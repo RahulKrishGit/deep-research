@@ -1,0 +1,595 @@
+{
+  "answer_kind": "factual",
+  "artifacts": {
+    "evidence_markdown": "aa7421dc6ca57866473357a24c56d6979c09b5147cbb13d3794699740073af04",
+    "reader_markdown": "29959a05fefedde099b9cabc6d204f9ac0914cf59c304f7051e4fbba9b80d9f0"
+  },
+  "as_of": "2026-09-21T19:53:44.328826+00:00",
+  "boundary_audits": [
+    {
+      "accepted_ids": [
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "agent_name": "researcher",
+      "audit_id": "audit-7a1743d3283ce9d07eb9392a",
+      "claim_cluster_ids": [],
+      "configuration_fingerprint": "selected=4;packet=24000",
+      "deferred_ids": [],
+      "disposition_ids": [],
+      "input_ids": [
+        "chunk-0"
+      ],
+      "job_id": "spike-3",
+      "operation": "passage_selection",
+      "packet_fingerprint": "916127f1b67901e0644b3dc67e2872b0ba65aa0b9076031d2a0f04bac67c45f8",
+      "returned_ids": [
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "schema_version": "1",
+      "selected_ids": [
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "status": "completed",
+      "target_ids": [
+        "topic-03"
+      ]
+    },
+    {
+      "accepted_ids": [
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "agent_name": "fact_checker",
+      "audit_id": "audit-d654127b035088fb09ef556c",
+      "claim_cluster_ids": [
+        "cluster-51ef6b7ed1a37adc3780390d0d43b711"
+      ],
+      "configuration_fingerprint": "evidence_chars=4000;passages=4",
+      "deferred_ids": [
+        "ev-ae8494cc410b347a8923e3cf",
+        "ev-fcb17b5dfbf1a1bc4d3866d3"
+      ],
+      "disposition_ids": [
+        "ev-ae8494cc410b347a8923e3cf:out_of_scope",
+        "ev-fcb17b5dfbf1a1bc4d3866d3:out_of_scope"
+      ],
+      "input_ids": [
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "job_id": "spike-3",
+      "operation": "adjudication_packet",
+      "packet_fingerprint": "e5e5787e6c75a15eb0237923df6d4e7a26fb37c70d95e0a72fd31363163b5e16",
+      "returned_ids": [],
+      "schema_version": "1",
+      "selected_ids": [
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "status": "completed",
+      "target_ids": []
+    },
+    {
+      "accepted_ids": [
+        "ev-fcb17b5dfbf1a1bc4d3866d3"
+      ],
+      "agent_name": "fact_checker",
+      "audit_id": "audit-f247c44b0483ac9f5cf61c96",
+      "claim_cluster_ids": [
+        "cluster-de369bc179d3f0141b51b6c25af285df"
+      ],
+      "configuration_fingerprint": "evidence_chars=4000;passages=4",
+      "deferred_ids": [
+        "ev-ae8494cc410b347a8923e3cf",
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "disposition_ids": [
+        "ev-ae8494cc410b347a8923e3cf:out_of_scope",
+        "ev-5ccdcbabc01171494e97807d:out_of_scope"
+      ],
+      "input_ids": [
+        "ev-fcb17b5dfbf1a1bc4d3866d3"
+      ],
+      "job_id": "spike-3",
+      "operation": "adjudication_packet",
+      "packet_fingerprint": "98afaee53d2c830e68026a0f95689cefb83da3e1b1dff23e5fadc4e9054f7a12",
+      "returned_ids": [],
+      "schema_version": "1",
+      "selected_ids": [
+        "ev-fcb17b5dfbf1a1bc4d3866d3"
+      ],
+      "status": "completed",
+      "target_ids": []
+    },
+    {
+      "accepted_ids": [
+        "read-cd12b4e1f9cf38f1ab917c99"
+      ],
+      "agent_name": "researcher",
+      "audit_id": "audit-fd480cf5d665cdb2f078cc11",
+      "claim_cluster_ids": [],
+      "configuration_fingerprint": "selected=4;packet=24000",
+      "deferred_ids": [],
+      "disposition_ids": [],
+      "input_ids": [
+        "https://official.example/year"
+      ],
+      "job_id": "spike-3",
+      "operation": "read_admission",
+      "packet_fingerprint": "916127f1b67901e0644b3dc67e2872b0ba65aa0b9076031d2a0f04bac67c45f8",
+      "returned_ids": [
+        "read-cd12b4e1f9cf38f1ab917c99"
+      ],
+      "schema_version": "1",
+      "selected_ids": [],
+      "status": "completed",
+      "target_ids": [
+        "topic-03"
+      ]
+    },
+    {
+      "accepted_ids": [
+        "ev-ae8494cc410b347a8923e3cf"
+      ],
+      "agent_name": "fact_checker",
+      "audit_id": "audit-fdc41551a3aa13caf5dbd520",
+      "claim_cluster_ids": [
+        "cluster-4c2e32862968374daf9c49e9eb155a8a"
+      ],
+      "configuration_fingerprint": "evidence_chars=4000;passages=4",
+      "deferred_ids": [
+        "ev-fcb17b5dfbf1a1bc4d3866d3",
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "disposition_ids": [
+        "ev-fcb17b5dfbf1a1bc4d3866d3:out_of_scope",
+        "ev-5ccdcbabc01171494e97807d:out_of_scope"
+      ],
+      "input_ids": [
+        "ev-ae8494cc410b347a8923e3cf"
+      ],
+      "job_id": "spike-3",
+      "operation": "adjudication_packet",
+      "packet_fingerprint": "195bfe2d659f864b4210ff85665bd2fff3b68833f7f3db9ee4e80e65d0f996ba",
+      "returned_ids": [],
+      "schema_version": "1",
+      "selected_ids": [
+        "ev-ae8494cc410b347a8923e3cf"
+      ],
+      "status": "completed",
+      "target_ids": []
+    }
+  ],
+  "claim_clusters": [],
+  "claims": [
+    {
+      "claim_id": "8fd2c0df358da0dac2edd890cd2eed0d39609aa36d8cabae975f6a35a54177c8",
+      "cluster_aliases": [],
+      "cluster_id": "cluster-4c2e32862968374daf9c49e9eb155a8a",
+      "confidence": 0.5,
+      "consumed_coverage_ids": [
+        "topic-01"
+      ],
+      "evidence_status": "source_supported",
+      "insufficient_reason": "packet_incomplete",
+      "source_urls": [
+        "https://official.example/measurement"
+      ],
+      "text": "The measured efficiency of the Acme widget is 42 percent.",
+      "verdict": "insufficient_evidence"
+    },
+    {
+      "claim_id": "5492003d34bd3b1e3bd8ee346882fbb5c5fbab0c2fbabf39017e3e04d6a259f4",
+      "cluster_aliases": [],
+      "cluster_id": "cluster-de369bc179d3f0141b51b6c25af285df",
+      "confidence": 0.5,
+      "consumed_coverage_ids": [
+        "topic-02"
+      ],
+      "evidence_status": "source_supported",
+      "insufficient_reason": "packet_incomplete",
+      "source_urls": [
+        "https://official.example/method"
+      ],
+      "text": "The Acme widget was measured under the standard test ST-4.",
+      "verdict": "insufficient_evidence"
+    },
+    {
+      "claim_id": "1ec81e18dc4125872e0fa16df621d49a79f1bcf29a4fdb85f6dbe46953392d4d",
+      "cluster_aliases": [],
+      "cluster_id": "cluster-51ef6b7ed1a37adc3780390d0d43b711",
+      "confidence": 0.5,
+      "consumed_coverage_ids": [
+        "topic-03"
+      ],
+      "evidence_status": "source_supported",
+      "insufficient_reason": "packet_incomplete",
+      "source_urls": [
+        "https://official.example/year"
+      ],
+      "text": "The Acme measurement was taken in 2025.",
+      "verdict": "insufficient_evidence"
+    }
+  ],
+  "composition_present": true,
+  "configuration": {
+    "composition_fingerprint": "7d4db7c4ccbb",
+    "quality_contract_version": "1",
+    "review_composition_fingerprint": "7d4db7c4ccbb",
+    "review_input_fingerprint": "c50f49f1f610",
+    "review_rubric_version": 2
+  },
+  "counts": {
+    "accounted_target_ids": [],
+    "answered_critical_targets": 0,
+    "answered_targets": 0,
+    "assessed_sources": 3,
+    "cache_reads": 0,
+    "checked_claims": 3,
+    "cited_assessed_sources": 3,
+    "contradicted_claims": 0,
+    "covered_topics": 3,
+    "critical_targets": 1,
+    "expanded_target_ids": [],
+    "findings": 3,
+    "initial_target_ids": [
+      "topic-01-target-01",
+      "topic-02-target-01",
+      "topic-03-target-01"
+    ],
+    "network_reads": 3,
+    "planned_targets": 3,
+    "planned_topics": 3,
+    "publishers": 1,
+    "read_records": 3,
+    "reader_statements": 12,
+    "required_targets": 3,
+    "source_urls": 3,
+    "substantive_topic_ratio": 0.0,
+    "unaccounted_target_ids": [
+      "topic-01-target-01",
+      "topic-02-target-01",
+      "topic-03-target-01"
+    ],
+    "unanswered_critical_target_ids": [
+      "topic-01-target-01"
+    ],
+    "unanswered_required_target_ids": [
+      "topic-01-target-01",
+      "topic-02-target-01",
+      "topic-03-target-01"
+    ],
+    "unique_works": 3,
+    "verified_claims": 0
+  },
+  "date_basis": "evidence available as of 2026-09-21",
+  "dispositions": [],
+  "evidence": [
+    {
+      "evidence_id": "ev-5ccdcbabc01171494e97807d",
+      "excerpt": "Acme measurement year note. The Acme measurement was taken in 2025.",
+      "locator": "chunk-0",
+      "origin": "researcher",
+      "read_id": "read-cd12b4e1f9cf38f1ab917c99",
+      "source_url": "https://official.example/year",
+      "target_ids": [
+        "topic-03"
+      ]
+    },
+    {
+      "evidence_id": "ev-ae8494cc410b347a8923e3cf",
+      "excerpt": "Acme measurement report 2025. The measured efficiency of the Acme widget is 42 percent under the standard test. The measurement was taken in 2025.",
+      "locator": "chunk-0",
+      "origin": "researcher",
+      "read_id": "read-d155c50633564d9f9e217b9f",
+      "source_url": "https://official.example/measurement",
+      "target_ids": [
+        "topic-01"
+      ]
+    },
+    {
+      "evidence_id": "ev-fcb17b5dfbf1a1bc4d3866d3",
+      "excerpt": "Acme test method note. The Acme widget was measured under the standard test ST-4.",
+      "locator": "chunk-0",
+      "origin": "researcher",
+      "read_id": "read-3e32510b843b1279aafc45c3",
+      "source_url": "https://official.example/method",
+      "target_ids": [
+        "topic-02"
+      ]
+    }
+  ],
+  "evidence_status": {
+    "contested": 0,
+    "corroborated": 0,
+    "not_established": 0,
+    "primary_attributed": 3
+  },
+  "generated_on": "2026-09-21",
+  "iteration": 1,
+  "quality_contract_version": "1",
+  "quality_status": "partial",
+  "question": "What is the measured efficiency of the Acme widget?",
+  "reads": [
+    {
+      "acquisition_kind": "network",
+      "content_sha256": "e5160f9357f23a5d2a3995bbcb391ed651d5e6ec2b35292ad62e719bc570ea60",
+      "extraction_complete": true,
+      "locator_count": 1,
+      "origin_session_id": "spike-3",
+      "read_id": "read-3e32510b843b1279aafc45c3",
+      "requested_url": "https://official.example/method",
+      "resolved_url": "https://official.example/method",
+      "retrieved_at": "2026-09-21T19:53:44.214970+00:00",
+      "target_ids": [
+        "topic-02"
+      ]
+    },
+    {
+      "acquisition_kind": "network",
+      "content_sha256": "86a38bef9da8694b31a91249450bb2d851b4587fc93655788feacd0886c6d484",
+      "extraction_complete": true,
+      "locator_count": 1,
+      "origin_session_id": "spike-3",
+      "read_id": "read-cd12b4e1f9cf38f1ab917c99",
+      "requested_url": "https://official.example/year",
+      "resolved_url": "https://official.example/year",
+      "retrieved_at": "2026-09-21T19:53:44.217344+00:00",
+      "target_ids": [
+        "topic-03"
+      ]
+    },
+    {
+      "acquisition_kind": "network",
+      "content_sha256": "3ddb6454f988e6ea7206857c7192d7d1346841aa25cbcb9c9096144a9be33115",
+      "extraction_complete": true,
+      "locator_count": 1,
+      "origin_session_id": "spike-3",
+      "read_id": "read-d155c50633564d9f9e217b9f",
+      "requested_url": "https://official.example/measurement",
+      "resolved_url": "https://official.example/measurement",
+      "retrieved_at": "2026-09-21T19:53:44.211192+00:00",
+      "target_ids": [
+        "topic-01"
+      ]
+    }
+  ],
+  "returned_to_fact_checker": [
+    "efficiency figure",
+    "Acme widget"
+  ],
+  "review": {
+    "composition_fingerprint": "7d4db7c4ccbb",
+    "coverage_complete": true,
+    "defects": [],
+    "dimensions": {
+      "actionability": 1.0,
+      "attribution": 1.0,
+      "completeness": 1.0,
+      "evidence_quality": 1.0,
+      "prioritization": 1.0,
+      "readability": 1.0,
+      "uncertainty": 1.0
+    },
+    "input_fingerprint": "c50f49f1f610",
+    "mean_score": 1.0,
+    "omitted_evidence_ids": [],
+    "per_statement_dispositions": {
+      "A004": "supported",
+      "A007": "supported",
+      "A010": "supported",
+      "C005": "supported",
+      "C006": "supported",
+      "C008": "supported",
+      "C009": "supported",
+      "C011": "supported",
+      "C012": "supported",
+      "S001": "supported",
+      "S002": "supported",
+      "S003": "supported"
+    },
+    "rationale": "Every statement is carried by the evidence shown.",
+    "rubric_version": 2,
+    "status": "scored",
+    "unreviewed_statement_ids": [],
+    "unsettled_statement_ids": []
+  },
+  "scope": "3 planned sub-topic(s), in priority order: topic-01 Acme widget efficiency; topic-02 Acme widget test method; topic-03 Acme widget measurement year. No geography, population, or period beyond what the cited sources state is assumed.",
+  "session_id": "spike-3",
+  "sources": [
+    {
+      "assessment_revision": "assess-497416571b5f038754f12d7d",
+      "cited": true,
+      "evaluation_status": "scored",
+      "publisher_id": "official.example",
+      "serving_host": "official.example",
+      "source_role": "unknown",
+      "target_ids": [
+        "topic-01"
+      ],
+      "title": "Acme measurement report 2025",
+      "transport_relation": "unknown",
+      "url": "https://official.example/measurement",
+      "work_id": "sha256:3ddb6454f988e6ea7206857c7192d7d1346841aa25cbcb9c9096144a9be33115"
+    },
+    {
+      "assessment_revision": "assess-1b99d123bb694a722425b0a1",
+      "cited": true,
+      "evaluation_status": "scored",
+      "publisher_id": "official.example",
+      "serving_host": "official.example",
+      "source_role": "unknown",
+      "target_ids": [
+        "topic-02"
+      ],
+      "title": "Acme test method note",
+      "transport_relation": "unknown",
+      "url": "https://official.example/method",
+      "work_id": "sha256:e5160f9357f23a5d2a3995bbcb391ed651d5e6ec2b35292ad62e719bc570ea60"
+    },
+    {
+      "assessment_revision": "assess-0eb1806af2502b0b4d1c196b",
+      "cited": true,
+      "evaluation_status": "scored",
+      "publisher_id": "official.example",
+      "serving_host": "official.example",
+      "source_role": "unknown",
+      "target_ids": [
+        "topic-03"
+      ],
+      "title": "Acme measurement year note",
+      "transport_relation": "unknown",
+      "url": "https://official.example/year",
+      "work_id": "sha256:86a38bef9da8694b31a91249450bb2d851b4587fc93655788feacd0886c6d484"
+    }
+  ],
+  "statement_dispositions": [
+    "unsupported_cell",
+    "returned_to_fact_checker",
+    "duplicate_statement"
+  ],
+  "statements": [
+    {
+      "answered_dimensions": [],
+      "basis": "",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-ae8494cc410b347a8923e3cf"
+      ],
+      "mode": "attributed",
+      "statement_id": "S001",
+      "target_ids": [],
+      "text": "The measured efficiency of the Acme widget is 42 percent."
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-fcb17b5dfbf1a1bc4d3866d3"
+      ],
+      "mode": "attributed",
+      "statement_id": "S002",
+      "target_ids": [],
+      "text": "The Acme widget was measured under the standard test ST-4."
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "mode": "attributed",
+      "statement_id": "S003",
+      "target_ids": [],
+      "text": "The Acme measurement was taken in 2025."
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "cell carried by the row's evidence",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-ae8494cc410b347a8923e3cf"
+      ],
+      "mode": "attributed",
+      "statement_id": "C005",
+      "target_ids": [],
+      "text": "Acme widget"
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "the cited evidence does not carry this cell",
+      "claim_cluster_ids": [],
+      "evidence_ids": [],
+      "mode": "context",
+      "statement_id": "C006",
+      "target_ids": [],
+      "text": "not stated"
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-ae8494cc410b347a8923e3cf"
+      ],
+      "mode": "attributed",
+      "statement_id": "A004",
+      "target_ids": [],
+      "text": "The measured efficiency of the Acme widget is 42 percent."
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "cell carried by the row's evidence",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-fcb17b5dfbf1a1bc4d3866d3"
+      ],
+      "mode": "attributed",
+      "statement_id": "C008",
+      "target_ids": [],
+      "text": "Acme widget"
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "cell carried by the row's evidence",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-fcb17b5dfbf1a1bc4d3866d3"
+      ],
+      "mode": "attributed",
+      "statement_id": "C009",
+      "target_ids": [],
+      "text": "test method"
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-fcb17b5dfbf1a1bc4d3866d3"
+      ],
+      "mode": "attributed",
+      "statement_id": "A007",
+      "target_ids": [],
+      "text": "The Acme widget was measured under the standard test ST-4."
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "the cited evidence does not carry this cell",
+      "claim_cluster_ids": [],
+      "evidence_ids": [],
+      "mode": "context",
+      "statement_id": "C011",
+      "target_ids": [],
+      "text": "not stated"
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "cell carried by the row's evidence",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "mode": "attributed",
+      "statement_id": "C012",
+      "target_ids": [],
+      "text": "measurement year"
+    },
+    {
+      "answered_dimensions": [],
+      "basis": "",
+      "claim_cluster_ids": [],
+      "evidence_ids": [
+        "ev-5ccdcbabc01171494e97807d"
+      ],
+      "mode": "attributed",
+      "statement_id": "A010",
+      "target_ids": [],
+      "text": "The Acme measurement was taken in 2025."
+    }
+  ],
+  "work_keys": {
+    "https://official.example/measurement": "sha256:3ddb6454f988e6ea7206857c7192d7d1346841aa25cbcb9c9096144a9be33115",
+    "https://official.example/method": "sha256:e5160f9357f23a5d2a3995bbcb391ed651d5e6ec2b35292ad62e719bc570ea60",
+    "https://official.example/year": "sha256:86a38bef9da8694b31a91249450bb2d851b4587fc93655788feacd0886c6d484"
+  }
+}

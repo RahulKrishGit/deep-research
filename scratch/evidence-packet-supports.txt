@@ -1,0 +1,16 @@
+# Same provider request (033-synthesizer-ReportDraft), two trees
+# left = worktree at 06ec090 (as dispatched), right = 4-line orientation fix applied
+
+## without the fix (claim C001 carries evidence_selection {ev-ae8494cc...: supports})
+17:C001 [insufficient_evidence 0.50] The measured efficiency of the Acme widget is 42 percent. (https://official.example/measurement) coverage=topic-01
+22:C001 [insufficient_evidence 0.50 | primary-source attribution; independent corroboration not established] The measured efficiency of the Acme widget is 42 percent.
+24:  supports: none recorded
+30:  supports: none recorded
+36:  supports: none recorded
+
+## with the fix
+17:C001 [insufficient_evidence 0.50] The measured efficiency of the Acme widget is 42 percent. (https://official.example/measurement) coverage=topic-01
+22:C001 [insufficient_evidence 0.50 | primary-source attribution; independent corroboration not established] The measured efficiency of the Acme widget is 42 percent.
+24:  supports: ev-ae8494cc410b347a8923e3cf chunk-0 "Acme measurement report 2025. The measured efficiency of the Acme widget is 42 percent under the standard test. The measurement was taken in 2025."
+30:  supports: ev-fcb17b5dfbf1a1bc4d3866d3 chunk-0 "Acme test method note. The Acme widget was measured under the standard test ST-4."
+36:  supports: ev-5ccdcbabc01171494e97807d chunk-0 "Acme measurement year note. The Acme measurement was taken in 2025."

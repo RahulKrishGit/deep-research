@@ -1,0 +1,75 @@
+PKT 8fd2c0df insufficient_evidence source_supported sel= ['ev-ae8494cc410b347a8923e3cf'] targets= [] cluster= cluster- urls= ['https://official.example/measurement']
+PKT 5492003d insufficient_evidence source_supported sel= ['ev-fcb17b5dfbf1a1bc4d3866d3'] targets= [] cluster= cluster- urls= ['https://official.example/method']
+PKT 1ec81e18 insufficient_evidence source_supported sel= ['ev-5ccdcbabc01171494e97807d'] targets= [] cluster= cluster- urls= ['https://official.example/year']
+PKT-EVIDENCE-KEYS ['ev-5ccdcbabc01171494e97807d', 'ev-ae8494cc410b347a8923e3cf', 'ev-fcb17b5dfbf1a1bc4d3866d3'] 3
+COMP evidence= ['ev-5ccdcbabc01171494e97807d', 'ev-ae8494cc410b347a8923e3cf', 'ev-fcb17b5dfbf1a1bc4d3866d3'] 3 claims= [('8fd2c0df', ['ev-ae8494cc410b347a8923e3cf']), ('5492003d', ['ev-fcb17b5dfbf1a1bc4d3866d3']), ('1ec81e18', ['ev-5ccdcbabc01171494e97807d'])]
+STM S001 substantive= True evidence= [] claims= ['8fd2c0df358da0dac2edd890cd2eed0d39609aa36d8cabae975f6a35a54177c8'] | The measured efficiency of the Acme widget is 42 percent. mode= attributed clusters= []
+STM S002 substantive= True evidence= [] claims= ['5492003d34bd3b1e3bd8ee346882fbb5c5fbab0c2fbabf39017e3e04d6a259f4'] | The Acme widget was measured under the standard test ST-4. mode= attributed clusters= []
+STM S003 substantive= True evidence= [] claims= ['1ec81e18dc4125872e0fa16df621d49a79f1bcf29a4fdb85f6dbe46953392d4d'] | The Acme measurement was taken in 2025. mode= attributed clusters= []
+STM C005 substantive= True evidence= [] claims= [] | Acme widget mode= attributed clusters= []
+STM C006 substantive= False evidence= [] claims= [] | not stated mode= context clusters= []
+STM A004 substantive= True evidence= [] claims= [] | The measured efficiency of the Acme widget is 42 percent. mode= attributed clusters= []
+STM C008 substantive= True evidence= [] claims= [] | Acme widget mode= attributed clusters= []
+STM C009 substantive= True evidence= [] claims= [] | test method mode= attributed clusters= []
+STM A007 substantive= True evidence= [] claims= [] | The Acme widget was measured under the standard test ST-4. mode= attributed clusters= []
+STM C011 substantive= True evidence= [] claims= [] | Acme widget mode= attributed clusters= []
+STM C012 substantive= True evidence= [] claims= [] | measurement year mode= attributed clusters= []
+STM A010 substantive= True evidence= [] claims= [] | The Acme measurement was taken in 2025. mode= attributed clusters= []
+STM-ERROR StatementMappingError a substantive reader statement carries no evidence link: C005
+Traceback (most recent call last):
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\scratch\spike3.py", line 711, in <module>
+    asyncio.run(_run())
+  File "C:\Users\Rahul Krishnamoorthy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\asyncio\base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\scratch\spike3.py", line 674, in _run
+    run = await run_research_graph(
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\src\deep_research\graph\orchestrator.py", line 450, in run_research_graph
+    return await _invoke(
+           ^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\src\deep_research\graph\orchestrator.py", line 365, in _invoke
+    result = await graph.ainvoke(channel, config)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Lib\site-packages\langgraph\pregel\main.py", line 4090, in ainvoke
+    async for chunk in self.astream(
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Lib\site-packages\langgraph\pregel\main.py", line 3440, in astream
+    async for _ in runner.atick(
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Lib\site-packages\langgraph\pregel\_runner.py", line 396, in atick
+    await arun_with_retry(
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Lib\site-packages\langgraph\pregel\_retry.py", line 744, in arun_with_retry
+    return await task.proc.ainvoke(task.input, config)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Lib\site-packages\langgraph\_internal\_runnable.py", line 733, in ainvoke
+    input = await asyncio.create_task(
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.venv\Lib\site-packages\langgraph\_internal\_runnable.py", line 501, in ainvoke
+    ret = await self.afunc(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\src\deep_research\graph\nodes.py", line 270, in node
+    composed = await inner(channel)
+               ^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\src\deep_research\graph\nodes.py", line 199, in node
+    outcome = await agent.run(started)
+              ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\src\deep_research\agents\synthesizer.py", line 2628, in run
+    report, compose_errors = self.compose(
+                             ^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\src\deep_research\agents\synthesizer.py", line 2497, in compose
+    return compose_report(
+           ^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\src\deep_research\agents\synthesizer.py", line 2182, in compose_report
+    markdown=render_reader_report(composition),
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\src\deep_research\agents\report.py", line 1125, in render_reader_report
+    validate_report_statements(composition)
+  File "C:\Users\Rahul Krishnamoorthy\OneDrive\Documents\Python Scripts\deep-research\.worktrees\agent-cli-quality-trace-plan\src\deep_research\agents\report.py", line 629, in validate_report_statements
+    raise StatementMappingError(
+deep_research.agents.report.StatementMappingError: a substantive reader statement carries no evidence link: C005
+During task with name 'synthesizer' and id 'fc73f94a-63c7-96be-994b-835b6f5d9286'

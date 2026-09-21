@@ -1,0 +1,142 @@
+PKT 8fd2c0df insufficient_evidence source_supported sel= ['ev-ae8494cc410b347a8923e3cf'] targets= [] cluster= cluster- urls= ['https://official.example/measurement']
+PKT 5492003d insufficient_evidence source_supported sel= ['ev-fcb17b5dfbf1a1bc4d3866d3'] targets= [] cluster= cluster- urls= ['https://official.example/method']
+PKT 1ec81e18 insufficient_evidence source_supported sel= ['ev-5ccdcbabc01171494e97807d'] targets= [] cluster= cluster- urls= ['https://official.example/year']
+PKT-EVIDENCE-KEYS ['ev-5ccdcbabc01171494e97807d', 'ev-ae8494cc410b347a8923e3cf', 'ev-fcb17b5dfbf1a1bc4d3866d3'] 3
+COMP evidence= ['ev-5ccdcbabc01171494e97807d', 'ev-ae8494cc410b347a8923e3cf', 'ev-fcb17b5dfbf1a1bc4d3866d3'] 3 claims= [('8fd2c0df', ['ev-ae8494cc410b347a8923e3cf']), ('5492003d', ['ev-fcb17b5dfbf1a1bc4d3866d3']), ('1ec81e18', ['ev-5ccdcbabc01171494e97807d'])]
+STM S001 substantive= True evidence= ['ev-ae8494cc410b347a8923e3cf'] claims= ['8fd2c0df358da0dac2edd890cd2eed0d39609aa36d8cabae975f6a35a54177c8'] | The measured efficiency of the Acme widget is 42 percent. mode= attributed clusters= []
+STM S002 substantive= True evidence= ['ev-fcb17b5dfbf1a1bc4d3866d3'] claims= ['5492003d34bd3b1e3bd8ee346882fbb5c5fbab0c2fbabf39017e3e04d6a259f4'] | The Acme widget was measured under the standard test ST-4. mode= attributed clusters= []
+STM S003 substantive= True evidence= ['ev-5ccdcbabc01171494e97807d'] claims= ['1ec81e18dc4125872e0fa16df621d49a79f1bcf29a4fdb85f6dbe46953392d4d'] | The Acme measurement was taken in 2025. mode= attributed clusters= []
+STM C005 substantive= True evidence= ['ev-ae8494cc410b347a8923e3cf'] claims= [] | Acme widget mode= attributed clusters= []
+STM C006 substantive= False evidence= [] claims= [] | not stated mode= context clusters= []
+STM A004 substantive= True evidence= ['ev-ae8494cc410b347a8923e3cf'] claims= [] | The measured efficiency of the Acme widget is 42 percent. mode= attributed clusters= []
+STM C008 substantive= True evidence= ['ev-fcb17b5dfbf1a1bc4d3866d3'] claims= [] | Acme widget mode= attributed clusters= []
+STM C009 substantive= True evidence= ['ev-fcb17b5dfbf1a1bc4d3866d3'] claims= [] | test method mode= attributed clusters= []
+STM A007 substantive= True evidence= ['ev-fcb17b5dfbf1a1bc4d3866d3'] claims= [] | The Acme widget was measured under the standard test ST-4. mode= attributed clusters= []
+STM C011 substantive= False evidence= [] claims= [] | not stated mode= context clusters= []
+STM C012 substantive= True evidence= ['ev-5ccdcbabc01171494e97807d'] claims= [] | measurement year mode= attributed clusters= []
+STM A010 substantive= True evidence= ['ev-5ccdcbabc01171494e97807d'] claims= [] | The Acme measurement was taken in 2025. mode= attributed clusters= []
+PKT 8fd2c0df insufficient_evidence source_supported sel= ['ev-ae8494cc410b347a8923e3cf'] targets= [] cluster= cluster- urls= ['https://official.example/measurement']
+PKT 5492003d insufficient_evidence source_supported sel= ['ev-fcb17b5dfbf1a1bc4d3866d3'] targets= [] cluster= cluster- urls= ['https://official.example/method']
+PKT 1ec81e18 insufficient_evidence source_supported sel= ['ev-5ccdcbabc01171494e97807d'] targets= [] cluster= cluster- urls= ['https://official.example/year']
+PKT-EVIDENCE-KEYS ['ev-5ccdcbabc01171494e97807d', 'ev-ae8494cc410b347a8923e3cf', 'ev-fcb17b5dfbf1a1bc4d3866d3'] 3
+COMP evidence= ['ev-5ccdcbabc01171494e97807d', 'ev-ae8494cc410b347a8923e3cf', 'ev-fcb17b5dfbf1a1bc4d3866d3'] 3 claims= [('8fd2c0df', ['ev-ae8494cc410b347a8923e3cf']), ('5492003d', ['ev-fcb17b5dfbf1a1bc4d3866d3']), ('1ec81e18', ['ev-5ccdcbabc01171494e97807d'])]
+STM S001 substantive= True evidence= ['ev-ae8494cc410b347a8923e3cf'] claims= ['8fd2c0df358da0dac2edd890cd2eed0d39609aa36d8cabae975f6a35a54177c8'] | The measured efficiency of the Acme widget is 42 percent. mode= attributed clusters= []
+STM S002 substantive= True evidence= ['ev-fcb17b5dfbf1a1bc4d3866d3'] claims= ['5492003d34bd3b1e3bd8ee346882fbb5c5fbab0c2fbabf39017e3e04d6a259f4'] | The Acme widget was measured under the standard test ST-4. mode= attributed clusters= []
+STM S003 substantive= True evidence= ['ev-5ccdcbabc01171494e97807d'] claims= ['1ec81e18dc4125872e0fa16df621d49a79f1bcf29a4fdb85f6dbe46953392d4d'] | The Acme measurement was taken in 2025. mode= attributed clusters= []
+STM C005 substantive= True evidence= ['ev-ae8494cc410b347a8923e3cf'] claims= [] | Acme widget mode= attributed clusters= []
+STM C006 substantive= False evidence= [] claims= [] | not stated mode= context clusters= []
+STM A004 substantive= True evidence= ['ev-ae8494cc410b347a8923e3cf'] claims= [] | The measured efficiency of the Acme widget is 42 percent. mode= attributed clusters= []
+STM C008 substantive= True evidence= ['ev-fcb17b5dfbf1a1bc4d3866d3'] claims= [] | Acme widget mode= attributed clusters= []
+STM C009 substantive= True evidence= ['ev-fcb17b5dfbf1a1bc4d3866d3'] claims= [] | test method mode= attributed clusters= []
+STM A007 substantive= True evidence= ['ev-fcb17b5dfbf1a1bc4d3866d3'] claims= [] | The Acme widget was measured under the standard test ST-4. mode= attributed clusters= []
+STM C011 substantive= False evidence= [] claims= [] | not stated mode= context clusters= []
+STM C012 substantive= True evidence= ['ev-5ccdcbabc01171494e97807d'] claims= [] | measurement year mode= attributed clusters= []
+STM A010 substantive= True evidence= ['ev-5ccdcbabc01171494e97807d'] claims= [] | The Acme measurement was taken in 2025. mode= attributed clusters= []
+status: incomplete
+calls: ['planner:react', 'planner:ResearchPlanDraft', 'planner:PlanReviewDraft', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:SubTopicFindingsDraft', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:SubTopicFindingsDraft', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:SubTopicFindingsDraft', 'source_evaluator:SourceScoresDraft', 'fact_checker:ClaimsDraft', 'fact_checker:react', 'fact_checker:ClaimVerdictDraft', 'fact_checker:react', 'fact_checker:ClaimVerdictDraft', 'fact_checker:react', 'fact_checker:ClaimVerdictDraft', 'synthesizer:ReportDraft', 'critic:CritiqueDraft', 'report_judge:ReportReviewDraft', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:SubTopicFindingsDraft', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:SubTopicFindingsDraft', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:react', 'researcher:SubTopicFindingsDraft', 'fact_checker:ClaimsDraft', 'synthesizer:ReportDraft', 'critic:CritiqueDraft', 'report_judge:ReportReviewDraft']
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 3}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 4}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 5}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 6}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 3}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 4}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 5}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 6}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 3}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 4}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 5}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 6}
+  - synthesizer_invalid_draft | Some drafted report content was malformed, or rested on a claim or source that is not in the checked evidence; it is listed in the evidence ledger instead of th | {"rejected": ["answer row 1 dimension: no evidence for this cell", "answer row 3 subject: no evidence for this cell", "section 1 point 1: repeats an earlier statement", "section 1: no printable point", "section 2 point 1: repeats an earlier statement", "section 2: no printable point", "section 3 poi
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 1}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 2}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 3}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 4}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 5}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 6}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 1}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 2}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 3}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 4}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 5}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 6}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 1}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 2}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 3}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 4}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 5}
+  - agent_tool_policy_rejected | The acquisition policy rejected a requested tool action. | {"tool": "web_scraper", "iteration": 6}
+  - fact_checker_invalid_claim | Some extracted claims were malformed and were dropped. | {"rejected": ["claim 1: already checked", "claim 2: already checked", "claim 3: already checked"]}
+  - synthesizer_invalid_draft | Some drafted report content was malformed, or rested on a claim or source that is not in the checked evidence; it is listed in the evidence ledger instead of th | {"rejected": ["answer row 1 dimension: no evidence for this cell", "answer row 3 subject: no evidence for this cell", "section 1 point 1: repeats an earlier statement", "section 1: no printable point", "section 2 point 1: repeats an earlier statement", "section 2: no printable point", "section 3 poi
+  claim-evidence 8fd2c0df source_supported insufficient_evidence ['ev-ae8494cc410b347a8923e3cf'] ['identity_unknown', 'packet_incomplete']
+  claim-evidence 5492003d source_supported insufficient_evidence ['ev-fcb17b5dfbf1a1bc4d3866d3'] ['identity_unknown', 'packet_incomplete']
+  claim-evidence 1ec81e18 source_supported insufficient_evidence ['ev-5ccdcbabc01171494e97807d'] ['identity_unknown', 'packet_incomplete']
+claims: 3
+    insufficient_evidence | The measured efficiency of the Acme widget is 42 percent.
+    insufficient_evidence | The Acme widget was measured under the standard test ST-4.
+    insufficient_evidence | The Acme measurement was taken in 2025.
+quality: coverage_ratio=1.0 planned_topics=3 covered_topics=3 unresolved_topic_ids=[] unique_findings=3 unique_sources=3 cited_sources=3 scored_cited_source_ratio=1.0 verified_claims=0 contradicted_claims=0 duplicate_claims=0 duplicate_source_rows=0 uncited_settled_points=0 hard_failures=['unanswered_critical_targets', 'unaccounted_required_targets'] substantive_topic_ratio=0.0 planned_targets=3 required_targets=3 answered_targets=0 critical_targets=1 unanswered_critical_target_ids=['topic-01-target-01'] unaccounted_target_ids=['topic-01-target-01', 'topic-02-target-01', 'topic-03-target-01'] semantic_review_status='scored' semantic_review_score=1.0 semantic_review_fingerprint='c50f49f1f610'
+review: scored
+report chars: 2487
+# Research report: What is the measured efficiency of the Acme widget?
+
+**As of:** 2026-09-21T19:53:44.328826+00:00
+
+**Generated on:** 2026-09-21
+
+**Date basis:** evidence available as of 2026-09-21
+
+**Scope:** 3 planned sub-topic(s), in priority order: topic-01 Acme widget efficiency; topic-02 Acme widget test method; topic-03 Acme widget measurement year. No geography, population, or period beyond what the cited sources state is assumed.
+
+**Quality status:** partial
+
+## Executive summary
+
+**What would change the answer**
+
+- The measured efficiency of the Acme widget is 42 percent. [1]
+- The Acme widget was measured under the standard test ST-4. [2]
+- The Acme measurement was taken in 2025. [3]
+
+**The most important unresolved limitation** is some steps of this pass failed.
+
+## Key facts
+
+| Subject | Dimension | Evidenced finding | Evidence strength |
+| --- | --- | --- | --- |
+| Acme widget | not stated | The measured efficiency of the Acme widget is 42 percent. [1] | — |
+| Acme widget | test method | The Acme widget was measured under the standard test ST-4. [2] | — |
+| not stated | measurement year | The Acme measurement was taken in 2025. [3] | — |
+
+## Findings
+
+(no finding passed validation for this pass)
+
+## Uncertainty and conflicting evidence
+
+### Insufficient independent evidence
+
+- The measured efficiency of the Acme widget is 42 percent. [1]
+- The Acme widget was measured under the standard test ST-4. [2]
+- The Acme measurement was taken in 2025. [3]
+
+**Limitations recorded for this pass**
+
+- Some steps of this research pass failed; sections of this report may be incomplete.
+- No claim was verified against a source independent of the one that made it.
+
+## Methodology
+
+- 3 reviewed source(s): 3 scored, 0 unscored.
+- 3 checked claim(s): 0 verified, 0 contradicted, 0 unverified, 3 insufficient; 3 verification passage(s) recorded.
+- 6 retrieved finding(s); 3 checked claim(s) support a statement above.
+- 3 planned sub-topic(s): topic-01, topic-02, topic-03
+- Iteration 1 of 2.
+- 2 statement(s) above carry no checked claim link; they are this pass's own framing, not findings.
+- 3 bullet(s) above repeat another bullet verbatim.
+- The limitations this pass discloses are listed with the uncertainty above, so no limitation is stated twice.
+
+## References
+
+1. Acme measurement report 2025 — https://official.example/measurement
+2. Acme test method note — https://official.example/method
+3. Acme measurement year note — https://official.example/year

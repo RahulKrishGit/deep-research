@@ -1,0 +1,48 @@
+diff --git a/src/deep_research/agents/researcher.py b/src/deep_research/agents/researcher.py
+index c9ec65a..76dfda1 100644
+--- a/src/deep_research/agents/researcher.py
++++ b/src/deep_research/agents/researcher.py
+@@ -229,7 +229,7 @@ def _cited_read_incidence(state: ResearchState) -> dict[str, tuple[str, str]]:
+     """
+     cited: dict[str, tuple[str, str]] = {}
+     for claim in state.verified_claims:
+-        for evidence_id in claim.evidence_selection.values():
++        for evidence_id in claim.evidence_selection:
+             unit = state.evidence_units.get(evidence_id)
+             if unit is None:
+                 continue
+diff --git a/src/deep_research/agents/synthesizer.py b/src/deep_research/agents/synthesizer.py
+index 3a0dc6f..3688d49 100644
+--- a/src/deep_research/agents/synthesizer.py
++++ b/src/deep_research/agents/synthesizer.py
+@@ -911,7 +911,7 @@ def _evidence_lines(
+ def _selected_ids(claim: Claim, cluster: ClaimCluster | None) -> list[str]:
+     if cluster is not None and cluster.evidence_ids:
+         return list(cluster.evidence_ids)
+-    return list(claim.evidence_selection.values())
++    return list(claim.evidence_selection)
+ 
+ 
+ def _packet_dates(
+@@ -1438,7 +1438,7 @@ def _cited_evidence(claims: Sequence[Claim], context: DraftContext) -> str:
+     """
+     parts: list[str] = []
+     for claim in claims:
+-        for evidence_id in claim.evidence_selection.values():
++        for evidence_id in claim.evidence_selection:
+             unit = context.evidence.get(evidence_id)
+             if unit is not None:
+                 parts.append(unit.excerpt)
+diff --git a/src/deep_research/utils/types.py b/src/deep_research/utils/types.py
+index f4ffb7a..0e66e4c 100644
+--- a/src/deep_research/utils/types.py
++++ b/src/deep_research/utils/types.py
+@@ -2023,7 +2023,7 @@ def derive_statement(
+             if evidence_id in evidence and evidence_id not in evidence_ids:
+                 evidence_ids.append(evidence_id)
+     for claim in claims:
+-        for evidence_id in claim.evidence_selection.values():
++        for evidence_id in claim.evidence_selection:
+             if evidence_id in evidence and evidence_id not in evidence_ids:
+                 evidence_ids.append(evidence_id)
+     target_ids: list[str] = []
