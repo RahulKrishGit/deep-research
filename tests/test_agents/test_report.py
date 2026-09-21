@@ -71,6 +71,7 @@ from deep_research.utils.types import (
     AtomicProposition,
     Claim,
     ClaimCluster,
+    EvidenceDisposition,
     EvidencePassage,
     EvidenceTarget,
     EvidenceUnit,
@@ -2261,7 +2262,9 @@ def _reader_points(composition: ReportComposition) -> list[ReportPoint]:
 # resolve a cited statement back to the exact evidence it rests on.
 
 
-def _record_state(composition: ReportComposition) -> ResearchState:
+def _record_state(
+    composition: ReportComposition, **fields: object
+) -> ResearchState:
     """The state the terminal finalizer holds when it publishes the set."""
     state = ResearchState(
         session_id=composition.session_id,
@@ -2270,6 +2273,7 @@ def _record_state(composition: ReportComposition) -> ResearchState:
         report=render_reader_report(composition),
         report_evidence=render_evidence_ledger(composition),
         quality_contract_version=QUALITY_CONTRACT_VERSION,
+        **fields,  # type: ignore[arg-type]
     )
     return state.model_copy(
         update={"quality": compute_report_quality(state, composition)}
@@ -2325,6 +2329,100 @@ def test_the_quality_record_replays_every_statement_from_its_own_ids() -> None:
     assert {
         citation.url for citation in reader_citations(composition)
     } == {row["url"] for row in record["sources"] if row["cited"]}
+
+
+def test_the_quality_record_derives_the_coverage_id_lists_the_snapshot_lacks() -> (
+    None
+):
+    """The record's target id lists are derived on the snapshot path too.
+
+    The record prefers the snapshot the gates judged, which is where the
+    denominators come from — but that snapshot carries no ``accounted_target_ids``
+    and no list of every unanswered required target, only the unanswered
+    critical ones and the unaccounted ones. Re-deriving them from those two
+    fields published an empty "accounted" list and omitted an obligation that
+    ended with a recorded denial, so a replay reading the record saw a target
+    nobody could account for, or did not see it at all. The id lists come from
+    the same pure function that produced the snapshot's own counts.
+    """
+    claim = _claim()
+    sub_topics = [
+        SubTopic(
+            coverage_id="topic-01",
+            title="Alpha",
+            rationale="First.",
+            search_queries=["alpha"],
+            success_criteria=["alpha evidence"],
+            priority=1,
+            evidence_targets=[
+                EvidenceTarget(
+                    target_id="t1",
+                    coverage_id="topic-01",
+                    question="What did the pilot add?",
+                    required_dimensions=["finding"],
+                    required=True,
+                    critical=False,
+                    support_policy="primary_attribution",
+                ),
+                EvidenceTarget(
+                    target_id="t-deferred",
+                    coverage_id="topic-01",
+                    question="What mechanism did the denied source report?",
+                    required_dimensions=["mechanism"],
+                    required=True,
+                    critical=False,
+                    support_policy="primary_attribution",
+                ),
+            ],
+        )
+    ]
+    composition = _evidence_composition(
+        claims=[claim],
+        claim_clusters={"cluster-1": _cluster(claim_ids=[claim.claim_id])},
+        sub_topics=sub_topics,
+        summary=[
+            ReportPoint(
+                text="The pilot added 12 GW.",
+                claim_ids=[claim.claim_id],
+                source_urls=[SOURCE_URL],
+                statement=ReportStatement(
+                    statement_id="S001",
+                    text="The pilot added 12 GW.",
+                    mode="settled",
+                    claim_cluster_ids=[claim.claim_id],
+                    evidence_ids=["e1"],
+                    target_ids=["t1"],
+                    answered_dimensions=["finding"],
+                ),
+            )
+        ],
+        sections=[],
+    )
+    state = _record_state(
+        composition,
+        sub_topics=sub_topics,
+        evidence_dispositions=[
+            EvidenceDisposition(
+                item_id="d1",
+                stage="access_denied",
+                reason="every candidate for this target was denied",
+                target_ids=["t-deferred"],
+            )
+        ],
+    )
+    assert state.quality is not None
+    assert state.quality.unaccounted_target_ids == []
+    assert state.quality.unanswered_critical_target_ids == []
+
+    record = render_quality_record(state, composition, None)
+    coverage = record["counts"]
+
+    assert coverage["unanswered_required_target_ids"] == ["t-deferred"]
+    assert coverage["accounted_target_ids"] == ["t-deferred"]
+    assert coverage["unaccounted_target_ids"] == []
+    # The scalars stay the snapshot's own measurement.
+    assert coverage["required_targets"] == state.quality.required_targets
+    assert coverage["answered_targets"] == state.quality.answered_targets
 
 
 def test_the_quality_record_hashes_the_published_bytes_and_never_itself() -> None:

@@ -65,6 +65,7 @@ from deep_research.utils.types import (
     ResearchEvent,
     ResearchState,
     ScoredSource,
+    SubstantiveCoverage,
     SubTopic,
 )
 
@@ -2208,36 +2209,37 @@ def _coverage_counts(
     """Target and topic progress, read from the snapshot the gates judged.
 
     The snapshot is preferred because it is the measurement acceptance was
-    decided on. A state holding no snapshot is measured here, at the same
-    denominator — never a smaller one: an absent record must not read as a
-    completed obligation.
+    decided on, and its scalars are published as it recorded them. It does not
+    carry every id list, though: it names the unanswered *critical* targets and
+    the unaccounted ones and no others, so re-deriving the rest from those two
+    fields dropped every accounted non-critical obligation — the "deferred with
+    a recorded reason" class — double-listed an unaccounted critical target,
+    and published an empty ``accounted_target_ids`` as a positive claim. The
+    lists come from ``compute_substantive_coverage`` instead: the same pure
+    function that measured the scalars, run against the composition this record
+    embeds, so every id it names resolves in the artifact beside it.
+
+    A state holding no snapshot is measured here at the same denominator —
+    never a smaller one: an absent record must not read as a completed
+    obligation.
     """
+    from deep_research.agents.quality import (  # noqa: PLC0415
+        compute_substantive_coverage,
+    )
+
+    measured = compute_substantive_coverage(state, composition)
     quality = state.quality
     if quality is None:
-        from deep_research.agents.quality import (  # noqa: PLC0415
-            compute_substantive_coverage,
-        )
-
-        substantive = compute_substantive_coverage(state, composition)
         return {
-            "planned_topics": substantive.planned_topics,
-            "covered_topics": substantive.covered_topics,
-            "substantive_topic_ratio": substantive.topic_ratio,
-            "planned_targets": substantive.planned_targets,
-            "required_targets": substantive.required_targets,
-            "answered_targets": substantive.answered_targets,
-            "critical_targets": substantive.critical_targets,
-            "answered_critical_targets": substantive.answered_critical_targets,
-            "unanswered_required_target_ids": list(
-                substantive.unanswered_required_target_ids
-            ),
-            "unanswered_critical_target_ids": list(
-                substantive.unanswered_critical_target_ids
-            ),
-            "accounted_target_ids": list(substantive.accounted_target_ids),
-            "unaccounted_target_ids": list(substantive.unaccounted_target_ids),
-            "initial_target_ids": list(substantive.initial_target_ids),
-            "expanded_target_ids": list(substantive.expanded_target_ids),
+            "planned_topics": measured.planned_topics,
+            "covered_topics": measured.covered_topics,
+            "substantive_topic_ratio": measured.topic_ratio,
+            "planned_targets": measured.planned_targets,
+            "required_targets": measured.required_targets,
+            "answered_targets": measured.answered_targets,
+            "critical_targets": measured.critical_targets,
+            "answered_critical_targets": measured.answered_critical_targets,
+            **_coverage_target_id_lists(measured),
         }
     answered_critical = max(
         0,
@@ -2252,20 +2254,30 @@ def _coverage_counts(
         "answered_targets": quality.answered_targets,
         "critical_targets": quality.critical_targets,
         "answered_critical_targets": answered_critical,
-        "unanswered_required_target_ids": [
-            target_id
-            for target_id in (
-                quality.unaccounted_target_ids
-                + quality.unanswered_critical_target_ids
-            )
-        ],
-        "unanswered_critical_target_ids": list(
-            quality.unanswered_critical_target_ids
+        **_coverage_target_id_lists(measured),
+    }
+
+
+def _coverage_target_id_lists(
+    measured: SubstantiveCoverage,
+) -> dict[str, JsonValue]:
+    """The target id lists one measurement publishes, in a fixed order.
+
+    ``accounted`` and ``unaccounted`` partition ``unanswered_required``, and
+    each list is the measurement's own — never re-derived from a subset, and
+    never emitted empty for a quantity nobody measured.
+    """
+    return {
+        "unanswered_required_target_ids": list(
+            measured.unanswered_required_target_ids
         ),
-        "accounted_target_ids": [],
-        "unaccounted_target_ids": list(quality.unaccounted_target_ids),
-        "initial_target_ids": list(state.initial_target_ids),
-        "expanded_target_ids": list(state.expanded_target_ids),
+        "unanswered_critical_target_ids": list(
+            measured.unanswered_critical_target_ids
+        ),
+        "accounted_target_ids": list(measured.accounted_target_ids),
+        "unaccounted_target_ids": list(measured.unaccounted_target_ids),
+        "initial_target_ids": list(measured.initial_target_ids),
+        "expanded_target_ids": list(measured.expanded_target_ids),
     }
 
 
