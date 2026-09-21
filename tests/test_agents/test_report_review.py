@@ -1772,8 +1772,10 @@ def test_a_ranked_report_shows_the_reviewer_its_rows_and_their_evidence() -> Non
     from deep_research.agents.report import ReportComposition
     from deep_research.utils.types import ReportConstraint
 
+    # Keyed by evidence id, valued with the stance it was selected under: the
+    # reverse orientation names no id in the registry and reads as no evidence.
     claim = _claim("Interconnection queues dominate.", target_ids=("t1",)).model_copy(
-        update={"evidence_selection": {"support": "e1"}}
+        update={"evidence_selection": {"e1": "supports"}}
     )
     composition = ReportComposition(
         question=QUESTION,
