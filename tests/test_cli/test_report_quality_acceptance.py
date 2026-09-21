@@ -36,6 +36,7 @@ hand-written constants are the pathology targets ``0`` and ``7/7`` above.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import re
@@ -98,7 +99,7 @@ from deep_research.main import DEFAULT_CONFIG_PATH
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.runtime.outcome import build_outcome
-from deep_research.tools.base import ToolResult
+from deep_research.tools.base import ToolError, ToolResult
 from deep_research.utils.types import (
     Claim,
     Critique,
@@ -778,13 +779,29 @@ def _fixture() -> _Fixture:
 
 @dataclass
 class _LocalPublisher:
-    """The production ``ReportPublisher`` protocol, writing under ``tmp_path``."""
+    """The production ``ReportPublisher`` protocol, writing under ``tmp_path``.
+
+    ``fail_filenames`` names the writes that fail, matching on a substring, so
+    a test can fail exactly one artifact of the set the way a real tool failure
+    arrives — as a failed result, never as a raised exception.
+    """
 
     directory: Path
     documents: list[Path] = field(default_factory=list)
     memory_claims: int = 0
+    fail_filenames: tuple[str, ...] = ()
 
     async def publish_document(self, *, filename: str, content: str) -> ToolResult:
+        if any(fragment in filename for fragment in self.fail_filenames):
+            return ToolResult(
+                tool_name="write_document",
+                success=False,
+                error=ToolError(
+                    type="ValidationError",
+                    message="The document could not be written.",
+                ),
+                latency_ms=0.0,
+            )
         target = self.directory / Path(filename).name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
@@ -907,9 +924,35 @@ def _stdout_metrics(stdout: str) -> dict[str, int | str]:
         stdout,
         re.MULTILINE,
     )
+    claims = re.search(
+        r"^Claims: (?P<checked>\d+) checked; "
+        r"(?P<corroborated>\d+) independently corroborated, "
+        r"(?P<attributed>\d+) primary-source attributed, "
+        r"(?P<contested>\d+) contested, "
+        r"(?P<not_established>\d+) not established$",
+        stdout,
+        re.MULTILINE,
+    )
+    sources = re.search(
+        r"^Sources: (?P<assessed>\d+) assessed, (?P<cited>\d+) cited; "
+        r"reads (?P<reads>\d+) \(network (?P<network>\d+), "
+        r"cache reuse (?P<cache>\d+)\), works (?P<works>\d+), "
+        r"publishers (?P<publishers>\d+), findings (?P<findings>\d+)$",
+        stdout,
+        re.MULTILINE,
+    )
+    review = re.search(
+        r"^Review: (?P<status>\S+)(?: (?P<score>\d+\.\d+))? "
+        r"\(fingerprint (?P<fingerprint>\S+)\)$",
+        stdout,
+        re.MULTILINE,
+    )
     assert evidence is not None, stdout
     assert integrity is not None, stdout
     assert quality is not None, stdout
+    assert claims is not None, stdout
+    assert sources is not None, stdout
+    assert review is not None, stdout
     return {
         "quality_status": quality.group("status"),
         "critic_score": int(quality.group("score")),
@@ -923,6 +966,22 @@ def _stdout_metrics(stdout: str) -> dict[str, int | str]:
         "duplicate_claims": int(integrity.group("claims")),
         "duplicate_source_rows": int(integrity.group("rows")),
         "uncited_settled_points": int(integrity.group("uncited")),
+        "checked_claims": int(claims.group("checked")),
+        "corroborated_claims": int(claims.group("corroborated")),
+        "primary_attributed_claims": int(claims.group("attributed")),
+        "contested_claims": int(claims.group("contested")),
+        "not_established_claims": int(claims.group("not_established")),
+        "assessed_sources": int(sources.group("assessed")),
+        "cited_assessed_sources": int(sources.group("cited")),
+        "read_records": int(sources.group("reads")),
+        "network_reads": int(sources.group("network")),
+        "cache_reads": int(sources.group("cache")),
+        "unique_works": int(sources.group("works")),
+        "publishers": int(sources.group("publishers")),
+        "findings": int(sources.group("findings")),
+        "review_status": review.group("status"),
+        "review_score": review.group("score") or "",
+        "review_fingerprint": review.group("fingerprint"),
     }
 
 
@@ -1023,18 +1082,20 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
     assert fixture.raw_source_records > len(canonical_urls)
     assert fixture.raw_claim_records > len(canonical_claims)
 
-    # The real terminal finalizer publishes both artifacts.
+    # The real terminal finalizer publishes the whole artifact set.
     publisher = _LocalPublisher(directory=tmp_path)
     final_state = load_state(
         asyncio.run(finalize_report_node(publisher)(dump_state(pre_state)))
     )
-    assert len(publisher.documents) == 2
+    assert len(publisher.documents) == 3
     assert graph_quality_status(final_state) == "accepted"
     assert publisher.memory_claims > 0
 
     report_path = Path(final_state.report_path or "")
     evidence_path = Path(final_state.evidence_path or "")
+    quality_path = Path(final_state.quality_path or "")
     assert report_path.is_file() and evidence_path.is_file()
+    assert quality_path.is_file()
 
     # The real CLI entry point, with a scripted runner.
     stdout = io.StringIO()
@@ -1091,6 +1152,8 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
     # Both Markdown artifacts, read back off disk.
     report = report_path.read_text(encoding="utf-8")
     ledger = evidence_path.read_text(encoding="utf-8")
+    quality_text = quality_path.read_text(encoding="utf-8")
+    record = json.loads(quality_text)
     assert report == final_state.report
     assert ledger == final_state.report_evidence
     # The plan's separation constraint, asserted in the direction that the
@@ -1105,6 +1168,50 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
 
     composition = final_state.composition
     assert composition is not None
+
+    # --- the quality record makes the other two replayable --------------------
+    # Every reader statement resolves inside the record: its claim clusters,
+    # the exact evidence units behind those clusters, and the reads and source
+    # rows the record serializes. Nothing here parses report prose.
+    record_statements = {row["statement_id"]: row for row in record["statements"]}
+    record_evidence = {row["evidence_id"] for row in record["evidence"]}
+    record_clusters = {row["cluster_id"] for row in record["claim_clusters"]}
+    record_claims = {row["claim_id"] for row in record["claims"]}
+    record_sources = {row["url"] for row in record["sources"]}
+    assert record_statements
+    assert set(record_statements) == {
+        statement.statement_id for statement in composition.statements
+    }
+    for statement in composition.statements:
+        assert set(statement.evidence_ids) <= record_evidence, (
+            statement.statement_id
+        )
+        assert set(statement.claim_cluster_ids) <= record_clusters, (
+            statement.statement_id
+        )
+    assert {claim.claim_id for claim in composition.claims} <= record_claims
+    assert {citation.url for citation in reader_citations(composition)} <= (
+        record_sources
+    )
+    # The one composition rule: the record describes the report it was written
+    # beside, and hashes exactly the bytes on disk.
+    assert record["composition_present"] is True
+    assert record["artifacts"] == {
+        "reader_markdown": hashlib.sha256(report.encode("utf-8")).hexdigest(),
+        "evidence_markdown": hashlib.sha256(ledger.encode("utf-8")).hexdigest(),
+    }
+    # No self-reference: the JSON never carries the digest of its own bytes.
+    assert hashlib.sha256(quality_text.encode("utf-8")).hexdigest() not in (
+        quality_text
+    )
+    assert "quality_json" not in record["artifacts"]
+    assert record["quality_contract_version"] == (
+        final_state.quality_contract_version
+    )
+    assert record["review"]["status"] == "scored"
+    assert record["review"]["input_fingerprint"] == (
+        final_state.report_review.input_fingerprint if final_state.report_review else ""
+    )
 
     # --- surfaces -------------------------------------------------------------
     printed = _stdout_metrics(captured)
@@ -1280,6 +1387,7 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
             {
                 "stdout": int(printed["verified_claims"]),
                 "state": quality.verified_claims,
+                "record": record["counts"]["verified_claims"],
                 "artifact": verdict_counts["verified"],
             }
         ),
@@ -1306,6 +1414,58 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
                 # rather than independently reading the report. The stdout and
                 # state legs carry the comparison.
                 "echo": len(covered_ids_in_report),
+            }
+        ),
+        # --- the record, the summary, and the artifacts, quantity by quantity -
+        "checked_claims": _Metric(
+            {
+                "stdout": int(printed["checked_claims"]),
+                "record": record["counts"]["checked_claims"],
+                "artifact": len(registry_rows),
+            }
+        ),
+        "corroborated_claims": _Metric(
+            {
+                "stdout": int(printed["corroborated_claims"]),
+                "record": record["evidence_status"]["corroborated"],
+            }
+        ),
+        "assessed_sources": _Metric(
+            {
+                "stdout": int(printed["assessed_sources"]),
+                "record": record["counts"]["assessed_sources"],
+                "artifact": len(source_rows),
+            }
+        ),
+        "cited_assessed_sources": _Metric(
+            {
+                "stdout": int(printed["cited_assessed_sources"]),
+                "record": record["counts"]["cited_assessed_sources"],
+                "artifact": len(reference_numbers),
+            }
+        ),
+        "unique_works": _Metric(
+            {
+                "stdout": int(printed["unique_works"]),
+                "record": record["counts"]["unique_works"],
+            }
+        ),
+        "read_records": _Metric(
+            {
+                "stdout": int(printed["read_records"]),
+                "record": record["counts"]["read_records"],
+                "state": len(final_state.read_records),
+            }
+        ),
+        "review_fingerprint": _Metric(
+            {
+                "stdout": str(printed["review_fingerprint"]),
+                "record": record["configuration"]["review_input_fingerprint"],
+                "state": (
+                    final_state.report_review.input_fingerprint
+                    if final_state.report_review
+                    else ""
+                ),
             }
         ),
     }
@@ -1377,13 +1537,47 @@ def test_mocked_cli_acceptance_has_no_recorded_report_pathology(
     )
     assert verdict_counts["contradicted"] == 1
 
-    # --- stdout identity, verdict, and artifact paths ------------------------
+    # The judgment the two vocabularies exist to keep apart, read across
+    # surfaces: this fixture holds 16 claims carrying a corroboration badge and
+    # 15 carrying a `verified` verdict, because one claim's verdict was
+    # contradicted while its badge records a pair. The CLI prints each against
+    # its own name and never presents the check count as the verified one.
+    assert printed["checked_claims"] == len(composition.claims) == 16
+    assert printed["corroborated_claims"] == 16
+    assert printed["verified_claims"] == 15
+    assert printed["corroborated_claims"] != printed["verified_claims"]
+
+    # The final header/status update cannot alter what was reviewed. The
+    # terminal re-render stamps the verdict the gates decided and nothing else:
+    # the reviewed statements are the same statements, the semantic fingerprint
+    # is unchanged, and the stored judgement survives the publication. A badge
+    # inside the fingerprint would have invalidated the review that accepted it.
+    review = final_state.report_review
+    assert review is not None
+    assert pre_state.report_review is not None
+    assert composition.quality_status == "accepted"
+    assert pre_state.composition is not None
+    assert pre_state.composition.quality_status != "accepted"
+    assert composition_semantic_fingerprint(composition) == (
+        composition_semantic_fingerprint(pre_state.composition)
+    )
+    assert [row.model_dump() for row in composition.statements] == [
+        row.model_dump() for row in pre_state.composition.statements
+    ]
+    assert review.per_statement_dispositions == (
+        pre_state.report_review.per_statement_dispositions
+    )
+    assert review.input_fingerprint == pre_state.report_review.input_fingerprint
+
+    # stdout identity, verdict, and artifact paths ------------------------
     assert printed["quality_status"] == "accepted"
     assert printed["critic_score"] == 8
     assert printed["coverage_ratio"] == 100
+    assert printed["review_status"] == "scored"
     assert (
         f"Report: {report_path}" in captured
         and f"Evidence ledger: {evidence_path}" in captured
+        and f"Quality record: {quality_path}" in captured
     )
     assert f"Session ID: {SESSION_ID}" in captured
     assert "Status: completed" in captured
@@ -1568,3 +1762,78 @@ def test_the_critic_sees_every_required_surface_of_a_long_report() -> None:
     assert blocks["reader-references"].startswith("1. ")
     assert "reviewed source(s)" in blocks["reader-methodology"]
     assert _critic_quality(body) == quality.model_dump(mode="json")
+
+
+def test_a_failed_required_artifact_leaves_no_accepted_advertised_output(
+    tmp_path: Path,
+) -> None:
+    """The publication is whole or not advertised, end to end.
+
+    The quality record is a required artifact of the set: without it the two
+    Markdown documents cannot be checked against the IDs and hashes that
+    describe them. The real finalizer publishes the set through a publisher
+    that refuses exactly that write, and the real CLI then reports what is
+    true — the Markdown is in state, two files really are on disk, no path is
+    advertised, and the failure names the write that did not complete.
+    """
+    fixture = _fixture()
+    publisher = _LocalPublisher(
+        directory=tmp_path, fail_filenames=("-quality.json",)
+    )
+
+    final_state = load_state(
+        asyncio.run(finalize_report_node(publisher)(dump_state(fixture.state)))
+    )
+
+    # Two writes succeeded; the set is still incomplete and says so.
+    assert len(publisher.documents) == 2
+    assert all(path.is_file() for path in publisher.documents)
+    assert final_state.report and final_state.report_evidence
+    assert final_state.report_path is None
+    assert final_state.evidence_path is None
+    assert final_state.quality_path is None
+    publication_errors = [
+        error
+        for error in final_state.errors
+        if error.error_type == "graph_publication_failed"
+    ]
+    assert [
+        (error.error_type, error.details["artifact"])
+        for error in publication_errors
+    ] == [("graph_publication_failed", "quality")]
+    published = final_state.events[-2]
+    assert published.metadata["document_writes"] == 2
+    assert published.metadata["report_path"] is None
+    assert published.metadata["evidence_path"] is None
+    assert published.metadata["quality_path"] is None
+
+    stdout = io.StringIO()
+    exit_code = cli_main(
+        [BATTERY_QUESTION, "--require-quality"],
+        runner=_ScriptedRunner(state=final_state),
+        stream=stdout,
+    )
+    captured = stdout.getvalue()
+
+    # The gates did accept the report, so strict mode still exits 0: what the
+    # run did not do is publish the set, and that is what the summary refuses
+    # to claim.
+    assert exit_code == EXIT_OK
+    assert "Quality: accepted" in captured
+    assert "Publication: incomplete; these writes failed: quality." in captured
+    assert (
+        "Report: not advertised; the artifact set is published whole or not "
+        "at all." in captured
+    )
+    assert (
+        "Evidence ledger: not advertised; the artifact set is published whole "
+        "or not at all." in captured
+    )
+    assert (
+        "Quality record: not advertised; the artifact set is published whole "
+        "or not at all." in captured
+    )
+    # No path the publisher wrote is advertised anywhere in the summary.
+    for path in publisher.documents:
+        assert str(path) not in captured
+    assert "Report: not written to disk" not in captured

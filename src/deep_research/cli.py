@@ -59,7 +59,9 @@ from deep_research.runtime.errors import (
 )
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.types import (
+    GAP_MATERIAL_SEVERITIES,
     QUALITY_STATUS_ACCEPTED,
+    CritiqueGap,
     ReportQualitySnapshot,
     ResearchError,
     ResearchEvent,
@@ -593,27 +595,141 @@ def _warning_line(error: ResearchError) -> str:
     return f"warning: [{error.error_type}] {error.message}"
 
 
+# The typed detail keys a producer records a *cause* under. Read in this order,
+# because ``reason`` is the enumerated "why" a producer stamps and the other
+# two name the failure class when a producer has no reason to give.
+_CAUSE_DETAIL_KEYS = ("reason", "cause", "failure_type", "exception_type")
+
+
+def _error_cause(error: ResearchError) -> str:
+    """The recorded cause of one error, or ``""`` when none was recorded.
+
+    Only a project-stamped detail key counts. A message is never parsed for a
+    cause: "the search provider timed out" is prose, and reading it as the
+    cause of a failure is how a display reason becomes a causal claim.
+    """
+    for key in _CAUSE_DETAIL_KEYS:
+        value = error.details.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"{key} {value.strip()}"
+    return ""
+
+
+def _topic_titles(outcome: ResearchOutcome) -> dict[str, str]:
+    """The plan's own title for each coverage topic id.
+
+    This is what lets an unresolved access problem name the *question* it
+    leaves unanswered instead of only the id it was filed under.
+    """
+    return {
+        topic.coverage_id: topic.title
+        for topic in outcome.state.sub_topics
+        if topic.coverage_id and topic.title
+    }
+
+
+def _error_targets(
+    errors: Sequence[ResearchError], *, titles: dict[str, str]
+) -> list[str]:
+    """The affected coverage topics and target ids a group's records name.
+
+    Read from the typed ``coverage_id`` / ``target_ids`` details a producer
+    stamps, never inferred from a message. A named topic carries its plan title
+    beside its id, so the line says which question lost out.
+    """
+    tokens: list[str] = []
+    for error in errors:
+        coverage_id = error.details.get("coverage_id")
+        if isinstance(coverage_id, str) and coverage_id.strip():
+            title = titles.get(coverage_id)
+            token = f'{coverage_id} "{title}"' if title else coverage_id
+            if token not in tokens:
+                tokens.append(token)
+        named = error.details.get("target_ids")
+        if isinstance(named, list):
+            for item in named:
+                if isinstance(item, str) and item.strip() and item not in tokens:
+                    tokens.append(item)
+    return tokens
+
+
+def _recovery_phrase(errors: Sequence[ResearchError]) -> str:
+    """Whether a group's records were recovered from, or are still open.
+
+    ``recoverable`` is the producer's own field: a refused URL that fell back
+    to a validated cache entry is a *recovered* error and is not an unresolved
+    report defect, while a failure nothing recovered from is. A group whose
+    records disagree says so rather than picking a side.
+    """
+    recovered = sum(error.recoverable for error in errors)
+    if recovered == len(errors):
+        return "recovered"
+    if recovered == 0:
+        return "unresolved"
+    return f"partly recovered: {recovered} of {len(errors)}"
+
+
+def _error_breakdown(
+    errors: Sequence[ResearchError], *, titles: dict[str, str]
+) -> list[str]:
+    """One line per (agent, type, cause) an error source actually recorded.
+
+    The source line above this says *who* lost out; these say *what* went
+    wrong, how often, how it ended, and which obligation it left open. Repeated
+    identical failures collapse into one line with a count, which is the
+    aggregation a reader needs — the alternative is one line per occurrence,
+    which is a log rather than a summary.
+    """
+    groups: dict[tuple[str, str, str], list[ResearchError]] = {}
+    for error in errors:
+        key = (error.source, error.error_type, _error_cause(error))
+        groups.setdefault(key, []).append(error)
+
+    lines: list[str] = []
+    for (_, error_type, cause), rows in groups.items():
+        count = f"x{len(rows)}" if len(rows) > 1 else ""
+        parts = [part for part in (count, _recovery_phrase(rows), cause) if part]
+        targets = _error_targets(rows, titles=titles)
+        detail = f": {', '.join(targets)}" if targets else ""
+        lines.append(f"    {error_type} ({'; '.join(parts)}){detail}")
+    return lines
+
+
 def render_warnings(
     outcome: ResearchOutcome, *, verbose: bool = False
 ) -> list[str]:
-    """Render recoverable errors grouped by the agent that recorded them.
+    """Render repeated errors grouped by agent, type, and cause.
 
-    Plain output is one line per affected source with its error count and the
-    coverage topics its records name, so a reader can see *who* contributed
-    nothing and *which* planned topic lost out without reading a log. The
-    messages themselves are verbose detail: they are enumerated and safe, but
-    they are not what makes the run actionable.
+    The header counts what was recovered and what is still open, because those
+    are different facts about a run: a refused fetch that a validated cache
+    entry answered is not an unresolved defect, and a run that names it as one
+    is reporting a failure it did not have. Each source then gets a line, and
+    each (type, cause) inside it gets a line that keeps the affected coverage
+    topics — with the plan's own title for each, so an unrecovered access
+    problem names the question it leaves unanswered.
+
+    The messages are verbose detail: they are enumerated and safe, but a
+    concrete cause with its targets is what makes the run actionable.
     """
     if not outcome.errors:
         return []
-    lines = ["Warnings:"]
-    for source, errors in _errors_by_source(outcome.errors).items():
-        coverage = _named_coverage_ids(errors)
-        count = f"{len(errors)} error" + ("" if len(errors) == 1 else "s")
+    errors = list(outcome.errors)
+    recovered = sum(error.recoverable for error in errors)
+    unresolved = len(errors) - recovered
+    counts = f"{len(errors)} error" + ("" if len(errors) == 1 else "s")
+    lines = [
+        f"Warnings: {counts} "
+        f"({recovered} recovered, {unresolved} unresolved)"
+    ]
+    titles = _topic_titles(outcome)
+    for source, rows in _errors_by_source(errors).items():
+        coverage = _named_coverage_ids(rows)
         detail = f" (coverage {', '.join(coverage)})" if coverage else ""
-        lines.append(f"  {source}: {count}{detail}")
+        lines.append(f"  {source}: {len(rows)} error"
+                     + ("" if len(rows) == 1 else "s") + detail)
+        lines.extend(_error_breakdown(rows, titles=titles))
         if verbose:
-            lines.extend(f"    {_warning_line(error)}" for error in errors)
+            lines.extend(f"    {_warning_line(error)}" for error in rows)
     return lines
 
 
@@ -627,7 +743,7 @@ def _scored_cited_sources(quality: ReportQualitySnapshot) -> int:
     return round(quality.scored_cited_source_ratio * quality.cited_sources)
 
 
-def _quality_lines(outcome: ResearchOutcome) -> list[str]:
+def _verdict_lines(outcome: ResearchOutcome) -> list[str]:
     """The terminal verdict, and the typed metrics it rests on.
 
     A fragment is printed only when the state carries it: no model review
@@ -645,20 +761,28 @@ def _quality_lines(outcome: ResearchOutcome) -> list[str]:
             f"covered, {quality.coverage_ratio:.0%}"
         )
     detail = f" ({'; '.join(parts)})" if parts else ""
-    lines = [f"Quality: {outcome.quality_status}{detail}"]
+    return [f"Quality: {outcome.quality_status}{detail}"]
+
+
+def _evidence_lines(outcome: ResearchOutcome) -> list[str]:
+    """The structural integrity counts, and the topics still open.
+
+    Nothing is invented for a run no quality pass judged: with no snapshot
+    there are no counts to print, and a row of zeroes would read as a clean
+    report rather than as an unjudged one.
+    """
+    quality = outcome.quality
     if quality is None:
-        return lines
-    lines.append(
+        return []
+    lines = [
         f"Evidence: {quality.cited_sources} cited sources; "
         f"{_scored_cited_sources(quality)} scored; "
         f"{quality.verified_claims} verified, "
-        f"{quality.contradicted_claims} contradicted"
-    )
-    lines.append(
+        f"{quality.contradicted_claims} contradicted",
         f"Integrity: {quality.duplicate_claims} duplicate claims; "
         f"{quality.duplicate_source_rows} duplicate source rows; "
-        f"{quality.uncited_settled_points} uncited settled points"
-    )
+        f"{quality.uncited_settled_points} uncited settled points",
+    ]
     if quality.unresolved_topic_ids:
         lines.append(
             f"Open coverage: {', '.join(quality.unresolved_topic_ids)}"
@@ -700,8 +824,233 @@ def _request_budget_lines(
     return lines
 
 
+def _quality_reason_line(quality: ReportQualitySnapshot) -> list[str]:
+    """Why this verdict, from the typed records behind it.
+
+    A verdict with no reason is not actionable. The specific reason here is the
+    gate's own hard-failure names and the semantic review's own status — both
+    enumerated values, never report prose — and the line is printed only when
+    there is one, so an accepted run carries no invented qualifier.
+    """
+    reasons: list[str] = []
+    if quality.hard_failures:
+        reasons.append(
+            f"{len(quality.hard_failures)} gate failure"
+            + ("" if len(quality.hard_failures) == 1 else "s")
+            + f" ({', '.join(quality.hard_failures)})"
+        )
+    status = quality.semantic_review_status.strip()
+    if status and status != "scored":
+        reasons.append(f"semantic review {status}")
+    elif not status:
+        reasons.append("no semantic review was recorded")
+    if not reasons:
+        return []
+    return [f"Quality reasons: {'; '.join(reasons)}"]
+
+
+def _coverage_line(outcome: ResearchOutcome) -> list[str]:
+    """Substantive topic and target completion, and the critical reading.
+
+    Three readings of one run, kept apart (Section 2.3). The topic count is the
+    *substantive* one, not the claimed ratio on the quality line: a topic some
+    claim recorded consuming is not an answered obligation, and only the
+    stricter number belongs in a line about completion.
+    """
+    coverage = outcome.coverage
+    if coverage is None:
+        return []
+    critical = (
+        f"{coverage.answered_critical_targets}/{coverage.critical_targets} "
+        "critical targets answered"
+    )
+    return [
+        f"Coverage: {coverage.covered_topics}/{coverage.planned_topics} topics "
+        f"covered (substantive, "
+        f"{coverage.substantive_topic_ratio:.0%}); "
+        f"{coverage.answered_targets}/{coverage.required_targets} required "
+        f"targets answered; {critical}"
+    ]
+
+
+def _claim_lines(outcome: ResearchOutcome) -> list[str]:
+    """Checked claims, counted apart from the claims that were corroborated.
+
+    "Sixteen claims were checked" is not "sixteen claims are verified". The
+    four readings below are the badges the canonical claims actually recorded,
+    and they add up to the number that was checked — so the line can never
+    present a check count as a corroboration count.
+    """
+    counts = outcome.evidence_counts
+    if counts is None:
+        return []
+    return [
+        f"Claims: {counts.checked_claims} checked; "
+        f"{counts.corroborated} independently corroborated, "
+        f"{counts.primary_attributed} primary-source attributed, "
+        f"{counts.contested} contested, "
+        f"{counts.not_established} not established"
+    ]
+
+
+def _source_lines(outcome: ResearchOutcome) -> list[str]:
+    """Assessed versus cited, and reads versus works versus cache reuses.
+
+    Four different quantities on one line, each labelled: every assessed source
+    is not every cited one (the last run had ten and eight), a physical read
+    call is not a unique validated work, and a cache reuse is not a second read
+    of the network.
+    """
+    counts = outcome.evidence_counts
+    if counts is None:
+        return []
+    return [
+        f"Sources: {counts.assessed_sources} assessed, "
+        f"{counts.cited_assessed_sources} cited; "
+        f"reads {counts.read_records} "
+        f"(network {counts.network_reads}, cache reuse {counts.cache_reads}), "
+        f"works {counts.unique_works}, "
+        f"publishers {counts.publishers}, "
+        f"findings {counts.findings}"
+    ]
+
+
+def _review_line(outcome: ResearchOutcome) -> list[str]:
+    """The semantic judgement, or the explicit record that there was none.
+
+    A missing judgement is printed as missing. It is never rendered as a score
+    of zero, and never left off the summary, because an absent review is the
+    reason a run cannot be accepted — a reader who cannot see it cannot see why
+    the verdict is ``partial``.
+    """
+    if outcome.quality is None:
+        return []
+    status = outcome.semantic_review_status.strip()
+    if not status:
+        return ["Review: no semantic review was recorded"]
+    if status != "scored":
+        return [f"Review: {status} (no score was recorded)"]
+    score = outcome.semantic_review_score
+    fingerprint = outcome.semantic_review_fingerprint.strip()
+    detail = f" {score:.2f}" if score is not None else ""
+    return [f"Review: scored{detail} (fingerprint {fingerprint or 'unrecorded'})"]
+
+
+def _unresolved_lines(outcome: ResearchOutcome) -> list[str]:
+    """The significant questions the run left open, by kind and scope.
+
+    Read from the Critic's own material defects and the semantic review's, each
+    with the coverage topic or statement it affects. A run with nothing open
+    prints nothing; a run with something open names it rather than saying
+    "limitations remain".
+    """
+    critique = outcome.state.critique
+    critic_defects = (
+        [
+            gap
+            for gap in critique.gaps
+            if gap.severity in GAP_MATERIAL_SEVERITIES
+        ]
+        if critique is not None and critique.review_status == "reviewed"
+        else []
+    )
+    review = outcome.state.report_review
+    review_defects = (
+        review.material_defects
+        if review is not None and review.status == "scored"
+        else []
+    )
+    if not critic_defects and not review_defects:
+        return []
+    parts: list[str] = []
+    if critic_defects:
+        parts.append(f"{_defect_phrase(critic_defects)} (critic)")
+    if review_defects:
+        parts.append(f"{_defect_phrase(review_defects)} (semantic review)")
+    return [f"Unresolved: {'; '.join(parts)}"]
+
+
+def _defect_phrase(gaps: Sequence[CritiqueGap]) -> str:
+    """One defect list as its count and its bounded kind/scope pairs."""
+    scopes = []
+    for gap in gaps:
+        scope = gap.coverage_id or (gap.target_ids[0] if gap.target_ids else "")
+        scopes.append(f"{gap.kind} {scope}".strip())
+    return f"{len(gaps)} defect" + ("" if len(gaps) == 1 else "s") + (
+        f" ({', '.join(scopes)})" if scopes else ""
+    )
+
+
+def _elapsed_line(outcome: ResearchOutcome) -> list[str]:
+    """The span the run's recorded events cover, as minutes and seconds.
+
+    A sub-second span is reported as such rather than rounded to ``0s``: the
+    record really does hold two timestamps, and "0s" is a different claim from
+    "less than a second".
+    """
+    seconds = outcome.duration_seconds
+    if seconds is None:
+        return []
+    if seconds < 1:
+        return ["Elapsed: less than a second"]
+    whole = int(round(seconds))
+    minutes, remainder = divmod(whole, 60)
+    rendered = f"{minutes}m {remainder}s" if minutes else f"{remainder}s"
+    return [f"Elapsed: {rendered}"]
+
+
+def _artifact_lines(outcome: ResearchOutcome) -> list[str]:
+    """The three artifacts, and a truthful record of an incomplete publication.
+
+    The set is published whole or advertised not at all. The distinction is on
+    the lines: a path is printed when the whole set was written, and when a
+    write failed the line says the path is *not advertised* — never that the
+    file does not exist, because a sibling write may well have succeeded and
+    left a file on disk. A run that never attempted a publication keeps the
+    older wording, which is true of it.
+    """
+    failed = outcome.failed_publication_artifacts
+    lines: list[str] = []
+    if failed:
+        lines.append(
+            "Publication: incomplete; these writes failed: "
+            f"{', '.join(failed)}. No artifact path is advertised until the "
+            "whole set is written."
+        )
+    withheld = "not advertised; the artifact set is published whole or not at all."
+    artifacts = (
+        (
+            "Report",
+            outcome.report_path,
+            "not written to disk; the report text is in the session state only.",
+        ),
+        (
+            "Evidence ledger",
+            outcome.evidence_path,
+            "not written to disk; the ledger text is in the session state only.",
+        ),
+        ("Quality record", outcome.quality_path, withheld),
+    )
+    for label, path, missing in artifacts:
+        if path is not None:
+            lines.append(f"{label}: {path}")
+        elif failed:
+            lines.append(f"{label}: {withheld}")
+        else:
+            lines.append(f"{label}: {missing}")
+    return lines
+
+
 def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
-    """Render the run's identity, quality verdict, artifacts, and costs."""
+    """Render the run's identity, verdict, counts, artifacts, and costs.
+
+    The order is deliberate: what the run was, what it decided, how much of the
+    question it answered, what the evidence actually supports, what is still
+    open, where the artifacts are, and how long it took. The numbers on these
+    lines come from the same typed records the artifacts render from, which is
+    what keeps the printed summary, the reader report, the ledger and the
+    quality JSON in agreement about one run.
+    """
     lines = [
         f"Session ID: {outcome.session_id}",
         f"Status: {outcome.status}",
@@ -710,26 +1059,23 @@ def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
     if note is not None:
         lines.append(note)
 
-    lines.extend(_quality_lines(outcome))
+    lines.extend(_verdict_lines(outcome))
+    quality = outcome.quality
+    if quality is not None:
+        lines.extend(_quality_reason_line(quality))
+    lines.extend(_coverage_line(outcome))
+    lines.extend(_claim_lines(outcome))
+    lines.extend(_source_lines(outcome))
+    lines.extend(_review_line(outcome))
+    lines.extend(_evidence_lines(outcome))
 
-    if outcome.report_path is None:
-        lines.append(
-            "Report: not written to disk; the report text is in the session "
-            "state only."
-        )
-    else:
-        lines.append(f"Report: {outcome.report_path}")
-
-    if outcome.evidence_path is None:
-        lines.append(
-            "Evidence ledger: not written to disk; the ledger text is in the "
-            "session state only."
-        )
-    else:
-        lines.append(f"Evidence ledger: {outcome.evidence_path}")
+    lines.extend(_unresolved_lines(outcome))
+    lines.extend(_artifact_lines(outcome))
 
     if outcome.trace_url is not None:
         lines.append(f"Trace: {outcome.trace_url}")
+
+    lines.extend(_elapsed_line(outcome))
 
     if verbose:
         if outcome.tool_calls:

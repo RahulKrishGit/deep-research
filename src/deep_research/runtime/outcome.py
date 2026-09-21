@@ -17,7 +17,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
+from deep_research.agents.report import (
+    distinct_retention_counts,
+    evidence_status_counts,
+)
 from deep_research.graph.orchestrator import GraphRun
 from deep_research.graph.state import graph_quality_status
 from deep_research.observability import (
@@ -28,7 +33,9 @@ from deep_research.observability import (
 )
 from deep_research.request_budget import RequestBudgetSnapshot
 from deep_research.utils.types import (
+    LEGACY_QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
+    ReportComposition,
     ReportQualitySnapshot,
     ResearchError,
     ResearchEvent,
@@ -36,14 +43,18 @@ from deep_research.utils.types import (
 )
 
 # The terminal event the finalizer emits, and the only record of where the
-# session's final artifacts were written. It carries *both* paths, each
-# ``None`` for a write that failed, so a reader is never pointed at an
-# earlier refinement pass's file. Emitted by
+# session's final artifacts were written. It carries *all three* paths, each
+# ``None`` unless the whole set was published, so a reader is never pointed at
+# an earlier refinement pass's file and never at an incomplete set. Emitted by
 # ``graph.events.report_published_event``.
 REPORT_WRITTEN_EVENT = "graph.report.published"
 
 REPORT_PATH_METADATA_KEY = "report_path"
 EVIDENCE_PATH_METADATA_KEY = "evidence_path"
+QUALITY_PATH_METADATA_KEY = "quality_path"
+
+PUBLICATION_FAILURE_ERROR_TYPE = "graph_publication_failed"
+"""The enumerated error type one failed terminal write records."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +120,41 @@ def evidence_path_from_state(state: ResearchState) -> str | None:
     )
 
 
+def quality_path_from_state(state: ResearchState) -> str | None:
+    """The path of the session's final quality record, if one was published.
+
+    The third terminal write, and read exactly like the other two. An
+    incomplete publication advertises none of the three, so ``None`` here
+    means the session published no quality record — never that a caller should
+    look for an earlier pass's file.
+    """
+    return _terminal_artifact_path(
+        state.quality_path,
+        state.events,
+        metadata_key=QUALITY_PATH_METADATA_KEY,
+    )
+
+
+def recorded_session_span(events: Sequence[ResearchEvent]) -> float | None:
+    """The seconds between the first and last recorded event, or ``None``.
+
+    Read from the events' own timestamps rather than from a clock, so the same
+    record always yields the same number and a replayed run reports the span it
+    actually covered. One event is not a span, and an unparseable timestamp is
+    no measurement at all — both are ``None``, never a zero.
+    """
+    stamps: list[datetime] = []
+    for event in events:
+        try:
+            stamps.append(datetime.fromisoformat(event.timestamp))
+        except ValueError:
+            continue
+    if len(stamps) < 2:
+        return None
+    span = (max(stamps) - min(stamps)).total_seconds()
+    return span if span > 0 else None
+
+
 def tool_call_summaries(
     metrics: Sequence[MetricRecord],
     *,
@@ -161,6 +207,56 @@ def total_token_usage(
 
 
 @dataclass(frozen=True, slots=True)
+class CoverageProgress:
+    """Target and topic progress, kept apart (Section 2.3).
+
+    Two denominators and two readings, because they fail differently: nine
+    tenths of the targets can be answered while one critical topic is
+    untouched, and one blended ratio hides exactly that. ``covered_topics``
+    counts topics whose every counted obligation is answered; an unanswered
+    critical target is listed whether or not its topic counted as covered.
+    """
+
+    planned_topics: int
+    covered_topics: int
+    substantive_topic_ratio: float
+    planned_targets: int
+    required_targets: int
+    answered_targets: int
+    critical_targets: int
+    answered_critical_targets: int
+    unanswered_critical_target_ids: tuple[str, ...]
+    unaccounted_target_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceCounts:
+    """Distinct quantities, each of a different thing (Section 2.5).
+
+    Ten counts of ten different things plus the four corroboration readings.
+    A read call is not a work; a work is not a publisher; a source URL is not a
+    finding; "checked" is not "corroborated". Each field here answers a
+    question the others cannot, which is why none of them is an alias of
+    another and why a read-call count never stands in for unique works.
+    """
+
+    read_records: int = 0
+    network_reads: int = 0
+    cache_reads: int = 0
+    unique_works: int = 0
+    publishers: int = 0
+    source_urls: int = 0
+    findings: int = 0
+    assessed_sources: int = 0
+    cited_assessed_sources: int = 0
+    checked_claims: int = 0
+    corroborated: int = 0
+    primary_attributed: int = 0
+    contested: int = 0
+    not_established: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class ResearchOutcome:
     """Everything one research session produced, ready to render."""
 
@@ -177,6 +273,30 @@ class ResearchOutcome:
 
     Derived with ``report_path`` from the terminal publication, so a failed
     ledger write is ``None`` rather than an earlier pass's file.
+    """
+
+    quality_path: str | None = None
+    """The file the quality record was published under, or ``None``.
+
+    The third path of the same publication: all three are advertised together
+    or none is, so this is ``None`` exactly when the published set is
+    incomplete.
+    """
+
+    duration_seconds: float | None = None
+    """The span the session's recorded events cover, or ``None``.
+
+    Read from the events' own timestamps, never from a clock: a replayed
+    outcome reports the same span. ``None`` means the record carries fewer than
+    two timestamps, which is not a duration of zero.
+    """
+
+    quality_contract_version: str = LEGACY_QUALITY_CONTRACT_VERSION
+    """Which evidence/quality contract wrote this session's snapshot.
+
+    The legacy version for a snapshot written before the versioned contract
+    existed — the honest value, and the one a consumer refuses strict
+    acceptance on.
     """
 
     request_budget_snapshots: tuple[RequestBudgetSnapshot, ...] = ()
@@ -225,6 +345,117 @@ class ResearchOutcome:
         """True when the terminal quality status accepted the report."""
         return self.quality_status == QUALITY_STATUS_ACCEPTED
 
+    @property
+    def composition(self) -> ReportComposition | None:
+        """The typed composition the published artifacts render, if any."""
+        return self.state.composition
+
+    @property
+    def semantic_review_status(self) -> str:
+        """The terminal review's own status, or ``""`` when none was made.
+
+        The quality snapshot's stamped field is the primary source — that is
+        the record the gates judged. A snapshot that carries no status at all
+        falls back to the stored review record, which is where Task 10 fills it
+        from: reading the same vocabulary from its own source is not a second
+        vocabulary, and answering "no review" while the state holds a scored
+        one would be a false statement about the run.
+        """
+        quality = self.quality
+        status = quality.semantic_review_status if quality is not None else ""
+        if status:
+            return status
+        review = self.state.report_review
+        return review.status if review is not None else ""
+
+    @property
+    def semantic_review_score(self) -> float | None:
+        """The review's mean over the seven dimensions, or ``None``.
+
+        ``None`` means no score was recorded, which is exactly the case for an
+        incomplete or provider-failed review. It is never rendered as zero.
+        """
+        quality = self.quality
+        if quality is not None and quality.semantic_review_status:
+            return quality.semantic_review_score
+        review = self.state.report_review
+        return review.mean_score if review is not None else None
+
+    @property
+    def semantic_review_fingerprint(self) -> str:
+        """The packet fingerprint the stored judgement was made over, or ``""``.
+
+        Read the same way the status and the score are: from the snapshot's
+        stamped field, falling back to the review record it was stamped from.
+        An empty value means no judgement names a packet, which is what an
+        unreviewed report has — never a fingerprint of something else.
+        """
+        quality = self.quality
+        fingerprint = (
+            quality.semantic_review_fingerprint if quality is not None else ""
+        )
+        if fingerprint:
+            return fingerprint
+        review = self.state.report_review
+        return review.input_fingerprint if review is not None else ""
+
+    @property
+    def coverage(self) -> CoverageProgress | None:
+        """Target and topic progress, or ``None`` when nothing judged it."""
+        quality = self.quality
+        if quality is None:
+            return None
+        answered_critical = max(
+            0,
+            quality.critical_targets
+            - len(quality.unanswered_critical_target_ids),
+        )
+        return CoverageProgress(
+            planned_topics=quality.planned_topics,
+            covered_topics=quality.covered_topics,
+            substantive_topic_ratio=quality.substantive_topic_ratio,
+            planned_targets=quality.planned_targets,
+            required_targets=quality.required_targets,
+            answered_targets=quality.answered_targets,
+            critical_targets=quality.critical_targets,
+            answered_critical_targets=answered_critical,
+            unanswered_critical_target_ids=tuple(
+                quality.unanswered_critical_target_ids
+            ),
+            unaccounted_target_ids=tuple(quality.unaccounted_target_ids),
+        )
+
+    @property
+    def evidence_counts(self) -> EvidenceCounts | None:
+        """The distinct counts, or ``None`` without a composition to count.
+
+        ``None`` is the honest reading of a session whose Markdown predates the
+        composition contract: with no reader report to index, "how many sources
+        were cited" has no answer, and a zero would be a claim rather than an
+        absence.
+        """
+        composition = self.state.composition
+        if composition is None:
+            return None
+        return EvidenceCounts(
+            **distinct_retention_counts(self.state, composition),
+            # ``composition.claims`` is the canonical registry: the type
+            # canonicalizes on construction, so re-merging here would only
+            # re-derive the same rows.
+            **evidence_status_counts(composition.claims),
+        )
+
+    @property
+    def failed_publication_artifacts(self) -> tuple[str, ...]:
+        """The enumerated artifacts whose terminal write did not complete."""
+        return tuple(
+            artifact
+            for error in self.errors
+            if error.error_type == PUBLICATION_FAILURE_ERROR_TYPE
+            for artifact in [str(error.details.get("artifact", ""))]
+            if artifact
+        )
+
 
 def build_outcome(
     run: GraphRun,
@@ -236,7 +467,9 @@ def build_outcome(
 
     ``request_budget_snapshots`` defaults to the empty tuple so every existing
     injected and unit caller stays source-compatible: an outcome built without
-    a budget simply records none.
+    a budget simply records none. The same holds for every field Task 11 adds:
+    an outcome assembled before them still reads, and the session span is read
+    from the run's own recorded events rather than from a clock.
     """
     return ResearchOutcome(
         session_id=run.session_id,
@@ -250,5 +483,8 @@ def build_outcome(
             tool_call_summaries(metrics, session_id=run.session_id)
         ),
         evidence_path=evidence_path_from_state(run.state),
+        quality_path=quality_path_from_state(run.state),
+        duration_seconds=recorded_session_span(run.state.events),
+        quality_contract_version=run.state.quality_contract_version,
         request_budget_snapshots=tuple(request_budget_snapshots),
     )

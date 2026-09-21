@@ -19,19 +19,28 @@ from deep_research.graph.events import (
     session_completed_event,
     session_started_event,
 )
+from deep_research.graph.orchestrator import GraphRun
 from deep_research.observability import TokenUsage
 from deep_research.request_budget import (
     ProviderCategory,
     RequestBudgetSnapshot,
 )
 from deep_research.runtime.outcome import ResearchOutcome, ToolCallSummary
+from deep_research.runtime.outcome import build_outcome as real_build_outcome
 from deep_research.utils.types import (
+    Claim,
     Critique,
+    CritiqueGap,
+    ReadRecord,
+    ReportComposition,
+    ReportPoint,
     ReportQualitySnapshot,
     ReportReview,
     ResearchError,
     ResearchEvent,
     ResearchState,
+    ScoredSource,
+    SubTopic,
 )
 from tests.graph_fakes import fake_report_review
 
@@ -383,9 +392,12 @@ def test_warnings_group_by_the_source_that_recorded_them() -> None:
     lines = render_warnings(build_outcome(state=error_state()))
 
     assert lines == [
-        "Warnings:",
+        "Warnings: 3 errors (3 recovered, 0 unresolved)",
         "  agent.researcher: 2 errors (coverage topic-03, topic-05)",
+        "    researcher_sub_topic_skipped (recovered; reason cap): topic-03",
+        "    researcher_extraction_provider_error (recovered): topic-05",
         "  tools.web_search: 1 error",
+        "    web_search_failed (recovered)",
     ]
 
 
@@ -403,8 +415,107 @@ def test_warnings_omit_the_coverage_fragment_when_none_is_named() -> None:
     )
 
     assert render_warnings(build_outcome(state=state)) == [
-        "Warnings:",
+        "Warnings: 1 error (1 recovered, 0 unresolved)",
         "  tools.web_search: 1 error",
+        "    web_search_failed (recovered)",
+    ]
+
+
+def test_a_resolved_fallback_is_not_counted_as_an_unresolved_defect() -> None:
+    """``recoverable`` is the difference between a fallback and an open defect.
+
+    A refused fetch that a validated cache entry answered is a recovered error.
+    Counting it as unresolved reports a failure the run did not have; counting
+    a failure nothing recovered from as recovered hides one it did.
+    """
+    resolved = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        errors=[
+            ResearchError(
+                error_type="researcher_url_denied",
+                source="agent.researcher",
+                message="One candidate refused the read.",
+                recoverable=True,
+                details={"coverage_id": "topic-03"},
+            )
+        ],
+    )
+    open_defect = resolved.model_copy(
+        update={
+            "errors": [
+                resolved.errors[0].model_copy(update={"recoverable": False})
+            ]
+        }
+    )
+
+    assert render_warnings(build_outcome(state=resolved))[0] == (
+        "Warnings: 1 error (1 recovered, 0 unresolved)"
+    )
+    assert render_warnings(build_outcome(state=open_defect))[0] == (
+        "Warnings: 1 error (0 recovered, 1 unresolved)"
+    )
+
+
+def test_an_unresolved_access_problem_names_the_question_it_left_open() -> None:
+    """The id alone is not the missing question; the plan's title is."""
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-03",
+                title="Siting, permitting, and fire safety rules",
+                rationale="It changes the decision surface.",
+                search_queries=["NFPA 855 storage siting 2026"],
+                success_criteria=["A read source answers it."],
+                priority=1,
+            )
+        ],
+        errors=[
+            ResearchError(
+                error_type="researcher_extraction_provider_error",
+                source="agent.researcher",
+                message="The model provider failed during research.",
+                recoverable=False,
+                details={"coverage_id": "topic-03", "reason": "provider_timeout"},
+            )
+        ],
+    )
+
+    lines = render_warnings(build_outcome(state=state))
+    joined = "\n".join(lines)
+
+    assert lines[0] == "Warnings: 1 error (0 recovered, 1 unresolved)"
+    assert (
+        'researcher_extraction_provider_error (unresolved; reason '
+        'provider_timeout): topic-03 "Siting, permitting, and fire safety rules"'
+        in joined
+    )
+
+
+def test_repeated_identical_errors_collapse_to_one_aggregated_line() -> None:
+    """Five occurrences of one failure are one line with a count, not five."""
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        errors=[
+            ResearchError(
+                error_type="web_search_failed",
+                source="tools.web_search",
+                message="The search provider timed out.",
+                details={"reason": "provider_timeout"},
+            )
+            for _ in range(5)
+        ],
+    )
+
+    lines = render_warnings(build_outcome(state=state))
+
+    assert lines == [
+        "Warnings: 5 errors (5 recovered, 0 unresolved)",
+        "  tools.web_search: 5 errors",
+        "    web_search_failed (x5; recovered; reason provider_timeout)",
     ]
 
 
@@ -416,13 +527,16 @@ def test_verbose_warnings_add_the_typed_messages() -> None:
     lines = render_warnings(build_outcome(state=error_state()), verbose=True)
 
     assert lines == [
-        "Warnings:",
+        "Warnings: 3 errors (3 recovered, 0 unresolved)",
         "  agent.researcher: 2 errors (coverage topic-03, topic-05)",
+        "    researcher_sub_topic_skipped (recovered; reason cap): topic-03",
+        "    researcher_extraction_provider_error (recovered): topic-05",
         "    warning: [researcher_sub_topic_skipped] A planned sub-topic was "
         "never researched; the report will be incomplete for it.",
         "    warning: [researcher_extraction_provider_error] The model "
         "provider failed during research.",
         "  tools.web_search: 1 error",
+        "    web_search_failed (recovered)",
         "    warning: [web_search_failed] The search provider timed out.",
     ]
 
@@ -487,7 +601,8 @@ def test_the_critic_fragment_is_omitted_without_a_model_review() -> None:
     joined = "\n".join(render_summary(outcome, verbose=False))
 
     assert "Quality: partial (2/2 topics covered, 100%)" in joined
-    assert "critic" not in joined
+    assert "critic 6/10" not in joined
+    assert "/10" not in joined
 
 
 def test_an_accepted_run_says_accepted() -> None:
@@ -758,3 +873,354 @@ def test_a_scraper_failure_and_request_budget_render_no_urls_or_queries() -> Non
     assert "example.invalid" not in joined
     assert "secret-page" not in joined
     assert QUESTION not in joined
+
+
+# --- the compact outcome ------------------------------------------------------
+#
+# One composed pass, with a read registry the counts can be read from. The
+# fixture is shaped so that no two quantities on the summary happen to be
+# equal: three reads over two works, three assessed sources of which one is
+# cited, and three checked claims at three different corroboration badges.
+
+READ_URL = "https://network.example/report"
+MIRROR_URL = "https://mirror.example/report"
+OTHER_URL = "https://other.example/analysis"
+CONTENT_ONE = "a" * 64
+CONTENT_TWO = "b" * 64
+
+
+def _read(
+    read_id: str,
+    *,
+    url: str,
+    content_sha256: str,
+    acquisition_kind: str,
+) -> ReadRecord:
+    return ReadRecord(
+        read_id=read_id,
+        requested_url=url,
+        resolved_url=url,
+        title=f"Source at {url}",
+        reader="web_scraper",
+        retrieved_at="2026-09-13T09:00:00+00:00",
+        content_sha256=content_sha256,
+        extraction_complete=True,
+        passages={"p. 1": "A measured statement."},
+        acquisition_kind=acquisition_kind,  # type: ignore[arg-type]
+        origin_session_id="session-1",
+    )
+
+
+def _scored_source(
+    url: str, *, publisher_id: str | None = None, work_id: str | None = None
+) -> ScoredSource:
+    return ScoredSource(
+        url=url,
+        title=f"Source at {url}",
+        authority_score=0.8,
+        recency_score=0.8,
+        relevance_score=0.8,
+        overall_score=0.8,
+        rationale="Read primary material with a stated date.",
+        publisher_id=publisher_id,
+        work_id=work_id,
+    )
+
+
+def _badged_claim(text: str, *, verdict: str, badge: str | None) -> Claim:
+    return Claim(
+        claim_id=f"claim-{abs(hash(text)) % 100000:05d}",
+        text=text,
+        source_urls=[READ_URL],
+        verdict=verdict,  # type: ignore[arg-type]
+        evidence_status=badge,  # type: ignore[arg-type]
+        confidence=0.8,
+        evidence=["A measured statement."],
+        contradictions=[],
+        verification_evidence=[],
+    )
+
+
+def composed_state(**overrides: object) -> ResearchState:
+    """A composed pass whose four counts are four different numbers."""
+    corroborated = _badged_claim(
+        "Independent corroboration was established.", verdict="verified",
+        badge="verified_pair",
+    )
+    attributed = _badged_claim(
+        "Only primary-source attribution was established.",
+        verdict="insufficient_evidence",
+        badge="source_supported",
+    )
+    unclassified = _badged_claim(
+        "No corroboration classification was recorded.",
+        verdict="unverified",
+        badge=None,
+    )
+    composition = ReportComposition(
+        question=QUESTION,
+        session_id="session-1",
+        claims=[corroborated, attributed, unclassified],
+        sources=[
+            _scored_source(READ_URL, publisher_id="network.example"),
+            _scored_source(MIRROR_URL, publisher_id="mirror.example"),
+            _scored_source(OTHER_URL),
+        ],
+        findings=[],
+        summary=[
+            ReportPoint(
+                text=corroborated.text,
+                claim_ids=[corroborated.claim_id],
+                source_urls=[READ_URL],
+            )
+        ],
+        sections=[],
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-01",
+                title="Grid connection and interconnection",
+                rationale="It changes the decision surface.",
+                search_queries=["FERC queue 2026"],
+                success_criteria=["A read source answers it."],
+                priority=1,
+            )
+        ],
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        composition=composition,
+        report="# Research report\n\nA measured statement.[1]\n",
+        report_evidence="# Evidence ledger\n",
+        read_records={
+            read.read_id: read
+            for read in (
+                _read("read-1", url=READ_URL, content_sha256=CONTENT_ONE,
+                      acquisition_kind="network"),
+                _read("read-2", url=MIRROR_URL, content_sha256=CONTENT_ONE,
+                      acquisition_kind="cache"),
+                _read("read-3", url=OTHER_URL, content_sha256=CONTENT_TWO,
+                      acquisition_kind="network"),
+            )
+        },
+        events=[
+            ResearchEvent(
+                event_type="graph.session.started",
+                source="graph",
+                message="Research session started.",
+                timestamp="2026-09-13T09:00:00+00:00",
+            ),
+            ResearchEvent(
+                event_type="graph.session.completed",
+                source="graph",
+                message="Research session completed.",
+                timestamp="2026-09-13T09:02:30+00:00",
+            ),
+        ],
+        quality=quality_snapshot(
+            planned_topics=3,
+            covered_topics=2,
+            coverage_ratio=2 / 3,
+            substantive_topic_ratio=2 / 3,
+            planned_targets=4,
+            required_targets=3,
+            answered_targets=2,
+            critical_targets=2,
+            unanswered_critical_target_ids=["t-2"],
+            semantic_review_status="scored",
+            semantic_review_score=0.86,
+            semantic_review_fingerprint="abc123def456",
+        ),
+        report_review=fake_report_review(),
+    )
+    payload = overrides.pop("state_overrides", {})
+    return state.model_copy(update={**payload, **overrides})
+
+
+def composed_outcome(**overrides: object) -> ResearchOutcome:
+    """The outcome a finished run produces, with every derived field real."""
+    state = composed_state(**overrides)
+    return real_build_outcome(
+        GraphRun(
+            session_id=state.session_id,
+            state=state,
+            status="completed",
+            trace_url=None,
+        ),
+        metrics=[],
+    )
+
+
+def test_the_summary_counts_checked_claims_apart_from_corroborated_ones() -> None:
+    """Three checked claims are not three verified ones.
+
+    Each canonical claim is counted under the badge it actually recorded, and
+    the four counts add up to the number that was checked — so a check count
+    can never be printed as a corroboration count.
+    """
+    joined = "\n".join(render_summary(composed_outcome(), verbose=False))
+
+    assert (
+        "Claims: 3 checked; 1 independently corroborated, "
+        "1 primary-source attributed, 0 contested, 1 not established" in joined
+    )
+    assert "3 verified" not in joined
+
+
+def test_the_summary_reports_assessed_cited_reads_works_and_publishers_apart() -> (
+    None
+):
+    """Four quantities, four numbers, no alias standing in for another.
+
+    Three reads (two network, one validated cache reuse) resolve to two works,
+    because the network read and the cache read are the same document; three
+    assessed sources are cited once; and the publisher count is the established
+    identities alone.
+    """
+    joined = "\n".join(render_summary(composed_outcome(), verbose=False))
+
+    assert (
+        "Sources: 3 assessed, 1 cited; reads 3 (network 2, cache reuse 1), "
+        "works 2, publishers 2, findings 0" in joined
+    )
+
+
+def test_the_summary_keeps_topic_and_target_progress_apart() -> None:
+    joined = "\n".join(render_summary(composed_outcome(), verbose=False))
+
+    assert (
+        "Coverage: 2/3 topics covered (substantive, 67%); "
+        "2/3 required targets answered; 1/2 critical targets answered" in joined
+    )
+
+
+def test_the_summary_names_the_semantic_review_and_never_invents_a_score() -> None:
+    reviewed = "\n".join(render_summary(composed_outcome(), verbose=False))
+    unreviewed = "\n".join(
+        render_summary(
+            composed_outcome(
+                state_overrides={
+                    "quality": quality_snapshot(
+                        semantic_review_status="incomplete",
+                        semantic_review_score=None,
+                    ),
+                    "report_review": None,
+                }
+            ),
+            verbose=False,
+        )
+    )
+
+    assert "Review: scored 0.86 (fingerprint abc123def456)" in reviewed
+    assert "Quality reasons:" not in reviewed
+    assert "Review: incomplete (no score was recorded)" in unreviewed
+    assert "Quality reasons: semantic review incomplete" in unreviewed
+    assert "Review: scored 0.00" not in unreviewed
+
+
+def test_the_summary_names_open_defects_with_their_scope() -> None:
+    """A partial verdict names what is open, not that "limitations remain"."""
+    state = composed_state(
+        state_overrides={
+            "critique": Critique(
+                score=6,
+                gaps=[
+                    CritiqueGap(
+                        gap_id="gap-01",
+                        coverage_id="topic-01",
+                        target_ids=["t-1"],
+                        kind="coverage",
+                        severity="major",
+                        repair_action="acquire",
+                        problem="The interconnection queue is not answered.",
+                    ),
+                    CritiqueGap(
+                        gap_id="gap-02",
+                        target_ids=["t-2"],
+                        kind="freshness",
+                        severity="minor",
+                        repair_action="acquire",
+                        problem="One passage is older than the others.",
+                    ),
+                ],
+                unsupported_claims=[],
+                recommended_queries=[],
+                should_continue=True,
+                rationale="One material defect remains.",
+            )
+        }
+    )
+
+    joined = "\n".join(render_summary(build_outcome(state=state), verbose=False))
+
+    # Only the material defect is open; the minor one is recorded, not open.
+    assert "Unresolved: 1 defect (coverage topic-01) (critic)" in joined
+    assert "freshness" not in joined
+
+
+def test_the_summary_reports_the_recorded_elapsed_span() -> None:
+    joined = "\n".join(render_summary(composed_outcome(), verbose=False))
+
+    assert "Elapsed: 2m 30s" in joined
+
+
+def test_the_summary_reports_every_artifact_path_of_the_published_set() -> None:
+    outcome = composed_outcome(
+        state_overrides={
+            "report_path": REPORT_PATH,
+            "evidence_path": EVIDENCE_PATH,
+            "quality_path": "output/report-session-1-0-quality.json",
+        }
+    )
+
+    joined = "\n".join(render_summary(outcome, verbose=False))
+
+    assert f"Report: {REPORT_PATH}" in joined
+    assert f"Evidence ledger: {EVIDENCE_PATH}" in joined
+    assert "Quality record: output/report-session-1-0-quality.json" in joined
+    assert "Publication: incomplete" not in joined
+
+
+def test_an_incomplete_publication_advertises_no_path_and_says_which_write_failed(
+) -> None:
+    """The whole set or nothing, and the failure record says which one.
+
+    Two of the three files may well exist on disk; none of them is advertised,
+    because a front-end holding two paths cannot tell which artifact is missing.
+    """
+    outcome = composed_outcome(
+        state_overrides={
+            "errors": [
+                ResearchError(
+                    error_type="graph_publication_failed",
+                    source="graph.finalize_report",
+                    message="A publication write did not complete.",
+                    details={
+                        "artifact": "quality",
+                        "tool": "write_document",
+                        "failure_type": "ValidationError",
+                    },
+                )
+            ]
+        }
+    )
+
+    joined = "\n".join(render_summary(outcome, verbose=False))
+
+    assert "Publication: incomplete; these writes failed: quality." in joined
+    # The line says the path is withheld, not that no file exists: a sibling
+    # write may well have succeeded and left one on disk.
+    assert (
+        "Report: not advertised; the artifact set is published whole or not "
+        "at all." in joined
+    )
+    assert (
+        "Evidence ledger: not advertised; the artifact set is published whole "
+        "or not at all." in joined
+    )
+    assert (
+        "Quality record: not advertised; the artifact set is published whole "
+        "or not at all." in joined
+    )
+    assert REPORT_PATH not in joined
+    assert EVIDENCE_PATH not in joined

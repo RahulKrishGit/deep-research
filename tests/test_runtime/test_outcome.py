@@ -15,16 +15,20 @@ from deep_research.runtime.outcome import (
     ToolCallSummary,
     build_outcome,
     evidence_path_from_state,
+    quality_path_from_state,
     report_path_from_state,
     tool_call_summaries,
     total_token_usage,
 )
 from deep_research.utils.types import (
+    LEGACY_QUALITY_CONTRACT_VERSION,
+    QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     Critique,
     ReportQualitySnapshot,
     ResearchError,
+    ResearchEvent,
     ResearchState,
 )
 from tests.graph_fakes import fake_report_review
@@ -33,6 +37,7 @@ QUESTION = "How mature is quantum error correction?"
 
 REPORT_PATH = "output/report-session-1-0.md"
 EVIDENCE_PATH = "output/report-session-1-0-evidence.md"
+QUALITY_PATH = "output/report-session-1-0-quality.json"
 
 
 def base_state(**overrides: object) -> ResearchState:
@@ -62,13 +67,15 @@ def legacy_synthesis_event(path: str | None) -> object:
 def publication_event(
     report_path: str | None = REPORT_PATH,
     evidence_path: str | None = EVIDENCE_PATH,
+    quality_path: str | None = QUALITY_PATH,
 ) -> object:
-    """The terminal event the finalizer emits, carrying both artifact paths."""
+    """The terminal event the finalizer emits, carrying all three paths."""
     return report_published_event(
         quality_status=QUALITY_STATUS_ACCEPTED,
         report_path=report_path,
         evidence_path=evidence_path,
-        document_writes=2,
+        quality_path=quality_path,
+        document_writes=3,
         memory_writes=1,
         error_count=0,
     )
@@ -557,3 +564,153 @@ def test_request_budget_snapshots_preserve_the_declared_absence_of_a_ceiling() -
 
     assert outcome.request_budget_snapshots[0].ceiling is None
     assert outcome.request_budget_snapshots[0].effective_limit is None
+
+
+# --- the quality record, the review, and the published set -------------------
+
+
+def test_quality_path_reads_the_terminal_publication_event() -> None:
+    state = base_state(events=[publication_event()])
+
+    assert quality_path_from_state(state) == QUALITY_PATH
+    assert outcome_of(state).quality_path == QUALITY_PATH
+
+
+def test_a_failed_quality_write_advertises_no_paths_at_all() -> None:
+    """The set is advertised whole or not at all.
+
+    The node never emits a partial publication, and this is the shape it emits
+    instead: every path ``None``, the write count truthful, and the failure
+    named by an error. A front-end reading the event is pointed at nothing
+    rather than at two thirds of a set.
+    """
+    state = base_state(
+        events=[
+            publication_event(
+                report_path=None, evidence_path=None, quality_path=None
+            ),
+        ],
+        errors=[
+            ResearchError(
+                error_type="graph_publication_failed",
+                source="graph.finalize_report",
+                message="A publication write did not complete.",
+                details={
+                    "artifact": "quality",
+                    "tool": "write_document",
+                    "failure_type": "ValidationError",
+                },
+            )
+        ],
+    )
+
+    outcome = outcome_of(state)
+
+    assert outcome.report_path is None
+    assert outcome.evidence_path is None
+    assert outcome.quality_path is None
+    assert outcome.failed_publication_artifacts == ("quality",)
+
+
+def test_the_outcome_reports_the_session_span_the_events_cover() -> None:
+    """Elapsed time is read from the record, never from a clock."""
+    timed = base_state(
+        events=[
+            ResearchEvent(
+                event_type="graph.session.started",
+                source="graph",
+                message="Research session started.",
+                timestamp="2026-09-13T09:00:00+00:00",
+            ),
+            ResearchEvent(
+                event_type="graph.node.started",
+                source="graph.planner",
+                message="Node planner started.",
+                timestamp="2026-09-13T09:00:05+00:00",
+            ),
+            ResearchEvent(
+                event_type="graph.session.completed",
+                source="graph",
+                message="Research session completed.",
+                timestamp="2026-09-13T09:02:30+00:00",
+            ),
+        ]
+    )
+
+    assert outcome_of(timed).duration_seconds == 150.0
+    # One event is not a span, and no events is no record at all.
+    assert outcome_of(base_state(events=[timed.events[0]])).duration_seconds is (
+        None
+    )
+    assert outcome_of(base_state()).duration_seconds is None
+
+
+def test_the_outcome_surfaces_the_semantic_review_beside_the_critic() -> None:
+    """The review's own status and mean, and never a zero for "no review"."""
+    reviewed = base_state(
+        quality=quality_snapshot(
+            semantic_review_status="scored",
+            semantic_review_score=0.86,
+            semantic_review_fingerprint="abc123def456",
+        ),
+        report_review=fake_report_review(),
+    )
+    unreviewed = base_state(quality=quality_snapshot())
+
+    assert outcome_of(reviewed).semantic_review_status == "scored"
+    assert outcome_of(reviewed).semantic_review_score == 0.86
+    assert outcome_of(unreviewed).semantic_review_status == ""
+    assert outcome_of(unreviewed).semantic_review_score is None
+    assert outcome_of(base_state()).semantic_review_status == ""
+
+
+def test_the_outcome_carries_the_quality_contract_version() -> None:
+    """Which contract wrote this session travels with the outcome."""
+    modern = base_state(quality_contract_version=QUALITY_CONTRACT_VERSION)
+
+    assert outcome_of(modern).quality_contract_version == (
+        QUALITY_CONTRACT_VERSION
+    )
+    assert outcome_of(base_state()).quality_contract_version == (
+        LEGACY_QUALITY_CONTRACT_VERSION
+    )
+
+
+def test_the_outcome_reports_target_progress_apart_from_topic_progress() -> None:
+    """Two denominators, two readings, never one blended ratio."""
+    state = base_state(
+        quality=quality_snapshot(
+            planned_topics=7,
+            covered_topics=3,
+            substantive_topic_ratio=3 / 7,
+            planned_targets=12,
+            required_targets=9,
+            answered_targets=6,
+            critical_targets=4,
+            unanswered_critical_target_ids=["t-crit-1"],
+            unaccounted_target_ids=["t-req-2"],
+        )
+    )
+
+    coverage = outcome_of(state).coverage
+
+    assert coverage is not None
+    assert coverage.planned_topics == 7
+    assert coverage.covered_topics == 3
+    assert coverage.substantive_topic_ratio == 3 / 7
+    assert coverage.planned_targets == 12
+    assert coverage.required_targets == 9
+    assert coverage.answered_targets == 6
+    assert coverage.critical_targets == 4
+    assert coverage.answered_critical_targets == 3
+    assert coverage.unanswered_critical_target_ids == ("t-crit-1",)
+    assert coverage.unaccounted_target_ids == ("t-req-2",)
+    # No quality pass judged this run, so no coverage is claimed for it.
+    assert outcome_of(base_state()).coverage is None
+
+
+def test_the_outcome_counts_reads_works_and_citations_apart() -> None:
+    """Without a composition there is no reader index to count citations from."""
+    state = base_state(quality=quality_snapshot())
+
+    assert outcome_of(state).evidence_counts is None
