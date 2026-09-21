@@ -22,6 +22,7 @@ from deep_research.agents.researcher import (
     ResearchFindings,
     SubTopicFindingsDraft,
     SubTopicTask,
+    _cited_read_incidence,
     bound_sub_topic_findings,
     build_findings,
     existing_sources_for,
@@ -57,6 +58,7 @@ from deep_research.utils.types import (
     Critique,
     CritiqueGap,
     EvidenceTarget,
+    EvidenceUnit,
     Finding,
     MemorySnapshot,
     ReadRecord,
@@ -129,6 +131,9 @@ def _state(
     critique: Critique | None = None,
     memory_context: MemorySnapshot | None = None,
     composition: ReportComposition | None = None,
+    verified_claims: list[Claim] | None = None,
+    evidence_units: dict[str, EvidenceUnit] | None = None,
+    read_records: dict[str, ReadRecord] | None = None,
 ) -> ResearchState:
     return ResearchState(
         session_id="session-1",
@@ -138,6 +143,9 @@ def _state(
         critique=critique,
         memory_context=memory_context or MemorySnapshot(),
         composition=composition,
+        verified_claims=verified_claims or [],
+        evidence_units=evidence_units or {},
+        read_records=read_records or {},
     )
 
 
@@ -2205,6 +2213,51 @@ def test_a_retained_finding_with_no_read_is_not_merged_with_another() -> None:
     bounded = bound_sub_topic_findings(findings, reads=[])
 
     assert bounded.works_retained == 2
+
+
+def test_the_runs_cited_reads_resolve_through_the_selected_evidence_id() -> None:
+    """``{canonical URL: (read_id, content_sha256)}``, read from the claim.
+
+    ``evidence_selection`` is keyed by evidence id and valued with the stance
+    it was selected under. Read the wrong way round, the run asks the registry
+    for an evidence unit called "supports", finds none, and reports that it
+    has cited nothing at all — so a cache entry under a citation to text
+    nobody re-read is served as a fresh read.
+    """
+    text = "Logical error rates fell below break-even in 2025."
+    read = _retained_read("https://example.test/qec", text)
+    unit = EvidenceUnit(
+        evidence_id="e1",
+        read_id=read.read_id,
+        source_url=read.resolved_url,
+        source_title=read.title,
+        locator="chunk-0",
+        excerpt=text,
+        target_ids=["target-01"],
+        origin="fact_checker",
+    )
+    claim = Claim(
+        claim_id=claim_fingerprint(text),
+        text=text,
+        source_urls=[read.resolved_url],
+        verdict="verified",
+        evidence_status="verified_pair",
+        confidence=0.9,
+        evidence=["Two independent reads state it."],
+        contradictions=[],
+        verification_evidence=[],
+        target_ids=["target-01"],
+        evidence_selection={"e1": "supports"},
+    )
+    state = _state(
+        verified_claims=[claim],
+        evidence_units={"e1": unit},
+        read_records={read.read_id: read},
+    )
+
+    assert _cited_read_incidence(state) == {
+        "https://example.test/qec": (read.read_id, read.content_sha256)
+    }
 
 
 @pytest.mark.asyncio
