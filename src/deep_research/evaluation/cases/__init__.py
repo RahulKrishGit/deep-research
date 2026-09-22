@@ -40,7 +40,26 @@ from deep_research.utils.types import (
     SubTopic,
 )
 
-CASE_REGISTRY_VERSION = 1
+CASE_REGISTRY_VERSION = 2
+"""The version of the registry's *semantics*, not of this file.
+
+Task 12 requires that existing case ids are preserved where they are
+meaningful and that their semantics are versioned when they change. This
+is the version at which one high-risk case per agent joins the registry
+and the inventory stops being a literal "exactly three controlled and one
+live" and becomes a declared id contract.
+
+The bump lands ahead of the six cases it names, deliberately. A version
+that moves early over-approximates — two artifacts stamped 2 may hold
+different case sets — while one that moves late lies: if the number had
+stayed at 1 while Rounds 4-6 added cases, artifacts would record
+``case_registry_version: 1`` beside a case set no v1 run ever scored, and
+provenance would fail silently rather than loudly. Where the two
+directions of error are not symmetric, take the one that fails safe.
+
+v1: three controlled and one live case per agent, the original fixtures.
+v2: the declared-inventory registry and Task 12's high-risk cases.
+"""
 
 # The declared inventory. Not a count in an assertion: the registry's
 # shape is a contract, and a contract belongs where a reader can read it.
