@@ -21,6 +21,7 @@ from deep_research.agents.sources import (
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.cases.critic import (
     CALIBRATION_CASES,
+    CALIBRATION_CLUSTER_IDS,
     CALIBRATION_STATEMENT_IDS,
     CALIBRATION_TARGET_IDS,
     calibration_packet,
@@ -44,6 +45,7 @@ CONTROLLED = (
     "approve-strong-report",
     "request-more-research",
     "missing-evidence-or-budget-exhausted",
+    "typed-gap-calibration",
 )
 
 _METRICS = {
@@ -63,6 +65,11 @@ _METRICS = {
         ("route_discipline", 0.60),
         ("conservative_score", 0.25),
         ("score_bounded", 0.15),
+    ),
+    "typed-gap-calibration": (
+        ("gap_kind_correct", 0.35),
+        ("repair_action_routed", 0.35),
+        ("conservative_score", 0.30),
     ),
     "critic-live-review": (
         ("score_bounded", 0.20),
@@ -112,10 +119,24 @@ _IEA_CE_URL = "https://iea.org/energy-system/industry/cement"
 _NATURE_CE_URL = "https://nature.com/articles/cement-decarbonization-at-scale"
 _LIVE_URLS = (_GCCA_URL, _IEA_CE_URL, _NATURE_CE_URL)
 
+# The typed-gap case reuses the Task 8 false-independent-pair candidate, so
+# every URL it holds is that candidate's: the assessed rows plus the two
+# association pages the reduction's two passages were read from.
+_GCCA_PAIR_URL = "https://gcca.org/net-zero-roadmap"
+_GCCA_SECOND_URL = "https://gcca.org/net-zero-roadmap-summary"
+_TYPED_GAP_URLS = (
+    _GCCA_URL,
+    _IEA_CE_URL,
+    _NATURE_CE_URL,
+    _GCCA_PAIR_URL,
+    _GCCA_SECOND_URL,
+)
+
 _KNOWN_URLS = {
     "approve-strong-report": _STRONG_URLS,
     "request-more-research": _GAPPY_URLS,
     "missing-evidence-or-budget-exhausted": _BUDGET_URLS,
+    "typed-gap-calibration": _TYPED_GAP_URLS,
     "critic-live-review": _LIVE_URLS,
 }
 
@@ -163,6 +184,17 @@ _REFERENCES = {
         "reason": "budget_exhausted",
         "maximum_score": 6,
     },
+    # The defect is an identity defect in the evidence, not a hole in the
+    # plan: pages that were already retrieved cannot close it. The band says
+    # a rejection without a collapse to the floor.
+    "typed-gap-calibration": {
+        "expected_gap_kinds": ["identity"],
+        "forbidden_gap_kinds": ["coverage", "acquisition"],
+        "expected_repair_actions": ["adjudicate"],
+        "forbidden_repair_actions": ["acquire", "extend_plan"],
+        "minimum_score": 2,
+        "maximum_score": 6,
+    },
     "critic-live-review": {
         "expected_route": "end",
         "minimum_score": 7,
@@ -186,6 +218,12 @@ _RUBRIC_DIMENSIONS = {
         "score_groundedness",
         "gap_precision",
         "route_discipline",
+    },
+    "typed-gap-calibration": {
+        "score_groundedness",
+        "gap_precision",
+        "defect_typing",
+        "route_fidelity",
     },
     "critic-live-review": {
         "score_groundedness",
@@ -407,7 +445,7 @@ def _live_no_spurious_gaps_score(gap: str) -> float:
     return scores["no_spurious_gaps"]
 
 
-def test_the_three_controlled_cases_are_registered() -> None:
+def test_the_controlled_cases_are_registered() -> None:
     assert tuple(
         case.case_id for case in cases_for("critic", "controlled")
     ) == CONTROLLED
@@ -450,6 +488,9 @@ def test_every_case_names_its_scenario() -> None:
     assert _case("missing-evidence-or-budget-exhausted").dependency_scenario == (
         "critic-budget-exhausted"
     )
+    assert _case("typed-gap-calibration").dependency_scenario == (
+        "critic-typed-gap"
+    )
 
 
 @pytest.mark.parametrize(
@@ -461,6 +502,7 @@ def test_every_case_names_its_scenario() -> None:
             "missing-evidence-or-budget-exhausted",
             "critic-budget-exhausted",
         ),
+        ("typed-gap-calibration", "critic-typed-gap"),
     ),
 )
 def test_controlled_scenarios_match_planned_queries_and_contract_version(
@@ -547,6 +589,10 @@ def test_each_case_pins_its_finding_and_claim_counts() -> None:
         "request-more-research": (2, 1),
         "missing-evidence-or-budget-exhausted": (1, 0),
         "critic-live-review": (3, 2),
+        # The typed-gap case is the Task 8 false-pair candidate rather than a
+        # run: its records are the composition's three checked claims, and it
+        # carries no reader findings because a candidate is not a pass.
+        "typed-gap-calibration": (0, 3),
     }
     for case_id, (findings, claims) in expected.items():
         case = _case(case_id)
@@ -834,7 +880,12 @@ def test_the_budget_case_routes_to_end_no_matter_the_score() -> None:
 
 @pytest.mark.parametrize(
     "scenario_name",
-    ("critic-strong-report", "critic-gappy-report", "critic-budget-exhausted"),
+    (
+        "critic-strong-report",
+        "critic-gappy-report",
+        "critic-budget-exhausted",
+        "critic-typed-gap",
+    ),
 )
 def test_every_critic_scenario_scripts_no_service(scenario_name: str) -> None:
     """The stored invariants of a tool-free agent's scenario.
@@ -987,6 +1038,62 @@ async def test_a_critic_bundle_scripts_no_service_for_any_tool(
     assert summaries["web_search"].calls == 1
     assert summaries["web_search"].failures == 1
     assert ledger.prohibited_calls == []
+
+
+# --- Task 12: the typed-gap contract ----------------------------------------
+
+
+def test_the_typed_gap_case_reuses_the_false_pair_candidate() -> None:
+    """Not a second identity-defect fixture.
+
+    The registered case is Task 8's false-independent-pair candidate — same
+    report, same assessed rows, same checked claims — so the defect this case
+    scores and the defect its calibration label describes cannot drift into
+    two fixtures that disagree about one candidate. Only the case id differs,
+    and it names the case rather than the label.
+    """
+    case = _case("typed-gap-calibration")
+    calibration = next(
+        item
+        for item in CALIBRATION_CASES
+        if item.case_id == "calibration-false-independent-pair"
+    )
+    candidate = calibration.state_factory()
+
+    assert case.state.report == candidate.report
+    assert tuple(
+        source.url for source in case.state.evaluated_sources
+    ) == tuple(source.url for source in candidate.evaluated_sources)
+    assert tuple(
+        claim.claim_id for claim in case.state.verified_claims
+    ) == tuple(claim.claim_id for claim in candidate.verified_claims)
+    assert case.state.session_id == "evaluation-typed-gap-calibration"
+    assert (
+        candidate.session_id == "evaluation-calibration-false-independent-pair"
+    )
+
+
+def test_the_typed_gap_cases_reduction_is_corroborated_by_one_publisher() -> None:
+    """The defect is real in the candidate: two passages stand behind the
+    measured reduction and their publishers resolve to one identity, while the
+    claim is recorded as a verified pair. A review that types this as a
+    coverage hole has diagnosed a shortfall of pages the run was never short
+    of."""
+    case = _case("typed-gap-calibration")
+    reduction = next(
+        claim
+        for claim in case.state.verified_claims
+        if "0.4 tonnes" in claim.text
+    )
+
+    assert reduction.evidence_status == "verified_pair"
+    assert len(reduction.verification_evidence) == 2
+    assert len(
+        {
+            publisher_identity(passage.source_url)
+            for passage in reduction.verification_evidence
+        }
+    ) == 1
 
 
 # --- Task 8: the eight paired calibration cases ------------------------------

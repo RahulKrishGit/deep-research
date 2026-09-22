@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from deep_research.agents.critic import fallback_critique
+from deep_research.agents.report import build_citation_index, collapse_mirror_urls
 from deep_research.agents.steps import ReActObservation, ReActStep
 from deep_research.evaluation.cases import all_cases
-from deep_research.evaluation.cases.critic import measure_critic_calibration
+from deep_research.evaluation.cases.critic import (
+    CALIBRATION_CLUSTER_IDS,
+    CALIBRATION_TARGET_IDS,
+    measure_critic_calibration,
+)
 from deep_research.evaluation.dependencies import (
     bounded_url_fingerprints,
     read_url_fingerprints,
@@ -1345,4 +1350,246 @@ def test_abstaining_on_every_claim_scores_verdict_correctness_zero(
         metric_score(output, upstream_pair_case, "no_false_independent_pair")
         == 1.0
     )
+
+
+# --- Task 12: canonical citation provenance ---------------------------------
+#
+# The synthesizer half of Task 7's risk: the report's references are composed
+# by joining the evidence registry, so no URL reaches the reader that the run
+# never held, and one work reprinted twice is one reference. The end-to-end
+# proof of the same defect lives in ``test_real_agents``, where
+# ``statement_source_urls`` is monkeypatched inside the full graph replay;
+# these assert the property at the artifact level — the composed report itself
+# never carries a URL the state cannot derive a citation from, and never
+# prints two references for one work.
+
+
+def _derived_reference_urls(case) -> list[str]:
+    """The reference list production's collapse rule derives from the state."""
+    derived = [
+        citation.url
+        for citation in build_citation_index(
+            case.state.evaluated_sources, case.state.verified_claims
+        )
+    ]
+    return collapse_mirror_urls(derived, case.state.evaluated_sources)
+
+
+def test_a_canonically_cited_report_scores_its_metrics_one(
+    canonical_report_case, canonical_report_output
+) -> None:
+    for metric_id in (
+        "citations_locally_derived",
+        "one_reference_per_work",
+        "coverage",
+        "limitations_present",
+        "reader_markdown_present",
+        "evidence_markdown_present",
+    ):
+        assert (
+            metric_score(
+                canonical_report_output, canonical_report_case, metric_id
+            )
+            == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            canonical_report_output,
+            canonical_report_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_an_invented_reference_url_is_not_locally_derived(
+    canonical_report_case, canonical_report_output
+) -> None:
+    """A URL no assessed source and no checked claim carries.
+
+    The known-source gate refuses it too, but for a different reason: that gate
+    compares the report against the case's *declaration*, while this metric
+    compares it against the records the run actually holds — which is the
+    invariant Task 7's join enforces, since a reference is rendered from an
+    evidence id and never from a URL the model supplied.
+    """
+    case = canonical_report_case
+    invented = "https://journal.example/cover-crop-nitrate-reduction"
+    output = canonical_report_output.with_references(
+        [*_derived_reference_urls(case), invented]
+    )
+
+    assert metric_score(output, case, "citations_locally_derived") == 0.0
+    assert metric_score(output, case, "one_reference_per_work") == 0.0
+    assert (
+        gate(
+            evaluate_general_gates(output, case, secrets=()),
+            "citations_known",
+        ).passed
+        is False
+    )
+
+
+def test_a_work_printed_twice_is_one_reference_not_two(
+    canonical_report_case, canonical_report_output
+) -> None:
+    """The two new metrics disagree here by design.
+
+    Both copies are URLs the run really retrieved, so both are locally derived
+    and the provenance metric passes: nothing was invented. What is wrong is
+    identity — one work printed as two references — and only the metric that
+    applies production's collapse rule sees it. A metric that only ever agreed
+    with ``citations_locally_derived`` would be a duplicate of it.
+    """
+    case = canonical_report_case
+    canonical, reprint = case.expectations.reference["mirror_pairs"][0]
+    listed = [source.url for source in case.state.evaluated_sources]
+    output = canonical_report_output.with_references(listed)
+
+    assert canonical in listed and reprint in listed
+    assert len(listed) == len(_derived_reference_urls(case)) + 1
+    assert metric_score(output, case, "citations_locally_derived") == 1.0
+    assert metric_score(output, case, "one_reference_per_work") == 0.0
+
+
+def test_printing_the_reprint_instead_of_the_original_is_not_canonical(
+    canonical_report_case, canonical_report_output
+) -> None:
+    """The other direction, and the reason neither metric is a URL count.
+
+    The reprint is locally derived — the run retrieved it — so provenance
+    passes, and the reference list still is not the one the composition
+    derives: the copy the work's own assessment identifies as the original is
+    what a reader is owed, and printing the republished copy instead loses the
+    reference to the work itself.
+    """
+    case = canonical_report_case
+    canonical, reprint = case.expectations.reference["mirror_pairs"][0]
+    listed = [
+        reprint if url == canonical else url
+        for url in _derived_reference_urls(case)
+    ]
+    output = canonical_report_output.with_references(listed)
+
+    assert reprint in listed and canonical not in listed
+    assert metric_score(output, case, "citations_locally_derived") == 1.0
+    assert metric_score(output, case, "one_reference_per_work") == 0.0
+
+
+# --- Task 12: typed gap calibration -----------------------------------------
+
+
+def _fixture_gap(typed_gap_output) -> dict:
+    return typed_gap_output.result["critique"]["gaps"][0]
+
+
+def test_a_typed_identity_gap_scores_its_metrics_one(
+    typed_gap_case, typed_gap_output
+) -> None:
+    for metric_id in (
+        "gap_kind_correct",
+        "repair_action_routed",
+        "conservative_score",
+    ):
+        assert (
+            metric_score(typed_gap_output, typed_gap_case, metric_id) == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            typed_gap_output,
+            typed_gap_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_the_typed_gap_fixture_types_the_defect_its_candidate_carries(
+    typed_gap_case, typed_gap_output
+) -> None:
+    """The scripted gap is the case's own defect.
+
+    It names the claim cluster the candidate's composition really carries, and
+    it is typed and routed the way the case's reference declares. A proof built
+    on a gap naming nothing the candidate has would only measure the fixture.
+    """
+    case = typed_gap_case
+    cluster_id = CALIBRATION_CLUSTER_IDS["emissions"]
+    reference = case.expectations.reference
+    gap = _fixture_gap(typed_gap_output)
+
+    assert gap["claim_cluster_ids"] == [cluster_id]
+    assert cluster_id in case.state.composition.claim_clusters
+    assert gap["kind"] in reference["expected_gap_kinds"]
+    assert gap["repair_action"] in reference["expected_repair_actions"]
+
+
+def test_a_false_pair_typed_as_coverage_routes_the_run_the_wrong_way(
+    typed_gap_case, typed_gap_output
+) -> None:
+    """The misroute in its most literal form.
+
+    The same rejection, the same score, and the same cluster — but typed as a
+    coverage hole and routed to acquisition, with a target and a query the run
+    may search for. That route sends the Researcher to fetch pages for a pair
+    that already sits in the state, and no number of pages closes a defect
+    about what those pages *are*. The typing and the route are what this case
+    scores apart from the score itself.
+    """
+    case = typed_gap_case
+    mistyped = {
+        **_fixture_gap(typed_gap_output),
+        "kind": "coverage",
+        "repair_action": "acquire",
+        "claim_cluster_ids": [],
+        "target_ids": [CALIBRATION_TARGET_IDS["emissions"]],
+        "recommended_queries": ["clinker substitution independent verification"],
+    }
+    output = typed_gap_output.with_typed_gaps([mistyped])
+
+    assert metric_score(output, case, "gap_kind_correct") == 0.0
+    assert metric_score(output, case, "repair_action_routed") == 0.0
+    # The rejection is still calibrated — only the diagnosis is wrong, and a
+    # case that scored the two together could not say which happened.
+    assert metric_score(output, case, "conservative_score") == 1.0
+
+
+def test_approving_the_false_pair_scores_every_metric_zero(
+    typed_gap_case, typed_gap_output
+) -> None:
+    """The anti-abstention proof, at the artifact the case must refuse.
+
+    A confident approval that names no defect: no material gap for either
+    metric to read, and a score above the band's ceiling. Missing the defect
+    has to cost every point this case offers, or abstaining from a judgement
+    would be the cheapest way to collect them.
+    """
+    output = typed_gap_output.with_typed_gaps([]).with_score(9).with_should_continue(
+        False
+    )
+
+    for metric_id in (
+        "gap_kind_correct",
+        "repair_action_routed",
+        "conservative_score",
+    ):
+        assert metric_score(output, typed_gap_case, metric_id) == 0.0, metric_id
+
+
+def test_answering_the_false_pair_at_the_floor_is_not_calibrated(
+    typed_gap_case, typed_gap_output
+) -> None:
+    """The band's floor is load-bearing, and this is its proof.
+
+    The defect is real and not fatal: it is a rejection, not a run that failed
+    to produce a report, and a review that answers it by collapsing to the
+    floor has stopped grading the report at all. That is a different failure
+    from accepting it — one the ceiling alone cannot see — and the case
+    declares both bounds so the two are told apart.
+    """
+    output = typed_gap_output.with_score(1)
+
+    assert metric_score(output, typed_gap_case, "conservative_score") == 0.0
+    assert metric_score(output, typed_gap_case, "gap_kind_correct") == 1.0
+    assert metric_score(output, typed_gap_case, "repair_action_routed") == 1.0
 

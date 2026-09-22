@@ -7,6 +7,7 @@ import pytest
 from deep_research.agents.report import (
     REPORT_TITLE_PREFIX,
     build_citation_index,
+    collapse_mirror_urls,
 )
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import cases_for
@@ -24,6 +25,7 @@ CONTROLLED = (
     "complete-cited-report",
     "conflict-and-limitations",
     "composition-no-publication",
+    "canonical-evidence-report",
 )
 
 _METRICS = {
@@ -52,6 +54,14 @@ _METRICS = {
         ("no_persistence_calls", 0.25),
         ("no_false_publication_claim", 0.20),
         ("citations_known", 0.15),
+    ),
+    "canonical-evidence-report": (
+        ("citations_locally_derived", 0.30),
+        ("one_reference_per_work", 0.30),
+        ("coverage", 0.20),
+        ("limitations_present", 0.10),
+        ("reader_markdown_present", 0.05),
+        ("evidence_markdown_present", 0.05),
     ),
     "synthesizer-live-report": (
         ("reader_markdown_present", 0.15),
@@ -164,6 +174,49 @@ _NREL_URL = "https://nrel.gov/research/buildings/heat-pump-retrofit-costs"
 _IEA_URL = "https://iea.org/energy-system/buildings/heating"
 _LIVE_URLS = (_DOE_URL, _NREL_URL, _IEA_URL)
 
+# The canonical case's five assessed rows hold four works: the trials
+# network's report and a reprint of it behind one work id, plus a
+# meta-analysis, catchment monitoring, and a vendor guide. Every host is a
+# ``.example`` host, whose full name is its publisher identity, so the four
+# works stay four publishers.
+_CANONICAL_TRIALS_URL = "https://fieldstation.example/cover-crop-nitrate-trials"
+_CANONICAL_REPRINT_URL = "https://agmirror.example/trials/cover-crop-nitrate"
+_CANONICAL_META_URL = (
+    "https://agmetaanalysis.example/cover-crop-nitrate-meta-analysis"
+)
+_CANONICAL_MONITOR_URL = (
+    "https://waterauthority.example/cover-crop-nitrate-monitoring"
+)
+_CANONICAL_GUIDE_URL = (
+    "https://farminputs.example/cover-crop-establishment-guide"
+)
+_CANONICAL_STATE_URLS = (
+    _CANONICAL_TRIALS_URL,
+    _CANONICAL_REPRINT_URL,
+    _CANONICAL_META_URL,
+    _CANONICAL_MONITOR_URL,
+    _CANONICAL_GUIDE_URL,
+)
+_CANONICAL_REFERENCE_URLS = (
+    _CANONICAL_TRIALS_URL,
+    _CANONICAL_META_URL,
+    _CANONICAL_MONITOR_URL,
+    _CANONICAL_GUIDE_URL,
+)
+_CANONICAL_TRIALS_WORK_ID = "work-cover-crop-nitrate-trials"
+_CANONICAL_TRIALS_CLAIM = (
+    "Cover crops reduce nitrate loss to tile drains by roughly 30 to 45 "
+    "percent in measured field trials."
+)
+_CANONICAL_CONDITIONS_CLAIM = (
+    "The size of the measured nitrate reduction depends on establishing the "
+    "cover crop before the preceding crop's window."
+)
+_CANONICAL_MONITORING_CLAIM = (
+    "Regional monitoring still records nitrate above the drinking-water "
+    "limit at some sampled wells."
+)
+
 _REFERENCES = {
     "complete-cited-report": {
         "known_citation_urls": list(_MIXED_URLS),
@@ -194,6 +247,13 @@ _REFERENCES = {
             "stored at",
             "published to",
         ],
+    },
+    "canonical-evidence-report": {
+        "mirror_pairs": [[_CANONICAL_TRIALS_URL, _CANONICAL_REPRINT_URL]],
+        "canonical_url_for_work": {
+            _CANONICAL_TRIALS_WORK_ID: _CANONICAL_TRIALS_URL,
+        },
+        "forbidden_citation_urls": [_CANONICAL_REPRINT_URL],
     },
     "synthesizer-live-report": {
         "known_citation_urls": list(_LIVE_URLS),
@@ -226,6 +286,12 @@ _RUBRIC_DIMENSIONS = {
         "citation_faithfulness",
         "structure_quality",
     },
+    "canonical-evidence-report": {
+        "citation_provenance",
+        "one_reference_per_work",
+        "citation_faithfulness",
+        "structure_quality",
+    },
     "synthesizer-live-report": {
         "evidence_fidelity",
         "limitations_honesty",
@@ -252,7 +318,7 @@ def _case(case_id: str):
     )
 
 
-def test_the_three_controlled_cases_are_registered() -> None:
+def test_the_controlled_cases_are_registered() -> None:
     assert tuple(
         case.case_id for case in cases_for("synthesizer", "controlled")
     ) == CONTROLLED
@@ -280,6 +346,7 @@ def test_the_controlled_catalog_replaces_publication_failure_with_composition() 
         "complete-cited-report",
         "conflict-and-limitations",
         "composition-no-publication",
+        "canonical-evidence-report",
     )
 
 
@@ -303,6 +370,9 @@ def test_every_case_names_its_scenario() -> None:
     )
     assert _case("composition-no-publication").dependency_scenario == (
         "synthesizer-composition"
+    )
+    assert _case("canonical-evidence-report").dependency_scenario == (
+        "synthesizer-canonical-evidence"
     )
 
 
@@ -334,6 +404,7 @@ def test_each_case_pins_its_finding_and_claim_counts() -> None:
         "complete-cited-report": (6, 4),
         "conflict-and-limitations": (5, 3),
         "composition-no-publication": (4, 3),
+        "canonical-evidence-report": (5, 3),
         "synthesizer-live-report": (3, 2),
     }
     for case_id, (findings, claims) in expected.items():
@@ -403,6 +474,95 @@ def test_the_composition_case_cites_exactly_its_four_urls() -> None:
     assert tuple(
         finding.source_url for finding in case.state.raw_findings
     ) == _FAILURE_URLS
+
+
+def test_the_canonical_case_cites_exactly_its_five_urls() -> None:
+    """Five assessed rows over four works: the trials network's report, a
+    reprint of it, a meta-analysis, catchment monitoring, and a guide."""
+    case = _case("canonical-evidence-report")
+
+    assert tuple(
+        finding.source_url for finding in case.state.raw_findings
+    ) == _CANONICAL_STATE_URLS
+
+
+def test_the_canonical_case_declares_one_work_carried_twice() -> None:
+    """The trap, declared and checked against the state.
+
+    ``mirror_pairs`` names the two URLs that are one work, and
+    ``canonical_url_for_work`` names the copy production's collapse rule
+    keeps. A reprint inherits the issuer of the work it carries and records
+    the host its bytes came from instead, which is why the two rows share a
+    work id and a publisher while their URLs differ.
+    """
+    case = _case("canonical-evidence-report")
+    reference = case.expectations.reference
+    rows = {source.url: source for source in case.state.evaluated_sources}
+
+    assert reference["mirror_pairs"] == [
+        [_CANONICAL_TRIALS_URL, _CANONICAL_REPRINT_URL]
+    ]
+    assert reference["canonical_url_for_work"] == {
+        _CANONICAL_TRIALS_WORK_ID: _CANONICAL_TRIALS_URL
+    }
+    assert reference["forbidden_citation_urls"] == [_CANONICAL_REPRINT_URL]
+
+    original = rows[_CANONICAL_TRIALS_URL]
+    reprint = rows[_CANONICAL_REPRINT_URL]
+    assert original.work_id == reprint.work_id == _CANONICAL_TRIALS_WORK_ID
+    assert original.transport_relation == "original"
+    assert reprint.transport_relation == "mirror"
+    assert reprint.publisher_id == original.publisher_id
+    assert reprint.serving_host == source_domain(_CANONICAL_REPRINT_URL)
+
+
+def test_the_canonical_case_state_collapses_to_four_references() -> None:
+    """The state really carries the trap.
+
+    Production's own collapse rule, run over the URLs the state can derive a
+    citation from — the assessed rows and the checked claims' URLs — keeps
+    exactly one reference per work, in first-seen order.
+    """
+    case = _case("canonical-evidence-report")
+    derived = [
+        citation.url
+        for citation in build_citation_index(
+            case.state.evaluated_sources, case.state.verified_claims
+        )
+    ]
+
+    assert derived == list(_CANONICAL_STATE_URLS)
+    assert collapse_mirror_urls(
+        derived, case.state.evaluated_sources
+    ) == list(_CANONICAL_REFERENCE_URLS)
+
+
+def test_the_canonical_case_carries_three_checked_claims() -> None:
+    case = _case("canonical-evidence-report")
+
+    assert tuple(
+        claim.text for claim in case.state.verified_claims
+    ) == (
+        _CANONICAL_TRIALS_CLAIM,
+        _CANONICAL_CONDITIONS_CLAIM,
+        _CANONICAL_MONITORING_CLAIM,
+    )
+    assert all(claim.verdict == "verified" for claim in case.state.verified_claims)
+
+
+def test_the_canonical_case_covers_every_planned_subtopic() -> None:
+    case = _case("canonical-evidence-report")
+
+    assert tuple(
+        topic.title for topic in case.state.sub_topics
+    ) == (
+        "Measured nitrate loss reductions",
+        "Field conditions behind the measured effects",
+        "Regional monitoring evidence",
+    )
+    assert {topic.title for topic in case.state.sub_topics} == {
+        finding.related_sub_topic for finding in case.state.raw_findings
+    }
 
 
 def test_the_live_case_cites_exactly_its_three_urls() -> None:
@@ -833,6 +993,7 @@ def test_every_case_declares_its_known_source_urls() -> None:
         "complete-cited-report": set(_MIXED_URLS),
         "conflict-and-limitations": set(_CONFLICT_URLS),
         "composition-no-publication": set(_FAILURE_URLS),
+        "canonical-evidence-report": set(_CANONICAL_STATE_URLS),
         "synthesizer-live-report": set(_LIVE_URLS),
     }
     for case_id, declared in expected.items():

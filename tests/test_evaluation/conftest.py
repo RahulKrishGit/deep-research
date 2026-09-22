@@ -28,6 +28,7 @@ from deep_research.evaluation.cases import (
     case_by_id,
     cases_for,
 )
+from deep_research.evaluation.cases.critic import CALIBRATION_CLUSTER_IDS
 from deep_research.evaluation.config import (
     GitMetadata,
     build_runtime_config,
@@ -903,6 +904,30 @@ class SynthesizerOutput(TargetOutput):
             }
         )
 
+    def with_references(self, urls: Sequence[str]) -> "SynthesizerOutput":
+        """Rewrite the reference list, leaving the prose and its markers.
+
+        A run that prints a mirrored copy as a second reference differs from a
+        correct one only in that list: the statement markers still resolve
+        through it, so a variant exercises the citation contract rather than
+        breaking the whole report shape.
+        """
+        result = dict(self.result or {})
+        report = str(result.get("markdown") or "")
+        head = report.split("## References")[0].rstrip()
+        listed = "\n".join(
+            f"{index}. Reference {index} — {url}"
+            for index, url in enumerate(urls, start=1)
+        )
+        report = f"{head}\n\n## References\n\n{listed}"
+        state_update = dict(self.state_update)
+        return self.model_copy(
+            update={
+                "result": {**result, "markdown": report},
+                "state_update": {**state_update, "report": report},
+            }
+        )
+
 
 class CriticOutput(TargetOutput):
     """A critic repetition with builder helpers."""
@@ -928,6 +953,18 @@ class CriticOutput(TargetOutput):
         self, queries: Sequence[str]
     ) -> "CriticOutput":
         return self._critique(recommended_queries=list(queries))
+
+    def with_typed_gaps(
+        self, gaps: Sequence[Mapping[str, object]]
+    ) -> "CriticOutput":
+        """Replace the gap list with typed gap records.
+
+        ``with_gaps`` writes the legacy string form, which predates the typed
+        contract and normalizes to one material ``coverage``/``acquire`` gap
+        scoped to the whole answer. A case that scores what a gap *names* and
+        where it *routes* needs records that carry a kind and a repair action.
+        """
+        return self._critique(gaps=[dict(gap) for gap in gaps])
 
 
 @pytest.fixture
@@ -1014,6 +1051,20 @@ def upstream_pair_case() -> EvaluationCase:
     return case_by_id(
         "fact_checker", "controlled", "upstream-independent-pair"
     )
+
+
+@pytest.fixture
+def canonical_report_case() -> EvaluationCase:
+    """The synthesizer case whose contract polices citation provenance."""
+    return case_by_id(
+        "synthesizer", "controlled", "canonical-evidence-report"
+    )
+
+
+@pytest.fixture
+def typed_gap_case() -> EvaluationCase:
+    """The critic case whose contract polices gap typing and routing."""
+    return case_by_id("critic", "controlled", "typed-gap-calibration")
 
 
 @pytest.fixture
@@ -2072,6 +2123,116 @@ def synthesizer_composition_output(
 
 
 @pytest.fixture
+def canonical_report_output(canonical_report_case) -> SynthesizerOutput:
+    """A report that prints one canonical reference per work.
+
+    The list is the case's own declaration, not a second copy of it: each
+    assessed source prints the canonical URL the case records for its work, so
+    the fixture cannot drift from the trap its state carries. The reprint
+    resolves to the original's URL and collapses into that one entry, which is
+    what a run composing its references from the evidence registry produces.
+    """
+    case = canonical_report_case
+    canonical = case.expectations.reference["canonical_url_for_work"]
+    listed: list[tuple[str, str]] = []
+    for source in case.state.evaluated_sources:
+        url = canonical.get(source.work_id, source.url)
+        if url not in [entry[0] for entry in listed]:
+            listed.append((url, source.title))
+    references = "\n".join(
+        f"{index}. {title} — {url}"
+        for index, (url, title) in enumerate(listed, start=1)
+    )
+    report = (
+        "# Research report: What do measured field studies show about the "
+        "effect of cover crops on nitrate loss to groundwater?\n\n"
+        "**As of:** 2026-08-01T00:00:00+00:00\n\n"
+        "**Scope:** the supplied cover-crop nitrate evidence.\n\n"
+        "**Quality status:** not yet quality-gated\n\n"
+        "## Executive summary\n\n"
+        "- Measured field trials report lower nitrate loss to tile drains "
+        "under cereal rye cover crops, and how much lower depends on how the "
+        "cover crop was established. [1][2]\n\n"
+        "## Constraint ranking\n\n"
+        "(no constraint was ranked for this pass)\n\n"
+        "## Findings\n\n"
+        "### Measured nitrate loss reductions\n\n"
+        "- Twelve site-years of field trials report nitrate loss to tile "
+        "drains 30 to 45 percent lower under cereal rye than under the "
+        "preceding cash crop alone. [1][2]\n\n"
+        "### Field conditions behind the measured effects\n\n"
+        "- A meta-analysis of 41 leaching studies finds the reduction depends "
+        "on establishing the cover crop before the preceding crop's window, "
+        "and a vendor guide names the same conditions without reporting "
+        "measurements of its own. [2][4]\n\n"
+        "### Regional monitoring evidence\n\n"
+        "- Regional monitoring records nitrate above the drinking-water limit "
+        "at 3 of 18 sampled wells, with no trend across the four monitored "
+        "years. [3]\n\n"
+        "## Uncertainty and conflicting evidence\n\n"
+        "The records cover few catchments and a short monitoring window. "
+        "Limitations: the vendor guide is not peer reviewed, and the trials "
+        "network's report is also carried by a reprint that adds no "
+        "measurement of its own.\n\n"
+        "## Methodology\n\n"
+        "- Claims and citations were composed from the supplied evidence.\n\n"
+        "## References\n\n"
+        f"{references}"
+    )
+    evidence = (
+        "# Evidence ledger: canonical-evidence-report\n\n"
+        "## Claim registry\n\n"
+        "Three checked claims resolved through the evidence registry, and one "
+        "reference per work however many copies of it were retrieved."
+    )
+    state_update = {
+        "report": report,
+        "report_evidence": evidence,
+        "evidence_path": "report-canonical-evidence-report-1-evidence.md",
+        "unique_source_count": len(case.state.evaluated_sources),
+        "unique_claim_count": len(case.state.verified_claims),
+    }
+    return SynthesizerOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id="evaluation-canonical-evidence-report",
+        experiment_name="synthesizer-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/synthesizer-canonical-1",
+        completed=True,
+        failure=None,
+        result={
+            "markdown": report,
+            "path": None,
+            "evidence_markdown": evidence,
+            "evidence_path": "report-canonical-evidence-report-1-evidence.md",
+            "section_count": 3,
+            "citation_count": len(listed),
+            "unique_source_count": len(case.state.evaluated_sources),
+            "unique_claim_count": len(case.state.verified_claims),
+        },
+        state_update=state_update,
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=1,
+            tool_calls=3,
+            stop_reason="finished",
+            max_iterations=case.expectations.max_iterations,
+            tool_budget=case.expectations.max_tool_calls,
+        ),
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(),
+        trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+
+@pytest.fixture
 def critic_output(critic_case) -> CriticOutput:
     """A strong-report approval: score 9, end routing, no gaps."""
     return CriticOutput(
@@ -2209,6 +2370,79 @@ def critic_budget_output(critic_budget_case) -> CriticOutput:
             stop_reason="finished",
             max_iterations=critic_budget_case.expectations.max_iterations,
             tool_budget=critic_budget_case.expectations.max_tool_calls,
+        ),
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(),
+        trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+
+@pytest.fixture
+def typed_gap_output(typed_gap_case) -> CriticOutput:
+    """The false pair rejected as the identity defect it is.
+
+    The gap names the emission cluster the candidate's own composition
+    carries, and it is typed ``identity``/``adjudicate``: the two passages
+    behind the reduction were retrieved, so no acquisition or plan extension
+    can close a defect about what those passages *are*. The score is the one
+    Task 8's calibration label gives this candidate — a rejection that still
+    grades the report, which is why the case declares a floor as well as a
+    ceiling.
+    """
+    return CriticOutput(
+        case_id=typed_gap_case.case_id,
+        case_version=typed_gap_case.version,
+        agent_name=typed_gap_case.agent_name,
+        tier=typed_gap_case.tier,
+        repetition=1,
+        session_id="evaluation-typed-gap-calibration",
+        experiment_name="critic-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/critic-typed-gap-1",
+        completed=True,
+        failure=None,
+        result={
+            "critique": {
+                "score": 3,
+                "gaps": [
+                    {
+                        "target_ids": [],
+                        "statement_ids": [],
+                        "claim_cluster_ids": [
+                            CALIBRATION_CLUSTER_IDS["emissions"]
+                        ],
+                        "kind": "identity",
+                        "severity": "major",
+                        "repair_action": "adjudicate",
+                        "problem": (
+                            "The corroboration behind the 0.4-tonne reduction "
+                            "is not independent: both passages resolve to one "
+                            "publisher's identity, so the independent pair the "
+                            "report implies does not exist."
+                        ),
+                        "recommended_queries": [],
+                    }
+                ],
+                "unsupported_claims": [],
+                "recommended_queries": [],
+                "should_continue": True,
+                "rationale": (
+                    "The measured reduction is presented as corroborated when "
+                    "its two passages share one origin."
+                ),
+            }
+        },
+        state_update={},
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=1,
+            tool_calls=0,
+            stop_reason="finished",
+            max_iterations=typed_gap_case.expectations.max_iterations,
+            tool_budget=typed_gap_case.expectations.max_tool_calls,
         ),
         dependencies=DependencyLedger(),
         evidence=EvidenceContext(),
