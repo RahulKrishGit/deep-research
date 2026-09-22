@@ -1404,6 +1404,41 @@ def test_evaluation_config_defaults_to_production_parity() -> None:
     assert EvaluationConfig().production_parity is True
 
 
+def test_an_invocation_can_force_parity_off_even_when_declared() -> None:
+    """A per-run ``--no-production-parity`` beats config.yaml's own on."""
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={"planner": {"reasoning_effort": "max"}},
+        )
+    )
+
+    runtime = build(
+        settings=settings, agent_name="planner", production_parity=False
+    )
+
+    assert runtime.target_profile_source == "evaluation"
+    assert runtime.production_parity is False
+
+
+def test_an_invocation_can_force_parity_on_even_when_configured_off() -> None:
+    """A per-run ``--production-parity`` beats config.yaml's own off."""
+    settings = ConfigSettings(
+        evaluation=EvaluationConfig(production_parity=False),
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={"planner": {"reasoning_effort": "max"}},
+        ),
+    )
+
+    runtime = build(
+        settings=settings, agent_name="planner", production_parity=True
+    )
+
+    assert runtime.target_profile_source == "production"
+    assert runtime.production_parity is True
+
+
 def test_the_target_llm_config_is_accepted_by_the_capability_registry() -> None:
     """Fail-closed: the baseline profile must be a combination DeepSeek
     actually supports, checked against the local table, not assumed."""
