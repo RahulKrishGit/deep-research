@@ -2492,6 +2492,12 @@ async def test_a_researcher_budget_override_bounds_each_sub_topic_loop(
     so a wiring bug would be invisible at that value. This pins the override
     at one against a global budget of four: only the override can stop the
     loop after the first executed call.
+
+    The refusal comes from the acquisition policy, which holds the target's
+    budget — the same override, read through
+    ``AgentRuntimeConfig.tool_budget_for`` — because that budget belongs to
+    the run and is resumed by every later loop for the same target, while a
+    fresh loop's own gate always starts full.
     """
     completer = ScriptedCompleter(
         decisions=_search_and_scrape_decisions(),
@@ -2512,7 +2518,16 @@ async def test_a_researcher_budget_override_bounds_each_sub_topic_loop(
         outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
 
     assert outcome.react.tool_calls == 1
-    assert outcome.react.stop_reason == "tool_budget_exhausted"
+    # The second scripted action is refused for the spent acquisition budget,
+    # and the loop ends when the model — told no further calls are possible —
+    # finishes.
+    assert outcome.react.errors[0].error_type == "agent_tool_policy_rejected"
+    assert any(
+        "budget" in step.observation.summary
+        for step in outcome.react.steps
+        if step.observation is not None
+    )
+    assert outcome.react.stop_reason == "finished"
 
 
 @pytest.mark.asyncio

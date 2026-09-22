@@ -980,14 +980,28 @@ class AcquisitionPolicy:
                 allowed=False,
                 reason="acquisition policy has no candidate work remaining",
             )
+        if expected == "finish" and self.state.remaining_calls <= 0:
+            # The loop's gate above holds only inside the pass that spent the
+            # budget. On a refinement pass the Researcher opens a fresh loop
+            # for the same unanswered target, and that loop's budget is full,
+            # so nothing else refuses these calls: a spent target would search
+            # and read freely while its ``remaining_calls`` stayed at zero.
+            # The budget is the run's — ``merge_acquisition_states`` keeps the
+            # minimum so spent capacity is never resurrected — so the policy
+            # says so here instead of deferring to a gate that cannot fire.
+            return ToolPolicyDecision(
+                allowed=False,
+                reason=(
+                    f"the acquisition budget of {self.state.target_id!r} is "
+                    "spent; no further tool calls are possible"
+                ),
+            )
         fallback_read_after_failed_search = (
             requested_kind == "read"
             and expected == "search"
             and self._last_search_failed
         )
-        if requested_kind != expected and not (
-            expected == "finish" and self.state.remaining_calls <= 0
-        ) and not fallback_read_after_failed_search:
+        if requested_kind != expected and not fallback_read_after_failed_search:
             return ToolPolicyDecision(
                 allowed=False,
                 reason=(
