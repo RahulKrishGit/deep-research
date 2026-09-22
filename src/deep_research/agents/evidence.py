@@ -1160,19 +1160,26 @@ def source_origin_id(source: ScoredSource) -> str | None:
     ``None`` means the source may not be half of an independent pair: an
     unscored source carries no assessment, a derivative or mixed document
     repeats someone else's work, and an unknown issuer establishes neither
-    identity nor independence. A mirror is not ``None`` — it can be the first
+    identity nor independence. A copy is not ``None`` — it can be the first
     primary support — but it must never present as a *second* origin beside
-    the work it mirrors.
+    the work it copies.
 
     The origin is the discriminator, so it may only separate sources that are
     demonstrably different. A DOI or an issuer-namespaced report number is an
     evidenced alias for a work, and the origin is that work. A bare content
     hash is not: it names a set of bytes, and two copies of one report that
-    were re-typeset hash differently while remaining one work — so a
-    hash-only source contributes *its publisher's* origin instead. Two copies
-    from one publisher therefore share one origin however their bytes differ,
-    while two genuinely different documents from different publishers keep
-    theirs apart.
+    were re-typeset hash differently while remaining one work. Such a page
+    contributes *its publisher's* origin instead — its publisher is the most
+    the identity evidence establishes, and two genuinely different documents
+    from different publishers keep theirs apart.
+
+    A source transported as a mirror or a syndication gets no such fallback
+    (Section 2.2 rule 4): the host serving a copy is not the origin of the
+    work it copies, so a copy that stamps its own publisher and carries no
+    shared identifier would otherwise manufacture a second origin for one
+    work. It contributes an origin only through a shared strong alias — the
+    same work, which is what lets it stand as the first primary support while
+    contributing no additional corroboration.
     """
     if source.evaluation_status != "scored":
         return None
@@ -1180,9 +1187,18 @@ def source_origin_id(source: ScoredSource) -> str | None:
         return None
     if source.work_id and _strong_work_alias(source.work_id):
         return f"work:{source.work_id}"
+    if source.transport_relation in COPIED_TRANSPORT_RELATIONS:
+        return None
     if source.publisher_id:
         return f"publisher:{source.publisher_id}"
     return None
+
+
+# How a copy reached us. A copy's publisher is the host's claim about itself,
+# never the origin of the figure it repeats, so these relations may not use the
+# publisher fallback above.
+COPIED_TRANSPORT_RELATIONS = ("mirror", "syndication")
+
 
 
 # Work aliases that name a work rather than a set of bytes. ``report:`` is
