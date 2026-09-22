@@ -7,6 +7,7 @@ from deep_research.evaluation.cases import (
     evaluation_state,
     finding,
     metrics,
+    read_record,
     rubric,
 )
 from deep_research.evaluation.models import CaseExpectations, EvaluationCase
@@ -370,6 +371,201 @@ _FAILURE = build_case(
     metadata={"scenario": "failure-recovery"},
 )
 
+# One survey, served three ways, and one genuinely separate study. The
+# first three URLs are a single work: the institute's own report, a
+# repository record carrying it, and a wire reprint repeating it. The
+# serving hosts differ, and that is the trap — a host is a transport fact,
+# not a publisher, and recording the repository or the wire as a second
+# publisher of a second work is the false independence count every
+# downstream check (pair support included) inherits. The university's
+# campaign is the legitimate second work the run must still recognize.
+
+_SURVEY_URL = "https://soilbaseline.example.gov/reports/sc-2026-04"
+_MIRROR_URL = "https://repository.example.org/records/sc-2026-04"
+_WIRE_URL = "https://wire.example.com/soil-carbon-baseline-reprint"
+_UNIVERSITY_URL = "https://soilstudies.example.edu/carbon-baseline-2025"
+
+_WORK_ROLE_RUBRIC = rubric(
+    "source-evaluator-work-role-independence",
+    *_SOURCE_SCORING_DIMENSIONS,
+    (
+        "work_identity",
+        "A reprint of one report is recorded as one work, whatever host "
+        "served it.",
+        "Every copy of the institute's survey is recorded as the same work, "
+        "publisher, and report number, and the university's campaign is "
+        "recorded as a second work of its own.",
+        "A copy is recorded as its own work, or the genuinely separate study "
+        "is recorded as the survey's.",
+    ),
+    (
+        "transport_vs_publication",
+        "A repository or wire host is not the publisher of what it carries.",
+        "The recorded publisher is the organization the document names as "
+        "its publisher, and how the page was served is recorded as a "
+        "transport relation instead.",
+        "The serving host is recorded as the publisher, or a copy is "
+        "recorded as an original publication.",
+    ),
+)
+
+_WORK_ROLE = build_case(
+    case_id="work-role-independence",
+    agent_name="source_evaluator",
+    tier="controlled",
+    title="Record one work once, however it was served",
+    purpose=(
+        "Score four read-backed sources for a national soil-carbon survey. "
+        "The institute's report, a repository record carrying it, and a wire "
+        "reprint repeating it are one work served three ways, and a run that "
+        "takes a serving host for the publisher turns that one work into two "
+        "— a false second source that every downstream independence count "
+        "inherits. The university's separate study is a real second work, "
+        "and a run that records no identity at all must not be credited for "
+        "finding it."
+    ),
+    state=evaluation_state(
+        case_id="work-role-independence",
+        question=(
+            "What is the measured soil organic carbon baseline in the "
+            "national cropland survey?"
+        ),
+        findings=(
+            finding(
+                "The National Soil Baseline Institute's own survey report "
+                "SC-2026-04 records mean cropland soil organic carbon of 42 "
+                "tonnes per hectare in 2025 across 3,100 sampled fields.",
+                url=_SURVEY_URL,
+                title="National soil carbon baseline survey 2025 (SC-2026-04)",
+                sub_topic_title="National soil carbon baseline",
+            ),
+            finding(
+                "A repository record carries the institute's survey: it "
+                "names the National Soil Baseline Institute and report "
+                "number SC-2026-04, and reproduces the same measured "
+                "baseline without adding anything of its own.",
+                url=_MIRROR_URL,
+                title="Repository record: national soil carbon baseline survey",
+                sub_topic_title="National soil carbon baseline",
+            ),
+            finding(
+                "A wire service reprint credits the National Soil Baseline "
+                "Institute and repeats the survey's 42 tonnes per hectare "
+                "baseline, adding no reporting of its own.",
+                url=_WIRE_URL,
+                title="Wire reprint: soil carbon baseline survey",
+                sub_topic_title="National soil carbon baseline",
+            ),
+            finding(
+                "A university soil-science group's own measurement campaign "
+                "reports a regional cropland soil-carbon baseline of 41 "
+                "tonnes per hectare under a different sampling design, with "
+                "no relation to the institute's survey.",
+                url=_UNIVERSITY_URL,
+                title="University soil study: regional carbon baseline",
+                sub_topic_title="Independent regional measurements",
+            ),
+        ),
+        # The reads are the whole provenance: the agent declares no tools,
+        # so without them nothing about any page could be established and the
+        # identity metrics would score an empty field. Each read's text
+        # carries the attribution its own page states, which is what makes
+        # the issuer — and with it the role, the relation, and the record
+        # number — recordable at all.
+        reads=(
+            read_record(
+                _SURVEY_URL,
+                case_id="work-role-independence",
+                title="National soil carbon baseline survey 2025 (SC-2026-04)",
+                text=(
+                    "National soil carbon baseline survey 2025. Report "
+                    "SC-2026-04. Published by the National Soil Baseline "
+                    "Institute. Mean cropland soil organic carbon measured "
+                    "42 tonnes per hectare in 2025 across 3,100 sampled "
+                    "fields."
+                ),
+                reader="document_reader",
+            ),
+            read_record(
+                _MIRROR_URL,
+                case_id="work-role-independence",
+                title="Repository record: national soil carbon baseline survey",
+                text=(
+                    "Repository record for the national soil carbon baseline "
+                    "survey. Prepared by the National Soil Baseline "
+                    "Institute. Report SC-2026-04. Archived copy of the "
+                    "institute's 2025 published survey, reproduced without "
+                    "change."
+                ),
+            ),
+            read_record(
+                _WIRE_URL,
+                case_id="work-role-independence",
+                title="Wire reprint: soil carbon baseline survey",
+                text=(
+                    "Wire report: national soil carbon baseline. The survey "
+                    "was released by the National Soil Baseline Institute "
+                    "under report number SC-2026-04 and reports 42 tonnes of "
+                    "soil organic carbon per hectare in 2025. This reprint "
+                    "adds no reporting of its own."
+                ),
+            ),
+            read_record(
+                _UNIVERSITY_URL,
+                case_id="work-role-independence",
+                title="University soil study: regional carbon baseline",
+                text=(
+                    "University soil study: regional cropland carbon "
+                    "baseline. Published by the University of Northfield "
+                    "Soil Science Group. The campaign measured soil organic "
+                    "carbon under its own sampling design and reports 41 "
+                    "tonnes per hectare."
+                ),
+            ),
+        ),
+    ),
+    dependency_scenario="source-evaluator-work-roles",
+    expectations=CaseExpectations(
+        required_output_fields=["evaluated_sources"],
+        reference={
+            "original_url": _SURVEY_URL,
+            "same_work_urls": [_SURVEY_URL, _MIRROR_URL, _WIRE_URL],
+            "independent_work_urls": [_UNIVERSITY_URL],
+            "derivative_relations": ["mirror", "syndication"],
+            "maximum_independent_works": 2,
+        },
+        max_iterations=1,
+        max_tool_calls=0,
+        deterministic_metrics=metrics(
+            (
+                "mirror_not_a_new_work",
+                0.30,
+                "No page carrying the survey is recorded as a second "
+                "original: a copy either inherits the institute as its "
+                "publisher or records how it was served.",
+            ),
+            (
+                "independent_work_recognized",
+                0.25,
+                "The university's own study carries a recognized-work role "
+                "and a publisher identity that is not the institute's.",
+            ),
+            (
+                "one_evaluation_per_source",
+                0.25,
+                "Exactly one `ScoredSource` per canonical URL, no extras.",
+            ),
+            (
+                "bounded_scores",
+                0.20,
+                "All four quality scores are finite and in `[0,1]`.",
+            ),
+        ),
+    ),
+    judge_rubric=_WORK_ROLE_RUBRIC,
+    metadata={"scenario": "identity-traps"},
+)
+
 _LIVE = build_case(
     case_id="source-evaluator-live-ranking",
     version=2,
@@ -475,5 +671,6 @@ CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
     _MIXED,
     _COMPETING,
     _FAILURE,
+    _WORK_ROLE,
 )
 LIVE_CASES: tuple[EvaluationCase, ...] = (_LIVE,)

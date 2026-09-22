@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from pydantic import JsonValue
 
+from deep_research.agents.evidence import build_read_record
 from deep_research.agents.fact_checker import (
     claimed_domains_for,
 )
@@ -35,6 +36,7 @@ from deep_research.utils.types import (
     EvidencePassage,
     Finding,
     MemorySnapshot,
+    ReadRecord,
     ResearchState,
     ScoredSource,
     SubTopic,
@@ -86,6 +88,7 @@ EXPECTED_CONTROLLED_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
         "strong-and-weak-sources",
         "corroboration-recency-reputation",
         "reputation-provider-failure",
+        "work-role-independence",
     ),
     "fact_checker": (
         "mixed-verdicts",
@@ -186,6 +189,47 @@ def scored_source(
         overall_score=overall,
         rationale=rationale,
         low_confidence=low_confidence,
+    )
+
+
+def read_record(
+    url: str,
+    *,
+    case_id: str,
+    title: str,
+    text: str,
+    reader: str = "web_scraper",
+    target_ids: Sequence[str] = (),
+) -> ReadRecord:
+    """One seeded, complete read of one document.
+
+    A tool-free agent derives a source's publisher, work, and transport
+    relation from the read behind it and from nothing else, so a case that
+    scores identity has to seed the reads it scores. The record is built by
+    ``build_read_record`` — the same strict producer a live read goes
+    through — so a seeded read cannot carry a passage that is not verbatim
+    its own body, and its content hash and read id are derived from that
+    body exactly as a run's would be.
+
+    ``case_id`` rather than a session id: a seeded read can only belong to
+    the case's own evaluation session, which is derived here by the same rule
+    ``evaluation_state`` uses, and ``evaluation_state`` refuses a read whose
+    session is not the one it is assembling.
+    """
+    return build_read_record(
+        session_id=f"evaluation-{case_id}",
+        reader=reader,
+        requested_url=url,
+        resolved_url=url,
+        title=title,
+        retrieved_at=FIXED_TIMESTAMP,
+        text=text,
+        # One document, one whole-body passage: a case authors a document,
+        # not a reader's pagination, and a single locator that is exactly the
+        # body satisfies the verbatim rule without inventing chunk boundaries
+        # the case author never saw.
+        passages={"body": text},
+        target_ids=target_ids,
     )
 
 
@@ -309,6 +353,7 @@ def evaluation_state(
     findings: Sequence[Finding] = (),
     sources: Sequence[ScoredSource] = (),
     claims: Sequence[Claim] = (),
+    reads: Sequence[ReadRecord] = (),
     report: str | None = None,
     critique: Critique | None = None,
     iteration: int = 0,
@@ -319,7 +364,11 @@ def evaluation_state(
 
     ``session_id`` is derived from the case id and always prefixed with
     ``evaluation-`` so no case can look like a production session in a
-    trace or a memory namespace.
+    trace or a memory namespace. Seeded ``reads`` belong to that same
+    session and are checked against it rather than relabelled: a read's id
+    is a fingerprint of the session that made it, so rewriting the session
+    here would leave every seeded read identifying itself as something it
+    was not.
 
     Task 7 review: the controlled memory double drops a scripted
     ``"timestamp"`` field from a seeded entry and falls back to the real
@@ -327,8 +376,15 @@ def evaluation_state(
     assertion on a scripted memory entry's timestamp out of the
     deterministic metrics.
     """
+    session_id = f"evaluation-{case_id}"
+    for read in reads:
+        if read.origin_session_id != session_id:
+            raise CaseRegistryError(
+                "a seeded read must belong to its own case's session: "
+                f"{read.read_id} was read by {read.origin_session_id!r}"
+            )
     return ResearchState(
-        session_id=f"evaluation-{case_id}",
+        session_id=session_id,
         original_question=question,
         # A curated plain tuple of sub-topics with duplicate titles would
         # collide in a coverage report, so the planner ids are stamped here,
@@ -347,6 +403,7 @@ def evaluation_state(
         raw_findings=list(findings),
         evaluated_sources=list(sources),
         verified_claims=list(claims),
+        read_records={read.read_id: read for read in reads},
         report=report,
         critique=critique,
         iteration=iteration,

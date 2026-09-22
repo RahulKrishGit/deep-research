@@ -1526,6 +1526,19 @@ def _source_evaluator_scenarios() -> dict[str, ScenarioScript]:
                 "aqmd.gov": RuntimeError("reputation lookup failed"),
             },
         ),
+        # One survey served three ways plus a separate study: the reputations
+        # are keyed by the serving hosts, because that is the only identity
+        # a mirror or a reprint carries on its own. The survey's authority
+        # belongs to the institute, not to the repository or the wire that
+        # carried it — which is the judgement the case scores.
+        "source-evaluator-work-roles": ScenarioScript(
+            reputations={
+                "soilbaseline.example.gov": 0.90,
+                "repository.example.org": 0.45,
+                "wire.example.com": 0.40,
+                "soilstudies.example.edu": 0.75,
+            },
+        ),
     }
 
 

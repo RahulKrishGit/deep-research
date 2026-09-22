@@ -2406,6 +2406,115 @@ def _no_fabricated_reputation_passes(
     return True
 
 
+# --- Task 12: work-role independence ----------------------------------------
+#
+# A page's serving host is a transport fact. A repository that hosts a copy
+# of a report, and a wire that reprints it, are not publishers of anything —
+# and a run that records them as publisher and original publication has
+# turned one work into two. Downstream, that false second work is what every
+# independence count is built from, so the two metrics here score the
+# judgement itself: one refuses the invented work, the other refuses the
+# run that asserts nothing and so distinguishes nothing.
+
+# ``SOURCE_ROLES`` values that record a page as a work in its own right:
+# a report issued by the organization it names, or research done by one.
+# ``derivative``, ``company_statement``, ``mixed``, and ``unknown`` all
+# describe a page whose standing is something else.
+_RECOGNIZED_WORK_ROLES = frozenset({"original_report", "independent_research"})
+
+
+def _evaluated_rows_by_url(output: TargetOutput) -> dict[str, object]:
+    """The evaluated sources keyed by canonical URL.
+
+    The first row for a URL wins; duplicates are already refused outright by
+    ``_one_evaluation_per_source_passes``. A row that cannot be read as a
+    mapping is still keyed by its URL, so an identity check reads ``None``
+    fields from it and fails rather than skipping the row entirely.
+    """
+    evaluated = _artifact(output, "evaluated_sources")
+    if not isinstance(evaluated, list):
+        return {}
+    rows: dict[str, object] = {}
+    for entry in evaluated:
+        url = _field(entry, "url")
+        if isinstance(url, str):
+            rows.setdefault(normalize_source_url(url), entry)
+    return rows
+
+
+def _mirror_not_a_new_work_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """No page carrying another's work is recorded as a second original.
+
+    One shape invents a work: a page recorded as ``transport_relation ==
+    "original"`` whose ``publisher_id`` differs from the original's. A page
+    that records the original's publisher is the same work however it was
+    served, and a page that records no publisher at all asserted no new
+    identity — unknown identity can establish neither sameness nor
+    independence, so it is not a false pair either. Refusing that last shape
+    is ``independent_work_recognized``'s job, not this one's.
+    """
+    reference = case.expectations.reference
+    original_url = reference.get("original_url")
+    same_work = _reference_strings(case, "same_work_urls")
+    if not isinstance(original_url, str) or not original_url or not same_work:
+        return True
+    rows = _evaluated_rows_by_url(output)
+    original = rows.get(normalize_source_url(original_url))
+    if original is None:
+        return False
+    original_publisher = _field(original, "publisher_id")
+    for url in same_work:
+        if normalize_source_url(url) == normalize_source_url(original_url):
+            continue
+        entry = rows.get(normalize_source_url(url))
+        if entry is None:
+            return False
+        if _field(entry, "transport_relation") != "original":
+            continue
+        publisher = _field(entry, "publisher_id")
+        if publisher is not None and publisher != original_publisher:
+            return False
+    return True
+
+
+def _independent_work_recognized_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """The genuinely separate work is recorded as a work of its own.
+
+    This is the anti-abstention half of its case, and deliberately not the
+    mirror of ``mirror_not_a_new_work``: a run that records no identity at
+    all passes that metric, because it asserted no false second work, and
+    would otherwise score full marks for having distinguished nothing. Here
+    the declared independent page must carry a recognized-work role and a
+    non-``None`` publisher identity that is not the original's. An
+    ``unknown`` role, a missing publisher, and the original's own publisher
+    all fail, because none of them separates the second work from the first.
+    """
+    reference = case.expectations.reference
+    original_url = reference.get("original_url")
+    independent = _reference_strings(case, "independent_work_urls")
+    if not isinstance(original_url, str) or not original_url or not independent:
+        return True
+    rows = _evaluated_rows_by_url(output)
+    original = rows.get(normalize_source_url(original_url))
+    if original is None:
+        return False
+    original_publisher = _field(original, "publisher_id")
+    for url in independent:
+        entry = rows.get(normalize_source_url(url))
+        if entry is None:
+            return False
+        if _field(entry, "source_role") not in _RECOGNIZED_WORK_ROLES:
+            return False
+        publisher = _field(entry, "publisher_id")
+        if publisher is None or publisher == original_publisher:
+            return False
+    return True
+
+
 def _verdict_correctness_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
@@ -2825,6 +2934,8 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "all_sources_still_scored": _one_evaluation_per_source_passes,
     "fallback_scores_bounded": _fallback_scores_bounded_passes,
     "no_fabricated_reputation": _no_fabricated_reputation_passes,
+    "mirror_not_a_new_work": _mirror_not_a_new_work_passes,
+    "independent_work_recognized": _independent_work_recognized_passes,
     # fact checker
     "verdict_correctness": _verdict_correctness_passes,
     "evidence_linked": _evidence_linked_passes,
