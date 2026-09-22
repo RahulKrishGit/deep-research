@@ -24,14 +24,13 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from deep_research.memory.entries import MemoryEntry
-
 from deep_research.e2e_evaluation.replay import (
     CaseExpectation,
     ReplayScenario,
     ReplaySource,
     ReplayTopic,
 )
+from deep_research.memory.entries import MemoryEntry
 
 REPLAY_CASE_MANIFEST_VERSION = 1
 
@@ -238,7 +237,9 @@ def _broad_constraints() -> ReplayScenario:
     return ReplayScenario(
         case_id="broad-constraints",
         version=REPLAY_CASE_VERSION,
-        question="What do the six published measures say about the Acme widget in 2024?",
+        question=(
+            "What do the six published measures say about the Acme widget in 2024?"
+        ),
         topics=tuple(topics),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -271,8 +272,14 @@ def _comparative_conflict() -> ReplayScenario:
     one, so the case would be asserting the answer form rather than the
     comparison.
     """
-    urban = "the Acme widget adoption rate in urban households in the United States was 40 percent in 2024"
-    rural = "the Acme widget adoption rate in rural households in the United States was 25 percent in 2024"
+    urban = (
+        "the Acme widget adoption rate in urban households in the United States was "
+        "40 percent in 2024"
+    )
+    rural = (
+        "the Acme widget adoption rate in rural households in the United States was "
+        "25 percent in 2024"
+    )
     return ReplayScenario(
         case_id="comparative-conflict",
         version=REPLAY_CASE_VERSION,
@@ -285,7 +292,8 @@ def _comparative_conflict() -> ReplayScenario:
             _topic(
                 1,
                 "Urban adoption",
-                "What was the Acme widget adoption rate in urban households in the United States in 2024?",
+                "What was the Acme widget adoption rate in urban households in the "
+                "United States in 2024?",
                 "rate",
                 "Acme widget adoption urban households 2024",
                 _pair(1, "urban-2024", "Urban household survey", urban),
@@ -295,20 +303,30 @@ def _comparative_conflict() -> ReplayScenario:
             _topic(
                 2,
                 "Rural adoption",
-                "What was the Acme widget adoption rate in rural households in the United States in 2024?",
+                "What was the Acme widget adoption rate in rural households in the "
+                "United States in 2024?",
                 "rate",
                 "Acme widget adoption rural households 2024",
                 _pair(2, "rural-2024", "Rural household survey", rural),
                 critical=True,
                 labels=("Acme widget", "rural households"),
             ),
-            _filler(3, "Widget funding", "Acme widget funding round", "12 million dollars"),
+            _filler(
+                3, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
         ),
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
-            required_target_ids=("topic-01-target-01", "topic-02-target-01", "topic-03-target-01"),
-            forbidden_assertions=("definitive national rate", "nationally representative"),
+            required_target_ids=(
+                "topic-01-target-01",
+                "topic-02-target-01",
+                "topic-03-target-01",
+            ),
+            forbidden_assertions=(
+                "definitive national rate",
+                "nationally representative",
+            ),
             minimum_answerable_claims=3,
             required_report_phrases=("urban households", "rural households"),
             required_invariants=("both_accounts_cited",),
@@ -344,8 +362,12 @@ def _refinement_evidence_recovery() -> ReplayScenario:
                     "Acme widget adoption rate United States 2024 second source",
                 ),
             ),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -420,8 +442,12 @@ def _blocked_html_pdf_fallback() -> ReplayScenario:
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -487,8 +513,12 @@ def _same_work_mirror() -> ReplayScenario:
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -522,9 +552,18 @@ def _semantic_duplicate_claims() -> ReplayScenario:
     nothing proposes it - a different period is a different claim, and merging
     it would put a stale figure behind a current answer.
     """
-    long_form = "the Acme widget adoption rate in urban households in the United States was 40 percent in 2024"
-    short_form = "urban household Acme widget adoption in the United States reached 40 percent in 2024"
-    stale = "the Acme widget adoption rate in urban households in the United States was 32 percent in 2023"
+    long_form = (
+        "the Acme widget adoption rate in urban households in the United States was "
+        "40 percent in 2024"
+    )
+    short_form = (
+        "urban household Acme widget adoption in the United States reached "
+        "40 percent in 2024"
+    )
+    stale = (
+        "the Acme widget adoption rate in urban households in the United States was "
+        "32 percent in 2023"
+    )
     return ReplayScenario(
         case_id="semantic-duplicate-claims",
         version=REPLAY_CASE_VERSION,
@@ -533,7 +572,8 @@ def _semantic_duplicate_claims() -> ReplayScenario:
             _topic(
                 1,
                 "Urban adoption",
-                "What was the urban household Acme widget adoption rate in the United States in 2024?",
+                "What was the urban household Acme widget adoption rate in the United "
+                "States in 2024?",
                 "rate",
                 "urban Acme widget adoption United States 2024",
                 (
@@ -558,7 +598,8 @@ def _semantic_duplicate_claims() -> ReplayScenario:
             _topic(
                 2,
                 "Adoption history",
-                "What did the Acme widget adoption rate in urban households measure in 2023?",
+                "What did the Acme widget adoption rate in urban households measure in "
+                "2023?",
                 "rate",
                 "urban Acme widget adoption United States 2023",
                 (
@@ -573,7 +614,9 @@ def _semantic_duplicate_claims() -> ReplayScenario:
                 critical=False,
                 labels=("Acme widget", "urban households"),
             ),
-            _filler(3, "Widget funding", "Acme widget funding round", "12 million dollars"),
+            _filler(
+                3, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
         ),
         equivalence_pairs=((1, 2),),
         expectation=CaseExpectation(
@@ -623,8 +666,12 @@ def _stalled_refinement() -> ReplayScenario:
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -805,7 +852,9 @@ def _current_versus_forecast() -> ReplayScenario:
         "the Acme widget adoption rate in the United States is projected to "
         "reach 55 percent in 2030"
     )
-    current = "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    current = (
+        "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    )
     return ReplayScenario(
         case_id="current-versus-forecast",
         version=REPLAY_CASE_VERSION,
@@ -830,11 +879,14 @@ def _current_versus_forecast() -> ReplayScenario:
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
             _topic(
                 3,
                 "Adoption history",
-                "What did the Acme widget adoption rate in the United States measure in 2024?",
+                "What did the Acme widget adoption rate in the United States "
+                "measure in 2024?",
                 "rate",
                 "Acme widget adoption rate United States 2024 history",
                 _pair(3, "history-2024", "Adoption history", current),
@@ -898,14 +950,17 @@ def _unsupported_mechanism() -> ReplayScenario:
             _topic(
                 2,
                 "Adoption mechanism",
-                "What mechanism increased Acme widget adoption in the United States in 2024?",
+                "What mechanism increased Acme widget adoption in the United States in "
+                "2024?",
                 "mechanism",
                 "Acme widget adoption mechanism United States 2024",
                 _pair(2, "mechanism-2024", "Adoption mechanism note", claim),
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(3, "Widget funding", "Acme widget funding round", "12 million dollars"),
+            _filler(
+                3, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
         ),
         invented_prose="the agency should subsidise Acme widget deployment",
         max_iterations=3,
@@ -946,8 +1001,12 @@ def _judge_failure() -> ReplayScenario:
         question="What do the published measures say about the Acme widget in 2024?",
         topics=(
             _filler(1, "Widget adoption", "Acme widget adoption rate", "40 percent"),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         review_failure=True,
         max_iterations=3,
@@ -984,11 +1043,18 @@ def _non_constraint_answer() -> ReplayScenario:
     return ReplayScenario(
         case_id="non-constraint-answer",
         version=REPLAY_CASE_VERSION,
-        question="What did Acme widget adoption and funding measure in the United States in 2024?",
+        question=(
+            "What did Acme widget adoption and funding measure in the United "
+            "States in 2024?"
+        ),
         topics=(
             _filler(1, "Widget adoption", "Acme widget adoption rate", "40 percent"),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -1015,7 +1081,9 @@ def _late_contradiction() -> ReplayScenario:
     evidence behind it disagrees.
     """
     agreed = "the Acme widget adoption rate in the United States was 40 percent in 2024"
-    contested = "the Acme widget adoption rate in the United States was 30 percent in 2024"
+    contested = (
+        "the Acme widget adoption rate in the United States was 30 percent in 2024"
+    )
     return ReplayScenario(
         case_id="late-contradiction",
         version=REPLAY_CASE_VERSION,
@@ -1041,8 +1109,12 @@ def _late_contradiction() -> ReplayScenario:
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -1082,7 +1154,8 @@ def _empty_but_clean() -> ReplayScenario:
             f"registry{index}.example.test",
             f"record-{index}",
             title,
-            "the record lists a title and a publication date and no measured value",
+            "the record lists a title and a publication date and no measured "
+                        "value",
             issuer=f"Acme Registry {index}",
             verdict="insufficient_evidence",
             text=body,
@@ -1151,7 +1224,9 @@ def _memory_is_not_read() -> ReplayScenario:
     what lets a later run spend its budget on the sources rather than on
     rediscovering them.
     """
-    memory_claim = "the Acme widget adoption rate in the United States was 47 percent in 2024"
+    memory_claim = (
+        "the Acme widget adoption rate in the United States was 47 percent in 2024"
+    )
     remembered = (
         "the Acme widget adoption rate in the United States was 47 percent in 2024",
         "urban Acme widget adoption in the United States reached 47 percent in 2024",
@@ -1175,8 +1250,12 @@ def _memory_is_not_read() -> ReplayScenario:
                 critical=True,
                 labels=("", ""),
             ),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         memory_entries=tuple(
             MemoryEntry(
@@ -1253,14 +1332,17 @@ def _validated_cache_reuse() -> ReplayScenario:
             _topic(
                 2,
                 "Adoption rate (reported)",
-                "Which Acme widget adoption rate did the survey report for the United States in 2024?",
+                "Which Acme widget adoption rate did the survey report for the United "
+                "States in 2024?",
                 "rate",
                 "Acme widget adoption survey reported rate 2024",
                 (shared,),
                 critical=False,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(3, "Widget funding", "Acme widget funding round", "12 million dollars"),
+            _filler(
+                3, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
         ),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -1300,7 +1382,8 @@ def _decision_context_late_candidate() -> ReplayScenario:
                         "agency12.example.test",
                         "cover-note",
                         "Adoption cover note",
-                        "the note lists a title and a publication date and no measured value",
+                        "the note lists a title and a publication date and no measured "
+                        "value",
                         issuer="Acme Institute 12",
                         verdict="insufficient_evidence",
                     ),
@@ -1323,8 +1406,12 @@ def _decision_context_late_candidate() -> ReplayScenario:
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -1371,7 +1458,8 @@ def _reopen_unanswered_target() -> ReplayScenario:
                         "agency13.example.test",
                         "record-2024",
                         "Adoption record",
-                        "the record lists a title and a publication date and no measured value",
+                        "the record lists a title and a publication date and no "
+                        "measured value",
                         issuer="Acme Registry 13",
                         verdict="insufficient_evidence",
                     ),
@@ -1395,8 +1483,12 @@ def _reopen_unanswered_target() -> ReplayScenario:
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(2, "Widget funding", "Acme widget funding round", "12 million dollars"),
-            _filler(3, "Widget exports", "Acme widget export volume", "3.4 million units"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
         ),
         max_iterations=3,
         expectation=CaseExpectation(

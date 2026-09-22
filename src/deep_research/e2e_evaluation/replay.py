@@ -35,9 +35,8 @@ import httpx
 
 from deep_research.agents.base import AgentCompleter
 from deep_research.agents.claim_clusters import ClaimEquivalenceDraft
-from deep_research.agents.evidence import read_identity
-from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.critic import CritiqueDraft
+from deep_research.agents.evidence import read_identity
 from deep_research.agents.fact_checker import (
     ClaimsDraft,
     ClaimVerdictDraft,
@@ -62,6 +61,7 @@ from deep_research.agents.source_evaluator import (
     SourceScoreDraft,
     SourceScoresDraft,
 )
+from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.synthesizer import (
     AnswerRowDraft,
     ReportDraft,
@@ -1534,7 +1534,10 @@ def _invariant_refinement_recovered_evidence(run: ReplayRun) -> str | None:
         return "the scenario declared no page a later round had to find"
     for source in late:
         if source.url not in run.replay.http.fetched:
-            return f"the page only a later round could find was never read: {source.url}"
+            return (
+                "the page only a later round could find was never read: "
+                f"{source.url}"
+            )
     late_urls = {normalize_source_url(source.url) for source in late}
     recovered = [
         claim
@@ -1595,7 +1598,6 @@ def _invariant_contradiction_recorded(run: ReplayRun) -> str | None:
     ]
     if not contested:
         return "no contradicting passage was recorded for any claim"
-    contested_ids = {claim.claim_id for claim in contested}
     contested_clusters = {
         cluster_id
         for claim in contested
