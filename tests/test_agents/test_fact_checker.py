@@ -121,6 +121,7 @@ from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     EVIDENCE_BADGE_LABELS,
+    AcquisitionState,
     ConflictAssessment,
     QUALITY_CONTRACT_VERSION,
     Claim,
@@ -6830,6 +6831,41 @@ async def test_a_deferral_from_an_earlier_claim_is_not_this_packets_omission(
     assert all(item.item_id != earlier.item_id for item in enlarged.omitted)
     # The run still records it: the disposition is the run's diagnostic.
     assert agent._new_dispositions == [earlier]
+
+
+def test_a_claim_loop_resumes_the_stored_state_of_its_own_sub_topic() -> None:
+    """The stored queue is keyed by coverage id; a claim carries a target id.
+
+    ``acquisition_state_by_target`` is the Researcher's, keyed by the
+    sub-topic's ``coverage_id`` — one acquisition loop runs per sub-topic —
+    while a claim's obligation carries the namespaced target id. Looking the
+    queue up by that id found nothing, so the resume context
+    ``build_decision_context`` exists to render was empty in every production
+    run: the loop never saw the candidates the run had already queued for its
+    own sub-topic, nor the URLs it had already attempted.
+    """
+    state = _ab_state()
+    agent = _packet_agent(state)
+    agent._config = AgentRuntimeConfig(
+        max_iterations=3, tool_budget=3, tool_budget_overrides={"fact_checker": 2}
+    )
+    agent._run_acquisition_state = {
+        "topic-01": AcquisitionState(
+            target_id="topic-01",
+            candidate_urls=["https://lab-c.test/queued"],
+            attempted_urls=[A_URL],
+        )
+    }
+    task = ClaimTask(
+        instruction="Verify the claim.",
+        claim=ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL]),
+        target_ids=[TASK6_TARGET],
+    )
+
+    context = agent.build_decision_context(task, iteration=1, steps=[])
+
+    assert "https://lab-c.test/queued" in context
+    assert A_URL in context
 
 
 @pytest.mark.asyncio

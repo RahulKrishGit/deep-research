@@ -23,6 +23,7 @@ from deep_research.graph.state import (
     ROUTE_FINALIZE,
     ROUTE_REFINE,
     dump_state,
+    evidence_exhausted,
     graph_quality_status,
     graph_recursion_limit,
     graph_route,
@@ -607,9 +608,10 @@ def _deferred_state(
     remaining_calls: int,
     status: str = "deferred",
 ) -> AcquisitionState:
+    """One sub-topic's queue, keyed the way the Researcher keys it."""
     url = "https://lab.example/queue"
     return AcquisitionState(
-        target_id="target-01",
+        target_id="topic-01",
         remaining_calls=remaining_calls,
         candidate_records={
             url: CandidateRecord(
@@ -745,7 +747,7 @@ def test_pending_deferred_evidence_is_not_labelled_no_progress() -> None:
         max_iterations=3,
         iteration=1,
         acquisition_state_by_target={
-            "target-01": _deferred_state(remaining_calls=4)
+            "topic-01": _deferred_state(remaining_calls=4)
         },
     )
     before = progress_snapshot(state)
@@ -766,7 +768,7 @@ def test_deferred_evidence_that_cannot_fit_is_capacity_limited() -> None:
         max_iterations=3,
         iteration=1,
         acquisition_state_by_target={
-            "target-01": _deferred_state(remaining_calls=0)
+            "topic-01": _deferred_state(remaining_calls=0)
         },
         critique=fake_critique(should_continue=True, score=4),
     )
@@ -781,13 +783,23 @@ def test_deferred_evidence_that_cannot_fit_is_capacity_limited() -> None:
 
 
 def test_exhausted_leads_are_evidence_unavailable_rather_than_a_stall() -> None:
+    """A spent target is a dead end, and the attempt is read by its own key.
+
+    ``acquisition_state_by_target`` is written by the Researcher alone, keyed
+    by the sub-topic's ``coverage_id`` (``topic-01``) — one acquisition loop
+    runs per sub-topic — while the obligation it answers carries a namespaced
+    target id (``target-01``). Reading the attempt by the target id found
+    nothing, so ``evidence_exhausted`` was constantly False and every run
+    whose leads were all spent reported ``no_progress``: a stall, where the
+    truth is a dead end the run had already established.
+    """
     state = fake_research_state(
         sub_topics=[_unmet_topic()],
         max_iterations=3,
         iteration=1,
         acquisition_state_by_target={
-            "target-01": AcquisitionState(
-                target_id="target-01",
+            "topic-01": AcquisitionState(
+                target_id="topic-01",
                 remaining_calls=0,
                 empty_searches=2,
                 denied_urls=["https://lab.example/denied"],
@@ -797,6 +809,7 @@ def test_exhausted_leads_are_evidence_unavailable_rather_than_a_stall() -> None:
     before = progress_snapshot(state)
     after = progress_snapshot(state, previous=before)
 
+    assert evidence_exhausted(state) is True
     assert repair_stop_reason(state, before=before, after=after) == (
         "evidence_unavailable"
     )
@@ -884,7 +897,7 @@ def test_an_old_provider_error_does_not_outrank_pending_work() -> None:
         iteration=1,
         errors=[_provider_error()],
         acquisition_state_by_target={
-            "target-01": _deferred_state(remaining_calls=4)
+            "topic-01": _deferred_state(remaining_calls=4)
         },
     )
     after = progress_snapshot(state)
@@ -917,7 +930,7 @@ def test_capacity_remains_while_a_pass_can_still_be_opened() -> None:
         max_iterations=3,
         iteration=2,
         acquisition_state_by_target={
-            "target-01": _deferred_state(remaining_calls=4)
+            "topic-01": _deferred_state(remaining_calls=4)
         },
     )
     before = progress_snapshot(state)

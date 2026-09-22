@@ -452,8 +452,8 @@ def test_a_deferred_disposition_does_not_account_while_its_work_is_queued() -> (
         update={
             "evidence_dispositions": [disposition],
             "acquisition_state_by_target": {
-                "t2": AcquisitionState(
-                    target_id="t2",
+                "topic-02": AcquisitionState(
+                    target_id="topic-02",
                     pending_passage_ids=["read-1/p-3"],
                     pending_extraction_ids=["read-1"],
                 )
@@ -472,8 +472,8 @@ def test_a_deferred_disposition_does_not_account_while_its_work_is_queued() -> (
     drained_state = queued_state.model_copy(
         update={
             "acquisition_state_by_target": {
-                "t2": AcquisitionState(
-                    target_id="t2",
+                "topic-02": AcquisitionState(
+                    target_id="topic-02",
                     pending_passage_ids=[],
                     pending_extraction_ids=[],
                 )
@@ -614,12 +614,17 @@ def test_a_passage_level_disposition_does_not_account_for_a_target() -> None:
         == []
     )
 
-    # And so is the acquisition trail the run writes itself: a denied read.
+    # And so is the acquisition trail the run writes itself: a denied read,
+    # keyed the way the Researcher keys it — by the sub-topic's coverage id,
+    # never by the target id the obligation carries.
     denied_state = passage_state.model_copy(
         update={
             "acquisition_state_by_target": {
-                "t2": AcquisitionState(
-                    target_id="t2", denied_urls=["https://example.test/denied"]
+                "topic-02": AcquisitionState(
+                    target_id="topic-02",
+                    remaining_calls=0,
+                    empty_searches=2,
+                    denied_urls=["https://example.test/denied"],
                 )
             }
         }
