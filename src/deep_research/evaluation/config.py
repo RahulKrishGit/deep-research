@@ -125,6 +125,15 @@ def resolve_target_effort(
 # rather than a measurement of the shipped one.
 TargetProfileSource = Literal["production", "evaluation", "invocation"]
 
+# Where the ``production_parity`` toggle itself came from for this run.
+# ``"invocation"`` means a CLI flag (``--production-parity`` /
+# ``--no-production-parity``) overrode ``config.yaml`` for this run alone;
+# ``"configuration"`` means the run simply inherited ``config.yaml``'s own
+# ``evaluation.production_parity``. Recording this is what lets an artifact
+# distinguish a run that inherited parity from one forced to it on the
+# command line -- disclosure a bare ``production_parity`` bool cannot give.
+ProductionParitySource = Literal["invocation", "configuration"]
+
 
 @dataclass(frozen=True, slots=True)
 class TargetProfile:
@@ -145,6 +154,7 @@ def resolve_target_profile(
     agent_name: AgentName,
     *,
     override: ReasoningEffort | None,
+    production_parity: bool,
 ) -> TargetProfile:
     """Resolve one target's profile, preferring the production declaration.
 
@@ -152,11 +162,18 @@ def resolve_target_profile(
 
     1. an explicit per-run override — an experiment the caller declared;
     2. production's own per-agent declaration (``llm.model_overrides``) when
-       ``evaluation.production_parity`` is on, because that is what the CLI
-       actually runs, and a measurement of the shipped configuration is what
-       the harness exists to produce;
+       ``production_parity`` is on, because that is what the CLI actually
+       runs, and a measurement of the shipped configuration is what the
+       harness exists to produce;
     3. the evaluation profile — used when production declares nothing for
        this agent, and labelled an experiment rather than release evidence.
+
+    ``production_parity`` is a caller-resolved value, not read from
+    ``evaluation`` here: the caller (``build_runtime_config``) already
+    folds a per-invocation CLI override on top of
+    ``evaluation.production_parity`` once, and passing the already-resolved
+    bool keeps that single resolution point instead of a second copy of the
+    same precedence logic here.
 
     Before this, an evaluation run always used the evaluation-only profile
     while the CLI could express only one effort for all six agents, so the
@@ -170,7 +187,7 @@ def resolve_target_profile(
             source="invocation",
         )
     declared = base.model_overrides.get(agent_name)
-    if evaluation.production_parity and declared is not None:
+    if production_parity and declared is not None:
         resolved = base.resolve_for(agent_name)
         return TargetProfile(
             model=resolved.model,
@@ -374,11 +391,32 @@ def build_runtime_config(
     experiment_prefix: str | None,
     now: datetime,
     git: GitMetadata,
+    production_parity: bool | None = None,
 ) -> EvaluationRuntimeConfig:
-    """Resolve settings plus CLI overrides into one frozen runtime config."""
+    """Resolve settings plus CLI overrides into one frozen runtime config.
+
+    ``production_parity`` is the CLI's own per-invocation override
+    (``None`` when neither ``--production-parity`` nor
+    ``--no-production-parity`` was passed, meaning "inherit
+    config.yaml"). It is resolved once, here, against
+    ``evaluation.production_parity`` and the resolved value is what both
+    ``resolve_target_profile`` and the runtime config's own
+    ``production_parity`` field use -- never a mutated copy of
+    ``evaluation``, which would desync from ``configuration_fingerprint``
+    (that fingerprint hashes ``settings.model_dump()`` directly).
+    """
     evaluation = settings.evaluation
+    parity = (
+        evaluation.production_parity
+        if production_parity is None
+        else production_parity
+    )
     profile = resolve_target_profile(
-        settings.llm, evaluation, agent_name, override=reasoning_effort
+        settings.llm,
+        evaluation,
+        agent_name,
+        override=reasoning_effort,
+        production_parity=parity,
     )
     judge_effort = resolve_judge_effort(
         evaluation, override=judge_reasoning_effort
@@ -460,7 +498,7 @@ def build_runtime_config(
         target_model=profile.model,
         target_reasoning_effort=profile.reasoning_effort,
         target_profile_source=profile.source,
-        production_parity=evaluation.production_parity,
+        production_parity=parity,
         experiment_only=experiment_only,
         judge_model=evaluation.judge_model,
         judge_reasoning_effort=judge_effort,
