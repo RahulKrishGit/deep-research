@@ -541,7 +541,7 @@ def test_a_reason_in_the_evidence_audit_trail_accounts_for_a_target() -> None:
         initial_target_ids=["t1", "t2"],
         evidence_dispositions=[
             EvidenceDisposition(
-                item_id="candidate-1",
+                item_id="t2",
                 stage="evidence_admission",
                 reason="every candidate for this obligation was denied",
                 target_ids=["t2"],

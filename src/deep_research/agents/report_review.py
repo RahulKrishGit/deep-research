@@ -49,7 +49,11 @@ from deep_research.agents.critic import (
     normalize_gaps,
 )
 from deep_research.agents.quality import compute_substantive_coverage
-from deep_research.agents.report import ReportComposition
+from deep_research.agents.report import (
+    ReportComposition,
+    evidence_badge_label,
+    evidence_status_bucket,
+)
 from deep_research.observability import Tracker
 from deep_research.providers import (
     ChatMessage,
@@ -656,15 +660,18 @@ def _badge_by_evidence(
     composition: ReportComposition,
     *,
     cited_by: Mapping[str, Sequence[str]],
-    badge_by_cluster: Mapping[str, str],
+    reading_by_cluster: Mapping[str, str],
 ) -> dict[str, str]:
     """The one corroboration badge the statements citing a passage agree on.
 
     Derived from the claims behind the citing statements rather than from the
     cluster registry alone, so a fixture — or a snapshot whose clusters were
     persisted without the registry — still reports the badge its claims carry.
-    Any disagreement reports no badge: an ambiguous passage must not read as
-    the stronger of two verdicts.
+    Each claim contributes its *reading* — ``evidence_status_bucket``, which
+    consults the verdict the way the reader and the quality counts do, so a
+    contradicted claim carrying a stale ``verified_pair`` badge is contested
+    here too. Any disagreement reports no badge: an ambiguous passage must not
+    read as the stronger of two verdicts.
     """
     by_id = {statement.statement_id: statement for statement in composition.statements}
     badges: dict[str, set[str]] = {}
@@ -674,21 +681,24 @@ def _badge_by_evidence(
             if statement is None:
                 continue
             for claim in statement_claims(composition, statement):
-                badge = claim.evidence_status or ""
-                if badge:
-                    badges.setdefault(evidence_id, set()).add(badge)
+                bucket = evidence_status_bucket(
+                    claim.evidence_status, verdict=claim.verdict
+                )
+                if bucket != "not_established":
+                    badges.setdefault(evidence_id, set()).add(bucket)
             for cluster_id in statement.claim_cluster_ids:
-                badge = badge_by_cluster.get(cluster_id, "")
-                if badge:
-                    badges.setdefault(evidence_id, set()).add(badge)
+                reading = reading_by_cluster.get(cluster_id, "")
+                if reading and reading != "not_established":
+                    badges.setdefault(evidence_id, set()).add(reading)
     return {
         evidence_id: (next(iter(values)) if len(values) == 1 else "")
         for evidence_id, values in badges.items()
     }
 
 
-def _badge_label(badge: str) -> str:
-    return EVIDENCE_BADGE_LABELS.get(badge, EVIDENCE_BADGE_LABELS[""])
+def _badge_label(badge: str, *, verdict: str | None = None) -> str:
+    """The reader's label for one recorded badge, read through its verdict."""
+    return evidence_badge_label(badge, verdict=verdict)
 
 
 def build_report_review_input(
@@ -720,12 +730,12 @@ def build_report_review_input(
         for evidence_id in statement.evidence_ids:
             cited_by.setdefault(evidence_id, []).append(statement.statement_id)
 
-    badge_by_cluster = {
-        cluster_id: _cluster_badge(cluster)
+    reading_by_cluster = {
+        cluster_id: _cluster_reading(cluster)
         for cluster_id, cluster in clusters.items()
     }
     badges = _badge_by_evidence(
-        composition, cited_by=cited_by, badge_by_cluster=badge_by_cluster
+        composition, cited_by=cited_by, reading_by_cluster=reading_by_cluster
     ) if composition is not None else {}
 
     cited_ids: list[str] = []
@@ -842,7 +852,9 @@ def build_report_review_input(
                 text=claim.text,
                 verdict=claim.verdict,
                 evidence_status=claim.evidence_status or "",
-                badge_label=_badge_label(claim.evidence_status or ""),
+                badge_label=_badge_label(
+                    claim.evidence_status or "", verdict=claim.verdict
+                ),
                 source_urls=list(claim.source_urls),
                 target_ids=list(claim.target_ids),
             )
@@ -882,14 +894,19 @@ def _canonical_sources(
     return merge_source_snapshot([], rows)
 
 
-def _cluster_badge(cluster: Any) -> str:
-    """The one badge a cluster's recorded verdicts agree on, or a blank."""
-    badges = {
-        badge
+def _cluster_reading(cluster: Any) -> str:
+    """The one corroboration reading a cluster's verdicts agree on, or blank.
+
+    Normalized to the same four buckets the counts and the reader use, so a
+    cluster's recorded badge and a claim's badge cannot enter one evidence
+    item's reading set as two different words for the same judgement.
+    """
+    readings = {
+        evidence_status_bucket(badge)
         for badge in cluster.verdict_evidence_status.values()
         if badge in EVIDENCE_BADGE_LABELS
     }
-    return badges.pop() if len(badges) == 1 else ""
+    return readings.pop() if len(readings) == 1 else ""
 
 
 def composition_semantic_fingerprint(

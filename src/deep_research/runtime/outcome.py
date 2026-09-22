@@ -460,7 +460,14 @@ class ResearchOutcome:
 
     @property
     def coverage(self) -> CoverageProgress | None:
-        """Target and topic progress, or ``None`` when nothing judged it."""
+        """Target and topic progress, or ``None`` when nothing judged it.
+
+        ``covered_topics`` is the substantive count — topics whose every
+        counted required target is answered — not the claimed one the snapshot
+        also carries for historical artifacts. A field named on
+        ``CoverageProgress`` as the measured reading must not publish a topic
+        the report never answered.
+        """
         quality = self.quality
         if quality is None:
             return None
@@ -471,7 +478,7 @@ class ResearchOutcome:
         )
         return CoverageProgress(
             planned_topics=quality.planned_topics,
-            covered_topics=quality.covered_topics,
+            covered_topics=quality.substantive_covered_topics,
             substantive_topic_ratio=quality.substantive_topic_ratio,
             planned_targets=quality.planned_targets,
             required_targets=quality.required_targets,

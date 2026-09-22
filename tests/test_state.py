@@ -1040,13 +1040,15 @@ def test_a_legacy_statement_scoping_excludes_a_cluster_naming_another_target() -
     assert target_is_answered(state, target)
 
 
-def test_a_claimless_inference_still_answers_a_derivation_target() -> None:
-    """CHARACTERIZATION, not red/green.
+def test_a_claimless_inference_cannot_answer_a_derivation_target() -> None:
+    """The derivation escape needs attributed premises behind it.
 
-    A claimless local derivation (an ``inference`` statement with a recorded
-    ``basis`` and no resolvable clusters) must satisfy a ``derivation``
-    target both before and after the fix — this pins F3's escape so the
-    fallback-path rewrite cannot break it.
+    A statement resting on no checked claim at all shows premises nobody
+    checked: the basis is model prose, so accepting it would let a target be
+    satisfied by an assertion with no evidence anywhere behind it. This
+    deliberately inverts the characterization this test used to pin — an
+    ``inference`` plus a basis satisfied ``derivation`` with no claims — which
+    is the escape the report-gates fix closes.
     """
     target = evidence_target(support_policy="derivation")
     row = ReportStatement(
@@ -1064,7 +1066,7 @@ def test_a_claimless_inference_still_answers_a_derivation_target() -> None:
         composition=composition(statements=[row], claims=[]),
     )
 
-    assert target_is_answered(state, target)
+    assert not target_is_answered(state, target)
 
 
 def test_an_answered_target_is_not_reported_as_unmet() -> None:

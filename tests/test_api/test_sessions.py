@@ -60,6 +60,7 @@ def judged_state() -> ResearchState:
         quality=fake_quality().model_copy(
             update={
                 "covered_topics": 1,
+                "substantive_covered_topics": 1,
                 "critical_targets": 2,
                 "unanswered_critical_target_ids": ["t2"],
             }

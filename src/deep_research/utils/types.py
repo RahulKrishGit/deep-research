@@ -1067,6 +1067,13 @@ class ReportQualitySnapshot(ContractModel):
     # --- Task 10: the substantive reading of the same denominator -----------
     substantive_topic_ratio: UnitScore = 0.0
     """Topics whose every counted required target is answered, over the plan."""
+    substantive_covered_topics: int = Field(default=0, ge=0)
+    """The numerator of ``substantive_topic_ratio``, as a count.
+
+    ``covered_topics`` above is the *claimed* reading kept for historical
+    artifacts; this is the measured one a reader-facing surface must report.
+    They disagree exactly when a topic was claimed but never answered.
+    """
     planned_targets: int = Field(default=0, ge=0)
     required_targets: int = Field(default=0, ge=0)
     answered_targets: int = Field(default=0, ge=0)
@@ -2118,8 +2125,9 @@ def derive_statement(
     answered_dimensions = [
         dimension for dimension in required if dimension in dimension_support
     ]
+    base_mode: StatementMode = statement_mode_for_claims(claims)
     recorded_mode: StatementMode = mode or (
-        "inference" if basis.strip() else statement_mode_for_claims(claims)
+        "inference" if basis.strip() and base_mode != "contested" else base_mode
     )
     return ReportStatement(
         statement_id=statement_id,
@@ -2810,6 +2818,12 @@ def statement_satisfies_support_policy(
     policies accept that attribution, and ``derivation`` additionally accepts
     a recorded inference — a statement that shows its premises has done what a
     derivation owes, whether or not a lone publisher is behind them.
+
+    The inference escape still requires attributed premises: a recorded basis
+    is model prose, so accepting it over unverified or contested claims would
+    let the writer satisfy an obligation with nothing behind it. Attribution
+    is the floor either way, and the escape only ever adds the derivation
+    case on top of it.
     """
     if support_policy == "independent_pair":
         return any(
@@ -2822,8 +2836,9 @@ def statement_satisfies_support_policy(
         for claim in claims
     )
     if support_policy == "derivation":
-        return attributed or (
-            statement.mode == "inference" and bool((statement.basis or "").strip())
+        return attributed and (
+            statement.mode != "inference"
+            or bool((statement.basis or "").strip())
         )
     if support_policy == "primary_attribution":
         return attributed

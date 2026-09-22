@@ -182,6 +182,21 @@ def _has_outstanding_work(state: ResearchState, target_id: str) -> bool:
     )
 
 
+def _accounts_for_target(disposition: EvidenceDisposition, target_id: str) -> bool:
+    """Whether one disposition is a recorded judgement about this obligation.
+
+    The record has to be about the target itself: its item is the target, not
+    a passage, a read, or a candidate URL. The producers write per-passage
+    dispositions as a matter of course — ``claim_pool_dispositions`` stamps
+    the unit's target ids on an ``out_of_scope`` row for every registry unit
+    outside one packet, and the extraction step writes ``irrelevant`` for every
+    selected passage that yielded no finding — and those say one passage was
+    not used, never that the obligation cannot be met. Counting them turned
+    the §2.3 accounting gate off for nearly every target that had a read.
+    """
+    return disposition.item_id == target_id and bool(disposition.reason.strip())
+
+
 def _accounted_target_ids(
     state: ResearchState,
     unanswered: Sequence[str],
@@ -191,9 +206,10 @@ def _accounted_target_ids(
     Two local records count, and both are evidence a reader can check rather
     than a claim about the model's intent:
 
-    * an ``EvidenceDisposition`` naming the target with a non-empty reason —
-      the Section 2.6 audit trail, where an explicit "every candidate was
-      denied" is a recorded judgement about that obligation;
+    * an ``EvidenceDisposition`` whose *item* is the target — a terminal
+      judgement about the obligation, the Section 2.6 audit trail for "every
+      candidate for this target was denied". A per-passage omission, however
+      explicit its reason, does not count (``_accounts_for_target``);
     * an acquisition state for the target that shows a spent search (a denied
       URL, or two empty searches) with nothing queued behind it.
 
@@ -211,12 +227,11 @@ def _accounted_target_ids(
 
     accounted: set[str] = set()
     for disposition in state.evidence_dispositions:
-        if not disposition.reason.strip():
-            continue
         accounted.update(
             target_id
             for target_id in disposition.target_ids
             if target_id in unanswered
+            and _accounts_for_target(disposition, target_id)
             and not _has_outstanding_work(state, target_id)
         )
     for target_id in unanswered:
@@ -518,6 +533,7 @@ def compute_report_quality(
         uncited_settled_points=uncited_settled_points,
         hard_failures=hard_failures,
         substantive_topic_ratio=substantive.topic_ratio,
+        substantive_covered_topics=substantive.covered_topics,
         planned_targets=substantive.planned_targets,
         required_targets=substantive.required_targets,
         answered_targets=substantive.answered_targets,

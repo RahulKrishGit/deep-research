@@ -52,6 +52,7 @@ from deep_research.agents.report import (
     ReportPoint,
     ReportSection,
     canonical_claims,
+    fit_report_composition,
     reader_citations,
     render_evidence_ledger,
     render_limitations,
@@ -2070,9 +2071,16 @@ def build_report_composition(
     )
     # The statement map is checked before anything renders: an unknown
     # evidence id or a substantive statement with no link behind it is a
-    # refusal, not a rendering surprise.
+    # refusal, not a rendering surprise. Then the fit runs here, once: the
+    # length ceiling is a property of the composition this pass publishes, so
+    # the gates, the reviewer, the quality record and the Markdown all read
+    # the same statement set — with the drop reasons on the composition where
+    # every one of them can see them. Fitting inside each renderer instead let
+    # a report omit the only answer to a critical target while every consumer
+    # of ``state.composition`` still counted that statement.
     validate_report_statements(composition)
-    return composition, context.rejected
+    fitted, _fit_reasons = fit_report_composition(composition)
+    return fitted, context.rejected
 
 
 def _build_points(

@@ -889,7 +889,9 @@ def test_the_composed_composition_is_the_reader_the_gates_judge() -> None:
     the unfitted draft: a critical target whose only answer the ceiling
     dropped was still counted as answered.
     """
-    claim = _claim(urls=[SOURCE_URL, OTHER_URL], target_ids=["t1"])
+    claim = _claim(urls=[SOURCE_URL, OTHER_URL], target_ids=["t1"]).model_copy(
+        update={"cluster_id": CLUSTER_ID}
+    )
     cluster = ClaimCluster(
         cluster_id=CLUSTER_ID,
         proposition=AtomicProposition(
@@ -929,7 +931,12 @@ def test_the_composed_composition_is_the_reader_the_gates_judge() -> None:
             requested_word_limit=250,
         ),
     )
-    labels = {item.claim_id: label for label, item in claim_registry(task.claims)}
+    wide_task = _grounded_task(
+        claims=[claim, filler],
+        claim_clusters={CLUSTER_ID: cluster},
+        sub_topics=[sub_topic],
+    )
+    labels = {item.claim_id: label for label, item in claim_registry(wide_task.claims)}
     openers = (
         "Another",
         "A further",
@@ -967,14 +974,12 @@ def test_the_composed_composition_is_the_reader_the_gates_judge() -> None:
         sections=[ReportSectionDraft(title="Error correction", points=points)],
         uncertainty_notes=[],
     )
-    unfitted, _ = build_report_composition(
-        task, draft, max_sections=1, limitations=[]
-    )
+    whole, _ = compose_report(wide_task, draft=draft, limitations=[])
     report, _ = compose_report(task, draft=draft, limitations=[])
     fitted = report.composition
 
     assert len(composition_statements(fitted)) < len(
-        composition_statements(unfitted)
+        composition_statements(whole.composition)
     )
     assert any(
         reason.startswith("length_budget_dropped")
@@ -983,6 +988,7 @@ def test_the_composed_composition_is_the_reader_the_gates_judge() -> None:
     assert "length_budget_dropped" in report.evidence_markdown
     assert reader_word_count(report.markdown) <= 250
     assert points[-1].text not in report.markdown
+    assert points[-1].text in whole.markdown
 
     state = ResearchState(
         session_id="session-1",
@@ -992,11 +998,11 @@ def test_the_composed_composition_is_the_reader_the_gates_judge() -> None:
     )
 
     assert not target_is_answered(state, target)
-    # The unfitted composition is what the gates used to read: the same
+    # The unlimited composition is what the gates used to read: the same
     # statement answered the target there, which is how a published report
     # could omit its only answer and still pass.
     assert target_is_answered(
-        state.model_copy(update={"composition": unfitted}), target
+        state.model_copy(update={"composition": whole.composition}), target
     )
 
 

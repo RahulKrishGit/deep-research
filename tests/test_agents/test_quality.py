@@ -623,8 +623,27 @@ def test_the_snapshot_keeps_the_claimed_and_substantive_topic_counts_apart() -> 
     """
     state, composition = _complete_state_and_composition(4)
     claimed_only = _claim("Topic 5 was asserted.", coverage_id="topic-05")
+    claimed_point = ReportPoint(
+        text="Topic 5 was asserted.",
+        claim_ids=[claimed_only.claim_id],
+        source_urls=["https://example.test/a"],
+        statement=ReportStatement(
+            statement_id="S900",
+            text="Topic 5 was asserted.",
+            mode="attributed",
+            claim_cluster_ids=[claimed_only.claim_id],
+            target_ids=[],
+            answered_dimensions=["finding"],
+        ),
+    )
     composition = composition.model_copy(
-        update={"claims": [*composition.claims, claimed_only]}
+        update={
+            "claims": [*composition.claims, claimed_only],
+            "summary": [*composition.summary, claimed_point],
+        }
+    )
+    state = state.model_copy(
+        update={"verified_claims": [*state.verified_claims, claimed_only]}
     )
 
     snapshot = compute_report_quality(state, composition)
@@ -636,7 +655,8 @@ def test_the_snapshot_keeps_the_claimed_and_substantive_topic_counts_apart() -> 
     # The published record reads like the snapshot: the substantive count is
     # what `covered_topics` means there, and the claimed one keeps a name that
     # says what it is.
-    record = json.loads(render_quality_json(state, composition, None))
+    judged = state.model_copy(update={"quality": snapshot})
+    record = json.loads(render_quality_json(judged, composition, None))
     counts = record["counts"]
     assert counts["covered_topics"] == 4
     assert counts["claimed_covered_topics"] == 5

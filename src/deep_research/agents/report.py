@@ -440,7 +440,15 @@ def collapse_mirror_urls(
 
 
 def _claim_urls(composition: ReportComposition, claim_ids: Sequence[str]) -> list[str]:
-    """Every URL the named checked claims are cited by, in recorded order."""
+    """Every URL the named checked claims are cited by, in recorded order.
+
+    Only the passages recorded as *supporting* count. A verification passage
+    carries the stance it was selected with, so a passage filed as
+    contradicting the claim is the rebuttal: printing it after a statement as
+    one of that statement's citations credits the thing the statement
+    disputes, and counting it as a cited source overstates what carried the
+    judgement.
+    """
     urls: list[str] = []
     wanted = set(claim_ids)
     for claim in composition.claims:
@@ -451,6 +459,8 @@ def _claim_urls(composition: ReportComposition, claim_ids: Sequence[str]) -> lis
             if url and url not in urls:
                 urls.append(url)
         for passage in claim.verification_evidence:
+            if passage.stance != "supports":
+                continue
             url = normalize_source_url(passage.source_url)
             if url and url not in urls:
                 urls.append(url)
@@ -461,11 +471,14 @@ def _cluster_urls(
     composition: ReportComposition,
     cluster_ids: Sequence[str],
 ) -> list[str]:
-    """Every citation the named clusters actually recorded, in order.
+    """Every citation the named clusters recorded for a supporting verdict.
 
     ``verdict_evidence`` is per verdict, so this is the union in the order the
     cluster's own verdict list records — the citations that carried the
-    judgement, not only the URL of the finding that first raised it.
+    judgement, not only the URL of the finding that first raised it. A
+    ``contradicted`` verdict is excluded: its evidence is what disputed the
+    proposition, and a reader statement asserting that proposition must not
+    list its rebuttal among the citations that carry it.
     """
     urls: list[str] = []
     for cluster_id in cluster_ids:
@@ -477,6 +490,7 @@ def _cluster_urls(
             *(
                 url
                 for verdict in cluster.verdicts
+                if verdict != "contradicted"
                 for url in cluster.verdict_evidence.get(verdict, [])
             ),
         ]
@@ -1043,6 +1057,12 @@ def fit_report_composition(
     ledger can account for prose the reader does not see. Nothing is dropped
     from the composition's evidence: the claim registry, sources, clusters and
     statements stay in the ledger.
+
+    The reasons travel on the fitted composition itself, because the fit runs
+    once and every later reader of the composition — the gates, the reviewer,
+    the quality record, the ledger — has to see what was dropped. A caller
+    that re-runs this on an already-fitted composition gets it back unchanged
+    with no reasons, so the dispositions cannot be duplicated or drifted.
     """
     fitted = composition.model_copy(deep=True)
     reasons: list[str] = []
@@ -1068,7 +1088,7 @@ def fit_report_composition(
         rendered = _render_reader(fitted, compact_backmatter=0)
         over = reader_word_count(rendered) - limit
         if over <= 0:
-            return fitted, reasons
+            return _with_fit_reasons(fitted, reasons), reasons
         dropped = 0
         freed = 0
         while pending and freed < over:
@@ -1081,7 +1101,23 @@ def fit_report_composition(
         reasons.append(f"length_budget_dropped:{dropped}")
     if reader_word_count(_render_reader(fitted, compact_backmatter=0)) > limit:
         reasons.append("length_budget_floor_reached")
-    return fitted, reasons
+    return _with_fit_reasons(fitted, reasons), reasons
+
+
+def _with_fit_reasons(
+    fitted: ReportComposition, reasons: Sequence[str]
+) -> ReportComposition:
+    """The fitted composition, carrying its own fit reasons as dispositions."""
+    if not reasons:
+        return fitted
+    return fitted.model_copy(
+        update={
+            "statement_dispositions": [
+                *fitted.statement_dispositions,
+                *reasons,
+            ]
+        }
+    )
 
 
 def _clusters_of(
@@ -1113,21 +1149,22 @@ def render_reader_report(composition: ReportComposition) -> str:
     Validates first: the production path checks the map in
     ``build_report_composition``, but a composition rehydrated from state and
     re-rendered would otherwise reach the reader with a substantive statement
-    that carries no evidence link at all. Then fits the composition to the
-    frozen length ceiling, and renders at the most informative backmatter
-    level that satisfies the backmatter ceiling. Both are measured on the
-    rendered text rather than estimated: the ceilings are stated over the
-    artifact a reader receives, and the counts and provenance sentences the
+    that carries no evidence link at all. The reader renders exactly the
+    composition it is given: the word-limit fit belongs to the build, so the
+    published Markdown, the acceptance gates, the reviewer and the quality
+    record all describe one statement set. It renders at the most informative
+    backmatter level that satisfies the backmatter ceiling, measured on the
+    rendered text rather than estimated, because the ceilings are stated over
+    the artifact a reader receives and the counts and provenance sentences the
     methodology carries are what keeps the reader able to check the report's
     own claims about itself.
     """
     validate_report_statements(composition)
-    fitted, _ = fit_report_composition(composition)
-    rendered = _render_reader(fitted, compact_backmatter=0)
+    rendered = _render_reader(composition, compact_backmatter=0)
     for level in (1, 2):
         if backmatter_ratio(rendered) <= MAX_BACKMATTER_RATIO:
             break
-        rendered = _render_reader(fitted, compact_backmatter=level)
+        rendered = _render_reader(composition, compact_backmatter=level)
     return rendered
 
 
@@ -1277,6 +1314,23 @@ def _claims_for(
     return [claim for claim in composition.claims if claim.claim_id in wanted]
 
 
+def evidence_badge_label(badge: str | None, *, verdict: str | None = None) -> str:
+    """The reader's label for one recorded badge, read through its verdict.
+
+    One place decides what a badge reads as, so the reader table, the review
+    packet and the quality counts cannot disagree about one claim. The reading
+    is ``evidence_status_bucket`` — the same four buckets the counts use — and
+    the verdict is consulted exactly as the counts consult it: the badge is
+    stamped before adjudication finishes, so a claim an independent source
+    contradicted can still carry ``verified_pair``, and labelling it from the
+    raw badge publishes a contradicted fact as "independently corroborated".
+    """
+    bucket = evidence_status_bucket(badge, verdict=verdict)
+    return EVIDENCE_STATUS_LABELS.get(
+        bucket, EVIDENCE_STATUS_LABELS["not_established"]
+    )
+
+
 def _evidence_strength(claims: Sequence[Claim]) -> str:
     """The qualitative reading of the badges behind a row, not a probability.
 
@@ -1284,14 +1338,15 @@ def _evidence_strength(claims: Sequence[Claim]) -> str:
     confidence is a model judgement, and a reader who weighs it as a frequency
     has been misled by the artifact. The badge says what a reader actually
     needs — independently corroborated, attribution only, contested, or never
-    classified — and the number stays in the ledger's claim registry.
+    classified — and the number stays in the ledger's claim registry. Each
+    label is read through the claim's verdict, so a contradicted claim prints
+    as contested here exactly as it counts in the quality record.
     """
     if not claims:
         return _CELL_EMPTY
     labels: list[str] = []
     for claim in claims:
-        badge = claim.evidence_status or ""
-        label = EVIDENCE_BADGE_LABELS.get(badge, badge or claim.verdict)
+        label = evidence_badge_label(claim.evidence_status, verdict=claim.verdict)
         if label not in labels:
             labels.append(label)
     return _CELL_SEPARATOR_JOIN.join(labels)
@@ -1629,51 +1684,48 @@ def _reader_methodology(
 def render_evidence_ledger(composition: ReportComposition) -> str:
     """Render the verbose evidence artifact for the same pass.
 
-    Fits the composition once, up front, and renders every block from that
-    fitted composition: the ledger's "reviewed but not cited" list, its
-    statement map and its dispositions must describe the same reader report
-    the other renderer produces, and re-deriving the fit separately is how the
-    two artifacts start disagreeing about one pass.
+    Renders exactly the composition it is given, which the build path has
+    already fitted: the ledger's "reviewed but not cited" list, its statement
+    map and its dispositions describe the same reader report the other
+    renderer produces. Fitting here instead — as this used to — let the two
+    artifacts disagree about one pass, and let the ledger's own statement count
+    describe prose the reader never received.
     """
-    fitted, fit_reasons = fit_report_composition(composition)
     bodies = (
-        _claim_registry(fitted),
-        _source_assessment(fitted),
-        _reviewed_not_cited(fitted),
-        _verification_passages(fitted),
-        _rejected_content(fitted),
-        _unchecked_findings(fitted),
-        _run_errors(fitted),
-        render_statement_map(fitted, fit_reasons=fit_reasons),
+        _claim_registry(composition),
+        _source_assessment(composition),
+        _reviewed_not_cited(composition),
+        _verification_passages(composition),
+        _rejected_content(composition),
+        _unchecked_findings(composition),
+        _run_errors(composition),
+        render_statement_map(composition),
     )
     blocks = [
-        f"{EVIDENCE_TITLE_PREFIX}{' '.join(fitted.question.split())}",
-        _ledger_header(fitted),
+        f"{EVIDENCE_TITLE_PREFIX}{' '.join(composition.question.split())}",
+        _ledger_header(composition),
     ]
     for heading, body in zip(EVIDENCE_SECTIONS, bodies, strict=True):
         blocks.append(f"{heading}\n\n{body}")
     return "\n\n".join(blocks) + "\n"
 
 
-def render_statement_map(
-    composition: ReportComposition,
-    *,
-    fit_reasons: Sequence[str] | None = None,
-) -> str:
+def render_statement_map(composition: ReportComposition) -> str:
     """Every reader statement, with the mapping that makes it auditable.
 
     This is the audit bulk the reader report deliberately does not carry: one
     row per statement, its reader mode, the claim clusters and exact evidence
     ids behind it, the targets and required dimensions it answers, any
     recorded derivation, and the citations it resolves to. The dispositions
-    this pass recorded for refused and repaired prose are stated above the
-    table, and the new factual assertions waiting for a fact check are named
-    here rather than routed from here.
+    this pass recorded — including the reasons the build-time fit dropped
+    prose the reader does not see — are stated above the table, and the new
+    factual assertions waiting for a fact check are named here rather than
+    routed from here.
 
-    ``fit_reasons`` is what the renderer that fitted this composition found.
-    A direct caller that supplies none gets them recomputed here, so a
-    standalone map is still honest; the ledger always supplies them, because a
-    ledger that re-derives the reader's fit can disagree with the reader.
+    The dispositions are read from the composition alone, never re-derived:
+    the fit ran once, where the composition was built, so a renderer that
+    fitted again could report a different statement set than the one it
+    renders.
     """
     statements = composition.statements
     prelude = [
@@ -1683,9 +1735,7 @@ def render_statement_map(
             "them."
         )
     ]
-    if fit_reasons is None:
-        _, fit_reasons = fit_report_composition(composition)
-    dispositions = [*composition.statement_dispositions, *fit_reasons]
+    dispositions = list(composition.statement_dispositions)
     if backmatter_ratio(_render_reader(composition, compact_backmatter=2)) > (
         MAX_BACKMATTER_RATIO
     ):
@@ -2238,7 +2288,11 @@ def _coverage_counts(
 
     A state holding no snapshot is measured here at the same denominator —
     never a smaller one: an absent record must not read as a completed
-    obligation.
+    obligation. ``covered_topics`` is the substantive count in both branches,
+    because that is what the field meant to a reader of this record; the
+    claimed count the snapshot also carries is published beside it as
+    ``claimed_covered_topics``, and is omitted — not zeroed — when no snapshot
+    recorded one.
     """
     from deep_research.agents.quality import (  # noqa: PLC0415
         compute_substantive_coverage,
@@ -2264,7 +2318,8 @@ def _coverage_counts(
     )
     return {
         "planned_topics": quality.planned_topics,
-        "covered_topics": quality.covered_topics,
+        "covered_topics": quality.substantive_covered_topics,
+        "claimed_covered_topics": quality.covered_topics,
         "substantive_topic_ratio": quality.substantive_topic_ratio,
         "planned_targets": quality.planned_targets,
         "required_targets": quality.required_targets,

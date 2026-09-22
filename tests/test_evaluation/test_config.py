@@ -771,12 +771,19 @@ CRITIC_PROMPT_FINGERPRINT = "2c80a78040b9"
 # The legacy ``CLAIM_VERIFICATION_INSTRUCTION`` is unchanged and still used by
 # the extracted-claim path, but the shared library moved, so every agent that
 # renders it moves with it. The judge did not move.
+# The report-gates pass moved the synthesizer alone, to ``26372cb8f056``, for
+# the composition-build change that runs the word-limit fit where the
+# composition is built instead of inside each renderer. No prompt text changed
+# and ``agents.prompts`` was not edited: ``build_report_composition`` now
+# returns the fitted composition with its fit reasons recorded on it, which is
+# a module-source edit and therefore a fingerprint move. The other five and the
+# judge were recomputed and did not move.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "7d0282b16bc5",
     "researcher": "7288d912bee3",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "9c5cba6e9b39",
-    "synthesizer": "3a96c3e6293d",
+    "synthesizer": "26372cb8f056",
     "critic": "2c80a78040b9",
 }
 
@@ -1179,6 +1186,13 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
     Task 12 moved the synthesizer's fingerprint again, to ``97cf77acbb15``, for
     the ``evidence_selection`` orientation fix recorded in the pin comment
     above; that move is attributed there and this assertion follows it.
+
+    The report-gates pass moved it a third time, to ``26372cb8f056``, for the
+    composition-build change: the word-limit fit now runs where the composition
+    is built, so the synthesizer module gained the call and lost nothing from
+    ``agents.prompts``. The fingerprint hashes this module's source, so a
+    structural edit moves it exactly as a prompt edit does — which is what this
+    test exists to make visible.
     """
     pre_task_11 = "0ec21503cc00"
 
@@ -1189,7 +1203,7 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
         "report-probe-0-evidence.md"
     )
     assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
-    assert agent_prompt_fingerprint("synthesizer") == "3a96c3e6293d"
+    assert agent_prompt_fingerprint("synthesizer") == "26372cb8f056"
     assert agent_prompt_fingerprint("synthesizer") != pre_task_11
 
 

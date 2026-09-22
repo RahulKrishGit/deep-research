@@ -63,6 +63,7 @@ from deep_research.agents.report import (
     render_statement_map,
     report_as_of,
     report_scope,
+    statement_citation_urls,
     statement_source_urls,
     validate_report_statements,
 )
@@ -1769,7 +1770,10 @@ def test_the_reader_word_ceiling_follows_the_frozen_contract() -> None:
         summary=points[:6],
         sections=[ReportSection(title="Error correction", points=points[6:])],
     )
-    reader = render_reader_report(composition)
+    # The ceiling is enforced where the composition is built; the renderer
+    # shows what it is given.
+    fitted, _ = fit_report_composition(composition)
+    reader = render_reader_report(fitted)
 
     assert reader_word_count(reader) <= 250
     assert "Statement 11" not in reader
@@ -2301,10 +2305,6 @@ def test_a_contradicted_verdicts_evidence_is_not_a_supporting_citation() -> None
     cluster = _cluster(
         verdicts=["verified", "contradicted"],
         verdict_evidence={"verified": [THIRD_URL], "contradicted": [OTHER_URL]},
-        verdict_evidence_status={
-            "verified": "verified_pair",
-            "contradicted": "contested",
-        },
     )
     composition = _evidence_composition(
         claims=[claim],
@@ -2590,7 +2590,7 @@ def test_the_quality_record_derives_the_coverage_id_lists_the_snapshot_lacks() -
         sub_topics=sub_topics,
         evidence_dispositions=[
             EvidenceDisposition(
-                item_id="d1",
+                item_id="t-deferred",
                 stage="access_denied",
                 reason="every candidate for this target was denied",
                 target_ids=["t-deferred"],
