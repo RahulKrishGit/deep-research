@@ -97,8 +97,8 @@ _ANSWER_FORM_REQUIREMENTS: dict[AnswerKind, str] = {
         "effect"
     ),
     "comparison": (
-        "answer form: the same measured dimension for every option compared, "
-        "on one shared basis and unit"
+        "answer form: the same measured dimension for every option in the "
+        "comparison, on one shared basis and unit"
     ),
     "explanation": (
         "answer form: a causal mechanism with evidence for each step, not a "

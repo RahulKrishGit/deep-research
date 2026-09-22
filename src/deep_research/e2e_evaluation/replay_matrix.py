@@ -271,14 +271,33 @@ def _comparative_conflict() -> ReplayScenario:
     mechanism obligation onto every target, and a measurement can never fill
     one, so the case would be asserting the answer form rather than the
     comparison.
+
+    Each figure is written as the share it is, naming the base it is taken of:
+    the comparison answer form asks for one shared basis and unit, and the
+    evidence has to carry that basis rather than leave it to be inferred from
+    the population the sentence happens to mention. A percentage whose
+    denominator is missing cannot fill the comparison dimension, which is the
+    product's own contract for a share rather than a reading of it.
+
+    The third topic is the plan's context work, and it is written the same
+    way. The answer contract stamps the comparison's form onto *every* target
+    the plan carries (``planner.apply_answer_contract``), so a topic whose
+    evidence states a bare value is an obligation no reading of it can
+    discharge - the same reason ``_filler`` cannot serve a comparison
+    question, and the same reason this case's question is not written as a
+    causal one.
     """
     urban = (
-        "the Acme widget adoption rate in urban households in the United States was "
-        "40 percent in 2024"
+        "the Acme widget adoption rate was 40 percent of urban households in the "
+        "United States in 2024"
     )
     rural = (
-        "the Acme widget adoption rate in rural households in the United States was "
-        "25 percent in 2024"
+        "the Acme widget adoption rate was 25 percent of rural households in the "
+        "United States in 2024"
+    )
+    suburban = (
+        "the Acme widget adoption rate was 30 percent of suburban households in "
+        "the United States in 2024"
     )
     return ReplayScenario(
         case_id="comparative-conflict",
@@ -311,8 +330,15 @@ def _comparative_conflict() -> ReplayScenario:
                 critical=True,
                 labels=("Acme widget", "rural households"),
             ),
-            _filler(
-                3, "Widget funding", "Acme widget funding round", "12 million dollars"
+            _topic(
+                3,
+                "Suburban adoption",
+                "What was the Acme widget adoption rate in suburban households in "
+                "the United States in 2024?",
+                "rate",
+                "Acme widget adoption suburban households 2024",
+                _pair(3, "suburban-2024", "Suburban household survey", suburban),
+                labels=("Acme widget", "suburban households"),
             ),
         ),
         expectation=CaseExpectation(
@@ -1560,7 +1586,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
     ReplayCaseEntry(
         case_id="comparative-conflict",
         version=REPLAY_CASE_VERSION,
-        title="Two populations, two accounts, no invented winner",
+        title="Three groups measured on one basis, no invented winner",
         expected_product_result="accepted / 0",
         decisive_assertion=(
             "Explains differing populations/methods; no invented universal "

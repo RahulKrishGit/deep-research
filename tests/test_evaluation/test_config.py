@@ -668,8 +668,21 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # ``primary_attribution``/``derivation`` target, and the call site says so.
 # The shared `agents.prompts` library was not edited, and the other five pins
 # and the judge did not move (verified by recomputing all six and the judge).
+#
+# The comparison answer form re-pinned the planner alone (`f2507b56d0c6` ->
+# `4fab1aa863d8`). This is real prompt-text drift and is meant to be:
+# ``_ANSWER_FORM_REQUIREMENTS["comparison"]`` is rendered into the obligation
+# the researcher is handed, and it read "for every option compared" — a phrase
+# sharing no word with ``utils.types._DIMENSION_SIGNALS``, so the obligation it
+# stamped onto every target of a comparison question was one no recorded
+# proposition could ever fill. It now reads "for every option in the
+# comparison", whose noun is the token the ``("share", "proportion", "percent",
+# "denominator", "comparison")`` group already keys on, so a statement resting
+# on evidence that states its share basis credits the dimension. The obligation
+# changed; what counts as discharging it did not. The other five pins and the
+# judge did not move (verified by recomputing all six and the judge).
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "f2507b56d0c6",
+    "planner": "4fab1aa863d8",
     "researcher": "613603dc5cbd",
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "7012a186eb59",

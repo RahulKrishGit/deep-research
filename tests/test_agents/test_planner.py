@@ -1720,11 +1720,12 @@ def test_a_threshold_question_is_not_a_comparison(
     """A bare inequality is a threshold, not a comparison.
 
     The comparison answer form ("the same measured dimension for every option
-    compared, on one shared basis and unit") is stamped into every target's
-    binding dimensions, and Section 2.3 judges a target answered only when
-    those dimensions are satisfied. Stamping it onto "how many projects waited
-    more than 5 years?" makes an ordinary quantity question unsatisfiable, so
-    an inequality counts as a comparison only when it names a referent.
+    in the comparison, on one shared basis and unit") is stamped into every
+    target's binding dimensions, and Section 2.3 judges a target answered only
+    when those dimensions are satisfied. Stamping it onto "how many projects
+    waited more than 5 years?" makes an ordinary quantity question
+    unsatisfiable, so an inequality counts as a comparison only when it names a
+    referent.
     """
     assert answer_kind_for(question, clock_year=2026) == expected
 
