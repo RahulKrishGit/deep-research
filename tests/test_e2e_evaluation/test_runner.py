@@ -21,12 +21,17 @@ from deep_research.e2e_evaluation.cases import (
     scripted_research_agents,
 )
 from deep_research.e2e_evaluation.evaluators import deterministic_evaluation
-from deep_research.e2e_evaluation.models import CaseCampaignResult
+from deep_research.e2e_evaluation.models import CaseCampaignResult, ReplaySuiteResult
+from deep_research.e2e_evaluation.replay_matrix import (
+    REPLAY_CASE_IDS,
+    REPLAY_CASE_MANIFEST,
+)
 from deep_research.e2e_evaluation.runner import (
     LIVE_TIER_NOT_RUN,
     build_judge_metadata,
     build_parser,
     run_case,
+    run_replay_suite,
     run_suite,
 )
 from deep_research.graph.orchestrator import compile_research_graph, run_research_graph
@@ -630,6 +635,66 @@ def test_controlled_suite_has_three_cases_and_no_report_body_on_summary(
 def test_controlled_repetitions_are_bounded_to_exactly_three(tmp_path) -> None:
     with pytest.raises(ValueError, match="exactly 3"):
         run_suite(tier="controlled", repetitions=2, output_directory=tmp_path)
+
+
+def test_the_replay_suite_runs_the_whole_manifest_not_the_three_legacy_rows(
+    tmp_path,
+) -> None:
+    """The controlled suite's inventory is the manifest, not a hardcoded three.
+
+    The suite used to be closed over exactly the three scripted-dependency
+    cases, which left fifteen declared real-agent rows that no command ever
+    ran. The inventory is the versioned manifest, so a row that is added,
+    removed or re-versioned changes what the suite runs without editing the
+    runner -- and the fifteen rows the suite never reached are now the
+    evidence a release is read from.
+    """
+    result = run_replay_suite(
+        tier="controlled", repetitions=3, output_directory=tmp_path
+    )
+
+    assert result.mode == "real-agent"
+    assert [case.case_id for case in result.cases] == list(REPLAY_CASE_IDS)
+    assert len(result.cases) == len(REPLAY_CASE_MANIFEST)
+    assert result.repetitions == 3
+    assert result.accepted
+    assert all(case.passed for case in result.cases)
+    assert all(case.deterministic for case in result.cases)
+    for case in result.cases:
+        assert len(case.repetitions) == 3
+        assert len({item.session_id for item in case.repetitions}) == 3
+        assert all(item.network_attempts == [] for item in case.repetitions)
+    # The two harnesses write different artifacts, so neither can overwrite
+    # the other's evidence in a shared output directory.
+    assert tmp_path.joinpath("replay-suite.json").is_file()
+    assert result.artifact_path == str(tmp_path / "replay-suite.json")
+    assert not tmp_path.joinpath("suite.json").exists()
+    restored = ReplaySuiteResult.model_validate(
+        json.loads(tmp_path.joinpath("replay-suite.json").read_text())
+    )
+    assert [case.case_id for case in restored.cases] == list(REPLAY_CASE_IDS)
+    assert restored.cases[0].repetitions[0].report_fingerprint
+
+
+def test_the_replay_suite_is_bounded_to_exactly_three_repetitions(tmp_path) -> None:
+    with pytest.raises(ValueError, match="exactly 3"):
+        run_replay_suite(tier="controlled", repetitions=2, output_directory=tmp_path)
+    with pytest.raises(RuntimeError, match=LIVE_TIER_NOT_RUN):
+        run_replay_suite(tier="live", repetitions=3, output_directory=tmp_path)
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_the_suite_command_defaults_to_the_real_agent_matrix() -> None:
+    """No --mode means the real agents, because that is what a release is."""
+    options = build_parser().parse_args(
+        ["suite", "--tier", "controlled", "--repetitions", "3"]
+    )
+
+    assert options.mode == "real-agent"
+    historical = build_parser().parse_args(
+        ["suite", "--tier", "controlled", "--mode", "graph-historical"]
+    )
+    assert historical.mode == "graph-historical"
 
 
 def test_live_tier_is_authorization_ready_but_never_runs(tmp_path) -> None:
