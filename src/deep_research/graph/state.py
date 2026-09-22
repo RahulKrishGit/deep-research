@@ -43,6 +43,7 @@ from deep_research.utils.types import (
     ResearchState,
     counted_evidence_targets,
     progress_improved,
+    sub_topic_owes_evidence,
     target_is_answered,
     unanswered_required_targets,
 )
@@ -454,6 +455,31 @@ def open_review_defect_ids(review: ReportReview | None) -> list[str]:
     return _material_gap_ids(review.defects)
 
 
+def _selectable_acquisition_keys(state: ResearchState) -> set[str]:
+    """The acquisition keys a refinement pass will actually work on.
+
+    Two things make a topic's queue spendable work: the plan still owes
+    evidence for it, so ``select_sub_topics`` hands it to the Researcher, or a
+    typed ``acquire`` job names it, which the refinement hop routes to the
+    Researcher as an errand in its own right. Everything else in
+    ``acquisition_state_by_target`` belongs to a sub-topic this pass skips —
+    an answered topic keeps whatever search candidates the last pass left
+    queued, and nothing will ever drain them — so counting those leftovers as
+    work owed is what kept a stalled run paying for passes it could not use.
+    """
+    keys = {
+        sub_topic.coverage_id
+        for sub_topic in state.sub_topics
+        if sub_topic_owes_evidence(state, sub_topic)
+    }
+    keys.update(
+        job.coverage_id
+        for job in state.refinement_targets
+        if job.action == "acquire" and job.coverage_id
+    )
+    return keys
+
+
 def pending_repair_work(state: ResearchState) -> list[str]:
     """Every piece of evidence work this run still holds unprocessed.
 
@@ -463,9 +489,19 @@ def pending_repair_work(state: ResearchState) -> list[str]:
     deferral is a decision to do the work later, and a run that reports
     ``no_progress`` while holding one has relabelled a capacity limit as a
     dead end.
+
+    Only the targets a refinement pass will actually select are read
+    (``_selectable_acquisition_keys``). A queue on a topic the pass skips is
+    not work this run can spend: the Researcher never revisits that topic, so
+    the leftover can never be drained, and counting it held the stop reason
+    open — the run bought every remaining macro pass and ended at the
+    iteration ceiling rather than reporting the dead end it had established.
     """
     items: list[str] = []
+    selectable = _selectable_acquisition_keys(state)
     for target_id, acquisition in state.acquisition_state_by_target.items():
+        if target_id not in selectable:
+            continue
         items.extend(
             f"{target_id}:passage:{item}"
             for item in acquisition.pending_passage_ids
@@ -583,10 +619,15 @@ def progress_snapshot(
 def repair_capacity_spent(state: ResearchState) -> bool:
     """True when no further acquisition can be bought for the work still owed.
 
-    The macro-iteration ceiling for the next pass, or every target's own
-    acquisition state reporting no remaining calls. A run that still holds
-    deferred evidence and still has calls to spend has not run out of capacity
-    — it has simply not spent it yet.
+    The macro-iteration ceiling for the next pass, or every *selectable*
+    target's own acquisition state reporting no remaining calls. A run that
+    still holds deferred evidence and still has calls to spend has not run out
+    of capacity — it has simply not spent it yet.
+
+    The targets read are the ones a refinement pass will work on
+    (``_selectable_acquisition_keys``), not every entry the run ever wrote: a
+    topic the pass skips can hold no calls and no queue and neither fact says
+    anything about what this run could still buy.
 
     The ceiling is read as "no pass can be opened", not "the next pass is the
     last": the refinement hop can open pass ``iteration + 1`` whenever
@@ -596,7 +637,11 @@ def repair_capacity_spent(state: ResearchState) -> bool:
     """
     if state.iteration >= state.max_iterations:
         return True
-    states = list(state.acquisition_state_by_target.values())
+    states = [
+        state.acquisition_state_by_target[key]
+        for key in sorted(_selectable_acquisition_keys(state))
+        if key in state.acquisition_state_by_target
+    ]
     if not states:
         return False
     return all(entry.remaining_calls <= 0 for entry in states)

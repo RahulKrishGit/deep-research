@@ -2977,6 +2977,88 @@ def unanswered_required_targets(
     ]
 
 
+def _collapsed(value: str) -> str:
+    """Whitespace-collapsed, case-folded text, for identity-free matching."""
+    return " ".join(value.split()).casefold()
+
+
+def _acquire_actions_by_coverage_id(
+    state: ResearchState,
+) -> dict[str, set[str]]:
+    """The typed repair actions the Critic routed at each planned topic id.
+
+    Read from ``CritiqueGap.coverage_id`` and from nothing else, so a gap whose
+    scope resolved to a topic is honored and a gap whose scope did not resolve
+    belongs to no topic. The *action* is what matters here: a gap that repairs
+    by synthesis, adjudication, consolidation or source assessment is repaired
+    by another node, and must not send this topic back to acquisition.
+    """
+    grouped: dict[str, set[str]] = {}
+    critique = state.critique
+    if critique is None:
+        return grouped
+    for gap in critique.gaps:
+        if gap.coverage_id is None:
+            continue
+        grouped.setdefault(gap.coverage_id, set()).add(gap.repair_action)
+    return grouped
+
+
+def _topic_has_prior_finding(state: ResearchState, sub_topic: SubTopic) -> bool:
+    """True when some raw finding names this topic — a legacy fallback only.
+
+    It is no longer how a refinement decides a topic is done: a finding is not
+    an answered obligation, and the reviewed baseline skipped topic-04,
+    topic-02 and topic-05 on exactly this test while their required targets
+    were unanswered. It survives for one case only — a plan carrying no
+    evidence targets at all, where there is no obligation to validate against
+    and "has anything ever been found for it" is the only honest signal left.
+    """
+    title = _collapsed(sub_topic.title)
+    return any(
+        _collapsed(finding.related_sub_topic) == title
+        for finding in state.raw_findings
+    )
+
+
+def sub_topic_owes_evidence(state: ResearchState, sub_topic: SubTopic) -> bool:
+    """True when a research pass could still do something for this topic.
+
+    Two reasons, and neither is "a finding already exists somewhere":
+
+    * the plan still owes an answer for one of the topic's required targets —
+      a required target is answered only when a reader statement satisfies its
+      dimensions and support policy, so one raw metadata finding leaves the
+      obligation open and the topic eligible whether or not the Critic named
+      it. This is what stops Critic silence from suppressing a required
+      target;
+    * the Critic routed an *acquisition* gap at the topic, which is the Critic
+      asking for searches.
+
+    A plan with no evidence targets has no obligation to check against — a
+    legacy snapshot the plan contract says must be replanned — and there the
+    only honest signal left is whether the topic ever produced a finding.
+
+    Stated here, beside ``target_is_answered``, because it is the one reading
+    of "is this topic still work" the whole tree shares: the Researcher uses it
+    to choose the topics a pass researches, and the graph uses the same answer
+    to decide which of their queues are work the run can still spend. Two
+    readings would let a pass skip a topic while the repair loop kept counting
+    that topic's leftovers as work owed.
+    """
+    if "acquire" in _acquire_actions_by_coverage_id(state).get(
+        sub_topic.coverage_id, frozenset()
+    ):
+        return True
+    targets = counted_evidence_targets(sub_topic.evidence_targets)
+    if not targets:
+        return not _topic_has_prior_finding(state, sub_topic)
+    return any(
+        target.required and not target_is_answered(state, target)
+        for target in targets
+    )
+
+
 # Fields whose update is a delta appended to what the state already holds.
 # ``evaluated_sources`` and ``verified_claims`` are deliberately absent: each
 # carries the complete canonical snapshot for the run so far, which its
