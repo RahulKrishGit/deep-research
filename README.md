@@ -865,7 +865,8 @@ per-agent controlled and live experiments against LangSmith, scored by
 deterministic gates and a judge model. It is independent of the graph-level
 CLI above: it never imports `deep_research.graph`, and evaluates each of the
 six agents (`planner`, `researcher`, `source-evaluator`, `fact-checker`,
-`synthesizer`, `critic`) in isolation against 24 code-backed cases.
+`synthesizer`, `critic`) in isolation against 30 code-backed cases — four
+controlled and one live per agent, 24 controlled and 6 live in total.
 
 The individual-agent controlled tier exercises one agent contract at a time
 with the configured provider and LangSmith experiment. Its live tier adds the
@@ -877,7 +878,7 @@ replacement, terminal publication, or the reader/evidence pair.
 # List agents, tiers, cases, repetitions, and dataset names.
 python -m deep_research.evaluation list
 
-# Run all three controlled cases for one agent, three times each.
+# Run all four controlled cases for one agent, three times each.
 python -m deep_research.evaluation agent researcher
 
 # Run one controlled case, still with three repetitions.
@@ -943,54 +944,95 @@ The graph-level campaign is a separate CLI and package:
 one agent's contract in isolation; whole-report evaluation checks the six-agent
 handoff, canonical source and claim snapshots, provenance, citation linkage,
 refinement, terminal publication, memory timing, and agreement between the
-typed state and the CLI summary. A deterministic integrity failure is a hard
-failure even when a judge score is high.
+typed state and the CLI summary. The package ships two controlled harnesses,
+and every run's own output says which one produced it.
 
-Task 9's controlled tier is network-zero. Its three cases use scripted search,
-read, memory, and publication doubles while compiling and running the
-production graph with six deterministic agent doubles. The campaign compares
-typed graph state and events with the production CLI summary formatter, and
-runs exactly three repetitions per case. The live tier is *declared only*: the
-three live cases exist as typed definitions with `tier="live"` and
-`authorization_required=True`, and `run_case`/`run_suite` raise for
-`tier="live"` unconditionally — no live runner exists in this package. Live
-provider, search, judge, and LangSmith calls belong to a separately authorized
-canary.
+### Real-agent harness (the default)
+
+`suite` runs the real agents: the 18 rows of the versioned replay manifest,
+each started through the production CLI entrypoint with the six production
+agent classes, the real graph, reviewer, renderer, and publisher, and only the
+external boundaries scripted. The socket layer is denied for every repetition
+and the attempts it records are carried into the result, so a suite that
+reached the network is not accepted however clean every row looked. A row
+passes when all three of its repetitions met its declared expected product
+result, and is reported `deterministic` or `NON-deterministic` by whether all
+three produced one identical outcome — exit code, terminal quality, answered
+targets, and published report. This harness computes no judge score at all.
+
+```
+Mode: real-agent (18 cases from replay manifest v1, case semantics v1)
+Agents: production classes through the real graph
+```
+
+### Graph-historical harness
+
+`suite --mode graph-historical` runs the three legacy cases, whose search,
+read, memory, and publication dependencies are scripted doubles alongside six
+deterministic agent doubles. Its output says plainly that its result is not
+evidence about the production agents:
+
+```
+Mode: graph-historical (3 legacy ScriptedGraphAgent cases)
+Agents: SCRIPTED DOUBLES, not production classes — historical regression only.
+        This mode is not release evidence for the real agents.
+```
+
+This is the harness with judge-score acceptance floors: 0.70 for every
+repetition and 0.80 for the three-run mean, with coverage and evidence gates
+applied separately. `case <id>` runs one of its three cases alone under the
+same floors.
+
+The live tier is *declared only*: the three live cases exist as typed
+definitions with `tier="live"` and `authorization_required=True`, and
+`run_case`/`run_suite` raise for `tier="live"` unconditionally — no live runner
+exists in this package. Live provider, search, judge, and LangSmith calls
+belong to a separately authorized canary.
 
 Whole-report gates are independent of the individual-agent gates: every
 integrity failure (including duplicate canonical rows, missing read
 provenance, unresolved citations, incomplete attempts, or publication timing)
-hard-fails the repetition regardless of judge score. The controlled runner's
-acceptance floors are 0.70 for every repetition and 0.80 for the three-run
-mean, with coverage and evidence gates applied separately. The production CLI
-`--require-quality` flag is a graph-run exit policy (exit 4 for a non-accepted
-terminal quality status); it does not replace these campaign gates.
+hard-fails the repetition. The production CLI `--require-quality` flag is a
+graph-run exit policy (exit 4 for a non-accepted terminal quality status); it
+does not replace these campaign gates.
 
 ```powershell
-# List the three controlled whole-report cases.
+# List both harnesses' cases, and the live cases that have no runner.
 python -m deep_research.e2e_evaluation list
 
-# Run one controlled case three times.
-python -m deep_research.e2e_evaluation case broad-constraints --tier controlled --repetitions 3
-
-# Run the complete controlled campaign (network-zero).
+# Run the real-agent campaign: 18 rows, three repetitions each, network-zero.
 python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
+
+# Run the graph-historical campaign instead (scripted doubles, judge-scored).
+python -m deep_research.e2e_evaluation suite --tier controlled --mode graph-historical --repetitions 3
+
+# Run one legacy case three times.
+python -m deep_research.e2e_evaluation case broad-constraints --tier controlled --repetitions 3
 ```
 
-Each run writes a local JSON campaign artifact under
-`output/evaluations/e2e/` containing the graph revision, all six target prompt
-fingerprints, report/quality/case schema versions, model settings, request
-counts, typed deterministic metrics, the exact bounded `WholeReportJudgeInput`,
-and the result. The bounded judge input contains only the question, scoped
-plan, reader report, deterministic metrics, and a bounded evidence-ledger
-summary; it never contains secrets, raw provider output, tool payloads, or
-hidden reasoning. The research output itself remains two distinct Markdown
-artifacts per repetition: the concise reader report (`report.md`) and the full evidence ledger
-(`evidence-ledger.md`). The reader report contains only unique cited sources;
-the ledger retains source assessments, checked claims, verification passages,
-unchecked findings, and run errors for auditability. Controlled stdout prints
-case/suite quality summaries and paths, never report bodies or raw tool/model
-payloads.
+Each suite writes its own JSON artifact under `output/evaluations/e2e/`:
+`replay-suite.json` for the real-agent harness and `suite.json` for the
+graph-historical one — distinct filenames precisely because the two share a
+directory and one harness's evidence must never overwrite the other's. The
+real-agent artifact carries the campaign identity, the manifest and
+case-semantics versions, the graph revision, every row's repetitions (exit
+code, terminal quality, expectation failures, answered targets, recorded
+network attempts, and the published report's fingerprint), and the suite's
+`accepted` verdict; each repetition's own published documents sit under
+`output/evaluations/e2e/replay/<case-id>/repetition-<n>/`. The graph-historical
+artifact carries the graph revision, all six target prompt fingerprints,
+report/quality/case schema versions, model settings, request counts, typed
+deterministic metrics, the exact bounded `WholeReportJudgeInput`, and the
+result; the bounded judge input contains only the question, scoped plan,
+reader report, deterministic metrics, and a bounded evidence-ledger summary,
+and never contains secrets, raw provider output, tool payloads, or hidden
+reasoning. That harness's research output remains two distinct Markdown
+artifacts per repetition: the concise reader report (`report.md`) and the full
+evidence ledger (`evidence-ledger.md`). The reader report contains only unique
+cited sources; the ledger retains source assessments, checked claims,
+verification passages, unchecked findings, and run errors for auditability.
+Controlled stdout prints case/suite quality summaries and paths, never report
+bodies or raw tool/model payloads.
 
 ### Manual Live Verification
 
