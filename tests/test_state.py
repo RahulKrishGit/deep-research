@@ -14,7 +14,9 @@ from deep_research.agents.identity import claim_fingerprint
 from deep_research.utils.types import (
     LEGACY_QUALITY_CONTRACT_VERSION,
     QUALITY_CONTRACT_VERSION,
+    AtomicProposition,
     Claim,
+    ClaimCluster,
     Critique,
     EvidenceDisposition,
     EvidenceTarget,
@@ -32,6 +34,8 @@ from deep_research.utils.types import (
     ScoredSource,
     SubTopic,
     advance_research_iteration,
+    answered_required_dimensions,
+    derive_statement,
     merge_research_state,
     progress_improved,
     target_is_answered,
@@ -557,6 +561,21 @@ def statement(
     )
 
 
+def cluster(
+    cluster_id: str,
+    *,
+    text: str = "The reported figure.",
+    target_ids: list[str] | None = None,
+    **proposition_fields: str,
+) -> ClaimCluster:
+    """A minimal claim cluster carrying one proposition, for dimension tests."""
+    return ClaimCluster(
+        cluster_id=cluster_id,
+        proposition=AtomicProposition(text=text, **proposition_fields),
+        target_ids=list(target_ids or []),
+    )
+
+
 def composition(
     *,
     statements: list[ReportStatement] | None = None,
@@ -721,6 +740,250 @@ def test_a_raw_metadata_finding_completes_no_required_target() -> None:
 
     assert not target_is_answered(state, target)
     assert unanswered_required_targets(state) == [target]
+
+
+# --- Bug 1 regressions: claim-support pooling must not let a strong claim on
+# one dimension vouch for a target whose *other* dimension only a weak claim
+# carries, and a contested statement (a recorded disagreement) must never
+# count as an answer. ------------------------------------------------------
+
+
+def test_a_strong_claim_cannot_carry_a_weak_claims_dimension() -> None:
+    """A verified_pair claim on one dimension cannot vouch for another.
+
+    Two clusters each carry exactly one of the target's two required
+    dimensions: X is independently corroborated but only states geography, Y
+    only states the observation period and is merely source-supported.
+    Pooling every claim behind the statement together makes the old ANY test
+    pass on X's strength alone, even though the period dimension's actual
+    carrier, Y, never met the ``independent_pair`` policy.
+    """
+    target = evidence_target(required_dimensions=["geography", "period"])
+    cluster_x = cluster(
+        "cluster-x", text="Germany reported the figure.", geography="Germany"
+    )
+    cluster_y = cluster(
+        "cluster-y",
+        text="The 2025 figure was reported.",
+        observation_period="2025",
+    )
+    claim_x = claim("Germany reported the figure.").model_copy(
+        update={"cluster_id": "cluster-x", "target_ids": ["target-01"]}
+    )
+    claim_y = attributed_claim("The 2025 figure was reported.").model_copy(
+        update={"cluster_id": "cluster-y", "target_ids": ["target-01"]}
+    )
+    clusters = {"cluster-x": cluster_x, "cluster-y": cluster_y}
+    row = derive_statement(
+        statement_id="S1",
+        text="Germany's 2025 figure was reported.",
+        claims=[claim_x, claim_y],
+        clusters=clusters,
+        evidence={},
+        dimensions_by_target={"target-01": ["geography", "period"]},
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[claim_x, claim_y]),
+    )
+
+    assert not target_is_answered(state, target)
+
+    # Positive control: once Y also carries the strict pair, the gate opens
+    # correctly — this is not a defect, so it must hold before and after.
+    claim_y_strong = claim_y.model_copy(
+        update={"verdict": "verified", "evidence_status": "verified_pair"}
+    )
+    row_strong = derive_statement(
+        statement_id="S2",
+        text="Germany's 2025 figure was reported.",
+        claims=[claim_x, claim_y_strong],
+        clusters=clusters,
+        evidence={},
+        dimensions_by_target={"target-01": ["geography", "period"]},
+    )
+    strong_state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(
+            statements=[row_strong], claims=[claim_x, claim_y_strong]
+        ),
+    )
+    assert target_is_answered(strong_state, target)
+
+
+def test_a_contested_statement_does_not_answer_its_target() -> None:
+    """A recorded disagreement is not an answer, even if it names the target.
+
+    The docstring on ``target_is_answered`` already says ``contested`` is not
+    an answer, but the guard it used (``statement.substantive``) does not
+    exclude it — ``contested`` is deliberately still substantive for other
+    consumers (``report.validate_report_statements`` needs an evidence link
+    on it), so the exclusion has to be local to this function.
+    """
+    target = evidence_target()
+    checked = claim("It costs 40 EUR per tonne.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
+    )
+    row = statement(mode="contested").model_copy(
+        update={"claim_cluster_ids": ["cluster-01"]}
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[checked]),
+    )
+
+    assert not target_is_answered(state, target)
+    # The shared property is deliberately unchanged: contested still must
+    # carry an evidence link everywhere else in the pipeline.
+    assert row.substantive is True
+
+
+def test_recorded_dimension_support_unions_to_the_answered_dimensions() -> None:
+    """Per-cluster dimension attribution unions to today's pooled result.
+
+    This is the proof the refactor changes nothing observable by itself:
+    ``answered_required_dimensions`` is distributive over propositions, so
+    computing "which dimensions does this cluster carry" cluster by cluster
+    and unioning the answers is byte-identical to pooling every proposition
+    up front and computing it once.
+    """
+    cluster_x = cluster(
+        "cluster-x", text="Germany reported the figure.", geography="Germany"
+    )
+    cluster_y = cluster(
+        "cluster-y",
+        text="The 2025 figure was reported.",
+        observation_period="2025",
+    )
+    cluster_z = cluster(
+        "cluster-z",
+        text="Germany's 2025 figure.",
+        geography="Germany",
+        observation_period="2025",
+    )
+    claim_x = claim("Germany reported the figure.").model_copy(
+        update={"cluster_id": "cluster-x", "target_ids": ["target-01"]}
+    )
+    claim_y = claim("The 2025 figure was reported.").model_copy(
+        update={"cluster_id": "cluster-y", "target_ids": ["target-01"]}
+    )
+    claim_z = claim("Germany's 2025 figure.").model_copy(
+        update={"cluster_id": "cluster-z", "target_ids": ["target-01"]}
+    )
+    clusters = {"cluster-x": cluster_x, "cluster-y": cluster_y, "cluster-z": cluster_z}
+    required = ["geography", "period"]
+
+    row = derive_statement(
+        statement_id="S1",
+        text="Germany's 2025 figure was reported.",
+        claims=[claim_x, claim_y, claim_z],
+        clusters=clusters,
+        evidence={},
+        dimensions_by_target={"target-01": required},
+    )
+
+    pooled = answered_required_dimensions(
+        required,
+        [cluster_x.proposition, cluster_y.proposition, cluster_z.proposition],
+    )
+    assert sorted(row.answered_dimensions) == sorted(pooled)
+    attributed_dimensions = {
+        dimension
+        for dimension, cluster_ids in row.dimension_support.items()
+        if cluster_ids
+    }
+    assert sorted(attributed_dimensions) == sorted(row.answered_dimensions)
+
+
+def test_a_legacy_statement_with_no_attribution_needs_every_scoped_cluster() -> (
+    None
+):
+    """The fallback path for a statement built before attribution existed.
+
+    Two clusters both name target-01: one qualifies under
+    ``independent_pair``, the other is only source-supported. The old ANY
+    check passes on the qualifying cluster alone; the fix requires every
+    cluster scoped to this target to qualify.
+    """
+    target = evidence_target()
+    qualifying_claim = claim("It costs 40 EUR per tonne.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-a"}
+    )
+    weak_claim = attributed_claim("A ministry cites 41 EUR per tonne.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-b"}
+    )
+    row = statement().model_copy(
+        update={"claim_cluster_ids": ["cluster-a", "cluster-b"]}
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(
+            statements=[row], claims=[qualifying_claim, weak_claim]
+        ),
+    )
+
+    assert not target_is_answered(state, target)
+
+
+def test_a_legacy_statement_scoping_excludes_a_cluster_naming_another_target() -> (
+    None
+):
+    """Same shape, but the weak cluster names a different target.
+
+    It is out of scope for target-01, so it cannot drag the check down: this
+    holds on both the buggy and the fixed code, and pins that target-scoping
+    does not introduce a false negative.
+    """
+    target = evidence_target()
+    qualifying_claim = claim("It costs 40 EUR per tonne.").model_copy(
+        update={"target_ids": ["target-01"], "cluster_id": "cluster-a"}
+    )
+    weak_claim = attributed_claim("A ministry cites 41 EUR per tonne.").model_copy(
+        update={"target_ids": ["target-02"], "cluster_id": "cluster-b"}
+    )
+    row = statement().model_copy(
+        update={"claim_cluster_ids": ["cluster-a", "cluster-b"]}
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(
+            statements=[row], claims=[qualifying_claim, weak_claim]
+        ),
+    )
+
+    assert target_is_answered(state, target)
+
+
+def test_a_claimless_inference_still_answers_a_derivation_target() -> None:
+    """CHARACTERIZATION, not red/green.
+
+    A claimless local derivation (an ``inference`` statement with a recorded
+    ``basis`` and no resolvable clusters) must satisfy a ``derivation``
+    target both before and after the fix — this pins F3's escape so the
+    fallback-path rewrite cannot break it.
+    """
+    target = evidence_target(support_policy="derivation")
+    row = ReportStatement(
+        statement_id="S1",
+        text="Combining the two prior figures gives the total.",
+        mode="inference",
+        claim_cluster_ids=[],
+        target_ids=["target-01"],
+        answered_dimensions=["cost"],
+        basis="Derived from the two prior rows.",
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[]),
+    )
+
+    assert target_is_answered(state, target)
 
 
 def test_an_answered_target_is_not_reported_as_unmet() -> None:
