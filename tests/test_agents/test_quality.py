@@ -10,7 +10,9 @@ from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import ReportComposition, ReportPoint, ReportSection
 from deep_research.utils import ReportQualitySnapshot as UtilsReportQualitySnapshot
 from deep_research.utils.types import (
+    AcquisitionState,
     Claim,
+    EvidenceDisposition,
     EvidenceTarget,
     EvidenceUnit,
     Finding,
@@ -333,6 +335,171 @@ def test_the_broad_plan_gate_reads_substantive_coverage_not_the_claimed_ratio() 
     assert three.substantive_topic_ratio == 0.6
     assert three.planned_topics == 5
     assert "broad_plan_coverage_below_0.80" in three.hard_failures
+
+
+# --- Bug 2 regressions: a deferred disposition is not a terminal judgement
+# while the same target's work still sits queued. ---------------------------
+
+
+def _deferred_state_and_composition() -> tuple[ResearchState, ReportComposition]:
+    """Two targets: t1 answered, t2 unanswered and open to a deferral test."""
+    t1 = EvidenceTarget(
+        target_id="t1",
+        coverage_id="topic-01",
+        question="What does topic 1 require?",
+        required_dimensions=["finding"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    t2 = EvidenceTarget(
+        target_id="t2",
+        coverage_id="topic-02",
+        question="What does topic 2 require?",
+        required_dimensions=["finding"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    topics = [
+        SubTopic(
+            coverage_id="topic-01",
+            title="Topic 1",
+            rationale="This topic matters to the answer.",
+            search_queries=["topic 1 evidence"],
+            success_criteria=["A checked claim answers the topic."],
+            priority=1,
+            evidence_targets=[t1],
+        ),
+        SubTopic(
+            coverage_id="topic-02",
+            title="Topic 2",
+            rationale="This topic matters to the answer.",
+            search_queries=["topic 2 evidence"],
+            success_criteria=["A checked claim answers the topic."],
+            priority=2,
+            evidence_targets=[t2],
+        ),
+    ]
+    claim_one = Claim(
+        claim_id=claim_fingerprint("Topic 1 was settled."),
+        text="Topic 1 was settled.",
+        source_urls=["https://example.test/a"],
+        verdict="verified",
+        evidence_status="verified_pair",
+        confidence=0.9,
+        evidence=["An independent review states the same figure."],
+        contradictions=[],
+        verification_evidence=[],
+        target_ids=["t1"],
+    )
+    point = ReportPoint(
+        text="Topic 1 was settled.",
+        claim_ids=[claim_one.claim_id],
+        source_urls=["https://example.test/a"],
+        statement=ReportStatement(
+            statement_id="S001",
+            text="Topic 1 was settled.",
+            claim_cluster_ids=[claim_one.claim_id],
+            target_ids=["t1"],
+            answered_dimensions=["finding"],
+        ),
+    )
+    state = ResearchState(
+        session_id="session-deferred",
+        original_question="What happened?",
+        sub_topics=topics,
+        verified_claims=[claim_one],
+        report="# Reader report",
+        report_evidence="# Evidence ledger",
+    )
+    composition = ReportComposition(
+        question=state.original_question,
+        session_id=state.session_id,
+        sub_topics=topics,
+        claims=[claim_one],
+        summary=[point],
+    )
+    return state, composition
+
+
+def test_a_deferred_disposition_does_not_account_while_its_work_is_queued() -> (
+    None
+):
+    """Section 2.6: a queued deferral is not a terminal disposition.
+
+    ``_record_deferred_passages`` writes a ``deferred_capacity`` disposition
+    at the same moment it queues the omitted passage for a later bounded
+    extraction pass — the disposition records queued work, not a terminal
+    judgement. Accounting for the target while that work still sits in the
+    queue hides an obligation that has not actually been decided.
+    """
+    state, composition = _deferred_state_and_composition()
+    disposition = EvidenceDisposition(
+        item_id="read-1/p-3",
+        stage="read-selection",
+        reason="deferred_capacity",
+        target_ids=["t2"],
+    )
+    queued_state = state.model_copy(
+        update={
+            "evidence_dispositions": [disposition],
+            "acquisition_state_by_target": {
+                "t2": AcquisitionState(
+                    target_id="t2",
+                    pending_passage_ids=["read-1/p-3"],
+                    pending_extraction_ids=["read-1"],
+                )
+            },
+        }
+    )
+
+    quality = compute_report_quality(queued_state, composition)
+
+    assert quality.unaccounted_target_ids == ["t2"]
+    assert "unaccounted_required_targets" in quality.hard_failures
+
+    # Drain control: once the queue empties, the same disposition accounts
+    # for the target again — this proves the guard tracks the queue, not the
+    # reason string.
+    drained_state = queued_state.model_copy(
+        update={
+            "acquisition_state_by_target": {
+                "t2": AcquisitionState(
+                    target_id="t2",
+                    pending_passage_ids=[],
+                    pending_extraction_ids=[],
+                )
+            }
+        }
+    )
+    drained_quality = compute_report_quality(drained_state, composition)
+    assert drained_quality.unaccounted_target_ids == []
+
+
+def test_an_unattempted_target_with_a_recorded_reason_is_still_accounted() -> (
+    None
+):
+    """A disposition with a reason but no acquisition record stays accounted.
+
+    Pins the predicate's ``None`` branch: a target that never got an
+    ``AcquisitionState`` entry at all — the shape most real dispositions
+    carry — must not be treated as having outstanding work.
+    """
+    state, composition = _deferred_state_and_composition()
+    disposition = EvidenceDisposition(
+        item_id="candidate-1",
+        stage="evidence_admission",
+        reason="every candidate for this obligation was denied",
+        target_ids=["t2"],
+    )
+    unattempted_state = state.model_copy(
+        update={"evidence_dispositions": [disposition]}
+    )
+
+    quality = compute_report_quality(unattempted_state, composition)
+
+    assert quality.unaccounted_target_ids == []
 
 
 def test_quality_snapshot_flags_unresolved_markers_and_uncited_points() -> None:
