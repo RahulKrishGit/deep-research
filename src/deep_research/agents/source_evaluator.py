@@ -376,10 +376,6 @@ def _read_fitness_identity(
         "work_identity": identity,
         "identity_anchors": dict(anchors),
     }
-    return SourceFitness(
-        fields=fields,
-        signals=_fitness_signals(fields, rejected=rejected),
-    )
 
 
 def _fitness_signals(
