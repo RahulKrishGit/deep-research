@@ -1172,6 +1172,16 @@ def _planner_scenarios() -> dict[str, ScenarioScript]:
             reputations={},
             scripted_search_urls=(),
         ),
+        # Empty on purpose: scoping is decided from the question and the
+        # answer contract, so nothing this run can recall or retrieve may
+        # decide whether the plan's obligations are answerable.
+        "planner-scoped-targets": ScenarioScript(
+            search_responses={},
+            http_pages={},
+            memory_entries=(),
+            reputations={},
+            scripted_search_urls=(),
+        ),
         "planner-ambiguous-scope": ScenarioScript(
             search_responses={},
             http_pages={},

@@ -36,7 +36,10 @@ def test_a_missing_dataset_is_created_with_the_versioned_name() -> None:
     assert client.created_datasets == [
         "deep-research-planner-controlled-v1"
     ]
-    assert len(client.created_examples) == 3
+    # One example per controlled case, however many the registry holds.
+    assert len(client.created_examples) == len(
+        cases_for("planner", "controlled")
+    )
 
 
 def test_an_unchanged_dataset_is_reused_and_nothing_is_written() -> None:
@@ -81,7 +84,9 @@ def test_a_new_case_version_updates_that_example_only() -> None:
     assert len(client.updated_examples) == 1
     assert client.updated_examples[0]["id"] == existing.id
     assert client.updated_examples[0]["metadata"]["case_version"] == 2
-    assert len(report.reused_case_ids) == 2
+    assert len(report.reused_case_ids) == (
+        len(cases_for("planner", "controlled")) - 1
+    )
 
 
 def test_synchronization_never_deletes_a_remote_example() -> None:
@@ -92,9 +97,11 @@ def test_synchronization_never_deletes_a_remote_example() -> None:
     report = sync(client, cases=list(cases_for("planner", "controlled"))[:2])
 
     assert report.added_case_ids == ()
-    assert len(client.list_examples(
-        dataset_name="deep-research-planner-controlled-v1"
-    )) == 3
+    assert len(
+        client.list_examples(
+            dataset_name="deep-research-planner-controlled-v1"
+        )
+    ) == len(cases_for("planner", "controlled"))
 
 
 def test_deleting_anything_would_raise_in_the_fake() -> None:

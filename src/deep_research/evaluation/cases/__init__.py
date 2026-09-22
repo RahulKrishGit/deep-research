@@ -74,6 +74,7 @@ EXPECTED_CONTROLLED_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
         "focused-decomposition",
         "ambiguous-scope",
         "planning-tool-failure",
+        "scoped-evidence-targets",
     ),
     "researcher": (
         "multi-source-coverage",

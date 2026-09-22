@@ -2772,11 +2772,11 @@ def live_evaluation_harness(tracker, settings):
 
 @pytest.fixture
 def partially_failing_harness(tracker, settings):
-    """The three planner controlled cases, with one repetition scripted to
+    """The planner controlled cases, with one repetition scripted to
     fail during the model call (a provider failure, the same shape
     ``failing_target_harness`` already proves the target captures as a
     typed, non-escaping failure) -- so the case owning that repetition
-    fails while the other two cases, and the other eight repetitions,
+    fails while the other cases, and the other eleven repetitions,
     complete normally.
     """
     cases = list(cases_for("planner", "controlled"))

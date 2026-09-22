@@ -25,6 +25,7 @@ from deep_research.agents.fact_checker import (
     claimed_domains_for,
     independent_domains,
 )
+from deep_research.agents.planner import support_policy_for
 from deep_research.agents.report import build_citation_index
 from deep_research.agents.sources import (
     normalize_source_url,
@@ -41,11 +42,16 @@ from deep_research.evaluation.models import (
     TargetOutput,
 )
 from deep_research.utils.types import (
+    MAX_TARGETS_PER_TOPIC,
+    AtomicProposition,
     Claim,
     Critique,
+    EvidenceTarget,
     ScoredSource,
     SubTopic,
     UnitScore,
+    answered_required_dimensions,
+    counted_evidence_targets,
 )
 
 GENERAL_GATE_IDS: tuple[str, ...] = (
@@ -1883,6 +1889,179 @@ def _plan_still_valid_passes(output: TargetOutput, case: EvaluationCase) -> bool
     return _distinct_subtopics_passes(output, case)
 
 
+# --- Task 12: scoped evidence targets ---------------------------------------
+#
+# A plan is only as good as the obligations it declares, and the general
+# gates cannot see them: ``valid_subtopics`` validates the shape of a plan,
+# not whether its obligations are answerable. These metrics are the scoping
+# contract, so each one fails closed on a plan it cannot read and on a plan
+# that declares no obligation at all — Section 2.1 requires that a run which
+# produces nothing scores nothing.
+
+# The proposition every "can this dimension ever be credited?" check probes
+# with: every atom field ``types._DIMENSION_SIGNALS`` can credit is filled, so
+# a dimension that matches a signal group is answered by it and one that
+# matches no group is not. A literal, deliberately, rather than a proposition
+# reflected out of the signal table — the table is what this probe exists to
+# be checked against, and a probe derived from it would follow a field rename
+# silently instead of failing
+# ``test_the_dimension_probe_fills_every_signal_field``.
+_TARGET_DIMENSION_PROBE = AtomicProposition(
+    text="A probe that fills every dimension this build can credit.",
+    subject="the probe",
+    predicate="states_value",
+    value="1",
+    unit="probe",
+    observation_period="2026",
+    forecast_status="observed",
+    geography="United States",
+    population="the probe population",
+    quantity_noun="probes",
+    denominator="all probes",
+    attribution="the probe issuer",
+)
+
+
+def _reference_strings(case: EvaluationCase, key: str) -> list[str]:
+    """The string entries of one declared reference list, if it is a list."""
+    value = case.expectations.reference.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _mentions_phrase(text: str, phrases: Sequence[str]) -> bool:
+    """True when ``text`` contains one of ``phrases`` as a whole phrase.
+
+    Whole phrase, never substring: the declared vocabularies hold ordinary
+    words ("details", "context") that a substring test would fire on inside a
+    longer word, and a dimension wrongly reported as vague fails a plan that
+    is fine.
+    """
+    normalized = _normalized_text(text)
+    if not normalized:
+        return False
+    for phrase in phrases:
+        marker = _normalized_text(phrase)
+        if marker and re.search(
+            rf"(?<!\w){re.escape(marker)}(?!\w)", normalized
+        ):
+            return True
+    return False
+
+
+def _planned_targets(
+    output: TargetOutput,
+) -> list[list[EvidenceTarget]] | None:
+    """The counted evidence targets of every planned sub-topic, or ``None``.
+
+    ``None`` means the plan cannot be read as obligations at all: the artifact
+    carries no ``sub_topics``, or a sub-topic does not validate as the
+    contract's own ``SubTopic``. Counting goes through
+    ``counted_evidence_targets`` so the reserved original-question omission
+    marker stays a reviewed omission rather than an obligation a coverage
+    number can be satisfied by.
+    """
+    sub_topics = _artifact(output, "sub_topics")
+    if not isinstance(sub_topics, list):
+        return None
+    planned: list[list[EvidenceTarget]] = []
+    for entry in sub_topics:
+        try:
+            topic = SubTopic.model_validate(entry)
+        except ValidationError:
+            return None
+        planned.append(counted_evidence_targets(topic.evidence_targets))
+    return planned
+
+
+def _targets_declared_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every sub-topic carries a workable number of counted obligations.
+
+    An empty target list is a *legacy* plan — a snapshot that has to be
+    replanned before it can be executed — never a plan with nothing
+    required. The composition rule is read from the case, defaulting to the
+    contract's own ceilings, so the case and the code police one bound.
+    """
+    planned = _planned_targets(output)
+    if not planned:
+        return False
+    minimum = _reference_int(case, "minimum_targets_per_sub_topic", 1)
+    maximum = _reference_int(
+        case, "maximum_targets_per_sub_topic", MAX_TARGETS_PER_TOPIC
+    )
+    return all(minimum <= len(targets) <= maximum for targets in planned)
+
+
+def _dimensions_are_checkable_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every obligation carries a dimension the recorded evidence can credit.
+
+    The question is not whether a dimension is phrased well but whether any
+    proposition could ever answer it, so the check is made against the
+    dimension probe rather than against a list of acceptable wordings.
+    """
+    planned = _planned_targets(output)
+    if not planned:
+        return False
+    return all(
+        answered_required_dimensions(
+            target.required_dimensions, (_TARGET_DIMENSION_PROBE,)
+        )
+        for targets in planned
+        for target in targets
+    )
+
+
+def _support_policy_not_downgraded_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """No obligation lost the support policy its own question earns.
+
+    Two clauses, because they catch different plans. The first compares each
+    recorded policy against ``support_policy_for`` — the planner's own rule,
+    the same function that stamps the policy in the first place — and refuses
+    a comparative question recorded under a weaker policy. The second
+    requires the plan's recorded policy set to cover the case's declared set:
+    a plan that dropped the comparative obligation entirely has no downgraded
+    target for the first clause to see.
+    """
+    planned = _planned_targets(output)
+    if not planned:
+        return False
+    targets = [target for group in planned for target in group]
+    for target in targets:
+        if target.support_policy != "independent_pair" and (
+            support_policy_for(question=target.question) == "independent_pair"
+        ):
+            return False
+    required = _reference_strings(case, "required_support_policies")
+    if not required:
+        return True
+    return set(required) <= {target.support_policy for target in targets}
+
+
+def _no_vague_dimensions_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """No obligation rests on a dimension that names nothing answerable."""
+    planned = _planned_targets(output)
+    if not planned:
+        return False
+    phrases = _reference_strings(case, "vague_dimension_phrases")
+    if not phrases:
+        return True
+    return not any(
+        _mentions_phrase(dimension, phrases)
+        for targets in planned
+        for target in targets
+        for dimension in target.required_dimensions
+    )
+
+
 def _failure_recorded_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     for entry in _error_records(output):
         if not _RESEARCH_ERROR_KEYS.issubset(entry.keys()):
@@ -2558,6 +2737,10 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "plan_still_valid": _plan_still_valid_passes,
     "failure_recorded": _failure_recorded_passes,
     "bounded_recovery": _bounded_recovery_passes,
+    "targets_declared": _targets_declared_passes,
+    "dimensions_are_checkable": _dimensions_are_checkable_passes,
+    "support_policy_not_downgraded": _support_policy_not_downgraded_passes,
+    "no_vague_dimensions": _no_vague_dimensions_passes,
     # researcher
     "sub_topic_coverage": _sub_topic_covered_passes,
     "source_grounding": _source_grounding_passes,
