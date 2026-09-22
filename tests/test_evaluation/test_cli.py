@@ -238,6 +238,50 @@ def test_there_is_no_repetition_count_flag() -> None:
     assert code == EXIT_USAGE
 
 
+# --- production parity ------------------------------------------------------
+
+
+def test_with_neither_flag_production_parity_is_none() -> None:
+    """``None`` means inherit ``config.yaml``'s own setting."""
+    options = parse_arguments(["agent", "researcher"])
+
+    assert options.production_parity is None
+
+
+def test_the_production_parity_flag_sets_it_true() -> None:
+    options = parse_arguments(["agent", "researcher", "--production-parity"])
+
+    assert options.production_parity is True
+
+
+def test_the_no_production_parity_flag_sets_it_false() -> None:
+    options = parse_arguments(
+        ["agent", "researcher", "--no-production-parity"]
+    )
+
+    assert options.production_parity is False
+
+
+def test_production_parity_flags_are_mutually_exclusive() -> None:
+    code, output = run(
+        [
+            "agent",
+            "researcher",
+            "--production-parity",
+            "--no-production-parity",
+        ]
+    )
+
+    assert code == EXIT_USAGE
+
+
+def test_the_suite_command_also_accepts_the_parity_flags() -> None:
+    """Shared options apply to both subcommands (Task 13 uses both)."""
+    options = parse_arguments(["suite", "--production-parity"])
+
+    assert options.production_parity is True
+
+
 # --- list ------------------------------------------------------------------
 
 
