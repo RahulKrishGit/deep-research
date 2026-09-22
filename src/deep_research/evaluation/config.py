@@ -23,6 +23,14 @@ from typing import Literal
 
 from pydantic import ConfigDict, TypeAdapter, ValidationError
 
+# The registry's version is read from the registry rather than restated
+# here. This module used to carry its own ``_CASE_REGISTRY_VERSION = 1``,
+# written when the case registry did not exist yet; the two constants
+# agreed only because nothing had moved, and ``experiment_metadata``
+# emitted the private copy. The first bump to the canonical constant would
+# have left every artifact recording a version of a registry it did not
+# use, which is a provenance lie in the artifact, not a cosmetic one.
+from deep_research.evaluation.cases import CASE_REGISTRY_VERSION
 from deep_research.evaluation.models import (
     AgentName,
     EvaluationTier,
@@ -46,10 +54,6 @@ and parse the legacy string-gap shape into them, so a score this package
 produces is not the score 1.0.0 produced. Stamping the version is what keeps
 "the new numbers are the honest ones" checkable rather than assumed.
 """
-
-# The local case registry does not exist yet (Task 9 owns the canonical
-# public ``cases.CASE_REGISTRY_VERSION``); both are pinned at 1 by the plan.
-_CASE_REGISTRY_VERSION = 1
 
 _SECRET_ENVIRONMENT_VARIABLES = (
     "DEEPSEEK_API_KEY",
@@ -694,7 +698,7 @@ def experiment_metadata(
         "judge_configuration_fingerprint": (
             runtime.judge_configuration_fingerprint
         ),
-        "case_registry_version": _CASE_REGISTRY_VERSION,
+        "case_registry_version": CASE_REGISTRY_VERSION,
         "rubric_version": runtime.rubric_version,
         "dependency_mode": runtime.tier,
         "target_prompt_fingerprint": runtime.prompt_fingerprint,
