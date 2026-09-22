@@ -934,8 +934,6 @@ def _lineage_id(entry: str) -> str:
     return f"{REPORT_NUMBER_LINEAGE}{number}" if number else ""
 
 
-
-
 def rejected_anchor_names(
     read: ReadRecord,
     anchors: Mapping[str, object],
@@ -977,7 +975,6 @@ def _anchor_accepted(
         _lineage_id(entry) for entry in _text_sequence(anchors, name)
     }
     return proposed <= set(kept)  # type: ignore[arg-type]
-
 
 
 def read_metadata_row(
@@ -1136,7 +1133,6 @@ def _keeps_stored_identity(source: ScoredSource, publisher_id: str | None) -> bo
     if _stored_strong_work_id(source) is not None:
         return True
     return bool(source.publisher_id and source.publisher_id != publisher_id)
-
 
 
 def _source_reads(reads: Iterable[ReadRecord]) -> dict[str, ReadRecord]:
@@ -1327,7 +1323,6 @@ def source_origin_id(source: ScoredSource) -> str | None:
 # never the origin of the figure it repeats, so these relations may not use the
 # publisher fallback above.
 COPIED_TRANSPORT_RELATIONS = ("mirror", "syndication")
-
 
 
 # Work aliases that name a work rather than a set of bytes. ``report:`` is
