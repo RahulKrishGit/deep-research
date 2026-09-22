@@ -5,7 +5,11 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from deep_research.agents.sources import normalize_source_url, source_domain
+from deep_research.agents.sources import (
+    normalize_source_url,
+    publisher_identity,
+    source_domain,
+)
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
     SCENARIOS,
@@ -16,6 +20,7 @@ CONTROLLED = (
     "mixed-verdicts",
     "independent-domain-evidence",
     "verification-search-failure",
+    "upstream-independent-pair",
 )
 
 _METRICS = {
@@ -36,6 +41,12 @@ _METRICS = {
         ("partial_verification_present", 0.25),
         ("failure_recorded", 0.25),
         ("budget_respected", 0.15),
+    ),
+    "upstream-independent-pair": (
+        ("verdict_correctness", 0.30),
+        ("no_false_independent_pair", 0.30),
+        ("independence_enforced", 0.20),
+        ("sources_known", 0.20),
     ),
     "fact-checker-live-verification": (
         ("evidence_linked", 0.30),
@@ -71,6 +82,18 @@ _ATTRIBUTION_CLAIM = (
 # claim's text prefix so Task 18's failure metric can recognize the failing
 # query, and the scenario keys the failing search under the full claim.
 _FAILING_QUERY_PREFIX = "Ocean heat content is still rising at the rate"
+
+# The upstream-independence case's two claims: one supported by a single
+# publisher's own two pages plus an attribution-only comment, one carried by
+# two separate works from two unrelated publishers.
+_UPSTREAM_TRAP_CLAIM = (
+    "Non-revenue water in Northfield's network measured 12 percent of "
+    "supply in 2025."
+)
+_UPSTREAM_CONTROL_CLAIM = (
+    "Northfield Water Authority replaced 41 kilometres of leaking mains "
+    "in 2025."
+)
 
 _IAEA_URL = "https://iaea.org/smr-safety-assessment"
 _WNA_URL = "https://world-nuclear.org/smr-safety-standards"
@@ -110,6 +133,20 @@ _IEA_URL = "https://iea.org/solar-pv-installed-capacity"
 _IRENA_URL = "https://irena.org/solar-capacity-statistics"
 _LIVE_URLS = (_IEA_URL, _IRENA_URL)
 
+# The upstream case: an agency order, the same agency's press release, a
+# policy lab's attribution-only page, and a wire story carrying the trap
+# claim — none of them on each other's registrable identity. The two
+# corroborating works arrive as scripted verification results instead.
+_AGENCY_URL = "https://commission.example.gov/order-2026-14"
+_AGENCY_PRESS_URL = "https://commission.example.gov/press/losses-target-2030"
+_LAB_URL = "https://leakagelab.example.org/commission-target"
+_WIRE_URL = "https://waterdesk.example.com/commission-losses-order"
+_UPSTREAM_URLS = (_AGENCY_URL, _AGENCY_PRESS_URL, _LAB_URL, _WIRE_URL)
+
+_MONITOR_URL = "https://lossesmonitor.example.net/2025-audit"
+_UNIVERSITY_URL = "https://audits.example.edu/2025-losses-study"
+_UPSTREAM_RESULT_URLS = (_MONITOR_URL, _UNIVERSITY_URL)
+
 _REFERENCES = {
     "mixed-verdicts": {
         "expected_verdicts": {
@@ -126,6 +163,22 @@ _REFERENCES = {
     "verification-search-failure": {
         "failing_query_prefix": _FAILING_QUERY_PREFIX,
         "conservative_verdicts": ["insufficient_evidence", "unverified"],
+    },
+    "upstream-independent-pair": {
+        "expected_verdicts": {
+            _UPSTREAM_TRAP_CLAIM: "insufficient_evidence",
+            _UPSTREAM_CONTROL_CLAIM: "verified",
+        },
+        "forbidden_verified_claims": [_UPSTREAM_TRAP_CLAIM],
+        "required_verified_claims": [_UPSTREAM_CONTROL_CLAIM],
+        "same_publisher_urls": [_AGENCY_URL, _AGENCY_PRESS_URL],
+        "dimension_only_urls": [_LAB_URL],
+        "corroborating_urls": [_MONITOR_URL, _UNIVERSITY_URL],
+        "claim_origin_urls": {
+            _UPSTREAM_TRAP_CLAIM: [_WIRE_URL],
+            _UPSTREAM_CONTROL_CLAIM: [_AGENCY_PRESS_URL],
+        },
+        "minimum_independent_domains": 2,
     },
     "fact-checker-live-verification": {
         "minimum_independent_domains": 2,
@@ -148,6 +201,12 @@ _RUBRIC_DIMENSIONS = {
         "evidence_grounding",
         "claim_fidelity",
         "conservatism_under_failure",
+    },
+    "upstream-independent-pair": {
+        "evidence_grounding",
+        "claim_fidelity",
+        "upstream_independence",
+        "dimension_specific_support",
     },
     "fact-checker-live-verification": {
         "evidence_grounding",
@@ -173,7 +232,7 @@ def _case(case_id: str):
     )
 
 
-def test_the_three_controlled_cases_are_registered() -> None:
+def test_the_controlled_cases_are_registered() -> None:
     assert tuple(
         case.case_id for case in cases_for("fact_checker", "controlled")
     ) == CONTROLLED
@@ -308,6 +367,100 @@ def test_the_search_failure_case_cites_exactly_its_four_urls() -> None:
     assert tuple(
         finding.source_url for finding in case.state.raw_findings
     ) == _FAILURE_URLS
+
+
+def test_the_upstream_case_cites_exactly_its_four_urls() -> None:
+    """The trap claim's three accounts are declared findings; the control
+    claim's two corroborating works are scripted verification results, so no
+    unsupported URL has to masquerade as a finding."""
+    case = _case("upstream-independent-pair")
+
+    assert tuple(
+        finding.source_url for finding in case.state.raw_findings
+    ) == _UPSTREAM_URLS
+
+
+def test_the_upstream_case_declares_every_url_its_scenario_serves() -> None:
+    case = _case("upstream-independent-pair")
+    script = SCENARIOS["fact-checker-upstream-independent-pair"]
+
+    assert set(case.expectations.known_source_urls) == set(
+        _UPSTREAM_URLS
+    ) | set(_UPSTREAM_RESULT_URLS)
+    readable = {
+        normalize_source_url(url) for url in script.http_pages
+    }
+    assert readable == set(case.expectations.known_source_urls)
+
+
+def test_the_upstream_case_scripts_one_search_per_claim() -> None:
+    """The scenario's search keys are exactly the two claim texts the case
+    pins, and each response serves the pages its claim needs: the trap's own
+    publisher plus an attribution-only comment, and the control's two
+    unrelated corroborators."""
+    script = SCENARIOS["fact-checker-upstream-independent-pair"]
+    case = _case("upstream-independent-pair")
+
+    assert set(script.search_responses) == set(
+        case.expectations.reference["expected_verdicts"]
+    )
+
+    trap_results = script.search_responses[_UPSTREAM_TRAP_CLAIM]["results"]
+    control_results = script.search_responses[_UPSTREAM_CONTROL_CLAIM][
+        "results"
+    ]
+
+    assert [result["url"] for result in trap_results] == [
+        _AGENCY_URL,
+        _AGENCY_PRESS_URL,
+        _LAB_URL,
+    ]
+    assert [result["url"] for result in control_results] == [
+        _MONITOR_URL,
+        _UNIVERSITY_URL,
+    ]
+
+
+def test_the_upstream_case_same_publisher_pair_shares_one_identity() -> None:
+    """The agency's order and its press release are one registrable publisher
+    — that is the defect the case stages — while the lab's page, the wire
+    story, the monitor, and the university are four more."""
+    case = _case("upstream-independent-pair")
+    reference = case.expectations.reference
+
+    agency, press = reference["same_publisher_urls"]
+    assert publisher_identity(agency) == publisher_identity(press)
+
+    others = {
+        publisher_identity(url)
+        for url in (
+            reference["dimension_only_urls"]
+            + reference["corroborating_urls"]
+        )
+    }
+    assert publisher_identity(agency) not in others
+    assert len(others) == 3
+
+
+def test_the_upstream_case_trap_origin_is_not_a_corroborating_work() -> None:
+    """The trap claim's declared origin sits on none of its apparent
+    corroborators' publishers, which is what makes the domain count pass on
+    the dimension-mismatch fixture while the case's own rule refuses the
+    pair."""
+    case = _case("upstream-independent-pair")
+    reference = case.expectations.reference
+
+    trap_origins = reference["claim_origin_urls"][_UPSTREAM_TRAP_CLAIM]
+    claimed = {publisher_identity(url) for url in trap_origins}
+
+    assert claimed & {
+        publisher_identity(url)
+        for url in (
+            reference["same_publisher_urls"]
+            + reference["dimension_only_urls"]
+        )
+    } == set()
+    assert publisher_identity(_WIRE_URL) in claimed
 
 
 def test_the_live_case_cites_exactly_its_two_urls() -> None:
@@ -499,6 +652,8 @@ def test_every_controlled_case_declares_its_scripted_urls() -> None:
             "https://agu.org/ocean-heat-attribution",
             "https://gcos.wmo.int/ocean-heat-bulletin",
         },
+        "upstream-independent-pair": set(_UPSTREAM_URLS)
+        | set(_UPSTREAM_RESULT_URLS),
     }
     for case_id, declared in expected.items():
         case = _case(case_id)

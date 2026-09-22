@@ -689,6 +689,29 @@ class SourceEvaluatorOutput(TargetOutput):
             update={"result": {**result, "evaluated_sources": sources}}
         )
 
+    def with_source_identity(
+        self, url: str, **fields: object
+    ) -> "SourceEvaluatorOutput":
+        """Rewrite one scored source's read-derived identity fields.
+
+        Publisher, work, transport relation, and role are the fields the
+        work-identity metrics read, so a mutation has to be able to set one of
+        them — including setting ``publisher_id`` to ``None`` — without
+        rebuilding the whole repetition. A url the fixture does not carry is a
+        typo, never a silent no-op.
+        """
+        result = dict(self.result or {})
+        sources = [dict(item) for item in (result.get("evaluated_sources") or [])]
+        for source in sources:
+            if source.get("url") == url:
+                source.update(fields)
+                break
+        else:
+            raise AssertionError(f"no evaluated source for {url}")
+        return self.model_copy(
+            update={"result": {**result, "evaluated_sources": sources}}
+        )
+
 
 class FactCheckerOutput(TargetOutput):
     """A fact-checker repetition with builder helpers.
@@ -794,6 +817,42 @@ class FactCheckerOutput(TargetOutput):
         claims = [dict(item) for item in (result.get("verified_claims") or [])]
         claims[0]["verdict"] = verdict
         claims[0]["confidence"] = confidence
+        return self.model_copy(
+            update={"result": {**result, "verified_claims": claims}}
+        )
+
+    def with_claim_fields(
+        self, index: int, **fields: object
+    ) -> "FactCheckerOutput":
+        """Rewrite one claim record's fields.
+
+        The helpers above patch ``claims[0]``; a fixture carrying more than
+        one claim needs to name the record it mutates, or an assertion about
+        the second claim is satisfied by a mutation that never touched it.
+        """
+        result = dict(self.result or {})
+        claims = [dict(item) for item in (result.get("verified_claims") or [])]
+        claims[index].update(fields)
+        return self.model_copy(
+            update={"result": {**result, "verified_claims": claims}}
+        )
+
+    def with_claim_passages(
+        self, index: int, urls: Sequence[str]
+    ) -> "FactCheckerOutput":
+        """Replace one claim's verification passages with one per URL."""
+        result = dict(self.result or {})
+        claims = [dict(item) for item in (result.get("verified_claims") or [])]
+        claims[index]["verification_evidence"] = [
+            {
+                "source_url": url,
+                "source_title": "Second account of the same number",
+                "locator": f"p. {position + 1}",
+                "excerpt": "A second account states the same figure.",
+                "stance": "supports",
+            }
+            for position, url in enumerate(urls)
+        ]
         return self.model_copy(
             update={"result": {**result, "verified_claims": claims}}
         )
@@ -939,6 +998,22 @@ def scoped_targets_case() -> EvaluationCase:
 def read_bearing_case() -> EvaluationCase:
     """The researcher case whose contract polices read-bearing provenance."""
     return case_by_id("researcher", "controlled", "read-bearing-acquisition")
+
+
+@pytest.fixture
+def work_role_case() -> EvaluationCase:
+    """The source-evaluator case whose contract polices work identity."""
+    return case_by_id(
+        "source_evaluator", "controlled", "work-role-independence"
+    )
+
+
+@pytest.fixture
+def upstream_pair_case() -> EvaluationCase:
+    """The fact-checker case whose contract polices upstream independence."""
+    return case_by_id(
+        "fact_checker", "controlled", "upstream-independent-pair"
+    )
 
 
 @pytest.fixture
@@ -1386,6 +1461,123 @@ def source_evaluator_output(
     )
 
 
+# The survey's publisher as a read-backed assessment resolves it: the
+# evidenced issuer's own words, which is what the identity code derives when a
+# document says who published it. The mirror and the wire reprint name the same
+# institute, so they resolve to the same identity — that is the whole point of
+# the case — while the university's study keeps its own.
+_SURVEY_PUBLISHER_ID = "national soil baseline institute"
+_SURVEY_WORK_ID = "report:national soil baseline institute:sc-2026-04"
+
+
+@pytest.fixture
+def work_role_output(work_role_case) -> SourceEvaluatorOutput:
+    """One evaluation per finding, with the survey's copies labelled.
+
+    The identity fields are the ones the work-identity metrics read, carrying
+    the shape a correct run produces: the repository copy and the wire reprint
+    inherit the survey's publisher identity and a derivative transport
+    relation, and the university's own study keeps its own identity. The
+    original's work key is the one the shared issuer and report number
+    resolve to.
+    """
+    reference = work_role_case.expectations.reference
+    original, mirror, wire = reference["same_work_urls"]
+    independent = reference["independent_work_urls"][0]
+    return SourceEvaluatorOutput(
+        case_id=work_role_case.case_id,
+        case_version=work_role_case.version,
+        agent_name=work_role_case.agent_name,
+        tier=work_role_case.tier,
+        repetition=1,
+        session_id="evaluation-work-role-independence",
+        experiment_name="source-evaluator-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/source-evaluator-2",
+        completed=True,
+        failure=None,
+        result={
+            "evaluated_sources": [
+                {
+                    "url": original,
+                    "title": "National soil carbon baseline survey 2025",
+                    "authority_score": 0.88,
+                    "recency_score": 0.85,
+                    "relevance_score": 0.90,
+                    "overall_score": 0.87,
+                    "rationale": "The institute's own survey report.",
+                    "evaluation_status": "scored",
+                    "low_confidence": False,
+                    "source_role": "original_report",
+                    "transport_relation": "original",
+                    "publisher_id": _SURVEY_PUBLISHER_ID,
+                    "work_id": _SURVEY_WORK_ID,
+                },
+                {
+                    "url": mirror,
+                    "title": "Repository record: soil carbon baseline survey",
+                    "authority_score": 0.85,
+                    "recency_score": 0.80,
+                    "relevance_score": 0.90,
+                    "overall_score": 0.85,
+                    "rationale": "The archived copy of the same survey.",
+                    "evaluation_status": "scored",
+                    "low_confidence": False,
+                    "source_role": "derivative",
+                    "transport_relation": "mirror",
+                    "publisher_id": _SURVEY_PUBLISHER_ID,
+                    "work_id": _SURVEY_WORK_ID,
+                },
+                {
+                    "url": wire,
+                    "title": "Wire reprint: soil carbon baseline survey",
+                    "authority_score": 0.60,
+                    "recency_score": 0.80,
+                    "relevance_score": 0.85,
+                    "overall_score": 0.72,
+                    "rationale": "A reprint that adds no new reporting.",
+                    "evaluation_status": "scored",
+                    "low_confidence": False,
+                    "source_role": "derivative",
+                    "transport_relation": "syndication",
+                    "publisher_id": _SURVEY_PUBLISHER_ID,
+                    "work_id": _SURVEY_WORK_ID,
+                },
+                {
+                    "url": independent,
+                    "title": "University soil study: regional carbon baseline",
+                    "authority_score": 0.80,
+                    "recency_score": 0.82,
+                    "relevance_score": 0.78,
+                    "overall_score": 0.80,
+                    "rationale": "A separate group's own measurements.",
+                    "evaluation_status": "scored",
+                    "low_confidence": False,
+                    "source_role": "independent_research",
+                    "transport_relation": "original",
+                    "publisher_id": "soilstudies.example.edu",
+                    "work_id": "sha256:" + "b" * 64,
+                },
+            ]
+        },
+        state_update={},
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=2,
+            tool_calls=4,
+            stop_reason="finished",
+            max_iterations=work_role_case.expectations.max_iterations,
+            tool_budget=work_role_case.expectations.max_tool_calls,
+        ),
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(),
+        trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="low",
+    )
+
+
 @pytest.fixture
 def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
     """One verified claim whose evidence spans two independent domains."""
@@ -1569,6 +1761,145 @@ def fact_checker_dependent_output(
                 "https://syndication.news.example.com/outage-minutes-fall",
             ]
         ),
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="low",
+    )
+
+
+@pytest.fixture
+def upstream_pair_output(upstream_pair_case) -> FactCheckerOutput:
+    """The case's two claims as a correct run records them.
+
+    The trap claim is supported by the commission's own order and its own
+    press release — one publisher, so ``insufficient_evidence`` with a
+    ``source_supported`` badge, never a pair. The control claim rests on two
+    separate works by two unrelated publishers, so it carries the pair badge.
+    Both claim texts and every URL come from the case's reference, so a
+    mutation cannot drift from what the case declares.
+    """
+    reference = upstream_pair_case.expectations.reference
+    trap = reference["forbidden_verified_claims"][0]
+    control = reference["required_verified_claims"][0]
+    agency, press = reference["same_publisher_urls"]
+    lab = reference["dimension_only_urls"][0]
+    monitor, university = reference["corroborating_urls"]
+    read_urls = [agency, press, lab, monitor, university]
+    return FactCheckerOutput(
+        case_id=upstream_pair_case.case_id,
+        case_version=upstream_pair_case.version,
+        agent_name=upstream_pair_case.agent_name,
+        tier=upstream_pair_case.tier,
+        repetition=1,
+        session_id="evaluation-upstream-independent-pair",
+        experiment_name="fact-checker-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/fact-checker-3",
+        completed=True,
+        failure=None,
+        result={
+            "verified_claims": [
+                {
+                    "text": trap,
+                    "claim_id": claim_fingerprint(trap),
+                    "source_urls": list(
+                        reference["claim_origin_urls"][trap]
+                    ),
+                    "verdict": "insufficient_evidence",
+                    "confidence": 0.40,
+                    "evidence": [
+                        "Order 2026-14 records non-revenue water at "
+                        "12 percent of supply in 2025.",
+                        "The commission's press release repeats the "
+                        "12 percent of supply figure for 2025.",
+                    ],
+                    "contradictions": [],
+                    "evidence_status": "source_supported",
+                    "verification_evidence": [
+                        {
+                            "source_url": agency,
+                            "source_title": "Commission order 2026-14",
+                            "locator": "p. 3",
+                            "excerpt": (
+                                "Order 2026-14 requires the authority to "
+                                "reduce non-revenue water to 8 percent of "
+                                "supply by 2030, from the 12 percent of "
+                                "supply measured in 2025."
+                            ),
+                            "stance": "supports",
+                        },
+                        {
+                            "source_url": press,
+                            "source_title": "Commission press release",
+                            "locator": "p. 1",
+                            "excerpt": (
+                                "The commission confirmed that non-revenue "
+                                "water in the authority's network measured "
+                                "12 percent of supply in 2025."
+                            ),
+                            "stance": "supports",
+                        },
+                    ],
+                },
+                {
+                    "text": control,
+                    "claim_id": claim_fingerprint(control),
+                    "source_urls": list(
+                        reference["claim_origin_urls"][control]
+                    ),
+                    "verdict": "verified",
+                    "confidence": 0.85,
+                    "evidence": [
+                        "The monitor's 2025 audit records 41 kilometres of "
+                        "leaking mains replaced.",
+                        "The university's regional study records 41 "
+                        "kilometres of mains replaced.",
+                    ],
+                    "contradictions": [],
+                    "evidence_status": "verified_pair",
+                    "verification_evidence": [
+                        {
+                            "source_url": monitor,
+                            "source_title": "Utility monitor: 2025 audit",
+                            "locator": "p. 2",
+                            "excerpt": (
+                                "The 2025 network audit records 41 "
+                                "kilometres of leaking mains replaced by "
+                                "the authority."
+                            ),
+                            "stance": "supports",
+                        },
+                        {
+                            "source_url": university,
+                            "source_title": "University regional study",
+                            "locator": "p. 4",
+                            "excerpt": (
+                                "The regional study records 41 kilometres "
+                                "of leaking mains replaced in the "
+                                "authority's network during 2025."
+                            ),
+                            "stance": "supports",
+                        },
+                    ],
+                },
+            ]
+        },
+        state_update={},
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=4,
+            tool_calls=5,
+            stop_reason="finished",
+            max_iterations=upstream_pair_case.expectations.max_iterations,
+            tool_budget=upstream_pair_case.expectations.max_tool_calls,
+        ),
+        dependencies=_read_ledger(read_urls),
+        evidence=EvidenceContext(
+            scripted_search_urls=list(
+                upstream_pair_case.expectations.known_source_urls
+            )
+        ),
+        trajectory=_read_trajectory(read_urls),
         target_model_requested="gpt-5.6-luna",
         target_model_returned="gpt-5.6-luna",
         target_reasoning_effort="low",

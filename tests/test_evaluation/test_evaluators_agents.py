@@ -1135,3 +1135,214 @@ def test_critic_self_agreement_is_recorded_as_not_ground_truth() -> None:
     assert report.self_agreement_is_ground_truth is False
     assert "not ground truth" in report.basis
 
+
+# --- Task 12: work-role independence ----------------------------------------
+
+
+def _work_role_urls(work_role_case) -> list[str]:
+    reference = work_role_case.expectations.reference
+    return [*reference["same_work_urls"], *reference["independent_work_urls"]]
+
+
+def _evaluated_row(output, url: str) -> dict:
+    return next(
+        row for row in output.result["evaluated_sources"] if row["url"] == url
+    )
+
+
+def test_a_work_role_run_scores_its_metrics_one(
+    work_role_case, work_role_output
+) -> None:
+    for metric_id in (
+        "mirror_not_a_new_work",
+        "independent_work_recognized",
+        "one_evaluation_per_source",
+        "bounded_scores",
+    ):
+        assert (
+            metric_score(work_role_output, work_role_case, metric_id) == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            work_role_output,
+            work_role_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_a_repository_copy_labelled_the_original_is_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """The case's risk in its most literal form: the archive copy claims to
+    be the original publication, published by someone else. One work has
+    become two, and every downstream independence count inherits it."""
+    mirror = work_role_case.expectations.reference["same_work_urls"][1]
+    output = work_role_output.with_source_identity(
+        mirror, transport_relation="original", publisher_id="example.org"
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 0.0
+    assert (
+        metric_score(output, work_role_case, "independent_work_recognized")
+        == 1.0
+    )
+
+
+def test_an_independent_work_given_the_original_publisher_scores_zero(
+    work_role_case, work_role_output
+) -> None:
+    """Collapsing the university's own study into the survey's publisher
+    reports one publisher where the run retrieved two — the independence
+    count downstream inherits that loss too."""
+    reference = work_role_case.expectations.reference
+    original = _evaluated_row(work_role_output, reference["original_url"])
+    independent = reference["independent_work_urls"][0]
+    output = work_role_output.with_source_identity(
+        independent, publisher_id=original["publisher_id"]
+    )
+
+    assert (
+        metric_score(output, work_role_case, "independent_work_recognized")
+        == 0.0
+    )
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
+
+
+def test_unknown_identity_asserts_nothing_and_recognizes_nothing(
+    work_role_case, work_role_output
+) -> None:
+    """The asymmetry between the two metrics is the design.
+
+    ``mirror_not_a_new_work`` asks whether the run asserted a false second
+    work; a row that records no identity asserted nothing, so the metric
+    passes. ``independent_work_recognized`` asks whether the run recognized
+    the genuinely separate work; unknown identity cannot recognize it, so the
+    metric fails. Both outcomes belong to the same artifact: labelling
+    everything unknown is exactly the behaviour the second metric exists to
+    refuse, and it is not something to paper over by making the first fail.
+    """
+    output = work_role_output
+    for url in _work_role_urls(work_role_case):
+        output = output.with_source_identity(
+            url,
+            transport_relation="unknown",
+            source_role="unknown",
+            publisher_id=None,
+        )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
+    assert (
+        metric_score(output, work_role_case, "independent_work_recognized")
+        == 0.0
+    )
+
+
+# --- Task 12: upstream independence -----------------------------------------
+
+
+def test_an_upstream_independent_pair_run_scores_its_metrics_one(
+    upstream_pair_case, upstream_pair_output
+) -> None:
+    for metric_id in (
+        "verdict_correctness",
+        "no_false_independent_pair",
+        "independence_enforced",
+        "sources_known",
+    ):
+        assert (
+            metric_score(upstream_pair_output, upstream_pair_case, metric_id)
+            == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            upstream_pair_output,
+            upstream_pair_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_one_publishers_two_accounts_are_not_an_independent_pair(
+    upstream_pair_case, upstream_pair_output
+) -> None:
+    """Flavour 1 of the Bug 1 defect class: the agency's order and that same
+    agency's press release. Both rules see it — no publisher may corroborate
+    itself — while the ordinary citation gate passes, because both URLs were
+    legitimately retrieved."""
+    reference = upstream_pair_case.expectations.reference
+    output = upstream_pair_output.with_claim_fields(
+        0, verdict="verified", evidence_status="verified_pair"
+    ).with_claim_passages(0, reference["same_publisher_urls"])
+
+    assert (
+        gate(
+            evaluate_general_gates(output, upstream_pair_case, secrets=()),
+            "citations_known",
+        ).passed
+        is True
+    )
+    assert (
+        metric_score(output, upstream_pair_case, "no_false_independent_pair")
+        == 0.0
+    )
+    assert (
+        metric_score(output, upstream_pair_case, "independence_enforced")
+        == 0.0
+    )
+
+
+def test_a_second_domain_vouching_only_for_attribution_is_not_a_pair(
+    upstream_pair_case, upstream_pair_output
+) -> None:
+    """Flavour 2, and the reason ``no_false_independent_pair`` is not a
+    second name for the domain count.
+
+    The mutated trap claim rests on the commission's order and the policy
+    lab's page: two genuinely distinct registrable domains, neither of them
+    an origin the claim was taken from, so ``independence_enforced`` PASSES —
+    domain arithmetic cannot see that the lab's page vouches only for who
+    said it, carrying neither the value nor the period the claim needs.
+    ``no_false_independent_pair`` FAILS, because that claim is one the case
+    declares must not be verified however many domains its passages span.
+    The two metrics disagree here by design; a metric that only ever agreed
+    with the domain count would be a duplicate and this case would not need
+    it.
+    """
+    reference = upstream_pair_case.expectations.reference
+    agency = reference["same_publisher_urls"][0]
+    lab = reference["dimension_only_urls"][0]
+    output = upstream_pair_output.with_claim_fields(
+        0, verdict="verified", evidence_status="verified_pair"
+    ).with_claim_passages(0, [agency, lab])
+
+    assert (
+        metric_score(output, upstream_pair_case, "independence_enforced") == 1.0
+    )
+    assert (
+        metric_score(output, upstream_pair_case, "no_false_independent_pair")
+        == 0.0
+    )
+
+
+def test_abstaining_on_every_claim_scores_verdict_correctness_zero(
+    upstream_pair_case, upstream_pair_output
+) -> None:
+    """The control claim is mandatory: a run that refuses to verify anything
+    must not collect the case's weight by staying silent."""
+    output = upstream_pair_output.with_claim_fields(
+        0, verdict="insufficient_evidence", evidence_status=None, evidence=[]
+    ).with_claim_fields(
+        1, verdict="insufficient_evidence", evidence_status=None, evidence=[]
+    )
+
+    assert (
+        metric_score(output, upstream_pair_case, "verdict_correctness") == 0.0
+    )
+    assert (
+        metric_score(output, upstream_pair_case, "no_false_independent_pair")
+        == 1.0
+    )
+
