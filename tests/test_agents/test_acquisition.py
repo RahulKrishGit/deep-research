@@ -28,6 +28,8 @@ from deep_research.agents.researcher import (
 )
 from deep_research.agents.steps import ReActDecision, ReActObservation, ReActStep
 from deep_research.agents.toolset import AgentToolset
+from deep_research.graph.nodes import agent_node
+from deep_research.graph.state import dump_state, load_state
 from deep_research.tools.base import BaseTool, ToolError, ToolResult
 from deep_research.tools.document_reader import DocumentReaderTool
 from deep_research.tools.passage_selection import select_relevant_passages
@@ -42,6 +44,7 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 from tests.agent_fakes import EchoTool, agent_scope, finish, use_tool
+from tests.graph_fakes import FakeAgent, fake_research_state
 from tests.research_fakes import (
     FakeSearchClient,
     page_client,
@@ -792,6 +795,92 @@ def test_a_retryable_extraction_failure_leaves_the_reads_pending() -> None:
     policy.complete_extraction()
 
     assert policy.state.pending_extraction_ids == []
+
+
+def _failed_read_step(
+    tool_name: str,
+    url: str,
+    *,
+    error_type: str,
+    iteration: int,
+) -> ReActStep:
+    """One failed read attempt, as the loop hands it to the policy."""
+    return ReActStep(
+        iteration=iteration,
+        thought="Read it.",
+        action="use_tool",
+        tool_name=tool_name,
+        tool_input={"url": url} if tool_name == "web_scraper" else {"source": url},
+        observation=ReActObservation(
+            tool_name=tool_name,
+            success=False,
+            summary="no usable body",
+            error_type=error_type,
+        ),
+        tool_result=ToolResult(
+            tool_name=tool_name,
+            success=False,
+            data=None,
+            error=ToolError(type=error_type, message="no usable body"),
+            latency_ms=0,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_url_that_fails_twice_records_both_attempts_without_halting() -> None:
+    """The designed PDF fallback can fail twice, and the run must survive it.
+
+    ``web_scraper`` refusing a URL as ``unsupported_content_type`` sends
+    ``document_reader`` at that same URL by design. When that read fails too,
+    each attempt is its own fact — a different reader, a different failure —
+    so both stay visible. Giving both attempts one identity made the second a
+    contradiction for an item that already had a reason;
+    ``merge_evidence_dispositions`` refuses those by raising, and the node
+    turns that ``ValueError`` into ``graph_invalid_agent_state``: the run ends
+    failed and publishes nothing.
+    """
+    url = "https://agency.example/looks-like-html"
+    policy = _policy(candidate_urls=[url, "https://agency.example/other"])
+
+    refused = policy.before_action(_read_decision("web_scraper", url), {"url": url})
+    policy.after_action(
+        _failed_read_step(
+            "web_scraper", url, error_type="unsupported_content_type", iteration=1
+        ),
+        {"url": url},
+    )
+    fallback = policy.before_action(
+        _read_decision("document_reader", url), {"source": url}
+    )
+    policy.after_action(
+        _failed_read_step(
+            "document_reader",
+            url,
+            error_type="document_extraction_failed",
+            iteration=2,
+        ),
+        {"source": url},
+    )
+
+    # Both reads were allowed: the fallback is the design, not a violation.
+    assert refused.allowed is True
+    assert fallback.allowed is True
+
+    # The pass's own update reaches the graph intact: no halt, and both
+    # attempts on the record.
+    agent = FakeAgent(
+        "researcher", [{"evidence_dispositions": list(policy.dispositions)}]
+    )
+    state = load_state(await agent_node(agent)(dump_state(fake_research_state())))
+
+    assert state.errors == []
+    attempts = [item for item in state.evidence_dispositions if item.stage == "read-selection"]
+    assert [item.reason for item in attempts] == [
+        "unsupported_content_type",
+        "document_extraction_failed",
+    ]
+    assert len({item.item_id for item in attempts}) == 2
 
 
 def test_both_targets_survive_a_second_admission_of_one_body() -> None:
