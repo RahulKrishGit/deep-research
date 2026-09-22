@@ -55,6 +55,7 @@ from deep_research.e2e_evaluation.replay import (
     run_replay_scenario,
 )
 from deep_research.e2e_evaluation.replay_matrix import (
+    GRAPH_ONLY_HISTORICAL_MANIFEST,
     REPLAY_CASE_MANIFEST,
     REPLAY_CASE_MANIFEST_VERSION,
     REPLAY_CASE_VERSION,
@@ -89,6 +90,17 @@ SUITE_MODES = (REAL_AGENT_MODE, GRAPH_HISTORICAL_MODE)
 # the other's.
 REPLAY_SUITE_FILENAME = "replay-suite.json"
 _REPLAY_STORAGE_DIRECTORY = "replay"
+
+# What each harness is, in the words its own output uses. A reader who sees
+# only the terminal gets the same disclosure the artifact's `mode` carries:
+# which agents produced the numbers, and whether the result is release
+# evidence at all.
+AGENTS_PRODUCTION = "Agents: production classes through the real graph"
+AGENTS_SCRIPTED = (
+    "Agents: SCRIPTED DOUBLES, not production classes — historical regression "
+    "only.",
+    "        This mode is not release evidence for the real agents.",
+)
 
 _AS_OF_PREFIX = "**As of:**"
 _REFERENCE_LINE = re.compile(r"^(\d+)\. (.*)$")
@@ -639,9 +651,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     options = build_parser().parse_args(argv)
     try:
         if options.command == "list":
-            print("Controlled whole-report cases (network-zero):")
-            for case in controlled_cases():
-                print(f"  {case.case_id}: {case.title}")
+            print(
+                real_agent_mode_label(
+                    len(REPLAY_CASE_MANIFEST),
+                    manifest_version=REPLAY_CASE_MANIFEST_VERSION,
+                    case_version=REPLAY_CASE_VERSION,
+                )
+            )
+            print(AGENTS_PRODUCTION)
+            for entry in REPLAY_CASE_MANIFEST:
+                print(f"  {entry.case_id}: {entry.title}")
+            print(
+                graph_historical_mode_label(len(GRAPH_ONLY_HISTORICAL_MANIFEST))
+            )
+            for line in AGENTS_SCRIPTED:
+                print(line)
+            for entry in GRAPH_ONLY_HISTORICAL_MANIFEST:
+                print(f"  {entry.case_id}: {entry.title}")
             print("Live cases: declared only; no live runner exists")
             for case_id in LIVE_CASE_IDS:
                 print(f"  {case_id}")
@@ -681,9 +707,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
 
+def real_agent_mode_label(
+    cases: int, *, manifest_version: int, case_version: int
+) -> str:
+    """The harness, the inventory it was read from, and its semantics version."""
+    return (
+        f"Mode: {REAL_AGENT_MODE} ({cases} cases from replay manifest "
+        f"v{manifest_version}, case semantics v{case_version})"
+    )
+
+
+def graph_historical_mode_label(cases: int) -> str:
+    return (
+        f"Mode: {GRAPH_HISTORICAL_MODE} "
+        f"({cases} legacy ScriptedGraphAgent cases)"
+    )
+
+
 def real_agent_suite_lines(suite: ReplaySuiteResult) -> list[str]:
-    """The real-agent suite's own output, one line each."""
+    """The real-agent suite's own output, one line each.
+
+    The two header lines come first and are not optional: a per-case line
+    reading "passed" is a claim about the six production agents, and a reader
+    who was not told which harness ran cannot tell that claim from its
+    opposite.
+    """
     lines = [
+        real_agent_mode_label(
+            len(suite.cases),
+            manifest_version=suite.manifest_version,
+            case_version=suite.case_version,
+        ),
+        AGENTS_PRODUCTION,
+    ]
+    lines += [
         (
             f"{case.case_id}: {'passed' if case.passed else 'failed'} "
             f"({len(case.repetitions)} repetitions, "
@@ -703,8 +760,17 @@ def real_agent_suite_lines(suite: ReplaySuiteResult) -> list[str]:
 
 
 def graph_historical_suite_lines(result: CampaignResult) -> list[str]:
-    """The historical suite's own output, one line each."""
+    """The historical suite's own output, one line each.
+
+    The header is longer here than for the real-agent mode on purpose: an
+    unlabelled "accepted" from a scripted double is exactly the reading this
+    mode's output exists to prevent.
+    """
     lines = [
+        graph_historical_mode_label(len(result.cases)),
+        *AGENTS_SCRIPTED,
+    ]
+    lines += [
         (
             f"{case.case_id}: {'accepted' if case.accepted else 'failed'}; "
             f"coverage {case.mean_coverage:.2f}; "

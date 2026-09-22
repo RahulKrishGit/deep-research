@@ -21,8 +21,14 @@ from deep_research.e2e_evaluation.cases import (
     scripted_research_agents,
 )
 from deep_research.e2e_evaluation.evaluators import deterministic_evaluation
-from deep_research.e2e_evaluation.models import CaseCampaignResult, ReplaySuiteResult
+from deep_research.e2e_evaluation.models import (
+    CaseCampaignResult,
+    ReplayCaseResult,
+    ReplayRepetitionResult,
+    ReplaySuiteResult,
+)
 from deep_research.e2e_evaluation.replay_matrix import (
+    GRAPH_ONLY_HISTORICAL_MANIFEST,
     REPLAY_CASE_IDS,
     REPLAY_CASE_MANIFEST,
 )
@@ -30,6 +36,8 @@ from deep_research.e2e_evaluation.runner import (
     LIVE_TIER_NOT_RUN,
     build_judge_metadata,
     build_parser,
+    network_line,
+    real_agent_suite_lines,
     run_case,
     run_replay_suite,
     run_suite,
@@ -676,6 +684,167 @@ def test_the_replay_suite_runs_the_whole_manifest_not_the_three_legacy_rows(
     )
     assert [case.case_id for case in restored.cases] == list(REPLAY_CASE_IDS)
     assert restored.cases[0].repetitions[0].report_fingerprint
+
+
+def _stub_replay_suite(
+    *, cases: int, attempts: tuple[str, ...] = (), passed: bool = True
+) -> ReplaySuiteResult:
+    """A suite result to render, so a disclosure test need not run one."""
+    rows = [
+        ReplayCaseResult(
+            case_id=f"row-{index}",
+            version=1,
+            expected_product_result="accepted / 0",
+            decisive_assertion="stub",
+            repetitions=[
+                ReplayRepetitionResult(
+                    case_id=f"row-{index}",
+                    repetition=number,
+                    session_id=f"replay-row-{index}-r{number}",
+                    terminal_quality="accepted",
+                    exit_code=0,
+                    expectation_failures=[] if passed else ["stub failure"],
+                    answered_target_ids=["topic-01-target-01"],
+                    network_attempts=(
+                        list(attempts) if (index, number) == (1, 1) else []
+                    ),
+                    report_fingerprint="0" * 64,
+                )
+                for number in range(1, 4)
+            ],
+            deterministic=True,
+            passed=passed,
+        )
+        for index in range(1, cases + 1)
+    ]
+    return ReplaySuiteResult(
+        campaign_id="controlled-replay-stub",
+        tier="controlled",
+        mode="real-agent",
+        manifest_version=1,
+        case_version=1,
+        repetitions=3,
+        cases=rows,
+        accepted=passed and not attempts,
+        artifact_path="output/evaluations/e2e/replay-suite.json",
+    )
+
+
+def test_the_real_agent_output_names_the_harness_before_the_results() -> None:
+    """Which agents ran is the first thing a reader has to be told.
+
+    Both whole-branch reviews on this task flagged prose-only disclosure: a
+    ledger saying "real agents" is not disclosure if the command's own output
+    does not say it. The line names the harness, the inventory it was read
+    from, and where the evidence landed, in the output itself.
+    """
+    suite = _stub_replay_suite(cases=18)
+
+    lines = real_agent_suite_lines(suite)
+
+    assert lines[:2] == [
+        "Mode: real-agent (18 cases from replay manifest v1, case semantics v1)",
+        "Agents: production classes through the real graph",
+    ]
+    assert [
+        f"row-{index}: passed (3 repetitions, deterministic)"
+        for index in range(1, 19)
+    ] == lines[2:-3]
+    assert lines[-3:] == [
+        "Suite: accepted (3 repetitions per case, 18/18 rows)",
+        "Artifact: output/evaluations/e2e/replay-suite.json",
+        "Network: zero (socket layer denied; 0 attempts recorded)",
+    ]
+
+
+def test_the_network_line_reports_attempts_rather_than_claiming_zero() -> None:
+    """A suite that reached the network cannot print the zero line."""
+    attempted = _stub_replay_suite(
+        cases=1,
+        attempts=("('agency.test', 443)", "('agency.test', 80)"),
+    )
+
+    assert network_line(attempted) == (
+        "Network: NOT zero (socket layer denied; 2 attempts recorded)"
+    )
+    assert attempted.accepted is False
+
+
+def test_the_suite_command_prints_the_real_agent_disclosure(
+    monkeypatch, capsys
+) -> None:
+    """No --mode means the real agents, and the output says so."""
+    stub = _stub_replay_suite(cases=2)
+    monkeypatch.setattr(campaign_runner, "run_replay_suite", lambda **_: stub)
+
+    code = campaign_runner.main(
+        ["suite", "--tier", "controlled", "--repetitions", "3"]
+    )
+    printed = capsys.readouterr().out.splitlines()
+
+    assert code == 0
+    assert printed == real_agent_suite_lines(stub)
+    assert printed[0].startswith("Mode: real-agent")
+    assert "SCRIPTED" not in "\n".join(printed)
+
+
+def test_the_graph_historical_mode_says_it_runs_scripted_doubles(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """The historical harness runs, and its output refuses to be read as proof.
+
+    The three legacy rows are still a real regression — they are the product
+    result recorded when the only agents were scripted doubles — so the mode
+    stays runnable. What it may never do is print a result that a reader could
+    take for real-agent evidence, so the label names the doubles and says what
+    the mode is not.
+    """
+    monkeypatch.setattr(campaign_runner, "DEFAULT_OUTPUT_DIRECTORY", tmp_path)
+
+    code = campaign_runner.main(
+        [
+            "suite",
+            "--tier",
+            "controlled",
+            "--mode",
+            "graph-historical",
+            "--repetitions",
+            "3",
+        ]
+    )
+    printed = capsys.readouterr().out.splitlines()
+
+    assert code == 0
+    assert printed[:3] == [
+        "Mode: graph-historical (3 legacy ScriptedGraphAgent cases)",
+        "Agents: SCRIPTED DOUBLES, not production classes — historical "
+        "regression only.",
+        "        This mode is not release evidence for the real agents.",
+    ]
+    assert printed[-2:] == [
+        f"Artifact: {tmp_path / 'suite.json'}",
+        "Network: zero (scripted dependencies only)",
+    ]
+    assert tmp_path.joinpath("suite.json").is_file()
+    assert not tmp_path.joinpath("replay-suite.json").exists()
+
+
+def test_the_list_command_shows_both_inventories_and_both_labels(capsys) -> None:
+    code = campaign_runner.main(["list"])
+    printed = capsys.readouterr().out.splitlines()
+
+    assert code == 0
+    text = "\n".join(printed)
+    assert "Mode: real-agent" in text
+    assert "Agents: production classes through the real graph" in text
+    assert "Mode: graph-historical" in text
+    assert "SCRIPTED DOUBLES, not production classes" in text
+    for case_id in REPLAY_CASE_IDS:
+        assert f"  {case_id}: " in text
+    for entry in GRAPH_ONLY_HISTORICAL_MANIFEST:
+        assert f"  {entry.case_id}: " in text
+    for case_id in LIVE_CASE_IDS:
+        assert f"  {case_id}" in text
 
 
 def test_the_replay_suite_is_bounded_to_exactly_three_repetitions(tmp_path) -> None:
