@@ -1920,6 +1920,78 @@ async def test_findings_merge_into_research_state(tracker: Tracker) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_second_researcher_does_not_remint_used_audit_ids(
+    tracker: Tracker,
+) -> None:
+    """A fresh ``ResearcherAgent`` built against a state that already carries
+    boundary audits must not remint sequence numbers an earlier instance
+    already used for the same ``(job, agent, operation)`` triple.
+
+    Bug 3 (latent, currently unreachable in production): each agent's audit
+    sequence counter lives only on the instance, seeded to 0 in ``__init__``
+    and never re-seeded from ``state.boundary_audits`` in ``run()``. A second
+    construction against a state that already holds audits therefore re-mints
+    ids ``merge_boundary_audits`` has already claimed for this agent and
+    operation, with different contents, and ``merge_research_state`` raises
+    ``EvidenceIdentityConflict``.
+    """
+    first_completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(),
+        outputs=[_findings_draft()],
+    )
+    first_agent = _researcher(tracker, first_completer)
+    state = _state(sub_topics=[_sub_topic("Alpha", 1, coverage_id="topic-01")])
+
+    async with tracker.session_span("session-1", "q"):
+        first_outcome = await first_agent.run(state)
+    merged = merge_research_state(state, first_outcome.state_update)
+    first_ids = set(merged.boundary_audits)
+    # Sanity: the fixture must actually exercise the minting path, or the
+    # rest of this test would pass vacuously.
+    assert first_ids
+
+    # A fresh instance, as a checkpoint restore or any other re-construction
+    # against already-populated state would produce. Its own
+    # ``_run_audit_sequence`` starts at 0 again. It works a *different*
+    # sub-topic/target than the first run so its own acquisition state is not
+    # carried over from ``merged`` (which would just skip the read as already
+    # satisfied for that target) — but it scrapes the same URL, which the
+    # first run's ``read_records`` already cached, so this run's read is
+    # served from the shared cache. That is exactly the boundary-audit path
+    # (``AcquisitionPolicy._read_observed``'s cache-admission branch) a
+    # checkpoint-restored second instance would hit for any repeat read
+    # anywhere in the job, and it mints a manifest whose id depends only on
+    # (job, agent, operation, sequence) — never on the target — so a sequence
+    # restarted at 0 collides with the first run's own sequence-0 manifest,
+    # which was minted for a different target and therefore differs in
+    # content.
+    second_completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(),
+        outputs=[SubTopicFindingsDraft(findings=[])],
+    )
+    second_agent = _researcher(tracker, second_completer)
+    # The same merged state a checkpoint restore would hand a freshly
+    # constructed agent, except the sub-topic list now names the new target a
+    # later pass (for example, a Critic gap) would add — ``topic-01`` is
+    # already fully read and would otherwise short-circuit with no new tool
+    # call at all.
+    state_for_second_run = merged.model_copy(
+        update={"sub_topics": [_sub_topic("Beta", 1, coverage_id="topic-02")]}
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        second_outcome = await second_agent.run(state_for_second_run)
+    final = merge_research_state(state_for_second_run, second_outcome.state_update)
+
+    second_new_ids = set(final.boundary_audits) - first_ids
+    # Sanity: the second run must also have minted something new, or the
+    # disjointness assertion below would pass vacuously too.
+    assert second_new_ids
+    assert second_new_ids.isdisjoint(first_ids)
+    assert len(final.boundary_audits) > len(merged.boundary_audits)
+
+
+@pytest.mark.asyncio
 async def test_the_researcher_reports_counts_and_stop_reason_per_sub_topic(
     tracker: Tracker,
 ) -> None:

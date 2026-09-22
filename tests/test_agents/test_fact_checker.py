@@ -5903,6 +5903,113 @@ async def test_a_refinement_pass_keeps_the_stored_cluster_identity(
 
 
 @pytest.mark.asyncio
+async def test_a_second_fact_checker_does_not_remint_used_audit_ids(
+    tracker: Tracker,
+) -> None:
+    """A fresh ``FactCheckerAgent`` built against a state that already carries
+    boundary audits must not remint sequence numbers an earlier instance
+    already used for the same ``(job, agent, operation)`` triple.
+
+    Bug 3 (latent, currently unreachable in production): ``_audit_sequence``
+    lives only on the instance, reset to 0 in ``__init__`` and never
+    re-seeded from ``state.boundary_audits`` when a pass starts. A second
+    construction against a state that already holds one adjudication audit
+    mints its own first audit at the exact same sequence (both agents claim
+    sequence 1 for their first packet) for the same job/agent/operation, with
+    different packet content — so ``merge_boundary_audits`` raises
+    ``EvidenceIdentityConflict``. Mirrors
+    ``test_a_second_researcher_does_not_remint_used_audit_ids``.
+
+    ``_packet_for`` bails out to the legacy passage path (no packet at all, so
+    no ``_record_packet_audit`` call) whenever a state carries neither
+    ``evidence_units`` nor ``read_records`` yet — the "nothing has ever been
+    read in this job" case. A seed read, standing in for a Researcher's
+    upstream work, unblocks the packet path. Each claim's own retrieval here
+    (of ``INDEPENDENT_URL``, via ``_check_decisions``) never selects a
+    passage the claim's own query counts as relevant, so its packet keeps
+    zero units and both claims settle on the ``no_candidate`` shortcut rather
+    than a model verdict — but that shortcut still records a packet audit
+    (``task.packet`` is not ``None``, just empty), which is exactly the
+    minting path this test needs.
+    """
+    seed_read = _ab_read(
+        "read-seed", "https://seed.test/unrelated", "Seed", "Seed text."
+    )
+    independent_source_score = SourceScoresDraft(
+        sources=[
+            SourceScoreDraft(
+                url=INDEPENDENT_URL,
+                authority_score=0.9,
+                recency_score=0.9,
+                relevance_score=0.9,
+                source_role="independent_research",
+                issuer="Third Party",
+                rationale="Independent and dated.",
+            )
+        ]
+    )
+
+    first_completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[
+            _queue_draft((QUEUE_URL_A, QUEUE_TEXTS[0])),
+            independent_source_score,
+        ],
+    )
+    first_agent = _checker_for_passes(tracker, first_completer, searches=1)
+    state = _queue_state((QUEUE_URL_A, QUEUE_TEXTS[0])).model_copy(
+        update={"read_records": {seed_read.read_id: seed_read}}
+    )
+    async with tracker.session_span(state.session_id, state.original_question):
+        first = await first_agent.run(state)
+
+    merged = merge_research_state(state, first.state_update)
+    first_ids = set(merged.boundary_audits)
+    # Sanity: the fixture must actually exercise the minting path, or the
+    # rest of this test would pass vacuously.
+    assert first_ids
+
+    # A fresh instance, as a checkpoint restore or any other re-construction
+    # against already-populated state would produce. Its own
+    # ``_audit_sequence`` starts at 0 again, and it works a second, distinct
+    # claim so it genuinely mints a new packet audit rather than being
+    # short-circuited as already-adjudicated.
+    second_state = merged.model_copy(
+        update={
+            "raw_findings": [
+                *merged.raw_findings,
+                _queue_finding(QUEUE_URL_B, QUEUE_TEXTS[1]),
+            ],
+            "evaluated_sources": [
+                *merged.evaluated_sources,
+                _scored(QUEUE_URL_B),
+            ],
+        }
+    )
+    second_completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[
+            _queue_draft((QUEUE_URL_B, QUEUE_TEXTS[1])),
+            independent_source_score,
+            _proposal((1, 2)),
+        ],
+    )
+    second_agent = _checker_for_passes(tracker, second_completer, searches=1)
+    async with tracker.session_span(
+        second_state.session_id, second_state.original_question
+    ):
+        second = await second_agent.run(second_state)
+
+    final = merge_research_state(second_state, second.state_update)
+    second_new_ids = set(final.boundary_audits) - first_ids
+    # Sanity: the second run must also have minted something new, or the
+    # disjointness assertion below would pass vacuously too.
+    assert second_new_ids
+    assert second_new_ids.isdisjoint(first_ids)
+    assert len(final.boundary_audits) > len(merged.boundary_audits)
+
+
+@pytest.mark.asyncio
 async def test_a_pass_that_adjudicates_nothing_consolidates_nothing(
     tracker: Tracker,
 ) -> None:
