@@ -35,6 +35,7 @@ from deep_research.agents.fact_checker import (
     DEFAULT_CLAIM_BATCHES_PER_PASS,
     DEFAULT_FINDING_DIGEST,
     DEFAULT_MAX_CLAIMS,
+    FACT_CHECK_EVIDENCE_CHARS,
     INSUFFICIENT_REASONS,
     MAX_PACKET_OMISSIONS,
     MAX_PASSAGE_EXCERPT_CHARS,
@@ -53,7 +54,9 @@ from deep_research.agents.fact_checker import (
     VerifiedClaims,
     _critique_texts,
     _finding_is_new,
+    _packet_has_pair,
     _packet_independent_publishers,
+    adjudication_messages,
     adjudication_repaired_event,
     admitted_target_ids,
     build_adjudication_packet,
@@ -6343,3 +6346,309 @@ async def test_two_stored_clusters_that_merge_leave_the_absorbed_row_behind(
         "prior-0",
         "prior-1",
     }
+
+
+# ---------------------------------------------------------------------------
+# Wave A: the false-verdict paths
+#
+# Every test here goes through ``validate_adjudication`` (the public verdict
+# path) over a real packet, or through ``adjudication_messages`` plus the
+# packet the validator reads. The claim is "Wind capacity reached 10 GW in
+# 2025."; two candidates support it independently and the third disagrees.
+# ---------------------------------------------------------------------------
+
+SUPPORT_TEXT = "The operator reported 10 GW in 2025."
+AUDIT_TEXT = "An audit confirms 10 GW in 2025."
+REFUTATION_TEXT = "A separate review states capacity was 4 GW in 2025."
+OFF_SCOPE_TEXT = "Capacity was 4 GW in 2023."
+
+
+def _row(
+    evidence_id: str,
+    stance: str,
+    *,
+    complete: bool = True,
+    scope: bool = True,
+    dependence: str = "primary",
+) -> SupportAssessment:
+    return SupportAssessment(
+        evidence_id=evidence_id,
+        stance=stance,
+        complete_support=complete,
+        scope_compatible=scope,
+        dependence=dependence,
+    )
+
+
+def _verdict_packet(
+    *eligibilities: EvidenceEligibility,
+    texts: tuple[str, ...] = (SUPPORT_TEXT, AUDIT_TEXT, REFUTATION_TEXT),
+    omitted: tuple[object, ...] = (),
+) -> AdjudicationPacket:
+    """A packet of named candidates with the identity each one carries."""
+    names = ("left", "right", "third")
+    units = [
+        _pair_unit(name, f"https://{name}.test/{name}", text)
+        for name, text in zip(names, texts)
+    ]
+    return AdjudicationPacket(
+        claim_id="claim-1",
+        claim_text=TASK6_CLAIM,
+        claim_source_urls=["https://left.test/left"],
+        claim_cluster_id="cluster-1",
+        units=units,
+        eligibility={
+            unit.evidence_id: eligibility
+            for unit, eligibility in zip(units, eligibilities)
+        },
+        omitted=list(omitted),
+        omitted_count=len(omitted),
+        fingerprint="fingerprint-1",
+    )
+
+
+def _third_origin() -> EvidenceEligibility:
+    return _eligibility(
+        publisher_id="publisher-three",
+        work_id="sha256:three",
+        origin_group_id="publisher:publisher-three",
+    )
+
+
+def _two_supports_and_a_refutation(**override: object) -> ClaimVerdictDraft:
+    return ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[
+            _row("ev-left", "supports"),
+            _row("ev-right", "supports"),
+            _row("ev-third", "contradicts", **override),
+        ],
+        support_ids=["ev-left", "ev-right"],
+        contradiction_ids=["ev-third"],
+        rationale="Two independent reports state the same figure.",
+    )
+
+
+def test_a_same_scope_refutation_blocks_verified_without_complete_support() -> None:
+    """``complete_support`` answers about support, and a refutation is not one.
+
+    The model was told ``complete_support`` means "supports the WHOLE atomic
+    claim" — a passage that *refutes* the claim answers no by definition, and
+    the field also defaults to ``False``. Reading materiality from it let a
+    same-scope refutation be filed as "not comparable" and the claim still
+    settle as verified.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+
+    claim = validate_adjudication(
+        _two_supports_and_a_refutation(complete=False, scope=True), packet, None
+    )
+
+    assert claim.verdict != "verified"
+    assert claim.evidence_status != "verified_pair"
+    (conflict,) = claim.conflict_assessments
+    assert conflict.resolution == "unresolved"
+    assert conflict.material is True
+    assert conflict.same_scope is True
+
+
+def test_a_selected_contradiction_with_no_assessment_blocks_verified() -> None:
+    """A selection without an assessment is a disagreement, not an absence."""
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+    draft = _two_supports_and_a_refutation().model_copy(
+        update={
+            "assessments": [
+                _row("ev-left", "supports"),
+                _row("ev-right", "supports"),
+            ]
+        }
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "verified"
+    (conflict,) = claim.conflict_assessments
+    assert conflict.resolution == "unresolved"
+    assert conflict.material is True
+    assert "ev-third" in conflict.evidence_ids
+
+
+def test_an_assessed_refutation_the_model_did_not_select_blocks_verified() -> None:
+    """A row that refutes is a contradiction whether or not it was listed.
+
+    The model assessed the passage as contradicting and then left it out of
+    ``contradiction_ids``; discarding it wrote ``verified`` over a packet that
+    contained a refutation.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+    draft = _two_supports_and_a_refutation().model_copy(
+        update={"contradiction_ids": []}
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "verified"
+    (conflict,) = claim.conflict_assessments
+    assert conflict.material is True
+    assert conflict.resolution == "unresolved"
+
+
+@pytest.mark.parametrize("stance", ["contradicts", "refutes", "disputes"])
+def test_any_refuting_stance_is_a_contradiction(stance: str) -> None:
+    """The vocabulary is closed and the local reading of it is conservative.
+
+    A stance this contract does not know is not "supports": the model meant
+    the passage disagrees, so it is read as a refutation that blocks settlement.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+    draft = _two_supports_and_a_refutation().model_copy(
+        update={
+            "assessments": [
+                _row("ev-left", "supports"),
+                _row("ev-right", "supports"),
+                _row("ev-third", stance),
+            ]
+        }
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "verified"
+    assert any(
+        "ev-third" in conflict.evidence_ids
+        for conflict in claim.conflict_assessments
+    )
+
+
+def test_a_duplicate_assessment_row_makes_its_id_unusable() -> None:
+    """One passage, two judgements: the conservative reading wins, and the id
+    cannot then be half of a verified pair."""
+    packet = _verdict_packet(_eligibility(), _independent_second())
+    draft = ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[
+            _row("ev-left", "supports"),
+            _row("ev-left", "contradicts", complete=False),
+            _row("ev-right", "supports"),
+        ],
+        support_ids=["ev-left", "ev-right"],
+        contradiction_ids=["ev-left"],
+        rationale="x",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "verified"
+    assert claim.evidence_status != "verified_pair"
+    assert "ev-left" in claim.refused_evidence_ids
+    assert claim.evidence_selection.get("ev-left") != "supports"
+    assert "model_disagreement" in claim.audit_flags
+
+
+def test_an_off_scope_contradiction_does_not_force_contradicted() -> None:
+    """A different period is not a refutation of this claim.
+
+    Nothing supports the claim and one passage disagrees about another period:
+    the honest verdict is that the claim is not settled, not that it is false.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), texts=(OFF_SCOPE_TEXT, SUPPORT_TEXT, AUDIT_TEXT)
+    )
+    draft = ClaimVerdictDraft(
+        verdict="insufficient_evidence",
+        confidence=0.5,
+        assessments=[_row("ev-left", "contradicts", complete=True, scope=False)],
+        support_ids=[],
+        contradiction_ids=["ev-left"],
+        rationale="A different period.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status != "contested"
+    (conflict,) = claim.conflict_assessments
+    assert conflict.resolution == "resolved"
+    assert conflict.material is False
+    assert claim.insufficient_reason
+
+
+def test_the_request_shows_every_candidate_and_omits_only_what_it_cannot() -> None:
+    """A budget bounds the text, not the candidate list.
+
+    Two long supporting pages used to consume the whole budget by themselves,
+    so the candidates behind them were never shown to the model and never
+    recorded as omitted — while the packet still counted them as input, and a
+    contradiction or a second pair member could sit unread behind the cut.
+    """
+    long_support = SUPPORT_TEXT + " " + ("Detail. " * 400)
+    long_audit = AUDIT_TEXT + " " + ("Detail. " * 300)
+    from deep_research.agents.fact_checker import with_unrendered_omissions
+
+    packet = _verdict_packet(
+        _eligibility(),
+        _independent_second(),
+        _third_origin(),
+        texts=(long_support, long_audit, REFUTATION_TEXT),
+    )
+
+    body = "\n".join(
+        message.content
+        for message in adjudication_messages(
+            packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+        )
+    )
+
+    # Every candidate is shown, each within a bounded excerpt.
+    for evidence_id in ("ev-left", "ev-right", "ev-third"):
+        assert f"id: {evidence_id}" in body
+    assert len(body) < FACT_CHECK_EVIDENCE_CHARS * 3
+
+    # Under a budget nothing can fit in, what is left out is recorded, never
+    # silently dropped.
+    tiny = with_unrendered_omissions(packet, evidence_chars=200)
+    assert tiny.omitted_count == len(tiny.omitted) > 0
+    assert {item.item_id for item in tiny.omitted} == {
+        "ev-right",
+        "ev-third",
+    }
+    assert _packet_has_pair(
+        tiny, shown=[unit.evidence_id for unit in tiny.units[:1]]
+    ) is False
+
+
+def test_the_adjudication_request_keeps_the_pair_and_the_refutation_together() -> None:
+    """The suffciency test reads the candidates the request can actually show.
+
+    A pair the budget cannot carry is not a pair the model can certify, so
+    retrieval must not be skipped on the strength of it.
+    """
+    long_left = SUPPORT_TEXT + " " + ("Detail. " * 900)
+    from deep_research.agents.fact_checker import with_unrendered_omissions
+
+    packet = _verdict_packet(
+        _eligibility(),
+        _independent_second(),
+        _third_origin(),
+        texts=(long_left, AUDIT_TEXT, REFUTATION_TEXT),
+    )
+
+    assert _packet_has_pair(packet) is True
+    shown = [
+        unit.evidence_id
+        for unit in with_unrendered_omissions(
+            packet, evidence_chars=200
+        ).units[:1]
+    ]
+    assert _packet_has_pair(packet, shown=shown) is False
+
