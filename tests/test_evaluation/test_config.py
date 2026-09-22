@@ -1439,6 +1439,37 @@ def test_an_invocation_can_force_parity_on_even_when_configured_off() -> None:
     assert runtime.production_parity is True
 
 
+def test_with_no_invocation_override_the_parity_source_is_configuration() -> None:
+    """Neither CLI flag passed -- the run simply inherited config.yaml."""
+    runtime = build()
+
+    assert runtime.production_parity_source == "configuration"
+
+
+def test_an_invocation_override_is_labelled_as_such() -> None:
+    """An artifact must be able to tell a forced run from an inherited one,
+    not just record the bool that resulted."""
+    runtime = build(production_parity=False)
+
+    assert runtime.production_parity_source == "invocation"
+
+    runtime = build(production_parity=True)
+
+    assert runtime.production_parity_source == "invocation"
+
+
+def test_experiment_metadata_records_the_parity_source() -> None:
+    settings = ConfigSettings()
+
+    inherited = experiment_metadata(build(settings=settings), settings)
+    overridden = experiment_metadata(
+        build(settings=settings, production_parity=False), settings
+    )
+
+    assert inherited["production_parity_source"] == "configuration"
+    assert overridden["production_parity_source"] == "invocation"
+
+
 def test_the_target_llm_config_is_accepted_by_the_capability_registry() -> None:
     """Fail-closed: the baseline profile must be a combination DeepSeek
     actually supports, checked against the local table, not assumed."""

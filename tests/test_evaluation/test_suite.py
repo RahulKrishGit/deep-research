@@ -10,6 +10,7 @@ from deep_research.evaluation import runner as runner_module
 from deep_research.evaluation.models import AGENT_NAMES, SuiteResult
 from deep_research.evaluation.reporting import render_suite, write_suite_artifact
 from deep_research.evaluation.runner import run_suite_evaluation
+from deep_research.utils.config import ConfigSettings, LLMConfig
 from tests.evaluation_fakes import FakeStructuredProvider
 
 # ``run_suite_evaluation`` reads the process environment for its preflight, and
@@ -73,6 +74,37 @@ async def test_a_judge_override_applies_uniformly_to_every_agent(
         for call in suite_harness.runner.calls
     }
     assert efforts == {"max"}
+
+
+@pytest.mark.asyncio
+async def test_a_production_parity_override_applies_uniformly_to_every_agent(
+    tmp_path, suite_harness
+) -> None:
+    """A suite-wide ``--no-production-parity`` must reach every agent's own
+    ``build_runtime_config`` call, the same way the judge override does."""
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            model_overrides={
+                name: {"reasoning_effort": "high"} for name in AGENT_NAMES
+            }
+        )
+    )
+
+    await run_suite_evaluation(
+        settings,
+        **{**suite_harness.kwargs(tmp_path), "production_parity": False},
+    )
+
+    sources = {
+        call["metadata"]["target_profile_source"]
+        for call in suite_harness.runner.calls
+    }
+    parity_sources = {
+        call["metadata"]["production_parity_source"]
+        for call in suite_harness.runner.calls
+    }
+    assert sources == {"evaluation"}
+    assert parity_sources == {"invocation"}
 
 
 @pytest.mark.asyncio

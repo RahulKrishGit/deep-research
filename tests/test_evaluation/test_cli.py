@@ -282,6 +282,32 @@ def test_the_suite_command_also_accepts_the_parity_flags() -> None:
     assert options.production_parity is True
 
 
+def test_the_production_parity_override_reaches_the_runner(
+    recording_runner,
+) -> None:
+    run(["agent", "researcher", "--production-parity"], runner=recording_runner)
+    run(["agent", "researcher", "--no-production-parity"], runner=recording_runner)
+    run(["agent", "researcher"], runner=recording_runner)
+
+    assert recording_runner.calls[0]["production_parity"] is True
+    assert recording_runner.calls[1]["production_parity"] is False
+    assert recording_runner.calls[2]["production_parity"] is None
+
+
+def test_verbose_output_discloses_the_resolved_production_parity(
+    passing_runner,
+) -> None:
+    code, output = run(
+        ["agent", "researcher", "--verbose"], runner=passing_runner
+    )
+
+    assert code == EXIT_OK
+    assert (
+        "production parity: on (configuration) — target profile from "
+        "production; release evidence: yes"
+    ) in output
+
+
 # --- list ------------------------------------------------------------------
 
 
