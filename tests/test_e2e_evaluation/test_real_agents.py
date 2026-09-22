@@ -359,6 +359,55 @@ def test_mirror_checker_reads_the_references_the_reader_is_handed() -> None:
     assert "reference" in twice
 
 
+def test_writer_discloses_a_claim_the_packet_badges_contradicted() -> None:
+    """A row the run refused to settle is disclosed, not published as one.
+
+    The synthesis packet tags every checked claim with the verdict the run's
+    own adjudication gave it, so a row reading ``contradicted`` is a claim the
+    run declined to settle. A scripted writer that published that row as an
+    answer anyway is writing the false settlement the adversarial cases exist
+    to catch, and it never makes the disclosure the reader is owed: it hands
+    the composer no uncertainty at all. The settled row stays a point; the
+    contradicted row becomes a note.
+    """
+    scenario = ReplayScenario(
+        case_id="writer-badge-probe",
+        question="What was the Acme widget adoption rate in 2024?",
+        topics=(
+            ReplayTopic(
+                title="Adoption rate",
+                question="What was the Acme widget adoption rate in 2024?",
+                dimensions=("rate",),
+                critical=True,
+                query="Acme widget adoption rate 2024",
+                sources=(),
+            ),
+        ),
+        expectation=CaseExpectation(terminal_quality="accepted", exit_code=0),
+    )
+    completer = ReplayCompleter(scenario)
+
+    draft = completer._reply_ReportDraft(
+        "Checked claims in this packet\n"
+        "C001 [verified 0.85] the rate was 40 percent in 2024 "
+        "(https://agency.test/report) coverage=topic-01\n"
+        "C002 [contradicted 0.85] the rate was 30 percent in 2024 "
+        "(https://rival.test/report) coverage=topic-01\n"
+    )
+
+    settled = [
+        point.text for section in draft.sections for point in section.points
+    ]
+    assert settled == ["the rate was 40 percent in 2024"]
+    assert [row.finding for row in draft.answer_rows] == [
+        "the rate was 40 percent in 2024"
+    ]
+    assert draft.uncertainty_notes, "the contradicted claim was never disclosed"
+    assert any(
+        "30 percent" in note for note in draft.uncertainty_notes
+    ), draft.uncertainty_notes
+
+
 def test_case_runs_the_production_agents_not_a_double() -> None:
     """The runtime under test holds the shipped agent classes, class for class."""
     from deep_research.agents.critic import CriticAgent

@@ -660,20 +660,45 @@ class ReplayCompleter(AgentCompleter):
         )
 
     def _reply_ClaimVerdictDraft(self, text: str) -> ClaimVerdictDraft:
+        """The verdict and the stances the scenario declared for each read.
+
+        A page the scenario declares as a contradicting account is scripted as
+        one: its row is the refutation, its id is in ``contradiction_ids``, and
+        the words it disagrees with are the words the packet attributes to it.
+        Scripting every read as a support would hand the run a packet in which
+        nothing disagrees, so the run could never record the disagreement the
+        scenario declared, and the case would be asserting the fixture's
+        silence rather than the product's behaviour. Each id is attributed to
+        the page the packet itself named with it.
+        """
         ids = re.findall(r"^- id: (\S+)", text, re.M)
         if not ids:
             raise ReplayContractError(
                 "the adjudication packet carried no evidence"
             )
         source = self.claim_source(text)
-        supporting = ids if source.verdict == "verified" else ids[:1]
+        contradicting = [
+            evidence_id
+            for evidence_id in ids
+            if (page := self.evidence_source(text, evidence_id)) is not None
+            and page.verdict == "contradicts"
+        ]
+        supporting = [
+            evidence_id for evidence_id in ids if evidence_id not in contradicting
+        ]
+        if source.verdict != "verified":
+            supporting = supporting[:1]
         return ClaimVerdictDraft(
             verdict=source.verdict,
             confidence=0.85 if source.verdict == "verified" else 0.5,
             assessments=[
                 SupportAssessment(
                     evidence_id=evidence_id,
-                    stance="supports",
+                    stance=(
+                        "contradicts"
+                        if evidence_id in contradicting
+                        else "supports"
+                    ),
                     complete_support=True,
                     scope_compatible=True,
                     independent=True,
@@ -681,13 +706,24 @@ class ReplayCompleter(AgentCompleter):
                 for evidence_id in ids
             ],
             support_ids=supporting,
-            contradiction_ids=[],
+            contradiction_ids=contradicting,
             rationale=(
                 "The packet's reads state the claim."
                 if source.verdict == "verified"
                 else "One read states the claim."
             ),
         )
+
+    def evidence_source(self, text: str, evidence_id: str) -> ReplaySource | None:
+        """The page the adjudication packet named with one evidence id."""
+        match = re.search(
+            rf"^- id: {re.escape(evidence_id)}\n  source: .*?\((https?://\S+)\)",
+            text,
+            re.M,
+        )
+        if match is None:
+            return None
+        return self.by_url.get(match.group(1))
 
     def _reply_PassageVerdictDraft(self, text: str) -> PassageVerdictDraft:
         del text
@@ -712,7 +748,9 @@ class ReplayCompleter(AgentCompleter):
             ]
         )
 
-    def packet_claims(self, text: str) -> list[tuple[str, str, tuple[str, ...], str]]:
+    def packet_claims(
+        self, text: str
+    ) -> list[tuple[str, str, tuple[str, ...], str, str]]:
         """Read the packet's ``C001 [badge] text (urls) coverage=…`` rows.
 
         The parenthetical is the list of pages that stated the claim, not one
@@ -725,9 +763,15 @@ class ReplayCompleter(AgentCompleter):
         three topics is one row reading ``coverage=topic-01, topic-02,
         topic-03``, and reading it as a single token made that row unparseable
         too. The row is drafted once, under the first target it covers.
+
+        The badge's first word is the verdict the run's own adjudication gave
+        the claim - ``verified``, ``contradicted``, ``insufficient_evidence``.
+        It is the product's finding about the row, and the writer's draft is
+        checked against it, so the row carries it out of the packet rather
+        than dropping it with the brackets.
         """
         rows = re.findall(
-            r"^(C\d+) \[[^\]]*\] (.*) \((.*?)\) coverage=(.+)$",
+            r"^(C\d+) \[([^\]]*)\] (.*) \((.*?)\) coverage=(.+)$",
             text,
             re.M,
         )
@@ -745,8 +789,9 @@ class ReplayCompleter(AgentCompleter):
                     if url.strip()
                 ),
                 coverage.split(",")[0].strip(),
+                badge.split()[0] if badge.split() else "",
             )
-            for claim_id, claim_text, urls, coverage in rows
+            for claim_id, badge, claim_text, urls, coverage in rows
         ]
 
     def _reply_ReportDraft(self, text: str) -> ReportDraft:
@@ -754,7 +799,20 @@ class ReplayCompleter(AgentCompleter):
         points: list[ReportPointDraft] = []
         sections: list[ReportSectionDraft] = []
         answer_rows: list[AnswerRowDraft] = []
-        for claim_id, claim_text, urls, coverage in rows:
+        notes: list[str] = []
+        for claim_id, claim_text, urls, coverage, verdict in rows:
+            if verdict == "contradicted":
+                # The run's own adjudication refused to settle this claim, so
+                # the draft may not settle it either: published as a point it
+                # is the false settlement the case exists to catch, and left
+                # out in silence it is a disagreement the reader was never
+                # told about. It is disclosed instead - the words it carries
+                # stay in the draft as the thing being disagreed with.
+                notes.append(
+                    f"A read account disagrees with '{claim_text}', and the "
+                    "two were not reconciled."
+                )
+                continue
             # The row's own coverage names the topic, so a section is never
             # titled from a position in the packet.
             topic = self._topic_for_target(coverage)
@@ -791,7 +849,7 @@ class ReplayCompleter(AgentCompleter):
             executive_summary=[],
             ranked_constraints=[],
             sections=sections,
-            uncertainty_notes=[],
+            uncertainty_notes=notes,
             answer_rows=answer_rows,
         )
 
