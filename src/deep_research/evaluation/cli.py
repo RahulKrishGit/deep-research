@@ -425,6 +425,7 @@ def _default_agent_runner(
     output_directory: str | None,
     experiment_prefix: str | None,
     verbose: bool,
+    production_parity: bool | None = None,
 ) -> ExperimentResult:
     del verbose  # rendering-only; it does not change what is executed
     from deep_research.evaluation.cases import case_by_id, cases_for
@@ -441,6 +442,7 @@ def _default_agent_runner(
         experiment_prefix=experiment_prefix,
         now=datetime.now(timezone.utc),
         git=resolve_git_metadata(),
+        production_parity=production_parity,
     )
     cases = (
         [case_by_id(agent_name, tier, case_id)]
@@ -458,6 +460,7 @@ def _default_suite_runner(
     output_directory: str | None,
     experiment_prefix: str | None,
     verbose: bool,
+    production_parity: bool | None = None,
 ) -> Any:
     """The real ``suite`` command execution path.
 
@@ -481,6 +484,7 @@ def _default_suite_runner(
             config_path=config,
             now=datetime.now(timezone.utc),
             git=resolve_git_metadata(),
+            production_parity=production_parity,
         )
     )
 
@@ -528,6 +532,7 @@ def _dispatch(
             output_directory=options.output_directory,
             experiment_prefix=options.experiment_prefix,
             verbose=options.verbose,
+            production_parity=options.production_parity,
         )
         emit(render_experiment(result, verbose=options.verbose))
         return EXPERIMENT_EXIT_CODES[result.status]
@@ -540,6 +545,7 @@ def _dispatch(
         output_directory=options.output_directory,
         experiment_prefix=options.experiment_prefix,
         verbose=options.verbose,
+        production_parity=options.production_parity,
     )
     emit(render_suite(result, verbose=options.verbose))
     return EXPERIMENT_EXIT_CODES[result.status]

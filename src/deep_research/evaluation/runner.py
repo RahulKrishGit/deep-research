@@ -1483,6 +1483,7 @@ async def run_suite_evaluation(
     langsmith_client_factory: Callable[[], Any] = LangSmithClient,
     now: datetime,
     git: GitMetadata,
+    production_parity: bool | None = None,
 ) -> SuiteResult:
     """Run all six agents' controlled experiments in one pass.
 
@@ -1490,13 +1491,14 @@ async def run_suite_evaluation(
     path for a suite run to reach the live tier, and each agent keeps its
     own approved target-reasoning-effort profile (``reasoning_effort=
     None`` per agent, resolved independently by ``build_runtime_config``)
-    -- only ``judge_reasoning_effort`` is a uniform override across all
-    six. An exception anywhere in one agent's setup (config, case lookup,
-    provider construction) or its ``run_agent_evaluation`` call becomes
-    that agent's own ``ExperimentResult`` with status
-    ``"INFRASTRUCTURE FAILURE"``; the loop always continues for the
-    remaining agents. Live runs are manually invoked per-agent, after
-    controlled review -- this function never launches one.
+    -- only ``judge_reasoning_effort`` (and, like it, ``production_parity``)
+    is a uniform override across all six. An exception anywhere in one
+    agent's setup (config, case lookup, provider construction) or its
+    ``run_agent_evaluation`` call becomes that agent's own
+    ``ExperimentResult`` with status ``"INFRASTRUCTURE FAILURE"``; the loop
+    always continues for the remaining agents. Live runs are manually
+    invoked per-agent, after controlled review -- this function never
+    launches one.
 
     Every agent still writes its own ``results.json`` (via
     ``run_agent_evaluation``); this function additionally writes the
@@ -1519,6 +1521,7 @@ async def run_suite_evaluation(
                 experiment_prefix=experiment_prefix,
                 now=now,
                 git=git,
+                production_parity=production_parity,
             )
             cases = list(cases_for(agent_name, "controlled"))
 

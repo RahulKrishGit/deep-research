@@ -345,6 +345,12 @@ class EvaluationRuntimeConfig(ContractModel):
     """
     production_parity: bool
     """Whether production's own declaration was consulted for this run."""
+    production_parity_source: ProductionParitySource
+    """Whether ``production_parity`` came from a per-run CLI override
+    (``"invocation"``) or was simply inherited from ``config.yaml``
+    (``"configuration"``). Without this, an artifact cannot tell a run
+    that was forced onto (or off) production parity from one that just
+    inherited whatever config.yaml happened to say."""
     experiment_only: bool
     """True when the resolved profile is not the one production runs."""
     judge_model: str
@@ -410,6 +416,9 @@ def build_runtime_config(
         evaluation.production_parity
         if production_parity is None
         else production_parity
+    )
+    parity_source: ProductionParitySource = (
+        "configuration" if production_parity is None else "invocation"
     )
     profile = resolve_target_profile(
         settings.llm,
@@ -499,6 +508,7 @@ def build_runtime_config(
         target_reasoning_effort=profile.reasoning_effort,
         target_profile_source=profile.source,
         production_parity=parity,
+        production_parity_source=parity_source,
         experiment_only=experiment_only,
         judge_model=evaluation.judge_model,
         judge_reasoning_effort=judge_effort,
@@ -664,6 +674,7 @@ def experiment_metadata(
         "target_reasoning_effort": runtime.target_reasoning_effort,
         "target_profile_source": runtime.target_profile_source,
         "production_parity": runtime.production_parity,
+        "production_parity_source": runtime.production_parity_source,
         "release_evidence": runtime.release_evidence,
         "target_react_transport": target_react_transport(
             settings.llm.provider
