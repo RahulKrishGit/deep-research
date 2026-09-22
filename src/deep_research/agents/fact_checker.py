@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
-from typing import Literal
+from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator
@@ -1295,34 +1295,153 @@ def build_adjudication_packet(
     )
 
 
+def refutes(stance: str) -> bool:
+    """True when a stance says the passage disagrees with the claim.
+
+    The vocabulary is closed — ``supports``, ``contradicts``, ``unrelated`` —
+    and the local reading of anything else is conservative: a stance this
+    contract cannot place is not read as support. A passage the model called
+    "refutes" or "disputes" is a refutation, and one it never described at all
+    cannot be credited as agreement.
+    """
+    return stance.casefold() not in ("supports", "unrelated")
+
+
+class PacketRendering(NamedTuple):
+    """Which candidates one adjudication request carries, and which it cannot.
+
+    ``rendered`` pairs each candidate with the exact text the request prints
+    for it; ``unrendered`` is what the budget left out, in packet order.
+    """
+
+    rendered: list[tuple[EvidenceUnit, str]]
+    unrendered: list[EvidenceUnit]
+
+
+def plan_packet_rendering(
+    packet: AdjudicationPacket,
+    *,
+    evidence_chars: int,
+    unit_chars: int = MAX_PASSAGE_EXCERPT_CHARS,
+) -> PacketRendering:
+    """Split a packet's candidates into what fits one request and what cannot.
+
+    Pair candidates are offered first, so a budget can never hide the second
+    member of a pair behind a passage that could not corroborate anything, and
+    every excerpt is bounded, so one whole-page read cannot consume the budget
+    by itself and push the candidates behind it out of the model's sight. What
+    does not fit is returned rather than dropped: the caller records it as an
+    explicit omission, and an unassessed passage is never read as an absent one.
+    """
+    if evidence_chars < 1 or unit_chars < 1:
+        raise ValueError("evidence_chars and unit_chars must be at least 1")
+    order = sorted(
+        range(len(packet.units)),
+        key=lambda index: (
+            not _pair_candidate(packet, packet.units[index]),
+            index,
+        ),
+    )
+    rendered: list[tuple[EvidenceUnit, str]] = []
+    unrendered: list[int] = []
+    used = 0
+    for index in order:
+        unit = packet.units[index]
+        text = _bounded_passage_text(unit.excerpt, limit=unit_chars)
+        block = _candidate_block(packet, unit, text)
+        if used + len(block) > evidence_chars and rendered:
+            unrendered.append(index)
+            continue
+        rendered.append((unit, text))
+        used += len(block)
+    return PacketRendering(
+        rendered=rendered,
+        unrendered=[packet.units[index] for index in sorted(unrendered)],
+    )
+
+
+def _pair_candidate(packet: AdjudicationPacket, unit: EvidenceUnit) -> bool:
+    """True when this candidate could be half of an independent pair."""
+    eligibility = packet.eligibility.get(unit.evidence_id)
+    return bool(eligibility is not None and eligibility.corroboration_eligible)
+
+
+def _candidate_block(
+    packet: AdjudicationPacket, unit: EvidenceUnit, text: str
+) -> str:
+    eligibility = packet.eligibility.get(unit.evidence_id)
+    origin = eligibility.origin_group_id if eligibility is not None else None
+    return (
+        f"- id: {unit.evidence_id}\n"
+        f"  source: {unit.source_title} ({unit.source_url})\n"
+        f"  origin: {origin or '(none resolved)'}\n"
+        f"  locator: {unit.locator}\n"
+        f"  exact text: {text}"
+    )
+
+
+def with_unrendered_omissions(
+    packet: AdjudicationPacket,
+    *,
+    evidence_chars: int,
+    unit_chars: int = MAX_PASSAGE_EXCERPT_CHARS,
+) -> AdjudicationPacket:
+    """The same packet, with every candidate this request cannot show omitted.
+
+    The omission is what tells the validator — and the audit that reads it —
+    that a passage existed and was not judged, so a verdict can never rest on
+    silence about it. At the production budget nothing is normally left out;
+    when something is, it is named.
+    """
+    plan = plan_packet_rendering(
+        packet, evidence_chars=evidence_chars, unit_chars=unit_chars
+    )
+    if not plan.unrendered:
+        return packet
+    omitted = [
+        *packet.omitted,
+        *(
+            EvidenceDisposition(
+                item_id=unit.evidence_id,
+                stage="adjudication-packet",
+                reason="deferred_capacity",
+                target_ids=list(unit.target_ids),
+            )
+            for unit in plan.unrendered
+        ),
+    ]
+    return packet.model_copy(
+        update={
+            "omitted": omitted[:MAX_PACKET_OMISSIONS],
+            "omitted_count": len(omitted),
+        }
+    )
+
+
 def adjudication_messages(
     packet: AdjudicationPacket,
     *,
     evidence_chars: int,
+    unit_chars: int = MAX_PASSAGE_EXCERPT_CHARS,
 ) -> list[ChatMessage]:
     """The messages that judge one claim from its own evidence packet.
 
-    Every candidate is printed with the id the model must select, the local
-    origin id it may name in ``origin_group_id``, and the exact text of the
-    read it came from. Nothing else is offered: no URL the model could cite
-    instead, and no invitation to quote.
+    Every candidate the budget can carry is printed with the id the model must
+    select, the local origin id it may name in ``origin_group_id``, and the
+    text of the read it came from — clipped to its own bound, so one long page
+    cannot fill the request by itself. Which candidates those are is
+    :func:`plan_packet_rendering`'s answer, and the caller records the rest as
+    omissions: the prompt and the packet the verdict is validated against are
+    the same set of candidates, so nothing is judged over a passage the model
+    never saw. Nothing else is offered: no URL the model could cite instead,
+    and no invitation to quote.
     """
-    rendered: list[str] = []
-    used = 0
-    for unit in packet.units:
-        eligibility = packet.eligibility.get(unit.evidence_id)
-        origin = eligibility.origin_group_id if eligibility is not None else None
-        block = (
-            f"- id: {unit.evidence_id}\n"
-            f"  source: {unit.source_title} ({unit.source_url})\n"
-            f"  origin: {origin or '(none resolved)'}\n"
-            f"  locator: {unit.locator}\n"
-            f"  exact text: {unit.excerpt}"
-        )
-        if used + len(block) > evidence_chars and rendered:
-            break
-        rendered.append(block)
-        used += len(block)
+    plan = plan_packet_rendering(
+        packet, evidence_chars=evidence_chars, unit_chars=unit_chars
+    )
+    rendered = [
+        _candidate_block(packet, unit, text) for unit, text in plan.rendered
+    ]
     sections = [
         f"# Claim\n{packet.claim_text}",
         (
@@ -1343,6 +1462,7 @@ def adjudication_messages(
         ),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
+
 
 
 def validate_adjudication(
@@ -1382,35 +1502,52 @@ def validate_adjudication(
             flags.append("evidence_not_admitted")
             refused.add(row.evidence_id)
             continue
-        if row.evidence_id in accepted:
+        existing = accepted.get(row.evidence_id)
+        if existing is not None:
+            # Two judgements of one passage: the model disagreed with itself
+            # about it, and the conservative reading of a disagreement is the
+            # refutation — exactly as when one id is selected as both. The
+            # refused id keeps the most conservative row and never becomes a
+            # corroborating support.
             flags.append("model_disagreement")
             refused.add(row.evidence_id)
+            if refutes(row.stance) and not refutes(existing.stance):
+                accepted[row.evidence_id] = row
             continue
         accepted[row.evidence_id] = row
 
+    selected_supports = list(dict.fromkeys(draft.support_ids))
+    selected_contradictions = list(dict.fromkeys(draft.contradiction_ids))
     supports = [
         evidence_id
-        for evidence_id in dict.fromkeys(draft.support_ids)
+        for evidence_id in selected_supports
         if evidence_id in accepted
         and accepted[evidence_id].stance.casefold() == "supports"
     ]
+    # Every candidate that disagrees, whether the model said so in a row or by
+    # selecting the id: a selection it never assessed, and an assessment it
+    # never selected, are each evidence that the passage refutes the claim.
+    # Dropping either published a verdict over a refutation nobody weighed.
     contradicts = [
-        evidence_id
-        for evidence_id in dict.fromkeys(draft.contradiction_ids)
-        if evidence_id in accepted
-        and accepted[evidence_id].stance.casefold() == "contradicts"
+        unit.evidence_id
+        for unit in packet.units
+        if unit.evidence_id in selected_contradictions
+        or (
+            unit.evidence_id in accepted
+            and refutes(accepted[unit.evidence_id].stance)
+        )
     ]
-    if len(supports) != len(list(dict.fromkeys(draft.support_ids))) or len(
-        contradicts
-    ) != len(list(dict.fromkeys(draft.contradiction_ids))):
+    admitted = set(supports).union(contradicts)
+    refused_now = {
+        evidence_id
+        for evidence_id in (*selected_supports, *selected_contradictions)
+        if evidence_id in shown and evidence_id not in admitted
+    }
+    if refused_now:
         flags.append("evidence_not_admitted")
         # A selection the local test refused is recorded as refused, so the
         # manifest can tell it apart from one the model never made.
-        refused.update(
-            set(draft.support_ids).union(draft.contradiction_ids)
-            - set(supports)
-            - set(contradicts)
-        )
+        refused.update(refused_now)
     selected_support_candidates = list(supports)
     overlap = set(supports).intersection(contradicts)
     if overlap:
@@ -1490,12 +1627,13 @@ def validate_adjudication(
         conflict.material and conflict.resolution == "unresolved"
         for conflict in conflicts
     )
-    if contradicts and (material_unresolved or not supports):
+    if material_unresolved:
         # Both sides exist and cannot be reconciled by a scope difference this
-        # contract can see (or nothing complete stands against them), so the
-        # claim is disputed. The conflict rows carry the analysis; the verdict
-        # is not a forced "false" — a weak or off-scope contradiction resolves
-        # into ``not_comparable``/``resolved`` above and never reaches here.
+        # contract can see, so the claim is disputed. The conflict rows carry
+        # the analysis; a refutation that resolves into ``resolved`` (a
+        # different period, unit, or population) or that nobody assessed into
+        # materiality never reaches here, and settles as *unsettled* below
+        # rather than as a forced "false".
         verdict: ClaimVerdict = "contradicted"
         status: str | None = "contested"
     elif verified_pair is not None:
@@ -1635,53 +1773,58 @@ def _conflict_assessments(
 ) -> list[ConflictAssessment]:
     """One row for every candidate that disagrees with a selected support.
 
-    Recorded rather than resolved away. ``resolved`` requires that the two
-    passages were assessed as measuring different scopes — a period, unit, or
-    population difference that accounts for the disagreement — and
-    ``not_comparable`` that at least one of them does not support the claim at
-    all. Anything else is ``unresolved``, and a material unresolved
-    contradiction precludes settled ``verified`` wording.
+    Recorded rather than resolved away. Materiality is decided by scope:
+    ``complete_support`` answers "does this passage support the WHOLE claim",
+    which a passage that *refutes* the claim answers "no" by definition — and
+    the schema's default when the model omits the field — so reading
+    materiality from it dismissed every same-scope refutation. An in-scope
+    refutation is therefore ``unresolved`` and material; a different period,
+    unit, or population is ``resolved`` and not material; and a refutation
+    nobody assessed at all is ``unresolved`` and material, because what was
+    never examined cannot be dismissed.
     """
     rows: list[ConflictAssessment] = []
     for evidence_id in contradicts:
         row = accepted.get(evidence_id)
         scope_ok = bool(row is not None and row.scope_compatible)
-        complete = bool(row is not None and row.complete_support)
-        if not complete:
-            resolution: str = "not_comparable"
-        elif not scope_ok:
-            resolution = "resolved"
+        if row is None:
+            resolution, material = "unresolved", True
+            rationale = "the contradicting passage was never assessed"
+        elif scope_ok:
+            resolution, material = "unresolved", True
+            rationale = "both passages claim to support the same scope"
         else:
-            resolution = "unresolved"
+            resolution, material = "resolved", False
+            rationale = "the passages differ in period, unit, or scope"
         rows.append(
             ConflictAssessment(
                 claim_cluster_id=packet.claim_cluster_id,
                 evidence_ids=sorted({*supports, evidence_id}),
                 same_scope=scope_ok,
-                material=complete and scope_ok,
+                material=material,
                 resolution=resolution,  # type: ignore[arg-type]
-                rationale=(
-                    "the contradicting passage was assessed as not supporting "
-                    "this claim"
-                    if resolution == "not_comparable"
-                    else (
-                        "the passages differ in period, unit, or scope"
-                        if resolution == "resolved"
-                        else "both passages claim to support the same scope"
-                    )
-                ),
+                rationale=rationale,
             )
         )
     return rows
 
 
-def _packet_has_pair(packet: AdjudicationPacket) -> bool:
+
+def _packet_has_pair(
+    packet: AdjudicationPacket,
+    *,
+    shown: Sequence[str] | None = None,
+) -> bool:
     """True when two of the packet's candidates already form the strict pair.
 
     A qualifying upstream pair needs no new retrieval (Section 2.1), so this is
     the test that lets the claim skip its loop entirely. It is a *necessary*
     condition for the badge, never the badge: the model still has to select the
     two passages and judge that each supports the whole claim.
+
+    ``shown`` restricts the test to the candidates one request actually carries
+    (``plan_packet_rendering``). A pair that the request cannot print is not a
+    pair the model can certify, so retrieval is not skipped on its strength.
     """
     # ``complete_support`` is the model's judgement about what a passage means,
     # so before the adjudication it is not yet known. The local half of the
@@ -1690,8 +1833,12 @@ def _packet_has_pair(packet: AdjudicationPacket) -> bool:
     # origin. Passing it means a pair is *possible* and no retrieval is needed;
     # it never means the badge, which only ``validate_adjudication`` writes.
     possible = [
-        eligibility.model_copy(update={"complete_support": True})
-        for eligibility in packet.eligibility.values()
+        packet.eligibility[unit.evidence_id].model_copy(
+            update={"complete_support": True}
+        )
+        for unit in packet.units
+        if unit.evidence_id in packet.eligibility
+        and (shown is None or unit.evidence_id in set(shown))
     ]
     for index, left in enumerate(possible):
         for right in possible[index + 1 :]:
@@ -2729,7 +2876,14 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             ),
             target_ids=target_ids,
         )
-        return packet, not _packet_has_pair(packet)
+        # A pair the request cannot show is not a pair the model can certify,
+        # so sufficiency is judged over the candidates the budget carries.
+        plan = plan_packet_rendering(
+            packet, evidence_chars=self._evidence_chars
+        )
+        return packet, not _packet_has_pair(
+            packet, shown=[unit.evidence_id for unit, _ in plan.rendered]
+        )
 
     async def _augment_packet(
         self, packet: AdjudicationPacket | None, run: ReActRun, task: ClaimTask
@@ -2802,6 +2956,23 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 target_ids=obligations,
             ),
             target_ids=obligations,
+        )
+
+    def _final_packet(
+        self, packet: AdjudicationPacket | None
+    ) -> AdjudicationPacket | None:
+        """The packet one request reads, once no more evidence will be added.
+
+        The candidates this request can carry are the ones the model is shown,
+        and every candidate it cannot carry is recorded as an explicit
+        omission — so the request, the verdict validated against the same
+        packet, and the boundary audit all describe one packet, and a passage
+        nobody could show is named rather than silently absent.
+        """
+        if packet is None:
+            return None
+        return with_unrendered_omissions(
+            packet, evidence_chars=self._evidence_chars
         )
 
     def _record_packet_audit(
@@ -3611,8 +3782,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                         react = self._sufficient_run()
                     task = task.model_copy(
                         update={
-                            "packet": await self._augment_packet(
-                                task.packet, react, task
+                            "packet": self._final_packet(
+                                await self._augment_packet(
+                                    task.packet, react, task
+                                )
                             )
                         }
                     )
@@ -3635,8 +3808,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                         react = await self._check_claim(task)
                         task = task.model_copy(
                             update={
-                                "packet": await self._augment_packet(
-                                    task.packet, react, task
+                                "packet": self._final_packet(
+                                    await self._augment_packet(
+                                        task.packet, react, task
+                                    )
                                 )
                             }
                         )

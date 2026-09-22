@@ -3958,6 +3958,7 @@ def test_a_memory_only_pair_never_becomes_a_packet() -> None:
 
     assert claim_evidence_pool(state, draft, target_ids=[TASK6_TARGET]) == []
     agent = object.__new__(FactCheckerAgent)
+    agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = {}
     agent._run_sources = list(state.evaluated_sources)
     packet, retrieval_needed = FactCheckerAgent._packet_for(
@@ -3974,6 +3975,7 @@ def test_a_sufficient_packet_is_recognised_before_any_model_call() -> None:
     state = _ab_state()
     draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
     agent = object.__new__(FactCheckerAgent)
+    agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
 
@@ -4018,6 +4020,7 @@ def test_a_boundary_loss_names_the_missing_read_and_never_verifies() -> None:
     )
 
     agent = object.__new__(FactCheckerAgent)
+    agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
     packet, _ = FactCheckerAgent._packet_for(
@@ -5016,6 +5019,7 @@ def test_a_handoff_loss_is_named_from_the_audit_not_the_test() -> None:
     )
     draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
     agent = object.__new__(FactCheckerAgent)
+    agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
     packet, _ = FactCheckerAgent._packet_for(
@@ -5144,6 +5148,7 @@ def test_memory_candidates_are_counted_apart_from_read_support() -> None:
     # The packet's independent-publisher count is derived from validated read
     # support alone, and memory can never raise it.
     agent = object.__new__(FactCheckerAgent)
+    agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
     packet, _ = FactCheckerAgent._packet_for(
@@ -5495,6 +5500,7 @@ def test_the_packet_path_carries_and_gates_the_claims_obligations() -> None:
     state = _ab_state()
     draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
     agent = object.__new__(FactCheckerAgent)
+    agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
 
@@ -5560,6 +5566,7 @@ async def test_a_handoff_loss_is_dropped_once_the_retrieval_repairs_it(
     )
     draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
     agent = object.__new__(FactCheckerAgent)
+    agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
     agent._session_id = "session-1"
@@ -6651,4 +6658,66 @@ def test_the_adjudication_request_keeps_the_pair_and_the_refutation_together() -
         ).units[:1]
     ]
     assert _packet_has_pair(packet, shown=shown) is False
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_the_request_cannot_carry_is_recorded_in_the_audit(
+    tracker: Tracker,
+) -> None:
+    """The wiring: request, verdict, and boundary audit describe one packet.
+
+    A budget that cannot carry the whole packet must say so where an audit
+    reads it. Otherwise the packet's input ids list candidates as judged while
+    the request never carried them — which is how a refutation sat unread
+    behind two rendered supports.
+    """
+    third_url = "https://lab-c.test/rival"
+    third_read = _ab_read(
+        "read-third", third_url, "Lab C measurement", RIVAL_TEXT + " " + ("Detail. " * 100)
+    )
+    third = build_evidence_unit(
+        read=third_read,
+        locator="chunk-0",
+        excerpt=third_read.passages["chunk-0"],
+        origin="researcher",
+        target_ids=[TASK6_TARGET],
+    )
+    base = _ab_state()
+    state = base.model_copy(
+        update={
+            "read_records": {**base.read_records, third_read.read_id: third_read},
+            "evidence_units": {**base.evidence_units, third.evidence_id: third},
+        }
+    )
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(
+                claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])]
+            ),
+            _select_every_shown_id,
+        ]
+    )
+    agent = _checker(tracker, completer)
+    # Enough for the two pair candidates, not for the long third passage.
+    agent._evidence_chars = 600
+
+    async with tracker.session_span(state.session_id, state.original_question):
+        outcome = await agent.run(state)
+
+    shown = _shown_ids([ChatMessage(role="user", content=_adjudication_body(completer))])
+    assert set(shown) == {
+        unit.evidence_id for unit in base.evidence_units.values()
+    }
+    assert third.evidence_id not in shown
+    # The candidate left out is an explicit omission, not a silent absence:
+    # the request never carried it, the claim says the packet was incomplete,
+    # and the boundary audit names it.
+    (audit,) = agent._adjudication_audits.values()
+    assert audit.disposition_ids == [
+        f"{third.evidence_id}:deferred_capacity"
+    ]
+    assert outcome.result is not None
+    (claim,) = outcome.result.claims
+    assert "packet_incomplete" in claim.audit_flags
+
 
