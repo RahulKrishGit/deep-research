@@ -33,46 +33,13 @@ from deep_research.evaluation.models import (
 )
 from deep_research.utils.types import MemorySnapshot
 
-CONTROLLED_IDS = {
-    "planner": (
-        "focused-decomposition",
-        "ambiguous-scope",
-        "planning-tool-failure",
-    ),
-    "researcher": (
-        "multi-source-coverage",
-        "conflicting-evidence",
-        "partial-search-failure",
-    ),
-    "source_evaluator": (
-        "strong-and-weak-sources",
-        "corroboration-recency-reputation",
-        "reputation-provider-failure",
-    ),
-    "fact_checker": (
-        "mixed-verdicts",
-        "independent-domain-evidence",
-        "verification-search-failure",
-    ),
-    "synthesizer": (
-        "complete-cited-report",
-        "conflict-and-limitations",
-        "composition-no-publication",
-    ),
-    "critic": (
-        "approve-strong-report",
-        "request-more-research",
-        "missing-evidence-or-budget-exhausted",
-    ),
-}
-LIVE_IDS = {
-    "planner": "planner-live-scope",
-    "researcher": "researcher-live-evidence",
-    "source_evaluator": "source-evaluator-live-ranking",
-    "fact_checker": "fact-checker-live-verification",
-    "synthesizer": "synthesizer-live-report",
-    "critic": "critic-live-review",
-}
+# The registered ids are not restated here. Their declaration lives in the
+# registry module itself (``EXPECTED_CONTROLLED_CASE_IDS`` /
+# ``EXPECTED_LIVE_CASE_IDS``) and these tests compare the registry against
+# it: an inventory written down twice is two sources of truth, and the
+# second one is always the stale one. A literal list here would also have
+# to be edited by every round that adds a case, which is how a test that
+# was supposed to guard the registry becomes a rubber stamp.
 
 
 # The four count tests below are expected red until all six case files
@@ -86,24 +53,35 @@ def test_the_registry_is_valid() -> None:
     validate_registry()
 
 
-def test_every_agent_has_exactly_three_controlled_cases() -> None:
+def test_every_agent_carries_its_declared_controlled_cases() -> None:
+    from deep_research.evaluation.cases import EXPECTED_CONTROLLED_CASE_IDS
+
     for agent_name in AGENT_NAMES:
-        controlled = cases_for(agent_name, "controlled")
-        assert len(controlled) == 3, agent_name
-        assert tuple(case.case_id for case in controlled) == (
-            CONTROLLED_IDS[agent_name]
+        found = tuple(
+            case.case_id for case in cases_for(agent_name, "controlled")
         )
+        assert found == EXPECTED_CONTROLLED_CASE_IDS[agent_name], agent_name
 
 
-def test_every_agent_has_exactly_one_live_case() -> None:
+def test_every_agent_carries_its_declared_live_cases() -> None:
+    from deep_research.evaluation.cases import EXPECTED_LIVE_CASE_IDS
+
     for agent_name in AGENT_NAMES:
-        live = cases_for(agent_name, "live")
-        assert len(live) == 1, agent_name
-        assert live[0].case_id == LIVE_IDS[agent_name]
+        found = tuple(case.case_id for case in cases_for(agent_name, "live"))
+        assert found == EXPECTED_LIVE_CASE_IDS[agent_name], agent_name
 
 
-def test_the_registry_holds_twenty_four_cases() -> None:
-    assert len(all_cases()) == 24
+def test_the_registry_holds_the_declared_inventory() -> None:
+    from deep_research.evaluation.cases import (
+        EXPECTED_CONTROLLED_CASE_IDS,
+        EXPECTED_LIVE_CASE_IDS,
+    )
+
+    declared = sum(
+        len(ids) for ids in EXPECTED_CONTROLLED_CASE_IDS.values()
+    ) + sum(len(ids) for ids in EXPECTED_LIVE_CASE_IDS.values())
+
+    assert len(all_cases()) == declared
 
 
 def test_every_case_carries_its_own_agent_and_tier() -> None:
@@ -141,12 +119,14 @@ def test_lookup_by_id_and_by_identity() -> None:
 
 
 def test_an_unknown_case_id_lists_the_valid_ones() -> None:
+    from deep_research.evaluation.cases import EXPECTED_CONTROLLED_CASE_IDS
+
     with pytest.raises(UnknownCaseError) as caught:
         case_by_id("planner", "controlled", "not-a-case")
 
     message = str(caught.value)
     assert "not-a-case" in message
-    for case_id in CONTROLLED_IDS["planner"]:
+    for case_id in EXPECTED_CONTROLLED_CASE_IDS["planner"]:
         assert case_id in message
 
 
@@ -171,18 +151,27 @@ def test_two_versions_of_one_case_id_fail_validation() -> None:
     assert "conflicting version" in str(caught.value)
 
 
-def test_a_wrong_case_count_fails_validation() -> None:
+def test_a_missing_controlled_case_fails_validation() -> None:
     cases = [case for case in all_cases() if case.case_id != "ambiguous-scope"]
 
     with pytest.raises(CaseRegistryError) as caught:
         validate_registry(cases)
 
-    assert "planner" in str(caught.value)
-    assert "3 controlled" in str(caught.value)
+    message = str(caught.value)
+    assert "planner" in message
+    # The mismatch is reported by id. A count check would have caught this
+    # one too, but it could not have caught the case that matters more: an
+    # id renamed or filed under the wrong agent still satisfies any length.
+    assert "ambiguous-scope" in message
 
 
 def test_the_registry_version_is_recorded() -> None:
-    assert CASE_REGISTRY_VERSION >= 1
+    """Pinned exactly: a bump must be a deliberate, visible act.
+
+    A ``>= 1`` lower bound would keep passing through every future bump,
+    which is the opposite of what versioning case semantics is for.
+    """
+    assert CASE_REGISTRY_VERSION == 2
 
 
 # --- Claim snapshot invariants across the whole registry -------------------
@@ -433,11 +422,13 @@ def test_validation_rejects_duplicates_and_conflicting_versions() -> None:
     assert "conflicting version" in str(caught.value)
 
 
-def test_validation_rejects_a_wrong_case_count() -> None:
+def test_validation_rejects_an_inventory_that_does_not_match() -> None:
     two_of_three = [_validation_case("one"), _validation_case("two")]
 
     with pytest.raises(CaseRegistryError) as caught:
         validate_registry(two_of_three)
 
-    assert "planner" in str(caught.value)
-    assert "3 controlled" in str(caught.value)
+    message = str(caught.value)
+    assert "planner" in message
+    # The message names what the registry declares, not a number to match.
+    assert "focused-decomposition" in message

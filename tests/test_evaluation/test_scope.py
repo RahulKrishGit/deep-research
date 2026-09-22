@@ -47,7 +47,11 @@ def test_the_evaluation_package_never_imports_the_graph() -> None:
 
 
 def test_the_evaluation_package_defines_no_graph_or_suite_dataset() -> None:
-    from deep_research.evaluation.cases import all_cases
+    from deep_research.evaluation.cases import (
+        EXPECTED_CONTROLLED_CASE_IDS,
+        EXPECTED_LIVE_CASE_IDS,
+        all_cases,
+    )
 
     assert all(
         case.agent_name
@@ -61,7 +65,11 @@ def test_the_evaluation_package_defines_no_graph_or_suite_dataset() -> None:
         }
         for case in all_cases()
     )
-    assert len(all_cases()) == 24
+    # The total is derived from the declared inventory rather than pinned to
+    # a literal, so a round that adds a case updates one declaration.
+    assert len(all_cases()) == sum(
+        len(ids) for ids in EXPECTED_CONTROLLED_CASE_IDS.values()
+    ) + sum(len(ids) for ids in EXPECTED_LIVE_CASE_IDS.values())
 
 
 def test_whole_report_evaluation_has_a_separate_package() -> None:

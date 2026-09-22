@@ -1651,6 +1651,23 @@ def test_experiment_metadata_records_everything_the_spec_names() -> None:
         assert key in metadata, key
 
 
+def test_the_case_registry_version_has_exactly_one_source() -> None:
+    """The artifact records the registry's version, not a copy of it.
+
+    ``config`` used to carry its own ``_CASE_REGISTRY_VERSION = 1`` while
+    ``cases`` carried the canonical constant, and the metadata emitted the
+    private copy. The two agreed only by luck; the moment a round bumped
+    the registry, every artifact would have recorded the old version, and
+    a recorded version that is wrong is worse than none.
+    """
+    from deep_research.evaluation.cases import CASE_REGISTRY_VERSION
+
+    metadata = experiment_metadata(build(agent_name="planner"), ConfigSettings())
+
+    assert metadata["case_registry_version"] == CASE_REGISTRY_VERSION
+    assert not hasattr(evaluation_config, "_CASE_REGISTRY_VERSION")
+
+
 def test_fingerprints_are_stable_and_order_insensitive() -> None:
     assert fingerprint({"a": 1, "b": 2}) == fingerprint({"b": 2, "a": 1})
     assert len(fingerprint({"a": 1})) == 12
