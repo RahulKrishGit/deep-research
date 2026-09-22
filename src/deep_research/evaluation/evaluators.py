@@ -2554,6 +2554,71 @@ def _confidence_calibrated_passes(
     return True
 
 
+def _no_false_independent_pair_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """No claim carries an independent-pair judgement its evidence refuses.
+
+    Two clauses, because the defect has two flavours. The case names the
+    claims that must not come back verified — one publisher's two accounts,
+    or a second publisher vouching only for attribution — and no such claim
+    may be marked ``verified`` or carry the ``verified_pair`` badge, since
+    that badge is what every downstream reader takes as "independently
+    corroborated". Then every claim that *is* verified must resolve to at
+    least two independent publishers by the same check the independence gate
+    runs, at this metric's own floor of two rather than the case's declared
+    minimum: a case that declares none would otherwise auto-pass, and there
+    is no reading of "independently corroborated" that survives one
+    publisher.
+
+    This is deliberately not a second name for the domain count. Domain
+    arithmetic cannot see the second flavour — a lab's page on its own
+    registrable domain is one publisher more and still supports only who
+    said the number — so what refuses that pair is the case's declaration
+    that the claim may not be verified at all.
+    """
+    reference = case.expectations.reference
+    forbidden = {
+        " ".join(text.split())
+        for text in _reference_strings(case, "forbidden_verified_claims")
+    }
+    family = reference.get("dependent_domain_family")
+    family_identity = (
+        publisher_identity(f"https://{family}")
+        if isinstance(family, str)
+        else None
+    )
+    claims = _artifact(output, "verified_claims")
+    if not isinstance(claims, list):
+        return False
+    for entry in claims:
+        text = _field(entry, "text")
+        if isinstance(text, str) and " ".join(text.split()) in forbidden:
+            if _field(entry, "verdict") == "verified":
+                return False
+            if _field(entry, "evidence_status") == "verified_pair":
+                return False
+        if _field(entry, "verdict") != "verified":
+            continue
+        source_urls = [
+            url
+            for url in (_field(entry, "source_urls") or [])
+            if isinstance(url, str)
+        ]
+        evidence_urls = [
+            url
+            for passage in (_field(entry, "verification_evidence") or [])
+            for url in [_field(passage, "source_url")]
+            if isinstance(url, str)
+        ]
+        independent = independent_domains(
+            evidence_urls, claimed_domains=claimed_domains_for(source_urls)
+        )
+        if _registrable_family_count(independent, family=family_identity) < 2:
+            return False
+    return True
+
+
 def _sources_known_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     known = {
         normalize_source_url(url) for url in case.expectations.known_source_urls
@@ -2942,6 +3007,7 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "confidence_calibrated": _confidence_calibrated_passes,
     "sources_known": _sources_known_passes,
     "independence_enforced": _independent_domains_passes,
+    "no_false_independent_pair": _no_false_independent_pair_passes,
     "conservative_on_failure": _conservative_on_failure_passes,
     "partial_verification_present": _partial_verification_present_passes,
     # synthesizer

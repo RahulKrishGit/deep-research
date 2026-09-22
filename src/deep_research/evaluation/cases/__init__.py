@@ -94,6 +94,7 @@ EXPECTED_CONTROLLED_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
         "mixed-verdicts",
         "independent-domain-evidence",
         "verification-search-failure",
+        "upstream-independent-pair",
     ),
     "synthesizer": (
         "complete-cited-report",

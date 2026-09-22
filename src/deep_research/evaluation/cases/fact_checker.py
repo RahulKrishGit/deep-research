@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from deep_research.evaluation.cases import (
     build_case,
+    claim,
     evaluation_state,
     finding,
     metrics,
@@ -554,6 +555,251 @@ _FAILURE = build_case(
     metadata={"scenario": "failure-recovery"},
 )
 
+# Two claims about one water authority, and the two ways a claim can look
+# corroborated without being corroborated. The trap claim's apparent support
+# is the commission's own order plus the commission's own press release —
+# one publisher saying one thing twice — with a policy lab's page as the
+# third "source", which vouches only for who said the number. The control
+# claim is carried by two separate works from two unrelated publishers, so
+# it does reach a pair. Counting domains alone passes the second flavour;
+# the case declares which claim may not come back verified and the metric
+# reads that declaration.
+
+_AGENCY_URL = "https://commission.example.gov/order-2026-14"
+_AGENCY_PRESS_URL = "https://commission.example.gov/press/losses-target-2030"
+_LAB_URL = "https://leakagelab.example.org/commission-target"
+_WIRE_URL = "https://waterdesk.example.com/commission-losses-order"
+_UPSTREAM_URLS = (_AGENCY_URL, _AGENCY_PRESS_URL, _LAB_URL, _WIRE_URL)
+
+_MONITOR_URL = "https://lossesmonitor.example.net/2025-audit"
+_UNIVERSITY_URL = "https://audits.example.edu/2025-losses-study"
+
+_UPSTREAM_TRAP_CLAIM = (
+    "Non-revenue water in Northfield's network measured 12 percent of "
+    "supply in 2025."
+)
+_UPSTREAM_CONTROL_CLAIM = (
+    "Northfield Water Authority replaced 41 kilometres of leaking mains "
+    "in 2025."
+)
+
+_UPSTREAM_RUBRIC = rubric(
+    "fact-checker-upstream-independence",
+    *_VERIFICATION_DIMENSIONS,
+    (
+        "upstream_independence",
+        "Two accounts of one publisher's number are one account.",
+        "A claim is judged on the publishers and works behind its passages, "
+        "not the number of pages: an agency's order and that agency's own "
+        "press release count once, and the verdict says so.",
+        "One publisher's repeated figure is treated as independent "
+        "corroboration.",
+    ),
+    (
+        "dimension_specific_support",
+        "A source that vouches for who said it has not vouched for the "
+        "number.",
+        "Every supporting passage carries the value and the period the claim "
+        "asserts; a page that only attributes the figure to someone is read "
+        "as attribution and never as support.",
+        "Attribution-only pages are counted as support for the claim's "
+        "value.",
+    ),
+)
+
+_UPSTREAM = build_case(
+    case_id="upstream-independent-pair",
+    agent_name="fact_checker",
+    tier="controlled",
+    title="Corroboration is two publishers, not two pages",
+    purpose=(
+        "Verify two claims about a water authority's network. The trap claim "
+        "— 12 percent non-revenue water in 2025 — is carried by a wire story "
+        "and apparently corroborated by the commission's own order, that same "
+        "commission's press release repeating the figure, and a lab's page "
+        "that vouches only for who said the number. That is one publisher "
+        "saying one thing twice, so the claim must not come back verified "
+        "however many domains its passages span. The control claim is "
+        "supported by two separate works from two unrelated publishers and "
+        "must reach a verified pair, so a run that abstains on everything "
+        "collects nothing."
+    ),
+    state=evaluation_state(
+        case_id="upstream-independent-pair",
+        question=(
+            "How much water does the Northfield Water Authority lose, and "
+            "what is it doing about it?"
+        ),
+        findings=(
+            finding(
+                "Order 2026-14 records non-revenue water of 12 percent of "
+                "supply in 2025 in the Northfield Water Authority's network "
+                "and sets a target of 8 percent of supply by 2030.",
+                url=_AGENCY_URL,
+                title="Commission order 2026-14",
+                sub_topic_title="Non-revenue water in the network",
+            ),
+            finding(
+                "The commission's press release for order 2026-14 repeats "
+                "that non-revenue water measured 12 percent of supply in "
+                "2025 and restates the 8 percent target.",
+                url=_AGENCY_PRESS_URL,
+                title="Commission press release: losses target 2030",
+                sub_topic_title="Non-revenue water in the network",
+            ),
+            finding(
+                "A leakage lab's commentary credits the commission's order "
+                "2026-14 as the source of the 12 percent figure and presents "
+                "no measurement of its own.",
+                url=_LAB_URL,
+                title="Leakage lab: the commission's 12 percent",
+                sub_topic_title="Attribution of the 12 percent figure",
+            ),
+            finding(
+                "A water desk's story on the commission's order reports that "
+                "non-revenue water reached 12 percent of supply in 2025.",
+                url=_WIRE_URL,
+                title="Water desk: commission losses order",
+                sub_topic_title="Non-revenue water in the network",
+            ),
+        ),
+        sources=(
+            scored_source(
+                _AGENCY_URL,
+                title="Commission order 2026-14",
+                authority=0.85,
+                recency=0.80,
+                relevance=0.90,
+                overall=0.85,
+                rationale=(
+                    "The commission's own order, stating the measured figure "
+                    "and the period it applies to."
+                ),
+            ),
+            scored_source(
+                _AGENCY_PRESS_URL,
+                title="Commission press release: losses target 2030",
+                authority=0.60,
+                recency=0.80,
+                relevance=0.85,
+                overall=0.70,
+                rationale=(
+                    "The same commission restating its own order's figure; "
+                    "one publisher with the order, not a second source."
+                ),
+            ),
+            scored_source(
+                _LAB_URL,
+                title="Leakage lab: the commission's 12 percent",
+                authority=0.55,
+                recency=0.75,
+                relevance=0.60,
+                overall=0.60,
+                rationale=(
+                    "An independent lab's commentary that attributes the "
+                    "figure to the commission without carrying a measurement."
+                ),
+            ),
+            scored_source(
+                _WIRE_URL,
+                title="Water desk: commission losses order",
+                authority=0.45,
+                recency=0.80,
+                relevance=0.75,
+                overall=0.60,
+                rationale=(
+                    "Trade reporting carrying the commission's figure; no "
+                    "measurement of its own."
+                ),
+                low_confidence=True,
+            ),
+        ),
+        claims=(
+            # The trap as the state holds it: taken from the wire story, not
+            # verified, and carrying no passage — the shape an
+            # ``insufficient_evidence`` claim always has until independent
+            # evidence is actually read.
+            claim(
+                _UPSTREAM_TRAP_CLAIM,
+                urls=[_WIRE_URL],
+                verdict="insufficient_evidence",
+                confidence=0.40,
+            ),
+            # The control as a correct run records it: two passages, two
+            # unrelated publishers, neither of them one of the claim's own
+            # origins, so the independent pair is what the badge rests on.
+            claim(
+                _UPSTREAM_CONTROL_CLAIM,
+                urls=[_AGENCY_PRESS_URL],
+                verdict="verified",
+                confidence=0.85,
+                evidence=[
+                    "The 2025 network audit records 41 kilometres of leaking "
+                    "mains replaced by the authority.",
+                    "The regional study records 41 kilometres of leaking "
+                    "mains replaced in the authority's network during 2025.",
+                ],
+                verification_urls=[_MONITOR_URL, _UNIVERSITY_URL],
+            ),
+        ),
+    ),
+    dependency_scenario="fact-checker-upstream-independent-pair",
+    expectations=CaseExpectations(
+        required_output_fields=["verified_claims"],
+        reference={
+            "expected_verdicts": {
+                _UPSTREAM_TRAP_CLAIM: "insufficient_evidence",
+                _UPSTREAM_CONTROL_CLAIM: "verified",
+            },
+            "forbidden_verified_claims": [_UPSTREAM_TRAP_CLAIM],
+            "required_verified_claims": [_UPSTREAM_CONTROL_CLAIM],
+            "same_publisher_urls": [_AGENCY_URL, _AGENCY_PRESS_URL],
+            "dimension_only_urls": [_LAB_URL],
+            "corroborating_urls": [_MONITOR_URL, _UNIVERSITY_URL],
+            "claim_origin_urls": {
+                _UPSTREAM_TRAP_CLAIM: [_WIRE_URL],
+                _UPSTREAM_CONTROL_CLAIM: [_AGENCY_PRESS_URL],
+            },
+            "minimum_independent_domains": 2,
+        },
+        known_source_urls=[
+            *_UPSTREAM_URLS,
+            _MONITOR_URL,
+            _UNIVERSITY_URL,
+        ],
+        max_iterations=12,
+        max_tool_calls=12,
+        deterministic_metrics=metrics(
+            (
+                "verdict_correctness",
+                0.30,
+                "The trap claim is not `verified` and the control claim is.",
+            ),
+            (
+                "no_false_independent_pair",
+                0.30,
+                "No claim the case forbids comes back `verified` or carries "
+                "the independent-pair badge, and every `verified` claim "
+                "resolves to at least two independent publishers.",
+            ),
+            (
+                "independence_enforced",
+                0.20,
+                "A claim whose evidence resolves to fewer than two "
+                "independent registrable domains is not marked `verified`.",
+            ),
+            (
+                "sources_known",
+                0.20,
+                "Every cited `source_url` is among the declared known "
+                "sources.",
+            ),
+        ),
+    ),
+    judge_rubric=_UPSTREAM_RUBRIC,
+    metadata={"scenario": "challenging"},
+)
+
 _LIVE = build_case(
     case_id="fact-checker-live-verification",
     agent_name="fact_checker",
@@ -638,5 +884,10 @@ _LIVE = build_case(
 # Append new cases; never prepend. ``conftest.controlled_case_for``
 # takes ``cases_for(agent, "controlled")[0]``, so the first case here
 # is the one every conftest-driven gate test exercises.
-CONTROLLED_CASES: tuple[EvaluationCase, ...] = (_MIXED, _DEPENDENT, _FAILURE)
+CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
+    _MIXED,
+    _DEPENDENT,
+    _FAILURE,
+    _UPSTREAM,
+)
 LIVE_CASES: tuple[EvaluationCase, ...] = (_LIVE,)

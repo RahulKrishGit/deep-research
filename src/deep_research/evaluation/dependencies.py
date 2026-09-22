@@ -1702,6 +1702,131 @@ def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
                 "https://gcos.wmo.int/ocean-heat-bulletin",
             ),
         ),
+        # Both claim-keyed searches serve their own claim's pages: the trap's
+        # search returns the commission's order, the same commission's press
+        # release, and the lab's attribution-only page — one publisher and one
+        # comment, never a pair — while the control's search returns the two
+        # unrelated works that do corroborate it. All six URLs are readable,
+        # the case's own findings included, so a run can always reach the page
+        # behind a passage it wants to cite.
+        "fact-checker-upstream-independent-pair": ScenarioScript(
+            search_responses={
+                (
+                    "Non-revenue water in Northfield's network measured 12 "
+                    "percent of supply in 2025."
+                ): {
+                    "results": [
+                        {
+                            "url": "https://commission.example.gov/order-2026-14",
+                            "title": "Commission order 2026-14",
+                            "content": (
+                                "Order 2026-14 requires the authority to "
+                                "reduce non-revenue water to 8 percent of "
+                                "supply by 2030, from the 12 percent of "
+                                "supply measured in 2025."
+                            ),
+                        },
+                        {
+                            "url": (
+                                "https://commission.example.gov/press/"
+                                "losses-target-2030"
+                            ),
+                            "title": "Commission press release",
+                            "content": (
+                                "The commission confirmed that non-revenue "
+                                "water in the authority's network measured "
+                                "12 percent of supply in 2025."
+                            ),
+                        },
+                        {
+                            "url": (
+                                "https://leakagelab.example.org/"
+                                "commission-target"
+                            ),
+                            "title": "Leakage lab: the commission's target",
+                            "content": (
+                                "The leakage lab credits the commission's "
+                                "order 2026-14 as the source of the 12 "
+                                "percent figure and reports no measurement "
+                                "of its own."
+                            ),
+                        },
+                    ]
+                },
+                (
+                    "Northfield Water Authority replaced 41 kilometres of "
+                    "leaking mains in 2025."
+                ): {
+                    "results": [
+                        {
+                            "url": (
+                                "https://lossesmonitor.example.net/2025-audit"
+                            ),
+                            "title": "Utility monitor: 2025 audit",
+                            "content": (
+                                "The 2025 network audit records 41 "
+                                "kilometres of leaking mains replaced by "
+                                "the authority."
+                            ),
+                        },
+                        {
+                            "url": (
+                                "https://audits.example.edu/"
+                                "2025-losses-study"
+                            ),
+                            "title": "University regional study",
+                            "content": (
+                                "The regional study records 41 kilometres "
+                                "of leaking mains replaced in the "
+                                "authority's network during 2025."
+                            ),
+                        },
+                    ]
+                },
+            },
+            http_pages={
+                "https://commission.example.gov/order-2026-14": (
+                    "Commission order 2026-14. Non-revenue water in the "
+                    "Northfield Water Authority's network measured 12 "
+                    "percent of supply in 2025, against a target of 8 "
+                    "percent of supply by 2030."
+                ),
+                "https://commission.example.gov/press/losses-target-2030": (
+                    "Commission press release. Non-revenue water in the "
+                    "authority's network measured 12 percent of supply in "
+                    "2025; the commission restates its 8 percent target for "
+                    "2030."
+                ),
+                "https://leakagelab.example.org/commission-target": (
+                    "Leakage lab commentary. The commission's order "
+                    "2026-14 is the source of the 12 percent figure. This "
+                    "commentary carries no measurement of its own."
+                ),
+                "https://waterdesk.example.com/commission-losses-order": (
+                    "Water desk report. The commission's order states that "
+                    "non-revenue water in the authority's network reached "
+                    "12 percent of supply in 2025."
+                ),
+                "https://lossesmonitor.example.net/2025-audit": (
+                    "Utility monitor, 2025 network audit. The authority "
+                    "replaced 41 kilometres of leaking mains during the "
+                    "year."
+                ),
+                "https://audits.example.edu/2025-losses-study": (
+                    "University regional study. The study records 41 "
+                    "kilometres of leaking mains replaced in the authority's "
+                    "network during 2025."
+                ),
+            },
+            scripted_search_urls=(
+                "https://commission.example.gov/order-2026-14",
+                "https://commission.example.gov/press/losses-target-2030",
+                "https://leakagelab.example.org/commission-target",
+                "https://waterdesk.example.com/commission-losses-order",
+                "https://lossesmonitor.example.net/2025-audit",
+                "https://audits.example.edu/2025-losses-study",
+            ),
+        ),
     }
 
 
