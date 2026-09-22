@@ -2602,3 +2602,176 @@ async def test_a_hash_only_source_of_unknown_transport_keeps_its_publisher_origi
     assert source.publisher_id == "example lab"
     assert source_origin_id(source) == "publisher:example lab"
 
+
+# --------------------------------------------------------------------------
+# Lineage and legacy snapshots: a citation of a report NUMBER names the work
+# that number keys, and a snapshot written before anchors were persisted keeps
+# the identity it already carries (§2.2 rules 3 and 5).
+# --------------------------------------------------------------------------
+
+NUMBERED_REPORT_TEXT = (
+    PLAIN_REPORT_TEXT + f" Report no. {REPORT_NUMBER}."
+)
+NUMBERED_REPORT_WORK = f"report:example lab:{REPORT_NUMBER.casefold()}"
+NUMBERED_STORY_TEXT = (
+    "Queue backlog, by the numbers. Published by News Daily on 2026-02-02. "
+    f"Our analysis of the Example Lab report {REPORT_NUMBER} finds 1,200 MW "
+    "was withheld during 2024."
+)
+
+
+@pytest.mark.asyncio
+async def test_a_story_citing_the_reports_number_cannot_corroborate_it() -> None:
+    """A report number names a work, so citing one is citing that work.
+
+    A number is unique inside its issuer's namespace, which is why the work key
+    is ``report:<issuer>:<number>``. A citation recorded in any other namespace
+    can never match it, and a derivative story would then pass every other test
+    — different publisher host, different work, different origin — while
+    repeating the report it cites (§2.2 rule 5).
+    """
+    report = _read(LAB_REPORT_URL, text=NUMBERED_REPORT_TEXT)
+    story = _read(
+        STORY_URL, title="Queue backlog, by the numbers", text=NUMBERED_STORY_TEXT
+    )
+    story_draft = _draft(
+        url=STORY_URL,
+        source_role="independent_research",
+        transport_relation="original",
+        issuer="News Daily",
+        rationale="An outlet's analysis of the laboratory's report.",
+        derived_from=[REPORT_NUMBER],
+    )
+
+    sources, _ = await _assess(
+        [report, story],
+        [_scores(_lab_draft(doi="", report_number=REPORT_NUMBER), story_draft)],
+    )
+
+    by_url = _by_url(sources)
+    assert by_url[LAB_REPORT_URL].work_id == NUMBERED_REPORT_WORK
+    derived = by_url[STORY_URL]
+    assert derived.work_identity is not None
+    assert derived.work_identity.derives_from_work_ids == [NUMBERED_REPORT_WORK]
+    # The citation was evidenced: it is recorded, not reported as unsupported.
+    assert "derived_from" not in derived.rationale
+    assert not _may_pair(report, story, sources)
+
+
+def _legacy_source(
+    url: str,
+    *,
+    title: str,
+    work_id: str,
+    publisher_id: str = "example lab",
+) -> ScoredSource:
+    """A scored source as a snapshot written before anchors were persisted.
+
+    Its identity was resolved with anchors that snapshot does not carry, so
+    only ``work_id``/``publisher_id`` survive to say what was assessed.
+    """
+    return ScoredSource(
+        url=url,
+        title=title,
+        authority_score=0.9,
+        recency_score=0.8,
+        relevance_score=0.9,
+        overall_score=0.88,
+        rationale="Assessed by an earlier pass.",
+        publisher_id=publisher_id,
+        work_id=work_id,
+    )
+
+
+LEGACY_UPDATE_URL = "https://data.example/capacity-update"
+LEGACY_UPDATE_TEXT = (
+    "Capacity Update. Published by Example Lab on 2026-03-02. Example Lab "
+    "measured that 900 MW of interconnection capacity was withheld during 2024."
+)
+
+
+def test_a_legacy_snapshot_keeps_the_identity_it_already_carries() -> None:
+    """Re-resolution may not demote a stored identity (§2.2 rule 3).
+
+    A record written before ``identity_anchors`` existed carries what its
+    assessment resolved with anchors this snapshot no longer has. Without them
+    the read establishes only a serving host and a bare hash, so replacing the
+    stored values moves the publisher to whichever host served the copy and the
+    work to a set of bytes — and two works from one evidenced issuer, which the
+    publisher test refuses, become two hosts that may pass it.
+    """
+    from deep_research.agents.evidence import resolve_source_identities
+
+    report = _read(LAB_REPORT_URL)
+    update = _read(LEGACY_UPDATE_URL, title="Capacity Update", text=LEGACY_UPDATE_TEXT)
+    sources = [
+        _legacy_source(
+            LAB_REPORT_URL, title="Grid Storage Outlook", work_id=REPORT_WORK
+        ),
+        _legacy_source(
+            LEGACY_UPDATE_URL,
+            title="Capacity Update",
+            work_id="doi:10.1234/capacity.2026",
+        ),
+    ]
+
+    resolved = resolve_source_identities(sources, [report, update])
+
+    assert [source.work_id for source in resolved] == [
+        REPORT_WORK,
+        "doi:10.1234/capacity.2026",
+    ]
+    assert [source.publisher_id for source in resolved] == [
+        "example lab",
+        "example lab",
+    ]
+    assert [source.identity_anchors for source in resolved] == [{}, {}]
+    assert not _may_pair(report, update, resolved)
+
+
+def test_a_legacy_strong_work_id_still_names_the_group_it_joins() -> None:
+    """A stored strong key is an alias, and a contradicting one is a conflict.
+
+    The legacy record's own work is preserved, and the key it names still joins
+    the resolution: a second record of the same body under a different DOI is
+    then reported ``conflicting`` rather than silently re-keying the body to
+    the identifier the older record never saw (§2.2 rule 3).
+    """
+    from deep_research.agents.evidence import resolve_source_identities
+
+    read = _read(
+        LAB_REPORT_URL,
+        text=LAB_REPORT_TEXT + " Re-registered as doi:10.9999/registry-change.",
+    )
+    sources = [
+        _legacy_source(LAB_REPORT_URL, title="Grid Storage Outlook", work_id=REPORT_WORK),
+        _legacy_source(
+            LAB_REPORT_URL,
+            title="Grid Storage Outlook",
+            work_id="doi:10.9999/registry-change",
+        ).model_copy(
+            update={
+                "work_id": None,
+                "publisher_id": None,
+                "identity_anchors": {
+                    "doi": "10.9999/registry-change",
+                    "issuer": "Example Lab",
+                },
+            }
+        ),
+    ]
+
+    resolved = resolve_source_identities(sources, [read])
+
+    assert resolved[0].work_id == REPORT_WORK
+    re_registered = resolved[1].work_identity
+    assert re_registered is not None
+    assert re_registered.identity_status == "conflicting"
+    assert re_registered.key is None
+    assert set(re_registered.aliases) == {
+        REPORT_WORK,
+        "doi:10.9999/registry-change",
+        f"sha256:{read.content_sha256}",
+    }
+
+
