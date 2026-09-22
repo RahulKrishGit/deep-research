@@ -24,6 +24,7 @@ from deep_research.agents.evidence import normalized_content_sha256
 from deep_research.e2e_evaluation.replay import (
     CaseExpectation,
     ReplayCompleter,
+    ReplayRun,
     ReplayScenario,
     ReplaySource,
     ReplayTopic,
@@ -935,3 +936,167 @@ def test_matrix_case_holds_for_three_offline_repetitions(case_id: str) -> None:
         "repetitions disagree": outcomes,
     }
     assert outcomes[0][3], f"{case_id}: the run published no report"
+
+
+# --- the named mutations: a check that cannot fail is not a check -------------
+#
+# The brief names four mutations, and a mutation test is the only thing that
+# tells a matrix row apart from a decoration: the row's own green says the
+# property holds, and running the *same* row against the forbidden shape says
+# the row's assertion is what holds it. Each mutation below is a drop-in for
+# one real production function, active only for that test, and each is scoped
+# to the behaviour the row asserts - never to the fixture that would fail
+# whatever the product did.
+
+
+def _repetitions_under_the_mutation(
+    case_id: str, root: Path
+) -> list[tuple[ReplayRun, list[str]]]:
+    """One case's three repetitions, and how each fell short, mutation active.
+
+    The same harness ``test_matrix_case_holds_for_three_offline_repetitions``
+    runs: the declared case, the same storage isolation, the network denied.
+    The only difference is the forbidden shape the caller has patched in, so a
+    repetition that passed here is a repetition the mutation did not reach.
+    """
+    outcomes: list[tuple[ReplayRun, list[str]]] = []
+    for repetition in range(1, REPETITIONS + 1):
+        run, attempts = _run(
+            case_id,
+            repetition=repetition,
+            root=root / f"repetition-{repetition}",
+        )
+        assert attempts == [], f"{case_id}: network attempted {attempts}"
+        outcomes.append((run, expectation_failures(run)))
+    return outcomes
+
+
+def _omitting_b(real):
+    """The brief's ``omit B`` mutation, as a drop-in for ``claim_evidence_pool``.
+
+    ``claim_evidence_pool`` is the function that decides which registry units a
+    claim is adjudicated against, and it is the only input the ``verified_pair``
+    badge has: the badge is granted from the two independent accounts one claim
+    row is adjudicated on. The mutation keeps the real pool's decision and then
+    drops the last independent account in it, so B never reaches the packet -
+    the shape the brief names, applied to whatever the case's pool happens to
+    be rather than to a hardcoded id.
+    """
+
+    def pool(state, claim, *, target_ids=None):
+        units = real(state, claim, target_ids=target_ids)
+        accounts: dict[str, list[object]] = {}
+        for unit in units:
+            accounts.setdefault(unit.source_url, []).append(unit)
+        if len(accounts) < 2:
+            return units
+        kept = {
+            unit.evidence_id
+            for url in list(accounts)[:-1]
+            for unit in accounts[url]
+        }
+        return [unit for unit in units if unit.evidence_id in kept]
+
+    return pool
+
+
+_INVENTED_STATEMENT_URL = "https://invented.example.test/never-read"
+
+
+def _inventing_a_statement_url(real):
+    """The brief's invented-URL mutation, as a drop-in for ``statement_source_urls``.
+
+    The real function derives a statement's citation URLs locally from the
+    evidence registry, keyed by the selected ids, so a URL is whatever the
+    recorded unit was actually served from. The mutation appends one URL that
+    no read of the run produced: the citation the contract exists to make
+    impossible.
+    """
+
+    def urls(evidence_ids, evidence):
+        return [*real(evidence_ids, evidence), _INVENTED_STATEMENT_URL]
+
+    return urls
+
+
+def test_omitting_b_from_the_claim_pool_breaks_the_recovery_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B is what the recovery row's badge rests on, so omitting it fails the row.
+
+    ``refinement-evidence-recovery`` is a positive row whose decisive assertion
+    is that the *repair round's* late page is what turned the obligation into an
+    answer, which its invariant reads off the badge: no corroborated claim
+    resting on the page the repair acquired is a failed recovery. The pool is
+    where the two accounts are joined, so a run that never showed the second
+    account to the adjudication cannot reach the badge at all - and the case has
+    to fail in exactly that way rather than falling over somewhere else.
+    """
+    from deep_research.agents import fact_checker
+
+    monkeypatch.setattr(
+        fact_checker,
+        "claim_evidence_pool",
+        _omitting_b(fact_checker.claim_evidence_pool),
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        outcomes = _repetitions_under_the_mutation(
+            "refinement-evidence-recovery", Path(directory)
+        )
+
+    for run, failures in outcomes:
+        assert failures, "the case passed with one of its two supports dropped"
+        assert not [
+            claim
+            for claim in run.state.verified_claims
+            if claim.evidence_status == "verified_pair"
+        ], "a pair badge was granted from the pool the mutation narrowed"
+        assert any(
+            "invariant 'refinement_recovered_evidence' broken: "
+            "no corroborated claim rested on the page the repair acquired"
+            in failure
+            for failure in failures
+        ), failures
+        assert run.report, "the case failed without publishing anything"
+
+
+def test_an_invented_statement_url_breaks_a_positive_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A citation no read produced is refused, and the positive row records that.
+
+    ``statement_source_urls`` derives every citation from the evidence registry
+    so a URL the model typed can never reach the reader. The mutation appends
+    one, and the case's own product contract is what catches it: the quality
+    gate records the hard failure ``unscored_cited_sources`` because the reader
+    was handed a source no assessment covers, so the run can no longer reach the
+    ``accepted`` result its row declares.
+    """
+    from deep_research.agents import report
+
+    monkeypatch.setattr(
+        report,
+        "statement_source_urls",
+        _inventing_a_statement_url(report.statement_source_urls),
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        outcomes = _repetitions_under_the_mutation(
+            "refinement-evidence-recovery", Path(directory)
+        )
+
+    for run, failures in outcomes:
+        read_urls = {
+            url
+            for read in run.state.read_records.values()
+            for url in (read.requested_url, read.resolved_url)
+        }
+        assert _INVENTED_STATEMENT_URL not in read_urls, (
+            "the invented URL was a real read of this run"
+        )
+        assert _INVENTED_STATEMENT_URL in run.report, (
+            "the reader was not handed the invented citation"
+        )
+        assert any(
+            "unscored_cited_sources" in failure for failure in failures
+        ), failures
+        assert failures, "the case passed with an invented citation published"
