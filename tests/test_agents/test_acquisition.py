@@ -883,6 +883,49 @@ async def test_a_url_that_fails_twice_records_both_attempts_without_halting() ->
     assert len({item.item_id for item in attempts}) == 2
 
 
+def test_a_target_whose_budget_is_spent_refuses_every_later_tool_call() -> None:
+    """``remaining_calls`` is the run's, not one pass's.
+
+    The per-target budget persists across passes — ``merge_acquisition_states``
+    keeps the minimum, so spent capacity is never resurrected — and the
+    Researcher resumes that state when it opens a *fresh* React loop for the
+    same unanswered target on a refinement pass. That loop's own budget gate
+    sees a full budget, so a waived policy means an exhausted target may search
+    and read freely while its ``remaining_calls`` sits at zero: the discipline
+    the budget exists to impose (read after two searches, finish when the leads
+    are gone) is enforced in the pass that spent the budget and in no pass
+    after it.
+    """
+    policy = _policy(
+        candidate_urls=["https://lab.example/queued"], remaining_calls=0
+    )
+
+    assert next_acquisition_action(policy.state) == "finish"
+
+    searches = [
+        policy.before_action(
+            ReActDecision(
+                thought="Search again.",
+                action="use_tool",
+                tool_name="web_search",
+                tool_input_json=json.dumps({"query": f"queue delay cost {index}"}),
+            ),
+            {"query": f"queue delay cost {index}"},
+        )
+        for index in range(4)
+    ]
+    read = policy.before_action(
+        _read_decision("web_scraper", "https://lab.example/queued"),
+        {"url": "https://lab.example/queued"},
+    )
+
+    assert [decision.allowed for decision in searches] == [False] * 4
+    assert all("budget" in decision.reason for decision in searches)
+    assert read.allowed is False
+    assert policy.state.remaining_calls == 0
+    assert policy.state.candidate_urls == ["https://lab.example/queued"]
+
+
 def test_both_targets_survive_a_second_admission_of_one_body() -> None:
     """Reuse adds an association; it never replaces the earlier target's."""
     shared_reads: dict[str, ReadRecord] = {}
