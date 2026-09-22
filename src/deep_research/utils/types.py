@@ -2982,26 +2982,31 @@ def _collapsed(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
-def _acquire_actions_by_coverage_id(
-    state: ResearchState,
-) -> dict[str, set[str]]:
-    """The typed repair actions the Critic routed at each planned topic id.
+def _acquire_coverage_ids(state: ResearchState) -> set[str]:
+    """Every planned topic a typed repair has asked to acquire for.
 
-    Read from ``CritiqueGap.coverage_id`` and from nothing else, so a gap whose
-    scope resolved to a topic is honored and a gap whose scope did not resolve
-    belongs to no topic. The *action* is what matters here: a gap that repairs
-    by synthesis, adjudication, consolidation or source assessment is repaired
-    by another node, and must not send this topic back to acquisition.
+    Two records of one request, and both are read because they are not
+    interchangeable. ``state.refinement_targets`` is the union the refinement
+    hop routes over: it carries the Critic's gaps *and* the terminal semantic
+    review's defects, which exist as jobs and nowhere else in the state.
+    ``state.critique.gaps`` is the durable record of the Critic's own half —
+    a job list is recomputed at each hop, so a topic an acquisition gap named
+    before that hop stamped its jobs (a resumed snapshot, a state assembled by
+    a caller) must stay selectable rather than silently dropping out.
     """
-    grouped: dict[str, set[str]] = {}
+    requested = {
+        job.coverage_id
+        for job in state.refinement_targets
+        if job.action == "acquire" and job.coverage_id
+    }
     critique = state.critique
-    if critique is None:
-        return grouped
-    for gap in critique.gaps:
-        if gap.coverage_id is None:
-            continue
-        grouped.setdefault(gap.coverage_id, set()).add(gap.repair_action)
-    return grouped
+    if critique is not None:
+        requested.update(
+            gap.coverage_id
+            for gap in critique.gaps
+            if gap.coverage_id and gap.repair_action == "acquire"
+        )
+    return requested
 
 
 def _topic_has_prior_finding(state: ResearchState, sub_topic: SubTopic) -> bool:
@@ -3032,8 +3037,12 @@ def sub_topic_owes_evidence(state: ResearchState, sub_topic: SubTopic) -> bool:
       obligation open and the topic eligible whether or not the Critic named
       it. This is what stops Critic silence from suppressing a required
       target;
-    * the Critic routed an *acquisition* gap at the topic, which is the Critic
-      asking for searches.
+    * a typed repair asked for *acquisition* at the topic — the Critic's gap,
+      or a defect the terminal semantic review named, which reaches this
+      predicate only as a ``refinement_target`` job (``_acquire_coverage_ids``).
+      An answered topic is not exempt: a review that calls for a missing
+      independent source is asking for searches, and the topic has to be
+      selectable for the pass it bought to do any.
 
     A plan with no evidence targets has no obligation to check against — a
     legacy snapshot the plan contract says must be replanned — and there the
@@ -3046,9 +3055,7 @@ def sub_topic_owes_evidence(state: ResearchState, sub_topic: SubTopic) -> bool:
     readings would let a pass skip a topic while the repair loop kept counting
     that topic's leftovers as work owed.
     """
-    if "acquire" in _acquire_actions_by_coverage_id(state).get(
-        sub_topic.coverage_id, frozenset()
-    ):
+    if sub_topic.coverage_id in _acquire_coverage_ids(state):
         return True
     targets = counted_evidence_targets(sub_topic.evidence_targets)
     if not targets:

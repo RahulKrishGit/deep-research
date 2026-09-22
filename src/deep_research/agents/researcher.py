@@ -436,12 +436,22 @@ def render_session_guidance(state: ResearchState) -> str:
 
 
 def _critic_queries_for(state: ResearchState, sub_topic: SubTopic) -> list[str]:
-    """The queries the Critic routed to this exact plan ID, in order.
+    """The queries routed to this exact plan ID, in order.
 
-    Only the gaps whose ``coverage_id`` equals the sub-topic's own are read,
-    so a refinement pass never spends another topic's queries on this one.
+    Read from the typed ``acquire`` jobs first — the refinement hop's own
+    union of the Critic's gaps and the terminal review's defects, so a defect
+    the review named reaches the loop the same way a gap does — and then from
+    the Critic's gaps, which is the durable record of its half of that union.
+    Only jobs whose ``coverage_id`` equals the sub-topic's own are read, so a
+    refinement pass never spends another topic's queries on this one.
     """
     queries: list[str] = []
+    for job in state.refinement_targets:
+        if job.action != "acquire" or job.coverage_id != sub_topic.coverage_id:
+            continue
+        for query in job.queries:
+            if query not in queries:
+                queries.append(query)
     for gap in _critic_gaps_by_target(state).get(sub_topic.coverage_id, []):
         for query in gap.recommended_queries:
             if query not in queries:
