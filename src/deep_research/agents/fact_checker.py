@@ -144,6 +144,12 @@ MAX_REPORTED_PENDING_CLAIMS = 16
 # re-exported from deep_research.agents, so the names must not collide.
 FACT_CHECK_EVIDENCE_CHARS = 4000
 MAX_PASSAGE_EXCERPT_CHARS = 1000
+
+# The shortest candidate excerpt worth showing. Below this the model would be
+# judging a fragment rather than the document's own statement, so the candidate
+# is recorded as an omission instead — which, on the packet path, withholds the
+# verified badge rather than settling the claim on evidence nobody read.
+MIN_CANDIDATE_CHARS = 200
 MAX_PASSAGE_LOCATOR_CHARS = 200
 # How many distinct schema field paths one repaired-reply event reports. The
 # diagnostic count is exact; the paths are bounded so an event never grows with
@@ -1386,6 +1392,13 @@ def plan_packet_rendering(
     """
     if evidence_chars < 1 or unit_chars < 1:
         raise ValueError("evidence_chars and unit_chars must be at least 1")
+    # The budget is shared out across the packet's candidates rather than spent
+    # on the first few: each block's fixed text is measured once, and what is
+    # left divides by how many candidates there are. One whole-page read can
+    # then no longer push its neighbours out of the request.
+    fixed = sum(len(_candidate_block(packet, unit, "")) for unit in packet.units)
+    share = (evidence_chars - fixed) // max(len(packet.units), 1)
+    bound = min(unit_chars, max(share, MIN_CANDIDATE_CHARS))
     order = sorted(
         range(len(packet.units)),
         key=lambda index: (
@@ -1398,7 +1411,7 @@ def plan_packet_rendering(
     used = 0
     for index in order:
         unit = packet.units[index]
-        text = _bounded_passage_text(unit.excerpt, limit=unit_chars)
+        text = _bounded_passage_text(unit.excerpt, limit=bound)
         block = _candidate_block(packet, unit, text)
         if used + len(block) > evidence_chars and rendered:
             unrendered.append(index)

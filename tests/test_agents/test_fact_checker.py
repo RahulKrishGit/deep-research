@@ -6992,6 +6992,56 @@ def test_not_comparable_is_still_loadable_but_no_longer_produced() -> None:
         )
 
 
+def test_a_crowded_packet_still_shows_every_candidate() -> None:
+    """The budget is shared out, so a full packet is still a full request.
+
+    Six candidates with whole-page bodies used to fill the request between
+    them and leave the last ones unshown — and, on the packet path, unshown
+    candidates withhold the badge. Dividing what is left after the blocks'
+    fixed text lets every candidate carry a readable excerpt instead, so the
+    omission path is reserved for packets that genuinely cannot fit.
+    """
+    text = SUPPORT_TEXT + " " + ("Detail. " * 400)
+    units = [
+        _pair_unit(name, f"https://{name}.test/{name}", text)
+        for name in ("left", "right", "third", "fourth", "fifth", "sixth")
+    ]
+    packet = AdjudicationPacket(
+        claim_id="claim-1",
+        claim_text=TASK6_CLAIM,
+        claim_source_urls=["https://left.test/left"],
+        claim_cluster_id="cluster-1",
+        units=units,
+        eligibility={
+            unit.evidence_id: _eligibility(
+                publisher_id=f"publisher-{unit.evidence_id}",
+                work_id=f"sha256:{unit.evidence_id}",
+                origin_group_id=f"publisher:publisher-{unit.evidence_id}",
+            )
+            for unit in units
+        },
+        fingerprint="fingerprint-1",
+    )
+
+    plan = plan_packet_rendering(
+        packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+    )
+
+    assert plan.unrendered == []
+    body = "\n".join(
+        message.content
+        for message in adjudication_messages(
+            packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+        )
+    )
+    for unit in units:
+        assert f"id: {unit.evidence_id}" in body
+    assert (
+        len(body.split("# Claim")[1].split("# Response contract")[0])
+        <= FACT_CHECK_EVIDENCE_CHARS * 2
+    )
+
+
 def test_packet_incomplete_is_about_this_claims_own_candidates() -> None:
     """Another claim's unit, and a run-wide deferral, are not this claim's gaps.
 
@@ -7123,12 +7173,12 @@ def test_an_id_the_request_never_carried_is_never_admitted() -> None:
             _third_origin(),
             texts=(long_left, AUDIT_TEXT, REFUTATION_TEXT),
         ),
-        evidence_chars=600,
+        evidence_chars=300,
     )
     rendered = {
         unit.evidence_id
         for unit, _ in plan_packet_rendering(
-            packet, evidence_chars=600
+            packet, evidence_chars=300
         ).rendered
     }
     unshown = "ev-right"
