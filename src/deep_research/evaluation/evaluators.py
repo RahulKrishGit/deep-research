@@ -2533,19 +2533,26 @@ def _mirror_not_a_new_work_passes(
 ) -> bool:
     """No page carrying another's work is recorded as a second original.
 
-    One shape invents a work: a page recorded as ``transport_relation ==
-    "original"`` whose ``publisher_id`` differs from the original's. A page
-    that records the original's publisher is the same work however it was
-    served, and a page that records no publisher at all asserted no new
-    identity — unknown identity can establish neither sameness nor
-    independence, so it is not a false pair either. Refusing that last shape
-    is ``independent_work_recognized``'s job, not this one's.
+    One shape invents a work: a page whose ``publisher_id`` differs from the
+    original's while its ``transport_relation`` is not one the case declares
+    derivative. A page that records the original's publisher is the same work
+    however it was served, and a page that records no publisher at all
+    asserted no new identity — unknown identity can establish neither
+    sameness nor independence, so it is not a false pair either. Refusing
+    that last shape is ``independent_work_recognized``'s job, not this
+    one's.
     """
     reference = case.expectations.reference
     original_url = reference.get("original_url")
     same_work = _reference_strings(case, "same_work_urls")
     if not isinstance(original_url, str) or not original_url or not same_work:
         return True
+    # A copy served from a repository or over a wire inherits the original's
+    # publisher by its declared relation alone. Production emits ``unknown``
+    # instead whenever the read does not evidence the issuer
+    # (``validated_transport_relation``), so identity — not the relation's
+    # spelling — is what the fallback below has to test.
+    derivative_relations = set(_reference_strings(case, "derivative_relations"))
     rows = _evaluated_rows_by_url(output)
     original = rows.get(normalize_source_url(original_url))
     if original is None:
@@ -2557,7 +2564,7 @@ def _mirror_not_a_new_work_passes(
         entry = rows.get(normalize_source_url(url))
         if entry is None:
             return False
-        if _field(entry, "transport_relation") != "original":
+        if _field(entry, "transport_relation") in derivative_relations:
             continue
         publisher = _field(entry, "publisher_id")
         if publisher is not None and publisher != original_publisher:
