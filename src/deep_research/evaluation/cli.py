@@ -113,6 +113,10 @@ _EPILOG = (
     "baseline config.\n"
     f"  {PROGRAM_NAME} agent researcher --reasoning-effort medium\n"
     "\n"
+    "  # Force this run to resolve from production's declaration, "
+    "regardless of config.yaml.\n"
+    f"  {PROGRAM_NAME} agent researcher --production-parity\n"
+    "\n"
     "  # Run controlled experiments for all six agents.\n"
     f"  {PROGRAM_NAME} suite"
 )
@@ -135,6 +139,10 @@ class CliOptions:
     reasoning_effort: str | None
     judge_reasoning_effort: str | None
     verbose: bool
+    production_parity: bool | None
+    """``None`` means inherit config.yaml's own setting; a bool is a
+    per-invocation override recorded as such in the run's own output
+    (``production_parity_source``)."""
 
 
 def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
@@ -171,6 +179,34 @@ def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
         "--verbose",
         action="store_true",
         help="print per-repetition gate and evaluator summaries",
+    )
+    # ``store_const`` rather than ``argparse.BooleanOptionalAction``: the
+    # "neither flag passed" state must stay distinguishable from "passed
+    # False" so it can mean "inherit config.yaml" instead of silently
+    # forcing parity off for every invocation that omits the flag.
+    parity_group = subparser.add_mutually_exclusive_group()
+    parity_group.add_argument(
+        "--production-parity",
+        dest="production_parity",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "force each target's model/effort to resolve from "
+            "production's own declaration for this run, regardless of "
+            "config.yaml's evaluation.production_parity"
+        ),
+    )
+    parity_group.add_argument(
+        "--no-production-parity",
+        dest="production_parity",
+        action="store_const",
+        const=False,
+        default=None,
+        help=(
+            "force the evaluation-only profile for this run, even when "
+            "config.yaml's evaluation.production_parity is on"
+        ),
     )
 
 
@@ -262,6 +298,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
         reasoning_effort=reasoning_effort,
         judge_reasoning_effort=namespace.judge_reasoning_effort,
         verbose=bool(namespace.verbose),
+        production_parity=namespace.production_parity,
     )
 
 
