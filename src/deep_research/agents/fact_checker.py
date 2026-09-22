@@ -983,6 +983,29 @@ class AdjudicationPacket(ContractModel):
     fingerprint: str = ""
 
 
+def _claim_target_scope(state: ResearchState, target_ids: set[str]) -> set[str]:
+    """Every id a unit may carry and still belong to this claim's work.
+
+    A claim's ``target_ids`` are the evidence targets the plan minted
+    (``topic-01-target-01``). Units do not carry those alone: the Researcher
+    registers a unit against the sub-topic its read was taken for
+    (``topic-01``), while the Fact Checker's own retrieval for a claim
+    registers against the obligation it was reading for. Two id spaces, so a
+    link that intersects the obligation ids directly admits only the second
+    kind and misses every read the Researcher already made for this exact
+    sub-topic. The scope is therefore the obligations themselves plus the
+    sub-topics they live in — never another topic's.
+    """
+    scope = set(target_ids)
+    for topic in state.sub_topics:
+        if topic.coverage_id in target_ids:
+            scope.add(topic.coverage_id)
+        for target in topic.evidence_targets:
+            if target.target_id in target_ids:
+                scope.add(target.coverage_id)
+    return scope
+
+
 def claim_evidence_pool(
     state: ResearchState,
     claim: Claim | ClaimDraft,
@@ -1000,16 +1023,18 @@ def claim_evidence_pool(
 
     Three links, and only these: a unit whose read is one of the claim's own
     citations, a unit whose locator and excerpt are the passage the claim
-    already recorded, and a unit an evidence target of this claim explicitly
-    candidate-listed. Everything else in the registry belongs to other claims —
-    admitting it would let a document about topic A settle a claim about topic
-    B on the strength of having been read in the same run.
+    already recorded, and a unit covering one of the claim's obligations — the
+    sub-topic an evidence target of this claim lives in. Everything else in the
+    registry belongs to other claims — admitting it would let a document about
+    topic A settle a claim about topic B on the strength of having been read in
+    the same run.
     """
     obligations = (
         set(target_ids)
         if target_ids is not None
         else set(getattr(claim, "target_ids", ()) or ())
     )
+    scope = _claim_target_scope(state, obligations)
     cited = {
         normalize_source_url(url) for url in getattr(claim, "source_urls", ()) or ()
     }
@@ -1026,9 +1051,7 @@ def claim_evidence_pool(
     pool: list[EvidenceUnit] = []
     for unit in state.evidence_units.values():
         by_citation = unit.read_id in reads
-        by_target = bool(
-            obligations and obligations.intersection(unit.target_ids)
-        )
+        by_target = bool(scope and scope.intersection(unit.target_ids))
         by_passage = (
             normalize_source_url(unit.source_url),
             unit.locator,

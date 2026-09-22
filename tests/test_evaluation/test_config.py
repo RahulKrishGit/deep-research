@@ -691,11 +691,21 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # joins against, never a prompt input. The shared `agents.prompts` library was
 # not edited, and the other five pins and the judge did not move (verified by
 # recomputing all six and the judge).
+#
+# The claim-pool target link re-pinned the fact_checker again
+# (`c4d37173726c` -> `70fa432dfc6d`). Again module-source drift rather than
+# prompt text: ``claim_evidence_pool`` resolves a claim's obligation ids
+# through the plan to the sub-topics they live in before matching them against
+# a unit's target ids. No instruction, packet rendering, or verdict rule
+# changed; what changed is which reads reach the packet the instruction is
+# applied to. The shared `agents.prompts` library was not edited, and the
+# other five pins and the judge did not move (verified by recomputing all six
+# and the judge).
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "4fab1aa863d8",
     "researcher": "613603dc5cbd",
     "source_evaluator": "6c12c0fffc92",
-    "fact_checker": "c4d37173726c",
+    "fact_checker": "70fa432dfc6d",
     "synthesizer": "97cf77acbb15",
     "critic": "9694e44926d3",
 }

@@ -3654,6 +3654,11 @@ A_TEXT = "Lab A reported that wind capacity reached 10 GW in 2025."
 B_TEXT = "Lab B audited the figure: wind capacity reached 10 GW in 2025."
 TASK6_TARGET = "target-1"
 
+RIVAL_URL = "https://lab-c.test/rival"
+RIVAL_TEXT = "Lab C measured 8 GW for the same year."
+ELSEWHERE_URL = "https://lab-d.test/other"
+ELSEWHERE_TEXT = "Lab D reported solar capacity."
+
 
 class _NoDownloadClient:
     """A page client that fails the test if any body is ever fetched."""
@@ -4059,6 +4064,84 @@ def test_two_unrelated_reads_are_not_a_proven_handoff_loss() -> None:
 
     assert {unit.source_url for unit in pool} == {A_URL, B_URL}
     assert all(unit.read_id != "read-c" for unit in pool)
+
+
+def _obligation_state() -> ResearchState:
+    """Two sub-topics, each read, and a claim citing only the first's page.
+
+    The ids are the two the product actually mints: ``target_id_for`` writes an
+    obligation per evidence target (``topic-01-target-01``), and the
+    acquisition layer registers its units against the sub-topic the read was
+    taken for (``topic-01``). The rival page is read for the *same* sub-topic
+    as the claim's own source, and read for the other sub-topic too.
+    """
+    own = _ab_read("read-own", A_URL, "Lab A report", A_TEXT)
+    rival = _ab_read("read-rival", RIVAL_URL, "Lab B audit", RIVAL_TEXT)
+    elsewhere = _ab_read(
+        "read-elsewhere", ELSEWHERE_URL, "Third topic", ELSEWHERE_TEXT
+    )
+    units = {
+        unit.evidence_id: unit
+        for unit in (
+            build_evidence_unit(
+                read=own,
+                locator="chunk-0",
+                excerpt=A_TEXT,
+                origin="researcher",
+                target_ids=["topic-01"],
+            ),
+            build_evidence_unit(
+                read=rival,
+                locator="chunk-0",
+                excerpt=RIVAL_TEXT,
+                origin="researcher",
+                target_ids=["topic-01"],
+            ),
+            build_evidence_unit(
+                read=elsewhere,
+                locator="chunk-0",
+                excerpt=ELSEWHERE_TEXT,
+                origin="researcher",
+                target_ids=["topic-02"],
+            ),
+        )
+    }
+    return ResearchState(
+        session_id="session-1",
+        original_question="How much wind capacity was added?",
+        initial_target_ids=["topic-01-target-01"],
+        sub_topics=[
+            _targeted_topic("topic-01", "Alpha", "topic-01-target-01"),
+            _targeted_topic("topic-02", "Beta", "topic-02-target-01"),
+        ],
+        read_records={read.read_id: read for read in (own, rival, elsewhere)},
+        evidence_units=units,
+    )
+
+
+def test_the_pool_links_an_obligation_to_the_units_that_cover_it() -> None:
+    """A contradicting account of the claim's own sub-topic reaches its packet.
+
+    The claim cites the record that agrees with it and nothing else, so the
+    citation link cannot admit the rival; the target link is the only way in.
+    It compares the claim's obligation ids against the units' coverage ids -
+    two id spaces that never meet, so it admits nothing in any case ever, and
+    a document read for this exact sub-topic that disagrees with the figure is
+    invisible to the adjudication that would have to settle it.
+    """
+    state = _obligation_state()
+    draft = ClaimDraft(
+        text="Wind capacity reached 10 GW in 2025.", source_urls=[A_URL]
+    )
+
+    pool = claim_evidence_pool(
+        state, draft, target_ids=["topic-01-target-01"]
+    )
+
+    assert {unit.source_url for unit in pool} == {A_URL, RIVAL_URL}
+    # And the link stays scoped to the claim's own sub-topic: another topic's
+    # read in the same run is still not evidence for this claim.
+    assert all(unit.source_url != ELSEWHERE_URL for unit in pool)
 
 
 @pytest.mark.asyncio
