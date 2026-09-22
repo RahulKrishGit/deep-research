@@ -8,6 +8,7 @@ import pytest
 
 import deep_research.runtime.assembly as assembly
 from deep_research.agents.errors import AgentConfigurationError
+from deep_research.agents.evidence import build_read_record
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
@@ -581,6 +582,55 @@ def test_an_agent_without_a_sub_topic_cap_is_not_given_one(tracker) -> None:
             reputation=None,
         )
         assert not hasattr(agent, "_max_sub_topics"), name
+
+
+def test_the_seeded_source_cache_reaches_the_researcher_alone(tracker) -> None:
+    """Source-cache state a caller supplies must reach the agent that uses it.
+
+    A session may start holding bodies an earlier session already read. The
+    registry belongs to the agent that decides whether a URL needs downloading
+    — the Researcher — and to no one else: the other five never fetch a body,
+    so a wiring that handed them a cache to look in would be a parameter they
+    cannot honour. Passing none keeps the shipped behaviour, a run whose cache
+    starts empty.
+    """
+    settings = ConfigSettings()
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+    stored = {
+        "https://agency.example/queue-study.pdf": build_read_record(
+            session_id="earlier-session",
+            reader="document_reader",
+            requested_url="https://agency.example/queue-study.pdf",
+            resolved_url="https://agency.example/queue-study.pdf",
+            title="Queue study",
+            retrieved_at="2024-11-01T00:00:00+00:00",
+            text="The queue delay study measured commissioning delay in 2024.",
+            passages={
+                "page-1-chunk-0": (
+                    "The queue delay study measured commissioning delay in 2024."
+                )
+            },
+        )
+    }
+
+    agents = build_agents(
+        settings,
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+        read_cache=stored,
+    )
+
+    assert agents.researcher._shared_cache is stored
+    assert getattr(agents.planner, "_shared_cache", None) is None
+    assert getattr(agents.fact_checker, "_shared_cache", None) is None
 
 
 def test_build_agent_rejects_an_unknown_agent_name(tracker) -> None:

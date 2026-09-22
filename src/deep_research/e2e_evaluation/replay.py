@@ -29,15 +29,18 @@ from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 import httpx
 
-from deep_research.agents.acquisition import _required_reader
+from deep_research.agents.acquisition import (
+    _required_reader,
+    build_read_record_from_tool_result,
+)
 from deep_research.agents.base import AgentCompleter
 from deep_research.agents.claim_clusters import ClaimEquivalenceDraft
 from deep_research.agents.critic import CritiqueDraft
-from deep_research.agents.evidence import read_identity
+from deep_research.agents.evidence import normalized_content_sha256, read_identity
 from deep_research.agents.fact_checker import (
     ClaimsDraft,
     ClaimVerdictDraft,
@@ -85,8 +88,9 @@ from deep_research.observability import (
 from deep_research.providers import NativeToolCall, NativeToolTurn
 from deep_research.providers.contracts import ProviderError
 from deep_research.runtime.assembly import build_runtime
+from deep_research.tools.base import ToolResult
 from deep_research.utils.config import ConfigSettings
-from deep_research.utils.types import ResearchState
+from deep_research.utils.types import ReadRecord, ResearchState
 
 # The public progress summary stays at its shipped length. A scenario may ask
 # for a different one to prove a case cannot pass by enlarging logs, but the
@@ -142,12 +146,45 @@ class ReplaySource:
     # document path is served as real PDF bytes so the production extractor,
     # not the fixture, is what reads it.
     content_type: str = "text/html; charset=utf-8"
+    # The read an earlier session stored for this page, seeded into the run's
+    # cache before the graph starts. ``valid`` is a stored read of the page's
+    # own text; ``stale`` is a stored read of ``cached_text``, the version that
+    # session saw, which the live page no longer is; ``forged`` stores a body
+    # while declaring the digest of another one, so its provenance is one no
+    # reader could have earned. The last two state the body they store, because
+    # an artifact whose body is unstated is not an artifact at all.
+    cache_artifact: Literal["", "valid", "stale", "forged"] = ""
+    cached_text: str = ""
 
     def __post_init__(self) -> None:
         if self.excerpt not in self.text:
             raise ValueError(f"excerpt not in text for {self.url}")
         if not self.excerpt.strip():
             raise ValueError(f"empty excerpt for {self.url}")
+        if self.cached_text and self.cache_artifact in ("", "valid"):
+            raise ValueError(
+                f"cached_text for {self.url} states a body only a stale or "
+                "forged artifact stores"
+            )
+        if self.cache_artifact in ("stale", "forged"):
+            if not self.cached_text:
+                raise ValueError(
+                    f"the {self.cache_artifact} artifact for {self.url} must "
+                    "state the body it stores"
+                )
+            if self.cached_text == self.text:
+                raise ValueError(
+                    f"the {self.cache_artifact} artifact for {self.url} stores "
+                    "this page's own text, so it claims nothing false"
+                )
+        if (
+            self.cache_artifact == "stale"
+            and self.excerpt not in self.cached_text
+        ):
+            raise ValueError(
+                f"the stored body of {self.url} does not state the excerpt its "
+                "claim rests on"
+            )
 
 
 @dataclass(frozen=True)
@@ -1259,6 +1296,73 @@ def replay_settings(
     )
 
 
+# The session every seeded cache artifact was read by. A cache entry is
+# provenance, not a fixture label: it has to name the session that read the
+# bytes, and no record this run keeps may claim those bytes as its own fetch.
+# One constant keeps that name out of every case's hands.
+PRIOR_SESSION_ID = "earlier-session"
+# When that session read them. The artifact's observation period is part of
+# what a cache import carries forward, so it is stated rather than defaulted
+# to the run's own clock.
+PRIOR_READ_RETRIEVED_AT = "2024-11-01T09:00:00+00:00"
+
+
+def prior_session_reads(scenario: ReplayScenario) -> dict[str, ReadRecord]:
+    """The bodies an earlier session stored, keyed the way the cache looks up.
+
+    Built through the product's own read contract from the payload the reader
+    would have returned — a fixture that assembled a record field by field
+    would be testing a shape no reader produces. What the artifact claims
+    about itself is the fixture's declaration: a ``valid`` or ``stale``
+    artifact stores a body and declares that body's digest, while a ``forged``
+    one stores a body and declares the digest of this page's own text, which
+    is provenance no reader of that body could have earned.
+    """
+    reads: dict[str, ReadRecord] = {}
+    for url, source in scenario.sources.items():
+        if not source.cache_artifact:
+            continue
+        body = source.cached_text or source.text
+        reader = _required_reader(url) or "web_scraper"
+        payload: dict[str, Any] = {
+            "title": source.title,
+            "extraction_complete": True,
+        }
+        if reader == "document_reader":
+            payload.update(
+                {
+                    "source": url,
+                    "requested_source": url,
+                    "resolved_source": url,
+                    "chunks": [{"text": body, "chunk_index": 0, "page": 1}],
+                }
+            )
+        else:
+            payload.update({"url": url, "requested_url": url, "text": body})
+        record = build_read_record_from_tool_result(
+            ToolResult(
+                tool_name=reader,
+                success=True,
+                data=payload,
+                latency_ms=0.0,
+            ),
+            session_id=PRIOR_SESSION_ID,
+            retrieved_at=PRIOR_READ_RETRIEVED_AT,
+        )
+        if record is None:
+            raise ReplayContractError(
+                f"the stored read declared for {url} is not admissible"
+            )
+        if source.cache_artifact == "forged":
+            record = record.model_copy(
+                update={
+                    "content_sha256": normalized_content_sha256(source.text)
+                }
+            )
+        reads[url] = record
+    return reads
+
+
 @dataclass
 class ReplayRuntime:
     """The real runtime, its scripted boundaries, and the agents it built."""
@@ -1272,6 +1376,14 @@ class ReplayRuntime:
     agents: Any
     long_term: LongTermMemory
     procedural: ProceduralMemory
+    seeded_reads: dict[str, ReadRecord] = field(default_factory=dict)
+    """The stored bodies the fixture declared, as they were handed to the run.
+
+    A snapshot rather than the run's own cache: the cache is the run's to
+    update — a fresh body at a stored URL replaces the index entry, which is
+    exactly how a changed page stops being served from an old read — so the
+    artifact a case declared is only visible from here.
+    """
 
 
 async def build_replay_runtime(
@@ -1331,6 +1443,12 @@ async def build_replay_runtime(
     procedural = ProceduralMemory.from_config(
         resolved.memory.procedural, tracker=tracker
     )
+    # The source-cache state the run starts with, seeded before the graph is
+    # compiled: what a case declares here is what an earlier session left, and
+    # the run has to validate or refuse each entry as it reaches it. The run
+    # gets its own copy of the mapping, because it is the run's cache to
+    # update; the declaration itself is kept for the case's own assertions.
+    stored_reads = prior_session_reads(scenario)
     import deep_research.runtime.assembly as assembly
 
     assembly.compile_research_graph = _capturing_compile
@@ -1345,6 +1463,7 @@ async def build_replay_runtime(
             tavily_api_key="",
             search_client=search,
             http_client=http,
+            read_cache=dict(stored_reads),
         )
     finally:
         assembly.compile_research_graph = original_compile
@@ -1362,6 +1481,7 @@ async def build_replay_runtime(
         agents=captured["agents"],
         long_term=memory,
         procedural=procedural,
+        seeded_reads=stored_reads,
     )
 
 
@@ -1872,6 +1992,9 @@ def _invariant_read_downloaded_once(run: ReplayRun) -> str | None:
     download of the same body is the defect. The checker reads the boundary's
     own record of what it served, so a run that fetched the page again to
     answer the second obligation is visible here rather than merely slower.
+    A body that reached the run as a stored artifact is the same fact one
+    session further out, and it is the cache admission the checker looks for:
+    a reuse filed as this run's own network read is a reuse nothing shows.
     """
     fetched = run.replay.http.fetched
     repeated = sorted({url for url in fetched if fetched.count(url) > 1})
@@ -1883,7 +2006,88 @@ def _invariant_read_downloaded_once(run: ReplayRun) -> str | None:
         if read.acquisition_kind == "cache"
     ]
     if not reused:
-        return "no later answer reused a read this run had already made"
+        return "no later answer reused a read already made"
+    return None
+
+
+def _invariant_cache_provenance_is_validated(run: ReplayRun) -> str | None:
+    """A stored body is validated before it is used, or it is refetched.
+
+    A cache is provenance somebody else established, and both ways it can lie
+    are visible from here. A body that validates — the digest it declares is
+    the digest of the body it stores — may be reused, but only as an import:
+    the run's record keeps the ``cache`` kind, the session that read the
+    bytes, and the moment this run validated them, because without those a
+    reader would take an earlier session's reading for this run's own fetch,
+    and a stored version for the page as it is now. A body that does not
+    validate may not be served at all: the URL is fetched, and the record the
+    run keeps has to be the read it made itself rather than the artifact's
+    read identity or its declared digest.
+    """
+    seeded = run.replay.seeded_reads
+    if not seeded:
+        return None
+    fetched = run.replay.http.fetched
+    records = list(run.state.read_records.values())
+    for url, artifact in seeded.items():
+        source = run.scenario.sources[url]
+        record = next(
+            (
+                read
+                for read in records
+                if url
+                in {
+                    normalize_source_url(read.requested_url),
+                    normalize_source_url(read.resolved_url),
+                }
+            ),
+            None,
+        )
+        served = normalize_source_url(url) in {
+            normalize_source_url(item) for item in fetched
+        }
+        if source.cache_artifact == "forged":
+            if not served:
+                return (
+                    f"the forged stored read for {url} did not produce a fetch "
+                    "of the page it claims"
+                )
+            if record is None:
+                return f"the fetched page {url} reached no read record"
+            if record.read_id == artifact.read_id:
+                return f"the forged stored read for {url} is what the run recorded"
+            if (
+                record.acquisition_kind != "network"
+                or record.origin_session_id != run.session_id
+            ):
+                return (
+                    f"the read of {url} is not the network read this run made"
+                )
+            continue
+        if served:
+            return (
+                f"the stored read for {url} was downloaded again instead of "
+                "being validated from the cache"
+            )
+        if record is None:
+            return f"the stored read for {url} reached no read record"
+        if record.acquisition_kind != "cache":
+            return (
+                f"the stored read for {url} was filed as "
+                f"{record.acquisition_kind!r}, not as this run's import"
+            )
+        if record.origin_session_id != PRIOR_SESSION_ID:
+            return (
+                f"the stored read for {url} lost the session that read it "
+                f"({record.origin_session_id!r})"
+            )
+        if record.version_validated_at is None:
+            return f"the stored read for {url} was never stamped as validated"
+        if record.content_sha256 != artifact.content_sha256:
+            return (
+                f"the stored read for {url} was recorded as a different body "
+                "than the one it stored"
+            )
     return None
 
 
@@ -2125,6 +2329,7 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
     "empty_answer_answered_nothing": _invariant_empty_answer_answered_nothing,
     "memory_leads_are_not_reads": _invariant_memory_leads_are_not_reads,
     "read_downloaded_once": _invariant_read_downloaded_once,
+    "cache_provenance_is_validated": _invariant_cache_provenance_is_validated,
     "late_candidate_reached_decision": _invariant_late_candidate_reached_decision,
     "public_summary_stayed_short": _invariant_public_summary_stayed_short,
     "required_target_reopened": _invariant_required_target_reopened,

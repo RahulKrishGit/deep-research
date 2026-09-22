@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from deep_research.agents.evidence import normalized_content_sha256
 from deep_research.e2e_evaluation.replay import (
     CaseExpectation,
     ReplayCompleter,
@@ -534,6 +535,167 @@ def test_mirror_checker_reads_the_references_the_reader_is_handed() -> None:
     )
     assert twice is not None, "one work reached the reader as two references"
     assert "reference" in twice
+
+
+def _cache_probe(declared: str) -> tuple[ReplayScenario, object]:
+    """A one-page scenario carrying a stored artifact, and that artifact.
+
+    The page is authored the way every case authors one, and the artifact is
+    what the harness would seed for it: a valid one stores the page's own
+    text, a forged one stores a body and declares the digest of this one.
+    """
+    from deep_research.e2e_evaluation.replay import prior_session_reads
+
+    claim = "the Acme widget adoption rate was 40 percent in 2024"
+    page = ReplaySource(
+        url="https://bureau.test/adoption-panel",
+        title="Adoption panel",
+        text=f"Adoption panel. Published by Independent Bureau 11. {claim}.",
+        excerpt=claim,
+        claim=claim,
+        issuer="Independent Bureau 11",
+        cache_artifact=declared,
+        cached_text="Panel notes. Published by Independent Bureau 11." * 3
+        if declared == "forged"
+        else "",
+    )
+    scenario = ReplayScenario(
+        case_id="cache-provenance-probe",
+        question="What was the Acme widget adoption rate in 2024?",
+        topics=(
+            ReplayTopic(
+                title="Adoption rate",
+                question="What was the Acme widget adoption rate in 2024?",
+                dimensions=("rate",),
+                critical=True,
+                query="Acme widget adoption rate 2024",
+                sources=(page,),
+            ),
+        ),
+        expectation=CaseExpectation(terminal_quality="accepted", exit_code=0),
+    )
+    return scenario, prior_session_reads(scenario)[page.url]
+
+
+def _cache_run(
+    scenario: ReplayScenario,
+    *,
+    kept: object | None,
+    fetched: bool,
+) -> object:
+    """A run handed ``scenario``'s stored artifact, and what it kept for it."""
+    from deep_research.e2e_evaluation.replay import prior_session_reads
+
+    url = next(iter(scenario.sources))
+    http = type(
+        "HTTP", (), {"fetched": [url] if fetched else [], "requests": []}
+    )()
+    state = type(
+        "State",
+        (),
+        {"read_records": {} if kept is None else {kept.read_id: kept}},
+    )()
+    return type(
+        "Run",
+        (),
+        {
+            "state": state,
+            "scenario": scenario,
+            "session_id": "cache-probe-run",
+            "replay": type(
+                "Replay",
+                (),
+                {"seeded_reads": prior_session_reads(scenario), "http": http},
+            )(),
+        },
+    )()
+
+
+def test_cache_provenance_checker_holds_each_artifact_to_what_it_claims() -> None:
+    """The checker fails the four ways a stored body can be misused.
+
+    It is the row's decisive assertion, so it cannot be a checker that only
+    ever passes: a validated import has to be the run's record, that record
+    has to keep the reading session and the local stamp, a stored body has to
+    be reused rather than downloaded again, and a forgery has to end in a
+    fetch rather than in the record it claims.
+    """
+    from deep_research.agents.evidence import build_read_record
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_cache_provenance_is_validated,
+    )
+
+    scenario, artifact = _cache_probe("valid")
+    url = artifact.resolved_url
+
+    def imported(**updates: object) -> object:
+        return artifact.model_copy(
+            update={
+                "acquisition_kind": "cache",
+                "version_validated_at": "2026-09-22T00:00:00+00:00",
+                **updates,
+            }
+        )
+
+    assert (
+        _invariant_cache_provenance_is_validated(
+            _cache_run(scenario, kept=imported(), fetched=False)
+        )
+        is None
+    )
+    assert "downloaded again" in (
+        _invariant_cache_provenance_is_validated(
+            _cache_run(scenario, kept=imported(), fetched=True)
+        )
+        or ""
+    )
+    assert "filed as" in (
+        _invariant_cache_provenance_is_validated(
+            _cache_run(scenario, kept=artifact, fetched=False)
+        )
+        or ""
+    )
+    assert "lost the session" in (
+        _invariant_cache_provenance_is_validated(
+            _cache_run(
+                scenario,
+                kept=imported(origin_session_id="some-other-session"),
+                fetched=False,
+            )
+        )
+        or ""
+    )
+
+    forged_scenario, forged = _cache_probe("forged")
+    assert forged.content_sha256 != normalized_content_sha256(
+        "".join(forged.passages.values())
+    ), "a forged record that validates itself is not forged"
+    assert "did not produce a fetch" in (
+        _invariant_cache_provenance_is_validated(
+            _cache_run(forged_scenario, kept=imported(), fetched=False)
+        )
+        or ""
+    )
+    own_text = (
+        "Adoption panel. Published by Independent Bureau 11. The rate was "
+        "40 percent."
+    )
+    own_read = build_read_record(
+        session_id="cache-probe-run",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title="Adoption panel",
+        retrieved_at="2026-09-22T00:00:00+00:00",
+        text=own_text,
+        passages={"chunk-0": own_text},
+    )
+    assert (
+        _invariant_cache_provenance_is_validated(
+            _cache_run(forged_scenario, kept=own_read, fetched=True)
+        )
+        is None
+    )
 
 
 def test_writer_discloses_a_claim_the_packet_badges_contradicted() -> None:

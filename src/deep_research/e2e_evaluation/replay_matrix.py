@@ -23,6 +23,8 @@ two.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
+from typing import Literal
 
 from deep_research.e2e_evaluation.replay import (
     CaseExpectation,
@@ -57,6 +59,8 @@ def _page(
     source_role: str = "original_report",
     transport_relation: str = "original",
     text: str | None = None,
+    cache_artifact: Literal["", "valid", "stale", "forged"] = "",
+    cached_text: str = "",
 ) -> ReplaySource:
     """One authored page, with the run's read of it scripted around it.
 
@@ -65,6 +69,11 @@ def _page(
     by ..."), because those two facts are what the read is judged on. The
     verdict travels with the page rather than with the pair, so a case can
     script an outage, a refusal, or a contradiction on exactly one read.
+
+    ``cache_artifact`` is the read an earlier session left in the run's source
+    cache for this page, and ``cached_text`` is the body a ``stale`` or
+    ``forged`` one stores. A page with no artifact is a page this run has to
+    fetch itself.
     """
     body = text or f"{title}. Published by {issuer}. The report states {claim}."
     if claim not in body:
@@ -82,6 +91,8 @@ def _page(
         discovered_on_search=discovered,
         status_code=status,
         content_type=content_type,
+        cache_artifact=cache_artifact,
+        cached_text=cached_text,
     )
 
 
@@ -1426,14 +1437,43 @@ def _memory_is_not_read() -> ReplayScenario:
     )
 
 
-def _validated_cache_reuse() -> ReplayScenario:
-    """A read is downloaded once, and every later answer reuses it.
+# The body an earlier session read for the adoption panel, before the panel
+# revised it. It still states the figure the run's claim rests on — a stored
+# version that did not would be a body no claim could be extracted from —
+# which is what makes the changed page a *changed* page rather than a second
+# account of something else.
+_STALE_PANEL_BODY = (
+    "Adoption panel draft. Published by Independent Bureau 11. The panel's "
+    "first table states the Acme widget adoption rate in the United States "
+    "was 40 percent in 2024; the survey instrument behind it was revised "
+    "before publication."
+)
 
-    The same page is the evidence for two obligations, and the second one is
-    answered from the registry the first read populated: one body, two
-    answers. Cache provenance is validated rather than trusted, which the
-    companion test in the release-proof module exercises directly with a
-    forged record.
+# The body the forged record for the funding panel stores. Its record declares
+# the digest of the page as it is now instead, so the artifact claims a
+# provenance that belongs to a body it does not hold.
+_FORGED_PANEL_BODY = (
+    "Funding panel notes. Published by Independent Bureau 3. The panel's "
+    "working notes were withdrawn before its report was published."
+)
+
+
+def _validated_cache_reuse() -> ReplayScenario:
+    """Stored reads are validated and reused; the one that cannot be is not.
+
+    An earlier session left three bodies in this run's source cache, and the
+    run is handed them before its graph starts. The first is the survey page
+    as it still is: this run validates it, admits it as an import, and
+    answers two obligations from it without downloading it once — for the
+    topic that carries it and again for the later topic that asks the same
+    URL. The second is the version that session saw, which the live page is
+    no longer: it is validated and reused as well, and the record says so —
+    ``cache`` kind, the session that read the bytes, the moment this run
+    validated them — so a stored version is never shown as this run's own
+    fetch. The third is a forgery: a body filed under a digest that is not
+    its own, which no consumer may serve, so the run fetches that page and
+    keeps the read it made itself. Exactly one page is downloaded, and it is
+    the forged one.
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
     shared = _page(
@@ -1442,6 +1482,24 @@ def _validated_cache_reuse() -> ReplayScenario:
         "Adoption survey",
         claim,
         issuer="Acme Institute 11",
+        cache_artifact="valid",
+    )
+    stale = _page(
+        "bureau11.example.test",
+        "adoption-panel-2024",
+        "Adoption panel",
+        claim,
+        issuer="Independent Bureau 11",
+        cache_artifact="stale",
+        cached_text=_STALE_PANEL_BODY,
+    )
+    funding = _filler(
+        3, "Widget funding", "Acme widget funding round", "12 million dollars"
+    )
+    forged = replace(
+        funding.sources[1],
+        cache_artifact="forged",
+        cached_text=_FORGED_PANEL_BODY,
     )
     return ReplayScenario(
         case_id="validated-cache-reuse",
@@ -1454,16 +1512,7 @@ def _validated_cache_reuse() -> ReplayScenario:
                 "What was the Acme widget adoption rate in the United States in 2024?",
                 "rate",
                 "Acme widget adoption rate United States 2024",
-                (
-                    shared,
-                    _page(
-                        "bureau11.example.test",
-                        "adoption-panel-2024",
-                        "Adoption panel",
-                        claim,
-                        issuer="Independent Bureau 11",
-                    ),
-                ),
+                (shared, stale),
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
@@ -1478,9 +1527,7 @@ def _validated_cache_reuse() -> ReplayScenario:
                 critical=False,
                 labels=("Acme widget", "adoption rate"),
             ),
-            _filler(
-                3, "Widget funding", "Acme widget funding round", "12 million dollars"
-            ),
+            replace(funding, sources=(funding.sources[0], forged)),
         ),
         max_iterations=3,
         expectation=CaseExpectation(
@@ -1488,7 +1535,10 @@ def _validated_cache_reuse() -> ReplayScenario:
             exit_code=0,
             required_target_ids=("topic-01-target-01", "topic-03-target-01"),
             minimum_answerable_claims=2,
-            required_invariants=("read_downloaded_once",),
+            required_invariants=(
+                "read_downloaded_once",
+                "cache_provenance_is_validated",
+            ),
             allowed_failure_classes=(
                 "error:researcher_sub_topic_skipped",
                 # The first read discharges topic-01's obligation and the

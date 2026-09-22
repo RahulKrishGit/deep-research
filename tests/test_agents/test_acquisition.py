@@ -19,7 +19,7 @@ from deep_research.agents.acquisition import (
     cache_reuse_problem,
     next_acquisition_action,
 )
-from deep_research.agents.evidence import merge_evidence_units
+from deep_research.agents.evidence import build_read_record, merge_evidence_units
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.researcher import (
     FindingDraft,
@@ -1164,6 +1164,117 @@ def _gateway_policy(
         cache=cache,
         network_read_ids=network_read_ids,
     )
+
+
+_PRIOR_SESSION = "session-0"
+_PRIOR_TEXT = (
+    "The queue delay study measured commissioning delay at 40 percent of "
+    "projects in 2024."
+)
+
+
+def _prior_session_artifact(
+    *,
+    text: str = _PRIOR_TEXT,
+    recorded_hash: str | None = None,
+) -> ReadRecord:
+    """The read an earlier session stored for the study, through its own builder.
+
+    A cache entry is an artifact some session actually read, so it is built the
+    way that session would have built it — not assembled field by field in the
+    test. ``recorded_hash`` overrides the digest the artifact claims, which is
+    how a forged entry is stated: a stored read whose declared provenance is
+    not the provenance of the bytes it holds.
+    """
+    record = build_read_record(
+        session_id=_PRIOR_SESSION,
+        reader="document_reader",
+        requested_url=_STUDY_URL,
+        resolved_url=_STUDY_URL,
+        title="Queue study",
+        retrieved_at="2024-11-01T00:00:00+00:00",
+        text=text,
+        passages={"page-1-chunk-0": text},
+    )
+    if recorded_hash is None:
+        return record
+    return record.model_copy(update={"content_sha256": recorded_hash})
+
+
+def test_a_prior_sessions_read_is_recorded_as_this_sessions_cache_import() -> None:
+    """An imported body keeps the reading session, and says it was imported.
+
+    The registry a sub-topic writes into is what every later consumer reads
+    provenance from. Filing the import there as an original network read of
+    this session would claim bytes this session never fetched — ``cache`` kind,
+    the reading session, and the moment of local validation exist precisely to
+    say otherwise — and the earlier session that did fetch them would vanish
+    from the record. A body this session's own registry already holds is not
+    re-stamped: this session's read stays the original it is.
+    """
+    artifact = _prior_session_artifact()
+    shared_reads: dict[str, ReadRecord] = {}
+    shared_cache = {_STUDY_URL: artifact}
+    policy = _gateway_policy(
+        candidate_urls=[_STUDY_URL],
+        cache=shared_cache,
+        reads=shared_reads,
+    )
+
+    decision = policy.before_action(
+        use_tool(
+            "Reuse the stored read.",
+            "document_reader",
+            json.dumps({"source": _STUDY_URL}),
+        ),
+        {"source": _STUDY_URL},
+    )
+
+    assert decision.result is not None
+    assert decision.result.metadata["acquisition_kind"] == "cache"
+    policy.after_action(_document_step(decision.result))
+
+    imported = shared_reads[artifact.read_id]
+    assert imported.acquisition_kind == "cache"
+    assert imported.origin_session_id == _PRIOR_SESSION
+    assert imported.version_validated_at is not None
+    # The stored body is what was imported: no second copy of it appears under
+    # this session's own read identity, because nothing was fetched.
+    assert list(shared_reads) == [artifact.read_id]
+
+
+def test_a_forged_cache_entry_is_never_admitted() -> None:
+    """A stored read whose declared hash is not its body's is refused.
+
+    Forged provenance is the case a cache makes dangerous: bytes that were
+    never read can be filed under a read identity by editing the record's own
+    metadata. The digest the entry declares is checked against the body it
+    stores, so the entry cannot stand in for a read — the URL is fetched
+    instead and the registry records this session's own network read.
+    """
+    forged = _prior_session_artifact(recorded_hash="f" * 64)
+    shared_reads: dict[str, ReadRecord] = {}
+    policy = _gateway_policy(
+        candidate_urls=[_STUDY_URL],
+        cache={_STUDY_URL: forged},
+        reads=shared_reads,
+    )
+
+    decision = policy.before_action(
+        use_tool(
+            "Reuse the stored read.",
+            "document_reader",
+            json.dumps({"source": _STUDY_URL}),
+        ),
+        {"source": _STUDY_URL},
+    )
+
+    assert decision.result is None
+    assert decision.allowed is True
+    policy.after_action(_document_step(_paged_result(1, text=_PRIOR_TEXT)))
+
+    assert forged.read_id not in shared_reads
+    assert [read.acquisition_kind for read in shared_reads.values()] == ["network"]
 
 
 @pytest.mark.asyncio

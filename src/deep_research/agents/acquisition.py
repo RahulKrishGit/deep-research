@@ -1251,9 +1251,13 @@ class AcquisitionPolicy:
                     validated_at=self.retrieved_at(),
                 )
                 if validated is not None:
-                    # Keep the original network record as the canonical body;
-                    # a cache hit is a local admission, not a second read.
-                    self.reads.setdefault(validated.read_id, original)
+                    # The import is what this session holds: ``cache`` kind, the
+                    # session that read the bytes, and the moment this one
+                    # validated them. A body this registry already holds is left
+                    # alone — a body this run read itself, or one an earlier
+                    # sub-topic of this run already imported, stays the record it
+                    # was filed as rather than being re-stamped by each reuse.
+                    self.reads.setdefault(validated.read_id, validated)
                     validated = self._resolve_read_title(validated, requested)
                     selected = select_relevant_passages(
                         validated.passages,

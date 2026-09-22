@@ -8,7 +8,7 @@ injectable so this module can be tested without an API key or a network.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -50,6 +50,7 @@ from deep_research.tools.web_scraper import WebScraperTool
 from deep_research.tools.web_search import WebSearchTool
 from deep_research.tools.write_document import WriteDocumentTool
 from deep_research.utils.config import SERVICE_ROLE_NAMES, ConfigSettings
+from deep_research.utils.types import ReadRecord
 
 TAVILY_API_KEY_VARIABLE = "TAVILY_API_KEY"
 
@@ -129,7 +130,8 @@ def _scratchpad(
 
 
 # Keyed by the six canonical agent names. Every entry receives the identical
-# shared kwargs; only the Source Evaluator consumes ``reputation``. Bodies
+# shared kwargs, apart from ``read_cache`` — only the Source Evaluator consumes
+# ``reputation``, and only the Researcher consumes source-cache state. Bodies
 # name the agent classes rather than capturing them, so a test that patches
 # a class on this module still sees its own class constructed.
 #
@@ -168,12 +170,19 @@ def build_agent(
     tools: Sequence[BaseTool],
     session_id: str,
     reputation: ReputationSource | None,
+    read_cache: MutableMapping[str, ReadRecord] | None = None,
 ) -> Any:
     """Construct exactly one production-configured agent.
 
     The single place any agent is wired. ``build_agents`` calls it six
     times; the evaluation harness calls it once. Sharing the mapping is
     what keeps evaluation from drifting away from production wiring.
+
+    ``read_cache`` is source-cache state the caller already holds — bodies an
+    earlier session read, keyed by URL. Only the Researcher looks a URL up
+    before downloading it, so only the Researcher is handed the registry; the
+    other five never fetch a body and a cache they cannot consult would be a
+    parameter with no meaning.
 
     ``AgentConfigurationError`` is raised, not converted: the graph path
     wants a ``ResearchConfigurationError`` and converts in ``build_agents``,
@@ -185,20 +194,22 @@ def build_agent(
         raise AgentConfigurationError(
             f"unknown agent name {name!r}; expected one of: {valid}"
         )
-    return constructor(
-        reputation=reputation,
-        provider=provider,
-        tracker=tracker,
-        tools=tools,
-        config=settings.agents,
+    shared: dict[str, Any] = {
+        "provider": provider,
+        "tracker": tracker,
+        "tools": tools,
+        "config": settings.agents,
         # The resolved profile, not the raw ``llm`` mapping: every per-call
         # configuration fingerprint then carries the model and effort this
         # agent's requests actually run under, per-agent overrides included.
-        model_profile=settings.llm.resolve_for(name),
-        scratchpad=_scratchpad(
+        "model_profile": settings.llm.resolve_for(name),
+        "scratchpad": _scratchpad(
             settings, session_id=session_id, agent_name=name
         ),
-    )
+    }
+    if read_cache is not None and name == "researcher":
+        shared["cache"] = read_cache
+    return constructor(reputation=reputation, **shared)
 
 
 def build_agents(
@@ -209,6 +220,7 @@ def build_agents(
     tools: Sequence[BaseTool],
     session_id: str,
     reputation: ReputationSource | None,
+    read_cache: MutableMapping[str, ReadRecord] | None = None,
 ) -> ResearchAgents:
     """Construct the six agents one graph runs.
 
@@ -229,6 +241,7 @@ def build_agents(
                     tools=tools,
                     session_id=session_id,
                     reputation=reputation,
+                    read_cache=read_cache,
                 )
                 for name in AGENT_NAMES
             }
@@ -287,6 +300,7 @@ async def build_runtime(
     tavily_api_key: str | None = None,
     search_client: Any | None = None,
     http_client: Any | None = None,
+    read_cache: MutableMapping[str, ReadRecord] | None = None,
 ) -> ResearchRuntime:
     """Build everything one research session needs, or fail cleanly.
 
@@ -296,6 +310,11 @@ async def build_runtime(
     store, a tool an agent declares but nobody built — becomes a
     ``ResearchConfigurationError`` here rather than an exception the user
     sees as a traceback.
+
+    ``read_cache`` is source-cache state the session starts with: bodies an
+    earlier session already read, keyed by URL. It is state rather than a
+    collaborator — the Researcher validates each entry locally before reusing
+    it, and a run that supplies none simply starts with an empty cache.
     """
     try:
         validate_agent_model_configs(
@@ -382,6 +401,7 @@ async def build_runtime(
         tools=tools,
         session_id=session_id,
         reputation=long_term,
+        read_cache=read_cache,
     )
     reviewer = build_report_reviewer(
         settings, tracker=tracker, provider=provider
