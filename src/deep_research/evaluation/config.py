@@ -43,6 +43,7 @@ from deep_research.utils.config import (
     LLMConfig,
     ProviderName,
     ReasoningEffort,
+    ThinkingMode,
 )
 from deep_research.utils.types import ContractModel, JsonValue
 
@@ -79,6 +80,15 @@ _TARGET_REACT_TRANSPORT = {
     "deepseek": "deepseek_chat_tools_auto_v1",
     "openai": "openai_responses_tools_auto_v1",
 }
+
+# The thinking mode every evaluation run is executed under, target and judge
+# alike. The harness has no toggle for it — the evaluation block carries no
+# thinking knob — and the field exists so an artifact says which mode produced
+# its numbers. It participates in the production-parity comparison for the
+# same reason: a production declaration that names another mode describes a
+# configuration this harness cannot reproduce, so a run of it is an experiment
+# about that declaration rather than evidence for it.
+RUNTIME_THINKING_MODE: ThinkingMode = "enabled"
 
 
 def judge_structured_transport(provider: ProviderName) -> str:
@@ -141,10 +151,19 @@ ProductionParitySource = Literal["invocation", "configuration"]
 
 @dataclass(frozen=True, slots=True)
 class TargetProfile:
-    """One evaluation target's resolved model and reasoning effort."""
+    """One evaluation target's resolved model, reasoning effort and mode."""
 
     model: str
     reasoning_effort: ReasoningEffort
+    thinking_mode: ThinkingMode
+    """The thinking mode this profile describes.
+
+    Read from the declaration the profile came from: production's own
+    per-agent override when the profile is production's, and the harness's one
+    hard-wired mode when the profile is the evaluation's own — the evaluation
+    block has no thinking knob, so a profile it supplies describes the mode
+    this harness runs.
+    """
     source: TargetProfileSource
 
     @property
@@ -185,9 +204,11 @@ def resolve_target_profile(
     no release could reproduce (baseline §6.2, D-10).
     """
     if override is not None:
+        declared = base.resolve_for(agent_name)
         return TargetProfile(
-            model=base.resolve_for(agent_name).model,
+            model=declared.model,
             reasoning_effort=_validated_effort(override),
+            thinking_mode=declared.thinking_mode,
             source="invocation",
         )
     declared = base.model_overrides.get(agent_name)
@@ -196,6 +217,7 @@ def resolve_target_profile(
         return TargetProfile(
             model=resolved.model,
             reasoning_effort=resolved.reasoning_effort,
+            thinking_mode=resolved.thinking_mode,
             source="production",
         )
     return TargetProfile(
@@ -203,6 +225,7 @@ def resolve_target_profile(
         reasoning_effort=resolve_target_effort(
             evaluation, agent_name, override=None
         ),
+        thinking_mode=RUNTIME_THINKING_MODE,
         source="evaluation",
     )
 
@@ -437,11 +460,19 @@ def build_runtime_config(
     # An evaluation-only profile is non-release evidence exactly when it
     # disagrees with what production would run for this agent. Agreement means
     # the experiment is still measuring the shipped configuration even though
-    # the value came from the evaluation block.
+    # the value came from the evaluation block. The thinking mode is compared
+    # first because it alone can turn a profile that *came from* production
+    # into an experiment: the harness executes one hard-wired mode, so a
+    # production declaration naming another one is not a configuration this
+    # run reproduces, and labelling that run as production parity would report
+    # an experiment about the shipped configuration as evidence for it.
     production = settings.llm.resolve_for(agent_name)
-    experiment_only = profile.source != "production" and (
-        profile.model != production.model
-        or profile.reasoning_effort != production.reasoning_effort
+    experiment_only = profile.thinking_mode != RUNTIME_THINKING_MODE or (
+        profile.source != "production"
+        and (
+            profile.model != production.model
+            or profile.reasoning_effort != production.reasoning_effort
+        )
     )
     resolved_dataset_name = dataset_name(
         agent_name, tier, evaluation.dataset_version
@@ -478,7 +509,7 @@ def build_runtime_config(
             "target_react_transport": target_react_transport(
                 settings.llm.provider
             ),
-            "thinking_mode": "enabled",
+            "thinking_mode": RUNTIME_THINKING_MODE,
             "dataset_version": evaluation.dataset_version,
             "rubric_version": evaluation.rubric_version,
             "package_version": EVALUATION_PACKAGE_VERSION,
@@ -493,7 +524,7 @@ def build_runtime_config(
             "judge_model": evaluation.judge_model,
             "judge_reasoning_effort": judge_effort,
             "judge_temperature": evaluation.judge_temperature,
-            "thinking_mode": "enabled",
+            "thinking_mode": RUNTIME_THINKING_MODE,
             "rubric_version": evaluation.rubric_version,
         }
     )
@@ -517,7 +548,7 @@ def build_runtime_config(
         judge_model=evaluation.judge_model,
         judge_reasoning_effort=judge_effort,
         judge_temperature=evaluation.judge_temperature,
-        thinking_mode="enabled",
+        thinking_mode=RUNTIME_THINKING_MODE,
         embedding_provider=resolved_embedding_provider,
         embedding_model=resolved_embedding_model,
         dataset_name=resolved_dataset_name,
@@ -555,19 +586,31 @@ def target_llm_config(
     runtime config being built and the provider being constructed is exactly
     the case a silent fallback would hide — the run would then be reported
     under a fingerprint it no longer matches.
+
+    The thinking mode is compared while the run claims release evidence, the
+    same three knobs the parity label is computed from. A run whose frozen
+    profile already named another mode is an experiment — ``build_runtime_config``
+    labelled it one — and forcing this harness's mode is exactly what that
+    label discloses, so refusing it here would make the label unreachable.
     """
     if runtime.target_profile_source == "production":
         resolved = base.resolve_for(runtime.agent_name)
         if (
             resolved.model != runtime.target_model
             or resolved.reasoning_effort != runtime.target_reasoning_effort
+            or (
+                runtime.release_evidence
+                and resolved.thinking_mode != runtime.thinking_mode
+            )
         ):
             raise ValueError(
                 "the frozen production profile no longer matches the "
                 f"configured llm for {runtime.agent_name}: this run was "
                 f"frozen at {runtime.target_model}/"
-                f"{runtime.target_reasoning_effort} and production now "
-                f"resolves {resolved.model}/{resolved.reasoning_effort}"
+                f"{runtime.target_reasoning_effort}/"
+                f"thinking {runtime.thinking_mode} and production now "
+                f"resolves {resolved.model}/{resolved.reasoning_effort}/"
+                f"thinking {resolved.thinking_mode}"
             )
     return base.model_copy(
         update={

@@ -780,10 +780,10 @@ CRITIC_PROMPT_FINGERPRINT = "2c80a78040b9"
 # a module-source edit and therefore a fingerprint move. The other five and the
 # judge were recomputed and did not move.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "7d0282b16bc5",
-    "researcher": "7288d912bee3",
+    "planner": "d2d7dec17bcd",
+    "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
-    "fact_checker": "9c5cba6e9b39",
+    "fact_checker": "53c371093ae9",
     "synthesizer": "26372cb8f056",
     "critic": "2c80a78040b9",
 }
@@ -1226,16 +1226,55 @@ def test_the_acquisition_sequence_repin_is_attributed_to_the_shared_counter() ->
 
     Bug 3 moved the researcher's fingerprint again, to ``70d8d679ea89``, for
     the instance-scoped audit-sequence fix recorded in the pin comment above;
-    that move is attributed there and this assertion follows it.
+    that move is attributed there and this assertion follows it. The
+    graph-state pass moved it a fourth time, to ``ec5244f2ba7f``: that step's
+    edits are module-source drift too — the acquisition-state key the claim
+    loop reads, the shared owes-evidence predicate, and reading ``acquire``
+    jobs from the refinement targets — with no prompt instruction and no
+    shared ``agents.prompts`` change (the planner and fact_checker pins moved
+    for the same reason and are attributed in
+    ``test_the_graph_state_repin_is_module_source_drift_not_prompt_text``).
     """
     pre_round_6 = "613603dc5cbd"
     pre_bug_3 = "25fba5d22654"
     counter = ManifestSequence()
 
-    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "7288d912bee3"
-    assert agent_prompt_fingerprint("researcher") == "7288d912bee3"
+    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "ec5244f2ba7f"
+    assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
     assert agent_prompt_fingerprint("researcher") not in {pre_round_6, pre_bug_3}
     assert (counter.take(), counter.take()) == (0, 1)
+
+
+def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
+    """Record why the graph-state pass moved three target fingerprints.
+
+    The pin above hashes each agent module's own source, so a structural edit
+    moves it exactly as a prompt edit does. Three moved here: ``researcher``
+    gained the shared owes-evidence predicate and the acquisition jobs it
+    reads, ``fact_checker`` gained the coverage-id key its claim loop resumes
+    the stored queue under, and ``planner`` gained the every-omission
+    extension request. The shared ``agents.prompts`` library was not touched
+    and the other three pins did not move; this test is the evidence for that
+    claim rather than a comment asserting it.
+    """
+    assert agent_prompt_fingerprint("planner") == "d2d7dec17bcd"
+    assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
+    assert agent_prompt_fingerprint("fact_checker") == "53c371093ae9"
+    # The other three target pins are untouched by this step, and the judge
+    # fingerprint with them: no prompt text moved anywhere.
+    assert {
+        name: agent_prompt_fingerprint(name)
+        for name in ("source_evaluator", "synthesizer", "critic")
+    } == {
+        "source_evaluator": "ad9e2afac12c",
+        "synthesizer": "26372cb8f056",
+        "critic": "2c80a78040b9",
+    }
+    assert agent_prompt_fingerprint("planner") not in {
+        "7d0282b16bc5",
+        "7288d912bee3",
+        "9c5cba6e9b39",
+    }
 
 
 def test_the_judge_fingerprint_is_pinned_beside_the_six_target_pins() -> None:
