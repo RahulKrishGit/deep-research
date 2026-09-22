@@ -85,6 +85,7 @@ from deep_research.agents.fact_checker import (
     retrieved_source_urls,
     supporting_publisher_count,
     union_claim_provenance,
+    unshown_candidates,
     valid_verification_passages,
     validate_adjudication,
     verdict_counts,
@@ -6520,31 +6521,41 @@ def test_an_assessed_refutation_the_model_did_not_select_blocks_verified() -> No
     assert conflict.resolution == "unresolved"
 
 
-@pytest.mark.parametrize("stance", ["contradicts", "refutes", "disputes"])
-def test_any_refuting_stance_is_a_contradiction(stance: str) -> None:
-    """The vocabulary is closed and the local reading of it is conservative.
+@pytest.mark.parametrize("stance", ["refutes", "disputes", "partial", ""])
+def test_a_stance_the_contract_cannot_place_blocks_without_asserting(stance: str) -> (
+    None
+):
+    """The vocabulary is closed, and what falls outside it is a gap.
 
-    A stance this contract does not know is not "supports": the model meant
-    the passage disagrees, so it is read as a refutation that blocks settlement.
+    A stance this contract cannot place is not "supports", so the claim cannot
+    settle over that passage — but neither is it ``contradicts``: the model
+    never said the passage is incompatible, and publishing ``contradicted``
+    over a guess fails every support policy and dominates every cluster the
+    claim joins.
     """
     packet = _verdict_packet(
         _eligibility(), _independent_second(), _third_origin()
     )
     draft = _two_supports_and_a_refutation().model_copy(
         update={
+            "contradiction_ids": [],
             "assessments": [
                 _row("ev-left", "supports"),
                 _row("ev-right", "supports"),
                 _row("ev-third", stance),
-            ]
+            ],
         }
     )
 
     claim = validate_adjudication(draft, packet, None)
 
     assert claim.verdict != "verified"
+    assert claim.verdict != "contradicted"
+    assert claim.contradictions == []
     assert any(
         "ev-third" in conflict.evidence_ids
+        and conflict.material
+        and conflict.resolution == "unresolved"
         for conflict in claim.conflict_assessments
     )
 
@@ -6990,6 +7001,167 @@ def test_not_comparable_is_still_loadable_but_no_longer_produced() -> None:
             row.resolution != "not_comparable"
             for row in claim.conflict_assessments
         )
+
+
+def test_a_never_carried_candidate_named_as_a_contradiction_is_refused() -> None:
+    """The id classes the validator refuses are refused in every role.
+
+    A support selection for an unrendered id was refused, but a *contradiction*
+    selection was not filtered by what the request carried, so the same id
+    reached the passage list — which indexes the shown candidates — and raised
+    instead of refusing.
+    """
+    long_left = SUPPORT_TEXT + " " + ("Detail. " * 200)
+    packet = with_unrendered_omissions(
+        _verdict_packet(
+            _eligibility(),
+            _independent_second(),
+            _third_origin(),
+            texts=(long_left, AUDIT_TEXT, REFUTATION_TEXT),
+        ),
+        evidence_chars=300,
+    )
+    unshown = "ev-right"
+    draft = ClaimVerdictDraft(
+        verdict="insufficient_evidence",
+        confidence=0.5,
+        assessments=[_row("ev-left", "supports")],
+        support_ids=["ev-left"],
+        contradiction_ids=[unshown],
+        rationale="Naming a contradiction the request never carried.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert unshown in claim.refused_evidence_ids
+    assert "evidence_not_admitted" in claim.audit_flags
+    assert unshown not in claim.evidence_selection
+    assert claim.verdict != "contradicted"
+
+
+def test_a_saturated_omission_list_still_records_an_unrendered_candidate() -> None:
+    """The record that a candidate was not carried cannot be the part dropped.
+
+    ``packet.omitted`` saturates in a multi-claim run — one ``out_of_scope``
+    entry per registry unit outside this claim's pool, itself capped — so
+    appending the unrendered candidates behind those and truncating the list
+    discarded exactly the entries that say the request did not carry them. The
+    same model output was then either a crash or a false ``verified`` depending
+    on how many other claims' units the registry happened to hold.
+    """
+    from deep_research.utils.types import EvidenceDisposition
+
+    saturated = tuple(
+        EvidenceDisposition(
+            item_id=f"ev-other-{index}",
+            stage="adjudication-packet",
+            reason="out_of_scope",
+            target_ids=["t2"],
+        )
+        for index in range(MAX_PACKET_OMISSIONS)
+    )
+    long_left = SUPPORT_TEXT + " " + ("Detail. " * 200)
+    packet = with_unrendered_omissions(
+        _verdict_packet(
+            _eligibility(),
+            _independent_second(),
+            _third_origin(),
+            texts=(long_left, AUDIT_TEXT, REFUTATION_TEXT),
+            omitted=saturated,
+        ),
+        evidence_chars=300,
+    )
+    unshown = "ev-right"
+
+    assert unshown in unshown_candidates(packet)
+    draft = ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[_row("ev-left", "supports"), _row(unshown, "supports")],
+        support_ids=["ev-left", unshown],
+        contradiction_ids=[],
+        rationale="Naming an id the request never carried.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "verified"
+    assert claim.evidence_status != "verified_pair"
+    assert unshown in claim.refused_evidence_ids
+    assert unshown not in claim.evidence_selection
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (_row("ev-left", "supports"), _row("ev-left", "supports", complete=False)),
+        (_row("ev-left", "supports", complete=False), _row("ev-left", "supports")),
+        (_row("ev-left", "supports"), _row("ev-left", "unrelated")),
+    ],
+)
+def test_duplicate_rows_keep_the_least_creditable_judgement(
+    first: SupportAssessment, second: SupportAssessment
+) -> None:
+    """The model's row order may not decide how much credit a passage gets.
+
+    Keeping the first row unless the second refuted meant the most permissive
+    judgement survived: a passage judged both a complete support and a partial
+    one verified the claim in one row order and settled as insufficient in the
+    other, and its id was published as a pair member while also being listed as
+    refused.
+    """
+    packet = _verdict_packet(_eligibility(), _independent_second())
+    draft = ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[first, second, _row("ev-right", "supports")],
+        support_ids=["ev-left", "ev-right"],
+        contradiction_ids=[],
+        rationale="One passage, two judgements.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "verified"
+    assert claim.evidence_status != "verified_pair"
+    assert "ev-left" in claim.refused_evidence_ids
+    assert claim.evidence_selection.get("ev-left") != "supports"
+
+
+def test_an_unclear_stance_blocks_settlement_without_asserting_contradiction() -> (
+    None
+):
+    """A stance outside the vocabulary is a gap, not a refutation.
+
+    ``partial`` is not ``contradicts``: the model did not state that the
+    passage disagrees, so publishing a ``contradicted`` verdict asserts
+    incompatibility it never claimed — and a published contradiction fails
+    every support policy and dominates every cluster it joins. What it does do
+    is block settlement, because a passage nobody could classify cannot be
+    read as absent.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+    draft = _two_supports_and_a_refutation().model_copy(
+        update={
+            "contradiction_ids": [],
+            "assessments": [
+                _row("ev-left", "supports"),
+                _row("ev-right", "supports"),
+                _row("ev-third", "partial", scope=True),
+            ],
+        }
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status != "contested"
+    assert claim.contradictions == []
+    (conflict,) = claim.conflict_assessments
+    assert conflict.material is True
+    assert conflict.resolution == "unresolved"
 
 
 def test_a_crowded_packet_still_shows_every_candidate() -> None:

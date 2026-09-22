@@ -111,6 +111,37 @@ def test_a_different_qualifier_is_not_one_assertion(left: str, right: str) -> No
     assert not atomic_compatible(a, b)
 
 
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        (
+            "Wind capacity rose to over 10 GW in 2025.",
+            "Wind capacity rose by over 10 GW in 2025.",
+        ),
+        (
+            "The share fell to under 10 percent in 2025.",
+            "The share fell by under 10 percent in 2025.",
+        ),
+    ],
+)
+def test_a_comparator_between_the_preposition_and_the_value_keeps_the_kind(
+    left: str, right: str
+) -> None:
+    """The level/delta marker is read past the bound, not just before the value.
+
+    "rose to over 10 GW" reached a level and "rose by over 10 GW" gained that
+    much: with a comparator sitting between the preposition and the number, the
+    suffix test missed and the relation class was read as a delta, so the two
+    merged.
+    """
+    a = extract_text_atoms(left, claim_id="a")[0]
+    b = extract_text_atoms(right, claim_id="b")[0]
+
+    assert a.comparator == b.comparator
+    assert a.change_kind != b.change_kind
+    assert not atomic_compatible(a, b)
+
+
 def test_a_qualifier_stated_the_same_way_still_merges() -> None:
     """The refusal is about a difference, not about having a qualifier."""
     stated = extract_text_atoms("Capacity rose to 10 GW in 2024.", claim_id="a")[0]
