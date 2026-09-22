@@ -159,6 +159,29 @@ def _mentions_coverage_id(note: str, coverage_id: str) -> bool:
     return re.search(pattern, note.casefold()) is not None
 
 
+def _has_outstanding_work(state: ResearchState, target_id: str) -> bool:
+    """True when this target's acquisition still holds queued work.
+
+    Keyed on state, not on which reason wrote a disposition:
+    ``EvidenceDisposition.reason`` is an intentionally unconstrained ``str``
+    (a future reason token must stay readable without touching this guard),
+    so the one reason that coexists with genuinely pending work
+    (``deferred_capacity``) cannot be told apart from a terminal one by
+    string alone. A target with no recorded acquisition state at all has no
+    queue to be outstanding, which is not the same claim as "nothing is
+    queued" — see the second branch's own docstring in
+    ``_accounted_target_ids``.
+    """
+    acquisition = state.acquisition_state_by_target.get(target_id)
+    if acquisition is None:
+        return False
+    return bool(
+        acquisition.candidate_urls
+        or acquisition.pending_passage_ids
+        or acquisition.pending_extraction_ids
+    )
+
+
 def _accounted_target_ids(
     state: ResearchState,
     unanswered: Sequence[str],
@@ -174,6 +197,13 @@ def _accounted_target_ids(
     * an acquisition state for the target that shows a spent search (a denied
       URL, or two empty searches) with nothing queued behind it.
 
+    Neither counts while the target's acquisition still holds queued work
+    (``_has_outstanding_work``): a deferral is a decision to do the work
+    later, which is the opposite of terminal — ``_record_deferred_passages``
+    writes a ``deferred_capacity`` disposition in the same breath it queues
+    the omitted passage, so the disposition alone cannot be read as a
+    finished judgement while that queue is still open.
+
     Nothing else does. In particular a target nobody has attempted yet is
     *not* accounted for: calling an unstarted obligation "unavailable" is the
     same error as calling it "answered", in the opposite direction.
@@ -187,14 +217,13 @@ def _accounted_target_ids(
             target_id
             for target_id in disposition.target_ids
             if target_id in unanswered
+            and not _has_outstanding_work(state, target_id)
         )
     for target_id in unanswered:
         acquisition = state.acquisition_state_by_target.get(target_id)
         if acquisition is None:
             continue
-        if acquisition.candidate_urls or acquisition.pending_passage_ids:
-            continue
-        if acquisition.pending_extraction_ids:
+        if _has_outstanding_work(state, target_id):
             continue
         if acquisition.denied_urls or acquisition.empty_searches >= 2:
             accounted.add(target_id)
