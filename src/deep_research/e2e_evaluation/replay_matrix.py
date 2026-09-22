@@ -1489,6 +1489,17 @@ def _validated_cache_reuse() -> ReplayScenario:
             required_target_ids=("topic-01-target-01", "topic-03-target-01"),
             minimum_answerable_claims=2,
             required_invariants=("read_downloaded_once",),
+            allowed_failure_classes=(
+                "error:researcher_sub_topic_skipped",
+                # The first read discharges topic-01's obligation and the
+                # filler topic owes nothing, so both are skipped rather than
+                # re-researched: the same record the other cases declare.
+                "error:fact_checker_invalid_claim",
+                # The case's premise is that the second topic reuses the body
+                # the first already read, and the extraction that follows it
+                # drafts the claim the first pass adjudicated. The duplicate
+                # refusal is the run recording the fact was checked once.
+            ),
         ),
     )
 
