@@ -1154,11 +1154,19 @@ def _change_kind(
     """Whether the value is a level the subject reached or a change it gained.
 
     "rose to 10 GW" and "rose by 10 GW" write the same verb and the same
-    number; the preposition decides which assertion is being made. A clause
-    that writes neither is read through its relation class, which already says
-    whether the value is a delta ("grew 30 percent") or a level ("held 10 GW").
+    number; the preposition decides which assertion is being made. A bound can
+    sit between the two — "rose to over 10 GW" — so the bound is stripped first
+    before the preposition is read. A clause that writes no preposition is read
+    through its relation class, which already says whether the value is a delta
+    ("grew 30 percent") or a level ("held 10 GW").
     """
     before = _word_before(clause, anchor=anchor)
+    comparator_name = _comparator(clause, anchor=anchor)
+    if comparator_name:
+        for phrase, name in _COMPARATOR_PHRASES:
+            if name == comparator_name and before.endswith(phrase):
+                before = before[: -len(phrase)].rstrip()
+                break
     if before.endswith(" by"):
         return "delta"
     if before.endswith(" to") or before.endswith(" at"):

@@ -1017,6 +1017,15 @@ class AdjudicationPacket(ContractModel):
     what disappeared instead of describing it.
     """
     missing_read_count: int = 0
+    unrendered_ids: list[str] = Field(default_factory=list)
+    """Candidates this packet holds that the request did not carry.
+
+    The one record of what the model was *not* shown. It is deliberately not
+    read back out of ``omitted``: that list is bounded and shared with other
+    claims' units, so a busy registry could truncate away the entry that says a
+    candidate was never carried — and a verdict would then be validated against
+    a passage nobody saw. Bounded by the packet's own size, so it needs no cap.
+    """
     fingerprint: str = ""
 
 
@@ -1357,11 +1366,41 @@ def refutes(stance: str) -> bool:
 
     The vocabulary is closed — ``supports``, ``contradicts``, ``unrelated`` —
     and the local reading of anything else is conservative: a stance this
-    contract cannot place is not read as support. A passage the model called
-    "refutes" or "disputes" is a refutation, and one it never described at all
-    cannot be credited as agreement.
+    contract cannot place is not read as support.
     """
     return stance.casefold() not in ("supports", "unrelated")
+
+
+def _unclear_stance(stance: str) -> bool:
+    """True when the model's stance is one this contract cannot classify.
+
+    Distinct from :func:`refutes` on purpose: an unclear stance blocks
+    settlement, but it never asserts that the passage is incompatible with the
+    claim, so nothing is published as a contradiction over it.
+    """
+    return stance.casefold() not in ("supports", "contradicts", "unrelated")
+
+
+def _row_credit(row: SupportAssessment) -> int:
+    """How much credit one assessment gives the claim; lower is less credit.
+
+    Used to choose between two judgements of one passage: the least creditable
+    row stands, so the model's row order cannot decide how much credit a
+    passage receives.
+    """
+    if row.stance.casefold() == "contradicts":
+        return 0
+    if _unclear_stance(row.stance):
+        return 1
+    if row.stance.casefold() != "supports":
+        return 2
+    if not row.complete_support:
+        return 3
+    if not row.scope_compatible:
+        return 4
+    if row.dependence not in CORROBORATING_DEPENDENCE:
+        return 5
+    return 6
 
 
 class PacketRendering(NamedTuple):
@@ -1462,8 +1501,8 @@ def with_unrendered_omissions(
     )
     if not plan.unrendered:
         return packet
+    unrendered = [unit.evidence_id for unit in plan.unrendered]
     omitted = [
-        *packet.omitted,
         *(
             EvidenceDisposition(
                 item_id=unit.evidence_id,
@@ -1473,11 +1512,15 @@ def with_unrendered_omissions(
             )
             for unit in plan.unrendered
         ),
+        *packet.omitted,
     ]
     return packet.model_copy(
         update={
+            # The new omissions come first: they are the ones that describe this
+            # request, and the list is bounded.
             "omitted": omitted[:MAX_PACKET_OMISSIONS],
-            "omitted_count": len(omitted),
+            "omitted_count": packet.omitted_count + len(unrendered),
+            "unrendered_ids": unrendered,
         }
     )
 
@@ -1534,11 +1577,13 @@ def unshown_candidates(packet: AdjudicationPacket) -> set[str]:
 
     A candidate here was in the packet the verdict is validated against and was
     not shown to the model, so it was never judged: an open question, never an
-    absent one. An omission of something that was never a packet candidate says
-    nothing about this claim and is not counted.
+    absent one. Read from the packet's own record of what it could not carry,
+    never back out of the bounded omission list — that list is shared with other
+    claims' units, and truncating it must not be able to hide a candidate the
+    request left behind.
     """
     return {unit.evidence_id for unit in packet.units}.intersection(
-        item.item_id for item in packet.omitted
+        packet.unrendered_ids
     )
 
 
@@ -1595,13 +1640,13 @@ def validate_adjudication(
         existing = accepted.get(row.evidence_id)
         if existing is not None:
             # Two judgements of one passage: the model disagreed with itself
-            # about it, and the conservative reading of a disagreement is the
-            # refutation — exactly as when one id is selected as both. The
-            # refused id keeps the most conservative row and never becomes a
-            # corroborating support.
+            # about it, so the id is refused and the *least* creditable of its
+            # rows stands — keeping the first one let the most permissive
+            # judgement decide the claim, and made the verdict depend on the
+            # order the model happened to write its rows in.
             flags.append("model_disagreement")
             refused.add(row.evidence_id)
-            if refutes(row.stance) and not refutes(existing.stance):
+            if _row_credit(row) < _row_credit(existing):
                 accepted[row.evidence_id] = row
             continue
         accepted[row.evidence_id] = row
@@ -1612,6 +1657,7 @@ def validate_adjudication(
         evidence_id
         for evidence_id in selected_supports
         if evidence_id in accepted
+        and evidence_id not in refused
         and accepted[evidence_id].stance.casefold() == "supports"
     ]
     # Every candidate that disagrees, whether the model said so in a row or by
@@ -1621,17 +1667,33 @@ def validate_adjudication(
     contradicts = [
         unit.evidence_id
         for unit in packet.units
-        if unit.evidence_id in selected_contradictions
-        or (
-            unit.evidence_id in accepted
-            and refutes(accepted[unit.evidence_id].stance)
+        if unit.evidence_id not in unshown
+        and (
+            unit.evidence_id in selected_contradictions
+            or (
+                unit.evidence_id in accepted
+                and accepted[unit.evidence_id].stance.casefold() == "contradicts"
+            )
         )
+    ]
+    # A row whose stance is none of ``supports``, ``contradicts``, or
+    # ``unrelated`` is a judgement this contract cannot place: it blocks
+    # settlement, because a passage nobody could classify is not an absent one,
+    # but it never asserts incompatibility — publishing ``contradicted`` over
+    # it would fail every support policy and dominate every cluster the claim
+    # joins.
+    unclear = [
+        unit.evidence_id
+        for unit in packet.units
+        if unit.evidence_id not in unshown
+        and unit.evidence_id in accepted
+        and _unclear_stance(accepted[unit.evidence_id].stance)
     ]
     admitted = set(supports).union(contradicts)
     refused_now = {
         evidence_id
         for evidence_id in (*selected_supports, *selected_contradictions)
-        if evidence_id in shown and evidence_id not in admitted
+        if evidence_id not in admitted
     }
     if refused_now:
         flags.append("evidence_not_admitted")
@@ -1717,12 +1779,23 @@ def validate_adjudication(
     if unshown:
         verified_pair = None
 
-    conflicts = _conflict_assessments(packet, accepted, supports, contradicts)
-    material_unresolved = any(
+    conflicts = _conflict_assessments(
+        packet, accepted, supports, [*contradicts, *unclear]
+    )
+    asserted_ids = set(contradicts)
+    asserted = any(
+        conflict.material and conflict.resolution == "unresolved"
+        for conflict in conflicts
+        if any(
+            evidence_id in asserted_ids
+            for evidence_id in conflict.evidence_ids
+        )
+    )
+    blocked = asserted or any(
         conflict.material and conflict.resolution == "unresolved"
         for conflict in conflicts
     )
-    if material_unresolved:
+    if asserted:
         # Both sides exist and cannot be reconciled by a scope difference this
         # contract can see, so the claim is disputed. The conflict rows carry
         # the analysis; a refutation that resolves into ``resolved`` (a
@@ -1731,6 +1804,16 @@ def validate_adjudication(
         # rather than as a forced "false".
         verdict: ClaimVerdict = "contradicted"
         status: str | None = "contested"
+    elif blocked:
+        # A judgement this contract cannot place, on a passage the model never
+        # said was incompatible: the claim cannot settle over it, and nothing
+        # is published as a contradiction for it.
+        verdict = "insufficient_evidence"
+        status = "source_supported" if supports else None
+        if supports:
+            flags.extend(_insufficient_flags(eligibility, supports))
+        else:
+            flags.append("no_complete_support")
     elif verified_pair is not None:
         verdict = "verified"
         status = "verified_pair"
@@ -3125,6 +3208,15 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 f"{packet.missing_read_count - len(packet.missing_read_ids)}"
             )
         disposition_ids.extend(f"refused:{item}" for item in refused)
+        # The candidates the request could not carry are the ones this packet
+        # offered and the model was never shown: they belong in the manifest
+        # whether or not the bounded omission list still has room for them.
+        recorded = {item.item_id for item in packet.omitted}
+        disposition_ids.extend(
+            f"{item}:deferred_capacity"
+            for item in packet.unrendered_ids
+            if item not in recorded
+        )
         audit = build_boundary_audit(
             operation=ADJUDICATION_OPERATION,
             job_id=self._session_id or "fact-checker-session",
@@ -3146,7 +3238,15 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 if selection.get(unit.evidence_id) == "supports"
             ),
             deferred_ids=tuple(
-                item.item_id for item in packet.omitted[:MAX_PACKET_OMISSIONS]
+                dict.fromkeys(
+                    [
+                        *packet.unrendered_ids,
+                        *(
+                            item.item_id
+                            for item in packet.omitted[:MAX_PACKET_OMISSIONS]
+                        ),
+                    ]
+                )
             ),
             disposition_ids=tuple(disposition_ids),
             packet_fingerprint=packet.fingerprint,
