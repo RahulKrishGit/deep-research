@@ -3416,6 +3416,19 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._new_dispositions = []
         self._adjudication_flags = {}
         self._adjudication_audits = {}
+        # ``merge_boundary_audits`` refuses one id with two different
+        # contents, so any prior instance that wrote into
+        # ``state.boundary_audits`` minted at most ``len(state.boundary_audits)``
+        # distinct audits total across every agent — meaning this instance's
+        # own highest-used sequence is strictly less than that count. A fresh
+        # instance (e.g. a checkpoint restore reconstructing this agent
+        # against already-populated state) would otherwise re-seed at 0 and
+        # remint ids an earlier instance already claimed. This only ever
+        # raises the counter, matching the same-instance, later-pass
+        # invariant just above.
+        self._audit_sequence = max(
+            self._audit_sequence, len(state.boundary_audits)
+        )
         self._adjudicated_packets = set()
         self._repair_events = []
         self._adjudication_failure = {}

@@ -148,6 +148,10 @@ async def run_research(
     outlive one run (a resume reuses the runtime that made the checkpoint),
     and a stale observer would attribute a later run's attempts to this
     caller. The terminal snapshots reach the outcome either way.
+    That guarantee holds today only because ``build_checkpointer`` returns an
+    in-memory saver; a rebuilt agent's own audit-sequence counters are now
+    seeded from the restored state's manifests too, so a durable checkpointer
+    would be safer than before this change.
 
     Inputs are normalized and validated before any configuration or runtime
     setup: outer whitespace is stripped, and blank questions and session ids

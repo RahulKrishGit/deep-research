@@ -714,11 +714,25 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # replay joins against, never a prompt input. The shared ``agents.prompts``
 # library was not edited, and the other five pins and the judge did not move
 # (verified by recomputing all six and the judge).
+#
+# Bug 3's instance-scoped audit sequence fix re-pinned the researcher and the
+# fact_checker together (`25fba5d22654` -> `70d8d679ea89`, `70fa432dfc6d` ->
+# `97de796ffb4a`). Module-source drift again, not prompt text: a second
+# construction of either agent against a state that already carries
+# ``boundary_audits`` — a checkpoint restore, in production, though currently
+# unreachable there — now seeds its own audit-sequence counter from
+# ``len(state.boundary_audits)`` at the start of ``run()``/a pass, instead of
+# always starting at 0, so it cannot remint an id an earlier instance already
+# claimed for the same job/agent/operation. No instruction, packet rendering,
+# or verdict rule changed — the sequence is bookkeeping a replay joins
+# against, never a prompt input. The shared ``agents.prompts`` library was not
+# edited, and the other four pins and the judge did not move (verified by
+# recomputing all six and the judge).
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "4fab1aa863d8",
-    "researcher": "25fba5d22654",
+    "researcher": "70d8d679ea89",
     "source_evaluator": "6c12c0fffc92",
-    "fact_checker": "70fa432dfc6d",
+    "fact_checker": "97de796ffb4a",
     "synthesizer": "97cf77acbb15",
     "critic": "9694e44926d3",
 }
@@ -1151,13 +1165,18 @@ def test_the_acquisition_sequence_repin_is_attributed_to_the_shared_counter() ->
     be the published mechanism, it must hand out distinct sequences to whoever
     shares it, and the live fingerprint must be exactly the value this re-pin
     recorded.
+
+    Bug 3 moved the researcher's fingerprint again, to ``70d8d679ea89``, for
+    the instance-scoped audit-sequence fix recorded in the pin comment above;
+    that move is attributed there and this assertion follows it.
     """
     pre_round_6 = "613603dc5cbd"
+    pre_bug_3 = "25fba5d22654"
     counter = ManifestSequence()
 
-    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "25fba5d22654"
-    assert agent_prompt_fingerprint("researcher") == "25fba5d22654"
-    assert agent_prompt_fingerprint("researcher") != pre_round_6
+    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "70d8d679ea89"
+    assert agent_prompt_fingerprint("researcher") == "70d8d679ea89"
+    assert agent_prompt_fingerprint("researcher") not in {pre_round_6, pre_bug_3}
     assert (counter.take(), counter.take()) == (0, 1)
 
 

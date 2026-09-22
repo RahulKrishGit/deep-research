@@ -599,6 +599,10 @@ class ManifestSequence:
         self.value += 1
         return claimed
 
+    def seed_at_least(self, value: int) -> None:
+        """Raise the counter to at least ``value``, never lower it."""
+        self.value = max(self.value, value)
+
 
 @dataclass
 class AcquisitionPolicy:

@@ -1581,6 +1581,19 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._run_evidence = dict(state.evidence_units)
         self._run_dispositions = list(state.evidence_dispositions)
         self._run_boundary_audits = dict(state.boundary_audits)
+        # ``merge_boundary_audits`` refuses one id with two different
+        # contents, so any prior instance that wrote into
+        # ``state.boundary_audits`` minted at most ``len(state.boundary_audits)``
+        # distinct audits total across every agent — meaning this instance's
+        # own highest-used sequence is strictly less than that count. A fresh
+        # instance (e.g. a checkpoint restore reconstructing this agent
+        # against already-populated state) would otherwise re-seed at 0 and
+        # remint ids an earlier instance already claimed. Seeding here, in
+        # place, before any ``AcquisitionPolicy`` is built from
+        # ``self._run_audit_sequence``, is provably collision-free; it only
+        # "wastes" unused sequence space, which costs nothing since sequence
+        # values carry no meaning beyond uniqueness.
+        self._run_audit_sequence.seed_at_least(len(state.boundary_audits))
         self._run_acquisition_states = dict(state.acquisition_state_by_target)
         self._run_seen_target_ids = set()
         self._run_cache = self._shared_cache
