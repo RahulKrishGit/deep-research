@@ -875,6 +875,34 @@ def test_the_outcome_reports_the_substantive_topic_count() -> None:
     assert coverage.substantive_topic_ratio == 0.0
 
 
+def test_a_snapshot_predating_the_substantive_field_reports_its_own_count() -> None:
+    """A record written before the numerator existed must not read as a zero.
+
+    ``substantive_covered_topics`` was added with a default of zero, so a
+    snapshot from the revision that already stamped ``substantive_topic_ratio``
+    but had no numerator published "0/4 topics covered (substantive, 87%)" —
+    a count and a ratio that contradict each other in the same sentence. The
+    readers fall back to the count the record does carry.
+    """
+    legacy = quality_snapshot(
+        coverage_ratio=0.75,
+        planned_topics=4,
+        covered_topics=3,
+        substantive_topic_ratio=0.75,
+        planned_targets=4,
+        required_targets=2,
+        answered_targets=2,
+        critical_targets=2,
+    ).model_copy(update={"substantive_covered_topics": None})
+
+    coverage = outcome_of(base_state(quality=legacy)).coverage
+
+    assert coverage is not None
+    assert coverage.planned_topics == 4
+    assert coverage.covered_topics == 3
+    assert coverage.substantive_topic_ratio == 0.75
+
+
 def test_the_outcome_counts_reads_works_and_citations_apart() -> None:
     """Without a composition there is no reader index to count citations from."""
     state = base_state(quality=quality_snapshot())

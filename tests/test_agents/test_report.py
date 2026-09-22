@@ -2330,6 +2330,103 @@ def test_a_contradicted_verdicts_evidence_is_not_a_supporting_citation() -> None
     }
 
 
+def test_a_contested_statement_cites_the_source_that_disputes_it() -> None:
+    """§2.4: an attributed or contested point cites its contradiction.
+
+    The stance filter belongs to statements the report presents as
+    *supporting*. A statement presented as contested must carry the source
+    that disputes it — that is the citation a reader checks the disagreement
+    against — and a cluster's ``contradicted`` verdict evidence is that
+    record. Excluding both unconditionally left a contested bullet whose every
+    citation supported it, with the refuting source recorded and unpublished.
+    """
+    claim = _claim(
+        verdict="contradicted",
+        badge="contested",
+        passages=[
+            EvidencePassage(
+                source_url=SOURCE_URL,
+                source_title="QEC 2025",
+                locator="p. 1",
+                excerpt="The study reports the fall.",
+                stance="supports",
+            ),
+            EvidencePassage(
+                source_url=OTHER_URL,
+                source_title="Rebuttal",
+                locator="p. 2",
+                excerpt="The rebuttal disputes the fall.",
+                stance="contradicts",
+            ),
+        ],
+    )
+    composition = _evidence_composition(
+        claims=[claim],
+        sources=[_source(), _source(url=OTHER_URL, title="Rebuttal")],
+        summary=[
+            _stated(
+                claim_ids=[claim.claim_id],
+                source_urls=[SOURCE_URL],
+                statement=_statement(
+                    "Break-even was reached, and disputed.",
+                    mode="contested",
+                    evidence_ids=[],
+                ),
+            )
+        ],
+        sections=[],
+        constraints=[],
+    )
+    statement = composition.summary[0].statement
+    assert statement is not None
+
+    urls = statement_citation_urls(statement, composition)
+
+    assert SOURCE_URL in urls
+    assert OTHER_URL in urls
+    assert OTHER_URL in {
+        citation.url for citation in reader_citations(composition)
+    }
+
+
+def test_a_contested_statement_cites_a_contradicted_verdicts_evidence() -> None:
+    """The cluster half of the same rule: a contested point keeps its rebuttal."""
+    claim = _claim(verdict="contradicted", badge="contested")
+    cluster = _cluster(
+        verdicts=["contradicted"],
+        verdict_evidence={"contradicted": [OTHER_URL]},
+        source_urls=[SOURCE_URL],
+    )
+    composition = _evidence_composition(
+        claims=[claim],
+        claim_clusters={"cluster-1": cluster},
+        sources=[_source(), _source(url=OTHER_URL, title="Rebuttal")],
+        summary=[
+            _stated(
+                claim_ids=[claim.claim_id],
+                source_urls=[SOURCE_URL],
+                statement=_statement(
+                    "Break-even was reached, and disputed.",
+                    mode="contested",
+                    cluster_ids=["cluster-1"],
+                    evidence_ids=[],
+                ),
+            )
+        ],
+        sections=[],
+        constraints=[],
+    )
+    statement = composition.summary[0].statement
+    assert statement is not None
+
+    urls = statement_citation_urls(statement, composition)
+
+    assert OTHER_URL in urls
+    assert OTHER_URL in {
+        citation.url for citation in reader_citations(composition)
+    }
+
+
 def test_the_backmatter_boundary_is_the_last_methodology_heading() -> None:
     """A statement naming the heading must not move the measured boundary."""
     body = "# Report\n\n- The source's own ## Methodology section is quoted.\n\n" + (

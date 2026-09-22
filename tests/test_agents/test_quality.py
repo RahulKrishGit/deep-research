@@ -538,6 +538,25 @@ def test_quality_snapshot_flags_unresolved_markers_and_uncited_points() -> None:
     assert "uncited_settled_points" in snapshot.hard_failures
 
 
+def test_a_snapshot_predating_the_substantive_field_publishes_its_count() -> None:
+    """The quality record reads the same fallback as the outcome.
+
+    A snapshot with no substantive numerator publishes the claimed count under
+    both names rather than a zero beside a nonzero ratio.
+    """
+    state, composition = _complete_state_and_composition(4)
+    snapshot = compute_report_quality(state, composition)
+    legacy = snapshot.model_copy(update={"substantive_covered_topics": None})
+    judged = state.model_copy(update={"quality": legacy})
+
+    record = json.loads(render_quality_json(judged, composition, None))
+    counts = record["counts"]
+
+    assert counts["covered_topics"] == legacy.covered_topics
+    assert counts["claimed_covered_topics"] == legacy.covered_topics
+    assert counts["substantive_topic_ratio"] == legacy.substantive_topic_ratio
+
+
 def test_quality_snapshot_requires_scope_and_as_of_declarations() -> None:
     state, composition = _complete_state_and_composition(5)
     composition = composition.model_copy(update={"scope": " ", "as_of": ""})

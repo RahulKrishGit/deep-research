@@ -775,7 +775,7 @@ def test_the_summary_leads_with_the_quality_block() -> None:
     joined = "\n".join(lines)
 
     assert (
-        "Quality: partial (critic 6/10; 3/7 topics covered, 43%)" in joined
+        "Quality: partial (critic 6/10; 3/7 topics claimed, 43%)" in joined
     )
     assert (
         "Evidence: 12 cited sources; 10 scored; 14 verified, 1 contradicted"
@@ -822,7 +822,7 @@ def test_the_critic_fragment_is_omitted_without_a_model_review() -> None:
 
     joined = "\n".join(render_summary(outcome, verbose=False))
 
-    assert "Quality: partial (2/2 topics covered, 100%)" in joined
+    assert "Quality: partial (2/2 topics claimed, 100%)" in joined
     assert "critic 6/10" not in joined
     assert "/10" not in joined
 
@@ -834,7 +834,7 @@ def test_an_accepted_run_says_accepted() -> None:
 
     joined = "\n".join(render_summary(outcome, verbose=False))
 
-    assert "Quality: accepted (critic 6/10; 3/7 topics covered, 43%)" in joined
+    assert "Quality: accepted (critic 6/10; 3/7 topics claimed, 43%)" in joined
 
 
 def test_the_quality_line_stands_alone_without_a_snapshot() -> None:
@@ -1420,6 +1420,23 @@ def test_the_coverage_line_reports_the_substantive_topic_count() -> None:
     assert (
         "Coverage: 0/1 topics covered (substantive, 0%); "
         "0/1 required targets answered" in joined
+    )
+
+
+def test_the_quality_line_names_the_claimed_topic_count() -> None:
+    """Two topic lines, two readings, each one named.
+
+    The Coverage line carries the substantive count; the Quality line carries
+    the claimed one next to ``coverage_ratio``. Printing the second as "topics
+    covered" beside the first's "(substantive, 0%)" made one run publish a
+    topic as covered and as not covered in adjacent lines.
+    """
+    joined = "\n".join(render_summary(composed_outcome(), verbose=False))
+
+    assert "Quality: accepted (critic 6/10; 3/7 topics claimed, 43%)" in joined
+    assert (
+        "Coverage: 2/3 topics covered (substantive, 67%); "
+        "2/3 required targets answered; 1/2 critical targets answered" in joined
     )
 
 
