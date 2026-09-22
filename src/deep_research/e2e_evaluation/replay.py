@@ -317,6 +317,7 @@ class ReplayCompleter(AgentCompleter):
         self.packets: dict[str, str] = {}
         self.packet_sequence: list[tuple[str, str]] = []
         self.search_queries: list[str] = []
+        self.recalled_targets: set[str] = set()
         self.packet_dump = packet_dump
         self.equivalence_pairs: tuple[tuple[int, int], ...] = ()
         self.review_failure: bool = False
@@ -449,6 +450,18 @@ class ReplayCompleter(AgentCompleter):
             if url in text and url not in attempted_urls:
                 return self._read(url)
         if all(url in read_urls or url in denied_urls for url in urls):
+            # A topic with nothing to read is not a topic with nothing to do:
+            # the obligations an earlier session left open are what long-term
+            # memory holds, and a sub-topic that declares no page of its own
+            # has only those leads to go on. Asking once per target is what
+            # makes the recall a step of the run rather than a thing the
+            # provider forgot to do - and the leads it returns are offered as
+            # candidates, which is the decision the next packet carries them
+            # into.
+            target = target_id.group(1)
+            if not urls and self.scenario.memory_entries and target not in self.recalled_targets:
+                self.recalled_targets.add(target)
+                return self._tool("query_memory", {"query": topic.query})
             return self._final("The reads for this topic are complete.")
         pending = [
             candidate

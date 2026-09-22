@@ -1405,6 +1405,15 @@ def _memory_is_not_read() -> ReplayScenario:
                 "unanswered_critical_target",
                 "unaccounted_target",
                 "semantic_review_missing",
+                # The critical topic declares no page of its own, and memory
+                # holds the other session's claims rather than this run's
+                # reads: the Researcher recalls the leads it is entitled to
+                # and stops there, which the product records as a topic it
+                # could take no further. The skips are the reopening pass
+                # saying which topics it owed nothing, the same record the
+                # other partial cases declare.
+                "error:researcher_sub_topic_skipped",
+                "error:researcher_sub_topic_without_findings",
             ),
             required_invariants=("memory_leads_are_not_reads",),
         ),
