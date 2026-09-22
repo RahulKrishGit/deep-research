@@ -249,10 +249,17 @@ def _broad_constraints() -> ReplayScenario:
                 f"topic-{index:02d}-target-01" for index in range(1, 7)
             ),
             minimum_answerable_claims=6,
+            # Each entry is the number-and-unit reading its page states, in the
+            # order its own claim writes it. The third is worth spelling out:
+            # its page says "the number of supplier records ... was 1.2
+            # million", so the figure is "1.2 million" and what it counts is
+            # the row's own label. Asserting "1.2 million supplier records"
+            # would be asserting a word order no requirement pins and no
+            # rendering of that claim produces.
             required_report_phrases=(
                 "40 percent",
                 "12 million dollars",
-                "1.2 million supplier records",
+                "1.2 million",
                 "3.4 million units",
                 "8 million units",
                 "12 thousand people",
