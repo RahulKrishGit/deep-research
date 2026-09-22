@@ -1440,10 +1440,10 @@ def _validated_cache_reuse() -> ReplayScenario:
 
 
 def _decision_context_late_candidate() -> ReplayScenario:
-    """The third candidate and the late section still reach the next request.
+    """The last candidate and the late section still reach the next request.
 
-    Two of the three candidates for the topic carry nothing a claim can be
-    made of, and the one that does is last in the list. The run has to keep
+    Two of the candidates for the topic carry nothing a claim can be made of,
+    and the account that does is last in the list. The run has to keep
     offering it: the decision packet lists it as a candidate, the extraction
     packet carries its excerpt, and the public observation summary stays at
     its shipped length rather than being enlarged to smuggle the passage
@@ -1462,12 +1462,17 @@ def _decision_context_late_candidate() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024",
                 (
+                    # Both notes name the record they belong to and neither
+                    # states a figure: the answer row drafted for them is
+                    # checked against their own evidence, so a note that
+                    # withheld even the subject would be refused as a drafted
+                    # answer rather than read as a page with nothing to say.
                     _page(
                         "agency12.example.test",
                         "cover-note",
                         "Adoption cover note",
-                        "the note lists a title and a publication date and no measured "
-                        "value",
+                        "the Acme widget adoption rate cover note lists a title "
+                        "and a publication date and states no measured value",
                         issuer="Acme Institute 12",
                         verdict="insufficient_evidence",
                     ),
@@ -1475,9 +1480,17 @@ def _decision_context_late_candidate() -> ReplayScenario:
                         "agency12.example.test",
                         "method-note",
                         "Adoption method note",
-                        "the note describes the method and states no measured value",
+                        "the Acme widget adoption rate method note describes the "
+                        "method and states no measured value",
                         issuer="Acme Institute 12",
                         verdict="insufficient_evidence",
+                    ),
+                    _page(
+                        "agency12.example.test",
+                        "adoption-2024",
+                        "Adoption survey",
+                        claim,
+                        issuer="Acme Institute 12",
                     ),
                     _page(
                         "bureau12.example.test",
