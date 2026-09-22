@@ -298,7 +298,10 @@ def _note_then_record_scenario() -> tuple[ReplayScenario, ReplaySource, str]:
     record = ReplaySource(
         url="https://agency12.test/adoption-2024",
         title="Adoption survey",
-        text=f"Adoption survey. Published by Acme Institute 12. The report states {claim}.",
+        text=(
+            f"Adoption survey. Published by Acme Institute 12. The report "
+            f"states {claim}."
+        ),
         excerpt=claim,
         claim=claim,
         issuer="Acme Institute 12",
@@ -369,7 +372,10 @@ def test_claim_source_is_scoped_to_the_pages_the_packet_selected() -> None:
     other = ReplaySource(
         url="https://bureau12.test/adoption-2024",
         title="Adoption panel",
-        text=f"Adoption panel. Published by Independent Bureau 12. The report states {claim}.",
+        text=(
+            f"Adoption panel. Published by Independent Bureau 12. The report "
+            f"states {claim}."
+        ),
         excerpt=claim,
         claim=claim,
         issuer="Independent Bureau 12",
