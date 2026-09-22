@@ -87,6 +87,50 @@ def test_verbose_output_prints_no_model_payload_and_no_secret(
     assert "messages" not in body.lower()
 
 
+def test_verbose_output_discloses_the_resolved_production_parity(
+    researcher_experiment_result,
+) -> None:
+    body = "\n".join(
+        render_experiment(researcher_experiment_result, verbose=True)
+    )
+
+    assert (
+        "production parity: on (configuration) — target profile from "
+        "production; release evidence: yes"
+    ) in body
+
+
+def test_verbose_output_labels_an_invocation_override(
+    researcher_experiment_result,
+) -> None:
+    result = researcher_experiment_result.model_copy(
+        update={
+            "metadata": {
+                **researcher_experiment_result.metadata,
+                "production_parity": False,
+                "production_parity_source": "invocation",
+                "target_profile_source": "evaluation",
+                "release_evidence": False,
+            }
+        }
+    )
+
+    body = "\n".join(render_experiment(result, verbose=True))
+
+    assert (
+        "production parity: off (invocation) — target profile from "
+        "evaluation; release evidence: no"
+    ) in body
+
+
+def test_non_verbose_output_omits_the_parity_line(
+    researcher_experiment_result,
+) -> None:
+    lines = render_experiment(researcher_experiment_result, verbose=False)
+
+    assert not any(line.startswith("production parity:") for line in lines)
+
+
 def test_a_judge_not_run_repetition_is_shown_with_its_reason(
     judge_not_run_experiment_result,
 ) -> None:
