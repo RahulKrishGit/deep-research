@@ -82,6 +82,7 @@ __all__ = [
     "metadata_dimension_asked_for",
     "oldest_first",
     "resolved_verdict",
+    "resolved_verdict_and_status",
     "reverification_cache_key",
     "select_claim_batch",
     "select_claim_batch_indices",
@@ -205,6 +206,8 @@ _COMPARED_DIMENSIONS = (
     "denominator",
     "attribution",
     "forecast_status",
+    "comparator",
+    "change_kind",
 )
 
 # The two dimensions that describe *how* a clause is written rather than what
@@ -1084,6 +1087,89 @@ def _predicate(
     return _PREDICATE_RELATIONS[match.group("predicate").casefold()]
 
 
+# The bound or approximation a clause may put on its value, longest phrase
+# first so "no more than" is read as one bound rather than as "more than".
+_COMPARATOR_PHRASES: tuple[tuple[str, str], ...] = (
+    ("no more than", "at_most"),
+    ("no less than", "at_least"),
+    ("not more than", "at_most"),
+    ("not less than", "at_least"),
+    ("more than", "more_than"),
+    ("greater than", "more_than"),
+    ("higher than", "more_than"),
+    ("less than", "less_than"),
+    ("fewer than", "less_than"),
+    ("lower than", "less_than"),
+    ("at least", "at_least"),
+    ("at most", "at_most"),
+    ("up to", "at_most"),
+    ("over", "more_than"),
+    ("above", "more_than"),
+    ("under", "less_than"),
+    ("below", "less_than"),
+    ("exceeding", "more_than"),
+    ("nearly", "nearly"),
+    ("almost", "nearly"),
+    ("roughly", "approximately"),
+    ("approximately", "approximately"),
+    ("about", "approximately"),
+    ("around", "approximately"),
+    ("exactly", "exactly"),
+)
+
+# The relation classes whose stated value is a change of the subject rather
+# than a level it reached.
+_DELTA_RELATIONS = frozenset(
+    {"increases_by", "decreases_by", "doubled", "tripled", "halved"}
+)
+_LEVEL_RELATIONS = frozenset({"reaches_level", "states_level"})
+
+
+def _word_before(clause: str, *, anchor: re.Match[str] | None) -> str:
+    """The clause's own words immediately before its measurement, folded.
+
+    Read from position, not from anywhere in the clause: "held more than 10 GW"
+    states a bound, while "under the new rule, capacity reached 10 GW" states
+    none, and only where the phrase sits tells the two apart.
+    """
+    if anchor is None:
+        return ""
+    return " ".join(clause[: anchor.start()].split()).casefold()
+
+
+def _comparator(clause: str, *, anchor: re.Match[str] | None) -> str:
+    """The bound or approximation this clause puts on its value, or empty."""
+    before = _word_before(clause, anchor=anchor)
+    if not before:
+        return ""
+    for phrase, name in _COMPARATOR_PHRASES:
+        if before.endswith(phrase) or before.endswith(f" {phrase}"):
+            return name
+    return ""
+
+
+def _change_kind(
+    clause: str, *, anchor: re.Match[str] | None, predicate: str
+) -> str:
+    """Whether the value is a level the subject reached or a change it gained.
+
+    "rose to 10 GW" and "rose by 10 GW" write the same verb and the same
+    number; the preposition decides which assertion is being made. A clause
+    that writes neither is read through its relation class, which already says
+    whether the value is a delta ("grew 30 percent") or a level ("held 10 GW").
+    """
+    before = _word_before(clause, anchor=anchor)
+    if before.endswith(" by"):
+        return "delta"
+    if before.endswith(" to") or before.endswith(" at"):
+        return "level"
+    if predicate in _DELTA_RELATIONS:
+        return "delta"
+    if predicate in _LEVEL_RELATIONS:
+        return "level"
+    return ""
+
+
 def _over_cap_subject(phrase: str) -> str:
     """The fixed-size identity of an entity phrase this contract cannot list whole.
 
@@ -1494,6 +1580,12 @@ def extract_text_atoms(
                 subject=subject,
                 subject_state=subject_state,
                 predicate=_predicate(clause, anchor=measurement),
+                comparator=_comparator(clause, anchor=measurement),
+                change_kind=_change_kind(
+                    clause,
+                    anchor=measurement,
+                    predicate=_predicate(clause, anchor=measurement),
+                ),
                 value=value,
                 unit=unit,
                 observation_period=period,
@@ -2023,6 +2115,23 @@ def _union(values: Sequence[str]) -> list[str]:
     return union
 
 
+def resolved_verdict_and_status(cluster: ClaimCluster) -> tuple[str, str | None]:
+    """The verdict and badge one cluster may publish, resolved conservatively.
+
+    The verdict is the strongest disagreement among the members, and the badge
+    is the one that verdict recorded — so a contradicted member never publishes
+    as the verified pair a sibling recorded. A ``verified`` resolution whose no
+    member recorded the strict badge degrades to ``unverified``: ``Claim``
+    refuses the combination outright, and a settled fact with no pair behind it
+    is exactly what the conservative direction must not invent.
+    """
+    verdict = resolved_verdict(cluster.verdicts)
+    status = cluster.verdict_evidence_status.get(verdict)
+    if verdict == "verified" and status != "verified_pair":
+        return "unverified", None
+    return verdict, status
+
+
 def _canonical_claim(cluster: ClaimCluster) -> Claim:
     """The one claim snapshot a cluster publishes.
 
@@ -2033,16 +2142,7 @@ def _canonical_claim(cluster: ClaimCluster) -> Claim:
     pass never resubmitted. The verdict is the conservative resolution over
     every verdict recorded, so a disagreement cannot read as a settled fact.
     """
-    verdict = resolved_verdict(cluster.verdicts)
-    status = cluster.verdict_evidence_status.get(verdict)
-    if verdict == "verified" and status != "verified_pair":
-        # No member recorded the strict badge for this resolution, so the
-        # cluster may not publish it: the conservative direction is a claim
-        # that is merely unverified, never a settled fact with no pair behind
-        # it. ``Claim`` refuses the combination outright, so this is the one
-        # place the cluster can still resolve it.
-        verdict = "unverified"
-        status = None
+    verdict, status = resolved_verdict_and_status(cluster)
     return Claim(
         claim_id=cluster.cluster_id,
         text=cluster.proposition.text,

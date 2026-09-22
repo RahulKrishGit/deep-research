@@ -17,7 +17,7 @@ true".
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
 
@@ -39,6 +39,7 @@ from deep_research.agents.claim_clusters import (
     consolidate_claims,
     critical_target_ids,
     extract_text_atoms,
+    resolved_verdict_and_status,
     select_claim_batch_indices,
     target_order_for,
 )
@@ -64,6 +65,7 @@ from deep_research.agents.identity import (
 )
 from deep_research.agents.prompts import (
     ADJUDICATION_DEPENDENCE_INSTRUCTION,
+    ADJUDICATION_INSTRUCTION,
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
     CLAIM_VERIFICATION_INSTRUCTION,
@@ -1025,8 +1027,15 @@ def _claim_target_scope(state: ResearchState, target_ids: set[str]) -> set[str]:
     sub-topic. The scope is therefore the obligations themselves plus the
     sub-topics they live in — never another topic's.
     """
+    return _target_scope(state.sub_topics, target_ids)
+
+
+def _target_scope(
+    sub_topics: Sequence[SubTopic], target_ids: set[str]
+) -> set[str]:
+    """The same expansion, from the plan alone, for callers without a state."""
     scope = set(target_ids)
-    for topic in state.sub_topics:
+    for topic in sub_topics:
         if topic.coverage_id in target_ids:
             scope.add(topic.coverage_id)
         for target in topic.evidence_targets:
@@ -1120,6 +1129,7 @@ def claim_missing_read_ids(
     pool: Sequence[EvidenceUnit],
     *,
     target_ids: Sequence[str] | None = None,
+    sub_topics: Sequence[SubTopic] = (),
 ) -> list[str]:
     """Reads this claim is linked to that contributed no passage to its packet.
 
@@ -1128,12 +1138,18 @@ def claim_missing_read_ids(
     from which no unit was admitted, is a *handoff loss*. Naming the exact read
     ids is what makes that distinguishable from a claim that simply has no
     source — the two produce the same thin packet and the same verdict.
+
+    The link is read through the same expansion the pool uses
+    (:func:`_claim_target_scope`): a read the Researcher registered against the
+    sub-topic it was taken for is a read taken for this claim's obligations,
+    and comparing the two id spaces directly reported no loss at all.
     """
     obligations = (
         set(target_ids)
         if target_ids is not None
         else set(getattr(claim, "target_ids", ()) or ())
     )
+    scope = _target_scope(sub_topics, obligations)
     cited = {
         normalize_source_url(url)
         for url in getattr(claim, "source_urls", ()) or ()
@@ -1146,7 +1162,7 @@ def claim_missing_read_ids(
         if (
             normalize_source_url(read.resolved_url) in cited
             or normalize_source_url(read.requested_url) in cited
-            or bool(obligations and obligations.intersection(read.target_ids))
+            or bool(scope and scope.intersection(read.target_ids))
         ):
             missing.append(read.read_id)
     return missing
@@ -1293,6 +1309,41 @@ def build_adjudication_packet(
         missing_read_count=len(missing_read_ids),
         fingerprint=fingerprint,
     )
+
+
+def _stamp_cluster_verdict(claim: Claim, cluster: ClaimCluster) -> Claim:
+    """One cluster member, carrying the verdict the cluster resolved.
+
+    The cluster is the unit that settles: a member's own verdict is what *it*
+    recorded, and publishing it beside a sibling's contradiction is how one
+    fact is presented as both corroborated and refuted.
+    """
+    verdict, status = resolved_verdict_and_status(cluster)
+    return claim.model_copy(
+        update={
+            "cluster_id": cluster.cluster_id,
+            "cluster_aliases": list(cluster.cluster_aliases),
+            "verdict": verdict,
+            "evidence_status": status,
+            "insufficient_reason": (
+                claim.insufficient_reason
+                if verdict == "insufficient_evidence"
+                else None
+            ),
+        }
+    )
+
+
+def _cluster_for_stored_claim(
+    claim: Claim, clusters: Iterable[ClaimCluster]
+) -> ClaimCluster | None:
+    """The cluster this claim belongs to, by its own id or by an absorbed one."""
+    for cluster in clusters:
+        if claim.cluster_id == cluster.cluster_id or (
+            claim.cluster_id and claim.cluster_id in cluster.cluster_aliases
+        ):
+            return cluster
+    return None
 
 
 def refutes(stance: str) -> bool:
@@ -1449,7 +1500,7 @@ def adjudication_messages(
             "text of the read, do not retype or cite anything else)\n"
             + ("\n".join(rendered) if rendered else "(none)")
         ),
-        f"# Response contract\n{CLAIM_VERIFICATION_INSTRUCTION}",
+        f"# Response contract\n{ADJUDICATION_INSTRUCTION}",
         f"# Dependence contract\n{ADJUDICATION_DEPENDENCE_INSTRUCTION}",
         (
             "# Reply format\n"
@@ -1498,14 +1549,27 @@ def validate_adjudication(
     evidence verdict about it.
     """
     rows = list(draft.assessments if assessments is None else assessments)
-    shown = {unit.evidence_id: unit for unit in packet.units}
+    # The ids the request actually carried: the packet minus the candidates the
+    # budget left out. An id in the packet but not in the request was never
+    # shown to the model, so a row for it is refused exactly as an id that is
+    # not in the packet at all — otherwise the model is credited with a passage
+    # it never saw, and that passage can be half of a pair.
+    unshown = unshown_candidates(packet)
+    shown = {
+        unit.evidence_id: unit
+        for unit in packet.units
+        if unit.evidence_id not in unshown
+    }
     flags: list[str] = []
     if packet.missing_read_ids:
         # A read this claim is linked to never reached the packet. That is the
         # first thing to say about the claim, because it explains a thin packet
         # that would otherwise read as "nothing supports this".
         flags.append("handoff_loss")
-    if packet.omitted_count:
+    if unshown:
+        # An omission of one of this packet's own candidates: the judgement is
+        # incomplete, which is what the flag means. Units of other claims, and
+        # deferrals from elsewhere in the run, are not about this claim.
         flags.append("packet_incomplete")
     accepted: dict[str, SupportAssessment] = {}
     selected_support_candidates: list[str] = []
@@ -1629,7 +1693,6 @@ def validate_adjudication(
     # A candidate this request could not carry was never judged by the model,
     # so the claim cannot settle over it: what was not shown is an open
     # question, never an absent one.
-    unshown = unshown_candidates(packet)
     verified_pair: tuple[str, str] | None = None
     for index, left in enumerate(supports):
         for right in supports[index + 1 :]:
@@ -2698,6 +2761,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._session_id = ""
         self._run_reads: dict[str, ReadRecord] = {}
         self._run_sources: list[ScoredSource] = []
+        self._sub_topics: list[SubTopic] = []
+        """The frozen plan, for expanding an obligation to its sub-topic scope."""
         self._run_acquisition_state: dict[str, AcquisitionState] = {}
         # What this pass newly admitted, so state_update can persist it for
         # synthesis and refinement rather than keeping it inside the loop.
@@ -2891,7 +2956,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             omitted=omitted,
             omitted_count=len(omitted),
             missing_read_ids=claim_missing_read_ids(
-                state.read_records, draft, pool, target_ids=target_ids
+                state.read_records,
+                draft,
+                pool,
+                target_ids=target_ids,
+                sub_topics=list(state.sub_topics),
             ),
             target_ids=target_ids,
         )
@@ -2919,6 +2988,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             return None
         units = {unit.evidence_id: unit for unit in packet.units}
         admitted_reads: list[ReadRecord] = []
+        # This claim's own deferrals, kept apart from the run-wide list: the
+        # packet describes this claim's evidence, and an earlier claim's
+        # read-selection deferral is not an omission from this packet.
+        claim_dispositions: list[EvidenceDisposition] = []
         for step in run.steps:
             result = step.tool_result
             if result is None or not result.success:
@@ -2936,6 +3009,9 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 continue
             self._new_reads[admission.read.read_id] = admission.read
             self._run_reads[admission.read.read_id] = admission.read
+            claim_dispositions.extend(
+                item for item in admission.dispositions if item
+            )
             self._new_dispositions.extend(admission.dispositions)
             for evidence_id, unit in admission.evidence.items():
                 self._new_evidence[evidence_id] = unit
@@ -2950,10 +3026,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 self._run_sources,
                 known_reads=self._run_reads.values(),
             )
-        merged_dispositions = [
-            *packet.omitted,
-            *(item for item in self._new_dispositions if item),
-        ]
+        merged_dispositions = [*packet.omitted, *claim_dispositions]
         eligibility = dict(packet.eligibility)
         enlarged = list(units.values())
         eligibility.update(self._claim_eligibility(enlarged))
@@ -2967,12 +3040,13 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             enlarged,
             eligibility=eligibility,
             omitted=merged_dispositions,
-            omitted_count=packet.omitted_count + len(self._new_dispositions),
+            omitted_count=packet.omitted_count + len(claim_dispositions),
             missing_read_ids=claim_missing_read_ids(
                 self._run_reads,
                 task.claim,
                 enlarged,
                 target_ids=obligations,
+                sub_topics=self._sub_topics,
             ),
             target_ids=obligations,
         )
@@ -3681,6 +3755,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._run_sources = resolve_source_identities(
             state.evaluated_sources, self._run_reads.values()
         )
+        self._sub_topics = list(state.sub_topics)
         self._run_acquisition_state = dict(state.acquisition_state_by_target)
         self._new_reads = {}
         self._new_evidence = {}
@@ -4045,12 +4120,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 for claim_id in cluster.member_claim_ids
             }
             claims = [
-                claim.model_copy(
-                    update={
-                        "cluster_id": cluster.cluster_id,
-                        "cluster_aliases": list(cluster.cluster_aliases),
-                    }
-                )
+                _stamp_cluster_verdict(claim, cluster)
                 if (cluster := cluster_for_claim.get(claim.claim_id))
                 is not None
                 else claim
@@ -4086,6 +4156,22 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             self._prior_claims,
             union_claim_provenance(self._prior_claims, claims),
         )
+        # A cluster publishes one verdict, and every member carries it —
+        # including a stored member this pass never resubmitted. Re-stamping
+        # only this pass's claims left a first-pass ``verified`` claim sitting
+        # in the cluster that a later pass contradicted, so the reader was
+        # shown the contradicted fact as independently corroborated.
+        canonical_claims = [
+            _stamp_cluster_verdict(claim, cluster)
+            if (
+                cluster := _cluster_for_stored_claim(
+                    claim, self._new_clusters.values()
+                )
+            )
+            is not None
+            else claim
+            for claim in canonical_claims
+        ]
         events.append(
             fact_check_completed_event(
                 canonical_claims,

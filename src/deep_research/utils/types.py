@@ -889,6 +889,20 @@ class AtomicProposition(ContractModel):
     """
     denominator: str = ""
     """The base a share is taken of — a percentage without one is ambiguous."""
+    comparator: str = ""
+    """The bound or approximation the clause puts on its value, or empty.
+
+    "more than 10 GW", "up to 10 GW", and "nearly 10 GW" are three different
+    assertions about a number: two are bounds in opposite directions and one is
+    an approximation. Comparing only the number treats all of them as "10 GW".
+    """
+    change_kind: str = ""
+    """Whether the stated value is a level or a change: ``level`` or ``delta``.
+
+    "rose to 10 GW" says the subject reached 10 GW; "rose by 10 GW" says it
+    gained that much. Both write the same verb and the same number, and only
+    the preposition says which one is meant.
+    """
     attribution: str = ""
     forecast_status: str = ""
     """``observed``, ``projected``, ``forecast``, ``estimated``, or empty."""

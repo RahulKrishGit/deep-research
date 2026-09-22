@@ -253,6 +253,37 @@ CLAIM_VERIFICATION_INSTRUCTION = (
     "filling it with restatements of the claim."
 )
 
+# The packet path's own response contract. The legacy instruction above asks
+# for a ``passages`` list the packet schema rejects and describes the verdicts
+# in terms of what a loop retrieved; this one describes the record the model is
+# actually handed back — ids, per-id assessments, and what each field decides.
+ADJUDICATION_INSTRUCTION = (
+    "Return one verdict for the claim, chosen from exactly these strings:\n"
+    "verified: two of the listed passages each support the WHOLE claim, in the "
+    "claim's own scope, from independent sources.\n"
+    "unverified: the listed passages address the claim and none of them "
+    "settles it.\n"
+    "contradicted: a listed passage states something incompatible with the "
+    "claim, in the claim's own scope.\n"
+    "insufficient_evidence: the listed passages do not address the claim, or "
+    "are too thin to judge.\n"
+    "Also return confidence as a number between 0 and 1, one assessment row "
+    "per candidate id you judged, the ids you selected, and a rationale.\n"
+    "Each assessment row has evidence_id, stance, complete_support, "
+    "scope_compatible, dependence, origin_group_id, and rationale.\n"
+    "stance: supports when the passage states the claim, contradicts when it "
+    "states something incompatible with it, unrelated when it does neither. A "
+    "passage that refutes the claim is contradicts — never supports with "
+    "complete_support false.\n"
+    "complete_support: true only when the passage supports the WHOLE atomic "
+    "claim rather than a part of it. It says nothing about a refutation.\n"
+    "scope_compatible: true when the passage measures the same period, unit, "
+    "and population as the claim.\n"
+    "support_ids and contradiction_ids: every id you judged, each under the "
+    "stance you gave it. Never cite a URL, never retype an excerpt, and never "
+    "name an id that is not listed above."
+)
+
 # The per-passage dependence judgement an adjudication returns. The model
 # names how each passage stands to the origin of its figure; local code decides
 # what that allows, and only an origin the packet printed can be named.

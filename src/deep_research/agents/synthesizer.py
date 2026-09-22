@@ -29,6 +29,7 @@ from collections.abc import Mapping, Sequence
 from pydantic import Field, JsonValue
 
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.claim_clusters import resolved_verdict_and_status
 from deep_research.agents.errors import (
     AgentConfigurationError,
     agent_error,
@@ -988,11 +989,19 @@ def build_canonical_packet(
             break
         cluster = clusters.get(claim.cluster_id or "")
         selected = _selected_ids(claim, cluster)
+        # What the cluster resolved, not its verified slice: a contradicted
+        # member of a cluster that also holds a verified one was labelled
+        # "verified pair" and given the verified member's citations.
+        resolved_verdict, resolved_status = (
+            resolved_verdict_and_status(cluster)
+            if cluster is not None
+            else (claim.verdict, claim.evidence_status)
+        )
         support = list(
             dict.fromkeys(
                 [
                     *(
-                        cluster.verdict_evidence.get("verified", [])
+                        cluster.verdict_evidence.get(resolved_verdict, [])
                         if cluster is not None
                         else []
                     ),
@@ -1012,11 +1021,7 @@ def build_canonical_packet(
             url = normalize_source_url(unit.source_url)
             if url and url not in urls:
                 urls.append(url)
-        badge = (
-            cluster.verdict_evidence_status.get("verified", "")
-            if cluster is not None
-            else ""
-        ) or (claim.evidence_status or "")
+        badge = (resolved_status or "") or (claim.evidence_status or "")
         target_ids = list(
             dict.fromkeys(
                 [

@@ -53,6 +53,7 @@ from deep_research.agents.claim_clusters import (
     metadata_dimension_asked_for,
     oldest_first,
     resolved_verdict,
+    resolved_verdict_and_status,
     reverification_cache_key,
     select_claim_batch,
     select_claim_batch_indices,
@@ -314,6 +315,7 @@ from deep_research.agents.planner import (
 )
 from deep_research.agents.prompts import (
     ADJUDICATION_DEPENDENCE_INSTRUCTION,
+    ADJUDICATION_INSTRUCTION,
     CLAIM_EQUIVALENCE_INSTRUCTION,
     CLAIM_EQUIVALENCE_SCHEMA_VERSION,
     CLAIM_EQUIVALENCE_SYSTEM_PROMPT,
@@ -612,6 +614,7 @@ from deep_research.utils.types import EVIDENCE_BADGE_LABELS, CritiqueGap
 __all__ = [
     "ACCEPTANCE_SCORE",
     "ADJUDICATION_DEPENDENCE_INSTRUCTION",
+    "ADJUDICATION_INSTRUCTION",
     "CORROBORATING_DEPENDENCE",
     "COPIED_TRANSPORT_RELATIONS",
     "DEPENDENCE_LEVELS",
@@ -1171,6 +1174,7 @@ __all__ = [
     "oldest_first",
     "partition_pending_claims",
     "resolved_verdict",
+    "resolved_verdict_and_status",
     "reverification_cache_key",
     "select_claim_batch",
     "select_claim_batch_indices",
