@@ -2625,11 +2625,15 @@ async def test_a_story_citing_the_reports_number_cannot_corroborate_it() -> None
     """A report number names a work, so citing one is citing that work.
 
     A number is unique inside its issuer's namespace, which is why the work key
-    is ``report:<issuer>:<number>``. A citation recorded in any other namespace
-    can never match it, and a derivative story would then pass every other test
-    — different publisher host, different work, different origin — while
+    is ``report:<issuer>:<number>`` — and the issuer of the *cited* work is not
+    something a citing document establishes, so the citation is recorded as the
+    number it printed and matched against the key it names. A citation a
+    comparison could never resolve would let a derivative story pass every
+    other test — different publisher, different work, different origin — while
     repeating the report it cites (§2.2 rule 5).
     """
+    from deep_research.agents.evidence import REPORT_NUMBER_LINEAGE
+
     report = _read(LAB_REPORT_URL, text=NUMBERED_REPORT_TEXT)
     story = _read(
         STORY_URL, title="Queue backlog, by the numbers", text=NUMBERED_STORY_TEXT
@@ -2652,10 +2656,43 @@ async def test_a_story_citing_the_reports_number_cannot_corroborate_it() -> None
     assert by_url[LAB_REPORT_URL].work_id == NUMBERED_REPORT_WORK
     derived = by_url[STORY_URL]
     assert derived.work_identity is not None
-    assert derived.work_identity.derives_from_work_ids == [NUMBERED_REPORT_WORK]
-    # The citation was evidenced: it is recorded, not reported as unsupported.
+    assert derived.work_identity.derives_from_work_ids == [
+        f"{REPORT_NUMBER_LINEAGE}{REPORT_NUMBER.casefold()}",
+    ]
+    # The citation was evidenced: it is recorded, not reported unsupported.
     assert "derived_from" not in derived.rationale
     assert not _may_pair(report, story, sources)
+
+
+@pytest.mark.asyncio
+async def test_a_story_citing_another_number_is_not_refused_by_lineage() -> None:
+    """The control: a citation of a *different* number is not that report.
+
+    Lineage reads the number a citation prints, never the shape of a citation,
+    so a story citing some other report is refused for whatever else is wrong
+    with it and not for this.
+    """
+    report = _read(LAB_REPORT_URL, text=NUMBERED_REPORT_TEXT)
+    story = _read(
+        STORY_URL,
+        title="Queue backlog, by the numbers",
+        text=NUMBERED_STORY_TEXT.replace(REPORT_NUMBER, "IR-1900-77"),
+    )
+    story_draft = _draft(
+        url=STORY_URL,
+        source_role="independent_research",
+        transport_relation="original",
+        issuer="News Daily",
+        rationale="An outlet's analysis of another report.",
+        derived_from=["IR-1900-77"],
+    )
+
+    sources, _ = await _assess(
+        [report, story],
+        [_scores(_lab_draft(doi="", report_number=REPORT_NUMBER), story_draft)],
+    )
+
+    assert _may_pair(report, story, sources)
 
 
 def _legacy_source(

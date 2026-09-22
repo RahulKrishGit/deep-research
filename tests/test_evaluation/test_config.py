@@ -746,11 +746,16 @@ CRITIC_PROMPT_FINGERPRINT = "3d6a1db27572"
 # single-read identity helper it now shares with the batch resolver was renamed
 # to ``_read_fitness_identity`` so no private name echoes the removed
 # ``evidence.read_identity``. No instruction changed; the other five did not
-# move.
+# move. Two follow-up fixes moved it twice more for module-source drift alone:
+# ``ae6aac567f2b`` for the mirror-origin rule (``source_origin_id`` gained
+# ``COPIED_TRANSPORT_RELATIONS``), and ``e098e605abc4`` for the legacy-snapshot
+# rule (``resolve_read_identities`` now takes ``ReadIdentityRequest``, so the
+# single-read caller builds one). No prompt text changed either time, and the
+# other five and the judge did not move (verified by recomputing all six).
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "3172856c4bfc",
     "researcher": "d35dcbd0689a",
-    "source_evaluator": "ae6aac567f2b",
+    "source_evaluator": "e098e605abc4",
     "fact_checker": "40afc3090052",
     "synthesizer": "27b2c2acc01c",
     "critic": "3d6a1db27572",

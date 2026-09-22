@@ -2659,7 +2659,8 @@ async def test_the_quality_record_exports_the_identity_the_sources_carry() -> No
     assert "doi" not in mirror["identity_anchors"]
     assert story["identity_status"] == "known"
     assert story["derives_from_work_ids"] == ["doi:10.1234/grid.2025"]
-    assert story["identity_anchors"]["derived_from"] == ["10.1234/grid.2025"]
+    # The anchor is the cited work's id, the form a lineage comparison reads.
+    assert story["identity_anchors"]["derived_from"] == ["doi:10.1234/grid.2025"]
     # One identity: the record's url -> work map is the sources' own.
     identified = {row["url"]: row["work_id"] for row in record["sources"] if row["work_id"]}
     assert identified
