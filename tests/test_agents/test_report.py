@@ -2544,6 +2544,130 @@ def test_the_quality_record_is_bounded_json_without_page_payloads() -> None:
     assert json.loads(encoded) == record
 
 
+@pytest.mark.asyncio
+async def test_the_quality_record_exports_the_identity_the_sources_carry() -> None:
+    """A replay reads work identity from the record, never re-derives it.
+
+    The sources come from the real assessment service: a DOI original, its
+    byte-identical DOI-less mirror, and a story stating the report's DOI as
+    its data source. The record must carry each source's aliases, basis,
+    status, issuer, lineage, and validated anchors — and its ``work_keys``
+    must be the sources' own work ids, not an anchor-less re-resolution of the
+    reads that would split the original from its mirror.
+    """
+    from deep_research.agents.evidence import build_read_record
+    from deep_research.agents.source_evaluator import (
+        SourceScoreDraft,
+        SourceScoresDraft,
+        assess_new_sources,
+    )
+    from tests.agent_fakes import ScriptedCompleter
+
+    report_text = (
+        "Grid Storage Outlook. Published by Example Lab on 2026-01-15. "
+        "Example Lab measured that 1,200 MW of interconnection capacity was "
+        "withheld during 2024. doi:10.1234/grid.2025"
+    )
+    story_text = (
+        "Queue backlog, by the numbers. Published by News Daily on "
+        "2026-02-02. Our analysis of the Example Lab report "
+        "(doi:10.1234/grid.2025) finds 1,200 MW was withheld during 2024."
+    )
+    original_url = "https://lab.example/report"
+    mirror_url = "https://mirror.example/grid-outlook"
+    story_url = "https://news.example/queue-story"
+
+    def read(url: str, title: str, text: str):  # type: ignore[no-untyped-def]
+        return build_read_record(
+            session_id="session-1",
+            reader="web_scraper",
+            requested_url=url,
+            resolved_url=url,
+            title=title,
+            retrieved_at=EXTRACTED_AT,
+            text=text,
+            passages={"chunk-0": text},
+            extraction_complete=True,
+        )
+
+    def draft(url: str, **fields: object) -> SourceScoreDraft:
+        return SourceScoreDraft(
+            url=url,
+            authority_score=0.9,
+            recency_score=0.8,
+            relevance_score=0.9,
+            rationale="Assessed from the read.",
+            **fields,  # type: ignore[arg-type]
+        )
+
+    reads = [
+        read(original_url, "Grid Storage Outlook", report_text),
+        read(mirror_url, "Grid Storage Outlook", report_text),
+        read(story_url, "Queue backlog, by the numbers", story_text),
+    ]
+    lab = {"source_role": "original_report", "issuer": "Example Lab"}
+    sources = await assess_new_sources(
+        ScriptedCompleter(
+            outputs=[
+                SourceScoresDraft(
+                    sources=[
+                        draft(
+                            original_url,
+                            transport_relation="original",
+                            doi="10.1234/grid.2025",
+                            **lab,
+                        ),
+                        draft(mirror_url, transport_relation="mirror", **lab),
+                        draft(
+                            story_url,
+                            source_role="independent_research",
+                            transport_relation="original",
+                            issuer="News Daily",
+                            derived_from=["10.1234/grid.2025"],
+                        ),
+                    ]
+                )
+            ]
+        ),
+        reads,
+    )
+    composition = _evidence_composition(sources=[_source(), *sources])
+    state = _record_state(
+        composition, read_records={item.read_id: item for item in reads}
+    )
+
+    record = json.loads(
+        json.dumps(render_quality_record(state, composition, None), sort_keys=True)
+    )
+
+    rows = {row["url"]: row for row in record["sources"]}
+    original, mirror, story = (
+        rows[original_url],
+        rows[mirror_url],
+        rows[story_url],
+    )
+    report_hash = f"sha256:{reads[0].content_sha256}"
+    assert original["work_id"] == mirror["work_id"] == "doi:10.1234/grid.2025"
+    for row in (original, mirror):
+        assert row["identity_status"] == "known"
+        assert row["identity_basis"]
+        assert set(row["work_aliases"]) == {"doi:10.1234/grid.2025", report_hash}
+        assert row["issuer_id"] == "example lab"
+        assert row["derives_from_work_ids"] == []
+    assert original["identity_anchors"]["doi"] == "10.1234/grid.2025"
+    assert original["identity_anchors"]["issuer"] == "Example Lab"
+    assert "doi" not in mirror["identity_anchors"]
+    assert story["identity_status"] == "known"
+    assert story["derives_from_work_ids"] == ["doi:10.1234/grid.2025"]
+    assert story["identity_anchors"]["derived_from"] == ["10.1234/grid.2025"]
+    # One identity: the record's url -> work map is the sources' own.
+    identified = {row["url"]: row["work_id"] for row in record["sources"] if row["work_id"]}
+    assert identified
+    assert {
+        url: key for url, key in record["work_keys"].items() if url in identified
+    } == identified
+
+
 def test_every_corroboration_badge_has_its_own_distinct_count() -> None:
     """Four labels, four counts, and they add up to the claims that were checked.
 

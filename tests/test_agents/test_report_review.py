@@ -40,6 +40,8 @@ from deep_research.utils.types import (
     ReportReview,
     ReportStatement,
     ResearchState,
+    ScoredSource,
+    SourceTemporal,
     SubTopic,
 )
 from tests.agent_fakes import ScriptedCompleter
@@ -2009,6 +2011,86 @@ def test_the_composition_fingerprint_covers_section_points() -> None:
         }
     )
     assert composition_semantic_fingerprint(reworded) != before
+
+
+def _assessed_source(**overrides: object) -> ScoredSource:
+    fields: dict[str, object] = {
+        "url": _URL,
+        "title": "QEC 2025",
+        "authority_score": 0.9,
+        "recency_score": 0.8,
+        "relevance_score": 0.9,
+        "overall_score": 0.88,
+        "rationale": "The laboratory's own dated report.",
+        "serving_host": "example.test",
+        "publisher_id": "example lab",
+        "work_id": "doi:10.1234/qec",
+        "transport_relation": "original",
+        "source_role": "original_report",
+        "self_interest": "none",
+        "temporal": SourceTemporal(publication_date="2025-06-01", status="current"),
+        "assessment_revision": "assess-one",
+    }
+    fields.update(overrides)
+    return ScoredSource(**fields)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_role", "derivative"),
+        ("self_interest", "evidenced"),
+        ("transport_relation", "mirror"),
+        (
+            "temporal",
+            SourceTemporal(publication_date="2025-06-01", status="superseded"),
+        ),
+        ("assessment_revision", "assess-two"),
+    ],
+)
+def test_a_source_fitness_change_invalidates_both_review_fingerprints(
+    field: str, value: object
+) -> None:
+    """What a reviewer judges independence by must key the stored judgement.
+
+    A source re-labelled from an original report to a derivative one changes
+    what the report's citations are worth, so neither the composition's
+    semantic fingerprint nor the review packet's may survive it — or
+    ``_review_report`` would reuse a judgement of evidence that no longer
+    exists. The presentation badge is the control: it still moves neither.
+    """
+    from deep_research.agents.report_review import (
+        composition_semantic_fingerprint,
+    )
+
+    source = _assessed_source()
+    changed = _assessed_source(**{field: value})
+    composition = _composition().model_copy(update={"sources": [source]})
+    recomposed = composition.model_copy(update={"sources": [changed]})
+    restamped = composition.model_copy(update={"quality_status": "accepted"})
+
+    assert composition_semantic_fingerprint(recomposed) != (
+        composition_semantic_fingerprint(composition)
+    ), field
+    assert composition_semantic_fingerprint(restamped) == (
+        composition_semantic_fingerprint(composition)
+    )
+
+    # The packet reads the state's canonical snapshot. The composition is held
+    # fixed here, so only the packet's own view of the source can move it.
+    def fingerprint(snapshot: ScoredSource, shown: ReportComposition) -> str:
+        return _packet(
+            _state(
+                composition=shown,
+                report="Break-even was reached.",
+                evaluated_sources=[snapshot],
+            )
+        ).fingerprint
+
+    assert fingerprint(changed, composition) != fingerprint(source, composition), (
+        field
+    )
+    assert fingerprint(source, restamped) == fingerprint(source, composition)
 
 
 def test_a_quality_snapshot_keeps_the_review_apart_from_its_diagnostics() -> None:

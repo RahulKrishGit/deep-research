@@ -6,12 +6,24 @@ import pytest
 
 from deep_research.agents.evidence import (
     TemporalClaim,
+    build_evidence_unit,
     build_read_dossiers,
     build_read_record,
     compute_assessment_revision,
     read_assessment_revision,
     read_dated_tokens,
     source_origin_id,
+)
+from deep_research.agents.fact_checker import (
+    AdjudicationPacket,
+    ClaimDraft,
+    ClaimVerdictDraft,
+    SupportAssessment,
+    _packet_has_pair,
+    adjudication_messages,
+    build_adjudication_packet,
+    claim_eligibility,
+    validate_adjudication,
 )
 from deep_research.agents.source_evaluator import (
     AUTHORITY_WEIGHT,
@@ -36,7 +48,7 @@ from deep_research.agents.source_evaluator import (
     low_confidence_count,
     overall_score,
 )
-from deep_research.agents.sources import SourceGroup
+from deep_research.agents.sources import SourceGroup, normalize_source_url
 from deep_research.agents.steps import ReActRun
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
@@ -46,6 +58,9 @@ from deep_research.providers import (
 )
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    QUALITY_CONTRACT_VERSION,
+    Claim,
+    EvidenceUnit,
     Finding,
     MemorySnapshot,
     ReadRecord,
@@ -114,7 +129,11 @@ def _draft(
     issuer: str = "",
     doi: str = "",
     year: str = "",
+    derived_from: list[str] | None = None,
 ) -> SourceScoreDraft:
+    lineage: dict[str, object] = (
+        {} if derived_from is None else {"derived_from": list(derived_from)}
+    )
     return SourceScoreDraft(
         url=url,
         authority_score=authority,
@@ -133,6 +152,7 @@ def _draft(
         issuer=issuer,
         doi=doi,
         year=year,
+        **lineage,  # type: ignore[arg-type]
     )
 
 
@@ -2002,3 +2022,417 @@ async def test_the_total_cap_records_unscored_identity_not_a_dropped_source() ->
     assert sources[1].overall_score is None
     assert sources[1].work_id == f"sha256:{second.content_sha256}"
     assert source_origin_id(sources[1]) is None
+
+
+# --------------------------------------------------------------------------
+# Canonical identity: what the Source Evaluator resolves is what the Fact
+# Checker pairs on. Every test below goes through the real producers and the
+# real pair test — no hand-built eligibility.
+# --------------------------------------------------------------------------
+
+IDENTITY_CLAIM = (
+    "Example Lab measured that 1,200 MW of interconnection capacity was "
+    "withheld during 2024."
+)
+MIRROR_HOST_URL = "https://mirror.example/grid-outlook"
+PDF_REPORT_URL = "https://lab.example/report.pdf"
+STORY_URL = "https://news.example/queue-story"
+REPORT_WORK = "doi:10.1234/grid.2025"
+REPORT_ORIGIN = f"work:{REPORT_WORK}"
+DATASET_DOI = "10.5555/queue.2024"
+
+# The same report, re-typeset by a repository on another host: the issuer is
+# still stated, the DOI is not, and the bytes differ.
+RETYPESET_MIRROR_TEXT = (
+    "Grid Storage Outlook (repository copy). Published by Example Lab on "
+    "2026-01-15. The laboratory measured that 1,200 MW of interconnection "
+    "capacity was withheld during 2024."
+)
+INDEPENDENT_TEXT = (
+    "We measured the queue ourselves. Published by Review Weekly on "
+    "2026-02-10. This outlet ran its own measurement of 1,180 MW during 2024."
+)
+STORY_TEXT = (
+    "Queue backlog, by the numbers. Published by News Daily on 2026-02-02. "
+    "Our analysis of the Example Lab report (doi:10.1234/grid.2025) finds "
+    "1,200 MW was withheld during 2024."
+)
+
+
+def _review_read() -> ReadRecord:
+    return _read(
+        REVIEW_URL,
+        title="We measured the queue ourselves",
+        text=INDEPENDENT_TEXT,
+    )
+
+
+def _review_draft(**overrides: object) -> SourceScoreDraft:
+    fields: dict[str, object] = {
+        "url": REVIEW_URL,
+        "source_role": "independent_research",
+        "transport_relation": "original",
+        "issuer": "Review Weekly",
+        "rationale": "Original measurement published by the outlet.",
+    }
+    fields.update(overrides)
+    return _draft(**fields)  # type: ignore[arg-type]
+
+
+def _by_url(sources: list[ScoredSource]) -> dict[str, ScoredSource]:
+    return {normalize_source_url(source.url): source for source in sources}
+
+
+def _unit_for(read: ReadRecord) -> EvidenceUnit:
+    return build_evidence_unit(
+        read=read,
+        locator="chunk-0",
+        excerpt=read.passages["chunk-0"],
+        origin="researcher",
+        target_ids=["target-1"],
+    )
+
+
+def _identity_packet(
+    reads: list[ReadRecord], sources: list[ScoredSource]
+) -> AdjudicationPacket:
+    """The claim's packet over these reads, with the identity the checker resolves.
+
+    Eligibility comes from ``claim_eligibility`` over the read and the source
+    the Source Evaluator produced for it — exactly what the Fact Checker hands
+    the pair test.
+    """
+    by_url = _by_url(sources)
+    units = [_unit_for(read) for read in reads]
+    return build_adjudication_packet(
+        ClaimDraft(text=IDENTITY_CLAIM, source_urls=[reads[0].resolved_url]),
+        units,
+        eligibility={
+            unit.evidence_id: claim_eligibility(
+                unit,
+                read=read,
+                source=by_url[normalize_source_url(read.resolved_url)],
+                assessment=None,
+            )
+            for unit, read in zip(units, reads, strict=True)
+        },
+    )
+
+
+def _may_pair(
+    left: ReadRecord, right: ReadRecord, sources: list[ScoredSource]
+) -> bool:
+    """Whether the local pair test lets these two reads corroborate a claim.
+
+    This is the test that decides, before any adjudication, whether a packet
+    already carries a qualifying pair — so a ``True`` here is a pair the model
+    would be allowed to certify.
+    """
+    return _packet_has_pair(_identity_packet([left, right], sources))
+
+
+async def _run_producer(
+    producer: str,
+    reads: list[ReadRecord],
+    drafts: list[SourceScoreDraft],
+    tracker: Tracker,
+) -> list[ScoredSource]:
+    """Assess ``reads`` through the shared service or through the agent."""
+    if producer == "service":
+        sources, _ = await _assess(reads, [_scores(*drafts)])
+        return sources
+    agent = _evaluator(tracker, ScriptedCompleter(outputs=[_scores(*drafts)]))
+    state = _eval_state(
+        [_eval_finding(read.resolved_url) for read in reads],
+        read_records={read.read_id: read for read in reads},
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+    )
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+    assert outcome.result is not None
+    # One resolved snapshot: what the agent returns is what it persists.
+    assert outcome.state_update["evaluated_sources"] == outcome.result.sources
+    return list(outcome.result.sources)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("producer", ["service", "agent"])
+async def test_a_doi_original_and_its_identical_doi_less_mirror_are_one_work(
+    producer: str, tracker: Tracker
+) -> None:
+    """Section 2.2 rule 2: identity resolves across records, not per URL."""
+    original = _read(LAB_REPORT_URL)
+    mirror = _read(MIRROR_HOST_URL)
+    assert original.content_sha256 == mirror.content_sha256
+
+    sources = await _run_producer(
+        producer,
+        [original, mirror],
+        [
+            _lab_draft(),
+            _lab_draft(url=MIRROR_HOST_URL, doi="", transport_relation="mirror"),
+        ],
+        tracker,
+    )
+
+    by_url = _by_url(sources)
+    assert by_url[LAB_REPORT_URL].work_id == REPORT_WORK
+    assert by_url[MIRROR_HOST_URL].work_id == REPORT_WORK
+    assert not _may_pair(original, mirror, sources)
+
+
+@pytest.mark.asyncio
+async def test_a_re_typeset_mirror_on_another_host_never_corroborates_its_original() -> (
+    None
+):
+    """The reproduced false pair: two hosts, one publisher, one report.
+
+    The Source Evaluator validated "Example Lab" on both copies. A pair test
+    that re-derived the publisher from the serving host would see two
+    publishers, two works, and two origins, and certify one report as two
+    independent accounts.
+    """
+    original = _read(LAB_REPORT_URL)
+    mirror = _read(
+        MIRROR_HOST_URL,
+        title="Grid Storage Outlook (repository copy)",
+        text=RETYPESET_MIRROR_TEXT,
+    )
+
+    sources, _ = await _assess(
+        [original, mirror],
+        [
+            _scores(
+                _lab_draft(),
+                _lab_draft(
+                    url=MIRROR_HOST_URL, doi="", transport_relation="mirror"
+                ),
+            )
+        ],
+    )
+
+    by_url = _by_url(sources)
+    assert by_url[MIRROR_HOST_URL].publisher_id == "example lab"
+    assert by_url[LAB_REPORT_URL].publisher_id == "example lab"
+    assert not _may_pair(original, mirror, sources)
+
+
+@pytest.mark.asyncio
+async def test_a_pdf_and_html_of_one_doi_are_one_known_work_that_can_still_pair() -> (
+    None
+):
+    """Two renderings of one DOI hash differently and are still one work.
+
+    Distinct bytes under one DOI are the PDF and the HTML of one report, not
+    a conflict — and treating them as unresolved would stop the original from
+    ever pairing with a genuinely independent measurement.
+    """
+    html = _read(LAB_REPORT_URL)
+    pdf = _read(
+        PDF_REPORT_URL,
+        reader="document_reader",
+        text=LAB_REPORT_TEXT + " Appendix: interconnection queue by region.",
+    )
+    independent = _review_read()
+    assert html.content_sha256 != pdf.content_sha256
+
+    sources, _ = await _assess(
+        [html, pdf, independent],
+        [_scores(_lab_draft(), _lab_draft(url=PDF_REPORT_URL), _review_draft())],
+    )
+
+    by_url = _by_url(sources)
+    for url in (LAB_REPORT_URL, PDF_REPORT_URL):
+        identity = by_url[url].work_identity
+        assert identity is not None, url
+        assert identity.identity_status == "known", url
+        assert identity.key == REPORT_WORK
+        assert by_url[url].work_id == REPORT_WORK
+        assert {
+            REPORT_WORK,
+            f"sha256:{html.content_sha256}",
+            f"sha256:{pdf.content_sha256}",
+        } <= set(identity.aliases)
+    assert not _may_pair(html, pdf, sources)
+    assert _may_pair(pdf, independent, sources)
+
+
+@pytest.mark.asyncio
+async def test_a_story_derived_from_the_report_cannot_corroborate_it() -> None:
+    """Section 2.2 rule 5: repeating one report is not a second account.
+
+    The story is its own work from its own publisher, labelled as its own
+    research — every identity field differs. What it states is where its figure
+    comes from, and that lineage is what refuses the pair.
+    """
+    report = _read()
+    story = _read(
+        STORY_URL, title="Queue backlog, by the numbers", text=STORY_TEXT
+    )
+    story_draft = _draft(
+        url=STORY_URL,
+        source_role="independent_research",
+        transport_relation="original",
+        issuer="News Daily",
+        rationale="An outlet's analysis of the laboratory's report.",
+        derived_from=["10.1234/grid.2025", "10.9999/never-cited"],
+    )
+
+    sources, _ = await _assess(
+        [report, story], [_scores(_lab_draft(), story_draft)]
+    )
+
+    by_url = _by_url(sources)
+    derived = by_url[STORY_URL]
+    assert derived.publisher_id == "news daily"
+    assert derived.work_id != by_url[LAB_REPORT_URL].work_id
+    assert derived.work_identity is not None
+    # Only the lineage the story itself states is recorded; the DOI it never
+    # prints is reported as an unevidenced anchor instead.
+    assert derived.work_identity.derives_from_work_ids == [REPORT_WORK]
+    assert "derived_from" in derived.rationale
+    assert not _may_pair(report, story, sources)
+
+
+@pytest.mark.asyncio
+async def test_two_articles_on_one_dataset_cannot_corroborate_each_other() -> None:
+    """Section 2.2 rule 6: shared data is one origin however it is written up."""
+    first = _read(
+        "https://first.example/analysis",
+        title="Queue analysis",
+        text=(
+            "Queue analysis. Published by First Outlet on 2026-02-02. Using "
+            f"the national queue dataset (doi:{DATASET_DOI}), we count "
+            "1,200 MW withheld during 2024."
+        ),
+    )
+    second = _read(
+        "https://second.example/feature",
+        title="Queue feature",
+        text=(
+            "Queue feature. Published by Second Outlet on 2026-02-05. The "
+            f"national queue dataset, doi:{DATASET_DOI}, shows 1,200 MW "
+            "withheld during 2024."
+        ),
+    )
+    drafts = [
+        _draft(
+            url=read.resolved_url,
+            source_role="independent_research",
+            transport_relation="original",
+            issuer=issuer,
+            rationale="An outlet's own write-up of a public dataset.",
+            derived_from=[DATASET_DOI],
+        )
+        for read, issuer in ((first, "First Outlet"), (second, "Second Outlet"))
+    ]
+
+    sources, _ = await _assess([first, second], [_scores(*drafts)])
+
+    assert sources[0].publisher_id != sources[1].publisher_id
+    assert sources[0].work_id != sources[1].work_id
+    for source in sources:
+        assert source.work_identity is not None
+        assert source.work_identity.derives_from_work_ids == [f"doi:{DATASET_DOI}"]
+    assert not _may_pair(first, second, sources)
+
+
+async def _independent_packet() -> AdjudicationPacket:
+    """A report and a genuinely independent measurement, assessed for real."""
+    report = _read()
+    review = _review_read()
+    sources, _ = await _assess(
+        [report, review], [_scores(_lab_draft(), _review_draft())]
+    )
+    return _identity_packet([report, review], sources)
+
+
+def _support(evidence_id: str, **fields: object) -> SupportAssessment:
+    return SupportAssessment(
+        evidence_id=evidence_id,
+        stance="supports",
+        complete_support=True,
+        scope_compatible=True,
+        **fields,  # type: ignore[arg-type]
+    )
+
+
+def _adjudicate(
+    packet: AdjudicationPacket, right_fields: dict[str, object]
+) -> Claim:
+    left, right = (unit.evidence_id for unit in packet.units)
+    return validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="verified",
+            confidence=0.9,
+            assessments=[
+                _support(left, dependence="primary", rationale="The report."),
+                _support(right, **right_fields),
+            ],
+            support_ids=[left, right],
+            contradiction_ids=[],
+            rationale="Both passages state the figure.",
+        ),
+        packet,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "right_fields", "flag"),
+    [
+        ("derivative", {"dependence": "derivative"}, None),
+        ("dependence-omitted", {}, None),
+        ("unrecognised-dependence", {"dependence": "independent"}, None),
+        (
+            "independent-analysis-of-the-report-origin",
+            {"dependence": "independent_analysis", "origin_group_id": REPORT_ORIGIN},
+            "shared_origin",
+        ),
+        (
+            "origin-not-in-the-packet",
+            {"dependence": "primary", "origin_group_id": "work:doi:10.9999/made-up"},
+            "model_disagreement",
+        ),
+    ],
+)
+async def test_only_primary_or_independent_analysis_rows_can_complete_a_pair(
+    label: str, right_fields: dict[str, object], flag: str | None
+) -> None:
+    """Section 2.2 rule 7 and the dependence contract, row by row.
+
+    The control proves the packet is a real pair: two primary rows on two
+    independent origins verify. Each case then changes only the model's
+    judgement of the second row, and none of them may verify.
+    """
+    packet = await _independent_packet()
+    control = _adjudicate(
+        packet, {"dependence": "primary", "rationale": "Its own measurement."}
+    )
+    assert control.evidence_status == "verified_pair"
+
+    claim = _adjudicate(packet, right_fields)
+
+    assert claim.verdict == "insufficient_evidence", label
+    assert claim.evidence_status == "source_supported", label
+    if flag is not None:
+        assert flag in claim.audit_flags, label
+
+
+@pytest.mark.asyncio
+async def test_the_adjudication_request_offers_each_candidate_origin() -> None:
+    """The model can only name an allowlisted origin if it was shown them."""
+    packet = await _independent_packet()
+
+    body = "\n".join(
+        message.content
+        for message in adjudication_messages(packet, evidence_chars=4000)
+    )
+
+    origins = {
+        eligibility.origin_group_id for eligibility in packet.eligibility.values()
+    }
+    assert origins == {REPORT_ORIGIN, "publisher:review weekly"}
+    for origin in origins:
+        assert origin in body
+    assert "independent_analysis" in body
