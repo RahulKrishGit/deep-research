@@ -130,6 +130,7 @@ def _draft(
     doi: str = "",
     year: str = "",
     derived_from: list[str] | None = None,
+    report_number: str = "",
 ) -> SourceScoreDraft:
     return SourceScoreDraft(
         url=url,
@@ -150,6 +151,7 @@ def _draft(
         doi=doi,
         year=year,
         derived_from=list(derived_from or []),
+        report_number=report_number,
     )
 
 
@@ -1173,12 +1175,13 @@ PLAIN_REPORT_TEXT = (
 
 @pytest.mark.asyncio
 async def test_a_re_typeset_mirror_adds_no_origin() -> None:
-    """A copy whose wrapper differs is the same work's origin, not a new one.
+    """A copy whose wrapper differs is not a second origin, and not an origin.
 
     Two byte-different copies of one report share no content hash, so a bare
-    hash can never be the origin they are compared by. The publisher is what
-    they do share, and folding it into the origin is what stops one underlying
-    work being counted twice.
+    hash can never be the origin they are compared by. A copy's publisher is
+    no better: the repository's own name is its own claim, not the origin of
+    the figure it repeats (§2.2 rule 4), so a hash-only mirror contributes no
+    origin at all. The readable original keeps its publisher origin.
     """
     original = _read(LAB_REPORT_URL, text=PLAIN_REPORT_TEXT)
     retypeset = _read(
@@ -1206,9 +1209,9 @@ async def test_a_re_typeset_mirror_adds_no_origin() -> None:
     assert first.work_id is not None and first.work_id.startswith("sha256:")
     assert copied.work_id.startswith("sha256:")
     assert copied.publisher_id == first.publisher_id == "example lab"
-    # Same work, however the wrapper differs: one origin, not two.
-    assert source_origin_id(copied) == source_origin_id(first)
+    # One origin, not two: the readable original's, and the copy's none.
     assert source_origin_id(first) == "publisher:example lab"
+    assert source_origin_id(copied) is None
 
 
 @pytest.mark.asyncio
@@ -2436,3 +2439,166 @@ async def test_the_adjudication_request_offers_each_candidate_origin() -> None:
     for origin in origins:
         assert origin in body
     assert "independent_analysis" in body
+
+
+# --------------------------------------------------------------------------
+# What a copy may contribute: §2.2 rule 4. A mirror "contributes no additional
+# corroboration" but "can be the first primary support", so it is the *origin*
+# that a copy may not manufacture — its publisher is not the origin of the work
+# it copies, and a hash-only copy has no other origin to offer.
+# --------------------------------------------------------------------------
+
+REPOSITORY_MIRROR_URL = "https://repository.example/lab/grid-outlook"
+WIRE_ECHO_URL = "https://wire.example/grid-outlook"
+REPORT_NUMBER = "TR-2025-01"
+REPOSITORY_MIRROR_TEXT = (
+    "Grid Storage Outlook (mirrored copy). Published by Repository Archive on "
+    "2026-01-15. Example Lab measured that 1,200 MW of interconnection "
+    "capacity was withheld during 2024."
+)
+
+
+@pytest.mark.asyncio
+async def test_a_hash_only_mirror_that_stamps_itself_publisher_contributes_no_origin() -> (
+    None
+):
+    """A mirror's publisher is not the origin of the work it mirrors.
+
+    The repository states its own name, so the copy carries an evidenced
+    publisher and its own bytes: every identity field the pair test compares
+    differs from the original's. What it must not be able to do is call itself
+    the origin of a figure it is repeating — ``publisher:repository archive``
+    is the *host's* claim about itself, and a hash-only copy has no strong
+    alias to offer instead.
+    """
+    original = _read(LAB_REPORT_URL)
+    mirror = _read(
+        REPOSITORY_MIRROR_URL,
+        title="Grid Storage Outlook (mirrored copy)",
+        text=REPOSITORY_MIRROR_TEXT,
+    )
+
+    sources, _ = await _assess(
+        [original, mirror],
+        [
+            _scores(
+                _lab_draft(),
+                _lab_draft(
+                    url=REPOSITORY_MIRROR_URL,
+                    doi="",
+                    issuer="Repository Archive",
+                    source_role="independent_research",
+                    transport_relation="mirror",
+                ),
+            )
+        ],
+    )
+
+    by_url = _by_url(sources)
+    copied = by_url[REPOSITORY_MIRROR_URL]
+    assert copied.transport_relation == "mirror"
+    assert copied.publisher_id == "repository archive"
+    assert copied.work_id is not None and copied.work_id.startswith("sha256:")
+    assert source_origin_id(copied) is None
+    assert not _may_pair(original, mirror, sources)
+
+
+@pytest.mark.asyncio
+async def test_a_mirror_carrying_the_shared_doi_still_contributes_the_works_origin() -> (
+    None
+):
+    """An identifier-bearing copy is the first primary support, not a refusal.
+
+    The copy states the DOI, so it is the same work however it was served and
+    whoever served it: it refuses to pair with its own original by work
+    equality, and it still pairs with a genuinely independent third source —
+    which a blanket refusal of anything transported as a mirror would break.
+    """
+    original = _read(LAB_REPORT_URL)
+    mirror = _read(
+        REPOSITORY_MIRROR_URL,
+        title="Grid storage outlook",
+        text=REPOSITORY_MIRROR_TEXT + " doi:10.1234/grid.2025",
+    )
+    independent = _review_read()
+
+    sources, _ = await _assess(
+        [original, mirror, independent],
+        [
+            _scores(
+                _lab_draft(),
+                _lab_draft(
+                    url=REPOSITORY_MIRROR_URL,
+                    doi="10.1234/grid.2025",
+                    issuer="Repository Archive",
+                    source_role="independent_research",
+                    transport_relation="mirror",
+                ),
+                _review_draft(),
+            )
+        ],
+    )
+
+    copied = _by_url(sources)[REPOSITORY_MIRROR_URL]
+    assert copied.work_id == REPORT_WORK
+    assert source_origin_id(copied) == REPORT_ORIGIN
+    assert not _may_pair(original, mirror, sources)
+    assert _may_pair(mirror, independent, sources)
+
+
+@pytest.mark.asyncio
+async def test_a_syndicated_copy_carrying_the_report_number_keeps_the_works_origin() -> (
+    None
+):
+    """A syndication is transport too, and the report number survives it."""
+    report_number_text = PLAIN_REPORT_TEXT + f" Report no. {REPORT_NUMBER}."
+    original = _read(LAB_REPORT_URL, text=report_number_text)
+    syndicated = _read(
+        WIRE_ECHO_URL,
+        text=report_number_text + " Syndicated copy.",
+    )
+    independent = _review_read()
+    drafts = [
+        _lab_draft(doi="", report_number=REPORT_NUMBER),
+        _lab_draft(
+            url=WIRE_ECHO_URL,
+            doi="",
+            report_number=REPORT_NUMBER,
+            transport_relation="syndication",
+        ),
+        _review_draft(),
+    ]
+
+    sources, _ = await _assess(
+        [original, syndicated, independent], [_scores(*drafts)]
+    )
+
+    expected = f"work:report:example lab:{REPORT_NUMBER.casefold()}"
+    by_url = _by_url(sources)
+    assert source_origin_id(by_url[WIRE_ECHO_URL]) == expected
+    assert source_origin_id(by_url[LAB_REPORT_URL]) == expected
+    assert not _may_pair(original, syndicated, sources)
+    assert _may_pair(syndicated, independent, sources)
+
+
+@pytest.mark.asyncio
+async def test_a_hash_only_source_of_unknown_transport_keeps_its_publisher_origin() -> (
+    None
+):
+    """The control: only a copy loses the publisher fallback.
+
+    A page nobody labelled as a copy is exactly the case ``publisher:`` was
+    written for — its own publisher is the most the identity evidence can
+    establish, and refusing it would drop sources the ledger depends on.
+    """
+    original = _read(LAB_REPORT_URL, text=PLAIN_REPORT_TEXT)
+
+    sources, _ = await _assess(
+        [original], [_scores(_lab_draft(doi="", transport_relation="unknown"))]
+    )
+
+    source = sources[0]
+    assert source.transport_relation == "unknown"
+    assert source.publisher_id == "example lab"
+    assert source_origin_id(source) == "publisher:example lab"
+
