@@ -1071,6 +1071,14 @@ def test_the_typed_gap_case_reuses_the_false_pair_candidate() -> None:
     assert (
         candidate.session_id == "evaluation-calibration-false-independent-pair"
     )
+    # The clusters the composition really carries, so the gap the fixture
+    # types can only land on one of them.
+    assert tuple(case.state.composition.claim_clusters) == tuple(
+        candidate.composition.claim_clusters
+    )
+    assert CALIBRATION_CLUSTER_IDS["emissions"] in (
+        case.state.composition.claim_clusters
+    )
 
 
 def test_the_typed_gap_cases_reduction_is_corroborated_by_one_publisher() -> None:

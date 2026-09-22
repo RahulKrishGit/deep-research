@@ -46,6 +46,7 @@ from deep_research.utils.types import (
     AtomicProposition,
     Claim,
     Critique,
+    CritiqueGap,
     EvidenceTarget,
     ScoredSource,
     SubTopic,
@@ -3031,18 +3032,128 @@ def _route_discipline_passes(output: TargetOutput, case: EvaluationCase) -> bool
     return case.state.iteration >= case.state.max_iterations
 
 
+def _declared_bound(case: EvaluationCase, key: str) -> float | None:
+    """One numeric band bound the case declared, or ``None``."""
+    value = case.expectations.reference.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
 def _conservative_score_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    maximum = case.expectations.reference.get("maximum_score")
-    if not isinstance(maximum, (int, float)) or isinstance(maximum, bool):
+    """The score stays inside the band the case declares, both ways.
+
+    The ceiling is what this metric was written for: a review that must reject
+    the report cannot score it like one it accepted. The floor is the other
+    half of the same claim — the defect is real and bounded, and a review that
+    answers it by collapsing to the bottom of the scale has stopped grading
+    the report at all, which a ceiling alone cannot see. A case that declares
+    neither bound is not scored on its score, which is the honest reading of a
+    band nobody stated.
+    """
+    minimum = _declared_bound(case, "minimum_score")
+    maximum = _declared_bound(case, "maximum_score")
+    if minimum is None and maximum is None:
         return True
-    critique = _artifact(output, "critique")
-    score = _field(critique, "score")
-    return (
-        isinstance(score, (int, float))
-        and not isinstance(score, bool)
-        and score <= maximum
+    score = _field(_artifact(output, "critique"), "score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return False
+    if maximum is not None and score > maximum:
+        return False
+    if minimum is not None and score < minimum:
+        return False
+    return True
+
+
+def _material_typed_gaps(critique: Critique | None) -> list[CritiqueGap]:
+    """The gaps this case scores: the ones that must be closed."""
+    if critique is None:
+        return []
+    return [gap for gap in critique.gaps if gap.material]
+
+
+def _typed_gaps_answer_with(
+    output: TargetOutput,
+    case: EvaluationCase,
+    *,
+    expected_key: str,
+    forbidden_key: str,
+    selected: Callable[[CritiqueGap], str],
+) -> bool:
+    """Whether every material gap is answered with an allowed value.
+
+    The shape the two typed metrics share, and the shape is the point. A
+    case declares the values its defect may be answered with — the kinds it
+    may be typed as, the repair actions it may be routed to — and the run has
+    to name at least one material gap and stay inside them. A review that
+    names no such gap scores zero rather than passing vacuously: the defect
+    the case exists to carry would otherwise be free to go unnoticed, and
+    saying nothing would be cheaper than saying the wrong thing. That is what
+    makes both metrics fail a confident approval, which is the anti-abstention
+    direction the case needs.
+    """
+    expected = {
+        value
+        for value in case.expectations.reference.get(expected_key, [])
+        if isinstance(value, str)
+    }
+    forbidden = {
+        value
+        for value in case.expectations.reference.get(forbidden_key, [])
+        if isinstance(value, str)
+    }
+    if not expected and not forbidden:
+        return False
+    gaps = _material_typed_gaps(_typed_critique(output))
+    if not gaps:
+        return False
+    for gap in gaps:
+        value = selected(gap)
+        if value in forbidden:
+            return False
+        if expected and value not in expected:
+            return False
+    return True
+
+
+def _gap_kind_correct_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every material gap is diagnosed as a kind this defect may be.
+
+    A defect that no number of pages can close — an identity defect, where
+    the evidence the run already holds is not the evidence it claims — is a
+    different failure from a hole in the plan, and the repair it needs is
+    different too. Typing it ``coverage`` sends the run to fetch pages for a
+    question that was never short of them.
+    """
+    return _typed_gaps_answer_with(
+        output,
+        case,
+        expected_key="expected_gap_kinds",
+        forbidden_key="forbidden_gap_kinds",
+        selected=lambda gap: gap.kind,
+    )
+
+
+def _repair_action_routed_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every material gap routes to an action this defect can be closed by.
+
+    Read beside ``gap_kind_correct``: the two are graded separately because
+    a review can diagnose correctly and still route to a search, which is the
+    misroute this case is about, and a case that scored the pair as one could
+    not say which happened.
+    """
+    return _typed_gaps_answer_with(
+        output,
+        case,
+        expected_key="expected_repair_actions",
+        forbidden_key="forbidden_repair_actions",
+        selected=lambda gap: gap.repair_action,
     )
 
 
@@ -3120,6 +3231,8 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "gaps_identified": _gaps_identified_passes,
     "route_discipline": _route_discipline_passes,
     "conservative_score": _conservative_score_passes,
+    "gap_kind_correct": _gap_kind_correct_passes,
+    "repair_action_routed": _repair_action_routed_passes,
 }
 
 _CASE_METRIC_IDS = {

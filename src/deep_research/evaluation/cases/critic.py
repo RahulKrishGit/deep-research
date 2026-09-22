@@ -1080,16 +1080,11 @@ _LIVE_CASE = build_case(
     judge_rubric=_LIVE_RUBRIC,
 )
 
-# Append new cases; never prepend. ``conftest.controlled_case_for``
-# takes ``cases_for(agent, "controlled")[0]``, so the first case here
-# is the one every conftest-driven gate test exercises.
-CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
-    _STRONG_CASE,
-    _GAPPY_CASE,
-    _BUDGET_CASE,
-)
-
-LIVE_CASES: tuple[EvaluationCase, ...] = (_LIVE_CASE,)
+# The case tuples live at the end of this module rather than here, because
+# the Task 12 case is built from the Task 8 calibration machinery below and a
+# tuple that named it before it was defined would be a name error at import.
+# Nothing reads these at import time: ``cases/__init__.py`` reads them when it
+# assembles the catalog, by which point the module is fully defined.
 
 
 # --- Task 8: the paired calibration contract ---------------------------------
@@ -1395,9 +1390,17 @@ _READINGS: dict[str, _Reading] = {
 
 
 def _calibration_sub_topic() -> SubTopic:
-    """The candidate's plan: the three obligations the question names."""
+    """The candidate's plan: the three obligations the question names.
+
+    The coverage id is the one ``PlannerAgent`` stamps on a one-sub-topic plan
+    — ``topic-01``, the priority position — and not a name of its own making.
+    The id carries the priority ordering every later pass keys coverage on, so
+    a candidate that spelled it differently would be a state no planner could
+    have produced, and the Task 12 case that registers this candidate has to
+    stand in for real planner output exactly as the other cases do.
+    """
     return SubTopic(
-        coverage_id="topic-calibration",
+        coverage_id="topic-01",
         title="Clinker substitution",
         rationale="The question turns on the emissions reduction and its cost.",
         search_queries=["clinker substitution emissions reduction and cost"],
@@ -1406,7 +1409,7 @@ def _calibration_sub_topic() -> SubTopic:
         evidence_targets=[
             EvidenceTarget(
                 target_id=CALIBRATION_TARGET_IDS["mechanism"],
-                coverage_id="topic-calibration",
+                coverage_id="topic-01",
                 question="By what mechanism does substitution cut emissions?",
                 required_dimensions=["mechanism"],
                 required=True,
@@ -1415,7 +1418,7 @@ def _calibration_sub_topic() -> SubTopic:
             ),
             EvidenceTarget(
                 target_id=CALIBRATION_TARGET_IDS["emissions"],
-                coverage_id="topic-calibration",
+                coverage_id="topic-01",
                 question="How much carbon dioxide does substitution remove?",
                 required_dimensions=["scale"],
                 required=True,
@@ -1424,7 +1427,7 @@ def _calibration_sub_topic() -> SubTopic:
             ),
             EvidenceTarget(
                 target_id=CALIBRATION_TARGET_IDS["cost"],
-                coverage_id="topic-calibration",
+                coverage_id="topic-01",
                 question="What does substitution cost?",
                 required_dimensions=["scale"],
                 required=True,
@@ -2226,3 +2229,139 @@ def measure_critic_calibration(
             )
         )
     return CriticCalibrationReport(outcomes=tuple(outcomes))
+
+
+# --- Task 12: the typed-gap contract -----------------------------------------
+#
+# Task 8's false-independent-pair candidate, registered as a case of its own.
+# It is deliberately not a second identity-defect fixture: the state is built
+# by the same ``_calibration_candidate`` call Task 8's label uses, with the
+# same report, obligations, and readings, so the defect this case grades and
+# the defect the label describes cannot drift into two fixtures that disagree
+# about one candidate. Only the session id differs, and it says which case
+# owns the state — a seeded session is ``evaluation-<case_id>``, and the
+# calibration label's own candidate keeps its own.
+#
+# What this case adds is the scoring, and the scoring is about the diagnosis
+# rather than the verdict. The measured reduction is corroborated by two
+# passages that resolve to one publisher's identity, so the report is not
+# short of pages — the pair it implies does not exist. A review that types
+# that defect ``coverage`` and routes it to acquisition sends the next pass
+# searching for pages the run already holds, and no number of them closes a
+# question about what those pages *are*. The two typed metrics grade that
+# separately from the score, and the band grades the score both ways: a
+# rejection is right and a collapse to the floor is not, which is why the
+# case declares a minimum beside its maximum.
+
+_TYPED_GAP_URLS = (
+    _GCCA_URL,
+    _IEA_CE_URL,
+    _NATURE_CE_URL,
+    _GCCA_PAIR_URL,
+    _GCCA_SECOND_URL,
+)
+
+_TYPED_GAP_REFERENCE = {
+    "expected_gap_kinds": ["identity"],
+    "forbidden_gap_kinds": ["coverage", "acquisition"],
+    "expected_repair_actions": ["adjudicate"],
+    "forbidden_repair_actions": ["acquire", "extend_plan"],
+    "minimum_score": 2,
+    "maximum_score": 6,
+}
+
+_TYPED_GAP_RUBRIC = rubric(
+    "critic-typed-gap-calibration",
+    *_CRITIQUE_CORE_DIMENSIONS,
+    (
+        "defect_typing",
+        "A defect is named as the kind of problem it is.",
+        "The false pair is typed as an identity defect in the evidence, "
+        "not as a hole in the evidence the run failed to fetch.",
+        "The defect is typed as missing coverage or acquisition, which no "
+        "further search can close.",
+    ),
+    (
+        "route_fidelity",
+        "The repair action answers the defect it is attached to.",
+        "The identity defect routes to adjudication, the action that "
+        "settles what the evidence already held is.",
+        "The identity defect routes to acquisition or plan extension, "
+        "which search instead of adjudicating.",
+    ),
+)
+
+_TYPED_GAP_CASE = build_case(
+    case_id="typed-gap-calibration",
+    agent_name="critic",
+    tier="controlled",
+    title="Type the false pair as an identity defect, and route it there",
+    purpose=(
+        "Critique the candidate whose measured reduction is corroborated by "
+        "two passages that resolve to one publisher. The defect is in the "
+        "evidence's identity, not in its quantity: the report is not short "
+        "of pages, and the independent pair it implies does not exist. The "
+        "gap that answers it is therefore typed ``identity`` and routed to "
+        "adjudication, while a review typed ``coverage`` and routed to "
+        "acquisition sends the next pass to fetch pages for a question that "
+        "was never short of them. The case scores the typing, the route, and "
+        "a score that stays inside the rejection band instead of collapsing "
+        "to the floor."
+    ),
+    state=_calibration_candidate(
+        case_id="typed-gap-calibration",
+        report=_CALIBRATION_REPORT,
+        answered=("mechanism", "emissions", "cost"),
+        readings=("mechanism", *_FALSE_EMISSIONS_PAIR, "cost"),
+    ),
+    dependency_scenario="critic-typed-gap",
+    expectations=CaseExpectations(
+        reference=_TYPED_GAP_REFERENCE,
+        known_source_urls=list(_TYPED_GAP_URLS),
+        max_iterations=1,
+        # The Critic declares no tools, so its ceiling is zero: a run that
+        # executed one would fail this budget gate rather than pass it.
+        max_tool_calls=0,
+        required_output_fields=["critique"],
+        # The one case whose state is the defect rather than a run's honest
+        # output: the reduction it carries is corroborated by two passages
+        # that resolve to one publisher, which is what the agent has to
+        # notice. The registry invariants that hold a seeded claim to the
+        # shapes an honest pass emits read this declaration and skip it.
+        state_is_the_defect=True,
+        deterministic_metrics=metrics(
+            (
+                "gap_kind_correct",
+                0.35,
+                "Every material gap is typed as a kind this defect may be, "
+                "and at least one material gap is named.",
+            ),
+            (
+                "repair_action_routed",
+                0.35,
+                "Every material gap routes to a repair action this defect "
+                "may be closed by.",
+            ),
+            (
+                "conservative_score",
+                0.30,
+                "The score stays inside the case's rejection band, its "
+                "floor as well as its ceiling.",
+            ),
+        ),
+    ),
+    judge_rubric=_TYPED_GAP_RUBRIC,
+    metadata={"scenario": "typed-gap"},
+)
+
+# Append new cases; never prepend. ``conftest.controlled_case_for``
+# takes ``cases_for(agent, "controlled")[0]``, so the first case here
+# is the one every conftest-driven gate test exercises.
+CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
+    _STRONG_CASE,
+    _GAPPY_CASE,
+    _BUDGET_CASE,
+    _TYPED_GAP_CASE,
+)
+
+LIVE_CASES: tuple[EvaluationCase, ...] = (_LIVE_CASE,)

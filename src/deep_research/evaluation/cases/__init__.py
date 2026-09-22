@@ -107,6 +107,7 @@ EXPECTED_CONTROLLED_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
         "approve-strong-report",
         "request-more-research",
         "missing-evidence-or-budget-exhausted",
+        "typed-gap-calibration",
     ),
 }
 

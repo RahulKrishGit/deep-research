@@ -189,6 +189,37 @@ def _registry_claims():
             yield case, item
 
 
+def _registry_claims_an_honest_run_could_emit():
+    """The seeded claims that must be snapshots production could have emitted.
+
+    A case whose state *is* the defect under review declares it
+    (``CaseExpectations.state_is_the_defect``): what it seeds is a candidate no
+    honest pass would have produced, and the two invariants built on this
+    generator exist to hold a *run's* records to shapes the pipeline can
+    really emit. Reading the declaration rather than naming an exempt case
+    here keeps this file from becoming a second source of truth for which
+    cases are excused.
+    """
+    for case, item in _registry_claims():
+        if not case.expectations.state_is_the_defect:
+            yield case, item
+
+
+def _carries_an_impossible_claim(item) -> bool:
+    """A claim shape no honest pass emits: a passage behind a verdict that
+    has none, or a passage on one of the claim's own publishers."""
+    if item.verdict == "insufficient_evidence" and item.verification_evidence:
+        return True
+    claimed = {
+        domain.casefold() for domain in claimed_domains_for(item.source_urls)
+    }
+    passage_publishers = {
+        publisher_identity(passage.source_url).casefold()
+        for passage in item.verification_evidence
+    }
+    return bool(passage_publishers & claimed)
+
+
 def test_every_registry_claim_id_is_its_canonical_fingerprint() -> None:
     """``merge_claim_snapshot`` recomputes the fingerprint from text, so an
     arbitrary fixture id would pass unnoticed and guard nothing."""
@@ -203,7 +234,7 @@ def test_every_registry_claim_id_is_its_canonical_fingerprint() -> None:
 
 def test_every_registry_claim_verdict_matches_its_passage_stances() -> None:
     """Exactly the verdicts ``fact_checker.resolve_verdict`` can produce."""
-    for case, item in _registry_claims():
+    for case, item in _registry_claims_an_honest_run_could_emit():
         stances = {passage.stance for passage in item.verification_evidence}
         where = f"{case.case_id}: {item.text[:40]!r}"
         if item.verdict == "insufficient_evidence":
@@ -219,7 +250,7 @@ def test_every_registry_claim_verdict_matches_its_passage_stances() -> None:
 
 def test_every_registry_verification_passage_is_independent() -> None:
     """A passage on the claim's own publisher is not verification."""
-    for case, item in _registry_claims():
+    for case, item in _registry_claims_an_honest_run_could_emit():
         claimed = {
             domain.casefold() for domain in claimed_domains_for(item.source_urls)
         }
@@ -231,6 +262,28 @@ def test_every_registry_verification_passage_is_independent() -> None:
             f"{case.case_id}: {item.text[:40]!r} verifies itself on "
             f"{sorted(passage_publishers & claimed)}"
         )
+
+
+def test_a_defective_state_really_carries_a_defect() -> None:
+    """The declaration excuses two invariants, so it has to be earned.
+
+    A case that declares its state is the defect must seed a claim no honest
+    pass could emit — otherwise the flag is a way to silence two integrity
+    checks on a state that never needed either excused, and an unused
+    exemption should be deleted rather than left lying in the registry.
+    """
+    declared = [
+        case
+        for case in all_cases()
+        if case.expectations.state_is_the_defect
+    ]
+
+    assert [case.case_id for case in declared]
+    for case in declared:
+        assert any(
+            _carries_an_impossible_claim(item)
+            for item in case.state.verified_claims
+        ), case.case_id
 
 
 def test_the_claim_builder_requires_independent_verification_passages() -> None:

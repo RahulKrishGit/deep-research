@@ -1844,7 +1844,7 @@ def _synthesizer_scenarios() -> dict[str, ScenarioScript]:
 
 
 def _critic_scenarios() -> dict[str, ScenarioScript]:
-    """Three scripted Critic scenarios with no service scripted at all.
+    """Four scripted Critic scenarios with no service scripted at all.
 
     They used to register search results and memory entries for a spot-check
     loop that opened pages it could not read. Task 8 removed that loop: the
@@ -1861,6 +1861,7 @@ def _critic_scenarios() -> dict[str, ScenarioScript]:
         "critic-strong-report": ScenarioScript(),
         "critic-gappy-report": ScenarioScript(),
         "critic-budget-exhausted": ScenarioScript(),
+        "critic-typed-gap": ScenarioScript(),
     }
 
 
