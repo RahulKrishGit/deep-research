@@ -228,6 +228,177 @@ def test_claim_source_is_a_page_that_delivered_its_body() -> None:
     assert source.verdict == "verified"
 
 
+def _claim_packet(claim: str, rows: tuple[tuple[str, ReplaySource], ...]) -> str:
+    """One adjudication packet as the product renders one.
+
+    The header states the claim under check, and each candidate is printed
+    with its id, its page and the exact text of the read - the shape
+    ``replay.py``'s own reply handler parses. Every candidate's own sentence is
+    therefore *in* the packet text whether or not it has anything to say about
+    the claim being judged.
+    """
+    blocks = [
+        (
+            f"- id: {evidence_id}\n"
+            f"  source: {source.title} ({source.url})\n"
+            f"  locator: chunk-0\n"
+            f"  exact text: {source.text}"
+        )
+        for evidence_id, source in rows
+    ]
+    return (
+        f"# Claim\n{claim}\n\n"
+        "# Candidate passages (select by id)\n" + "\n".join(blocks) + "\n"
+    )
+
+
+def _note_then_record_scenario() -> tuple[ReplayScenario, ReplaySource, str]:
+    """A topic whose first two pages state no value, and the record after them."""
+    claim = (
+        "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    )
+    cover = ReplaySource(
+        url="https://agency12.test/cover-note",
+        title="Adoption cover note",
+        text=(
+            "Adoption cover note. Published by Acme Institute 12. The report "
+            "states the Acme widget adoption rate cover note lists a title and "
+            "a publication date and states no measured value."
+        ),
+        excerpt=(
+            "the Acme widget adoption rate cover note lists a title and a "
+            "publication date and states no measured value"
+        ),
+        claim=(
+            "the Acme widget adoption rate cover note lists a title and a "
+            "publication date and states no measured value"
+        ),
+        issuer="Acme Institute 12",
+        verdict="insufficient_evidence",
+    )
+    method = ReplaySource(
+        url="https://agency12.test/method-note",
+        title="Adoption method note",
+        text=(
+            "Adoption method note. Published by Acme Institute 12. The report "
+            "states the Acme widget adoption rate method note describes the "
+            "method and states no measured value."
+        ),
+        excerpt=(
+            "the Acme widget adoption rate method note describes the method "
+            "and states no measured value"
+        ),
+        claim=(
+            "the Acme widget adoption rate method note describes the method "
+            "and states no measured value"
+        ),
+        issuer="Acme Institute 12",
+        verdict="insufficient_evidence",
+    )
+    record = ReplaySource(
+        url="https://agency12.test/adoption-2024",
+        title="Adoption survey",
+        text=f"Adoption survey. Published by Acme Institute 12. The report states {claim}.",
+        excerpt=claim,
+        claim=claim,
+        issuer="Acme Institute 12",
+        verdict="verified",
+    )
+    scenario = ReplayScenario(
+        case_id="claim-source-scope-probe",
+        question=(
+            "What was the Acme widget adoption rate in the United States in 2024?"
+        ),
+        topics=(
+            ReplayTopic(
+                title="Adoption rate",
+                question=(
+                    "What was the Acme widget adoption rate in the United "
+                    "States in 2024?"
+                ),
+                dimensions=("rate",),
+                critical=True,
+                query="Acme widget adoption rate 2024",
+                sources=(cover, method, record),
+            ),
+        ),
+        expectation=CaseExpectation(terminal_quality="accepted", exit_code=0),
+    )
+    return scenario, record, claim
+
+
+def test_claim_source_is_the_page_that_states_the_claim_under_check() -> None:
+    """A page quoted for its own sake cannot carry another claim's verdict.
+
+    The notes are read for the same sub-topic as the record, so a pool that
+    selects by the sub-topic quotes them beside the pages that state the
+    figure - and the packet carries each one's own sentence. The verdict of
+    the claim being judged is the verdict of the page that states *that*
+    claim: reading any candidate whose text the packet contains would let a
+    page that states no value decide a figure.
+    """
+    scenario, record, claim = _note_then_record_scenario()
+    completer = ReplayCompleter(scenario)
+    cover, method = scenario.topics[0].sources[:2]
+
+    source = completer.claim_source(
+        _claim_packet(
+            claim,
+            (
+                ("ev-1", cover),
+                ("ev-2", method),
+                ("ev-3", record),
+            ),
+        )
+    )
+
+    assert source.url == record.url
+    assert source.verdict == "verified"
+
+
+def test_claim_source_is_scoped_to_the_pages_the_packet_selected() -> None:
+    """The packet's own page carries its verdict, not any page that states it.
+
+    Both pages state the same claim, and this packet selected one of them: the
+    verdict is the verdict of the page the pool chose for *this* packet. A
+    search over the scenario's whole registry answers with the page that
+    happens to be declared first.
+    """
+    scenario, record, claim = _note_then_record_scenario()
+    completer = ReplayCompleter(scenario)
+    other = ReplaySource(
+        url="https://bureau12.test/adoption-2024",
+        title="Adoption panel",
+        text=f"Adoption panel. Published by Independent Bureau 12. The report states {claim}.",
+        excerpt=claim,
+        claim=claim,
+        issuer="Independent Bureau 12",
+        verdict="verified",
+    )
+    scenario = ReplayScenario(
+        case_id=scenario.case_id,
+        question=scenario.question,
+        topics=(
+            ReplayTopic(
+                title="Adoption rate",
+                question=scenario.topics[0].question,
+                dimensions=("rate",),
+                critical=True,
+                query="Acme widget adoption rate 2024",
+                sources=(record, other),
+            ),
+        ),
+        expectation=scenario.expectation,
+    )
+    completer = ReplayCompleter(scenario)
+
+    source = completer.claim_source(
+        _claim_packet(claim, (("ev-9", other),)),
+    )
+
+    assert source.url == other.url
+
+
 def _mirror_run(
     *,
     supports: tuple[str, ...],

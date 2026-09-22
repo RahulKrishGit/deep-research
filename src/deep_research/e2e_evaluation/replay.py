@@ -645,7 +645,7 @@ class ReplayCompleter(AgentCompleter):
         )
 
     def claim_source(self, text: str) -> ReplaySource:
-        """The scenario's declared source for the claim a packet carries.
+        """The page a packet's verdict is scripted from: the claim's own page.
 
         Only a page that delivered a body counts. A page the host refused was
         never read, so no claim was ever extracted from it and its scripted
@@ -653,15 +653,59 @@ class ReplayCompleter(AgentCompleter):
         letting a 403 landing page decide would script the strict badge away
         for a fact two readable documents state, and the run would be judged
         on a refusal that carried no text at all.
+
+        And only a page *this packet selected* counts, for the claim this
+        packet states it is judging. A packet prints every candidate's own
+        text, so a page's declared claim is in the packet text merely by being
+        a candidate in it: the moment a pool legitimately widens - to the
+        sub-topic's other reads, say - a note that states no value would
+        decide the verdict for the figure its neighbour measures. The search
+        therefore runs over the pages the packet's own evidence ids name, and
+        matches the claim statement the packet prints, never a sentence that
+        happens to be quoted in it.
         """
-        for source in self.scenario.sources.values():
+        statement = self.claim_statement(text)
+        for source in self.packet_sources(text):
             if source.status_code != 200:
                 continue
-            if source.claim in text:
+            if source.claim in statement:
                 return source
         raise ReplayContractError(
             "the packet carried no scripted claim"
         )
+
+    def packet_sources(self, text: str) -> list[ReplaySource]:
+        """The declared pages this packet's own evidence ids name.
+
+        In the scenario's declared order, so a packet carrying two pages that
+        state one claim resolves the way it always did. A packet that names no
+        evidence selected nothing to search, so the scenario's registry stands
+        in: that is the shape a caller hands in when all it has is a claim.
+        """
+        named = {
+            source.url
+            for evidence_id in re.findall(r"^- id: (\S+)", text, re.M)
+            if (source := self.evidence_source(text, evidence_id)) is not None
+        }
+        if not named:
+            return list(self.scenario.sources.values())
+        return [
+            source
+            for source in self.scenario.sources.values()
+            if source.url in named
+        ]
+
+    def claim_statement(self, text: str) -> str:
+        """The claim a packet declares it is judging - its own ``# Claim``.
+
+        The definition the packet's candidate list is an answer to. A packet
+        that names no claim states none, so its whole text stands: that is the
+        shape a caller hands in when all it has is a passage list.
+        """
+        match = re.search(r"^# Claim\n(.*?)(?=\n\n|\Z)", text, re.M | re.S)
+        if match is None:
+            return text
+        return match.group(1)
 
     def _reply_ClaimVerdictDraft(self, text: str) -> ClaimVerdictDraft:
         """The verdict and the stances the scenario declared for each read.
