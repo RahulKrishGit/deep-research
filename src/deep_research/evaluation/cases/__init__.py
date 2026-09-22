@@ -80,6 +80,7 @@ EXPECTED_CONTROLLED_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
         "multi-source-coverage",
         "conflicting-evidence",
         "partial-search-failure",
+        "read-bearing-acquisition",
     ),
     "source_evaluator": (
         "strong-and-weak-sources",

@@ -60,6 +60,27 @@ _FAILURE_RUBRIC = rubric(
 
 _LIVE_RUBRIC = rubric("researcher-live-evidence", *_GROUNDING_DIMENSIONS)
 
+_READ_BEARING_RUBRIC = rubric(
+    "researcher-read-bearing",
+    (
+        "read_provenance",
+        "A finding rests on a page this run opened, not on a remembered "
+        "fact that arrived with a URL.",
+        "Every reported finding traces to a page the run itself read.",
+        "A finding reports a remembered entry as if it were retrieved "
+        "evidence.",
+    ),
+    (
+        "recall_as_lead",
+        "A recalled fact is treated as a lead to follow, not as evidence to "
+        "report.",
+        "The recalled fact is chased to a readable source before it is "
+        "reported, or held back when it cannot be.",
+        "The recalled fact is reported verbatim, on the memory's own "
+        "authority.",
+    ),
+)
+
 # The scripted URLs are shared with the dependency scenarios: the case
 # declares them as known_source_urls, and dependencies.py scripts the same
 # URLs as search results and page bodies.
@@ -84,6 +105,17 @@ _CONFLICT_URLS = (_GAIN_URL, _NO_CHANGE_URL, _CONFOUNDED_URL)
 _FAILURE_URLS = (
     "https://www.nrel.gov/perovskite-encapsulation-study",
     "https://www.sciencedirect.com/perovskite-encapsulation-review",
+)
+
+# The recalled lead: it is a search result, it is inside a remembered entry
+# with high confidence and a prior "verified" label, and its page cannot be
+# fetched. It is declared as a known source on purpose — the general citation
+# gate accepts a declared source, so the run's read record is what has to
+# separate it from evidence.
+_RECALL_ONLY_URL = "https://www.eia.gov/us-battery-storage-capacity-2025"
+_READABLE_URLS = (
+    "https://www.nrel.gov/utility-scale-storage-2025-deployment",
+    "https://www.energy.gov/grid-storage-additions-2025",
 )
 
 _MULTI_SOURCE_SUB_TOPICS = (
@@ -162,6 +194,82 @@ _LIVE_SUB_TOPICS = (
         criteria=["Cell-level Wh/kg figures from named sources"],
         priority=1,
     ),
+)
+
+_READ_BEARING_SUB_TOPICS = (
+    sub_topic(
+        "Reported storage additions",
+        rationale=(
+            "The annual addition figure is the one claim this run has to "
+            "report."
+        ),
+        queries=["US utility-scale battery storage capacity additions 2025"],
+        criteria=["A 2025 utility-scale storage addition figure"],
+        priority=1,
+    ),
+)
+
+_READ_BEARING = build_case(
+    case_id="read-bearing-acquisition",
+    agent_name="researcher",
+    tier="controlled",
+    title="Report only the page the run actually opened",
+    purpose=(
+        "Research one figure that reaches the run twice: through a "
+        "remembered entry whose page cannot be fetched, and through two "
+        "pages the run can read. A recalled fact is a lead, never a read, "
+        "so a finding may rest only on a page this run opened — and a run "
+        "that cannot prove what it read may report nothing."
+    ),
+    state=evaluation_state(
+        case_id="read-bearing-acquisition",
+        question=(
+            "How much utility-scale battery storage capacity was added in "
+            "the United States in 2025?"
+        ),
+        sub_topics=_READ_BEARING_SUB_TOPICS,
+    ),
+    dependency_scenario="researcher-read-bearing",
+    expectations=CaseExpectations(
+        required_output_fields=["findings"],
+        reference={
+            "recall_only_url": _RECALL_ONLY_URL,
+            "readable_urls": list(_READABLE_URLS),
+            "minimum_findings": 1,
+            "minimum_distinct_domains": 2,
+        },
+        # The recalled lead is declared beside the readable pages, so the
+        # citation gate cannot be the rule that refuses it.
+        known_source_urls=[_RECALL_ONLY_URL, *_READABLE_URLS],
+        max_iterations=12,
+        max_tool_calls=12,
+        deterministic_metrics=metrics(
+            (
+                "findings_are_read_bearing",
+                0.35,
+                "Every finding cites a page this repetition actually read; "
+                "a run that cannot prove its reads scores nothing.",
+            ),
+            (
+                "no_recall_only_source",
+                0.25,
+                "No finding cites the recalled lead's unreadable URL.",
+            ),
+            (
+                "sub_topic_coverage",
+                0.25,
+                "Every subtopic has at least one finding or a recorded skip "
+                "reason.",
+            ),
+            (
+                "budget_respected",
+                0.15,
+                "Tool calls stayed within the case budget.",
+            ),
+        ),
+    ),
+    judge_rubric=_READ_BEARING_RUBRIC,
+    metadata={"scenario": "challenging"},
 )
 
 _MULTI_SOURCE = build_case(
@@ -391,5 +499,6 @@ CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
     _MULTI_SOURCE,
     _CONFLICT,
     _PARTIAL_FAILURE,
+    _READ_BEARING,
 )
 LIVE_CASES: tuple[EvaluationCase, ...] = (_LIVE,)

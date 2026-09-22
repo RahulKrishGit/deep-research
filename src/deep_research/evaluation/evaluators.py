@@ -2109,6 +2109,68 @@ def _source_diversity_passes(output: TargetOutput, case: EvaluationCase) -> bool
     return len(domains) >= minimum
 
 
+# --- Task 12: read-bearing acquisition --------------------------------------
+#
+# A finding's provenance is not its URL's membership in a declared list: the
+# case declares the recalled lead as a known source precisely so that
+# ``citations_known`` accepts it. What separates a reported finding from a
+# remembered one is whether *this run* opened the page, which only the
+# recorded read identities can show.
+
+
+def _findings_are_read_bearing_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every finding cites a page this repetition actually read.
+
+    ``_read_url_identities`` returns ``None`` when the artifact cannot prove
+    any read at all — no identities, a completeness flag that is anything but
+    ``True``, or a payload that is not a list of strings — and the metric then
+    fails closed, exactly as the read-provenance gate does. Beyond that, a
+    repetition that read pages and reported nothing is not read-bearing
+    either: the floor is the case's declared ``minimum_findings``, one unless
+    the case says otherwise.
+    """
+    identities = _read_url_identities(output)
+    if identities is None:
+        return False
+    findings = _artifact(output, "findings")
+    if not isinstance(findings, list):
+        return False
+    if len(findings) < _reference_int(case, "minimum_findings", 1):
+        return False
+    for finding in findings:
+        url = _field(finding, "source_url")
+        if not isinstance(url, str) or not url.strip():
+            return False
+        if not _passage_url_is_read(url, identities):
+            return False
+    return True
+
+
+def _no_recall_only_source_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """No finding cites the case's recall-only URL.
+
+    That URL is a lead: it may be recalled, and this run may try to open it,
+    but nothing it produced may be reported as evidence. It is also a
+    *declared* known source — the general citation gate accepts it — so this
+    is the only rule that can refuse it.
+    """
+    recall_only = case.expectations.reference.get("recall_only_url")
+    if not isinstance(recall_only, str) or not recall_only.strip():
+        return True
+    forbidden = _normalized(recall_only)
+    findings = _artifact(output, "findings")
+    if not isinstance(findings, list):
+        return False
+    return not any(
+        isinstance(url, str) and _normalized(url) == forbidden
+        for url in (_field(finding, "source_url") for finding in findings)
+    )
+
+
 def _uncertainty_preserved_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
@@ -2751,6 +2813,8 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "partial_results_present": _partial_results_present_passes,
     "no_invented_sources": _no_invented_sources_passes,
     "sources_are_real_urls": _sources_are_real_urls_passes,
+    "findings_are_read_bearing": _findings_are_read_bearing_passes,
+    "no_recall_only_source": _no_recall_only_source_passes,
     # source evaluator
     "one_evaluation_per_source": _one_evaluation_per_source_passes,
     "score_ordering": _score_ordering_passes,

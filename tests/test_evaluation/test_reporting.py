@@ -30,9 +30,9 @@ def test_the_summary_matches_the_shape_the_spec_shows(
     body = "\n".join(lines)
 
     assert lines[0] == "Researcher - controlled"
-    assert "Cases:       3/3 passed" in body
-    assert "Repetitions: 9/9 completed" in body
-    assert "Hard gates:  9/9 passed" in body
+    assert "Cases:       4/4 passed" in body
+    assert "Repetitions: 12/12 completed" in body
+    assert "Hard gates:  12/12 passed" in body
     assert "Mean score:  0.86" in body
     assert "Status:      REVIEW REQUIRED" in body
     assert "Experiment:  https://" in body
@@ -40,6 +40,7 @@ def test_the_summary_matches_the_shape_the_spec_shows(
     assert "multi-source-coverage" in body
     assert "conflicting-evidence" in body
     assert "partial-search-failure" in body
+    assert "read-bearing-acquisition" in body
     assert "Results: " in body
     assert "results.json" in body
 
@@ -219,7 +220,7 @@ def test_the_artifact_contains_every_repetition_result(
     repetitions = [
         item for case in payload["cases"] for item in case["repetitions"]
     ]
-    assert len(repetitions) == 9
+    assert len(repetitions) == 12
     for item in repetitions:
         assert "gates" in item
         assert "deterministic_quality" in item

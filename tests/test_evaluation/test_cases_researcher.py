@@ -405,7 +405,7 @@ def test_the_read_bearing_case_scripts_a_recalled_fact_two_readable_pages() -> N
         case.state.sub_topics[0].search_queries
     )
     [response] = script.search_responses.values()
-    assert [result["url"] for result in response["results"]] == (
+    assert tuple(result["url"] for result in response["results"]) == (
         _RECALL_ONLY_URL,
         *_READABLE_URLS,
     )

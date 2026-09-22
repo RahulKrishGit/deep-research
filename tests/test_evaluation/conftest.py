@@ -2494,7 +2494,7 @@ def _scored_judge(score: float) -> JudgeFeedback:
 
 @pytest.fixture
 def researcher_experiment_result() -> ExperimentResult:
-    """3 real researcher controlled cases x 3 repetitions, mean 0.86.
+    """4 real researcher controlled cases x 3 repetitions, mean 0.86.
 
     Every repetition scores exactly 0.86 so the experiment-level mean is
     exactly 0.86 and ``format_score`` never has to hide rounding drift.
@@ -2504,6 +2504,7 @@ def researcher_experiment_result() -> ExperimentResult:
         "multi-source-coverage",
         "conflicting-evidence",
         "partial-search-failure",
+        "read-bearing-acquisition",
     ]
 
     case_results: list[CaseResult] = []

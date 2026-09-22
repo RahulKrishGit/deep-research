@@ -1162,6 +1162,18 @@ _FAILURE_URLS = (
     "https://www.sciencedirect.com/perovskite-encapsulation-review",
 )
 
+# The recalled lead is scripted as a search result and inside the remembered
+# entry, and its page raises: the run can recall the fact, it can try to open
+# the page, and it cannot read it. The two readable pages carry the same
+# figure, so the fact is reachable without ever reporting the lead as
+# evidence.
+_RECALL_ONLY_URL = "https://www.eia.gov/us-battery-storage-capacity-2025"
+_READABLE_URLS = (
+    "https://www.nrel.gov/utility-scale-storage-2025-deployment",
+    "https://www.energy.gov/grid-storage-additions-2025",
+)
+_READ_BEARING_URLS = (_RECALL_ONLY_URL, *_READABLE_URLS)
+
 
 def _planner_scenarios() -> dict[str, ScenarioScript]:
     return {
@@ -1433,6 +1445,68 @@ def _researcher_scenarios() -> dict[str, ScenarioScript]:
                 ),
             },
             scripted_search_urls=_FAILURE_URLS,
+        ),
+        "researcher-read-bearing": ScenarioScript(
+            search_responses={
+                "US utility-scale battery storage capacity additions 2025": {
+                    "results": [
+                        {
+                            "url": _RECALL_ONLY_URL,
+                            "title": "EIA battery storage capacity report",
+                            "content": "Utility-scale battery storage "
+                            "additions reached 14 GW in 2025.",
+                        },
+                        {
+                            "url": _READABLE_URLS[0],
+                            "title": "NREL utility-scale storage deployment "
+                            "report",
+                            "content": "14 GW of utility-scale battery "
+                            "storage was added in 2025.",
+                        },
+                        {
+                            "url": _READABLE_URLS[1],
+                            "title": "Department of Energy storage "
+                            "additions report",
+                            "content": "Utility-scale storage additions "
+                            "totaled 14 GW in 2025.",
+                        },
+                    ]
+                },
+            },
+            http_pages={
+                # A plain RuntimeError: an httpx failure would be retried by
+                # the real scraper and triple-counted in the call ledger.
+                _RECALL_ONLY_URL: RuntimeError(
+                    "the reported page is no longer served"
+                ),
+                _READABLE_URLS[0]: (
+                    "Deployment data for 2025 record 14 GW of utility-scale "
+                    "battery storage capacity added in the United States. "
+                    "Additions were concentrated in Texas and California."
+                ),
+                _READABLE_URLS[1]: (
+                    "The department's 2025 additions report states that "
+                    "14 GW of utility-scale battery storage came online "
+                    "during the year."
+                ),
+            },
+            memory_entries=(
+                {
+                    "content": (
+                        "Utility-scale battery storage additions in the "
+                        "United States reached 14 GW in 2025."
+                    ),
+                    "entry_type": "finding",
+                    "confidence": 0.95,
+                    "source_url": _RECALL_ONLY_URL,
+                    "source_title": "EIA battery storage capacity report",
+                    # A prior run's labels: neither makes the recall a read.
+                    "verified": "true",
+                    "read_id": "read-legacy-0001",
+                },
+            ),
+            reputations={},
+            scripted_search_urls=_READ_BEARING_URLS,
         ),
     }
 
