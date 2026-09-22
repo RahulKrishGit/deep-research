@@ -14,14 +14,17 @@ editing it.
 
 from __future__ import annotations
 
+import json
 import re
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
 from deep_research.agents.evidence import normalized_content_sha256
 from deep_research.e2e_evaluation.replay import (
+    OBSERVATION_SUMMARY_CHARS,
     CaseExpectation,
     ReplayCompleter,
     ReplayRun,
@@ -1019,6 +1022,98 @@ def _inventing_a_statement_url(real):
     return urls
 
 
+def _memory_recall_admitted_as_read(real):
+    """The pre-fix ``query_memory``-as-read shape, as an ``AcquisitionPolicy`` hook.
+
+    A recall is a lead: the policy queues the remembered URL as a candidate and
+    owes an original-source read before anything may rest on it. The mutation
+    restores the behaviour Task 1 removed - a matched entry's ``source_url``
+    counted as content this session had *read* - by handing each match's own
+    text to the real read-admission path, so the read record it produces is the
+    product's own and not a fixture's.
+    """
+
+    def recalled(result: object):
+        data = result.data if isinstance(result.data, Mapping) else None
+        matches = data.get("matches") if data is not None else None
+        for match in matches if isinstance(matches, list) else []:
+            if not isinstance(match, Mapping):
+                continue
+            content = match.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            metadata = match.get("metadata")
+            metadata_map = metadata if isinstance(metadata, Mapping) else {}
+            url = match.get("source_url") or metadata_map.get("source_url")
+            if isinstance(url, str) and url.strip():
+                yield url, content, str(match.get("title") or url)
+
+    def observed(policy, result):
+        real(policy, result)
+        if not result.success:
+            return
+        for url, content, title in recalled(result):
+            policy._read_observed(
+                result.model_copy(
+                    update={
+                        "tool_name": "web_scraper",
+                        "data": {"url": url, "text": content, "title": title},
+                    }
+                ),
+                {"url": url},
+            )
+
+    return observed
+
+
+def _manifest_from_the_public_summary(real):
+    """The pre-fix prefix-only decision context, as a ``build_acquisition_context``.
+
+    Before Task 3 the next-decision packet carried no acquisition context at
+    all: the model saw the public observation summary - every search and read
+    payload clamped to ``observation_summary_chars`` - and the decision was made
+    from that prefix. The mutation restores that shape for the candidate
+    manifest the row is about: the queued candidates are re-derived from the
+    prefix of their own serialization the public summary length allows, so a
+    candidate that fell past the clamp is a candidate no later request names.
+    """
+    from deep_research.agents.steps import summarize_text
+
+    urls_in_line = re.compile(r"https?://\S+")
+
+    def context(state, reads, evidence, *, limit, target_id=None, dispositions=()):
+        text = real(
+            state,
+            reads,
+            evidence,
+            limit=limit,
+            target_id=target_id,
+            dispositions=dispositions,
+        )
+        carried = summarize_text(
+            json.dumps(
+                [
+                    {"title": record.title, "url": record.url}
+                    for record in state.candidate_records.values()
+                ]
+            ),
+            limit=OBSERVATION_SUMMARY_CHARS,
+        )
+        kept: list[str] = []
+        for line in text.splitlines():
+            manifest = line.startswith(
+                ("- candidate_id=", "- candidate_urls=")
+            )
+            if manifest and any(
+                url not in carried for url in urls_in_line.findall(line)
+            ):
+                continue
+            kept.append(line)
+        return "\n".join(kept)
+
+    return context
+
+
 def test_omitting_b_from_the_claim_pool_breaks_the_recovery_case(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1100,3 +1195,89 @@ def test_an_invented_statement_url_breaks_a_positive_case(
             "unscored_cited_sources" in failure for failure in failures
         ), failures
         assert failures, "the case passed with an invented citation published"
+
+
+def test_restoring_query_memory_as_read_breaks_the_memory_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recalled entry is a lead, so admitting it as a read fails the row.
+
+    ``memory-is-not-read`` is the row whose decisive assertion is that two
+    remembered generated claims with different URLs establish neither a read nor
+    independent support. The mutation restores the forbidden shape at the seam
+    that decides it in this path - the acquisition policy's own admission of a
+    recall - and the row's invariant names the fabrication: the remembered lead
+    is recorded as a read of this run. The lead still reaches a decision packet
+    under the mutation, so what fails is the read, not the recall.
+    """
+    from deep_research.agents.acquisition import AcquisitionPolicy
+
+    monkeypatch.setattr(
+        AcquisitionPolicy,
+        "_memory_observed",
+        _memory_recall_admitted_as_read(AcquisitionPolicy._memory_observed),
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        outcomes = _repetitions_under_the_mutation(
+            "memory-is-not-read", Path(directory)
+        )
+
+    for run, failures in outcomes:
+        leads = [
+            entry.source_url
+            for entry in run.scenario.memory_entries
+            if entry.source_url
+        ]
+        assert leads, "the case seeded no remembered lead"
+        recorded = " ".join(
+            f"{read.requested_url} {read.resolved_url}"
+            for read in run.state.read_records.values()
+        )
+        for lead in leads:
+            assert lead in recorded, (
+                f"the mutation did not admit the lead {lead} as a read"
+            )
+        # The invariant stops at the first lead it finds recorded as a read, so
+        # the failure names one of them rather than each.
+        assert any(
+            "invariant 'memory_leads_are_not_reads' broken" in failure
+            and "was recorded as a read of this run" in failure
+            and any(lead in failure for lead in leads)
+            for failure in failures
+        ), failures
+
+
+def test_a_prefix_only_decision_context_breaks_the_late_candidate_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The late candidate is the row's subject, so a prefix-only packet fails it.
+
+    ``decision-context-late-candidate`` is a positive row whose decisive
+    assertion is that the last result of a search and its document section reach
+    the requests that decide and extract from it, despite the 200-character
+    public summaries. The mutation makes the acquisition context fall back to
+    what those summaries could carry, and the row's invariant names the loss:
+    the candidate reached no request, so no later pass could ever read the
+    figure the question asked for.
+    """
+    from deep_research.agents import acquisition
+
+    monkeypatch.setattr(
+        acquisition,
+        "build_acquisition_context",
+        _manifest_from_the_public_summary(acquisition.build_acquisition_context),
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        outcomes = _repetitions_under_the_mutation(
+            "decision-context-late-candidate", Path(directory)
+        )
+
+    for run, failures in outcomes:
+        late = run.scenario.topics[0].sources[-1]
+        assert any(
+            "invariant 'late_candidate_reached_decision' broken: the candidate "
+            f"{late.url} reached 0 request(s), so a later pass never saw it again"
+            in failure
+            for failure in failures
+        ), failures
+        assert run.report, "the case failed without publishing anything"
