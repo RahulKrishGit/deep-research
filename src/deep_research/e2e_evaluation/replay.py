@@ -40,7 +40,7 @@ from deep_research.agents.acquisition import (
 from deep_research.agents.base import AgentCompleter
 from deep_research.agents.claim_clusters import ClaimEquivalenceDraft
 from deep_research.agents.critic import CritiqueDraft
-from deep_research.agents.evidence import normalized_content_sha256, read_identity
+from deep_research.agents.evidence import normalized_content_sha256
 from deep_research.agents.fact_checker import (
     ClaimsDraft,
     ClaimVerdictDraft,
@@ -786,7 +786,7 @@ class ReplayCompleter(AgentCompleter):
                     ),
                     complete_support=True,
                     scope_compatible=True,
-                    independent=True,
+                    dependence="primary",
                 )
                 for evidence_id in ids
             ],
@@ -1603,11 +1603,25 @@ def _read_index(run: ReplayRun) -> dict[str, Any]:
 
 
 def _identity(run: ReplayRun, url: str) -> tuple[str | None, str | None]:
-    """``(publisher_id, work_id)`` for a URL this run read, or two ``None``s."""
+    """``(publisher_id, work_id)`` the run recorded for a URL it read.
+
+    The identity is the Source Evaluator's persisted, batch-resolved one —
+    what the Fact Checker's pair test reads — never a re-derivation from the
+    read alone, which would forget the issuer the evaluator validated and
+    disagree with the product it is checking. A URL with no read, or no
+    assessed source behind its read, has neither.
+    """
     read = _read_index(run).get(normalize_source_url(url))
     if read is None:
         return (None, None)
-    return read_identity(read)
+    urls = {
+        normalize_source_url(read.resolved_url),
+        normalize_source_url(read.requested_url),
+    }
+    for source in run.state.evaluated_sources:
+        if normalize_source_url(source.url) in urls:
+            return (source.publisher_id, source.work_id)
+    return (None, None)
 
 
 def _supporting_urls(claim: Any) -> list[str]:

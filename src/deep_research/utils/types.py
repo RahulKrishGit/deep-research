@@ -355,6 +355,28 @@ class SourceTemporal(ContractModel):
     """``unknown`` whenever the read cannot support the claimed status."""
 
 
+class WorkIdentity(ContractModel):
+    """The identity of one intellectual work, or an explicit ambiguity.
+
+    ``key`` is ``None`` whenever the work is not established — either because
+    the evidence is missing (``unknown``) or because it contradicts itself
+    (``conflicting``). Consumers must treat a ``None`` key as "cannot
+    establish this is the same work", never as a new work: unknown identity
+    cannot establish independence either. ``aliases`` keeps every alias that
+    was considered, so an unresolved ambiguity stays auditable instead of
+    being flattened into one key.
+    """
+
+    key: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    basis: str = Field(min_length=1)
+    """The project-generated sentence naming what established the identity."""
+    issuer_id: str | None = None
+    derives_from_work_ids: list[str] = Field(default_factory=list)
+    """Evidenced version/derivation relationships, which never merge works."""
+    identity_status: Literal["known", "unknown", "conflicting"]
+
+
 class ScoredSource(ContractModel):
     url: str = Field(min_length=1)
     title: str = Field(min_length=1)
@@ -389,7 +411,26 @@ class ScoredSource(ContractModel):
     one".
     """
     work_id: str | None = None
-    """The intellectual work this source is a copy of, or ``None``."""
+    """The intellectual work this source is a copy of, or ``None``.
+
+    Always ``work_identity.key`` once identity is resolved: kept as its own
+    field because every consumer that only needs the key reads it here.
+    """
+    identity_anchors: dict[str, str | list[str]] = Field(default_factory=dict)
+    """The metadata anchors the read was shown to evidence, and nothing else.
+
+    ``issuer``/``doi``/``year``/``report_number`` as validated against the
+    read, plus ``derived_from`` — the DOIs or report numbers the document
+    itself says its data come from. Persisted so work identity can be
+    re-resolved across every read of a run without asking the model again.
+    """
+    work_identity: WorkIdentity | None = None
+    """The work this source belongs to, resolved across every read of the run.
+
+    ``None`` for a record with no read behind it, or one written before batch
+    resolution existed. Carries the aliases, basis, status, and evidenced
+    derivation that ``work_id`` alone cannot.
+    """
     transport_relation: TransportRelation = "unknown"
     source_role: SourceRole = "unknown"
     self_interest: SelfInterest = "unknown"
@@ -482,28 +523,6 @@ class _VerbatimContractModel(ContractModel):
         str_strip_whitespace=False,
         validate_default=True,
     )
-
-
-class WorkIdentity(ContractModel):
-    """The identity of one intellectual work, or an explicit ambiguity.
-
-    ``key`` is ``None`` whenever the work is not established — either because
-    the evidence is missing (``unknown``) or because it contradicts itself
-    (``conflicting``). Consumers must treat a ``None`` key as "cannot
-    establish this is the same work", never as a new work: unknown identity
-    cannot establish independence either. ``aliases`` keeps every alias that
-    was considered, so an unresolved ambiguity stays auditable instead of
-    being flattened into one key.
-    """
-
-    key: str | None = None
-    aliases: list[str] = Field(default_factory=list)
-    basis: str = Field(min_length=1)
-    """The project-generated sentence naming what established the identity."""
-    issuer_id: str | None = None
-    derives_from_work_ids: list[str] = Field(default_factory=list)
-    """Evidenced version/derivation relationships, which never merge works."""
-    identity_status: Literal["known", "unknown", "conflicting"]
 
 
 class ReadRecord(_VerbatimContractModel):

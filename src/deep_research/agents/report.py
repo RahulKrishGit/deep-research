@@ -36,7 +36,6 @@ from datetime import datetime
 
 from pydantic import JsonValue
 
-from deep_research.agents.evidence import resolve_read_work_keys
 from deep_research.agents.identity import (
     deduplicate_findings,
     finding_fingerprint,
@@ -2482,22 +2481,7 @@ def render_quality_record(
             "reader_statements": len(statements),
         },
         "evidence_status": evidence_status_counts(claims),
-        "sources": [
-            {
-                "url": normalize_source_url(source.url),
-                "title": source.title,
-                "publisher_id": source.publisher_id or "",
-                "work_id": source.work_id or "",
-                "serving_host": source.serving_host or "",
-                "transport_relation": source.transport_relation,
-                "source_role": source.source_role,
-                "evaluation_status": source.evaluation_status,
-                "assessment_revision": source.assessment_revision,
-                "target_ids": list(source.target_ids),
-                "cited": normalize_source_url(source.url) in cited,
-            }
-            for source in sources
-        ],
+        "sources": [_quality_source_row(source, cited) for source in sources],
         "reads": [
             {
                 "read_id": read.read_id,
@@ -2513,10 +2497,17 @@ def render_quality_record(
             }
             for read in reads
         ],
+        # The sources' own persisted identity, so this map and ``sources`` can
+        # never disagree — a re-resolution of the reads without the anchors the
+        # Source Evaluator validated would split an original from its mirror.
         "work_keys": {
             url: key
             for url, key in sorted(
-                resolve_read_work_keys(reads).items()
+                {
+                    normalize_source_url(source.url): source.work_id
+                    for source in sources
+                    if source.work_id
+                }.items()
             )
         },
         "evidence": [
@@ -2637,6 +2628,44 @@ def render_quality_record(
         "review": _review_record(review),
     }
     return record
+
+
+def _quality_source_row(
+    source: ScoredSource, cited: set[str]
+) -> dict[str, JsonValue]:
+    """One assessed source with the identity it was resolved to, for replay.
+
+    The aliases, basis, status, issuer, lineage, and validated anchors are
+    what let a replay tell a mirror from a second source without re-deriving
+    anything; a record written before batch resolution carries none of them
+    and says so with an empty status.
+    """
+    identity = source.work_identity
+    url = normalize_source_url(source.url)
+    return {
+        "url": url,
+        "title": source.title,
+        "publisher_id": source.publisher_id or "",
+        "work_id": source.work_id or "",
+        "identity_status": identity.identity_status if identity is not None else "",
+        "identity_basis": identity.basis if identity is not None else "",
+        "work_aliases": list(identity.aliases) if identity is not None else [],
+        "issuer_id": (identity.issuer_id or "") if identity is not None else "",
+        "derives_from_work_ids": (
+            list(identity.derives_from_work_ids) if identity is not None else []
+        ),
+        "identity_anchors": {
+            name: list(value) if isinstance(value, list) else value
+            for name, value in sorted(source.identity_anchors.items())
+        },
+        "serving_host": source.serving_host or "",
+        "transport_relation": source.transport_relation,
+        "source_role": source.source_role,
+        "evaluation_status": source.evaluation_status,
+        "assessment_revision": source.assessment_revision,
+        "target_ids": list(source.target_ids),
+        "cited": url in cited,
+    }
 
 
 def render_quality_json(

@@ -17,7 +17,7 @@ instead of a fabricated floor.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import NamedTuple, Protocol
 
 from pydantic import Field
@@ -33,9 +33,10 @@ from deep_research.agents.evidence import (
     ReadDossier,
     TemporalClaim,
     build_read_dossiers,
-    read_identity,
     read_serving_host,
     rejected_anchor_names,
+    resolve_read_identities,
+    resolve_source_identities,
     validate_metadata_anchors,
     validated_self_interest,
     validated_source_role,
@@ -124,11 +125,12 @@ class SourceScoreDraft(ContractModel):
     The fitness fields beyond the three scores are all optional, and an
     omitted field is recorded as ``unknown`` rather than defaulted to a
     judgement the model never made. The metadata anchors (``issuer``,
-    ``doi``, ``year``, ``report_number``) are proposals: each is accepted only
-    when the read the model was shown actually evidences it. The four temporal
-    fields are quoted claims — a value *and* the document's own words for it —
-    and a field the document does not state is ``null`` rather than a date the
-    model inferred.
+    ``doi``, ``year``, ``report_number``, and the ``derived_from`` list of
+    DOIs or report numbers the document says its data come from) are
+    proposals: each is accepted only when the read the model was shown
+    actually evidences it. The four temporal fields are quoted claims — a
+    value *and* the document's own words for it — and a field the document
+    does not state is ``null`` rather than a date the model inferred.
     """
 
     url: str
@@ -149,6 +151,7 @@ class SourceScoreDraft(ContractModel):
     doi: str = ""
     year: str = ""
     report_number: str = ""
+    derived_from: list[str] = []
 
 
 class SourceScoresDraft(ContractModel):
@@ -173,7 +176,7 @@ _SOURCE_SCORE_REPLY_EXAMPLES = (
         '"transport_relation":"unknown","self_interest":"unknown",'
         '"publication_date":null,"data_period":null,"forecast_horizon":null,'
         '"effective_date":null,"freshness_status":"unknown","issuer":"",'
-        '"doi":"","year":"","report_number":"",'
+        '"doi":"","year":"","report_number":"","derived_from":[],'
         '"rationale":"The publisher is unidentified, there is no dating '
         'signal, and the excerpt only mentions the topic."}]}',
     ),
@@ -190,6 +193,7 @@ _SOURCE_SCORE_REPLY_EXAMPLES = (
         '"forecast_horizon":null,"effective_date":null,"freshness_status":'
         '"current","issuer":"Example Standards Body",'
         '"doi":"10.1234/standard.2026","year":"2026","report_number":"",'
+        '"derived_from":[],'
         '"rationale":"A current standards body publication directly answers '
         'the topic with primary material."}]}',
     ),
@@ -299,23 +303,26 @@ def source_fitness(
     validate against, so no identity and no dating is recorded at all — the
     three quality scores are model judgements and are recorded regardless,
     because that is what they are.
+
+    The accepted anchors are recorded as ``identity_anchors`` so the caller
+    can resolve this source's work across every read of the run; the identity
+    stamped here is that resolution over this one read, and the caller's
+    batch resolution replaces it.
     """
     read: ReadRecord | None = dossier.read if dossier is not None else None
-    anchors = {
+    anchors: dict[str, object] = {
         "issuer": draft.issuer,
         "doi": draft.doi,
         "year": draft.year,
         "report_number": draft.report_number,
+        "derived_from": list(draft.derived_from),
     }
-    if read is None:
-        publisher_id: str | None = None
-        work_id: str | None = None
-        issuer_evidenced = False
-        rejected: list[str] = []
-    else:
-        publisher_id, work_id = read_identity(read, anchors=anchors)
-        issuer_evidenced = "issuer" in validate_metadata_anchors(read, anchors)
+    accepted: dict[str, object] = {}
+    rejected: list[str] = []
+    if read is not None:
+        accepted = validate_metadata_anchors(read, anchors)
         rejected = rejected_anchor_names(read, anchors)
+    issuer_evidenced = "issuer" in accepted
     role = validated_source_role(
         draft.source_role, issuer_evidenced=issuer_evidenced
     )
@@ -333,8 +340,7 @@ def source_fitness(
     )
     fields: dict[str, object] = {
         "serving_host": read_serving_host(read) if read is not None else None,
-        "publisher_id": publisher_id,
-        "work_id": work_id,
+        **_read_fitness_identity(read, accepted),
         "transport_relation": transport,
         "source_role": role,
         "self_interest": self_interest,
@@ -344,6 +350,31 @@ def source_fitness(
         "assessment_revision": (
             dossier.assessment_revision if dossier is not None else ""
         ),
+    }
+    return SourceFitness(
+        fields=fields,
+        signals=_fitness_signals(fields, rejected=rejected),
+    )
+
+
+def _read_fitness_identity(
+    read: ReadRecord | None, anchors: Mapping[str, object]
+) -> dict[str, object]:
+    """The identity fields this source's own read establishes, before batching.
+
+    Resolved through the same :func:`resolve_read_identities` the whole
+    snapshot is resolved through, over this one read — so a record built on
+    its own is never identified by a different rule than the snapshot it
+    joins. No read, no identity: every field stays unknown.
+    """
+    if read is None:
+        return {"publisher_id": None, "work_id": None, "identity_anchors": {}}
+    ((identity, publisher_id),) = resolve_read_identities([(read, anchors)])
+    return {
+        "publisher_id": publisher_id,
+        "work_id": identity.key,
+        "work_identity": identity,
+        "identity_anchors": dict(anchors),
     }
     return SourceFitness(
         fields=fields,
@@ -459,18 +490,16 @@ def fallback_scored_source(
     identity: dict[str, object] = {}
     if dossier is not None:
         read = dossier.read
-        publisher_id, work_id = read_identity(read)
         identity = {
             "serving_host": dossier.serving_host,
-            "publisher_id": publisher_id,
-            "work_id": work_id,
+            **_read_fitness_identity(read, {}),
             "cited_sub_topics": list(group.sub_topics),
             "target_ids": list(read.target_ids),
             "assessment_revision": dossier.assessment_revision,
         }
         parts.append(
             f"Serving host: {dossier.serving_host}. Work: "
-            f"{work_id or 'not established'}."
+            f"{identity['work_id'] or 'not established'}."
         )
     return ScoredSource(
         url=group.url,
@@ -575,6 +604,7 @@ async def assess_new_sources(
     batch_size: int = DEFAULT_BATCH_SIZE,
     max_total_sources: int = DEFAULT_MAX_TOTAL_SOURCES,
     excerpt_chars: int = DEFAULT_EXCERPT_CHARS,
+    known_reads: Iterable[ReadRecord] = (),
 ) -> list[ScoredSource]:
     """Assess newly read sources and return the cumulative source snapshot.
 
@@ -588,9 +618,10 @@ async def assess_new_sources(
     validate the read-backed dossiers; reuse the assessments whose content,
     metadata, and dating fingerprint is unchanged; ask the model only about
     what is left; validate every proposed metadata anchor against the read it
-    was shown; resolve publisher and work identity across the reads; and
-    return ``merge_source_snapshot(existing, new)`` so the snapshot stays
-    cumulative and every earlier source survives.
+    was shown; merge into ``existing`` so the snapshot stays cumulative and
+    every earlier source survives; and resolve publisher and work identity
+    across the whole snapshot over ``known_reads`` plus ``reads`` — one
+    resolution, so a copy read now and its original read earlier are one work.
 
     A provider or schema failure is never a quality judgement: the affected
     sources keep the identity their read establishes, carry an explicit
@@ -601,13 +632,16 @@ async def assess_new_sources(
         raise ValueError(
             "batch_size, max_total_sources, and excerpt_chars must be at least 1"
         )
+    all_reads = [*known_reads, *reads]
     dossiers = build_read_dossiers(
         reads,
         cited_sub_topics=cited_sub_topics,
         excerpt_chars=excerpt_chars,
     )
     if not dossiers:
-        return merge_source_snapshot(existing, [])
+        return resolve_source_identities(
+            merge_source_snapshot(existing, []), all_reads
+        )
 
     prior = {normalize_source_url(source.url): source for source in existing}
     seeds = {
@@ -701,7 +735,9 @@ async def assess_new_sources(
                     dossier=dossier,
                 )
             )
-    return merge_source_snapshot(existing, records)
+    return resolve_source_identities(
+        merge_source_snapshot(existing, records), all_reads
+    )
 
 
 class ReputationSource(Protocol):
@@ -941,10 +977,12 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         self._batch_size = resolved_batch_size
         self._max_total_sources = resolved_max_total_sources
         self._excerpt_chars = excerpt_chars
-        # The canonical snapshot of the state this run was handed, captured by
-        # ``run`` so ``state_update`` can merge into it. Empty until a run
+        # The canonical snapshot of the state this run was handed, and the
+        # run's reads, captured by ``run`` so ``state_update`` can merge into
+        # the one and resolve identity over the other. Empty until a run
         # starts, which keeps a directly-invoked ``state_update`` total.
         self._prior_sources: list[ScoredSource] = []
+        self._reads: list[ReadRecord] = []
 
     @property
     def output_schema(self) -> type[EvaluatedSources]:
@@ -1180,10 +1218,19 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
-            update["evaluated_sources"] = merge_source_snapshot(
-                self._prior_sources, result.sources
-            )
+            update["evaluated_sources"] = self._snapshot(result.sources)
         return update
+
+    def _snapshot(self, sources: Sequence[ScoredSource]) -> list[ScoredSource]:
+        """The cumulative snapshot, identified across every read of the run.
+
+        One resolution over the whole snapshot, not one per source: a mirror
+        scored now and the original it copies scored in an earlier pass are
+        one work only when both are resolved together.
+        """
+        return resolve_source_identities(
+            merge_source_snapshot(self._prior_sources, sources), self._reads
+        )
 
     async def run(self, state: ResearchState) -> AgentRun[EvaluatedSources]:
         """Group, look up reputations, score, and report the counts.
@@ -1196,6 +1243,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         """
         task = self.build_task(state)
         self._prior_sources = list(state.evaluated_sources)
+        self._reads = list(state.read_records.values())
         events: list[ResearchEvent] = [
             evaluation_started_event(
                 finding_count=len(state.raw_findings),
@@ -1217,7 +1265,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 int(error.details.get("failures", 0) or 0)
                 for error in lookup_errors
             )
-            snapshot = merge_source_snapshot(self._prior_sources, sources)
+            snapshot = self._snapshot(sources)
             events.append(
                 evaluation_completed_event(
                     snapshot,
@@ -1243,9 +1291,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             stop_reason="provider_error" if provider_failed else "finished",
             errors=errors,
         )
-        result = EvaluatedSources(
-            sources=merge_source_snapshot(self._prior_sources, sources)
-        )
+        result = EvaluatedSources(sources=snapshot)
         return AgentRun(
             agent_name=self.name,
             result=result,

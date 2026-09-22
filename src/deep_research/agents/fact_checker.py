@@ -21,7 +21,7 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from deep_research.agents.acquisition import (
     AcquisitionState,
@@ -52,7 +52,8 @@ from deep_research.agents.evidence import (
     EvidenceEligibility,
     canonical_read_text,
     eligible_independent_pair,
-    read_identity,
+    resolve_source_identities,
+    shares_lineage,
     source_origin_id,
 )
 from deep_research.agents.identity import (
@@ -62,6 +63,7 @@ from deep_research.agents.identity import (
     merge_claim_snapshot,
 )
 from deep_research.agents.prompts import (
+    ADJUDICATION_DEPENDENCE_INSTRUCTION,
     CLAIM_EXTRACTION_INSTRUCTION,
     CLAIM_EXTRACTION_SYSTEM_PROMPT,
     CLAIM_VERIFICATION_INSTRUCTION,
@@ -864,6 +866,12 @@ class PassageVerdictDraft(ContractModel):
     passages: list[EvidencePassageDraft]
 
 
+# How a passage stands to the origin of the figure it carries (Section 2.2
+# rules 5-7). Only the first two can be half of a corroborating pair.
+DEPENDENCE_LEVELS = ("primary", "independent_analysis", "derivative", "unknown")
+CORROBORATING_DEPENDENCE = frozenset({"primary", "independent_analysis"})
+
+
 class SupportAssessment(ContractModel):
     """The model's per-id assessment of ONE passage it was shown.
 
@@ -880,9 +888,27 @@ class SupportAssessment(ContractModel):
     """True only when the passage supports the WHOLE atomic claim, not a part."""
     scope_compatible: bool = False
     """True when period, unit, and scope match the claim."""
-    independent: bool = False
-    """True when the passage is independent of the claim's own publisher."""
-    note: str = ""
+    dependence: str = "unknown"
+    """``primary`` / ``independent_analysis`` / ``derivative`` / ``unknown``.
+
+    Anything outside that vocabulary is ``unknown``, and only ``primary`` and
+    ``independent_analysis`` may corroborate: an omitted or unreadable
+    judgement can never complete a pair.
+    """
+    origin_group_id: str = ""
+    """The origin this passage's figure comes from, when not its own.
+
+    Empty keeps the passage's locally resolved origin. Anything else must be
+    one of the origins the packet printed beside its candidates; a value the
+    model was not shown refuses the passage for corroboration.
+    """
+    rationale: str = ""
+
+    @field_validator("dependence")
+    @classmethod
+    def _known_dependence(cls, value: str) -> str:
+        folded = value.casefold()
+        return folded if folded in DEPENDENCE_LEVELS else "unknown"
 
 
 class ClaimVerdictDraft(ContractModel):
@@ -929,12 +955,14 @@ _CLAIM_VERIFICATION_REPLY_EXAMPLES = (
 _ADJUDICATION_REPLY_EXAMPLES = (
     (
         "Verified example input: ev-1 and ev-2 each state the same measured "
-        "reduction for the same period.",
+        "reduction for the same period, each from its own measurement.",
         '{"verdict":"verified","confidence":0.9,"assessments":['
         '{"evidence_id":"ev-1","stance":"supports","complete_support":true,'
-        '"scope_compatible":true,"independent":true,"note":""},'
+        '"scope_compatible":true,"dependence":"primary","origin_group_id":"",'
+        '"rationale":"The operator reports its own measurement."},'
         '{"evidence_id":"ev-2","stance":"supports","complete_support":true,'
-        '"scope_compatible":true,"independent":true,"note":""}],'
+        '"scope_compatible":true,"dependence":"primary","origin_group_id":"",'
+        '"rationale":"The audit measured the reduction itself."}],'
         '"support_ids":["ev-1","ev-2"],"contradiction_ids":[],'
         '"rationale":"Two independent reports state the same figure."}',
     ),
@@ -943,7 +971,8 @@ _ADJUDICATION_REPLY_EXAMPLES = (
         "period.",
         '{"verdict":"insufficient_evidence","confidence":0.0,"assessments":['
         '{"evidence_id":"ev-3","stance":"supports","complete_support":false,'
-        '"scope_compatible":false,"independent":true,"note":"different year"}],'
+        '"scope_compatible":false,"dependence":"primary","origin_group_id":"",'
+        '"rationale":"It measures a different year."}],'
         '"support_ids":[],"contradiction_ids":[],'
         '"rationale":"The only candidate measures a different period."}',
     ),
@@ -1173,21 +1202,28 @@ def claim_eligibility(
 ) -> EvidenceEligibility:
     """The strict-pair inputs one candidate passage contributes.
 
+    Publisher, work, and lineage are the Source Evaluator's resolved identity
+    of ``source`` — the identity validated against the anchors it accepted and
+    resolved across every read of the run — and never a re-derivation from
+    ``read`` alone, which would forget the evidenced issuer and turn one
+    report's mirror into a second publisher. ``read`` says only whether the
+    passage is a valid read.
+
     ``corroboration_eligible`` is the Task 4 enforcement point: a passage whose
     source was never assessed may support a statement, but it may never be half
     of an independent pair, because nothing established what it is or where it
-    came from. The model's own ``independent`` flag is necessary and not
-    sufficient — the origin identity local code resolved has to exist too.
+    came from. The model's ``dependence`` is necessary and not sufficient — the
+    origin identity local code resolved has to exist too.
     """
-    publisher_id: str | None = None
-    work_id: str | None = None
-    if read is not None:
-        publisher_id, work_id = read_identity(read)
     origin_group_id = source_origin_id(source) if source is not None else None
+    identity = source.work_identity if source is not None else None
     return EvidenceEligibility(
-        publisher_id=publisher_id,
-        work_id=work_id,
+        publisher_id=source.publisher_id if source is not None else None,
+        work_id=source.work_id if source is not None else None,
         origin_group_id=origin_group_id,
+        derives_from_work_ids=(
+            list(identity.derives_from_work_ids) if identity is not None else []
+        ),
         complete_support=bool(
             assessment is not None
             and assessment.complete_support
@@ -1197,14 +1233,17 @@ def claim_eligibility(
         # The local half of the pair test, and the Task 4 enforcement point: a
         # passage whose source was never assessed carries no origin, so it may
         # support a statement but may never be half of an independent pair. The
-        # model's own ``independent`` judgement is folded in only where an
-        # assessment exists — before adjudication this is what a candidate
-        # *could* contribute, and the model decides what it does.
+        # model's ``dependence`` is folded in only where an assessment exists —
+        # before adjudication this is what a candidate *could* contribute, and
+        # the model decides what it does.
         corroboration_eligible=bool(
             source is not None
             and source.evaluation_status == "scored"
             and origin_group_id is not None
-            and (assessment is None or assessment.independent)
+            and (
+                assessment is None
+                or assessment.dependence in CORROBORATING_DEPENDENCE
+            )
         ),
     )
 
@@ -1263,16 +1302,20 @@ def adjudication_messages(
 ) -> list[ChatMessage]:
     """The messages that judge one claim from its own evidence packet.
 
-    Every candidate is printed with the id the model must select and the exact
-    text of the read it came from. Nothing else is offered: no URL the model
-    could cite instead, and no invitation to quote.
+    Every candidate is printed with the id the model must select, the local
+    origin id it may name in ``origin_group_id``, and the exact text of the
+    read it came from. Nothing else is offered: no URL the model could cite
+    instead, and no invitation to quote.
     """
     rendered: list[str] = []
     used = 0
     for unit in packet.units:
+        eligibility = packet.eligibility.get(unit.evidence_id)
+        origin = eligibility.origin_group_id if eligibility is not None else None
         block = (
             f"- id: {unit.evidence_id}\n"
             f"  source: {unit.source_title} ({unit.source_url})\n"
+            f"  origin: {origin or '(none resolved)'}\n"
             f"  locator: {unit.locator}\n"
             f"  exact text: {unit.excerpt}"
         )
@@ -1288,6 +1331,7 @@ def adjudication_messages(
             + ("\n".join(rendered) if rendered else "(none)")
         ),
         f"# Response contract\n{CLAIM_VERIFICATION_INSTRUCTION}",
+        f"# Dependence contract\n{ADJUDICATION_DEPENDENCE_INSTRUCTION}",
         (
             "# Reply format\n"
             f"{render_structured_reply_format(_ADJUDICATION_REPLY_EXAMPLES)}"
@@ -1384,15 +1428,39 @@ def validate_adjudication(
                 shown[evidence_id], read=None, source=None, assessment=None
             ),
         )
+    # The origins the model was shown, and so the only ones it may name: the
+    # local origin of each candidate in the packet.
+    allowed_origins = {
+        eligibility[evidence_id].origin_group_id
+        for evidence_id in shown
+        if eligibility[evidence_id].origin_group_id
+    }
     for evidence_id, row in accepted.items():
         base = eligibility[evidence_id]
+        origin = base.origin_group_id
+        named_origin_valid = True
+        if row.origin_group_id:
+            if row.origin_group_id in allowed_origins:
+                # "This passage's figure comes from that candidate's origin":
+                # the passage then shares it, and cannot pair with it.
+                origin = row.origin_group_id
+            else:
+                # An origin nobody printed is not evidence of anything, and it
+                # is never trusted — the row cannot corroborate at all.
+                named_origin_valid = False
+                flags.append("model_disagreement")
         eligibility[evidence_id] = base.model_copy(
             update={
                 "complete_support": bool(
                     row.complete_support and row.scope_compatible
                 ),
+                "origin_group_id": origin,
+                # Section 2.2 rule 7: only a primary account or an independent
+                # analysis can corroborate; derivative and unknown never do.
                 "corroboration_eligible": bool(
-                    base.corroboration_eligible and row.independent
+                    base.corroboration_eligible
+                    and named_origin_valid
+                    and row.dependence in CORROBORATING_DEPENDENCE
                 ),
             }
         )
@@ -1535,7 +1603,14 @@ def _insufficient_flags(
         origins = {
             eligibility[item].origin_group_id for item in identified
         }
-        if None not in origins and len(origins) < 2:
+        # A story repeating a report, or two write-ups of one dataset, share
+        # their origin through the lineage the sources state.
+        lineage = any(
+            shares_lineage(eligibility[left], eligibility[right])
+            for index, left in enumerate(identified)
+            for right in identified[index + 1 :]
+        )
+        if (None not in origins and len(origins) < 2) or lineage:
             flags.append("shared_origin")
     if not flags:
         eligible = [
@@ -2609,9 +2684,9 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
     ) -> dict[str, EvidenceEligibility]:
         """The strict-pair inputs of every candidate, resolved locally.
 
-        Publisher and work identity come from the read's own evidenced
-        metadata, and the claim-specific origin from the source's *assessment*
-        — so a passage whose source was never scored carries no origin and can
+        Publisher, work, and lineage are the assessed source's resolved
+        identity, and the claim-specific origin comes from its *assessment* —
+        so a passage whose source was never scored carries no origin and can
         never be half of an independent pair.
         """
         return {
@@ -2694,10 +2769,13 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 units[evidence_id] = unit
             admitted_reads.append(admission.read)
         if admitted_reads:
+            # Resolved over every read of the run, not only the new ones: a
+            # verifier-read copy of an upstream report is that report's work.
             self._run_sources = await assess_new_sources(
                 self.provider,
                 admitted_reads,
                 self._run_sources,
+                known_reads=self._run_reads.values(),
             )
         merged_dispositions = [
             *packet.omitted,
@@ -3408,7 +3486,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # the stored body instead of downloading it again.
         self._session_id = state.session_id
         self._run_reads = dict(state.read_records)
-        self._run_sources = list(state.evaluated_sources)
+        # Resolved once over the registry, so a snapshot written before batch
+        # resolution existed is identified by the same rule as a fresh one.
+        self._run_sources = resolve_source_identities(
+            state.evaluated_sources, self._run_reads.values()
+        )
         self._run_acquisition_state = dict(state.acquisition_state_by_target)
         self._new_reads = {}
         self._new_evidence = {}

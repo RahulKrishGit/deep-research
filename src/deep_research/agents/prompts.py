@@ -163,6 +163,9 @@ SOURCE_SCORING_INSTRUCTION = (
     "the document itself states. Copy them only from the dossier. A name "
     "that is merely mentioned — the subject of the article — is not its "
     "publisher, and an identifier you were not shown is not evidence.\n"
+    "derived_from: the DOIs or report numbers the document says its data or "
+    "figures come from — the report a story repeats, the dataset an analysis "
+    "uses — copied only from the dossier; an empty list when it names none.\n"
     "The combined score is computed for you and is not yours to return.\n"
     "rationale: name the concrete signals you used. Never restate the "
     "numbers alone."
@@ -248,6 +251,26 @@ CLAIM_VERIFICATION_INSTRUCTION = (
     "stance (supports or contradicts). Quote or closely paraphrase only "
     "independent read-bearing passages, and leave the list empty rather than "
     "filling it with restatements of the claim."
+)
+
+# The per-passage dependence judgement an adjudication returns. The model
+# names how each passage stands to the origin of its figure; local code decides
+# what that allows, and only an origin the packet printed can be named.
+ADJUDICATION_DEPENDENCE_INSTRUCTION = (
+    "Every assessment also carries dependence, origin_group_id, and "
+    "rationale.\n"
+    "dependence: primary when the passage is its source's own measurement "
+    "or statement of the figure; independent_analysis when it applies its "
+    "own method to data; derivative when it repeats another work's figure; "
+    "unknown when the passage does not show which. Any other value is read "
+    "as unknown. Only primary and independent_analysis passages can "
+    "corroborate a claim.\n"
+    "origin_group_id: leave empty to keep the origin printed beside the "
+    "passage. When the passage's figure comes from the origin printed "
+    "beside another candidate — an analysis of that candidate's data — copy "
+    "that origin exactly. Name no origin that is not printed above: an "
+    "unlisted origin refuses the passage for corroboration.\n"
+    "rationale: one sentence on why the passage has that dependence."
 )
 
 SYNTHESIZER_SYSTEM_PROMPT = (

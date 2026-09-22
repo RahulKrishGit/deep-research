@@ -194,9 +194,11 @@ def resolve_work_identities(
     rows whose complete-content evidence does not contradict, which is what
     stops one generic title ("Annual Report") from merging two different
     documents. A group that evidences two different values in one class — two
-    DOIs, two report numbers of one issuer, two complete hashes — is reported
-    ``conflicting`` with ``key=None``: ambiguity is preserved, never averaged
-    into a join.
+    DOIs, or two report numbers of one issuer — is reported ``conflicting``
+    with ``key=None``: ambiguity is preserved, never averaged into a join. Two
+    complete hashes conflict too, unless the group is held together by exactly
+    one DOI or one issuer-namespaced report number: the PDF and the HTML of one
+    DOI are two renderings of one work, and every hash stays in its aliases.
     """
     rows = [_parse_row(row) for row in metadata]
     groups = _group_rows(rows)
@@ -347,7 +349,9 @@ def _resolve_group(group: Sequence[_Row]) -> WorkIdentity:
     conflicts: list[str] = []
     if len(dois) > 1:
         conflicts.append(f"{len(dois)} distinct normalized DOIs")
-    if len(hashes) > 1:
+    if len(hashes) > 1 and not (len(dois) == 1 or len(reports) == 1):
+        # Distinct bytes are one work only when one registered identifier
+        # says so (Section 2.2 rules 2/4); without one they are ambiguity.
         conflicts.append(f"{len(hashes)} distinct complete-content hashes")
     for issuer in issuers:
         numbers = _distinct(
@@ -567,7 +571,9 @@ _ATTRIBUTION_GAP = r"[\s:,\u2013\u2014-]{0,4}"
 
 # The anchors a model may propose about a document. Each is accepted only when
 # the read itself carries it; everything else is dropped rather than recorded.
-ANCHOR_FIELDS = ("doi", "issuer", "report_number", "year")
+# ``derived_from`` is a list: the DOIs or report numbers the document says its
+# data or figures come from, which become ``identity_links``.
+ANCHOR_FIELDS = ("derived_from", "doi", "issuer", "report_number", "year")
 
 # One date atom: a year, a year and month, or a full day.
 _DATE_ATOM = r"\d{4}(?:-\d{2}(?:-\d{2})?)?"
@@ -830,8 +836,9 @@ def validate_metadata_anchors(
 
     A model may only report what the document shows: an issuer the read
     attributes the document to, a DOI the read carries, a year the read
-    states, a report number the read prints. Everything else is dropped, so an
-    unsupported issuer, DOI, or year can never reach an identity.
+    states, a report number the read prints, and a source of its data it
+    names. Everything else is dropped, so an unsupported issuer, DOI, year, or
+    lineage can never reach an identity.
     """
     accepted: dict[str, object] = {}
     issuer = _text_field(anchors, "issuer")
@@ -846,7 +853,25 @@ def validate_metadata_anchors(
     number = _identifier_text(_text_field(anchors, "report_number"))
     if number and _literal_evidenced(read, number):
         accepted["report_number"] = number
+    derived = _evidenced_lineage(read, _text_sequence(anchors, "derived_from"))
+    if derived:
+        accepted["derived_from"] = derived
     return accepted
+
+
+def _evidenced_lineage(read: ReadRecord, proposed: Sequence[str]) -> list[str]:
+    """The proposed data sources this read itself names, normalized, in order.
+
+    Each entry passes the same literal test as the ``doi`` and
+    ``report_number`` anchors. A DOI is kept in its normalized form, so the
+    link it becomes names exactly the key the cited work resolves to.
+    """
+    kept: list[str] = []
+    for entry in proposed:
+        value = _normalized_doi(entry) or _identifier_text(entry)
+        if value and value not in kept and _literal_evidenced(read, value):
+            kept.append(value)
+    return kept[:MAX_WORK_ALIASES]
 
 
 def rejected_anchor_names(
@@ -856,13 +881,15 @@ def rejected_anchor_names(
     """The proposed anchor names this read did not evidence, sorted.
 
     Recorded so a reviewer can tell "the model proposed nothing" from "the
-    model proposed a publisher and the document did not support it".
+    model proposed a publisher and the document did not support it". A
+    ``derived_from`` list is rejected when any entry of it is.
     """
     accepted = validate_metadata_anchors(read, anchors)
     rejected = [
         name
         for name in ANCHOR_FIELDS
-        if name not in accepted and _anchor_proposed(anchors, name)
+        if _anchor_proposed(anchors, name)
+        and not _anchor_accepted(anchors, accepted, name)
     ]
     return sorted(rejected)
 
@@ -871,7 +898,24 @@ def _anchor_proposed(anchors: Mapping[str, object], name: str) -> bool:
     value = anchors.get(name)
     if name == "year":
         return bool(_year_text(value))
+    if name == "derived_from":
+        return bool(_text_sequence(anchors, name))
     return bool(_text_field(anchors, name))
+
+
+def _anchor_accepted(
+    anchors: Mapping[str, object],
+    accepted: Mapping[str, object],
+    name: str,
+) -> bool:
+    if name != "derived_from":
+        return name in accepted
+    kept = accepted.get(name) or []
+    proposed = {
+        _normalized_doi(entry) or _identifier_text(entry)
+        for entry in _text_sequence(anchors, name)
+    }
+    return proposed <= set(kept)  # type: ignore[arg-type]
 
 
 def read_metadata_row(
@@ -882,8 +926,9 @@ def read_metadata_row(
     """Build the identity row one read contributes, anchored to the read.
 
     A complete read contributes its title, its serving host, its complete
-    content hash, and whichever proposed anchors the read evidences. A partial
-    read contributes nothing but its own id: it is admissible evidence for the
+    content hash, and whichever proposed anchors the read evidences — an
+    evidenced ``derived_from`` as the row's ``identity_links``. A partial read
+    contributes nothing but its own id: it is admissible evidence for the
     pages it read, but it is never an identity or equality edge, because the
     pages it never saw could say anything.
     """
@@ -896,26 +941,99 @@ def read_metadata_row(
         "complete_content_sha256": read.content_sha256,
         "extraction_complete": True,
     }
-    row.update(validate_metadata_anchors(read, anchors or {}))
+    accepted = validate_metadata_anchors(read, anchors or {})
+    derived = accepted.pop("derived_from", None)
+    if derived:
+        row["identity_links"] = derived
+    row.update(accepted)
     return row
 
 
-def read_identity(
-    read: ReadRecord,
-    *,
-    anchors: Mapping[str, object] | None = None,
-) -> tuple[str | None, str | None]:
-    """Return ``(publisher_id, work_id)`` for one read.
+def resolve_read_identities(
+    entries: Sequence[tuple[ReadRecord, Mapping[str, object]]],
+) -> list[tuple[WorkIdentity, str | None]]:
+    """``(work identity, publisher id)`` for each ``(read, anchors)``, jointly.
 
-    Both are ``None`` when the read establishes neither — an opaque URL with
-    no evidenced issuer, or a partial read. Unknown identity is preserved as
-    ``None`` rather than guessed, because unknown identity can establish
-    neither sameness nor independence.
+    Every entry contributes the row its anchors validate on, and all rows are
+    resolved in ONE :func:`resolve_work_identities` call — so a DOI-bearing
+    original and its byte-identical, DOI-less mirror resolve to one work,
+    which no per-read resolution can see. A single entry is the degenerate
+    batch, never a second rule. The publisher is the row's evidenced issuer,
+    else its serving host, else ``None`` for a partial read.
     """
-    row = read_metadata_row(read, anchors=anchors)
-    identity = resolve_work_identities([row]).get(read.read_id)
-    work_id = identity.key if identity is not None else None
-    return canonical_publisher_id(row), work_id
+    rows: list[dict[str, object]] = []
+    for index, (read, anchors) in enumerate(entries):
+        row = read_metadata_row(read, anchors=anchors)
+        # One read can stand behind two entries (a finding cited the requested
+        # URL, another the resolved one), so the row id is the position.
+        row["source_id"] = str(index)
+        rows.append(row)
+    identities = resolve_work_identities(rows)
+    return [
+        (identities[str(index)], canonical_publisher_id(row))
+        for index, row in enumerate(rows)
+    ]
+
+
+def resolve_source_identities(
+    sources: Sequence[ScoredSource],
+    reads: Iterable[ReadRecord],
+) -> list[ScoredSource]:
+    """Stamp every source with the work identity its read has *across* reads.
+
+    Each source is matched to its read by URL and resolved, with every other
+    matched source, through :func:`resolve_read_identities` on its persisted
+    ``identity_anchors``. ``work_identity``, ``work_id``, and ``publisher_id``
+    are replaced; order and every other field are preserved, and a source
+    with no read is returned unchanged.
+    """
+    by_url = _source_reads(reads)
+    matched: list[tuple[int, ReadRecord]] = []
+    for index, source in enumerate(sources):
+        read = by_url.get(normalize_source_url(source.url))
+        if read is not None:
+            matched.append((index, read))
+    identities = resolve_read_identities(
+        [(read, sources[index].identity_anchors) for index, read in matched]
+    )
+    resolved = list(sources)
+    for (index, _), (identity, publisher_id) in zip(
+        matched, identities, strict=True
+    ):
+        resolved[index] = sources[index].model_copy(
+            update={
+                "work_identity": identity,
+                "work_id": identity.key,
+                "publisher_id": publisher_id,
+            }
+        )
+    return resolved
+
+
+def _source_reads(reads: Iterable[ReadRecord]) -> dict[str, ReadRecord]:
+    """The one read each canonical URL names, as the dossier chose it.
+
+    A served URL outranks a requested one. Among reads of one URL the
+    complete read wins, then the latest observation — the read the Source
+    Evaluator's dossier was built from — and the read id breaks a tie so the
+    choice never depends on iteration order.
+    """
+    served: dict[str, ReadRecord] = {}
+    requested: dict[str, ReadRecord] = {}
+    for read in reads:
+        for index, url in (
+            (served, read.resolved_url),
+            (requested, read.requested_url),
+        ):
+            key = normalize_source_url(url)
+            current = index.get(key)
+            if current is None or _read_rank(read) > _read_rank(current):
+                index[key] = read
+    return {**requested, **served}
+
+
+def _read_rank(read: ReadRecord) -> tuple[bool, str, str]:
+    return (read.extraction_complete, read.retrieved_at, read.read_id)
 
 
 def _content_fingerprint(read: ReadRecord) -> str:
@@ -1099,6 +1217,22 @@ class EvidenceEligibility(ContractModel):
     complete_support: bool = False
     read_valid: bool = False
     corroboration_eligible: bool = False
+    derives_from_work_ids: list[str] = Field(default_factory=list)
+    """The works this passage's source says its data come from."""
+
+
+def shares_lineage(a: EvidenceEligibility, b: EvidenceEligibility) -> bool:
+    """True when one side derives from the other, or both from one work.
+
+    A story repeating a report, and two articles on one dataset, are one
+    account of the underlying figure however different their publishers and
+    works are (Section 2.2 rules 5/6).
+    """
+    return bool(
+        (a.work_id and a.work_id in b.derives_from_work_ids)
+        or (b.work_id and b.work_id in a.derives_from_work_ids)
+        or set(a.derives_from_work_ids).intersection(b.derives_from_work_ids)
+    )
 
 
 def eligible_independent_pair(
@@ -1108,10 +1242,11 @@ def eligible_independent_pair(
 
     Both must be a valid read of a passage that completely supports the claim,
     contributed by a source eligible to corroborate at all; all six identity
-    fields must be known; and publisher, work, and claim-specific origin must be
-    pairwise different. A mirror, a second work from one publisher, two
-    documents sharing one origin, and any pair with an unknown identity all
-    fail — a URL count is never corroboration.
+    fields must be known; publisher, work, and claim-specific origin must be
+    pairwise different; and neither may derive from the other or share the
+    work both derive from. A mirror, a second work from one publisher, two
+    documents sharing one origin or one lineage, and any pair with an unknown
+    identity all fail — a URL count is never corroboration.
     """
     return (
         a.read_valid
@@ -1133,6 +1268,7 @@ def eligible_independent_pair(
         and a.publisher_id != b.publisher_id
         and a.work_id != b.work_id
         and a.origin_group_id != b.origin_group_id
+        and not shares_lineage(a, b)
     )
 
 

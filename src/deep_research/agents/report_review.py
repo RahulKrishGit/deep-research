@@ -71,6 +71,7 @@ from deep_research.utils.types import (
     ReportStatement,
     ResearchState,
     ScoredSource,
+    SourceTemporal,
     StatementReviewDisposition,
     SubstantiveCoverage,
     UnitScore,
@@ -353,9 +354,16 @@ class ReviewSourceView(ContractModel):
     """One assessed source, identified without its scores.
 
     Publisher and work identity are what an independence judgement turns on,
-    so they travel. The numeric scores do not: they are a model's rating of a
-    source, and a reviewer that ranked evidence by them would be repeating the
-    proxy this review replaces.
+    so they travel — with the aliases, status, and evidenced lineage that
+    resolved them. So do the fitness facts that constrain what a citation is
+    worth: its role, its self-interest, how it was transported, what its dates
+    are, and which assessment revision said so. The numeric scores do not:
+    they are a model's rating of a source, and a reviewer that ranked evidence
+    by them would be repeating the proxy this review replaces.
+
+    This is also exactly the per-source projection of the composition's
+    semantic fingerprint, so a change a reviewer could see always invalidates
+    the stored judgement.
     """
 
     url: str = Field(min_length=1)
@@ -363,7 +371,37 @@ class ReviewSourceView(ContractModel):
     publisher_id: str = ""
     work_id: str = ""
     evaluation_status: str = ""
-    temporal_status: str = ""
+    source_role: str = ""
+    self_interest: str = ""
+    transport_relation: str = ""
+    temporal: SourceTemporal = Field(default_factory=SourceTemporal)
+    assessment_revision: str = ""
+    identity_status: str = ""
+    """``known``/``unknown``/``conflicting``; empty when none was resolved."""
+    work_aliases: list[str] = Field(default_factory=list)
+    derives_from_work_ids: list[str] = Field(default_factory=list)
+
+
+def review_source_view(source: ScoredSource) -> ReviewSourceView:
+    """The one view of an assessed source a review reads and is keyed by."""
+    identity = source.work_identity
+    return ReviewSourceView(
+        url=source.url,
+        title=source.title,
+        publisher_id=source.publisher_id or "",
+        work_id=source.work_id or "",
+        evaluation_status=source.evaluation_status,
+        source_role=source.source_role,
+        self_interest=source.self_interest,
+        transport_relation=source.transport_relation,
+        temporal=source.temporal,
+        assessment_revision=source.assessment_revision,
+        identity_status=identity.identity_status if identity is not None else "",
+        work_aliases=list(identity.aliases) if identity is not None else [],
+        derives_from_work_ids=(
+            list(identity.derives_from_work_ids) if identity is not None else []
+        ),
+    )
 
 
 class ReviewRankedRow(ContractModel):
@@ -810,17 +848,7 @@ def build_report_review_input(
             )
             for claim in canonical_claims
         ],
-        sources=[
-            ReviewSourceView(
-                url=source.url,
-                title=source.title,
-                publisher_id=source.publisher_id or "",
-                work_id=source.work_id or "",
-                evaluation_status=source.evaluation_status,
-                temporal_status=source.temporal.status,
-            )
-            for source in canonical_sources
-        ],
+        sources=[review_source_view(source) for source in canonical_sources],
         ranked_rows=_ranked_rows(composition),
         deterministic=ReviewDeterministic.from_coverage(
             coverage, hard_checks=hard_checks
@@ -927,12 +955,7 @@ def composition_semantic_fingerprint(
             for claim in composition.claims
         ],
         "sources": [
-            {
-                "url": source.url,
-                "publisher_id": source.publisher_id or "",
-                "work_id": source.work_id or "",
-                "evaluation_status": source.evaluation_status,
-            }
+            review_source_view(source).model_dump(mode="json")
             for source in composition.sources
         ],
     }
@@ -1237,15 +1260,39 @@ def _render_claims(packet: ReportReviewInput) -> str:
 
 
 def _render_sources(packet: ReportReviewInput) -> str:
-    lines = [
+    lines = [_render_source(source) for source in packet.sources]
+    return "\n".join(lines) or "(no sources were assessed)"
+
+
+def _render_source(source: ReviewSourceView) -> str:
+    """One source line: identity, fitness, and dates, never a score."""
+    temporal = source.temporal
+    dates = ", ".join(
+        f"{name}={value}"
+        for name, value in (
+            ("published", temporal.publication_date),
+            ("data", temporal.data_period),
+            ("forecast", temporal.forecast_horizon),
+            ("effective", temporal.effective_date),
+        )
+        if value
+    )
+    return (
         f"- {source.title} — {source.url} "
         f"(publisher={source.publisher_id or 'unknown'}, "
         f"work={source.work_id or 'unknown'}, "
+        f"identity={source.identity_status or 'unknown'}, "
+        f"aliases={', '.join(source.work_aliases) or 'none'}, "
+        f"derives_from={', '.join(source.derives_from_work_ids) or 'none'}, "
+        f"role={source.source_role or 'unknown'}, "
+        f"self_interest={source.self_interest or 'unknown'}, "
+        f"transport={source.transport_relation or 'unknown'}, "
         f"assessment={source.evaluation_status or 'unknown'}, "
-        f"temporal={source.temporal_status or 'unknown'})"
-        for source in packet.sources
-    ]
-    return "\n".join(lines) or "(no sources were assessed)"
+        f"revision={source.assessment_revision or 'none'}, "
+        f"temporal={temporal.status}"
+        + (f" [{dates}]" if dates else "")
+        + ")"
+    )
 
 
 def _render_dimension_guidance() -> str:
@@ -2126,5 +2173,6 @@ __all__ = [
     "review_defects_as_refinement_jobs",
     "review_messages",
     "review_report",
+    "review_source_view",
     "semantic_review_passes",
 ]
