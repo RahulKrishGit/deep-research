@@ -36,9 +36,12 @@ from deep_research.e2e_evaluation.replay import (
     run_replay_scenario,
 )
 from deep_research.e2e_evaluation.replay_matrix import (
+    GRAPH_ONLY_HISTORICAL_MANIFEST,
     REPLAY_CASE_IDS,
     REPLAY_CASE_MANIFEST,
     REPLAY_CASE_MANIFEST_VERSION,
+    ReplayCaseEntry,
+    controlled_suite_inventory,
     manifest_entry,
     scenario_by_id,
 )
@@ -150,6 +153,77 @@ def test_matrix_declares_every_case_the_plan_names() -> None:
     }
     assert len(REPLAY_CASE_IDS) == len(set(REPLAY_CASE_IDS))
     for entry in REPLAY_CASE_MANIFEST:
+        assert entry.version >= 1, entry.case_id
+        assert entry.expected_product_result, entry.case_id
+        assert entry.decisive_assertion, entry.case_id
+
+
+def _never_built() -> ReplayScenario:
+    raise AssertionError("a rejected row must never be asked for its scenario")
+
+
+def _probe_entry(
+    *, build: object, graph_only_historical: bool
+) -> ReplayCaseEntry:
+    return ReplayCaseEntry(
+        case_id="probe-row",
+        version=1,
+        title="probe",
+        expected_product_result="accepted / 0",
+        decisive_assertion="probe",
+        build=build,  # type: ignore[arg-type]
+        graph_only_historical=graph_only_historical,
+    )
+
+
+def test_a_graph_only_historical_row_cannot_contradict_its_own_builder() -> None:
+    """The flag and the builder are one fact, and neither may be inert.
+
+    ``graph_only_historical`` was assigned in ``__init__`` and read nowhere: a
+    row could carry it, a row could drop it, and no reader could tell. The flag
+    exists because a historical row has no scenario to build, so "no builder"
+    and "graph-only historical" are two spellings of one fact, and the
+    constructor refuses the pairings that would let them disagree — the
+    historical row that quietly grew a builder, and the real-agent row that
+    lost one and became unrunnable.
+    """
+    with pytest.raises(ValueError, match="graph_only_historical"):
+        _probe_entry(build=None, graph_only_historical=False)
+    with pytest.raises(ValueError, match="graph_only_historical"):
+        _probe_entry(build=_never_built, graph_only_historical=True)
+
+    historical = _probe_entry(build=None, graph_only_historical=True)
+    assert historical.build is None
+    assert historical.graph_only_historical is True
+    real_agent = _probe_entry(build=_never_built, graph_only_historical=False)
+    assert real_agent.build is _never_built
+    assert real_agent.graph_only_historical is False
+
+
+def test_the_controlled_inventory_is_the_matrix_plus_the_graph_only_rows() -> None:
+    """One declared inventory per harness, and no row claimed by both.
+
+    A controlled run names one of two harnesses, and each has its own declared
+    inventory: the eighteen real-agent rows, and the historical rows whose
+    product result was recorded when the only agents were scripted doubles.
+    The three historical case ids are the *same strings* as the first three
+    matrix rows, so the ids are checked for collision rather than assumed
+    distinct — a doubled id would let one harness's evidence answer for the
+    other's.
+    """
+    real_agent_ids = tuple(entry.case_id for entry in REPLAY_CASE_MANIFEST)
+    historical_ids = tuple(
+        entry.case_id for entry in GRAPH_ONLY_HISTORICAL_MANIFEST
+    )
+    combined = controlled_suite_inventory()
+
+    assert len(historical_ids) == 3
+    assert combined == (*REPLAY_CASE_MANIFEST, *GRAPH_ONLY_HISTORICAL_MANIFEST)
+    assert len({entry.case_id for entry in combined}) == len(combined)
+    assert set(historical_ids).isdisjoint(real_agent_ids)
+    for entry in GRAPH_ONLY_HISTORICAL_MANIFEST:
+        assert entry.graph_only_historical is True, entry.case_id
+        assert entry.build is None, entry.case_id
         assert entry.version >= 1, entry.case_id
         assert entry.expected_product_result, entry.case_id
         assert entry.decisive_assertion, entry.case_id
