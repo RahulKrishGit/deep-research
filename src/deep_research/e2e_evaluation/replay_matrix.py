@@ -1246,6 +1246,12 @@ def _late_contradiction() -> ReplayScenario:
                 "unanswered_critical_target",
                 "unaccounted_target",
                 "semantic_review_missing",
+                # The two topics whose obligations the first pass met owe the
+                # refinement pass nothing, and the Researcher records that as
+                # a skip rather than buying the same pages twice. The topic
+                # left owing an answer is the one the contradiction is about,
+                # so the run is partial for exactly the reason the case names.
+                "error:researcher_sub_topic_skipped",
             ),
             required_invariants=("contradiction_recorded",),
         ),
