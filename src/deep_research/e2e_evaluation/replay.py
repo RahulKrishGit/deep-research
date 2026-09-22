@@ -114,6 +114,16 @@ class ReplaySource:
     relevance: float = 0.9
     confidence: float = 0.85
     verdict: str = "insufficient_evidence"
+    # The score the Source Evaluator is scripted to write for this page. The
+    # role and the transport relation are not decoration: an ``unknown`` role
+    # has no claim-specific origin, so a page left at the shipped default can
+    # support a statement but can never be half of an independent pair. Both
+    # fields are only recorded when the page evidences an issuer, which is why
+    # a fixture states one ("Published by ...") rather than merely mentioning
+    # the name in a sentence about somebody else.
+    source_role: str = "original_report"
+    transport_relation: str = "original"
+    report_number: str = ""
 
     def __post_init__(self) -> None:
         if self.excerpt not in self.text:
@@ -483,6 +493,9 @@ class ReplayCompleter(AgentCompleter):
                     relevance_score=source.relevance,
                     rationale=f"{source.title} is the declared source.",
                     issuer=source.issuer,
+                    source_role=source.source_role,
+                    transport_relation=source.transport_relation,
+                    report_number=source.report_number,
                 )
             )
         if not rows:
@@ -492,19 +505,34 @@ class ReplayCompleter(AgentCompleter):
         return SourceScoresDraft(sources=rows)
 
     def _reply_ClaimsDraft(self, text: str) -> ClaimsDraft:
-        rows = []
+        """One claim row per distinct scripted claim, with every URL stating it.
+
+        ``ClaimDraft.source_urls`` is a list for exactly this reason: the unit
+        of a claim is the assertion, not the page, so two reads that state one
+        fact are one claim carrying two sources — which is what the identity
+        and independence tests downstream are given to judge. Emitting one row
+        per URL instead makes the second row a duplicate of the first by the
+        claim's own fingerprint, and ingestion refuses it, so a corroborated
+        claim could never be presented at all.
+        """
+        rows: dict[str, list[str]] = {}
         for url in re.findall(r"https?://\S+", text):
             source = self.by_url.get(url.rstrip(".,)"))
             if source is None:
                 continue
-            rows.append(
-                {"text": source.claim, "source_urls": [source.url]}
-            )
+            urls = rows.setdefault(source.claim, [])
+            if source.url not in urls:
+                urls.append(source.url)
         if not rows:
             raise ReplayContractError(
                 "the claim packet carried no scripted URL"
             )
-        return ClaimsDraft(claims=rows)
+        return ClaimsDraft(
+            claims=[
+                {"text": claim, "source_urls": urls}
+                for claim, urls in rows.items()
+            ]
+        )
 
     def claim_source(self, text: str) -> ReplaySource:
         """The scenario's declared source for the claim a packet carries."""
@@ -568,10 +596,17 @@ class ReplayCompleter(AgentCompleter):
             ]
         )
 
-    def packet_claims(self, text: str) -> list[tuple[str, str, str, str]]:
-        """Read the synthesis packet's ``C001 [badge] text (url) coverage=…`` rows."""
+    def packet_claims(self, text: str) -> list[tuple[str, str, tuple[str, ...], str]]:
+        """Read the packet's ``C001 [badge] text (urls) coverage=…`` rows.
+
+        The parenthetical is the list of pages that stated the claim, not one
+        page: a claim two independent reads support arrives as
+        ``(https://a…, https://b…)``. Reading it as a single ``\\S+`` URL made
+        every such row unparseable, so exactly the claims whose corroboration
+        the case exists to show were silently dropped from the draft.
+        """
         rows = re.findall(
-            r"^(C\d+) \[[^\]]*\] (.*) \((https?://\S+)\) coverage=(\S+)$",
+            r"^(C\d+) \[[^\]]*\] (.*) \((.*?)\) coverage=(\S+)$",
             text,
             re.M,
         )
@@ -579,34 +614,49 @@ class ReplayCompleter(AgentCompleter):
             raise ReplayContractError(
                 "the synthesis packet carried no checked claims"
             )
-        return rows
+        return [
+            (
+                claim_id,
+                claim_text,
+                tuple(
+                    url.strip()
+                    for url in urls.split(",")
+                    if url.strip()
+                ),
+                coverage,
+            )
+            for claim_id, claim_text, urls, coverage in rows
+        ]
 
     def _reply_ReportDraft(self, text: str) -> ReportDraft:
         rows = self.packet_claims(text)
-        points = [
-            ReportPointDraft(
-                text=claim_text,
-                claim_ids=[claim_id],
-                source_urls=[url],
+        points: list[ReportPointDraft] = []
+        sections: list[ReportSectionDraft] = []
+        answer_rows: list[AnswerRowDraft] = []
+        for claim_id, claim_text, urls, coverage in rows:
+            # The row's own coverage names the topic, so a section is never
+            # titled from a position in the packet.
+            topic = self._topic_for_target(coverage)
+            subject, dimension = self.answer_labels_for(coverage, claim_text)
+            points.append(
+                ReportPointDraft(
+                    text=claim_text,
+                    claim_ids=[claim_id],
+                    source_urls=list(urls),
+                )
             )
-            for claim_id, claim_text, url, _coverage in rows
-        ]
-        answer_rows = [
-            AnswerRowDraft(
-                subject=self.answer_labels_for(coverage, claim_text)[0],
-                dimension=self.answer_labels_for(coverage, claim_text)[1],
-                finding=claim_text,
-                claim_ids=[claim_id],
-                source_urls=[url],
+            sections.append(
+                ReportSectionDraft(title=topic.title, points=[points[-1]])
             )
-            for claim_id, claim_text, url, coverage in rows
-        ]
-        sections = [
-            ReportSectionDraft(
-                title=self.scenario.topics[index].title, points=[point]
+            answer_rows.append(
+                AnswerRowDraft(
+                    subject=subject,
+                    dimension=dimension,
+                    finding=claim_text,
+                    claim_ids=[claim_id],
+                    source_urls=list(urls),
+                )
             )
-            for index, point in enumerate(points)
-        ]
         return ReportDraft(
             # One point per section, and no executive summary: the composer
             # refuses the same fact twice under one section, and a restatement
