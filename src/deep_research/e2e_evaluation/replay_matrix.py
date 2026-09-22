@@ -1729,7 +1729,14 @@ def _reopen_unanswered_target() -> ReplayScenario:
 
 
 class ReplayCaseEntry:
-    """One declared matrix row: identity, expectation, and its builder."""
+    """One declared matrix row: identity, expectation, and its builder.
+
+    ``build`` is ``None`` for exactly the rows the matrix cannot replay: a
+    historical row records what the product did when the six agents were
+    scripted doubles, and there is no real-agent scenario to build for it.
+    The two facts are the same fact, so the constructor refuses the pairings
+    that would let them disagree.
+    """
 
     def __init__(
         self,
@@ -1739,9 +1746,14 @@ class ReplayCaseEntry:
         title: str,
         expected_product_result: str,
         decisive_assertion: str,
-        build: Callable[[], ReplayScenario],
+        build: Callable[[], ReplayScenario] | None,
         graph_only_historical: bool = False,
     ) -> None:
+        if graph_only_historical != (build is None):
+            raise ValueError(
+                f"{case_id!r}: graph_only_historical must be True exactly "
+                "when build is None"
+            )
         self.case_id = case_id
         self.version = version
         self.title = title
@@ -1974,15 +1986,72 @@ def manifest_entry(case_id: str) -> ReplayCaseEntry:
 
 
 def scenario_by_id(case_id: str) -> ReplayScenario:
-    return manifest_entry(case_id).build()
+    entry = manifest_entry(case_id)
+    if entry.build is None:  # pragma: no cover - the manifest's own invariant
+        raise KeyError(f"replay case {case_id!r} declares no scenario")
+    return entry.build()
+
+
+# The historical half of the controlled inventory. These rows are the three
+# cases the whole-report campaign ran before the real-agent matrix existed:
+# scripted dependencies, a scripted six-agent double, and a recorded product
+# result. They are declared *beside* the manifest rather than inside it
+# because they have no scenario to replay, and because their case ids are the
+# same strings as the first three matrix rows — inside ``REPLAY_CASE_MANIFEST``
+# they would collide with real-agent rows, and the manifest's own contract is
+# that it is exactly the plan's eighteen. The ``-graph`` suffix names the
+# harness that produced the result, so one inventory's evidence can never be
+# read as the other's.
+GRAPH_ONLY_HISTORICAL_MANIFEST: tuple[ReplayCaseEntry, ...] = (
+    ReplayCaseEntry(
+        case_id="broad-constraints-graph",
+        version=REPLAY_CASE_VERSION,
+        title="Six obligations, five-item batching, all answered",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "graph-only historical regression: scripted six-agent double"
+        ),
+        build=None,
+        graph_only_historical=True,
+    ),
+    ReplayCaseEntry(
+        case_id="comparative-conflict-graph",
+        version=REPLAY_CASE_VERSION,
+        title="Three groups measured on one basis, no invented winner",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "graph-only historical regression: scripted six-agent double"
+        ),
+        build=None,
+        graph_only_historical=True,
+    ),
+    ReplayCaseEntry(
+        case_id="refinement-evidence-recovery-graph",
+        version=REPLAY_CASE_VERSION,
+        title="The missing account is acquired in the repair round",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "graph-only historical regression: scripted six-agent double"
+        ),
+        build=None,
+        graph_only_historical=True,
+    ),
+)
+
+
+def controlled_suite_inventory() -> tuple[ReplayCaseEntry, ...]:
+    """The declared controlled inventory: the eighteen rows, then the three."""
+    return (*REPLAY_CASE_MANIFEST, *GRAPH_ONLY_HISTORICAL_MANIFEST)
 
 
 __all__ = [
+    "GRAPH_ONLY_HISTORICAL_MANIFEST",
     "REPLAY_CASE_IDS",
     "REPLAY_CASE_MANIFEST",
     "REPLAY_CASE_MANIFEST_VERSION",
     "REPLAY_CASE_VERSION",
     "ReplayCaseEntry",
+    "controlled_suite_inventory",
     "manifest_entry",
     "replay_scenarios",
     "scenario_by_id",
