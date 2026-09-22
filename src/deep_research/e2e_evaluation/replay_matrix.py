@@ -834,7 +834,15 @@ def _primary_attribution() -> ReplayScenario:
                 "independently corroborated",
             ),
             minimum_answerable_claims=4,
-            required_invariants=("no_false_verification",),
+            # Both directions of the same claim: the four obligations are
+            # answered from one publisher each, so the run must answer them
+            # *without* recording an independent pair (the first checker) and
+            # the pair badge, if it ever appeared, must rest on two publishers
+            # and two complete reads (the second).
+            required_invariants=(
+                "primary_attribution_not_verified",
+                "no_false_verification",
+            ),
         ),
     )
 
@@ -1145,17 +1153,23 @@ def _empty_but_clean() -> ReplayScenario:
     """
     def _bare(index: int, subject: str) -> ReplaySource:
         title = f"{subject} record"
+        # The claim is written into the body verbatim and in its own case: the
+        # guard that a page states the claim it is read for is a substring
+        # check, so a sentence recased to start with a capital is a page that
+        # does not state its claim, and a case that cannot even be built.
+        claim = (
+            "The record lists a title and a publication date and no measured "
+            "value"
+        )
         body = (
             f"{title}. Published by Acme Registry {index}. "
-            "The record lists a title and a publication date and no measured "
-            "value for any period."
+            f"{claim} for any period."
         )
         return _page(
             f"registry{index}.example.test",
             f"record-{index}",
             title,
-            "the record lists a title and a publication date and no measured "
-                        "value",
+            claim,
             issuer=f"Acme Registry {index}",
             verdict="insufficient_evidence",
             text=body,

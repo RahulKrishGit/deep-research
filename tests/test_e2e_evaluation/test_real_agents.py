@@ -146,6 +146,31 @@ def test_matrix_declares_every_case_the_plan_names() -> None:
         assert entry.decisive_assertion, entry.case_id
 
 
+def test_every_checker_is_asserted_by_a_case() -> None:
+    """A checker no case declares is an assertion nothing makes.
+
+    The registry is the matrix's whole vocabulary of properties, and a name
+    that sits in it unwatched is worse than a missing one: it reads as
+    coverage while asserting nothing. Both directions are checked, because a
+    case naming a checker that does not exist is the same gap from the other
+    side.
+    """
+    from deep_research.e2e_evaluation.replay import _REPLAY_INVARIANTS
+
+    declared: set[str] = set()
+    for case_id in REPLAY_CASE_IDS:
+        declared.update(scenario_by_id(case_id).expectation.required_invariants)
+    registered = set(_REPLAY_INVARIANTS)
+    assert registered == declared, {
+        "registered but no case declares it": sorted(registered - declared),
+        "declared but not registered": sorted(declared - registered),
+    }
+    # And a registered checker is a callable the run is judged by, not a name
+    # that happens to be spelled the same in two places.
+    for name, checker in _REPLAY_INVARIANTS.items():
+        assert callable(checker), name
+
+
 def test_case_runs_the_production_agents_not_a_double() -> None:
     """The runtime under test holds the shipped agent classes, class for class."""
     from deep_research.agents.critic import CriticAgent
