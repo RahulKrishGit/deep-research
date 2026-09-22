@@ -14,15 +14,26 @@ from deep_research.evaluation.evaluators import (
     AGENT_GATE_IDS,
     METRIC_FUNCTIONS,
     code_evaluator,
+    deterministic_metric_scores,
+    deterministic_quality,
     evaluate_agent_gates,
+    evaluate_general_gates,
     evaluate_target,
 )
-from deep_research.evaluation.models import AGENT_NAMES
+from deep_research.evaluation.models import AGENT_NAMES, DependencyLedger
 from deep_research.tools.base import ToolResult
+from deep_research.utils.types import ORIGINAL_QUESTION_OMISSION_REFERENCE
 
 
 def gate(results, gate_id):
     return next(item for item in results if item.gate_id == gate_id)
+
+
+def metric_score(output, case, metric_id: str) -> float:
+    """One case metric's unit score, resolved through ``METRIC_FUNCTIONS``."""
+    return deterministic_metric_scores(
+        output, case, metric_functions=METRIC_FUNCTIONS
+    )[metric_id]
 
 
 def test_every_case_metric_has_an_implementation() -> None:
@@ -766,6 +777,269 @@ def test_evaluate_target_combines_general_and_agent_gates(
     assert "run_completed" in ids
     assert "subtopic_count" in ids
     assert 0.0 <= quality <= 1.0
+
+
+# --- Task 12: scoped evidence targets ---------------------------------------
+#
+# Section 2.1's scoping guarantees are metrics, not gates: each one states a
+# property of a plan that a general gate cannot see, so each needs a positive
+# proof and a mutation that must score zero.
+
+
+def _scoped_topic(output):
+    """The scoped-targets fixture's first sub-topic: the comparison."""
+    return output.result["sub_topics"][0]
+
+
+def test_a_scoped_plan_scores_its_metrics_one(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    for metric_id in (
+        "targets_declared",
+        "dimensions_are_checkable",
+        "support_policy_not_downgraded",
+        "no_vague_dimensions",
+    ):
+        assert (
+            metric_score(scoped_target_output, scoped_targets_case, metric_id)
+            == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            scoped_target_output,
+            scoped_targets_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_the_omission_marker_alone_is_not_a_counted_obligation(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """A target carrying the reserved omission reference is a marker for a
+    reviewed omission, not an evidence obligation: a plan whose only entry is
+    the marker has declared nothing and cannot be executed."""
+    topic = _scoped_topic(scoped_target_output)
+    marker = {
+        **topic["evidence_targets"][0],
+        "question": ORIGINAL_QUESTION_OMISSION_REFERENCE,
+    }
+    output = scoped_target_output.with_evidence_targets(
+        {str(topic["title"]): [marker]}
+    )
+
+    assert metric_score(output, scoped_targets_case, "targets_declared") == 0.0
+
+
+def test_a_counted_obligation_beside_the_marker_still_counts(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """The filter skips the marker; it does not fail the plan carrying it."""
+    topic = _scoped_topic(scoped_target_output)
+    targets = list(topic["evidence_targets"])
+    marker = {
+        **targets[0],
+        "target_id": "topic-01-target-02",
+        "question": ORIGINAL_QUESTION_OMISSION_REFERENCE,
+    }
+    output = scoped_target_output.with_evidence_targets(
+        {str(topic["title"]): [*targets, marker]}
+    )
+
+    assert metric_score(output, scoped_targets_case, "targets_declared") == 1.0
+
+
+def test_a_plan_with_no_evidence_targets_scores_targets_declared_zero(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """A plan with an empty target list is a *legacy* plan — one that has to
+    be replanned before it can be executed — never a plan with nothing
+    required."""
+    output = scoped_target_output.without_evidence_targets()
+
+    assert metric_score(output, scoped_targets_case, "targets_declared") == 0.0
+
+
+def test_a_vague_dimension_scores_checkability_and_vagueness_zero(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """The scoping defect both metrics exist for: every obligation still
+    carries "required dimensions", and not one of them names anything a
+    recorded proposition can fill."""
+    output = scoped_target_output.with_target_dimensions(["relevant information"])
+
+    assert (
+        metric_score(output, scoped_targets_case, "dimensions_are_checkable")
+        == 0.0
+    )
+    assert (
+        metric_score(output, scoped_targets_case, "no_vague_dimensions") == 0.0
+    )
+
+
+def test_a_policy_downgraded_under_its_own_question_scores_zero(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """The comparative obligation keeps the wording that earns an independent
+    pair and is recorded under a weaker policy."""
+    target = _scoped_topic(scoped_target_output)["evidence_targets"][0]
+    output = scoped_target_output.with_target_policy(
+        str(target["target_id"]), "primary_attribution"
+    )
+
+    assert (
+        metric_score(
+            output, scoped_targets_case, "support_policy_not_downgraded"
+        )
+        == 0.0
+    )
+
+
+def test_a_plan_that_lost_its_comparison_scores_zero(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """Every recorded policy agrees with its question and the comparison is
+    simply gone: the declared policy set is the only clause that can see it."""
+    target = _scoped_topic(scoped_target_output)["evidence_targets"][0]
+    output = scoped_target_output.with_target_policy(
+        str(target["target_id"]),
+        "primary_attribution",
+        question=(
+            "What does the current federal interconnection rule require of "
+            "utility-scale wind projects?"
+        ),
+    )
+
+    assert (
+        metric_score(
+            output, scoped_targets_case, "support_policy_not_downgraded"
+        )
+        == 0.0
+    )
+
+
+def test_the_dimension_probe_fills_every_signal_field() -> None:
+    """``dimensions_are_checkable`` is only as good as the proposition it
+    probes with.
+
+    A signal field the probe leaves empty would report every dimension
+    answerable only through that field as un-creditable, failing plans that
+    are fine. Reflected over the private signal table deliberately: that
+    table is the thing the probe must stay in step with.
+    """
+    from deep_research.evaluation.evaluators import _TARGET_DIMENSION_PROBE
+    from deep_research.utils.types import (
+        _DIMENSION_SIGNALS,
+        answered_atom_dimensions,
+    )
+
+    expected = {field for _, fields in _DIMENSION_SIGNALS for field in fields}
+
+    assert set(answered_atom_dimensions((_TARGET_DIMENSION_PROBE,))) == expected
+
+
+# --- Task 12: read-bearing acquisition --------------------------------------
+
+
+def _readable_urls(read_bearing_case) -> list[str]:
+    return list(read_bearing_case.expectations.reference["readable_urls"])
+
+
+def test_a_read_bearing_run_scores_its_metrics_one(
+    read_bearing_case, read_bearing_output
+) -> None:
+    for metric_id in (
+        "findings_are_read_bearing",
+        "no_recall_only_source",
+        "sub_topic_coverage",
+        "budget_respected",
+    ):
+        assert (
+            metric_score(read_bearing_output, read_bearing_case, metric_id)
+            == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            read_bearing_output,
+            read_bearing_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_a_finding_citing_an_unread_page_scores_zero(
+    read_bearing_case, read_bearing_output
+) -> None:
+    """The run read one of the two pages it cites; the other finding rests on
+    a page its artifact cannot prove was ever opened."""
+    readable = _readable_urls(read_bearing_case)
+    output = read_bearing_output.with_read_urls([readable[0]])
+
+    assert output.dependencies.read_url_fingerprints_complete is True
+    assert (
+        metric_score(output, read_bearing_case, "findings_are_read_bearing")
+        == 0.0
+    )
+
+
+def test_a_recalled_lead_reported_as_a_finding_scores_both_metrics_zero(
+    read_bearing_case, read_bearing_output
+) -> None:
+    """The case's whole risk, and why a general gate cannot see it.
+
+    The remembered entry is not a read, so a finding citing it is not
+    read-bearing — while ``citations_known`` passes, because the case
+    deliberately declares that URL as one of its known sources.
+    """
+    recall_only = read_bearing_case.expectations.reference["recall_only_url"]
+    output = read_bearing_output.with_finding_url(recall_only)
+
+    assert gate(
+        evaluate_general_gates(output, read_bearing_case, secrets=()),
+        "citations_known",
+    ).passed is True
+    assert (
+        metric_score(output, read_bearing_case, "findings_are_read_bearing")
+        == 0.0
+    )
+    assert (
+        metric_score(output, read_bearing_case, "no_recall_only_source") == 0.0
+    )
+
+
+def test_an_artifact_that_cannot_prove_its_reads_scores_zero(
+    read_bearing_case, read_bearing_output
+) -> None:
+    """Fail closed, three ways: an incomplete ledger, a ledger that lost its
+    read identities, and a complete ledger that recorded no read at all."""
+    readable = _readable_urls(read_bearing_case)
+    incomplete = read_bearing_output.with_read_urls(readable, complete=False)
+    lost = read_bearing_output.model_copy(
+        update={"dependencies": DependencyLedger()}
+    )
+    empty = read_bearing_output.with_read_urls([])
+
+    assert incomplete.dependencies.read_url_fingerprints_complete is False
+    for output in (incomplete, lost, empty):
+        assert (
+            metric_score(output, read_bearing_case, "findings_are_read_bearing")
+            == 0.0
+        )
+
+
+def test_an_empty_finding_list_scores_zero(
+    read_bearing_case, read_bearing_output
+) -> None:
+    """Reporting nothing is not read-bearing: a run that reads and then says
+    nothing must not collect the metric's weight."""
+    output = read_bearing_output.model_copy(update={"result": {"findings": []}})
+
+    assert (
+        metric_score(output, read_bearing_case, "findings_are_read_bearing")
+        == 0.0
+    )
 
 
 # --- Task 8: the three calibration error rates, measured separately ----------

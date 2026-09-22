@@ -6,8 +6,14 @@ import pytest
 
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import SCENARIOS
+from deep_research.utils.types import MAX_TARGETS_PER_TOPIC
 
-CONTROLLED = ("focused-decomposition", "ambiguous-scope", "planning-tool-failure")
+CONTROLLED = (
+    "focused-decomposition",
+    "ambiguous-scope",
+    "planning-tool-failure",
+    "scoped-evidence-targets",
+)
 
 _METRICS = {
     "focused-decomposition": (
@@ -28,6 +34,13 @@ _METRICS = {
         ("failure_recorded", 0.35),
         ("bounded_recovery", 0.25),
     ),
+    "scoped-evidence-targets": (
+        ("subtopic_count", 0.20),
+        ("targets_declared", 0.25),
+        ("dimensions_are_checkable", 0.20),
+        ("support_policy_not_downgraded", 0.20),
+        ("no_vague_dimensions", 0.15),
+    ),
     "planner-live-scope": (
         ("subtopic_count", 0.25),
         ("distinct_titles", 0.25),
@@ -36,6 +49,20 @@ _METRICS = {
         ("question_preserved", 0.15),
     ),
 }
+
+# The dimension wordings a plan may not rest on. Every entry names no atom
+# field the coverage machinery can credit, so a target whose only dimension is
+# one of these is a target no pass can ever answer.
+_SCOPED_VAGUE_DIMENSION_PHRASES = [
+    "relevant information",
+    "good sources",
+    "background",
+    "details",
+    "context",
+    "overview",
+    "key facts",
+    "general information",
+]
 
 _REFERENCES = {
     "focused-decomposition": {
@@ -62,6 +89,14 @@ _REFERENCES = {
         "minimum_sub_topics": 3,
         "expected_error_sources": ["query_memory"],
     },
+    "scoped-evidence-targets": {
+        "minimum_sub_topics": 3,
+        "maximum_sub_topics": 7,
+        "minimum_targets_per_sub_topic": 1,
+        "maximum_targets_per_sub_topic": 4,
+        "required_support_policies": ["independent_pair", "primary_attribution"],
+        "vague_dimension_phrases": _SCOPED_VAGUE_DIMENSION_PHRASES,
+    },
 }
 
 
@@ -69,7 +104,15 @@ def _all_planner_cases():
     return [*cases_for("planner", "controlled"), *cases_for("planner", "live")]
 
 
-def test_the_three_controlled_cases_are_registered() -> None:
+def _controlled(case_id: str):
+    return next(
+        item
+        for item in cases_for("planner", "controlled")
+        if item.case_id == case_id
+    )
+
+
+def test_the_controlled_cases_are_registered() -> None:
     assert tuple(
         case.case_id for case in cases_for("planner", "controlled")
     ) == CONTROLLED
@@ -190,6 +233,10 @@ def test_each_case_has_its_own_judge_rubric_instance() -> None:
             {"decomposition_quality", "search_framing", "failure_transparency"},
         ),
         (
+            "scoped-evidence-targets",
+            {"target_scoping", "policy_fidelity"},
+        ),
+        (
             "planner-live-scope",
             {"decomposition_quality", "search_framing"},
         ),
@@ -233,3 +280,29 @@ def test_the_failure_case_scripts_a_memory_error_and_recovery_search() -> None:
     assert "intermittent fasting metabolic health review" in (
         script.search_responses
     )
+
+
+def test_the_scoped_case_declares_the_real_target_ceiling() -> None:
+    """The declared per-sub-topic ceiling is the contract's own bound.
+
+    ``targets_declared`` reads the composition rule from this reference, so a
+    declaration that drifted from ``MAX_TARGETS_PER_TOPIC`` would police a
+    bound no plan is planned against.
+    """
+    reference = _controlled("scoped-evidence-targets").expectations.reference
+
+    assert (
+        reference["maximum_targets_per_sub_topic"] == MAX_TARGETS_PER_TOPIC
+    )
+    assert reference["minimum_targets_per_sub_topic"] == 1
+
+
+def test_the_scoped_case_scripts_no_memory_and_no_search() -> None:
+    """The case measures a plan made from the question alone: nothing this
+    run can recall or retrieve decides whether the scoping was right."""
+    script = SCENARIOS["planner-scoped-targets"]
+
+    assert script.search_responses == {}
+    assert script.http_pages == {}
+    assert script.memory_entries == ()
+    assert script.scripted_search_urls == ()

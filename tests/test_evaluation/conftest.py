@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +17,7 @@ from deep_research.agents.planner import (
     PlanReviewDraft,
     ResearchPlanDraft,
     SubTopicDraft,
+    target_id_for,
 )
 from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
 from deep_research.agents.steps import ReActDecision, ReActStep
@@ -24,6 +25,7 @@ from deep_research.evaluation.cases import (
     all_cases as _all_cases,
 )
 from deep_research.evaluation.cases import (
+    case_by_id,
     cases_for,
 )
 from deep_research.evaluation.config import (
@@ -516,6 +518,92 @@ class PlannerOutput(TargetOutput):
             }
         )
 
+    def with_evidence_targets(
+        self, by_title: Mapping[str, Sequence[dict[str, object]]]
+    ) -> "PlannerOutput":
+        """Replace the evidence targets of the sub-topics named in ``by_title``."""
+        result = dict(self.result or {})
+        sub_topics = []
+        for entry in result.get("sub_topics") or []:
+            topic = dict(entry)
+            replacement = by_title.get(str(topic.get("title")))
+            if replacement is not None:
+                topic["evidence_targets"] = [
+                    dict(target) for target in replacement
+                ]
+            sub_topics.append(topic)
+        return self.model_copy(
+            update={"result": {**result, "sub_topics": sub_topics}}
+        )
+
+    def without_evidence_targets(self) -> "PlannerOutput":
+        """Every sub-topic planned with no evidence target at all."""
+        return self._map_sub_topics(
+            lambda topic: {**topic, "evidence_targets": []}
+        )
+
+    def with_target_dimensions(
+        self, dimensions: Sequence[str]
+    ) -> "PlannerOutput":
+        """Rewrite every planned target's required dimensions."""
+        return self._map_targets(
+            lambda target: {**target, "required_dimensions": list(dimensions)}
+        )
+
+    def with_target_policy(
+        self,
+        target_id: str,
+        policy: str,
+        *,
+        question: str | None = None,
+    ) -> "PlannerOutput":
+        """Rewrite one target's support policy, and its question when given.
+
+        The policy is set here rather than derived: these fixtures stage a
+        plan the Planner has already stamped, so the helper writes what the
+        Planner *would* have written for the replacement question.
+        """
+
+        def rewrite(target: dict[str, object]) -> dict[str, object]:
+            updated = dict(target)
+            if updated.get("target_id") != target_id:
+                return updated
+            updated["support_policy"] = policy
+            if question is not None:
+                updated["question"] = question
+            return updated
+
+        return self._map_targets(rewrite)
+
+    def _map_sub_topics(
+        self, transform: Callable[[dict[str, object]], dict[str, object]]
+    ) -> "PlannerOutput":
+        result = dict(self.result or {})
+        return self.model_copy(
+            update={
+                "result": {
+                    **result,
+                    "sub_topics": [
+                        transform(dict(entry))
+                        for entry in result.get("sub_topics") or []
+                    ],
+                }
+            }
+        )
+
+    def _map_targets(
+        self, transform: Callable[[dict[str, object]], dict[str, object]]
+    ) -> "PlannerOutput":
+        return self._map_sub_topics(
+            lambda topic: {
+                **topic,
+                "evidence_targets": [
+                    transform(dict(target))
+                    for target in topic.get("evidence_targets") or []
+                ],
+            }
+        )
+
 
 class ResearcherOutput(TargetOutput):
     """A researcher repetition with builder helpers for the agent gate tests.
@@ -552,6 +640,25 @@ class ResearcherOutput(TargetOutput):
         findings[0]["source_url"] = url
         return self.model_copy(
             update={"result": {**result, "findings": findings}}
+        )
+
+    def with_read_urls(
+        self, urls: Sequence[str], *, complete: bool = True
+    ) -> "ResearcherOutput":
+        """Declare exactly which URLs this repetition READ.
+
+        ``complete=False`` models an artifact that lost read identities, which
+        the read-bearing metric must treat as unable to prove anything.
+        """
+        fingerprints, derived_complete = bounded_url_fingerprints(urls)
+        return self.model_copy(
+            update={
+                "dependencies": _ledger_with_reads(
+                    self.dependencies,
+                    fingerprints,
+                    complete=complete and derived_complete,
+                )
+            }
         )
 
 
@@ -816,6 +923,24 @@ def synthesizer_composition_case(controlled_case_for_id):
     return controlled_case_for_id("synthesizer", "composition-no-publication")
 
 
+# Task 12's high-risk cases are looked up by id with ``case_by_id``, not
+# through ``controlled_case_for_id``: that factory skips when a case is
+# missing, and a test whose whole subject is one of these cases has to fail
+# loudly when the case it measures is not registered.
+
+
+@pytest.fixture
+def scoped_targets_case() -> EvaluationCase:
+    """The planner case whose contract polices evidence-target scoping."""
+    return case_by_id("planner", "controlled", "scoped-evidence-targets")
+
+
+@pytest.fixture
+def read_bearing_case() -> EvaluationCase:
+    """The researcher case whose contract polices read-bearing provenance."""
+    return case_by_id("researcher", "controlled", "read-bearing-acquisition")
+
+
 @pytest.fixture
 def planner_output(planner_case) -> PlannerOutput:
     """Three distinct, prioritized subtopics for the focused case."""
@@ -883,6 +1008,163 @@ def planner_output(planner_case) -> PlannerOutput:
     )
 
 
+def _stamped_target(
+    coverage_id: str,
+    position: int,
+    *,
+    question: str,
+    required_dimensions: Sequence[str],
+    support_policy: str,
+    critical: bool = True,
+) -> dict[str, object]:
+    """One evidence target as the Planner's artifact carries it, id stamped."""
+    return {
+        "target_id": target_id_for(coverage_id, position),
+        "coverage_id": coverage_id,
+        "question": question,
+        "required_dimensions": list(required_dimensions),
+        "required": True,
+        "critical": critical,
+        "support_policy": support_policy,
+    }
+
+
+@pytest.fixture
+def scoped_target_output(scoped_targets_case) -> PlannerOutput:
+    """A plan whose three obligations are bounded, creditable, and policed.
+
+    One comparative obligation under the independent-pair policy and two
+    official-instrument obligations under primary attribution: the declared
+    policy set is covered only while the comparative obligation keeps the
+    policy its own wording earns.
+    """
+    comparison = (
+        "How do documented interconnection queue wait times for "
+        "utility-scale solar compare with those for utility-scale wind in "
+        "the United States?"
+    )
+    return PlannerOutput(
+        case_id=scoped_targets_case.case_id,
+        case_version=scoped_targets_case.version,
+        agent_name=scoped_targets_case.agent_name,
+        tier=scoped_targets_case.tier,
+        repetition=1,
+        session_id="evaluation-scoped-evidence-targets",
+        experiment_name="planner-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/planner-agent-2",
+        completed=True,
+        failure=None,
+        result={
+            "sub_topics": [
+                {
+                    "coverage_id": "topic-01",
+                    "title": "Documented queue wait times",
+                    "rationale": "Queue duration is the compared dimension.",
+                    "search_queries": [
+                        "interconnection queue wait times solar and wind "
+                        "United States"
+                    ],
+                    "success_criteria": ["A reported wait time per technology"],
+                    "priority": 1,
+                    "evidence_targets": [
+                        _stamped_target(
+                            "topic-01",
+                            1,
+                            question=comparison,
+                            required_dimensions=[
+                                "comparison: median queue wait time in months "
+                                "for each technology",
+                                "period: the most recent reported year",
+                                "geography: the United States",
+                            ],
+                            support_policy="independent_pair",
+                        )
+                    ],
+                },
+                {
+                    "coverage_id": "topic-02",
+                    "title": "Federal interconnection rule requirements",
+                    "rationale": (
+                        "The question also asks what the current federal rule "
+                        "requires."
+                    ),
+                    "search_queries": [
+                        "current federal interconnection rule requirements "
+                        "utility-scale generators"
+                    ],
+                    "success_criteria": ["The binding requirement, by issuer"],
+                    "priority": 2,
+                    "evidence_targets": [
+                        _stamped_target(
+                            "topic-02",
+                            1,
+                            question=(
+                                "What does the current federal "
+                                "interconnection rule require of "
+                                "utility-scale solar projects?"
+                            ),
+                            required_dimensions=[
+                                "instrument: the issuing federal rule and its "
+                                "effective date",
+                                "period: the rule in force as of the latest "
+                                "revision",
+                                "geography: the United States",
+                            ],
+                            support_policy="primary_attribution",
+                        )
+                    ],
+                },
+                {
+                    "coverage_id": "topic-03",
+                    "title": "Official study process",
+                    "rationale": (
+                        "Study timelines decide how much of the wait is "
+                        "administrative."
+                    ),
+                    "search_queries": [
+                        "official interconnection study process timeline"
+                    ],
+                    "success_criteria": ["An official timeline or fee schedule"],
+                    "priority": 3,
+                    "evidence_targets": [
+                        _stamped_target(
+                            "topic-03",
+                            1,
+                            question=(
+                                "Which official instrument sets the "
+                                "interconnection study fee schedule for "
+                                "utility-scale generators?"
+                            ),
+                            required_dimensions=[
+                                "measure: the study fee in dollars",
+                                "instrument: the official fee schedule",
+                                "geography: the United States",
+                            ],
+                            support_policy="primary_attribution",
+                        )
+                    ],
+                },
+            ]
+        },
+        state_update={"note": "planned three obligations"},
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=2,
+            tool_calls=3,
+            stop_reason="finished",
+            max_iterations=scoped_targets_case.expectations.max_iterations,
+            tool_budget=scoped_targets_case.expectations.max_tool_calls,
+        ),
+        dependencies=DependencyLedger(),
+        evidence=EvidenceContext(),
+        trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+
 @pytest.fixture
 def researcher_output(researcher_case) -> ResearcherOutput:
     """Findings for two of the three subtopics of the multi-source case.
@@ -933,6 +1215,73 @@ def researcher_output(researcher_case) -> ResearcherOutput:
         dependencies=DependencyLedger(),
         evidence=EvidenceContext(scripted_search_urls=list(urls)),
         trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="low",
+    )
+
+
+@pytest.fixture
+def read_bearing_output(read_bearing_case) -> ResearcherOutput:
+    """Two findings, each citing one of the two pages the run read.
+
+    The read ledger is derived from the case's own ``readable_urls``, so the
+    fixture cannot drift from the URLs the scenario scripts as readable.
+    """
+    readable = read_bearing_case.expectations.reference["readable_urls"]
+    sub_topic = read_bearing_case.state.sub_topics[0].title
+    return ResearcherOutput(
+        case_id=read_bearing_case.case_id,
+        case_version=read_bearing_case.version,
+        agent_name=read_bearing_case.agent_name,
+        tier=read_bearing_case.tier,
+        repetition=1,
+        session_id="evaluation-read-bearing-acquisition",
+        experiment_name="researcher-controlled-20260816T101500Z-abc1234",
+        trace_url="https://smith.langchain.com/o/x/r/researcher-agent-2",
+        completed=True,
+        failure=None,
+        result={
+            "findings": [
+                {
+                    "content": (
+                        "Utility-scale battery storage additions in the "
+                        "United States reached 14 GW in 2025."
+                    ),
+                    "source_url": readable[0],
+                    "source_title": (
+                        "NREL utility-scale storage deployment report"
+                    ),
+                    "related_sub_topic": sub_topic,
+                },
+                {
+                    "content": (
+                        "The department's deployment report states 14 GW of "
+                        "utility-scale battery storage was added in 2025."
+                    ),
+                    "source_url": readable[1],
+                    "source_title": "Department of Energy storage report",
+                    "related_sub_topic": sub_topic,
+                },
+            ]
+        },
+        state_update={},
+        errors=[],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=3,
+            tool_calls=4,
+            stop_reason="finished",
+            max_iterations=read_bearing_case.expectations.max_iterations,
+            tool_budget=read_bearing_case.expectations.max_tool_calls,
+        ),
+        dependencies=_read_ledger(list(readable)),
+        evidence=EvidenceContext(
+            scripted_search_urls=list(
+                read_bearing_case.expectations.known_source_urls
+            )
+        ),
+        trajectory=_read_trajectory(list(readable)),
         target_model_requested="gpt-5.6-luna",
         target_model_returned="gpt-5.6-luna",
         target_reasoning_effort="low",

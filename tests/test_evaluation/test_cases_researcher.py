@@ -13,6 +13,7 @@ CONTROLLED = (
     "multi-source-coverage",
     "conflicting-evidence",
     "partial-search-failure",
+    "read-bearing-acquisition",
 )
 
 _METRICS = {
@@ -32,6 +33,12 @@ _METRICS = {
         ("partial_results_present", 0.35),
         ("failure_recorded", 0.30),
         ("no_invented_sources", 0.20),
+        ("budget_respected", 0.15),
+    ),
+    "read-bearing-acquisition": (
+        ("findings_are_read_bearing", 0.35),
+        ("no_recall_only_source", 0.25),
+        ("sub_topic_coverage", 0.25),
         ("budget_respected", 0.15),
     ),
     "researcher-live-evidence": (
@@ -58,6 +65,16 @@ _GAIN_URL = "https://www.aeaweb.org/four-day-work-week-trial"
 _NO_CHANGE_URL = "https://www.aeaweb.org/four-day-work-week-replication"
 _CONFOUNDED_URL = "https://www.nber.org/four-day-self-selection"
 
+# The recall-only URL: it appears in the run's search results and in the
+# remembered entry, and its page cannot be read. It is a declared known source
+# on purpose, so ``citations_known`` cannot refuse it and the case's own
+# read-bearing metric is the only thing that can.
+_RECALL_ONLY_URL = "https://www.eia.gov/us-battery-storage-capacity-2025"
+_READABLE_URLS = (
+    "https://www.nrel.gov/utility-scale-storage-2025-deployment",
+    "https://www.energy.gov/grid-storage-additions-2025",
+)
+
 _REFERENCES = {
     "multi-source-coverage": {
         "sub_topic_titles": [
@@ -81,6 +98,12 @@ _REFERENCES = {
         "failing_sub_topic": "Moisture-driven degradation",
         "recoverable_sources": ["web_search", "web_scraper"],
     },
+    "read-bearing-acquisition": {
+        "recall_only_url": _RECALL_ONLY_URL,
+        "readable_urls": list(_READABLE_URLS),
+        "minimum_findings": 1,
+        "minimum_distinct_domains": 2,
+    },
 }
 
 
@@ -92,7 +115,7 @@ def _case(case_id: str):
     return next(item for item in _all_researcher_cases() if item.case_id == case_id)
 
 
-def test_the_three_controlled_cases_are_registered() -> None:
+def test_the_controlled_cases_are_registered() -> None:
     assert tuple(
         case.case_id for case in cases_for("researcher", "controlled")
     ) == CONTROLLED
@@ -239,6 +262,10 @@ def test_each_case_has_its_own_judge_rubric_instance() -> None:
             },
         ),
         (
+            "read-bearing-acquisition",
+            {"read_provenance", "recall_as_lead"},
+        ),
+        (
             "researcher-live-evidence",
             {"evidence_grounding", "source_diversity"},
         ),
@@ -354,3 +381,60 @@ def test_the_partial_failure_case_lets_some_evidence_survive() -> None:
         script.http_pages["https://www.nrel.gov/perovskite-encapsulation-study"]
         .strip()
     )
+
+
+def test_the_read_bearing_case_declares_the_recall_only_url_as_known() -> None:
+    """Deliberately: the general citation gate accepts a declared known
+    source, so nothing but the case's own read-bearing metric can refuse a
+    finding that cites the remembered lead."""
+    case = _case("read-bearing-acquisition")
+
+    assert tuple(case.expectations.known_source_urls) == (
+        _RECALL_ONLY_URL,
+        *_READABLE_URLS,
+    )
+
+
+def test_the_read_bearing_case_scripts_a_recalled_fact_two_readable_pages() -> None:
+    """The trap in full: the same fact reaches the run from a remembered entry
+    whose page cannot be read, and from two pages it can read."""
+    case = _case("read-bearing-acquisition")
+    script = SCENARIOS["researcher-read-bearing"]
+
+    assert set(script.search_responses) == set(
+        case.state.sub_topics[0].search_queries
+    )
+    [response] = script.search_responses.values()
+    assert [result["url"] for result in response["results"]] == (
+        _RECALL_ONLY_URL,
+        *_READABLE_URLS,
+    )
+    assert all("14 GW" in result["content"] for result in response["results"])
+    assert all(
+        "14 GW" in str(script.http_pages[url]) for url in _READABLE_URLS
+    )
+
+    [entry] = script.memory_entries
+    assert entry["source_url"] == _RECALL_ONLY_URL
+    assert "14 GW" in str(entry["content"])
+    assert entry["confidence"] == 0.95
+    assert entry["entry_type"] == "finding"
+    assert entry["verified"] == "true"
+    assert entry["read_id"] == "read-legacy-0001"
+
+
+def test_the_read_bearing_case_scripts_a_runtime_error_only() -> None:
+    """A scripted httpx failure would be retried three times by the real
+    scraper, triple-counting the fetch in the call ledger."""
+    import httpx
+
+    script = SCENARIOS["researcher-read-bearing"]
+
+    failure = script.http_pages[_RECALL_ONLY_URL]
+    assert isinstance(failure, RuntimeError)
+    assert not isinstance(failure, httpx.HTTPError)
+    assert tuple(script.scripted_search_urls) == (
+        _RECALL_ONLY_URL,
+        *_READABLE_URLS,
+    )
+    assert set(script.http_pages) == {_RECALL_ONLY_URL, *_READABLE_URLS}
