@@ -56,6 +56,7 @@ from deep_research.agents.fact_checker import (
     _finding_is_new,
     _packet_has_pair,
     _packet_independent_publishers,
+    plan_packet_rendering,
     adjudication_messages,
     adjudication_repaired_event,
     admitted_target_ids,
@@ -66,6 +67,7 @@ from deep_research.agents.fact_checker import (
     claim_checked_event,
     claim_evidence_pool,
     claim_extraction_messages,
+    claim_missing_read_ids,
     claim_verification_messages,
     claimed_domains_for,
     consumed_provenance,
@@ -86,12 +88,14 @@ from deep_research.agents.fact_checker import (
     valid_verification_passages,
     validate_adjudication,
     verdict_counts,
+    with_unrendered_omissions,
 )
 from deep_research.agents.identity import (
     claim_fingerprint,
     finding_fingerprint,
 )
 from deep_research.agents.prompts import AgentTask
+from deep_research.agents.synthesizer import build_canonical_packet
 from deep_research.agents.source_evaluator import (
     SourceScoreDraft,
     SourceScoresDraft,
@@ -115,6 +119,8 @@ from deep_research.providers.contracts import StructuredRepairRecord
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    EVIDENCE_BADGE_LABELS,
+    ConflictAssessment,
     QUALITY_CONTRACT_VERSION,
     Claim,
     ClaimVerdict,
@@ -3961,6 +3967,7 @@ def test_a_memory_only_pair_never_becomes_a_packet() -> None:
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = {}
     agent._run_sources = list(state.evaluated_sources)
+    agent._sub_topics = list(state.sub_topics)
     packet, retrieval_needed = FactCheckerAgent._packet_for(
         agent, state, draft, target_ids=[TASK6_TARGET]
     )
@@ -3978,6 +3985,7 @@ def test_a_sufficient_packet_is_recognised_before_any_model_call() -> None:
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
+    agent._sub_topics = list(state.sub_topics)
 
     packet, retrieval_needed = FactCheckerAgent._packet_for(
         agent, state, draft, target_ids=[TASK6_TARGET]
@@ -4023,6 +4031,7 @@ def test_a_boundary_loss_names_the_missing_read_and_never_verifies() -> None:
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
+    agent._sub_topics = list(state.sub_topics)
     packet, _ = FactCheckerAgent._packet_for(
         agent, state, draft, target_ids=[TASK6_TARGET]
     )
@@ -5022,6 +5031,7 @@ def test_a_handoff_loss_is_named_from_the_audit_not_the_test() -> None:
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
+    agent._sub_topics = list(state.sub_topics)
     packet, _ = FactCheckerAgent._packet_for(
         agent, state, draft, target_ids=[TASK6_TARGET]
     )
@@ -5151,6 +5161,7 @@ def test_memory_candidates_are_counted_apart_from_read_support() -> None:
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
+    agent._sub_topics = list(state.sub_topics)
     packet, _ = FactCheckerAgent._packet_for(
         agent, state, draft, target_ids=[TASK6_TARGET]
     )
@@ -5503,6 +5514,7 @@ def test_the_packet_path_carries_and_gates_the_claims_obligations() -> None:
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
+    agent._sub_topics = list(state.sub_topics)
 
     packet, _ = FactCheckerAgent._packet_for(
         agent, state, draft, target_ids=[TASK6_TARGET]
@@ -5569,6 +5581,7 @@ async def test_a_handoff_loss_is_dropped_once_the_retrieval_repairs_it(
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
+    agent._sub_topics = list(state.sub_topics)
     agent._session_id = "session-1"
     agent._passages_per_read = 4
     agent._new_reads = {}
@@ -6600,8 +6613,6 @@ def test_the_request_shows_every_candidate_and_omits_only_what_it_cannot() -> No
     """
     long_support = SUPPORT_TEXT + " " + ("Detail. " * 400)
     long_audit = AUDIT_TEXT + " " + ("Detail. " * 300)
-    from deep_research.agents.fact_checker import with_unrendered_omissions
-
     packet = _verdict_packet(
         _eligibility(),
         _independent_second(),
@@ -6641,8 +6652,6 @@ def test_the_adjudication_request_keeps_the_pair_and_the_refutation_together() -
     retrieval must not be skipped on the strength of it.
     """
     long_left = SUPPORT_TEXT + " " + ("Detail. " * 900)
-    from deep_research.agents.fact_checker import with_unrendered_omissions
-
     packet = _verdict_packet(
         _eligibility(),
         _independent_second(),
@@ -6712,7 +6721,6 @@ async def test_a_candidate_the_request_cannot_carry_is_recorded_in_the_audit(
     # The candidate left out is an explicit omission, not a silent absence:
     # the request never carried it, the claim says the packet was incomplete,
     # and the boundary audit names it.
-    # The candidate left out is an explicit omission, not a silent absence.
     (audit,) = agent._adjudication_audits.values()
     assert audit.disposition_ids == [
         f"{third.evidence_id}:deferred_capacity"
@@ -6725,5 +6733,425 @@ async def test_a_candidate_the_request_cannot_carry_is_recorded_in_the_audit(
     assert claim.evidence_status != "verified_pair"
     assert "packet_incomplete" in claim.audit_flags
     assert claim.insufficient_reason
+
+
+def test_the_adjudication_request_asks_for_the_packet_contract() -> None:
+    """The packet request must describe the shape the packet validator reads.
+
+    It carried the legacy instruction, which asks for a ``passages`` list that
+    ``ClaimVerdictDraft`` (``extra="forbid"``) rejects — so the request asked
+    for exactly what the schema refuses — and which never said what
+    ``complete_support`` or ``scope_compatible`` mean, although the local
+    verdict and conflict rules turn on them.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+
+    body = "\n".join(
+        message.content
+        for message in adjudication_messages(packet, evidence_chars=4000)
+    )
+
+    # Not the legacy passage contract.
+    assert "a passages list" not in body
+    assert "source_url" not in body
+    # The packet's own shape, and what each field decides.
+    for expected in (
+        "assessments",
+        "support_ids",
+        "contradiction_ids",
+        "evidence_id",
+        "stance",
+        "complete_support",
+        "scope_compatible",
+        "dependence",
+        "origin_group_id",
+    ):
+        assert expected in body, expected
+    assert "supports the WHOLE" in body
+    assert "refutes the claim is contradicts" in body
+
+
+@pytest.mark.asyncio
+async def test_a_deferral_from_an_earlier_claim_is_not_this_packets_omission(
+    tracker: Tracker,
+) -> None:
+    """The run's deferrals belong to the run, not to every later packet.
+
+    ``_augment_packet`` rebuilt each packet with the instance-wide
+    ``_new_dispositions`` list, which accumulates every earlier claim's
+    read-selection deferrals — so claim two's packet carried claim one's
+    omissions, and at claim five every packet looked incomplete.
+    """
+    from deep_research.utils.types import EvidenceDisposition
+
+    state = _ab_state()
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+    agent = _packet_agent(state)
+    earlier = EvidenceDisposition(
+        item_id="read-from-an-earlier-claim",
+        stage="read-selection",
+        reason="deferred_capacity",
+        target_ids=["topic-earlier"],
+    )
+    agent._new_dispositions = [earlier]
+    agent._new_evidence = {}
+    agent._new_reads = {}
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+    assert packet is not None
+    task = ClaimTask(
+        instruction="Verify the claim.",
+        claim=draft,
+        packet=packet,
+        target_ids=[TASK6_TARGET],
+    )
+
+    enlarged = await agent._augment_packet(
+        packet,
+        ReActRun(agent_name="fact_checker", stop_reason="finished"),
+        task,
+    )
+
+    assert enlarged is not None
+    assert all(item.item_id != earlier.item_id for item in enlarged.omitted)
+    # The run still records it: the disposition is the run's diagnostic.
+    assert agent._new_dispositions == [earlier]
+
+
+@pytest.mark.asyncio
+async def test_a_contradicted_member_stamps_the_clusters_stored_claim(
+    tracker: Tracker,
+) -> None:
+    """A cluster publishes one verdict, and every member carries it.
+
+    Pass 1 verified "The 2020 interconnection queue held 10 GW of capacity."
+    Pass 2 adjudicates a paraphrase of it as contradicted, and consolidation
+    merges the two into one cluster whose resolved verdict is the
+    contradiction. The stored, first-pass claim was left with its own verified
+    badge, so a reader was shown the contradicted fact as independently
+    corroborated — the exact laundering ``resolved_verdict`` exists to stop.
+    """
+    text = "The 1980 interconnection queue held 10 GW of capacity."
+    stored_cluster = _stored_cluster(0)
+    atom = extract_text_atoms(text, claim_id="stored-0")[0]
+    assert atom.text == stored_cluster.proposition.text
+    stored = Claim(
+        claim_id=claim_fingerprint(text),
+        text=text,
+        source_urls=[QUEUE_URL_A],
+        verdict="verified",
+        confidence=0.9,
+        evidence=["10 GW of capacity was queued."],
+        contradictions=[],
+        verification_evidence=[],
+        evidence_status="verified_pair",
+        cluster_id=stored_cluster.cluster_id,
+    )
+    completer = ScriptedCompleter(
+        decisions=_check_decisions(),
+        outputs=[
+            _queue_draft((QUEUE_URL_A, "In 1980, the interconnection queue held 10 GW of capacity.")),
+            _verdict_draft(
+                verdict="contradicted",
+                contradictions=["The queue held 4 GW, not 10 GW."],
+            ),
+            _proposal((1, 2)),
+        ],
+    )
+    agent = _checker_for_passes(tracker, completer, searches=1)
+    state = _queue_state(
+        (QUEUE_URL_A, "In 1980, the interconnection queue held 10 GW of capacity.")
+    ).model_copy(
+        update={
+            "verified_claims": [stored],
+            "claim_clusters": {stored_cluster.cluster_id: stored_cluster},
+        }
+    )
+
+    async with tracker.session_span(state.session_id, state.original_question):
+        outcome = await agent.run(state)
+
+    merged = merge_research_state(state, outcome.state_update)
+    published = list(merged.verified_claims)
+    # Both members of the cluster are published as the cluster resolved them.
+    assert len(published) == 2
+    assert {claim.cluster_id for claim in published} == {
+        stored_cluster.cluster_id
+    }
+    assert {claim.verdict for claim in published} == {"contradicted"}
+    assert {claim.evidence_status for claim in published} == {"contested"}
+    # And the strict-pair policy is no longer satisfied by the stored claim.
+    assert [
+        claim.claim_id
+        for claim in published
+        if claim.evidence_status == "verified_pair"
+    ] == []
+
+
+def test_the_synthesizer_badges_a_contested_cluster_contested() -> None:
+    """The writer is told what the cluster resolved, not its verified slice.
+
+    ``build_canonical_packet`` read ``verdict_evidence["verified"]`` and the
+    verified badge for every member of a cluster, so a contradicted member was
+    presented to the writer as a verified pair carrying the *verified* member's
+    citations — the amplifier on the same laundering.
+    """
+    text = "The 1980 interconnection queue held 10 GW of capacity."
+    atom = extract_text_atoms(text, claim_id="stored-0")[0]
+    base = cluster_for_atom(atom, claim_id="stored-0", created_seq=1)
+    cluster = base.model_copy(
+        update={
+            "verdicts": ["contradicted", "verified"],
+            "verdict_evidence": {
+                "contradicted": ["https://contra.test/b"],
+                "verified": ["https://verified.test/a"],
+            },
+            "verdict_evidence_status": {
+                "contradicted": "contested",
+                "verified": "verified_pair",
+            },
+        }
+    )
+    contradicted = Claim(
+        claim_id=claim_fingerprint(text),
+        text=text,
+        source_urls=["https://contra.test/b"],
+        verdict="contradicted",
+        confidence=0.8,
+        evidence=[],
+        contradictions=["The queue held 4 GW, not 10 GW."],
+        verification_evidence=[],
+        evidence_status="contested",
+        cluster_id=cluster.cluster_id,
+    )
+
+    packet = build_canonical_packet(
+        claims=[contradicted],
+        clusters={cluster.cluster_id: cluster},
+        evidence={},
+        targets=[],
+        sources=[],
+        limit=4,
+    )
+
+    (entry,) = packet.entries
+    assert entry.evidence_status == "contested"
+    assert entry.evidence_label == EVIDENCE_BADGE_LABELS["contested"]
+    assert "https://verified.test/a" not in entry.citation_urls
+
+
+def test_not_comparable_is_still_loadable_but_no_longer_produced() -> None:
+    """The resolution vocabulary keeps a value the producer stopped choosing.
+
+    An in-scope refutation is material and a scope difference resolves, so no
+    adjudication writes ``not_comparable`` any more — but a record written by
+    an earlier release carries it, and dropping the value would make a stored
+    conflict row unloadable. Kept for loading, never produced.
+    """
+    claim = Claim(
+        claim_id="claim-1",
+        text="Wind capacity reached 10 GW in 2025.",
+        source_urls=["https://left.test/left"],
+        verdict="contradicted",
+        confidence=0.9,
+        evidence=[],
+        contradictions=["Capacity was 4 GW in 2025."],
+        verification_evidence=[],
+        evidence_status="contested",
+        conflict_assessments=[
+            ConflictAssessment(
+                claim_cluster_id="cluster-1",
+                evidence_ids=["ev-left", "ev-right"],
+                same_scope=False,
+                material=False,
+                resolution="not_comparable",
+                rationale="Recorded by an earlier release.",
+            )
+        ],
+    )
+
+    assert claim.conflict_assessments[0].resolution == "not_comparable"
+    # And nothing this release writes it: an unassessed refutation is
+    # unresolved and material, an off-scope one is resolved.
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+    for draft in (
+        _two_supports_and_a_refutation().model_copy(
+            update={"assessments": [_row("ev-left", "supports")]}
+        ),
+        _two_supports_and_a_refutation(),
+    ):
+        claim = validate_adjudication(draft, packet, None)
+        assert all(
+            row.resolution != "not_comparable"
+            for row in claim.conflict_assessments
+        )
+
+
+def test_packet_incomplete_is_about_this_claims_own_candidates() -> None:
+    """Another claim's unit, and a run-wide deferral, are not this claim's gaps.
+
+    ``packet_incomplete`` used to fire for every omission the packet carried,
+    which includes every registry unit that belongs to a different claim and
+    every read-selection deferral the run accumulated earlier — so in any run
+    with more than one claim the flag replaced the real reason and the ledger
+    printed ``packet_incomplete`` where ``single_primary_only`` was the answer.
+    """
+    from deep_research.utils.types import EvidenceDisposition
+
+    packet = _verdict_packet(
+        _eligibility(),
+        _independent_second(),
+        omitted=(
+            EvidenceDisposition(
+                item_id="ev-another-claim",
+                stage="adjudication-packet",
+                reason="out_of_scope",
+                target_ids=["t2"],
+            ),
+            EvidenceDisposition(
+                item_id="read-deferred-earlier",
+                stage="read-selection",
+                reason="deferred_capacity",
+                target_ids=["t9"],
+            ),
+        ),
+    )
+    draft = ClaimVerdictDraft(
+        verdict="insufficient_evidence",
+        confidence=0.6,
+        assessments=[_row("ev-left", "supports")],
+        support_ids=["ev-left"],
+        contradiction_ids=[],
+        rationale="One source states it.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert "packet_incomplete" not in claim.audit_flags
+    assert claim.insufficient_reason == "single_primary_only"
+
+
+def test_a_sub_topic_scoped_read_is_reported_as_a_handoff_loss() -> None:
+    """The scope the pool uses is the scope the loss is measured in.
+
+    The Researcher registers a read against the sub-topic it was taken for
+    (``topic-01``) while a claim's obligations are evidence targets
+    (``topic-01-target-01``). Comparing the two id spaces directly reported no
+    loss at all, so a read whose passage never reached the packet read as
+    "nothing supports this" instead of as the handoff that lost it.
+    """
+    state = _obligation_state()
+    lost = _ab_read(
+        "read-lost", "https://lab-e.test/lost", "Lab E report", A_TEXT
+    ).model_copy(update={"target_ids": ["topic-01"]})
+    state = state.model_copy(
+        update={"read_records": {**state.read_records, lost.read_id: lost}}
+    )
+    draft = ClaimDraft(
+        text="Wind capacity reached 10 GW in 2025.", source_urls=[A_URL]
+    )
+
+    pool = claim_evidence_pool(
+        state, draft, target_ids=["topic-01-target-01"]
+    )
+    missing = claim_missing_read_ids(
+        state.read_records,
+        draft,
+        pool,
+        target_ids=["topic-01-target-01"],
+        sub_topics=list(state.sub_topics),
+    )
+
+    assert lost.read_id in missing
+    # The control: another topic's read is still not this claim's loss.
+    assert "read-elsewhere" not in missing
+    packet, _ = FactCheckerAgent._packet_for(
+        _packet_agent(state),
+        state,
+        draft,
+        target_ids=["topic-01-target-01"],
+    )
+    assert packet is not None
+    assert lost.read_id in packet.missing_read_ids
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[
+                _row(unit.evidence_id, "supports") for unit in pool[:1]
+            ],
+            support_ids=[unit.evidence_id for unit in pool[:1]],
+            contradiction_ids=[],
+            rationale="One source states it.",
+        ),
+        packet,
+        None,
+    )
+    assert "handoff_loss" in claim.audit_flags
+    assert claim.insufficient_reason == "handoff_loss"
+
+
+def _packet_agent(state: ResearchState) -> FactCheckerAgent:
+    """A checker with exactly what ``_packet_for`` reads."""
+    agent = object.__new__(FactCheckerAgent)
+    agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
+    agent._run_reads = dict(state.read_records)
+    agent._run_sources = list(state.evaluated_sources)
+    agent._sub_topics = list(state.sub_topics)
+    return agent
+
+
+def test_an_id_the_request_never_carried_is_never_admitted() -> None:
+    """§2.5/Task 6: the id must be one the model was shown.
+
+    The request fits one pair candidate and not the other, and the model names
+    both as supports. Crediting the id it never saw would make a passage the
+    model was not shown half of a verified pair — the false-verified vector
+    this refusal closes. It is refused exactly as an id that is not in the
+    packet at all.
+    """
+    long_left = SUPPORT_TEXT + " " + ("Detail. " * 200)
+    packet = with_unrendered_omissions(
+        _verdict_packet(
+            _eligibility(),
+            _independent_second(),
+            _third_origin(),
+            texts=(long_left, AUDIT_TEXT, REFUTATION_TEXT),
+        ),
+        evidence_chars=600,
+    )
+    rendered = {
+        unit.evidence_id
+        for unit, _ in plan_packet_rendering(
+            packet, evidence_chars=600
+        ).rendered
+    }
+    unshown = "ev-right"
+    assert rendered == {"ev-left"}
+    assert unshown not in rendered
+    draft = ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[
+            _row("ev-left", "supports"),
+            _row(unshown, "supports"),
+        ],
+        support_ids=["ev-left", unshown],
+        contradiction_ids=[],
+        rationale="Naming an id the request never carried.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "verified"
+    assert claim.evidence_status != "verified_pair"
+    assert unshown in claim.refused_evidence_ids
+    assert "evidence_not_admitted" in claim.audit_flags
+    assert unshown not in claim.evidence_selection
 
 

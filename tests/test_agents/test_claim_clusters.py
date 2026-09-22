@@ -35,6 +35,7 @@ from deep_research.agents.claim_clusters import (
     equivalence_messages,
     equivalence_strength,
     extract_atoms,
+    extract_text_atoms,
     merge_claim_cluster_registry,
     merge_claim_clusters,
     metadata_dimension_asked_for,
@@ -60,6 +61,63 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 from tests.agent_fakes import ScriptedCompleter
+
+# --------------------------------------------------------------------------
+# Qualifiers that change what a clause asserts
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        (
+            "Capacity rose to 10 GW in 2024.",
+            "Capacity rose by 10 GW in 2024.",
+        ),
+        (
+            "Capacity rose to 10 percent in 2024.",
+            "Capacity rose by 10 percent in 2024.",
+        ),
+        (
+            "Capacity was more than 10 GW in 2024.",
+            "Capacity was less than 10 GW in 2024.",
+        ),
+        (
+            "Capacity was over 10 GW in 2024.",
+            "Capacity was under 10 GW in 2024.",
+        ),
+        (
+            "Capacity was up to 10 GW in 2024.",
+            "Capacity was at least 10 GW in 2024.",
+        ),
+        (
+            "Capacity was nearly 10 GW in 2024.",
+            "Capacity was 10 GW in 2024.",
+        ),
+    ],
+)
+def test_a_different_qualifier_is_not_one_assertion(left: str, right: str) -> None:
+    """A bound, an approximation, and a bare value are three assertions.
+
+    "rose to 10 GW" states a level the subject reached and "rose by 10 GW" a
+    change it underwent; "more than" and "less than" are bounds in opposite
+    directions; "up to" and "at least" are not the same bound; and "nearly
+    10 GW" is not 10 GW. Comparing only the number merged all of them, so one
+    proposition's pair and badge were presented for another.
+    """
+    a = extract_text_atoms(left, claim_id="a")[0]
+    b = extract_text_atoms(right, claim_id="b")[0]
+
+    assert not atomic_compatible(a, b)
+
+
+def test_a_qualifier_stated_the_same_way_still_merges() -> None:
+    """The refusal is about a difference, not about having a qualifier."""
+    stated = extract_text_atoms("Capacity rose to 10 GW in 2024.", claim_id="a")[0]
+    reworded = extract_text_atoms("In 2024, capacity rose to 10 GW.", claim_id="b")[0]
+
+    assert atomic_compatible(stated, reworded)
+
 
 # --------------------------------------------------------------------------
 # atomic_compatible: necessary, not sufficient
