@@ -2447,6 +2447,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._new_dispositions: list[EvidenceDisposition] = []
         self._adjudication_flags: dict[str, list[str]] = {}
         self._adjudication_audits: dict[str, BoundaryAudit] = {}
+        # How many manifests this *session* has minted. ``_adjudication_audits``
+        # is cleared at every pass start, so a count taken from it restarts at
+        # 1 and a second pass mints ids the first pass already used, with
+        # different contents: the state merge refuses one id with two contents
+        # and the whole update is rejected.
+        self._audit_sequence = 0
         self._adjudicated_packets: set[str] = set()
         self._repair_events: list[ResearchEvent] = []
 
@@ -2745,7 +2751,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             operation=ADJUDICATION_OPERATION,
             job_id=self._session_id or "fact-checker-session",
             agent_name=self.name,
-            sequence=len(self._adjudication_audits) + 1,
+            sequence=getattr(self, "_audit_sequence", 0) + 1,
             target_ids=tuple(target_ids),
             claim_cluster_ids=(
                 [packet.claim_cluster_id] if packet.claim_cluster_id else []
@@ -2773,6 +2779,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             status=status,  # type: ignore[arg-type]
         )
         self._adjudication_audits[audit.audit_id] = audit
+        self._audit_sequence = getattr(self, "_audit_sequence", 0) + 1
 
     def _discard_stale_repairs(self) -> None:
         """Drop repairs the provider buffered before the call about to be made.

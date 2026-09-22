@@ -681,11 +681,21 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # on evidence that states its share basis credits the dimension. The obligation
 # changed; what counts as discharging it did not. The other five pins and the
 # judge did not move (verified by recomputing all six and the judge).
+#
+# The boundary-audit sequence repair re-pinned the fact_checker alone
+# (`7012a186eb59` -> `c4d37173726c`). This is module-source drift, not prompt
+# text: the pin hashes the agent's whole module, and ``_record_packet_audit``
+# now mints its sequence from a counter that survives a pass boundary instead
+# of from the length of a dict each pass clears. No instruction, packet
+# rendering, or verdict rule changed — the audit id is bookkeeping a replay
+# joins against, never a prompt input. The shared `agents.prompts` library was
+# not edited, and the other five pins and the judge did not move (verified by
+# recomputing all six and the judge).
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "4fab1aa863d8",
     "researcher": "613603dc5cbd",
     "source_evaluator": "6c12c0fffc92",
-    "fact_checker": "7012a186eb59",
+    "fact_checker": "c4d37173726c",
     "synthesizer": "97cf77acbb15",
     "critic": "9694e44926d3",
 }

@@ -28,6 +28,7 @@ from deep_research.agents.evidence import (
     EvidenceEligibility,
     build_evidence_unit,
     build_read_record,
+    merge_boundary_audits,
 )
 from deep_research.agents.fact_checker import (
     DEFAULT_CLAIM_BATCH_SIZE,
@@ -4823,6 +4824,49 @@ def test_the_manifest_ids_are_joinable_evidence_ids() -> None:
     assert all(item.startswith("ev-") for item in audit.input_ids)
     assert audit.target_ids == [TASK6_TARGET]
     assert audit.claim_cluster_ids == ["cluster-1"]
+
+
+def test_a_second_pass_keeps_its_manifests_distinct_from_the_first() -> None:
+    """One session's passes each keep their own manifest identity.
+
+    A pass start clears the pass's own audit dict, so an id minted from its
+    length restarts at 1: the second pass then writes a *different* manifest —
+    a wider target set, in the case this is taken from — under the id the
+    first pass already used. ``merge_boundary_audits`` refuses one id with two
+    contents, and the fact-checker update is folded into the state as one
+    mapping, so a session's second pass is rejected whole and the run halts on
+    a bookkeeping collision instead of on a quality gap. The identity has to
+    be unique for the *session*, not for the pass.
+    """
+    packet = _pair_packet(_eligibility(), _independent_second())
+    agent = object.__new__(FactCheckerAgent)
+    agent._session_id = "session-1"
+    agent._evidence_chars = 4000
+    agent._passages_per_read = 4
+    agent._adjudication_audits = {}
+
+    FactCheckerAgent._record_packet_audit(
+        agent, packet, None, status="completed", target_ids=[TASK6_TARGET]
+    )
+    first_pass = dict(agent._adjudication_audits)
+    # The next pass starts here: the pass's own dict is cleared, the session
+    # is not.
+    agent._adjudication_audits = {}
+    FactCheckerAgent._record_packet_audit(
+        agent,
+        packet,
+        None,
+        status="completed",
+        target_ids=[TASK6_TARGET, "topic-02-target-01"],
+    )
+    second_pass = dict(agent._adjudication_audits)
+
+    assert set(first_pass).isdisjoint(second_pass)
+    merged = merge_boundary_audits(first_pass, second_pass)
+    assert len(merged) == 2
+    assert {
+        tuple(audit.target_ids) for audit in merged.values()
+    } == {(TASK6_TARGET,), (TASK6_TARGET, "topic-02-target-01")}
 
 
 def test_the_persisted_manifest_is_bounded_and_summarizes_its_overflow() -> None:
