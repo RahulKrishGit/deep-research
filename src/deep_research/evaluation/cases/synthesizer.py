@@ -1040,6 +1040,9 @@ _LIVE = build_case(
     metadata={"scenario": "live"},
 )
 
+# Append new cases; never prepend. ``conftest.controlled_case_for``
+# takes ``cases_for(agent, "controlled")[0]``, so the first case here
+# is the one every conftest-driven gate test exercises.
 CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
     _COMPLETE,
     _CONFLICT,

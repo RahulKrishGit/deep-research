@@ -100,7 +100,7 @@ _EPILOG = (
     "  # List agents, tiers, cases, repetitions, and dataset names.\n"
     f"  {PROGRAM_NAME} list\n"
     "\n"
-    "  # Run all three controlled cases for one agent, three times each.\n"
+    "  # Run every controlled case for one agent, three times each.\n"
     f"  {PROGRAM_NAME} agent researcher\n"
     "\n"
     "  # Run one controlled case, still with three repetitions.\n"

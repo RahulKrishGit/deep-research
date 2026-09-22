@@ -1080,6 +1080,9 @@ _LIVE_CASE = build_case(
     judge_rubric=_LIVE_RUBRIC,
 )
 
+# Append new cases; never prepend. ``conftest.controlled_case_for``
+# takes ``cases_for(agent, "controlled")[0]``, so the first case here
+# is the one every conftest-driven gate test exercises.
 CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
     _STRONG_CASE,
     _GAPPY_CASE,

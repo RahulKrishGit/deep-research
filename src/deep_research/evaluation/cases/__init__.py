@@ -42,6 +42,56 @@ from deep_research.utils.types import (
 
 CASE_REGISTRY_VERSION = 1
 
+# The declared inventory. Not a count in an assertion: the registry's
+# shape is a contract, and a contract belongs where a reader can read it.
+#
+# Comparing ids rather than lengths is what makes a case that is renamed,
+# duplicated across agents, or filed under the wrong agent fail validation
+# instead of quietly satisfying a count. Adding a case is a one-line edit
+# to the relevant agent's tuple, in the same commit as the case itself —
+# and it must be appended, never prepended (see ``CONTROLLED_CASES``).
+EXPECTED_CONTROLLED_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
+    "planner": (
+        "focused-decomposition",
+        "ambiguous-scope",
+        "planning-tool-failure",
+    ),
+    "researcher": (
+        "multi-source-coverage",
+        "conflicting-evidence",
+        "partial-search-failure",
+    ),
+    "source_evaluator": (
+        "strong-and-weak-sources",
+        "corroboration-recency-reputation",
+        "reputation-provider-failure",
+    ),
+    "fact_checker": (
+        "mixed-verdicts",
+        "independent-domain-evidence",
+        "verification-search-failure",
+    ),
+    "synthesizer": (
+        "complete-cited-report",
+        "conflict-and-limitations",
+        "composition-no-publication",
+    ),
+    "critic": (
+        "approve-strong-report",
+        "request-more-research",
+        "missing-evidence-or-budget-exhausted",
+    ),
+}
+
+EXPECTED_LIVE_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
+    "planner": ("planner-live-scope",),
+    "researcher": ("researcher-live-evidence",),
+    "source_evaluator": ("source-evaluator-live-ranking",),
+    "fact_checker": ("fact-checker-live-verification",),
+    "synthesizer": ("synthesizer-live-report",),
+    "critic": ("critic-live-review",),
+}
+
 # A fixed timestamp so a case fixture is byte-identical between runs and a
 # dataset example never changes just because the clock moved.
 FIXED_TIMESTAMP = "2026-08-01T00:00:00+00:00"
@@ -417,8 +467,8 @@ def validate_registry(
     """Fail before any model call when the registry cannot be trusted.
 
     Checks the three things that would corrupt a dataset or an experiment:
-    duplicate identities, one id at conflicting versions, and the wrong
-    number of cases for an agent or tier.
+    duplicate identities, one id at conflicting versions, and an inventory
+    that does not match the declared ids for an agent and tier.
     """
     catalog = list(all_cases() if cases is None else cases)
 
@@ -442,19 +492,22 @@ def validate_registry(
             f"conflicting versions for case ids: {', '.join(conflicting)}"
         )
 
+    # The inventory is compared by id and in order, not by length. A count
+    # cannot see the failure that matters: a case that is renamed, or
+    # reordered under the wrong agent, still satisfies any number.
     for agent_name in AGENT_NAMES:
-        controlled = [
-            case
-            for case in catalog
-            if case.agent_name == agent_name and case.tier == "controlled"
-        ]
-        live = [
-            case
-            for case in catalog
-            if case.agent_name == agent_name and case.tier == "live"
-        ]
-        if len(controlled) != 3 or len(live) != 1:
-            raise CaseRegistryError(
-                f"{agent_name} must define exactly 3 controlled and 1 live "
-                f"case; found {len(controlled)} controlled and {len(live)} live"
+        for tier, declared in (
+            ("controlled", EXPECTED_CONTROLLED_CASE_IDS),
+            ("live", EXPECTED_LIVE_CASE_IDS),
+        ):
+            expected = declared.get(agent_name, ())
+            found = tuple(
+                case.case_id
+                for case in catalog
+                if case.agent_name == agent_name and case.tier == tier
             )
+            if found != expected:
+                raise CaseRegistryError(
+                    f"{agent_name} must define the declared {tier} cases "
+                    f"{list(expected)}; found {list(found)}"
+                )
