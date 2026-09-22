@@ -38,6 +38,31 @@ rose 3/10 → 5/10 against a ≥7/10 requirement, and coverage moved 3/6 → 4/6
 against a ≥0.80 requirement. Criterion 9 was reached in neither run.
 **NOT READY stands.**
 
+### 0.1 Controlled validation pointer (added 2026-09-22)
+
+Every entry above is retained verbatim. This is a new subsection, not a
+revision of any line before it.
+
+[The controlled real-agent validation](2026-09-16-real-agent-controlled-validation.md)
+now exists. It certifies the **Task 12 evaluation harness** at candidate
+`27c45b9c1b6e2e32e26420c72b4befd16eb48da5` on a confirmed-clean tree, and it
+carries the verdict **`CONTROLLED READY / LIVE NOT VALIDATED`**.
+
+**This does not move the release bar and it does not change any criterion in
+§1.** That document certifies a harness — its inventory, case versions, test
+counts, fingerprints, reviewed snapshots, and socket-layer network isolation.
+It certifies no agent: no live run has cleared the ten Step 7 criteria, and, as
+its own §0 states prominently, the six new individual-agent evaluation cases
+have never been executed against a real model. Its `CONTROLLED READY` half is a
+statement about the apparatus; its `LIVE NOT VALIDATED` half is why
+**NOT READY still stands** here.
+
+Two limitations are also recorded in that document rather than only in the
+ledger: the `content_version_changed`/`content_hash_changed` cache-provenance
+shape remains unit-tested only, and three Minor/Informational findings from the
+whole-branch re-review remain open and are explicitly non-blocking per that
+review.
+
 ## 1. The ten criteria, against the run this document was written from
 
 Run: `ce8911eef28847d7ac739be450430ca8`, candidate `9d87360`, 26.4 minutes,
