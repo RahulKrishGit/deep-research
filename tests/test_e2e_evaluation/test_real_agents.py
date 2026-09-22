@@ -22,6 +22,10 @@ import pytest
 
 from deep_research.e2e_evaluation.replay import (
     CaseExpectation,
+    ReplayCompleter,
+    ReplayScenario,
+    ReplaySource,
+    ReplayTopic,
     expectation_failures,
     network_denied,
     run_replay_scenario,
@@ -169,6 +173,190 @@ def test_every_checker_is_asserted_by_a_case() -> None:
     # that happens to be spelled the same in two places.
     for name, checker in _REPLAY_INVARIANTS.items():
         assert callable(checker), name
+
+
+def test_claim_source_is_a_page_that_delivered_its_body() -> None:
+    """A refused page never stated the claim, so it cannot carry its verdict.
+
+    The landing page is declared first and answers 403: the run records the
+    denial and reads the document behind it, and the verdict of the claim the
+    documents state is the verdict the *readable* page carries. A provider
+    that let the refusal decide would script the badge away for a fact two
+    documents state, which is the case's subject rather than its premise.
+    """
+    claim = "the Acme widget adoption rate was 40 percent in 2024"
+    scenario = ReplayScenario(
+        case_id="claim-source-probe",
+        question="What was the Acme widget adoption rate in 2024?",
+        topics=(
+            ReplayTopic(
+                title="Adoption rate",
+                question="What was the Acme widget adoption rate in 2024?",
+                dimensions=("rate",),
+                critical=True,
+                query="Acme widget adoption rate 2024",
+                sources=(
+                    ReplaySource(
+                        url="https://refused.test/report",
+                        title="Adoption report landing page",
+                        text=f"Adoption report landing page. {claim}.",
+                        excerpt=claim,
+                        claim=claim,
+                        issuer="Acme Institute 4",
+                        verdict="insufficient_evidence",
+                        status_code=403,
+                    ),
+                    ReplaySource(
+                        url="https://agency.test/report.pdf",
+                        title="Adoption report",
+                        text=f"Adoption report. {claim}.",
+                        excerpt=claim,
+                        claim=claim,
+                        issuer="Acme Institute 4",
+                        verdict="verified",
+                    ),
+                ),
+            ),
+        ),
+        expectation=CaseExpectation(terminal_quality="accepted", exit_code=0),
+    )
+    completer = ReplayCompleter(scenario)
+
+    source = completer.claim_source(f"Candidate passages\n{claim}\n")
+
+    assert source.url == "https://agency.test/report.pdf"
+    assert source.verdict == "verified"
+
+
+def _mirror_run(
+    *,
+    supports: tuple[str, ...],
+    references: tuple[str, ...],
+) -> object:
+    """A run with two hosts serving one body, judged by one filled-in checker.
+
+    ``supports`` is the pages the claim's badge rests on and ``references`` the
+    list the report published. Three reads are registered: the running copy,
+    its mirror, and an account an independent publisher wrote.
+    """
+    from deep_research.utils.types import Claim, EvidencePassage, ReadRecord
+
+    body = "the Acme widget adoption rate was 40 percent in 2024"
+    reads = {
+        "https://agency.test/report.pdf": "a" * 64,
+        "https://mirror.test/report.pdf": "a" * 64,
+        "https://bureau.test/panel.pdf": "b" * 64,
+    }
+    read_records = {
+        f"read-{index}": ReadRecord(
+            read_id=f"read-{index}",
+            requested_url=url,
+            resolved_url=url,
+            title="Adoption report",
+            reader="document_reader",
+            retrieved_at="2024-12-31T00:00:00+00:00",
+            content_sha256=digest,
+            extraction_complete=True,
+            passages={"page-1-chunk-0": body},
+            origin_session_id="mirror-probe",
+        )
+        for index, (url, digest) in enumerate(reads.items())
+    }
+    claim = Claim(
+        claim_id="claim-1",
+        text=body,
+        source_urls=list(reads),
+        verdict="verified",
+        confidence=0.85,
+        evidence=[body],
+        contradictions=[],
+        verification_evidence=[
+            EvidencePassage(
+                source_url=url,
+                source_title="Adoption report",
+                locator="page-1-chunk-0",
+                excerpt=body,
+                stance="supports",
+            )
+            for url in supports
+        ],
+        cluster_id="cluster-1",
+        evidence_status="verified_pair",
+    )
+    report = "\n".join(
+        f"{number}. Adoption report — {url}"
+        for number, url in enumerate(references, start=1)
+    )
+
+    class _Run:
+        state = type(
+            "State",
+            (),
+            {"read_records": read_records, "verified_claims": [claim]},
+        )()
+        statements: list[object] = []
+
+    run = _Run()
+    run.report = report
+    return run
+
+
+def test_mirror_checker_reads_the_references_the_reader_is_handed() -> None:
+    """One work is one reference, and one body is not a second account.
+
+    The badge half: a corroborated claim whose supporting reads are the two
+    copies of one body is the badge the case exists to refuse, and a badge
+    that also rested on a genuine second account is not. The reader half: the
+    published reference list is what the reader was handed, so a list naming
+    the running copy and its mirror is one work counted twice however the
+    citation list behind it was assembled.
+    """
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_mirror_not_double_counted,
+    )
+
+    copied = _invariant_mirror_not_double_counted(
+        _mirror_run(
+            supports=(
+                "https://agency.test/report.pdf",
+                "https://mirror.test/report.pdf",
+            ),
+            references=("https://agency.test/report.pdf",),
+        )
+    )
+    assert copied is not None, "a badge resting on one body twice passed"
+    assert "one body" in copied
+
+    corroborated = _invariant_mirror_not_double_counted(
+        _mirror_run(
+            supports=(
+                "https://agency.test/report.pdf",
+                "https://mirror.test/report.pdf",
+                "https://bureau.test/panel.pdf",
+            ),
+            references=(
+                "https://agency.test/report.pdf",
+                "https://bureau.test/panel.pdf",
+            ),
+        )
+    )
+    assert corroborated is None, corroborated
+
+    twice = _invariant_mirror_not_double_counted(
+        _mirror_run(
+            supports=(
+                "https://agency.test/report.pdf",
+                "https://bureau.test/panel.pdf",
+            ),
+            references=(
+                "https://agency.test/report.pdf",
+                "https://mirror.test/report.pdf",
+                "https://bureau.test/panel.pdf",
+            ),
+        )
+    )
+    assert twice is not None, "one work reached the reader as two references"
+    assert "reference" in twice
 
 
 def test_case_runs_the_production_agents_not_a_double() -> None:

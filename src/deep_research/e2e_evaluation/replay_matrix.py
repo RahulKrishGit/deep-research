@@ -458,7 +458,19 @@ def _blocked_html_pdf_fallback() -> ReplayScenario:
         "Adoption report (mirror)",
         claim,
         issuer="Acme Institute 4",
+        # Word for word is what a mirror is: the same body, served by a second
+        # host. A fixture that re-worded the copy would hand the run two
+        # different works, and the read it must not promote to a second origin
+        # would not be the same read at all.
+        text=official.text,
         content_type=PDF,
+        # And a copy is what it says it is. Two reads of one work both
+        # declared *original* leave the run no way to tell which host serves
+        # the running copy, so the reference list keeps whichever one it
+        # reaches first - which is the session's own read order, and the
+        # published citation moves between hosts from run to run. Naming the
+        # mirror is the fact the collapse rule reads to prefer the original.
+        transport_relation="mirror",
     )
     return ReplayScenario(
         case_id="blocked-html-pdf-fallback",
@@ -492,6 +504,12 @@ def _blocked_html_pdf_fallback() -> ReplayScenario:
                 "topic-03-target-01",
             ),
             minimum_answerable_claims=3,
+            # The refusal is what this case is about: the landing page answers
+            # 403, and the run records the denial before reading the document
+            # behind it. A refusal that left no record would be
+            # indistinguishable from a page nobody ever asked for, which is
+            # the other half of the invariant this case asserts.
+            allowed_failure_classes=("error:agent_tool_failed",),
             required_invariants=(
                 "denied_url_not_retried",
                 "mirror_not_double_counted",

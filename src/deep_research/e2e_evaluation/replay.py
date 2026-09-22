@@ -33,6 +33,7 @@ from typing import Any, Iterator
 
 import httpx
 
+from deep_research.agents.acquisition import _required_reader
 from deep_research.agents.base import AgentCompleter
 from deep_research.agents.claim_clusters import ClaimEquivalenceDraft
 from deep_research.agents.critic import CritiqueDraft
@@ -425,6 +426,11 @@ class ReplayCompleter(AgentCompleter):
         is still open has to be able to buy one. That is also where the policy
         stops — a topic whose pages are all read or refused ends the loop
         rather than searching for evidence that is not there.
+
+        The reader is chosen by the same rule the product enforces: a document
+        asked for with ``web_scraper`` is refused outright, so a script that
+        always scraped would spend a topic's whole iteration budget on
+        refusals and read none of the documents the scenario declared.
         """
         target_id = re.search(r"- target_id=(topic-\d+)", text)
         if target_id is None:
@@ -439,9 +445,9 @@ class ReplayCompleter(AgentCompleter):
             if url in read_urls or url in denied_urls:
                 continue
             if url in candidate_urls:
-                return self._tool("web_scraper", {"url": url})
+                return self._read(url)
             if url in text and url not in attempted_urls:
-                return self._tool("web_scraper", {"url": url})
+                return self._read(url)
         if all(url in read_urls or url in denied_urls for url in urls):
             return self._final("The reads for this topic are complete.")
         pending = [
@@ -453,6 +459,18 @@ class ReplayCompleter(AgentCompleter):
             return self._final("No further candidate is available.")
         self.search_queries.append(pending[0])
         return self._tool("web_search", {"query": pending[0]})
+
+    def _read(self, url: str) -> NativeToolTurn:
+        """The read tool the acquisition policy requires for one candidate.
+
+        The suffix table is the product's own, not a copy of it: a fixture
+        that routed documents to the scraper would be refused by the policy
+        and read nothing, and a copy of the table here would be free to drift
+        away from the rule the refusal is made by.
+        """
+        if _required_reader(url) == "document_reader":
+            return self._tool("document_reader", {"source": url})
+        return self._tool("web_scraper", {"url": url})
 
     # --- structured replies ----------------------------------------------
     def _reply(self, name: str, text: str) -> Any:
@@ -610,8 +628,18 @@ class ReplayCompleter(AgentCompleter):
         )
 
     def claim_source(self, text: str) -> ReplaySource:
-        """The scenario's declared source for the claim a packet carries."""
+        """The scenario's declared source for the claim a packet carries.
+
+        Only a page that delivered a body counts. A page the host refused was
+        never read, so no claim was ever extracted from it and its scripted
+        verdict is not the verdict of the claim its text would have stated:
+        letting a 403 landing page decide would script the strict badge away
+        for a fact two readable documents state, and the run would be judged
+        on a refusal that carried no text at all.
+        """
         for source in self.scenario.sources.values():
+            if source.status_code != 200:
+                continue
             if source.claim in text:
                 return source
         raise ReplayContractError(
@@ -1388,6 +1416,12 @@ def _years(text: str) -> set[str]:
     return set(re.findall(r"\b(?:19|20)\d{2}\b", text))
 
 
+# One numbered line of the report's own reference list: the product renders
+# ``N. title — url``, and a checker reading the artifact reads the URL it
+# printed rather than a list it would have to derive for itself.
+_REFERENCE_URL = re.compile(r"^\d+\.\s.*?(https?://\S+)\s*$")
+
+
 def _figures(claims: Sequence[str]) -> list[str]:
     """The number-and-unit readings a set of claim texts states."""
     found: list[str] = []
@@ -1451,9 +1485,20 @@ def _invariant_mirror_not_double_counted(run: ReplayRun) -> str | None:
 
     Both reads are real and both are admitted; what the mirror cannot do is
     become the second account. So the checker looks for two reads of one body
-    and requires that the badge was refused - which is only observable if both
-    reads happened, which is why the case proves the read as well as the
-    refusal.
+    - which is only observable if both reads happened, which is why the case
+    proves the read as well as the refusal - and then requires that no claim
+    rests on that one body, and that no work reaches the reader twice.
+
+    The badge carries the first half: a corroborated claim's supporting reads
+    must span more than one body, so a run that offered both copies is never
+    credited with two accounts. The references carry the second, and the
+    checker reads them off the published report rather than off the citation
+    list the renderer worked from: one work reaches the reader as one
+    reference, whatever a statement's evidence ids name, and a reference list
+    naming the running copy *and* its mirror tells the reader that one work is
+    two sources. Two references are the same work when the reads resolve to
+    one work, which is identity the product already decided - the checker only
+    relates the URLs the report itself published.
     """
     by_digest: dict[str, list[Any]] = {}
     for read in run.state.read_records.values():
@@ -1463,11 +1508,22 @@ def _invariant_mirror_not_double_counted(run: ReplayRun) -> str | None:
         return "no body was read from two hosts, so nothing was mirrored"
     for claim in _verified_pairs(run):
         reads = _supporting_reads(run, claim)
-        if len({read.content_sha256 for read in reads}) < len(reads):
+        if len({read.content_sha256 for read in reads}) < 2:
             return (
-                f"{claim.text[:60]!r} was badged as a pair on two reads of one "
-                "body"
+                f"{claim.text[:60]!r} was badged as a pair on one body read "
+                "from two hosts"
             )
+    references = [
+        match.group(1)
+        for line in run.report.splitlines()
+        if (match := _REFERENCE_URL.search(line))
+    ]
+    works = [work for work in (_identity(run, url)[1] for url in references) if work]
+    if len(set(works)) < len(works):
+        return (
+            f"the reference list names {len(works)} reads of one work as "
+            f"{len(references)} references"
+        )
     return None
 
 
