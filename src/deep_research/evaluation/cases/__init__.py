@@ -40,6 +40,7 @@ from deep_research.utils.types import (
     ResearchState,
     ScoredSource,
     SubTopic,
+    TransportRelation,
 )
 
 CASE_REGISTRY_VERSION = 2
@@ -100,6 +101,7 @@ EXPECTED_CONTROLLED_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
         "complete-cited-report",
         "conflict-and-limitations",
         "composition-no-publication",
+        "canonical-evidence-report",
     ),
     "critic": (
         "approve-strong-report",
@@ -180,7 +182,23 @@ def scored_source(
     overall: float,
     rationale: str,
     low_confidence: bool = False,
+    serving_host: str | None = None,
+    publisher_id: str | None = None,
+    work_id: str | None = None,
+    transport_relation: TransportRelation = "unknown",
 ) -> ScoredSource:
+    """One assessment row, with the identity its page carries declared.
+
+    A case whose rows are meant to be *readable as identity* declares the
+    identity here, because nothing else can supply it. Production derives
+    ``serving_host``, ``publisher_id``, ``work_id``, and
+    ``transport_relation`` from the read behind the row — see
+    ``read_record`` — so a case with no reads (a Synthesizer case assesses
+    nothing itself) has to state what its rows are: which host served the
+    bytes, which publisher and work the document belongs to, and whether it
+    is that work's own publication or a copy. Leaving the defaults is the
+    honest "not established", and consumers read ``None`` as exactly that.
+    """
     return ScoredSource(
         url=url,
         title=title,
@@ -190,6 +208,10 @@ def scored_source(
         overall_score=overall,
         rationale=rationale,
         low_confidence=low_confidence,
+        serving_host=serving_host,
+        publisher_id=publisher_id,
+        work_id=work_id,
+        transport_relation=transport_relation,
     )
 
 

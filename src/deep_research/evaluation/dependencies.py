@@ -1839,6 +1839,7 @@ def _synthesizer_scenarios() -> dict[str, ScenarioScript]:
         "synthesizer-complete": ScenarioScript(),
         "synthesizer-conflicted": ScenarioScript(),
         "synthesizer-composition": ScenarioScript(),
+        "synthesizer-canonical-evidence": ScenarioScript(),
     }
 
 

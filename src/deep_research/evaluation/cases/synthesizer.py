@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from deep_research.agents.sources import publisher_identity, source_domain
 from deep_research.evaluation.cases import (
     build_case,
     claim,
@@ -830,6 +831,361 @@ _COMPOSITION = build_case(
     metadata={"scenario": "composition-only"},
 )
 
+# One work carried twice, beside three others. The trials network's report
+# and a reprint of it are the same measurements served from two hosts: they
+# share a work id, and the reprint records the host that served its bytes as
+# ``serving_host`` while inheriting the publisher the work belongs to. The
+# reader's reference list is composed from the evidence registry, so that
+# work must print once, and no reference may name a URL the run never held —
+# a citation is rendered from an evidence id, never from prose a model
+# wrote. The other three rows are one work each, which makes the reference
+# list four entries over five assessed pages.
+
+_CANONICAL_TRIALS_URL = (
+    "https://fieldstation.example/cover-crop-nitrate-trials"
+)
+_CANONICAL_REPRINT_URL = (
+    "https://agmirror.example/trials/cover-crop-nitrate"
+)
+_CANONICAL_META_URL = (
+    "https://agmetaanalysis.example/cover-crop-nitrate-meta-analysis"
+)
+_CANONICAL_MONITOR_URL = (
+    "https://waterauthority.example/cover-crop-nitrate-monitoring"
+)
+_CANONICAL_GUIDE_URL = (
+    "https://farminputs.example/cover-crop-establishment-guide"
+)
+_CANONICAL_URLS = (
+    _CANONICAL_TRIALS_URL,
+    _CANONICAL_REPRINT_URL,
+    _CANONICAL_META_URL,
+    _CANONICAL_MONITOR_URL,
+    _CANONICAL_GUIDE_URL,
+)
+_CANONICAL_TRIALS_WORK_ID = "work-cover-crop-nitrate-trials"
+_CANONICAL_META_WORK_ID = "work-cover-crop-nitrate-meta-analysis"
+_CANONICAL_MONITOR_WORK_ID = "work-cover-crop-nitrate-monitoring"
+_CANONICAL_GUIDE_WORK_ID = "work-cover-crop-establishment-guide"
+
+_CANONICAL_TRIALS_TITLE = "Field Station: cover-crop nitrate trials"
+_CANONICAL_REPRINT_TITLE = "Ag Mirror: cover-crop nitrate trials (reprint)"
+_CANONICAL_META_TITLE = "Ag Meta-Analysis: cover-crop nitrate leaching"
+_CANONICAL_MONITOR_TITLE = "Water Authority: cover-crop nitrate monitoring"
+_CANONICAL_GUIDE_TITLE = "Farm Inputs: cover-crop establishment guide"
+
+_CANONICAL_TRIALS_CLAIM = (
+    "Cover crops reduce nitrate loss to tile drains by roughly 30 to 45 "
+    "percent in measured field trials."
+)
+_CANONICAL_CONDITIONS_CLAIM = (
+    "The size of the measured nitrate reduction depends on establishing the "
+    "cover crop before the preceding crop's window."
+)
+_CANONICAL_MONITORING_CLAIM = (
+    "Regional monitoring still records nitrate above the drinking-water "
+    "limit at some sampled wells."
+)
+
+_CANONICAL_RUBRIC = rubric(
+    "synthesizer-canonical-evidence",
+    (
+        "citation_provenance",
+        "Every reference resolves to evidence this run actually holds.",
+        "Every reference in the list traces to a source the run assessed or "
+        "a claim it checked, and none names a URL the run never retrieved.",
+        "A reference names a URL no assessed source and no checked claim "
+        "carries.",
+    ),
+    (
+        "one_reference_per_work",
+        "One work is one reference, however it was served.",
+        "A work retrieved from more than one host is printed once, under the "
+        "copy its own assessment identifies as the original.",
+        "One work is printed twice because it was served twice, or the "
+        "republication is printed in place of the work it carries.",
+    ),
+    *_CITATION_DIMENSIONS,
+)
+
+_CANONICAL = build_case(
+    case_id="canonical-evidence-report",
+    agent_name="synthesizer",
+    tier="controlled",
+    title="Print one reference per work, all of them locally derived",
+    purpose=(
+        "Compose a report over five assessed pages that hold four works, "
+        "because one trials-network report is carried twice: its own page "
+        "and a reprint of it behind the same work id. Citations are derived "
+        "locally from the evidence registry — a reference is rendered from "
+        "an evidence id, never from a URL the model supplied — so the "
+        "composed artifact can never carry a URL the run did not hold, and "
+        "one work reprinted twice collapses to one reference instead of "
+        "reading as two sources. A run that prints both copies, prints the "
+        "reprint in place of the original, or prints a URL from nowhere "
+        "loses the weight this case puts on the two properties."
+    ),
+    state=evaluation_state(
+        case_id="canonical-evidence-report",
+        question=(
+            "What do measured field studies show about the effect of cover "
+            "crops on nitrate loss to groundwater?"
+        ),
+        sub_topics=(
+            sub_topic(
+                "Measured nitrate loss reductions",
+                rationale=(
+                    "The measured size of the reduction is what the question "
+                    "asks for."
+                ),
+                queries=["cover crop nitrate loss tile drains measured"],
+                criteria=[
+                    "A measured nitrate loss under a cover crop, with a "
+                    "comparison"
+                ],
+                priority=1,
+            ),
+            sub_topic(
+                "Field conditions behind the measured effects",
+                rationale=(
+                    "The conditions are what make one measured reduction "
+                    "differ from the next."
+                ),
+                queries=["cover crop establishment timing nitrate loss"],
+                criteria=["A condition that changes the measured reduction"],
+                priority=2,
+            ),
+            sub_topic(
+                "Regional monitoring evidence",
+                rationale=(
+                    "Monitoring shows whether the measured reductions reach "
+                    "the water."
+                ),
+                queries=["regional groundwater nitrate monitoring wells"],
+                criteria=["Monitoring data on nitrate concentrations"],
+                priority=3,
+            ),
+        ),
+        findings=(
+            finding(
+                "Twelve site-years of field trials report nitrate loss to "
+                "tile drains 30 to 45 percent lower under cereal rye than "
+                "under the preceding cash crop alone.",
+                url=_CANONICAL_TRIALS_URL,
+                title=_CANONICAL_TRIALS_TITLE,
+                sub_topic_title="Measured nitrate loss reductions",
+            ),
+            finding(
+                "A reprint of the trials network's report repeats the same "
+                "30 to 45 percent reduction for twelve site-years and adds "
+                "no measurement of its own.",
+                url=_CANONICAL_REPRINT_URL,
+                title=_CANONICAL_REPRINT_TITLE,
+                sub_topic_title="Measured nitrate loss reductions",
+            ),
+            finding(
+                "A meta-analysis of 41 leaching studies finds the size of "
+                "the measured reduction depends on establishing the cover "
+                "crop before the preceding crop's window.",
+                url=_CANONICAL_META_URL,
+                title=_CANONICAL_META_TITLE,
+                sub_topic_title="Field conditions behind the measured effects",
+            ),
+            finding(
+                "Regional monitoring records nitrate above the "
+                "drinking-water limit at 3 of 18 sampled wells across four "
+                "monitored years.",
+                url=_CANONICAL_MONITOR_URL,
+                title=_CANONICAL_MONITOR_TITLE,
+                sub_topic_title="Regional monitoring evidence",
+            ),
+            finding(
+                "A seed supplier's establishment guide names the same "
+                "establishment window, citing the trials network rather "
+                "than reporting measurements of its own.",
+                url=_CANONICAL_GUIDE_URL,
+                title=_CANONICAL_GUIDE_TITLE,
+                sub_topic_title=(
+                    "Field conditions behind the measured effects"
+                ),
+            ),
+        ),
+        sources=(
+            scored_source(
+                _CANONICAL_TRIALS_URL,
+                title=_CANONICAL_TRIALS_TITLE,
+                authority=0.85,
+                recency=0.80,
+                relevance=0.95,
+                overall=0.88,
+                rationale=(
+                    "The trials network's own report; the original "
+                    "publication of the measurements."
+                ),
+                serving_host=source_domain(_CANONICAL_TRIALS_URL),
+                publisher_id=publisher_identity(_CANONICAL_TRIALS_URL),
+                work_id=_CANONICAL_TRIALS_WORK_ID,
+                transport_relation="original",
+            ),
+            scored_source(
+                _CANONICAL_REPRINT_URL,
+                title=_CANONICAL_REPRINT_TITLE,
+                authority=0.40,
+                recency=0.78,
+                relevance=0.80,
+                overall=0.62,
+                rationale=(
+                    "A reprint of the trials report; it adds no measurement "
+                    "of its own, so it is the same work served again."
+                ),
+                serving_host=source_domain(_CANONICAL_REPRINT_URL),
+                publisher_id=publisher_identity(_CANONICAL_TRIALS_URL),
+                work_id=_CANONICAL_TRIALS_WORK_ID,
+                transport_relation="mirror",
+            ),
+            scored_source(
+                _CANONICAL_META_URL,
+                title=_CANONICAL_META_TITLE,
+                authority=0.88,
+                recency=0.82,
+                relevance=0.90,
+                overall=0.87,
+                rationale=(
+                    "Peer-reviewed meta-analysis of 41 leaching studies."
+                ),
+                serving_host=source_domain(_CANONICAL_META_URL),
+                publisher_id=publisher_identity(_CANONICAL_META_URL),
+                work_id=_CANONICAL_META_WORK_ID,
+                transport_relation="original",
+            ),
+            scored_source(
+                _CANONICAL_MONITOR_URL,
+                title=_CANONICAL_MONITOR_TITLE,
+                authority=0.80,
+                recency=0.88,
+                relevance=0.85,
+                overall=0.84,
+                rationale=(
+                    "The monitoring authority's own well data; current but "
+                    "regional."
+                ),
+                serving_host=source_domain(_CANONICAL_MONITOR_URL),
+                publisher_id=publisher_identity(_CANONICAL_MONITOR_URL),
+                work_id=_CANONICAL_MONITOR_WORK_ID,
+                transport_relation="original",
+            ),
+            scored_source(
+                _CANONICAL_GUIDE_URL,
+                title=_CANONICAL_GUIDE_TITLE,
+                authority=0.35,
+                recency=0.72,
+                relevance=0.78,
+                overall=0.55,
+                rationale=(
+                    "A vendor's guide that cites the trials network instead "
+                    "of measuring anything; low confidence."
+                ),
+                low_confidence=True,
+                serving_host=source_domain(_CANONICAL_GUIDE_URL),
+                publisher_id=publisher_identity(_CANONICAL_GUIDE_URL),
+                work_id=_CANONICAL_GUIDE_WORK_ID,
+                transport_relation="original",
+            ),
+        ),
+        claims=(
+            claim(
+                _CANONICAL_TRIALS_CLAIM,
+                # Both origins are the same work, deliberately: the claim was
+                # made once and the run holds two copies of it, which is the
+                # shape a downstream independence count must not read as two.
+                urls=[_CANONICAL_TRIALS_URL, _CANONICAL_REPRINT_URL],
+                verdict="verified",
+                confidence=0.84,
+                evidence=[
+                    "Trials network: nitrate loss 30 to 45 percent lower "
+                    "under cereal rye across twelve site-years",
+                ],
+                verification_urls=[_CANONICAL_META_URL],
+            ),
+            claim(
+                _CANONICAL_CONDITIONS_CLAIM,
+                urls=[_CANONICAL_META_URL, _CANONICAL_GUIDE_URL],
+                verdict="verified",
+                confidence=0.79,
+                evidence=[
+                    "Meta-analysis of 41 leaching studies: the reduction "
+                    "depends on establishing the cover crop before the "
+                    "preceding crop's window",
+                ],
+                verification_urls=[_CANONICAL_TRIALS_URL],
+            ),
+            claim(
+                _CANONICAL_MONITORING_CLAIM,
+                urls=[_CANONICAL_MONITOR_URL],
+                verdict="verified",
+                confidence=0.76,
+                evidence=[
+                    "Regional monitoring: nitrate above the drinking-water "
+                    "limit at 3 of 18 sampled wells",
+                ],
+                verification_urls=[_CANONICAL_META_URL],
+            ),
+        ),
+    ),
+    dependency_scenario="synthesizer-canonical-evidence",
+    expectations=CaseExpectations(
+        required_output_fields=["markdown", "evidence_markdown"],
+        reference={
+            "mirror_pairs": [
+                [_CANONICAL_TRIALS_URL, _CANONICAL_REPRINT_URL],
+            ],
+            "canonical_url_for_work": {
+                _CANONICAL_TRIALS_WORK_ID: _CANONICAL_TRIALS_URL,
+            },
+            "forbidden_citation_urls": [_CANONICAL_REPRINT_URL],
+        },
+        known_source_urls=list(_CANONICAL_URLS),
+        max_iterations=1,
+        max_tool_calls=5,
+        deterministic_metrics=metrics(
+            (
+                "citations_locally_derived",
+                0.30,
+                "Every URL in the reader reference list derives from the "
+                "state's own assessed sources and checked claims.",
+            ),
+            (
+                "one_reference_per_work",
+                0.30,
+                "The reference list is exactly one entry per work, the "
+                "original copy of a work that was served more than once.",
+            ),
+            (
+                "coverage",
+                0.20,
+                "Every subtopic title appears in the report body.",
+            ),
+            (
+                "limitations_present",
+                0.10,
+                "A limitations section exists.",
+            ),
+            (
+                "reader_markdown_present",
+                0.05,
+                "The result carries non-empty reader `markdown`.",
+            ),
+            (
+                "evidence_markdown_present",
+                0.05,
+                "The result carries non-empty `evidence_markdown`.",
+            ),
+        ),
+    ),
+    judge_rubric=_CANONICAL_RUBRIC,
+    metadata={"scenario": "citation-provenance"},
+)
+
 _LIVE = build_case(
     case_id="synthesizer-live-report",
     agent_name="synthesizer",
@@ -1047,5 +1403,6 @@ CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
     _COMPLETE,
     _CONFLICT,
     _COMPOSITION,
+    _CANONICAL,
 )
 LIVE_CASES: tuple[EvaluationCase, ...] = (_LIVE,)

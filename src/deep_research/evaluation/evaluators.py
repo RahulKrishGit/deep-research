@@ -26,7 +26,7 @@ from deep_research.agents.fact_checker import (
     independent_domains,
 )
 from deep_research.agents.planner import support_policy_for
-from deep_research.agents.report import build_citation_index
+from deep_research.agents.report import build_citation_index, collapse_mirror_urls
 from deep_research.agents.sources import (
     normalize_source_url,
     publisher_identity,
@@ -1600,6 +1600,91 @@ def _gate_no_false_publication_claim(
     )
 
 
+def _state_citation_urls(case: EvaluationCase) -> list[str]:
+    """Every URL this state's own records can derive a citation from.
+
+    The assessed rows and the checked claims, numbered by production's
+    evidence-level index builder — the same one the evidence ledger uses, not
+    the reader's narrower list — so this cannot drift from the URLs a
+    composing run would derive.
+    """
+    sources = _field(case.state, "evaluated_sources") or ()
+    claims = _field(case.state, "verified_claims") or ()
+    try:
+        index = build_citation_index(sources, claims)
+    except (AttributeError, TypeError, ValueError):
+        return []
+    return [
+        normalized
+        for citation in index
+        if isinstance(citation.url, str)
+        for normalized in [_normalized(citation.url)]
+        if normalized
+    ]
+
+
+def _listed_citation_urls(output: TargetOutput) -> set[str]:
+    """The URLs the reader report's own reference list prints."""
+    return {
+        url
+        for url in _reader_reference_urls(_report_body(output)).values()
+        if url
+    }
+
+
+def _citations_locally_derived_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """No reference names a URL this run cannot derive from its own records.
+
+    Two sets, both computed here: the URLs the reader report's own reference
+    list prints, and the URLs the state's assessed rows and checked claims
+    derive. The report may print fewer of them than it holds — completeness is
+    graded elsewhere — but nothing outside them: a URL no assessed source and
+    no checked claim carries is a citation the run invented, and Task 7
+    renders references from evidence ids precisely so that cannot happen.
+
+    Deliberately not a second name for the ``citations_known`` gate. That gate
+    compares the report against the case's *declaration* — the URLs the case
+    says are known — while this compares it against the records the run
+    actually holds, and being a metric it costs weight rather than only
+    failing a gate. The invariant is about the run's own evidence, not about
+    the fixture's list.
+    """
+    listed = _listed_citation_urls(output)
+    if not listed:
+        return False
+    return listed <= set(_state_citation_urls(case))
+
+
+def _one_reference_per_work_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """The reference list is one entry per work, under the readable copy.
+
+    The state's derived URLs are reduced by production's own collapse rule —
+    one entry per recorded work, preferring the copy the assessments identify
+    as the original — and the report's list must be exactly that. Printing
+    both copies fails because the list is longer; printing only the reprint
+    fails because it is not the copy the work's own assessment names, which is
+    what makes this a judgement about identity rather than about length.
+
+    Unknown work identity cannot collapse two references into one, so a case
+    whose rows record no work is scored against its own uncollapsed
+    derivation: without recorded identity there is no second reference to
+    catch.
+    """
+    listed = _listed_citation_urls(output)
+    if not listed:
+        return False
+    sources = _field(case.state, "evaluated_sources") or ()
+    try:
+        canonical = collapse_mirror_urls(_state_citation_urls(case), sources)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return listed == {_normalized(url) for url in canonical}
+
+
 # --- Critic gates ----------------------------------------------------------
 
 
@@ -3015,6 +3100,8 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "evidence_markdown_present": _evidence_markdown_present_passes,
     "no_persistence_calls": _no_persistence_calls_passes,
     "no_false_publication_claim": _no_false_publication_claim_passes,
+    "citations_locally_derived": _citations_locally_derived_passes,
+    "one_reference_per_work": _one_reference_per_work_passes,
     # Legacy aliases remain readable for pre-Task-6 artifacts; active Task 6
     # cases use the explicit composition names above.
     "report_present": _report_present_in_state_passes,
