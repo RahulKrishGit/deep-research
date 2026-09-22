@@ -349,6 +349,80 @@ class CampaignResult(ContractModel):
     langsmith_metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
+class ReplayRepetitionResult(ContractModel):
+    """One repetition of one real-agent replay row.
+
+    This is the real-agent harness's repetition record, and it is deliberately
+    not ``CampaignRepetition``: a replay runs the six production agents through
+    the real graph and judges nothing with the whole-report judge, so a
+    repetition forced into that contract would have to carry a judge score that
+    was never computed. What it carries instead is what the run actually
+    produced — the terminal quality, the exit code, the ways it fell short of
+    its case's declared result — plus the two pieces of harness evidence the
+    campaign's contracts have no place for: the socket connections the run
+    attempted, and the fingerprint of the report it published.
+    """
+
+    case_id: str
+    repetition: int = Field(ge=1)
+    session_id: str
+    terminal_quality: str
+    exit_code: int
+    expectation_failures: list[str] = Field(default_factory=list)
+    answered_target_ids: list[str] = Field(default_factory=list)
+    network_attempts: list[str] = Field(default_factory=list)
+    """Every socket connect this repetition attempted. Empty is the evidence.
+
+    A suite that cannot show this empty on every repetition is not accepted:
+    the harness exists to be network-zero, so an attempt is a failure of the
+    proof rather than a warning about it.
+    """
+    report_fingerprint: str
+    """The published report's hash, over its canonical form.
+
+    Canonicalized because two things about a report are facts about the
+    *session* that made it: the ``As of`` clock read, and which ordinal each
+    reference was assigned. The fingerprint is what makes "the same result
+    every time" a measurable claim rather than a hope.
+    """
+
+
+class ReplayCaseResult(ContractModel):
+    """One declared replay row, and the repetitions that ran it."""
+
+    case_id: str
+    version: int = Field(ge=1)
+    expected_product_result: str
+    decisive_assertion: str
+    repetitions: list[ReplayRepetitionResult] = Field(min_length=1)
+    deterministic: bool
+    """Whether every repetition produced one identical outcome."""
+    passed: bool
+    """Whether every repetition met its case's declared result."""
+    artifact_path: str | None = None
+
+
+class ReplaySuiteResult(ContractModel):
+    """Round-trippable real-agent suite artifact.
+
+    ``mode`` names the harness that ran. Both values are declared because the
+    axis is the harness, not the result shape: a suite run says which one
+    produced it, so evidence from scripted doubles can never be read as
+    evidence from the production agents.
+    """
+
+    campaign_id: str = Field(min_length=1)
+    tier: Literal["controlled"]
+    mode: Literal["real-agent", "graph-historical"]
+    manifest_version: int = Field(ge=1)
+    case_version: int = Field(ge=1)
+    repetitions: int = Field(ge=1)
+    cases: list[ReplayCaseResult] = Field(min_length=1)
+    accepted: bool
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    artifact_path: str | None = None
+
+
 # Descriptive aliases keep the public vocabulary focused on the whole-report
 # campaign while the shorter internal names remain convenient in the runner.
 WholeReportCase = ControlledCase

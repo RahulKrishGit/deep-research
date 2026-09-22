@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import re
 import subprocess
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -42,7 +44,22 @@ from deep_research.e2e_evaluation.models import (
     CampaignResult,
     CaseCampaignResult,
     ControlledCase,
+    ReplayCaseResult,
+    ReplayRepetitionResult,
+    ReplaySuiteResult,
     WholeReportJudgeScore,
+)
+from deep_research.e2e_evaluation.replay import (
+    expectation_failures,
+    network_denied,
+    run_replay_scenario,
+)
+from deep_research.e2e_evaluation.replay_matrix import (
+    REPLAY_CASE_MANIFEST,
+    REPLAY_CASE_MANIFEST_VERSION,
+    REPLAY_CASE_VERSION,
+    ReplayCaseEntry,
+    scenario_by_id,
 )
 from deep_research.graph.orchestrator import (
     compile_research_graph,
@@ -60,6 +77,23 @@ CONTROLLED_REPETITIONS = 3
 JUDGE_FLOOR = 0.70
 JUDGE_MEAN_FLOOR = 0.80
 _SCORE_EPSILON = 1e-9
+
+# The two harnesses a controlled suite can run. The tier is "controlled"
+# either way; which agents ran is a separate axis, and it is the axis a
+# reader has to be told about before reading any result.
+REAL_AGENT_MODE = "real-agent"
+GRAPH_HISTORICAL_MODE = "graph-historical"
+SUITE_MODES = (REAL_AGENT_MODE, GRAPH_HISTORICAL_MODE)
+# A different filename from the legacy suite's ``suite.json``: the two modes
+# share an output directory, and one harness's evidence must never overwrite
+# the other's.
+REPLAY_SUITE_FILENAME = "replay-suite.json"
+_REPLAY_STORAGE_DIRECTORY = "replay"
+
+_AS_OF_PREFIX = "**As of:**"
+_REFERENCE_LINE = re.compile(r"^(\d+)\. (.*)$")
+_CITATION = re.compile(r"\[(\d+)\]")
+_CITATION_RUN = re.compile(r"(?:\[\d+\]){2,}")
 
 
 def _score_at_least(value: float, floor: float) -> bool:
@@ -366,6 +400,210 @@ def run_controlled_suite(**kwargs: Any) -> CampaignResult:
     return run_suite(tier="controlled", **kwargs)
 
 
+def canonical_report_fingerprint(report: str) -> str:
+    """The published report's hash, over the part of it the reader was shown.
+
+    Two things about a published report are facts about the *session* that
+    made it rather than about the report: the ``As of`` clock read, and the
+    ordinal each source was given, which is the order that session's reads
+    were recorded in. Read identity is session-scoped by the product's own
+    contract, so two repetitions of one fixture cite the same sources
+    numbered in whichever order their own reads landed — measured here, that
+    renumbering happens in fifteen of the eighteen rows. Hashing the rendered
+    text as it stands would report a deterministic harness as non-deterministic
+    on five sixths of the matrix.
+
+    So the hash is taken over the canonical form: the clock read dropped, and
+    every reference renumbered by its own label. What remains comparable is
+    which sources the reader was shown against which sentences, so a citation
+    set that gained, lost or moved a source still differs here.
+    """
+    body: list[str] = []
+    references: list[tuple[str, str]] = []
+    for line in report.splitlines():
+        if line.startswith(_AS_OF_PREFIX):
+            continue
+        match = (
+            _REFERENCE_LINE.match(line)
+            if references or line[:1].isdigit()
+            else None
+        )
+        if match is not None:
+            references.append((match.group(1), match.group(2)))
+            continue
+        body.append(line)
+    canonical = {
+        number: index
+        for index, (number, _label) in enumerate(
+            sorted(references, key=lambda item: item[1]), start=1
+        )
+    }
+
+    def _sort_run(run: re.Match[str]) -> str:
+        markers = _CITATION.findall(run.group(0))
+        return "".join(f"[{marker}]" for marker in sorted(markers, key=int))
+
+    rewritten = [
+        _CITATION_RUN.sub(
+            _sort_run,
+            _CITATION.sub(
+                lambda hit: f"[{canonical.get(hit.group(1), int(hit.group(1)))}]",
+                line,
+            ),
+        )
+        for line in body
+    ]
+    listing = sorted(
+        (f"{canonical[number]}. {label}" for number, label in references),
+        key=lambda line: int(line.split(".", 1)[0]),
+    )
+    return hashlib.sha256("\n".join(rewritten + listing).encode("utf-8")).hexdigest()
+
+
+def _replay_repetition(
+    entry: ReplayCaseEntry, repetition: int, *, storage: Path
+) -> ReplayRepetitionResult:
+    """Run one declared row once, with the socket layer denied.
+
+    The guard is not decoration: it is what turns "network-zero" from a claim
+    about the fixture into a recorded fact about the run, and the attempts it
+    records are carried into the result rather than asserted and dropped.
+    """
+    session_id = f"replay-{entry.case_id}-r{repetition}"
+    with network_denied() as attempts:
+        run = run_replay_scenario(
+            scenario_by_id(entry.case_id),
+            root=storage,
+            session_id=session_id,
+            repetition=repetition,
+        )
+    return ReplayRepetitionResult(
+        case_id=entry.case_id,
+        repetition=repetition,
+        session_id=run.session_id,
+        terminal_quality=run.quality_status,
+        exit_code=run.exit_code,
+        expectation_failures=expectation_failures(run),
+        answered_target_ids=run.answered_target_ids(),
+        network_attempts=list(attempts),
+        report_fingerprint=canonical_report_fingerprint(run.report),
+    )
+
+
+def _replay_case_result(
+    entry: ReplayCaseEntry, repetitions: Sequence[ReplayRepetitionResult]
+) -> ReplayCaseResult:
+    """One row's verdict: what it produced, and whether that was its result.
+
+    Determinism is asserted over the whole outcome — the exit code, the
+    terminal quality, the answered targets and the report — not over the exit
+    code alone, which two runs can agree on while publishing different
+    reports.
+    """
+    outcomes = {
+        (
+            item.exit_code,
+            item.terminal_quality,
+            tuple(sorted(item.answered_target_ids)),
+            item.report_fingerprint,
+        )
+        for item in repetitions
+    }
+    return ReplayCaseResult(
+        case_id=entry.case_id,
+        version=entry.version,
+        expected_product_result=entry.expected_product_result,
+        decisive_assertion=entry.decisive_assertion,
+        repetitions=list(repetitions),
+        deterministic=len(outcomes) == 1,
+        passed=all(not item.expectation_failures for item in repetitions),
+    )
+
+
+def run_replay_suite(
+    *,
+    tier: str = "controlled",
+    repetitions: int = CONTROLLED_REPETITIONS,
+    output_directory: str | Path | None = None,
+) -> ReplaySuiteResult:
+    """Run every row of the real-agent matrix and write the suite artifact.
+
+    This is the real thing: six production agents through the real compiled
+    graph, the real reviewer, renderer and publisher, with only the external
+    boundaries scripted and the socket layer denied for every repetition. The
+    inventory is ``REPLAY_CASE_MANIFEST``, so the suite covers every row the
+    versioned manifest declares rather than a hardcoded set.
+    """
+    if tier == "live":
+        raise RuntimeError(LIVE_TIER_NOT_RUN)
+    if tier != "controlled":
+        raise ValueError("tier must be controlled or live")
+    if repetitions != CONTROLLED_REPETITIONS:
+        raise ValueError("controlled replay suite requires exactly 3 repetitions")
+    root = Path(output_directory or DEFAULT_OUTPUT_DIRECTORY)
+    results = [
+        _replay_case_result(
+            entry,
+            [
+                _replay_repetition(
+                    entry,
+                    repetition,
+                    # Each repetition gets its own storage root, so the
+                    # repetitions are isolated from one another and from the
+                    # legacy mode's per-case directories.
+                    storage=(
+                        root
+                        / _REPLAY_STORAGE_DIRECTORY
+                        / entry.case_id
+                        / f"repetition-{repetition}"
+                    ),
+                )
+                for repetition in range(1, repetitions + 1)
+            ],
+        )
+        for entry in REPLAY_CASE_MANIFEST
+    ]
+    attempts = sum(
+        len(item.network_attempts)
+        for case in results
+        for item in case.repetitions
+    )
+    metadata: dict[str, JsonValue] = {
+        "graph_revision": graph_revision_value(),
+        "manifest_version": REPLAY_CASE_MANIFEST_VERSION,
+        "case_version": REPLAY_CASE_VERSION,
+        "case_ids": [case.case_id for case in results],
+        # Written from the recorded attempts, not from the harness's intent:
+        # an artifact claiming "zero" beside a non-zero attempt count would be
+        # the same silent substitution this suite exists to prevent.
+        "network": "zero" if not attempts else "attempted",
+        "network_attempts": attempts,
+    }
+    suite = ReplaySuiteResult(
+        campaign_id=(
+            "controlled-replay-"
+            + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            + "-"
+            + uuid4().hex[:8]
+        ),
+        tier="controlled",
+        mode=REAL_AGENT_MODE,
+        manifest_version=REPLAY_CASE_MANIFEST_VERSION,
+        case_version=REPLAY_CASE_VERSION,
+        repetitions=repetitions,
+        cases=results,
+        # A suite whose runs reached the network is not a suite that passed,
+        # however clean every row's own result was.
+        accepted=all(case.passed for case in results) and attempts == 0,
+        metadata=metadata,
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    artifact = root / REPLAY_SUITE_FILENAME
+    suite = suite.model_copy(update={"artifact_path": str(artifact)})
+    artifact.write_text(suite.model_dump_json(indent=2), encoding="utf-8")
+    return suite
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m deep_research.e2e_evaluation",
@@ -382,6 +620,15 @@ def build_parser() -> argparse.ArgumentParser:
     suite_parser = subparsers.add_parser("suite", help="run the controlled suite")
     suite_parser.add_argument(
         "--tier", choices=("controlled", "live"), default="controlled"
+    )
+    suite_parser.add_argument(
+        "--mode",
+        choices=SUITE_MODES,
+        default=REAL_AGENT_MODE,
+        help=(
+            "which controlled harness to run: the real agents over the replay "
+            "matrix (default), or the historical scripted doubles"
+        ),
     )
     suite_parser.add_argument("--repetitions", type=int, default=CONTROLLED_REPETITIONS)
     return parser
@@ -414,38 +661,105 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"Artifact: {result.artifact_path}")
             print("Network: zero (scripted dependencies only)")
             return 0 if result.accepted else 1
-        result = run_suite(
+        if options.mode == GRAPH_HISTORICAL_MODE:
+            historical = run_suite(
+                tier=options.tier,
+                repetitions=options.repetitions,
+            )
+            for line in graph_historical_suite_lines(historical):
+                print(line)
+            return 0 if historical.accepted else 1
+        suite = run_replay_suite(
             tier=options.tier,
             repetitions=options.repetitions,
         )
-        for case in result.cases:
-            print(
-                f"{case.case_id}: "
-                f"{'accepted' if case.accepted else 'failed'}; "
-                f"coverage {case.mean_coverage:.2f}; "
-                f"judge {case.mean_judge_score:.2f}"
-            )
-        print(
-            f"Suite: {'accepted' if result.accepted else 'failed'} "
-            f"({result.repetitions} repetitions per case)"
-        )
-        print(f"Artifact: {result.artifact_path}")
-        print("Network: zero (scripted dependencies only)")
-        return 0 if result.accepted else 1
+        for line in real_agent_suite_lines(suite):
+            print(line)
+        return 0 if suite.accepted else 1
     except (KeyError, RuntimeError, ValueError) as error:
         print(f"error: {error}")
         return 2
+
+
+def real_agent_suite_lines(suite: ReplaySuiteResult) -> list[str]:
+    """The real-agent suite's own output, one line each."""
+    lines = [
+        (
+            f"{case.case_id}: {'passed' if case.passed else 'failed'} "
+            f"({len(case.repetitions)} repetitions, "
+            f"{'deterministic' if case.deterministic else 'NON-deterministic'})"
+        )
+        for case in suite.cases
+    ]
+    accepted = sum(1 for case in suite.cases if case.passed)
+    lines.append(
+        f"Suite: {'accepted' if suite.accepted else 'failed'} "
+        f"({suite.repetitions} repetitions per case, "
+        f"{accepted}/{len(suite.cases)} rows)"
+    )
+    lines.append(f"Artifact: {suite.artifact_path}")
+    lines.append(network_line(suite))
+    return lines
+
+
+def graph_historical_suite_lines(result: CampaignResult) -> list[str]:
+    """The historical suite's own output, one line each."""
+    lines = [
+        (
+            f"{case.case_id}: {'accepted' if case.accepted else 'failed'}; "
+            f"coverage {case.mean_coverage:.2f}; "
+            f"judge {case.mean_judge_score:.2f}"
+        )
+        for case in result.cases
+    ]
+    lines.append(
+        f"Suite: {'accepted' if result.accepted else 'failed'} "
+        f"({result.repetitions} repetitions per case)"
+    )
+    lines.append(f"Artifact: {result.artifact_path}")
+    lines.append("Network: zero (scripted dependencies only)")
+    return lines
+
+
+def network_line(suite: ReplaySuiteResult) -> str:
+    """What the socket guard recorded, as the run's own evidence.
+
+    Read from the repetitions rather than from the run's configuration: the
+    number is a count of connections the product tried to open, so a suite
+    that reached the network cannot print the zero that would have made it
+    look acceptable.
+    """
+    attempts = sum(
+        len(item.network_attempts)
+        for case in suite.cases
+        for item in case.repetitions
+    )
+    if attempts:
+        return (
+            f"Network: NOT zero (socket layer denied; "
+            f"{attempts} attempts recorded)"
+        )
+    return "Network: zero (socket layer denied; 0 attempts recorded)"
 
 
 __all__ = [
     "CASE_REGISTRY_VERSION",
     "CONTROLLED_REPETITIONS",
     "DEFAULT_OUTPUT_DIRECTORY",
+    "GRAPH_HISTORICAL_MODE",
     "LIVE_TIER_NOT_RUN",
+    "REAL_AGENT_MODE",
+    "REPLAY_SUITE_FILENAME",
+    "SUITE_MODES",
     "build_judge_metadata",
     "build_parser",
+    "canonical_report_fingerprint",
+    "graph_historical_suite_lines",
     "main",
+    "network_line",
+    "real_agent_suite_lines",
     "run_case",
     "run_controlled_suite",
+    "run_replay_suite",
     "run_suite",
 ]

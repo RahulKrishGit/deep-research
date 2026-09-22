@@ -657,6 +657,8 @@ def test_the_replay_suite_runs_the_whole_manifest_not_the_three_legacy_rows(
     assert [case.case_id for case in result.cases] == list(REPLAY_CASE_IDS)
     assert len(result.cases) == len(REPLAY_CASE_MANIFEST)
     assert result.repetitions == 3
+    assert result.metadata["network"] == "zero"
+    assert result.metadata["network_attempts"] == 0
     assert result.accepted
     assert all(case.passed for case in result.cases)
     assert all(case.deterministic for case in result.cases)
