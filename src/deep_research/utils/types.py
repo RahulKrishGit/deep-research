@@ -1644,6 +1644,20 @@ SUBSTANTIVE_STATEMENT_MODES: tuple[StatementMode, ...] = (
     "contested",
 )
 
+#: The modes that can discharge a planned obligation. A different question
+#: from ``SUBSTANTIVE_STATEMENT_MODES``: that one asks "must this carry an
+#: evidence link" (yes for ``contested`` — a recorded disagreement still has
+#: to cite what it disagrees about), this one asks "can this count as the
+#: answer to a target" (no for ``contested`` — a disagreement recorded
+#: without settling it is not an answer, and letting it satisfy a target's
+#: obligation would let a target report answered while the report itself
+#: still states the fact is disputed).
+ANSWERING_STATEMENT_MODES: tuple[StatementMode, ...] = (
+    "settled",
+    "attributed",
+    "inference",
+)
+
 # The qualitative reading of an evidence badge, shared by every surface that
 # reports one — the model-facing packet and the reader report. A reader should
 # learn whether an assertion was independently corroborated, only attributed
@@ -1686,6 +1700,18 @@ class ReportStatement(ContractModel):
     evidence_ids: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
     answered_dimensions: list[str] = Field(default_factory=list)
+    dimension_support: dict[str, list[str]] = Field(default_factory=dict)
+    """Each answered dimension mapped to the cluster ids that carry it.
+
+    Recorded at derivation time by ``derive_statement``, per cluster, so a
+    target check can tell which claim actually carries a required dimension
+    instead of testing the target's support policy against every claim the
+    statement resolves to pooled together. Empty means "built before this
+    attribution existed, or hand-built by a fixture or an older snapshot" —
+    deliberately not "no cluster carries anything": the same polarity as
+    ``Claim.insufficient_reason``, where a missing record reads as "not yet
+    known" rather than as a negative fact.
+    """
     basis: str | None = None
 
     @property
@@ -2040,7 +2066,23 @@ def derive_statement(
         for dimension in dimensions_by_target.get(target_id, ()):
             if dimension not in required:
                 required.append(dimension)
-    propositions = [clusters[cluster_id].proposition for cluster_id in cluster_ids]
+    # Attributed per cluster, not pooled: each cluster's own recorded
+    # proposition is checked against ``required`` on its own, and the
+    # dimension is credited only to the clusters that actually carry it. By
+    # construction this unions to the exact same set ``answered_dimensions``
+    # would be if computed by pooling every proposition up front — see
+    # ``test_recorded_dimension_support_unions_to_the_answered_dimensions``
+    # — but it also records *which* cluster is answerable for, which is what
+    # lets a target check scope its support-policy test to the right claim
+    # instead of testing it against every claim the statement resolves to.
+    dimension_support: dict[str, list[str]] = {}
+    for cluster_id in cluster_ids:
+        proposition = clusters[cluster_id].proposition
+        for dimension in answered_required_dimensions(required, [proposition]):
+            dimension_support.setdefault(dimension, []).append(cluster_id)
+    answered_dimensions = [
+        dimension for dimension in required if dimension in dimension_support
+    ]
     recorded_mode: StatementMode = mode or (
         "inference" if basis.strip() else statement_mode_for_claims(claims)
     )
@@ -2051,7 +2093,8 @@ def derive_statement(
         claim_cluster_ids=cluster_ids,
         evidence_ids=evidence_ids,
         target_ids=target_ids,
-        answered_dimensions=answered_required_dimensions(required, propositions),
+        answered_dimensions=answered_dimensions,
+        dimension_support=dimension_support,
         basis=basis.strip() or None,
     )
 
@@ -2671,15 +2714,22 @@ def _canonical_dimension(value: str) -> str:
     return " ".join(value.replace("-", " ").replace("_", " ").split()).casefold()
 
 
-def statement_claims(
+def statement_claims_by_cluster(
     composition: ReportComposition,
     statement: ReportStatement,
-) -> list[Claim]:
-    """The checked claims one statement rests on, in the order it names them.
+) -> dict[str, list[Claim]]:
+    """The checked claims one statement rests on, keyed by cluster id.
 
     Resolved through both directions of the cluster link: a statement names
     clusters, a claim names the cluster it joined, and a refinement that
-    persisted only one side still resolves.
+    persisted only one side still resolves. ``statement_claims`` is the
+    deduplicated, ordered flatten of this map — the one resolver both read.
+
+    Only the first-registered claim per cluster id is consulted here (the
+    ``by_cluster.setdefault`` below), matching the resolution this function
+    replaces: broadening that to every member claim would loosen the gate a
+    support-policy check reads this map for, which is out of scope for a fix
+    that is tightening it.
     """
     by_id: dict[str, Claim] = {}
     by_cluster: dict[str, Claim] = {}
@@ -2690,11 +2740,24 @@ def statement_claims(
         for alias in claim.cluster_aliases:
             by_cluster.setdefault(alias, claim)
 
-    resolved: list[Claim] = []
+    resolved: dict[str, list[Claim]] = {}
     for cluster_id in statement.claim_cluster_ids:
         claim = by_id.get(cluster_id) or by_cluster.get(cluster_id)
-        if claim is not None and claim not in resolved:
-            resolved.append(claim)
+        if claim is not None:
+            resolved[cluster_id] = [claim]
+    return resolved
+
+
+def statement_claims(
+    composition: ReportComposition,
+    statement: ReportStatement,
+) -> list[Claim]:
+    """The checked claims one statement rests on, in the order it names them."""
+    resolved: list[Claim] = []
+    for claims in statement_claims_by_cluster(composition, statement).values():
+        for claim in claims:
+            if claim not in resolved:
+                resolved.append(claim)
     return resolved
 
 
@@ -2753,7 +2816,7 @@ def target_is_answered(state: ResearchState, target: EvidenceTarget) -> bool:
     for statement in composition.statements:
         if target.target_id not in statement.target_ids:
             continue
-        if not statement.substantive:
+        if statement.mode not in ANSWERING_STATEMENT_MODES:
             continue
         answered = {
             _canonical_dimension(dimension)
@@ -2761,12 +2824,70 @@ def target_is_answered(state: ResearchState, target: EvidenceTarget) -> bool:
         }
         if not required.issubset(answered):
             continue
-        if not statement_satisfies_support_policy(
-            statement,
-            statement_claims(composition, statement),
-            support_policy=target.support_policy,
-        ):
-            continue
+
+        by_cluster = statement_claims_by_cluster(composition, statement)
+        qualifying = {
+            cluster_id
+            for cluster_id, claims in by_cluster.items()
+            if statement_satisfies_support_policy(
+                statement, claims, support_policy=target.support_policy
+            )
+        }
+
+        if not by_cluster:
+            # No cluster resolves at all: a genuinely claimless statement.
+            # Defer to the direct support-policy check — the same check a
+            # single scoped cluster would get — so a claimless ``derivation``
+            # inference still passes (F3's escape) without vacuously passing
+            # a stricter policy (``independent_pair``, ``primary_attribution``)
+            # that a claimless statement never actually meets.
+            if not statement_satisfies_support_policy(
+                statement, [], support_policy=target.support_policy
+            ):
+                continue
+        elif statement.dimension_support:
+            # Attributed path: a statement derived with per-cluster dimension
+            # tracking. Every required dimension must name at least one
+            # cluster that itself qualifies under the target's support
+            # policy — not any cluster the statement happens to resolve to.
+            support_by_dimension: dict[str, list[str]] = {}
+            for dimension, cluster_ids in statement.dimension_support.items():
+                support_by_dimension.setdefault(
+                    _canonical_dimension(dimension), []
+                ).extend(cluster_ids)
+            if not all(
+                dimension in support_by_dimension
+                and any(
+                    cluster_id in qualifying
+                    for cluster_id in support_by_dimension[dimension]
+                )
+                for dimension in required
+            ):
+                continue
+        else:
+            # Fallback path: a legacy statement (a snapshot, a fixture, or a
+            # hand-built record) with no recorded attribution. Scope to the
+            # clusters that actually name this target — by the resolved
+            # claim's own ``target_ids``, or by the cluster registry's
+            # ``target_ids`` when the composition carries one — and require
+            # every one of them to qualify, not just any. A fully legacy
+            # shape where nothing in scope names the target falls back to
+            # every resolved cluster, which is what today's pooled check
+            # already tested.
+            scoped = {
+                cluster_id
+                for cluster_id, claims in by_cluster.items()
+                if any(target.target_id in claim.target_ids for claim in claims)
+                or (
+                    (registered := composition.claim_clusters.get(cluster_id))
+                    is not None
+                    and target.target_id in registered.target_ids
+                )
+            }
+            if not scoped:
+                scoped = set(by_cluster.keys())
+            if not all(cluster_id in qualifying for cluster_id in scoped):
+                continue
         return True
     return False
 
