@@ -1030,7 +1030,16 @@ def _unsupported_mechanism() -> ReplayScenario:
                 "Adoption mechanism",
                 "What mechanism increased Acme widget adoption in the United States in "
                 "2024?",
-                "mechanism",
+                # The obligation is about a cause, so the dimension has to read
+                # as one to the composition table that decides whether the
+                # recorded propositions state it — but a dimension whose head
+                # *is* "mechanism" is one the planning table cannot credit to
+                # any claim at all, however plainly the pages state the cause.
+                # The planner's own dimensions are written "<kind>: <prose>"
+                # ("measure: annual ridership"), which is the phrasing that
+                # both tables read: the head names a measurable kind and the
+                # prose names the cause.
+                "measure: the mechanism behind the change",
                 "Acme widget adoption mechanism United States 2024",
                 _pair(2, "mechanism-2024", "Adoption mechanism note", claim),
                 critical=True,
@@ -1059,6 +1068,18 @@ def _unsupported_mechanism() -> ReplayScenario:
                 "semantic_review_missing",
                 "error:researcher_sub_topic_skipped",
                 "error:researcher_sub_topic_without_findings",
+                # Both of these are the product recording a refusal this case
+                # is about, not a fault of its own. The drafted recommendation
+                # is refused by the composer, which is the refusal the case
+                # names as the reason the phrase cannot reach the reader: the
+                # forbidden assertion is what proves it, and a refusal that
+                # left no record would be indistinguishable from a writer that
+                # never made the claim. The repeated claims are the second
+                # pass re-offering what the first pass already adjudicated,
+                # which is this run recording that a repair round opened to
+                # meet an outstanding obligation found nothing new to check.
+                "error:fact_checker_invalid_claim",
+                "error:synthesizer_invalid_draft",
             ),
             required_invariants=("mechanism_obligation_stays_unanswered",),
         ),
