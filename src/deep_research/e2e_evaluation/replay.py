@@ -679,9 +679,14 @@ class ReplayCompleter(AgentCompleter):
         ``(https://a…, https://b…)``. Reading it as a single ``\\S+`` URL made
         every such row unparseable, so exactly the claims whose corroboration
         the case exists to show were silently dropped from the draft.
+
+        The coverage cell is a list for the same reason: one claim stated by
+        three topics is one row reading ``coverage=topic-01, topic-02,
+        topic-03``, and reading it as a single token made that row unparseable
+        too. The row is drafted once, under the first target it covers.
         """
         rows = re.findall(
-            r"^(C\d+) \[[^\]]*\] (.*) \((.*?)\) coverage=(\S+)$",
+            r"^(C\d+) \[[^\]]*\] (.*) \((.*?)\) coverage=(.+)$",
             text,
             re.M,
         )
@@ -698,7 +703,7 @@ class ReplayCompleter(AgentCompleter):
                     for url in urls.split(",")
                     if url.strip()
                 ),
-                coverage,
+                coverage.split(",")[0].strip(),
             )
             for claim_id, claim_text, urls, coverage in rows
         ]
