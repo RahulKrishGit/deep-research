@@ -224,6 +224,10 @@ __marimo__/
 # SDD scratch workspace
 .superpowers/
 
+# Ad-hoc investigation/diagnostic scaffolding from SDD implementer rounds.
+# Never intended to ship; must stay untracked.
+scratch/
+
 # Local Git worktrees
 .worktrees/
 
