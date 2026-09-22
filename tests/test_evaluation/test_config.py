@@ -35,6 +35,7 @@ from deep_research.evaluation.config import (
 )
 from deep_research.evaluation.judging import judge_prompt_fingerprint
 from deep_research.evaluation.models import AGENT_NAMES
+from deep_research.providers import validate_agent_model_configs
 from deep_research.utils.config import (
     AgentRuntimeConfig,
     ConfigSettings,
@@ -1378,6 +1379,82 @@ def test_an_evaluation_only_profile_is_labelled_non_release_evidence() -> None:
     assert runtime.target_profile_source == "evaluation"
     assert runtime.experiment_only is True
     assert runtime.release_evidence is False
+
+
+def test_a_production_declaration_the_harness_cannot_run_is_not_release_evidence() -> (
+    None
+):
+    """The parity claim covers every knob the run sets, thinking mode included.
+
+    Production declares thinking disabled for the researcher; the harness has
+    one hard-wired mode and runs it enabled, and the declaration is one
+    ``validate_agent_model_configs`` accepts for ``deepseek-v4-flash``. The
+    label was computed from the model and the effort alone, so a run that
+    differed from the shipped configuration in every call it made was reported
+    as production parity and release evidence.
+    """
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={
+                "researcher": {
+                    "thinking_mode": "disabled",
+                    "reasoning_effort": "high",
+                }
+            },
+        )
+    )
+    validate_agent_model_configs(settings.llm, ("researcher",))
+
+    runtime = build(settings=settings, agent_name="researcher")
+
+    assert settings.llm.resolve_for("researcher").thinking_mode == "disabled"
+    assert runtime.target_model == settings.llm.resolve_for("researcher").model
+    assert runtime.target_reasoning_effort == "high"
+    assert runtime.target_profile_source == "production"
+    assert runtime.experiment_only is True
+    assert runtime.release_evidence is False
+    # The mode the run does use stays recorded, so the artifact still says
+    # which configuration produced its numbers.
+    assert (
+        target_llm_config(runtime, settings.llm)
+        .resolve_for("researcher")
+        .thinking_mode
+        == "enabled"
+    )
+    assert experiment_metadata(runtime, settings)["release_evidence"] is False
+
+
+def test_a_frozen_parity_profile_whose_thinking_mode_changed_is_refused() -> None:
+    """Fail preflight: the frozen label named a mode the run no longer matches.
+
+    The model and the effort are untouched here, so only the thinking mode can
+    account for the refusal — the third knob of the same parity claim.
+    """
+    frozen = build(
+        settings=ConfigSettings(
+            llm=LLMConfig(
+                reasoning_effort="high",
+                model_overrides={"researcher": {"reasoning_effort": "high"}},
+            )
+        ),
+        agent_name="researcher",
+    )
+    assert frozen.release_evidence is True
+    edited = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={
+                "researcher": {
+                    "thinking_mode": "disabled",
+                    "reasoning_effort": "high",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(ValueError, match="production"):
+        target_llm_config(frozen, edited.llm)
 
 
 def test_a_cli_runtime_override_is_an_experiment_not_release_evidence() -> None:
