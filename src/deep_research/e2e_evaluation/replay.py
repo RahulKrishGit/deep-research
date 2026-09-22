@@ -459,7 +459,11 @@ class ReplayCompleter(AgentCompleter):
             # candidates, which is the decision the next packet carries them
             # into.
             target = target_id.group(1)
-            if not urls and self.scenario.memory_entries and target not in self.recalled_targets:
+            if (
+                not urls
+                and self.scenario.memory_entries
+                and target not in self.recalled_targets
+            ):
                 self.recalled_targets.add(target)
                 return self._tool("query_memory", {"query": topic.query})
             return self._final("The reads for this topic are complete.")
