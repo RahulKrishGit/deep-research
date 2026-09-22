@@ -1244,6 +1244,52 @@ def test_unknown_identity_asserts_nothing_and_recognizes_nothing(
     )
 
 
+def test_a_reprint_with_an_unknown_relation_and_its_own_publisher_is_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """The shape production actually emits, scoring the case's declared risk.
+
+    ``validated_transport_relation`` downgrades a claimed mirror or
+    syndication to ``unknown`` whenever the read does not evidence the
+    issuer, while ``publisher_id`` is assigned from the read identity
+    regardless — so a reprint whose page names nobody arrives as a
+    non-derivative relation carrying a distinct publisher. Three publishers
+    for one report is verbatim this case's stated risk, and only a relation
+    inside the case's declared ``derivative_relations`` may inherit the
+    original's publisher by relation alone.
+    """
+    mirror = work_role_case.expectations.reference["same_work_urls"][1]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="unknown",
+        publisher_id="repository.example.org",
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 0.0
+
+
+def test_an_unknown_relation_carrying_the_original_publisher_is_not_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """An unknown relation is not itself the defect; the publisher decides.
+
+    The same downgraded row recording the institute as its publisher is the
+    same work however it was served: the relation went unknown, the identity
+    did not. Failing it would punish a run that correctly inherited the
+    publisher across a page that happens not to evidence its issuer.
+    """
+    reference = work_role_case.expectations.reference
+    original, mirror, _wire = reference["same_work_urls"]
+    original_publisher = _evaluated_row(work_role_output, original)["publisher_id"]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="unknown",
+        publisher_id=original_publisher,
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
+
+
 # --- Task 12: upstream independence -----------------------------------------
 
 
