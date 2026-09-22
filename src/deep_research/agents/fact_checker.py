@@ -811,7 +811,7 @@ INSUFFICIENT_REASONS = {
     # prompt: which boundary lost the evidence, which identity test failed, or
     # which part of the support the model could not complete.
     "evidence_not_admitted": (
-        "The model selected an evidence id that was not in its packet."
+        "The model selected an evidence id it was not shown."
     ),
     "handoff_loss": (
         "A passage or read this claim linked to never reached the registry."
