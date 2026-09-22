@@ -12,6 +12,7 @@ from deep_research.agents.evidence import (
     build_read_record,
     require_boundary_manifest,
 )
+from deep_research.agents.researcher import select_sub_topics
 from deep_research.graph.state import (
     DEFAULT_MAX_ITERATIONS,
     FINALIZE_NODE,
@@ -44,6 +45,7 @@ from deep_research.utils.types import (
     REPAIR_STOP_REASONS,
     AcquisitionState,
     CandidateRecord,
+    Claim,
     Critique,
     CritiqueGap,
     EvidenceTarget,
@@ -938,6 +940,137 @@ def test_capacity_remains_while_a_pass_can_still_be_opened() -> None:
 
     assert repair_capacity_spent(state) is False
     assert repair_stop_reason(state, before=before, after=after) is None
+
+
+def _second_unmet_topic() -> SubTopic:
+    """A second planned topic, unmet, with its own obligation id."""
+    return fake_sub_topic(coverage_id="topic-02", priority=2).model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id="topic-02-target-01",
+                    coverage_id="topic-02",
+                    question="What does it cost?",
+                    required_dimensions=["cost"],
+                    required=True,
+                    critical=True,
+                    support_policy="independent_pair",
+                )
+            ]
+        }
+    )
+
+
+def _answered_composition() -> ReportComposition:
+    """One reader statement that satisfies topic-01's cost obligation."""
+    claim = Claim(
+        claim_id="claim-01",
+        text="The cost is 40 EUR per tonne.",
+        source_urls=["https://lab.example/cost"],
+        verdict="verified",
+        evidence_status="verified_pair",
+        confidence=0.9,
+        evidence=["An independent review states the same figure."],
+        contradictions=[],
+        verification_evidence=[],
+        target_ids=["target-01"],
+    )
+    return ReportComposition(
+        question="How mature is quantum error correction?",
+        session_id="session-1",
+        sub_topics=[_unmet_topic()],
+        claims=[claim],
+        summary=[
+            ReportPoint(
+                text=claim.text,
+                claim_ids=[claim.claim_id],
+                source_urls=list(claim.source_urls),
+                statement=ReportStatement(
+                    statement_id="S001",
+                    text=claim.text,
+                    mode="settled",
+                    claim_cluster_ids=[claim.claim_id],
+                    target_ids=["target-01"],
+                    answered_dimensions=["cost"],
+                ),
+            )
+        ],
+    )
+
+
+def test_leftover_work_on_an_answered_topic_does_not_hold_a_stalled_run_open() -> (
+    None
+):
+    """Only the work a refinement pass will pick up is work the run still owes.
+
+    ``pending_repair_work`` counted every entry in
+    ``acquisition_state_by_target``, including sub-topics whose required
+    targets are all answered — and an ordinary pass nearly always leaves
+    unread search candidates queued. A refinement pass never revisits those
+    topics (``select_sub_topics`` omits them), so their queues could never be
+    drained, yet holding one kept ``repair_stop_reason`` from stopping: the run
+    bought every remaining macro pass and ended ``max_iterations_reached``
+    instead of reporting the dead end it had established.
+    """
+    state = fake_research_state(
+        sub_topics=[_unmet_topic(), _second_unmet_topic()],
+        composition=_answered_composition(),
+        critique=fake_critique(should_continue=True, score=4),
+        max_iterations=3,
+        iteration=1,
+        acquisition_state_by_target={
+            "topic-01": AcquisitionState(
+                target_id="topic-01",
+                remaining_calls=3,
+                candidate_urls=["https://lab.example/untouched"],
+            ),
+            "topic-02": AcquisitionState(
+                target_id="topic-02",
+                remaining_calls=0,
+                empty_searches=2,
+                denied_urls=["https://lab.example/denied"],
+            ),
+        },
+    )
+    before = progress_snapshot(state)
+    after = progress_snapshot(state, previous=before)
+
+    # The pass researches topic-02 only: topic-01's obligation is answered, so
+    # neither its queue nor its remaining calls are work this run can spend.
+    assert [topic.coverage_id for topic in select_sub_topics(state)] == [
+        "topic-02"
+    ]
+    assert not [
+        item for item in pending_repair_work(state) if "topic-01" in item
+    ]
+    assert repair_stop_reason(state, before=before, after=after) == (
+        "evidence_unavailable"
+    )
+
+    # Control: the same leftover queued for the topic the pass *will* revisit
+    # is work this run owes, and a run holding it has not run out of capacity.
+    revisited = state.model_copy(
+        update={
+            "acquisition_state_by_target": {
+                "topic-02": AcquisitionState(
+                    target_id="topic-02",
+                    remaining_calls=2,
+                    candidate_urls=["https://lab.example/queued"],
+                )
+            }
+        }
+    )
+    revisited_before = progress_snapshot(revisited)
+    revisited_after = progress_snapshot(revisited, previous=revisited_before)
+
+    assert pending_repair_work(revisited) == [
+        "topic-02:candidate:https://lab.example/queued"
+    ]
+    assert repair_capacity_spent(revisited) is False
+    assert (
+        repair_stop_reason(revisited, before=revisited_before, after=revisited_after)
+        is None
+    )
 
 
 def test_the_progress_snapshot_names_completed_targets_and_open_defects() -> None:
