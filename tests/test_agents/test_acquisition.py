@@ -1715,8 +1715,13 @@ async def test_a_scanned_or_unparseable_document_states_its_limitation(
         for item in policy.dispositions
         if item.stage == "read-selection"
     }
-    assert reasons[scanned_url] == "document_extraction_failed"
-    assert reasons[broken_url] == "document_extraction_failed"
+    # A disposition names the attempt: the URL and the reader that made it.
+    assert reasons[f"{scanned_url}#document_reader#1"] == (
+        "document_extraction_failed"
+    )
+    assert reasons[f"{broken_url}#document_reader#1"] == (
+        "document_extraction_failed"
+    )
     assert policy.reads == {}
     assert policy.evidence == {}
 

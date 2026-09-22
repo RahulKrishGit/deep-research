@@ -1222,6 +1222,35 @@ class AcquisitionPolicy:
             }
         )
 
+    def _attempt_item_id(self, requested: str, tool_name: str) -> str:
+        """The disposition identity of one failed read attempt.
+
+        An attempt is a URL *plus the reader that made it*. When
+        ``web_scraper`` refuses a page as ``unsupported_content_type`` the
+        policy sends ``document_reader`` at the same URL by design, and those
+        two failures are two facts about one URL rather than one fact
+        restated. Keying both to the URL alone made the second a contradiction
+        for an item that already had a reason — ``merge_evidence_dispositions``
+        refuses those by design, and the node turns that ``ValueError`` into
+        ``graph_invalid_agent_state``, ending the run with nothing published.
+
+        The trailing number covers the repetition left over: a discovered URL
+        may be retried while the call budget lasts, and a retry can fail
+        differently (a transport failure this pass, a refusal the next). The
+        count is read off the shared, run-level disposition list the caller
+        passes in — the Researcher's policies all write into one — so an
+        attempt number is stable across the passes of a run instead of
+        restarting with each policy.
+        """
+        base = f"{requested or 'read-attempt'}#{tool_name}"
+        earlier = sum(
+            1
+            for item in self.dispositions
+            if item.stage == "read-selection"
+            and item.item_id.startswith(f"{base}#")
+        )
+        return f"{base}#{earlier + 1}"
+
     def _read_observed(
         self,
         result: ToolResult,
@@ -1450,7 +1479,7 @@ class AcquisitionPolicy:
             reason = "malformed"
         self.dispositions.append(
             EvidenceDisposition(
-                item_id=requested or "read-attempt",
+                item_id=self._attempt_item_id(requested, result.tool_name),
                 stage="read-selection",
                 reason=reason,
                 target_ids=list(
