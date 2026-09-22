@@ -7,14 +7,29 @@ from deep_research.e2e_evaluation.cases import (
     controlled_cases,
     dependencies_for,
 )
+from deep_research.e2e_evaluation.replay_matrix import (
+    GRAPH_ONLY_HISTORICAL_MANIFEST,
+)
 
 
-def test_controlled_registry_has_exactly_three_network_zero_cases() -> None:
-    """Every controlled case is scripted and cannot reach a real service."""
+def test_the_graph_historical_registry_matches_its_declared_inventory() -> None:
+    """Every controlled case is scripted, and is one the inventory declares.
+
+    These three cases are the graph-historical half of the controlled
+    inventory: scripted dependencies and a scripted six-agent double, kept
+    because the product result they recorded is the regression baseline the
+    real-agent rows cannot reproduce. "Exactly three" was the hardcode this
+    derives away from — the count is the manifest's, so a case added to one
+    and not the other fails here instead of quietly disagreeing.
+    """
     cases = controlled_cases()
+    expected = tuple(
+        entry.case_id.removesuffix("-graph")
+        for entry in GRAPH_ONLY_HISTORICAL_MANIFEST
+    )
 
+    assert tuple(case.case_id for case in cases) == expected
     assert tuple(case.case_id for case in cases) == CONTROLLED_CASE_IDS
-    assert len(cases) == 3
     assert {case.tier for case in cases} == {"controlled"}
     assert all(case.network_zero for case in cases)
     assert all(case.scripted_dependencies for case in cases)

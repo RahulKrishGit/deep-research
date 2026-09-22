@@ -626,7 +626,7 @@ def test_controlled_acceptance_boundaries_are_seven_score_aware(
     )
 
 
-def test_controlled_suite_has_three_cases_and_no_report_body_on_summary(
+def test_the_graph_historical_suite_has_three_cases_and_no_report_body_on_summary(
     tmp_path,
 ) -> None:
     result = run_suite(tier="controlled", repetitions=3, output_directory=tmp_path)
