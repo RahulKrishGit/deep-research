@@ -1,5 +1,262 @@
 # Task 12 report — Prove the real agents and CLI in an offline adversarial matrix
 
+## Round 7 - the four named mutations: every guard proven load-bearing
+
+Round 7 had one job. The brief names four mutations, and a matrix row that has
+never been seen to fail is a decoration. Each mutation here restores the
+forbidden pre-fix shape of a real production function for the duration of one
+test and pushes the row it guards through the *same* harness the matrix uses
+(`test_real_agents.py::_repetitions_under_the_mutation` - the declared case,
+three repetitions, storage isolated per repetition, `network_denied()` active).
+All four go red for a reason that names the property; all four are non-vacuous,
+proved by neutering each drop-in to `return real` (`scratch/r7-neutered-red.txt`:
+`4 failed`). Nothing outside the test file changed: `git diff --stat
+d57c300..31c4b5f` is `tests/test_e2e_evaluation/test_real_agents.py | 346
+++++++++++...`, one file.
+
+Dispatch settings: model `deepseek-v4-flash`, reasoning effort `max`. Worktree
+`...\.worktrees\agent-cli-quality-trace-plan`, branch
+`codex/agent-cli-quality-trace-plan`, HEAD confirmed `d57c300` before the first
+command. Baseline `4249 passed, 1 deselected, 2 warnings`, the 18/18 matrix
+green. Untracked `scratch/` from prior rounds left as it was (this round's own
+logs are `scratch/r7-*.txt`, also untracked). I did not push, did not dispatch
+subagents, did not run `git stash`, and did not invoke the paid individual-agent
+evaluation CLI. Every command ran with `PYTHONPATH=<worktree>\src` and the
+worktree as cwd; the import target is printed in §5.
+
+### 1. `omit B` from `claim_evidence_pool` -> `refinement-evidence-recovery` fails
+
+**Seam.** `deep_research.agents.fact_checker.claim_evidence_pool` - the function
+that decides which registry units a claim is adjudicated against, and therefore
+the only input the `verified_pair` badge has. The drop-in `_omitting_b` calls the
+real pool and then drops the last independent account in it (grouped by
+`source_url`, so it is the case's own B that goes missing and not a hardcoded
+id). Commit `612f079`.
+
+**Real captured failure** (`scratch/r7-mutation-failures.txt`; 3 repetitions,
+6 failures each):
+
+```
+terminal quality 'partial' != 'accepted'
+exit code 4 != 0
+required targets unanswered: topic-01-target-01, topic-02-target-01, topic-03-target-01
+0 answerable claims < 3 required
+failure kinds the case does not allow: hard:unaccounted_required_targets, hard:unanswered_critical_targets, unaccounted_target, unanswered_critical_target
+invariant 'refinement_recovered_evidence' broken: no corroborated claim rested on the page the repair acquired
+```
+
+The test also asserts that no claim carries `verified_pair` at all under the
+mutation - the badge is granted *from* the pool - and that the run still
+published a report, so the row fails on the property and not by falling over.
+This is the brief's "case depending on an `independent_pair`/`verified_pair`
+badge"; the recovery row is the one whose decisive assertion reads that badge.
+
+### 2. An invented URL from `statement_source_urls` -> the same positive row fails
+
+**Seam.** `deep_research.agents.report.statement_source_urls`, which derives
+every citation from the evidence registry. `_inventing_a_statement_url` appends
+`https://invented.example.test/never-read` (`_INVENTED_STATEMENT_URL`) to the
+real return value. Commit `612f079`.
+
+**Real captured failure** (3 repetitions, 3 failures each):
+
+```
+terminal quality 'partial' != 'accepted'
+exit code 4 != 0
+failure kinds the case does not allow: error:researcher_sub_topic_skipped, hard:unscored_cited_sources
+```
+
+Two further assertions keep this from being a fixture assertion: the invented
+URL is *not* in any read record of the run (so it is a fabricated citation, not
+a real read the case happened to have), and it *is* present in the published
+report (so the reader was actually handed it). The failure is the citation
+contract - the quality gate's hard `unscored_cited_sources` - observed through
+the case's own `accepted`/exit-0 declaration.
+
+### 3. `query_memory`-as-read -> `memory-is-not-read` fails
+
+**The real check the matrix relies on.** Not a classifier: the acquisition
+policy's own admission. `AcquisitionPolicy._memory_observed` takes a recall and
+queues the remembered URL as a *candidate lead* - the packet text says
+"memory lead requiring original-source read admission" - and no read record can
+be minted from a recall at all, because read admission goes through the
+tool-name table that only `web_scraper` and `document_reader` satisfy. The
+invariant `memory_leads_are_not_reads` asserts exactly the two halves of §2.1:
+the lead must reach a decision packet, and it must never be a read of the run.
+
+**The mutation.** `_memory_recall_admitted_as_read` wraps
+`AcquisitionPolicy._memory_observed`: the real hook still runs (the lead is
+still queued, so the row fails on the read and not on the recall), and then each
+recalled match's own `source_url` and `content` are handed to the *real*
+`policy._read_observed` as a `web_scraper` result - the product's own admission
+path, so the record it produces is the product's, not a fixture's. Commit
+`31c4b5f`.
+
+**Real captured failure** (3 repetitions, 1 failure each):
+
+```
+invariant 'memory_leads_are_not_reads' broken: the remembered lead https://memory-a.example.test/adoption-2024 was recorded as a read of this run
+```
+
+**Finding, first scoping (recorded because it is a real result).** The brief's
+"old forbidden behavior" for this row is the `query_memory` branch that
+`ddc3964` ("stop admitting recalled memory as a source read") removed from
+`agents/steps.py::_read_payload_urls`. Restoring that branch verbatim is
+**inert** for this case: byte-identical results, zero failures. Diagnosed rather
+than papered over - in the agent path read admission is decided *earlier*, in
+the acquisition policy, so `_read_payload_urls`' read URLs are shadowed by what
+the policy already recorded, and the researcher's extraction gate consults
+`policy.reads`, not the shadowed value. The removed rule is still load-bearing
+where its consumers are not shadowed (the fact checker's provenance gate and
+the no-policy researcher path); what changed is which seam the invariant can
+observe. Nothing in `src/` needed touching, so nothing in `src/` was touched:
+the mutation was rescoped to the live seam instead.
+
+### 4. Prefix-only decision context -> `decision-context-late-candidate` fails
+
+**Seam.** `deep_research.agents.acquisition.build_acquisition_context`, the
+Task 3 replacement for prefix-only next-decision feedback (SDD global-constraint
+§2.6; the row's invariant is `late_candidate_reached_decision` plus
+`public_summary_stayed_short`). `_manifest_from_the_public_summary` reproduces
+the pre-fix shape from what the public summary could carry: it re-derives
+`summarize_text(json.dumps([{title, url} for candidate in state.candidate_records.values()]), limit=OBSERVATION_SUMMARY_CHARS)`
+and drops the `- candidate_id=` / `- candidate_urls=` lines whose URLs that
+200-character prefix did not hold. Commit `31c4b5f`.
+
+**Real captured failure** (3 repetitions, 7 failures each):
+
+```
+terminal quality 'partial' != 'accepted'
+exit code 4 != 0
+required targets unanswered: topic-01-target-01, topic-02-target-01, topic-03-target-01
+0 answerable claims < 3 required
+the report does not state '40 percent'
+failure kinds the case does not allow: hard:unaccounted_required_targets, hard:unanswered_critical_targets, unaccounted_target, unanswered_critical_target
+invariant 'late_candidate_reached_decision' broken: the candidate https://bureau12.example.test/adoption-2024 reached 0 request(s), so a later pass never saw it again
+```
+
+`bureau12.example.test/adoption-2024` is `scenario.topics[0].sources[-1]` - the
+row's late candidate. The packet flow confirms the mechanism: in the unmutated
+run the 200-character public summary in packet 005 shows only the cover-note
+while `build_acquisition_context` supplies the full `candidate_urls=` manifest,
+which is why the acquisition context, and not the summary, is what the row
+proves.
+
+**Two blunter versions, recorded because they show what the row guards.** Doing
+the same thing to the *whole* context - returning `text[:200]`, or clamping
+every line to 200 characters - did not isolate the row's property: the run fell
+over on the harness contract instead
+(`ReplayContractError: the review packet listed no statement ids`; `the read of
+...cover-note does not entail the claim it is scripted to support`). A packet
+that loses everything is caught elsewhere; the shape this row guards is a packet
+that keeps the records and drops the candidate that fell past the clamp, which
+is what the final mutation restores.
+
+### 5. Gates (real output)
+
+Import target first, so no gate below can be reading another worktree:
+
+```
+$ PYTHONPATH=<worktree>\src python -c "import deep_research, deep_research.e2e_evaluation.replay as r, deep_research.agents.fact_checker as f, deep_research.agents.report as rep; print(deep_research.__file__); print(r.__file__); print(f.__file__); print(rep.__file__)"
+...\agent-cli-quality-trace-plan\src\deep_research\__init__.py
+...\agent-cli-quality-trace-plan\src\deep_research\e2e_evaluation\replay.py
+...\agent-cli-quality-trace-plan\src\deep_research\agents\fact_checker.py
+...\agent-cli-quality-trace-plan\src\deep_research\agents\report.py
+```
+
+```
+$ PYTHONPATH=... python -m pytest tests/test_evaluation tests/test_e2e_evaluation tests/test_cli -q
+1128 passed, 1 warning in 74.70s (0:01:14)                      [scratch/r7-gate-groups.txt]
+
+$ PYTHONPATH=... python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
+broad-constraints: accepted; coverage 1.00; judge 1.00
+comparative-conflict: accepted; coverage 1.00; judge 0.81
+refinement-evidence-recovery: accepted; coverage 1.00; judge 0.86
+Suite: accepted (3 repetitions per case)
+Network: zero (scripted dependencies only)                      [scratch/r7-gate-controlled-suite.txt]
+
+$ PYTHONPATH=... python -m pytest -q
+4253 passed, 1 deselected, 2 warnings in 87.03s (0:01:27)       [scratch/r7-gate-full.txt]
+
+$ PYTHONPATH=... python -m pytest tests/test_e2e_evaluation/test_real_agents.py -q -k "matrix_case_holds_for_three_offline_repetitions"
+18 passed, 15 deselected, 1 warning in 12.87s                    [scratch/r7-matrix18.txt]
+
+$ PYTHONPATH=... python -m pytest tests/test_e2e_evaluation/test_real_agents.py -q -k "omitting_b or invented_statement_url or query_memory_as_read or prefix_only_decision_context"
+4 passed, 29 deselected, 1 warning in 5.25s                      [scratch/r7-mut-tests.txt]
+
+$ python -m ruff check src tests
+All checks passed!
+
+$ git diff --check
+(no output, exit 0)
+```
+
+`4253` is the `4249` baseline plus exactly the four mutation tests; no earlier
+test was lost, and the 18/18 matrix is green in the same run.
+
+**RED before GREEN on the mutations themselves.** Each mutation test was
+written to fail first with the mutation neutered (drop-in replaced by
+`return real`), so the assertion is known to depend on the mutation rather than
+on the fixture (`scratch/r7-neutered-red.txt`, `4 failed, 29 deselected`):
+
+```
+E   AssertionError: the case passed with one of its two supports dropped
+E   AssertionError: the reader was not handed the invented citation
+E   AssertionError: the mutation did not admit the lead https://memory-a.example.test/adoption-2024 as a read
+E   AssertionError: []                                    # no late-candidate failure to assert on
+```
+
+### 6. Files changed
+
+- `tests/test_e2e_evaluation/test_real_agents.py` - the only file touched, +346
+  lines across two commits:
+  - `612f079` `test(evaluation): exercise real agents and CLI against
+    adversarial evidence` (165 lines): the shared
+    `_repetitions_under_the_mutation` helper, the `claim_evidence_pool` and
+    `statement_source_urls` drop-ins, and their two tests.
+  - `31c4b5f` `test(evaluation): exercise real agents and CLI against
+    adversarial evidence` (181 lines): the `_memory_observed` and
+    `build_acquisition_context` drop-ins and their two tests.
+- No production file changed - not under `src/deep_research/agents/`, not under
+  `src/deep_research/e2e_evaluation/`. The functions above were read to locate
+  the seams and patched only from inside the tests.
+
+### 7. Self-review
+
+- Every mutation test runs the row through `_run` + `expectation_failures`,
+  the same path the matrix test uses, so it cannot pass by judging the run more
+  leniently than the matrix does.
+- Each test asserts both the property-naming failure *and* a second fact that
+  rules out "it broke somehow" - a published report, an absent `verified_pair`,
+  a URL that is not a read, a lead that really is recorded. A crash in the wrong
+  place fails these.
+- Each drop-in is derived from the case's own data (the pool's accounts, the
+  recalled matches, the candidate records) rather than from fixture constants,
+  so none of them pre-commits to a shape the product could legitimately change.
+- The four tests are additive only: the matrix test and the 29 pre-existing
+  tests in the file are unmodified and still pass (`scratch/r7-commit1-tests.txt`
+  `31 passed` at commit 1, `scratch/r7-commit2-tests.txt` `33 passed` at commit 2).
+
+### 8. Concerns
+
+1. **`memory-is-not-read` has moved seams.** The historical
+   `steps._read_payload_urls` branch is inert for this case because admission is
+   decided earlier; the test proves the invariant through the acquisition
+   policy, which is the live seam today. Correct, but it means the mutation test
+   would keep passing if some *other*, later path re-admitted a recall as a read
+   without going through the policy - the invariant would still catch it, but
+   this particular mutation would not.
+2. **Two of the four mutations guard the same row.**
+   `refinement-evidence-recovery` is the brief's own example for both the
+   omitted support and the invented URL; `memory-is-not-read` and
+   `decision-context-late-candidate` are each proven by one mutation. If a wider
+   sweep is wanted later, the other sixteen rows are still unproven in this
+   sense.
+3. **Mutation 4 is scoped to the candidate manifest.** The row's guard is proven
+   for the packet's candidate ids/urls, not for every way an acquisition context
+   could be lossy; the blunt whole-context versions trip the harness contract
+   instead of the invariant, as recorded in §4.
+
 ## Round 6 - 18/18; both rulings landed as TDD commits and the last red row is green
 
 Both round-5 rulings were applied as asked. Ruling 4 - the acquisition-side
