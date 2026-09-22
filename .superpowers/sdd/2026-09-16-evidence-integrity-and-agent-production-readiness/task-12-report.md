@@ -1,5 +1,308 @@
 # Task 12 report — Prove the real agents and CLI in an offline adversarial matrix
 
+## Round 4 — matrix closed to 16/18; two structural defects diagnosed, BLOCKED
+
+Sixteen of the eighteen matrix rows now hold for three offline repetitions
+each. The two that do not — `late-contradiction` and `validated-cache-reuse` —
+are both failing on defects in **shipped** code, diagnosed below with file:line
+evidence and a measured repro; the two specific questions are at the end of
+sections 4.1 and 4.2. Round 3's report is preserved unedited below.
+
+Dispatch settings: model `deepseek-v4-flash`, reasoning effort `max`. Worktree
+`...\.worktrees\agent-cli-quality-trace-plan`, branch
+`codex/agent-cli-quality-trace-plan`, started from the tree round 3 left
+(`55a7851`, 11 failed / 4225 passed, all eleven in
+`tests/test_e2e_evaluation/test_real_agents.py`). I did not push, did not
+dispatch subagents, did not run `git stash`, and did not invoke the paid
+individual-agent evaluation CLI.
+
+---
+
+### 1. What landed this round
+
+| commit | what it is |
+|---|---|
+| `173d9b8` `fix(planner): give the comparison answer form a creditable dimension` | Round 3's blocker, closed by the owner's R1 ruling: `_ANSWER_FORM_REQUIREMENTS["comparison"]` now names the shared basis, so the form shares a token with `_DIMENSION_SIGNALS` and a comparison target can be answered by evidence that fills that atom field. One requirement string in `agents/planner.py`; the strictness of `target_is_answered`, `_DIMENSION_SIGNALS`, and the credit-side exclusion of `answer form:`/`evidence period:` prose are untouched. `comparative-conflict` reached green. Fixture and pin work in the same commit: `e2e_evaluation/replay_matrix.py`, `tests/test_agents/test_planner.py`, `tests/test_evaluation/test_config.py` |
+| `c582e11` | `broad-constraints`: the required phrase `1.2 million supplier records` was a *reordering* of the page's own sentence, so no rendering of the case's own evidence could satisfy it; the row asserts the figure the page states. `replay_matrix.py` |
+| `0c87d19` | `semantic-duplicate-claims`: three fixture defects measured against the packet the run actually asked for — the equivalence proposal named packet *positions* (1, 2) where the stale 2023 claim sits, the two 2024 wordings differed in the relation they state as well as in wording, and the wording that carries `verified_pair` is the one two bodies publish. The 2023 archive is a read of the first topic, not a planned sub-topic: the frozen contract's evidence period is stamped on every target, so a planned 2023 sub-topic carried an obligation its own page could never discharge. `replay_matrix.py` |
+| `ac043b2` | `reopen-unanswered-target`: the second-round pages are only discoverable through the topic's follow-up query, and the first-round record page now names the subject and dimension its answer row is drafted from. `replay_matrix.py` |
+| `0b2f927` | `decision-context-late-candidate`: the corroborating account moves ahead of the late candidate so the topic is answerable while the last source is still the one the decision packet must keep offering; both evidence-poor notes name the record they belong to. `replay_matrix.py` |
+| `612fed9` | `empty-but-clean`: the synthesis packet's coverage cell is a *list* when one claim is stated by several topics - the row carrying the case's only claim was being refused as an empty packet. `replay.py` |
+| `7898252` | `unsupported-mechanism`: the cause obligation is declared the way the planner writes one, and the case declares the two refusals it is about (the composer refusing the drafted recommendation, and the second pass re-offering claims already adjudicated). `replay_matrix.py` |
+| `f695db0` | `blocked-html-pdf-fallback`, which was failing for five separate reasons: the harness read every candidate with the scraper instead of through the product's own required-reader table; `claim_source` let a 403 landing page decide a verdict for a fact two readable documents state; the mirror page was declared `original` (so the collapse rule had no way to prefer the running copy, and the published reference moved between hosts with the session's read order) and did not serve the official's bytes; and the `mirror_not_double_counted` checker asserted the wrong thing. Two new harness tests pin the reader half and the reference-list half. `replay.py`, `replay_matrix.py`, `test_real_agents.py` |
+| `695b0f2` | `memory-is-not-read`: the scripted Researcher never asked long-term memory for anything - a sub-topic that declares no page of its own ended its loop with zero tool calls, so the remembered lead could never reach a decision packet. The fixture recalls once per target, only for such a topic and only when the scenario seeded memory; measured, both leads are carried by requests 005/024/028, no read record names either URL, no claim cites one. The two records such a topic produces are declared, as the sibling partial cases declare them. `replay.py`, `replay_matrix.py` |
+| `81fac82` | `late-contradiction`'s two scripted boundaries made faithful: a read the fixture marks as a contradicting account reaches the adjudication packet as one, attributed to the id the packet gave it; and a row the synthesis packet badges `contradicted` is disclosed as an uncertainty note rather than published as a settled finding (new test `test_writer_discloses_a_claim_the_packet_badges_contradicted`). `replay.py`, `test_real_agents.py` |
+| `d5914f9` | the `late-contradiction` declaration admits the skip the Researcher records for the two topics whose obligations the first pass met - the class five sibling cases already allow. `replay_matrix.py` |
+| `0e53854` | E501 wrap in the memory-recall guard, so the lint gate is clean. `replay.py` |
+
+Nine of the eleven round-start reds are closed. Every case keeps its own three
+offline repetitions, each in its own storage root under its own session, with
+the three outcomes compared for equality.
+
+### 2. The matrix, measured
+
+```
+PYTHONPATH=<worktree>\src python -m pytest tests/test_e2e_evaluation/test_real_agents.py -q
+2 failed, 24 passed, 1 warning in 9.64s
+```
+
+**Green, three offline repetitions each (16):** `broad-constraints`,
+`comparative-conflict`, `refinement-evidence-recovery`,
+`blocked-html-pdf-fallback`, `same-work-mirror`, `semantic-duplicate-claims`,
+`stalled-refinement`, `primary-attribution`, `current-versus-forecast`,
+`unsupported-mechanism`, `judge-failure`, `non-constraint-answer`,
+`empty-but-clean`, `memory-is-not-read`, `decision-context-late-candidate`,
+`reopen-unanswered-target`.
+
+**Red (2),** with the case's own reported reason at repetition 1:
+
+| case | reason at r1 | verdict |
+|---|---|---|
+| `late-contradiction` | `terminal quality 'accepted' != 'partial'`, `exit code 0 != 4`, `the expected gap 'hard:unanswered_critical_targets' was not recorded` | **shipped-code defect, section 4.1** |
+| `validated-cache-reuse` | `terminal quality 'partial' != 'accepted'`, `exit code 3 != 0`, `error:graph_invalid_agent_state`, `error:researcher_sub_topic_skipped`, `hard:unaccounted_required_targets`, `read_downloaded_once`: "no later answer reused a read this run had already made" | **shipped-code defect, section 4.2** |
+
+Both rows are down to the one cause each section 4 names, with the fixture
+noise they started with gone. `late-contradiction` used to fail on
+`contradiction_recorded: "no contradicting passage was recorded for any claim"`
+and now records the passage, the verdict and the disclosure; what it still
+fails on is that the run counts the contested obligation **answered**.
+`validated-cache-reuse` ends at the same halt round 3 recorded, now with the
+cause traced (section 4.2) and with the declaration-level skips and the
+unaccounted-target gap visible in the same failure list.
+
+### 3. Zero-network evidence
+
+Unchanged in shape and re-verified this round: `network_denied()` replaces
+`socket.socket`, `socket.socketpair`, `socket.create_connection` and
+`socket.getaddrinfo`, records each attempt and restores them in a `finally`.
+Every repetition asserts `attempts == []` before reading anything else
+(`test_real_agents.py:572`), and the class-check test does the same (`:432`).
+Every run behind this report, green or red, was made under that guard, and gate
+item 2 prints `Network: zero (scripted dependencies only)`.
+
+### 4. The two blockers
+
+#### 4.1 `late-contradiction`: the claim pool's sub-topic link compares two id spaces that never meet
+
+**A contradicting account the run has already read cannot reach the packet of a
+claim that does not cite it, because the pool's `by_target` link compares the
+claim's evidence-target ids against the units' coverage ids.**
+
+The chain, all in shipped code:
+
+1. `claim_evidence_pool` (`agents/fact_checker.py:986-1039`) builds a claim's
+   packet from three links: by citation, by target, by passage.
+2. `obligations` (line 1008) is the claim's `target_ids` - the planner mints
+   these as `topic-01-target-01` (`agents/planner.py:1293`, `target_id_for`).
+3. Units are registered by the acquisition layer against the sub-topic the read
+   was taken for: `researcher.py:1298` sets
+   `target_id = task.sub_topic.coverage_id` - the bare `topic-01`.
+4. `by_target = bool(obligations and obligations.intersection(unit.target_ids))`
+   (`fact_checker.py:1029-1031`) therefore intersects `{topic-01-target-01}`
+   with `{topic-01}`.
+
+**Measured over all eighteen cases** (`scratch/r4-pool-link.py`, output
+`scratch/r4-pool-link-2.txt`): unit target-id shapes `{'coverage'}`, claim
+target-id shapes `{'obligation'}`, and **0 of 331 (claim, unit) pairs whose ids
+intersect** - so the link admits nothing, in any case, ever.
+`claim_missing_read_ids` (`fact_checker.py:1097`) makes the same comparison
+against `read.target_ids` and is dead for the same reason.
+
+**Run level.** In `late-contradiction` a third publisher states 30 percent
+where two state 40, and all three are reads of the same sub-topic. The
+40-percent claim cites only the two agreeing pages, so its pool never sees the
+rival page: measured, the run ends **accepted / exit 0** with the figure
+settled as a finding, the rival account recorded as a claim of its own, and the
+critical target counted answered (`scratch/r4-lc3.py`, `scratch/r4-lc3.txt`).
+The case's decisive assertion - a material conflicting passage past prefix
+limits stays visible and blocks false settlement - is exactly what does not
+happen.
+
+**Proposal, measured** (`scratch/r4-proposal-pool-link.patch`, 46 lines, **not
+committed**): a `_claim_coverage_ids(state, target_ids)` helper resolves a
+claim's obligations to the sub-topics they live in, and `by_target` intersects
+those coverage ids instead. With it applied, `late-contradiction` passes all
+three repetitions: quality `partial`, exit 4, the required gap recorded, both
+accounts' rows badged `contradicted`, and the published report carrying the two
+filler findings while putting both adoption figures under "Uncertainty and
+conflicting evidence / Contradicted by independent sources"
+(`scratch/r4-lc6.txt`). That is the case's declared result.
+
+**The proposal is not viable as written**, and this is the part I could not
+decide alone: applying it regresses two rows that are green today -
+`decision-context-late-candidate` and `reopen-unanswered-target` both flip to
+`partial / 4` with `topic-01-target-01` unanswered
+(`scratch/r4-proposal-matrix2.txt`). Mechanism, measured: with the widened pool
+the sub-topic's evidence-poor note pages enter the claim's adjudication packet,
+and the scripted adjudicator takes the verdict from the first declared page
+whose declared claim string appears anywhere in the packet
+(`ReplayCompleter.claim_source`, `replay.py:643-660`) - measured,
+`claim_source -> https://agency12.example.test/method-note | declared verdict
+insufficient_evidence` (`scratch/r4-lc5.py`, `scratch/r4-lc5.txt`). So the row
+is judged on a page that states no figure.
+
+**Question 1.** Which correction is mine to make here?
+
+- **(a)** repair the pool link in production (the shape above, or a narrower one
+  - for instance only units whose passage states the same obligation),
+  accepting that the two green fixtures then need a harness that names the page
+  the packet is *checking*;
+- **(b)** leave production alone and first make the harness read the claim
+  under check precisely (packet side), then re-measure the proposal;
+- **(c)** leave both as they stand and keep the row red, on the reading that the
+  case is correctly catching the defect and the pool's id space is a contract
+  Task 5/11 owns.
+
+#### 4.2 `validated-cache-reuse`: boundary-audit ids collide across the passes of one session
+
+**The second fact-checking pass of a session mints an audit id the first pass
+already used, and the state merge refuses the whole update - a non-recoverable
+halt, not a quality gap.**
+
+The chain:
+
+1. `_record_packet_audit` (`agents/fact_checker.py:2700-2775`) mints each
+   manifest's id from `job_id=self._session_id`, `agent_name`, `operation` and
+   `sequence=len(self._adjudication_audits) + 1` (line 2748).
+2. `_adjudication_audits` is **reset on every pass** (`fact_checker.py:3388`),
+   so pass 2's first packet gets sequence 1 again - the id pass 1 used.
+3. `merge_boundary_audits` (`agents/evidence.py:1927-1942`) refuses one id with
+   two different contents (`raise EvidenceIdentityConflict`), and the reducer
+   runs inside `merge_research_state`, so the entire fact-checker update is
+   rejected: `graph_invalid_agent_state`, non-recoverable, exit 3.
+
+**Measured repro, current tree** (`scratch/r4-vcr3.py`, output
+`scratch/r4-vcr3.txt`) - the two manifests, caught where the product refuses
+them; they differ in exactly one field:
+
+```
+COLLISION audit-122dc229f4ffe3c51eb105f8
+  previous: target_ids=['topic-01-target-01'] ...
+  current : target_ids=['topic-02-target-01', 'topic-01-target-01'] ...
+  (job_id='replay-validated-cache-reuse-r1', agent_name='fact_checker',
+   operation='adjudication_packet', packet_fingerprint identical)
+```
+
+Run level without the fix: `exit 3`, quality `partial`,
+`error_type=graph_invalid_agent_state`, `exception_type=EvidenceIdentityConflict`
+(`scratch/r4-vcr2.txt`).
+
+**Proposal, measured** (`scratch/r4-proposal-audit-sequence.patch`, 32 lines,
+**not committed**): a per-session `self._audit_sequence` that rises across
+passes, read with `getattr(self, "_audit_sequence", 0)` so the tests' own
+`object.__new__(FactCheckerAgent)` stubs still build. With it applied: the halt
+is gone and the run reaches **exit 0 / accepted** with all three required
+targets answered; `tests/test_agents` is 1716 passed; in the matrix the halt is
+gone from `validated-cache-reuse`'s failure list, which now reads the skip
+class, the duplicate-claim refusal and the cache invariant
+(`scratch/r4-audit-proposal-matrix.txt`).
+
+**What sits behind the halt, measured** (`scratch/r4-vcr1.py`,
+`scratch/r4-vcr1.txt`): the run answers both topics' obligations from the
+**first** topic's single read (one claim whose `target_ids` are
+`['topic-02-target-01', 'topic-01-target-01']`), so no second read is ever
+attempted and no read record carries `acquisition_kind == "cache"` - the
+invariant `read_downloaded_once` (`replay.py:1820-1839`) is unsatisfied even
+though no body was fetched twice. The same probe records
+`error:fact_checker_invalid_claim {'rejected': ['claim 2: already checked']}`:
+the scripted second extraction hands the fact checker the identical claim,
+which the product correctly refuses to check twice. Both are fixture work - the
+case's premise is the brief's "known valid original cache artifact", and the
+fixture does not yet build the shape in which a later read must come from the
+registry - but neither can be validated green while the halt stands.
+
+**Question 2.** Is the boundary-audit id collision mine to fix in Task 12, and
+if so which shape: **(a)** a per-session monotone sequence, as proposed; **(b)**
+keep the per-pass sequence and namespace the id by pass (or take the pass out
+of the session-scoped `job_id`); or **(c)** something the evidence-contract
+owner should rule on, with the row left red until then.
+
+### 5. Self-review, concerns and open items
+
+Self-review:
+
+- Every test added this round was RED first, with the failure captured:
+  `test_writer_discloses_a_claim_the_packet_badges_contradicted` failed on
+  `Left contains one more item: 'the rate was 30 percent in 2024'`
+  (`scratch/r4-writer-red.txt`) before the badge was read, and passed after
+  (`scratch/r4-writer-green.txt`). No assertion was relaxed to reach green:
+  the two new writer assertions are stricter than the behaviour they replaced,
+  and no existing case's declaration lost a required target, gap or invariant.
+- The one assertion I changed is a *fixture* declaration gaining a tolerated
+  failure class (`d5914f9`), not a case losing one; the row stayed red after
+  the change for exactly the reason section 4.1 gives
+  (`scratch/r4-lc-nodecl-red.txt`).
+- Nothing I claim is from memory: every number in sections 2 and 6 is the tail
+  of a file under `scratch/` produced by the command printed beside it, and
+  the two line-number corrections in this section were re-checked against the
+  tree after the first draft.
+- `git status` at the end of the round shows no file under
+  `src/deep_research/agents/` modified: the two proposals were applied,
+  measured and reverted, and re-applying either `scratch/*.patch` reproduces
+  the measurements above.
+
+Open items:
+
+- Both remaining reds are rows that were flagged as possibly structural at the
+  start of the round, and both turned out to be.
+- The pool proposal in its measured form is **not** viable as written (two
+  green rows regress); the audit proposal passes the unit suite and unblocks
+  the case to its next failure. Both are one case's worth of evidence, not a
+  vetted fix.
+- Gate item 2 (`suite --tier controlled --repetitions 3`) still runs three
+  cases (`broad-constraints`, `comparative-conflict`,
+  `refinement-evidence-recovery`) rather than the eighteen-row manifest. Wiring
+  it is not cheap and remains open, as round 3 recorded.
+- Still not started: the four named mutation tests, and the
+  `validate_cached_read`/`cache_reuse_problem` focused test.
+- The published report's reference numbering is **session-scoped** (read
+  identity is salted by session, so the same fixture cites the same sources
+  numbered in the order its own reads landed). The matrix canonicalizes the
+  report by URL before comparing repetitions and says so in the test.
+- The harness's `claim_source` resolves a packet's verdict by "the first
+  declared page whose claim string appears anywhere in this packet". It is
+  correct for every green case today, but section 4.1 shows it decides the
+  wrong page as soon as a packet carries other pages that mention the claim's
+  subject. I have not changed it, because the change is only measurable against
+  the pool question.
+- Every harness run writes under a caller-supplied `root`, so offline fixture
+  output cannot land in the live evaluation namespace (D-14); the gate's own
+  artifact went to `output\evaluations\e2e\suite.json`.
+
+### 6. Baseline and the gate, at the final tree `0e53854`
+
+Baseline at the round-start tree (`55a7851`): **11 failed, 4225 passed**, every
+failure in `tests/test_e2e_evaluation/test_real_agents.py`.
+
+```
+1. python -m pytest tests/test_evaluation tests/test_e2e_evaluation tests/test_cli -q
+   2 failed, 1118 passed, 1 warning in 45.54s
+   (both failures are the two cases in section 4)
+
+2. python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
+   broad-constraints: accepted; coverage 1.00; judge 1.00
+   comparative-conflict: accepted; coverage 1.00; judge 0.81
+   refinement-evidence-recovery: accepted; coverage 1.00; judge 0.86
+   Suite: accepted (3 repetitions per case)
+   Artifact: output\evaluations\e2e\suite.json
+   Network: zero (scripted dependencies only)
+
+3. python -m pytest -q
+   2 failed, 4237 passed, 1 deselected, 2 warnings in 55.57s
+   (the same two failures; every other test green)
+
+4. python -m ruff check src tests
+   All checks passed!
+
+5. git diff --check
+   (no output)
+```
+
+No pre-existing test regressed: the pass count rose from 4225 to 4237 and the
+failure count fell from 11 to 2. Tree state at the end of the round: `0e53854`
+on `codex/agent-cli-quality-trace-plan`, nothing pushed, `git status` clean
+apart from this report file and the pre-existing untracked `scratch/`.
+
 ## Round 3 — **BLOCKED** on the comparison answer form
 
 One structural production defect, diagnosed with file:line evidence and a
