@@ -3307,6 +3307,30 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             if event is not None:
                 self._repair_events.append(event)
 
+    def _acquisition_key(self, target_id: str | None) -> str:
+        """The key the run's acquisition state is written under for a target.
+
+        ``acquisition_state_by_target`` is the Researcher's, keyed by the
+        sub-topic's ``coverage_id`` — one acquisition loop runs per sub-topic
+        — while a claim's obligation carries the namespaced target id
+        (``topic-01-target-01``). Reading the queue by that id found nothing,
+        so the resume context this claim's loop renders was always empty and
+        the loop never saw what the run had already queued for its own
+        sub-topic.
+
+        A target id the plan does not name keeps the id it came with: a plan
+        built before the planner namespaced its targets stamped the coverage
+        id on the target itself, and that id is the key its entry was written
+        under.
+        """
+        for sub_topic in self._sub_topics:
+            if any(
+                target.target_id == target_id
+                for target in sub_topic.evidence_targets
+            ):
+                return sub_topic.coverage_id
+        return target_id or ""
+
     def build_decision_context(
         self,
         task: AgentTask,
@@ -3325,7 +3349,9 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         if not isinstance(task, ClaimTask):
             return ""
         target_id = task.target_ids[0] if task.target_ids else None
-        stored = self._run_acquisition_state.get(target_id or "")
+        stored = self._run_acquisition_state.get(
+            self._acquisition_key(target_id)
+        )
         discovered: list[str] = []
         for step in steps:
             for url in read_evidence_urls(step):

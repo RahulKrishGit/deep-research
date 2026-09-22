@@ -620,16 +620,22 @@ def evidence_exhausted(state: ResearchState) -> bool:
     target nobody has tried to acquire for yet is not evidence anyone failed
     to find, and calling that "unavailable" would report a dead end where the
     truth is that the work has not started.
+
+    The attempt is read under ``EvidenceTarget.coverage_id`` — the key the
+    Researcher writes ``acquisition_state_by_target`` under, because one
+    acquisition loop runs per sub-topic — and never under ``target_id``, which
+    is namespaced *inside* that coverage id (``topic-01-target-01``). Looking
+    it up by target id found no attempt in any production run, so this
+    function was constantly False and a target whose every lead was spent was
+    reported as a stall instead of as the dead end the run had established.
     """
-    outstanding = {
-        target.target_id for target in unanswered_required_targets(state)
-    }
+    outstanding = unanswered_required_targets(state)
     if not outstanding:
         return False
     attempts = [
-        state.acquisition_state_by_target[target_id]
-        for target_id in sorted(outstanding)
-        if target_id in state.acquisition_state_by_target
+        state.acquisition_state_by_target[target.coverage_id]
+        for target in outstanding
+        if target.coverage_id in state.acquisition_state_by_target
     ]
     if len(attempts) != len(outstanding):
         return False

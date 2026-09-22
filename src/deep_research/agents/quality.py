@@ -159,7 +159,32 @@ def _mentions_coverage_id(note: str, coverage_id: str) -> bool:
     return re.search(pattern, note.casefold()) is not None
 
 
-def _has_outstanding_work(state: ResearchState, target_id: str) -> bool:
+def _acquisition_state_for(
+    state: ResearchState, target_id: str
+) -> AcquisitionState | None:
+    """The acquisition state of the target a given obligation id names.
+
+    The Researcher is the only writer of ``acquisition_state_by_target``, and
+    it keys each entry by the sub-topic's ``coverage_id``: one acquisition
+    loop runs per sub-topic, and a target's own id is namespaced *inside*
+    that coverage id (``topic-01-target-01``). A reader looking the queue up
+    by target id therefore found nothing in any production run, which read as
+    "this obligation has no queue" — the opposite of what the entry said.
+
+    A target id the plan does not name resolves to no state at all, which is
+    the honest answer for it: the accounting has no queue to judge and no
+    attempt to credit.
+    """
+    for topic in state.sub_topics:
+        for target in counted_evidence_targets(topic.evidence_targets):
+            if target.target_id == target_id:
+                return state.acquisition_state_by_target.get(
+                    target.coverage_id
+                )
+    return None
+
+
+def _has_outstanding_work(acquisition: AcquisitionState | None) -> bool:
     """True when this target's acquisition still holds queued work.
 
     Keyed on state, not on which reason wrote a disposition:
@@ -172,7 +197,6 @@ def _has_outstanding_work(state: ResearchState, target_id: str) -> bool:
     queued" — see the second branch's own docstring in
     ``_accounted_target_ids``.
     """
-    acquisition = state.acquisition_state_by_target.get(target_id)
     if acquisition is None:
         return False
     return bool(
@@ -234,6 +258,10 @@ def _accounted_target_ids(
     Nothing else does. In particular a target nobody has attempted yet is
     *not* accounted for: calling an unstarted obligation "unavailable" is the
     same error as calling it "answered", in the opposite direction.
+
+    Both records are read through the target's own coverage id
+    (``_acquisition_state_for``), which is the key the Researcher writes the
+    queue under.
     """
 
     accounted: set[str] = set()
@@ -243,13 +271,15 @@ def _accounted_target_ids(
             for target_id in disposition.target_ids
             if target_id in unanswered
             and _accounts_for_target(disposition, target_id)
-            and not _has_outstanding_work(state, target_id)
+            and not _has_outstanding_work(
+                _acquisition_state_for(state, target_id)
+            )
         )
     for target_id in unanswered:
-        acquisition = state.acquisition_state_by_target.get(target_id)
+        acquisition = _acquisition_state_for(state, target_id)
         if acquisition is None:
             continue
-        if _has_outstanding_work(state, target_id):
+        if _has_outstanding_work(acquisition):
             continue
         if acquisition.denied_urls or acquisition.empty_searches >= 2:
             accounted.add(target_id)
