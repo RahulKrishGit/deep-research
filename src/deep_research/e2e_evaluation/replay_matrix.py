@@ -579,18 +579,47 @@ def _same_work_mirror() -> ReplayScenario:
 def _semantic_duplicate_claims() -> ReplayScenario:
     """Paraphrases of one fact collapse; a different year does not.
 
-    Two pages state the same 2024 figures in different words, and the run's
-    equivalence pass is scripted to propose exactly that pair: one fact, two
-    wordings, one row. A third page states the same measure for 2023, and
-    nothing proposes it - a different period is a different claim, and merging
-    it would put a stale figure behind a current answer.
+    One 2024 fact is published by two bodies in the same words, and by a third
+    in different words; the run's equivalence pass is scripted to propose the
+    paraphrase pair, and all three must end as one row. A fourth page states
+    the same measure for 2023, and nothing proposes it - a different period is
+    a different claim, and merging it would put a stale figure behind a
+    current answer.
+
+    The corroborated wording carries the pair, on purpose. ``verified_pair``
+    has exactly one writer, the Fact Checker at adjudication time
+    (``agents/fact_checker.py``), and it is granted from the sources one claim
+    row carries; a merge unions what its members recorded
+    (``claim_clusters._union_verdict_status``) and never re-derives it. So a
+    fixture whose only two pages state one fact in two *different* wordings
+    gives the merged row two single-source members and no pair, and the
+    paraphrase row then publishes as ``unverified`` however well corroborated
+    it is. The wording that is corroborated is therefore the wording two
+    bodies publish.
+
+    The two wordings also state the same *relation* as well as the same
+    figure. A paraphrase reading "reached 40 percent" against the long form's
+    "was 40 percent" is not one fact under this contract's own comparator: the
+    extractor records a ``reaches_level`` relation for the first and none for
+    the second, and ``atomic_compatible`` refuses a pair whose stated
+    qualifiers differ, which is the product working and not a fixture to talk
+    around.
+
+    The 2023 archive is a read of the first topic rather than a planned
+    sub-topic of its own. ``planner.apply_answer_contract`` stamps the frozen
+    contract's evidence period onto *every* target the plan carries, and the
+    contract's period is the question's 2024, so a planned 2023 sub-topic
+    carries an obligation that its own 2023 page can never discharge and the
+    run can never reach ``accepted``. What the case needs is not a 2023
+    obligation but a 2023 *read*: a stale figure the run saw and must not
+    merge, nor publish behind the current one.
     """
     long_form = (
         "the Acme widget adoption rate in urban households in the United States was "
         "40 percent in 2024"
     )
     short_form = (
-        "urban household Acme widget adoption in the United States reached "
+        "urban household Acme widget adoption in the United States was "
         "40 percent in 2024"
     )
     stale = (
@@ -624,18 +653,13 @@ def _semantic_duplicate_claims() -> ReplayScenario:
                         short_form,
                         issuer="Independent Bureau 6",
                     ),
-                ),
-                critical=True,
-                labels=("Acme widget", "urban households"),
-            ),
-            _topic(
-                2,
-                "Adoption history",
-                "What did the Acme widget adoption rate in urban households measure in "
-                "2023?",
-                "rate",
-                "urban Acme widget adoption United States 2023",
-                (
+                    _page(
+                        "panel6.example.test",
+                        "urban-2024-second",
+                        "Urban adoption second panel",
+                        long_form,
+                        issuer="Urban Research Panel 6",
+                    ),
                     _page(
                         "archives6.example.test",
                         "urban-2023",
@@ -644,19 +668,32 @@ def _semantic_duplicate_claims() -> ReplayScenario:
                         issuer="Acme Archives 6",
                     ),
                 ),
-                critical=False,
+                critical=True,
                 labels=("Acme widget", "urban households"),
+            ),
+            _filler(
+                2, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
             _filler(
                 3, "Widget funding", "Acme widget funding round", "12 million dollars"
             ),
         ),
-        equivalence_pairs=((1, 2),),
+        # The positions the equivalence packet actually shows, read off the
+        # packet rather than assumed from the topic order: the archive's 2023
+        # claim is extracted second, so the two 2024 wordings are 1 and 4.
+        # Proposing (1, 2) would be proposing to merge a current figure with a
+        # stale one - the merge `different_periods_stay_distinct` exists to
+        # prevent, and which the product refuses.
+        equivalence_pairs=((1, 4),),
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
-            required_target_ids=("topic-01-target-01", "topic-03-target-01"),
-            minimum_answerable_claims=2,
+            required_target_ids=(
+                "topic-01-target-01",
+                "topic-02-target-01",
+                "topic-03-target-01",
+            ),
+            minimum_answerable_claims=3,
             required_invariants=(
                 "paraphrases_merged",
                 "different_periods_stay_distinct",
