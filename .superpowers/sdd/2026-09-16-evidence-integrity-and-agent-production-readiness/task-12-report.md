@@ -1,5 +1,255 @@
 # Task 12 report — Prove the real agents and CLI in an offline adversarial matrix
 
+## Round 5 — 17/18; both rulings landed as TDD commits; `validated-cache-reuse` stops on a new finding
+
+Round 4's two questions were ruled and both rulings landed: the boundary-audit
+id collision is fixed with a per-session sequence (`9b530d8`), the harness's
+claim verdict is now scoped to what the packet selected (`7caa255`), and the
+claim pool is linked to the sub-topics its obligations live in (`263945d`).
+Each fix has its own RED-then-GREEN test and its own commit. The three rows
+Ruling 2c named hold for all three offline repetitions, and no row that was
+green regressed: **seventeen of eighteen** matrix rows are green.
+
+`validated-cache-reuse` remains red, on the invariant `read_downloaded_once`
+alone, and the two facts behind that are measured here for the first time -
+neither is covered by the rulings. **4.1:** the invariant's second half asks
+`state.read_records` for a read with `acquisition_kind == "cache"`, and the
+shipped cache-hit path deliberately keeps the run's own network record
+canonical, so the clause is satisfied only by an admission whose read id the
+run has not seen - the persisted artifact this case does not build and the
+harness has no way to seed. **4.2:** every acquisition policy starts its own
+audit sequence over the run's one shared manifest mapping, so each later
+sub-topic's Section 2.6 manifests silently replace the earlier topic's -
+including the admission manifest that recorded the reuse - the same identity
+class as Ruling 1, differing only in that nothing refuses the loss. Ruling 2's
+stop rule is honoured; Ruling 1's iterate-the-fixture instruction is carried as
+far as fixture work reaches, with the case's two self-caused refusals declared
+(`be4608f`, following the sibling rows that declare the identical records), and
+the failure list left holding exactly one line whose fix is not a fixture's.
+
+Dispatch settings: model `deepseek-v4-flash`, reasoning effort `max`. Worktree
+`...\.worktrees\agent-cli-quality-trace-plan`, branch
+`codex/agent-cli-quality-trace-plan`, started from `f47bb19` (round 4's head:
+2 failed / 4237 passed / 1 deselected; the two reds were `late-contradiction`
+and `validated-cache-reuse`). I did not push, did not dispatch subagents, did
+not run `git stash`, and did not invoke the paid individual-agent evaluation
+CLI. Every run below was made with `PYTHONPATH=<worktree>\src` and the worktree
+as cwd, with the import target printed first
+(`python -c "import deep_research; print(deep_research.__file__)"`).
+
+### 1. What landed this round
+
+| commit | what it is |
+|---|---|
+| `9b530d8` `fix(fact-checker): keep boundary-audit ids unique across a whole session` | Ruling 1, applied as proposed and re-tested: a per-session `self._audit_sequence` read with `getattr(self, "_audit_sequence", 0)` so the `object.__new__` stubs still build, so a second pass cannot re-mint an id the first pass used. New test `test_a_second_pass_keeps_its_manifests_distinct_from_the_first`: two passes over one stub, ids asserted disjoint, both manifests merged through the real `merge_boundary_audits`. RED, with the collision captured - both passes minting `audit-0348b27da461b57f573e3416` (`scratch/r5-audit-red.txt`); GREEN - `4 passed, 183 deselected` (`scratch/r5-audit-green.txt`); `tests/test_agents` after the fix - `1908 passed` (`scratch/r5-agents-green.txt`). Pin re-pinned `7012a186eb59` -> `c4d37173726c` with an attributed comment (the pin hashes the agent module source). |
+| `7caa255` `fix(evaluation): scope the harness's claim verdict to what the packet actually selected` | Ruling 2a: `claim_source` resolves the claim the packet states under its `# Claim` header, then only the pages whose evidence ids the packet actually carries (`packet_sources`), instead of scanning the whole scenario registry for the first declared page whose claim string appears anywhere. Two new tests (`test_claim_source_is_the_page_that_states_the_claim_under_check`, `test_claim_source_is_scoped_to_the_pages_the_packet_selected`) with a packet renderer that reproduces the product's own packet shape. RED, with the wrong page measured - `agency12.test/adoption-2024` where the packet selected `bureau12.test/adoption-2024` (`scratch/r5-harness-red.txt`); GREEN - `5 passed, 23 deselected` (`scratch/r5-harness-commit.txt`). |
+| `263945d` `fix(fact-checker): link a claim's evidence pool to its obligations' coverage` | Ruling 2b: `_claim_target_scope` resolves a claim's obligations to themselves (the Fact Checker registers its own acquisitions against the obligation id, `fact_checker.py:2675`) plus the sub-topics those obligations live in (the Researcher registers reads against the coverage id, `researcher.py:1298`), and `by_target` intersects that scope - never another topic's. New test `test_the_pool_links_an_obligation_to_the_units_that_cover_it`. RED, with the rival unit missing - `Extra items in the right set: 'https://lab-c.test/rival'` (`scratch/r5-pool-red.txt`); GREEN - `188 passed` (`scratch/r5-pool-green2.txt`). Pin re-pinned `c4d37173726c` -> `70fa432dfc6d` (`scratch/r5-pin2.txt` is the failure that caught the move). The literal round-4 proposal (coverage ids only) is **not** what shipped: it regressed eleven green tests (`11 failed, 177 passed`, `scratch/r5-pool-green.txt`) because both id spaces are real in production, so the scope keeps both and nothing else. |
+| `2ca4a14` `style(evaluation): wrap two over-long fixture lines from the harness scoping fix` | Gate item 4 caught two E501s `7caa255` introduced; wrapped, gate green. |
+| `be4608f` `test(evaluation): exercise real agents and CLI against adversarial evidence` | `validated-cache-reuse`'s declaration admits the two refusals the case's own shape causes: the topics the first read discharged (and the filler topic) are skipped rather than re-researched, and the second topic's extraction re-drafts the claim the first pass adjudicated, which the product records as the fact having been checked once. Sibling rows declare both classes for the identical records (`unsupported-mechanism`'s comment is the same reasoning); the case still asserts quality `accepted`, exit 0, its two required targets, its minimum claim count and its invariant. |
+
+### 2. The matrix, measured
+
+```
+PYTHONPATH=<worktree>\src python -m pytest tests/test_e2e_evaluation/test_real_agents.py -q
+1 failed, 27 passed, 1 warning in 24.01s        (scratch/r5-matrix-final.txt)
+```
+
+**Green, three offline repetitions each (17):** `broad-constraints`,
+`comparative-conflict`, `refinement-evidence-recovery`,
+`blocked-html-pdf-fallback`, `same-work-mirror`, `semantic-duplicate-claims`,
+`stalled-refinement`, `primary-attribution`, `current-versus-forecast`,
+`unsupported-mechanism`, `judge-failure`, `non-constraint-answer`,
+`empty-but-clean`, `memory-is-not-read`, `decision-context-late-candidate`,
+`reopen-unanswered-target`, `late-contradiction`.
+
+**Red (1):** `validated-cache-reuse` - `invariant 'read_downloaded_once'
+broken: no later answer reused a read this run had already made`
+(`scratch/r5-vcr-fixture.txt`); section 4.
+
+The three rows Ruling 2c named, re-measured after both fixes:
+
+```
+$ python -m pytest tests/test_e2e_evaluation/test_real_agents.py -q \
+    -k 'late-contradiction or decision-context-late-candidate or reopen-unanswered-target'
+3 passed, 25 deselected, 1 warning in 3.19s     (scratch/r5-2c-rows-final.txt)
+```
+
+`late-contradiction` is green for the first time: the pool link of `263945d`
+admits the contradicting account, and the run ends `partial` / exit 4 with the
+required gap recorded, as the case declares.
+
+### 3. Zero-network evidence
+
+Unchanged in shape and re-verified: `network_denied()` replaces
+`socket.socket`, `socket.socketpair`, `socket.create_connection` and
+`socket.getaddrinfo`, records each attempt and restores them in a `finally`.
+Every repetition asserts `attempts == []` before reading anything else, every
+replay behind this report - green or red - ran through `run_replay_scenario`
+inside that guard, and gate item 2 prints `Network: zero (scripted
+dependencies only)`. The two new harness tests touch no network at all: they
+exercise the completer's verdict resolution directly, against a packet built in
+the product's own shape.
+
+### 4. `validated-cache-reuse`, the remaining red
+
+State at the end of the round (`scratch/r5-vcr-errors.txt`): exit 0, quality
+`accepted`, both required targets answered, `quality.hard_failures` empty. The
+halt round 4 recorded is gone (Ruling 1) and the pool link is in (Ruling 2b).
+The run does record the two refusals section 1 describes. What is left is the
+invariant, and the two measured facts behind it.
+
+#### 4.1 the invariant's second half is not satisfiable by the shape this case builds
+
+1. `_invariant_read_downloaded_once` (`replay.py:1868-1888`) requires
+   (i) no URL fetched twice - which holds, measured: four bodies, one fetch
+   each, `Counter({'https://agency11.example.test/adoption-2024': 1, ...})`
+   (`scratch/r5-cache-probe-final.txt`) - and (ii) at least one
+   `state.read_records` entry with `acquisition_kind == "cache"`.
+2. The reuse itself happens, measured: `AFTER-OBS target=topic-02
+   meta_kind=cache` and `VALIDATE read=read-aa46f438c1d kind=network
+   expected=True -> OK` (`scratch/r5-cache-probe3-final.txt`) - topic-02's read
+   of the page topic-01 read is admitted as a validated import.
+3. But the admitted record keeps the original's read id
+   (`validate_cached_read`, `evidence.py:1666-1743`, re-stamps the kind and
+   keeps the identity), and `_read_observed` then stores the **original**
+   record under that id: `self.reads.setdefault(validated.read_id, original)`
+   (`acquisition.py:1207-1213`), whose comment states the rule - "a cache hit
+   is a local admission, not a second read". The cache-stamped record never
+   reaches `self.reads`, so `state.read_records` ends with four records, every
+   one `acquisition_kind == "network"`.
+4. The clause can therefore only hold for an admission whose read id the run
+   has **not** seen - a stored original from another session. The harness has
+   no way to build one: `grep -n cache src/deep_research/e2e_evaluation/replay.py`
+   finds the invariant and nothing else, and the fixture declares the same page
+   on two topics rather than a stored artifact.
+
+**Question 3.** Which correction is mine here? **(a)** the product records the
+admitted cache read in `state.read_records` - a change to a documented
+deliberate rule, and one that would put two records under one body; **(b)** the
+harness gains a way to seed the case with a stored original, so the reuse is an
+import (the brief's row 46, "known valid original cache artifact") and the
+invariant can hold as written; **(c)** the invariant reads the boundary's own
+admission record rather than the read registry - which 4.2 blocks today, since
+that record is currently overwritten in place; or **(d)** leave the row red.
+
+#### 4.2 the acquisition manifests overwrite each other (new production defect)
+
+**Every acquisition policy of a run writes into one shared manifest mapping
+while counting its own sequence from zero, so all but the last sub-topic's
+manifests are silently replaced before any reader sees them.**
+
+The chain, all in shipped code:
+
+1. `AcquisitionPolicy` holds one `boundary_audits` mapping (`acquisition.py:590`,
+   passed in by the caller) and a per-instance `_sequence` starting at 0
+   (`:607`), incremented after each write (`:823`, `:1265`, `:1287`, `:1495`).
+2. `ResearcherAgent._policy_for_task` (`researcher.py:1297-1328`) builds a
+   **new policy per sub-topic**, each with `boundary_audits=self._run_boundary_audits`
+   - the run's one mapping.
+3. `boundary_audit_id` names the job, the agent, the operation and the sequence,
+   so policy #2's first audit of the same operation mints the id policy #1
+   already used, with different contents.
+
+**Measured** (`scratch/r5-cache-probe5.py`, output
+`scratch/r5-cache-probe5-final.txt`): twelve manifest writes over seven ids,
+eight of which replaced an existing id, for example
+
+```
+OVERWRITE[read] target=topic-02 id=audit-fc131260417ec9a6d872c0ed
+  was_op=read_admission fp=0eb33d05e4 -> op=read_admission fp=5af88bd12a
+OVERWRITE[read] target=topic-03 id=audit-ee599db2612369fa0003d721
+  was_op=passage_selection fp=0eb33d05e4 -> op=passage_selection fp=6e35ef489f
+```
+
+The end state holds seven audits,
+`Counter({'adjudication_packet': 3, 'read_admission': 2, 'passage_selection': 2})`,
+and both surviving `read_admission` manifests are `targets: ['topic-03']`
+(`scratch/r5-cache-probe-final.txt`). The manifests for topic-01's and
+topic-02's reads - including the admission that recorded the reuse of 4.1 -
+were replaced in place. **No error is raised and the run is `accepted` / exit
+0**: the loss is silent, which is what separates this from Ruling 1's
+collision, where the merge refused the update loudly. The three
+`adjudication_packet` manifests survive because the Fact Checker's own ids
+carry its agent and operation and now a session-wide sequence.
+
+**Proposal, not applied:** give the run's policies one sequence, shared the way
+`_run_boundary_audits` is shared (`researcher.py:1297-1328`) - the exact shape
+of Ruling 1's fix, with no new id scheme - or take the sub-topic into the id's
+namespace, which changes a format the evidence contract owns.
+
+**Question 4.** Is the acquisition-side id collision mine to fix in Task 12,
+and if so which shape?
+
+### 5. The gate, measured
+
+```
+1. PYTHONPATH=<worktree>\src python -m pytest tests/test_evaluation tests/test_e2e_evaluation tests/test_cli -q
+   1 failed, 1121 passed, 1 warning in 82.56s                    (scratch/r5-gate1c.txt)
+2. PYTHONPATH=<worktree>\src python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
+   Suite: accepted (3 repetitions per case)
+   Artifact: output\evaluations\e2e\suite.json
+   Network: zero (scripted dependencies only)                    (scratch/r5-gate2c.txt)
+3. PYTHONPATH=<worktree>\src python -m pytest -q
+   1 failed, 4242 passed, 1 deselected, 2 warnings in 97.59s     (scratch/r5-gate3c.txt)
+4. python -m ruff check src tests
+   All checks passed!                                            (exit 0)
+5. git diff --check
+   (no output; exit 0)
+```
+
+The full-suite pass count is **4242**, five above the round's 4237 floor: four
+added tests plus `late-contradiction`, which was one of the two failures at the
+start of the round. The one failure in items 1 and 3 is the row of section 4.
+Gate item 2 still runs the controlled tier's three cases rather than the
+eighteen-row manifest (a carried open item, not a regression).
+
+### 6. Self-review, concerns and open items
+
+Self-review:
+
+- Every test added or changed this round was RED first, with the failure
+  captured in the file named beside it, and GREEN after; no assertion was
+  relaxed to reach a green. The two pre-existing assertions that moved are the
+  `fact_checker` prompt-drift pin (moved by the source it hashes, twice, each
+  with an attributed comment) and the `validated-cache-reuse` declaration,
+  which gained two tolerated classes that sibling rows declare for the
+  identical records while every other assertion of the case stayed.
+- The shipped pool fix deviates from round 4's proposal in exactly one place
+  and says so: the literal coverage-id-only form regressed eleven green tests
+  (`scratch/r5-pool-green.txt`), because the two id spaces are both live in
+  production, so the scope keeps the obligations themselves and the sub-topics
+  they live in - and nothing else. With it, `late-contradiction` reaches the
+  result the case declares and the other seventeen rows are unmoved.
+- The harness fix anchors on the packet's stated claim as well as its ids
+  because id-scoping alone still decides the wrong page when a page is *in* the
+  ids and quotes a foreign claim in its own excerpt - measured in round 4
+  (`scratch/r4-lc5.txt`), and pinned by the first of the two new tests.
+- Nothing in this section is from memory: every number is the tail of a file
+  under `scratch/` printed beside it, and the line numbers were re-read from
+  the tree after the first draft.
+
+Concerns:
+
+- 4.2 is wider than this case. Any run with more than one researched sub-topic
+  loses the earlier sub-topics' acquisition manifests, silently, in the state
+  every Section 2.6 consumer reads. The matrix only catches it because this
+  case's invariant looks for a manifest that is gone.
+- `validated-cache-reuse` is red on the invariant alone; with the fixture work
+  of this round in, no further fixture-side change moves it. Questions 3 and 4
+  are the ruling it needs.
+
+Open items:
+
+- The controlled-tier manifest wiring (gate item 2 runs 3 of 18 cases),
+  carried since round 3; not started.
+- The four named mutation tests and the
+  `validate_cached_read`/`cache_reuse_problem` focused test: not started this
+  round.
+- Round 4's remaining notes stand unchanged (session-scoped reference
+  numbering; every harness run writes under a caller-supplied `root`, so
+  offline fixture output cannot land in the live evaluation namespace - this
+  round's gate artifact is `output\evaluations\e2e\suite.json`).
+
 ## Round 4 — matrix closed to 16/18; two structural defects diagnosed, BLOCKED
 
 Sixteen of the eighteen matrix rows now hold for three offline repetitions
