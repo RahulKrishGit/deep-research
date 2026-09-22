@@ -6712,12 +6712,18 @@ async def test_a_candidate_the_request_cannot_carry_is_recorded_in_the_audit(
     # The candidate left out is an explicit omission, not a silent absence:
     # the request never carried it, the claim says the packet was incomplete,
     # and the boundary audit names it.
+    # The candidate left out is an explicit omission, not a silent absence.
     (audit,) = agent._adjudication_audits.values()
     assert audit.disposition_ids == [
         f"{third.evidence_id}:deferred_capacity"
     ]
     assert outcome.result is not None
     (claim,) = outcome.result.claims
+    # And the claim cannot settle over a candidate the model never saw: the
+    # pair was shown and selected, and the badge is still withheld.
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status != "verified_pair"
     assert "packet_incomplete" in claim.audit_flags
+    assert claim.insufficient_reason
 
 

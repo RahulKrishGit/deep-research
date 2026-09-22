@@ -1465,6 +1465,19 @@ def adjudication_messages(
 
 
 
+def unshown_candidates(packet: AdjudicationPacket) -> set[str]:
+    """The packet's own candidates that one request could not carry.
+
+    A candidate here was in the packet the verdict is validated against and was
+    not shown to the model, so it was never judged: an open question, never an
+    absent one. An omission of something that was never a packet candidate says
+    nothing about this claim and is not counted.
+    """
+    return {unit.evidence_id for unit in packet.units}.intersection(
+        item.item_id for item in packet.omitted
+    )
+
+
 def validate_adjudication(
     draft: ClaimVerdictDraft,
     packet: AdjudicationPacket,
@@ -1613,6 +1626,10 @@ def validate_adjudication(
         if eligibility[evidence_id].complete_support
     ]
     supports = complete_supports
+    # A candidate this request could not carry was never judged by the model,
+    # so the claim cannot settle over it: what was not shown is an open
+    # question, never an absent one.
+    unshown = unshown_candidates(packet)
     verified_pair: tuple[str, str] | None = None
     for index, left in enumerate(supports):
         for right in supports[index + 1 :]:
@@ -1621,6 +1638,8 @@ def validate_adjudication(
                 break
         if verified_pair is not None:
             break
+    if unshown:
+        verified_pair = None
 
     conflicts = _conflict_assessments(packet, accepted, supports, contradicts)
     material_unresolved = any(
@@ -3796,6 +3815,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                         claim is not None
                         and not retrieval_needed
                         and claim.verdict == "insufficient_evidence"
+                        and task.packet is not None
+                        and not unshown_candidates(task.packet)
                     ):
                         # The pool looked sufficient and the model could not use
                         # it. Two identities existing is never the same as two
@@ -3804,7 +3825,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                         # its read is admitted and assessed like any other, and
                         # the claim is re-adjudicated over the enlarged union.
                         # Reusing the loop's own bounded budget rather than
-                        # nesting another retry is the point.
+                        # nesting another retry is the point. A candidate the
+                        # request could not carry is excluded: retrieval cannot
+                        # fix a rendering shortfall, and spending tool calls on
+                        # one would not show the model the passage it lacks.
                         react = await self._check_claim(task)
                         task = task.model_copy(
                             update={

@@ -753,7 +753,7 @@ CRITIC_PROMPT_FINGERPRINT = "3d6a1db27572"
 # single-read caller builds one). No prompt text changed either time, and the
 # other five and the judge did not move (verified by recomputing all six).
 # The Fact Checker verdict-correctness pass re-pinned the fact_checker alone
-# (`40afc3090052` -> `2fb6e7611b15`). Module-source drift, not prompt text: the
+# (`40afc3090052` -> `2fb6e7611b15`, -> `efb73308d093`). Module-source drift, not prompt text: the
 # adjudication request now renders the candidates a bounded budget can carry
 # (with the rest recorded as explicit omissions), a refutation is material by
 # scope rather than by ``complete_support``, a contradiction is read from the
@@ -764,7 +764,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "3172856c4bfc",
     "researcher": "d35dcbd0689a",
     "source_evaluator": "e098e605abc4",
-    "fact_checker": "2fb6e7611b15",
+    "fact_checker": "efb73308d093",
     "synthesizer": "27b2c2acc01c",
     "critic": "3d6a1db27572",
 }
