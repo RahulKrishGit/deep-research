@@ -2474,6 +2474,14 @@ class RefinementTarget(ContractModel):
         node's repair for the other's defect. Severity and problem text are
         deliberately absent — they choose which wording survives, never
         whether a job exists.
+
+        ``extend_plan`` is the one exception, and it is the omission's own
+        doing: an original-question omission has no plan id, no cluster and no
+        statement, so two of them share every scope field and their texts are
+        the only thing that tells them apart. Folding them kept the most
+        severe problem and discarded the rest, and the single extension the
+        pass bought then closed one omission while the others disappeared from
+        the very pass purchased to fix them.
         """
         return (
             self.action,
@@ -2482,6 +2490,7 @@ class RefinementTarget(ContractModel):
             tuple(sorted(self.claim_cluster_ids)),
             tuple(sorted(self.statement_ids)),
             self.requested_dimension,
+            self.problem if self.action == "extend_plan" else "",
         )
 
     @property

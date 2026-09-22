@@ -1758,17 +1758,30 @@ def format_review_problems(review: PlanReviewDraft) -> str:
 
 
 def _planned_omission(state: ResearchState) -> str | None:
-    """The original-question omission the graph routed to this node, if any.
+    """Every original-question omission the graph routed to this node, or None.
 
-    The instruction to extend the plan is the typed ``extend_plan`` job in
-    ``state.refinement_targets`` — the same object the refinement hop's edge
+    The instruction to extend the plan is the typed ``extend_plan`` jobs in
+    ``state.refinement_targets`` — the same objects the refinement hop's edge
     dispatched on — so the Planner never re-reads the critique's prose to learn
     why it was entered, and cannot mistake a re-plan for an extension.
+
+    Every job's omission is named, not just the first. One extension pass is
+    one request, and a request that closes only the most severe omission
+    leaves the other defects exactly where they were: the same critique comes
+    back, and the pass that was bought to close them closed one.
     """
-    for job in state.refinement_targets:
-        if job.action == "extend_plan":
-            return job.problem
-    return None
+    problems = list(
+        dict.fromkeys(
+            job.problem.strip()
+            for job in state.refinement_targets
+            if job.action == "extend_plan" and job.problem.strip()
+        )
+    )
+    if not problems:
+        return None
+    if len(problems) == 1:
+        return problems[0]
+    return "\n".join(f"- {problem}" for problem in problems)
 
 
 def extension_messages(
