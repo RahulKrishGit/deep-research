@@ -1542,8 +1542,13 @@ def _reopen_unanswered_target() -> ReplayScenario:
                         "agency13.example.test",
                         "record-2024",
                         "Adoption record",
-                        "the record lists a title and a publication date and no "
-                        "measured value",
+                        # The record names what it is a record of — the answer
+                        # row's subject and dimension are checked against the
+                        # row's own evidence, so a page that withheld even the
+                        # subject would be refused as a drafted answer rather
+                        # than as an unsupported figure.
+                        "the Acme widget adoption rate record lists a title "
+                        "and a publication date and states no measured value",
                         issuer="Acme Registry 13",
                         verdict="insufficient_evidence",
                     ),
@@ -1566,6 +1571,9 @@ def _reopen_unanswered_target() -> ReplayScenario:
                 ),
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
+                follow_up_queries=(
+                    "Acme widget adoption rate United States 2024 second source",
+                ),
             ),
             _filler(
                 2, "Widget funding", "Acme widget funding round", "12 million dollars"
