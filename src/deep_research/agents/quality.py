@@ -193,6 +193,11 @@ def _accounts_for_target(disposition: EvidenceDisposition, target_id: str) -> bo
     selected passage that yielded no finding — and those say one passage was
     not used, never that the obligation cannot be met. Counting them turned
     the §2.3 accounting gate off for nearly every target that had a read.
+
+    No producer writes a target-itemed record today, so on real input this
+    predicate is never true and the accounting comes from the acquisition
+    trail (``_accounted_target_ids``). It states the rule such a record would
+    have to meet rather than describing a path the run takes.
     """
     return disposition.item_id == target_id and bool(disposition.reason.strip())
 
@@ -206,12 +211,18 @@ def _accounted_target_ids(
     Two local records count, and both are evidence a reader can check rather
     than a claim about the model's intent:
 
-    * an ``EvidenceDisposition`` whose *item* is the target — a terminal
-      judgement about the obligation, the Section 2.6 audit trail for "every
-      candidate for this target was denied". A per-passage omission, however
-      explicit its reason, does not count (``_accounts_for_target``);
+    * an ``EvidenceDisposition`` whose *item* is the target — the shape a
+      terminal judgement about the obligation takes. **No producer writes one
+      today**: every construction site in the tree records a read id, an
+      evidence id, a URL, or an attempt marker, so on real input this branch
+      never fires. It is kept as the rule such a record has to satisfy, not as
+      a path anything currently takes, and it must not be read as an audit
+      trail the run is producing. A per-passage omission, however explicit its
+      reason, does not count (``_accounts_for_target``);
     * an acquisition state for the target that shows a spent search (a denied
-      URL, or two empty searches) with nothing queued behind it.
+      URL, or two empty searches) with nothing queued behind it. **This is the
+      live path**: it is where a run actually records that an obligation was
+      pursued and could not be met.
 
     Neither counts while the target's acquisition still holds queued work
     (``_has_outstanding_work``): a deferral is a decision to do the work

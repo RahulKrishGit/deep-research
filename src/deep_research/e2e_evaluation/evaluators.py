@@ -178,7 +178,7 @@ def production_cli_summary(lines: Sequence[str]) -> dict[str, JsonValue]:
         summary["quality_status"] = quality_line.removeprefix("Quality: ").split(
             " ", 1
         )[0]
-        coverage = re.search(r"(\d+)/(\d+) topics covered, (\d+)%", quality_line)
+        coverage = re.search(r"(\d+)/(\d+) topics claimed, (\d+)%", quality_line)
         if coverage is not None and int(coverage.group(2)):
             summary["coverage_ratio"] = int(coverage.group(3)) / 100
     evidence_line = next(

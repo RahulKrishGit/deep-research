@@ -842,6 +842,11 @@ def _verdict_lines(outcome: ResearchOutcome) -> list[str]:
     A fragment is printed only when the state carries it: no model review
     means no critic score, and a run no quality pass judged prints its verdict
     alone rather than a row of invented zeroes.
+
+    The topic fragment is the *claimed* count and says so. The Coverage line
+    below carries the substantive reading of the same denominator, and two
+    lines printing different numbers for one quantity under one name is how a
+    run publishes a topic as covered and as not covered at the same time.
     """
     parts: list[str] = []
     critique = outcome.state.critique
@@ -851,7 +856,7 @@ def _verdict_lines(outcome: ResearchOutcome) -> list[str]:
     if quality is not None:
         parts.append(
             f"{quality.covered_topics}/{quality.planned_topics} topics "
-            f"covered, {quality.coverage_ratio:.0%}"
+            f"claimed, {quality.coverage_ratio:.0%}"
         )
     detail = f" ({'; '.join(parts)})" if parts else ""
     return [f"Quality: {outcome.quality_status}{detail}"]

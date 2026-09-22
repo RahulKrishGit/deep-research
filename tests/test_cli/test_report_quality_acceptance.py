@@ -919,7 +919,7 @@ def _stdout_metrics(stdout: str) -> dict[str, int | str]:
     )
     quality = re.search(
         r"^Quality: (?P<status>\S+) \(critic (?P<score>\d+)/10; "
-        r"(?P<covered>\d+)/(?P<planned>\d+) topics covered, "
+        r"(?P<covered>\d+)/(?P<planned>\d+) topics claimed, "
         r"(?P<ratio>\d+)%\)$",
         stdout,
         re.MULTILINE,

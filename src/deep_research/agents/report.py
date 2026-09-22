@@ -45,6 +45,7 @@ from deep_research.agents.identity import (
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import summarize_text
 from deep_research.utils.types import (
+    ANSWERING_STATEMENT_MODES,
     EVIDENCE_BADGE_LABELS,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_NOT_GATED,
@@ -439,15 +440,21 @@ def collapse_mirror_urls(
     return collapsed
 
 
-def _claim_urls(composition: ReportComposition, claim_ids: Sequence[str]) -> list[str]:
+def _claim_urls(
+    composition: ReportComposition,
+    claim_ids: Sequence[str],
+    *,
+    supporting: bool,
+) -> list[str]:
     """Every URL the named checked claims are cited by, in recorded order.
 
-    Only the passages recorded as *supporting* count. A verification passage
-    carries the stance it was selected with, so a passage filed as
-    contradicting the claim is the rebuttal: printing it after a statement as
-    one of that statement's citations credits the thing the statement
-    disputes, and counting it as a cited source overstates what carried the
-    judgement.
+    Only the passages recorded as *supporting* count for a statement presented
+    as supporting: a verification passage carries the stance it was selected
+    with, so a passage filed as contradicting the claim is the rebuttal, and
+    printing it after a supporting statement as one of that statement's
+    citations credits the thing the statement disputes. A statement presented
+    as contested cites both, because there the rebuttal is the point
+    (``statement_citation_urls``).
     """
     urls: list[str] = []
     wanted = set(claim_ids)
@@ -459,7 +466,7 @@ def _claim_urls(composition: ReportComposition, claim_ids: Sequence[str]) -> lis
             if url and url not in urls:
                 urls.append(url)
         for passage in claim.verification_evidence:
-            if passage.stance != "supports":
+            if supporting and passage.stance != "supports":
                 continue
             url = normalize_source_url(passage.source_url)
             if url and url not in urls:
@@ -470,15 +477,18 @@ def _claim_urls(composition: ReportComposition, claim_ids: Sequence[str]) -> lis
 def _cluster_urls(
     composition: ReportComposition,
     cluster_ids: Sequence[str],
+    *,
+    supporting: bool,
 ) -> list[str]:
-    """Every citation the named clusters recorded for a supporting verdict.
+    """Every citation the named clusters recorded for this statement.
 
     ``verdict_evidence`` is per verdict, so this is the union in the order the
     cluster's own verdict list records — the citations that carried the
-    judgement, not only the URL of the finding that first raised it. A
-    ``contradicted`` verdict is excluded: its evidence is what disputed the
-    proposition, and a reader statement asserting that proposition must not
-    list its rebuttal among the citations that carry it.
+    judgement, not only the URL of the finding that first raised it. For a
+    statement presented as supporting, a ``contradicted`` verdict is excluded:
+    its evidence is what disputed the proposition, and a statement asserting
+    that proposition must not list its rebuttal among the citations that carry
+    it. A statement presented as contested keeps it, for the same reason.
     """
     urls: list[str] = []
     for cluster_id in cluster_ids:
@@ -490,7 +500,7 @@ def _cluster_urls(
             *(
                 url
                 for verdict in cluster.verdicts
-                if verdict != "contradicted"
+                if not (supporting and verdict == "contradicted")
                 for url in cluster.verdict_evidence.get(verdict, [])
             ),
         ]
@@ -515,14 +525,30 @@ def statement_citation_urls(
     that first raised it. The result is collapsed per work, so a mirrored copy
     contributes one reference. A model-supplied URL never enters this
     function.
+
+    Which of those citations count depends on how the statement is presented
+    (Section 2.4: "attributed/contested points cite the appropriate
+    source/contradiction"). A statement the reader is shown as supporting —
+    ``settled``, ``attributed`` or ``inference`` — cites its support and never
+    its rebuttal. A statement presented as ``contested`` cites the source that
+    disputes it as well: that is the citation a reader checks the recorded
+    disagreement against, and withholding it published a contested bullet
+    whose every citation agreed with it.
     """
+    supporting = statement.mode in ANSWERING_STATEMENT_MODES
     urls = statement_source_urls(
         statement.evidence_ids, composition.evidence_units
     )
     claims = _statement_owner_claims(composition, statement)
     for url in (
-        *_cluster_urls(composition, statement.claim_cluster_ids),
-        *_claim_urls(composition, [claim.claim_id for claim in claims]),
+        *_cluster_urls(
+            composition, statement.claim_cluster_ids, supporting=supporting
+        ),
+        *_claim_urls(
+            composition,
+            [claim.claim_id for claim in claims],
+            supporting=supporting,
+        ),
     ):
         if url not in urls:
             urls.append(url)
@@ -2292,7 +2318,9 @@ def _coverage_counts(
     because that is what the field meant to a reader of this record; the
     claimed count the snapshot also carries is published beside it as
     ``claimed_covered_topics``, and is omitted — not zeroed — when no snapshot
-    recorded one.
+    recorded one. A snapshot written before the substantive numerator existed
+    publishes the count it does carry (``measured_covered_topics``), so a
+    legacy record never shows a zero count beside its own nonzero ratio.
     """
     from deep_research.agents.quality import (  # noqa: PLC0415
         compute_substantive_coverage,
@@ -2318,7 +2346,7 @@ def _coverage_counts(
     )
     return {
         "planned_topics": quality.planned_topics,
-        "covered_topics": quality.substantive_covered_topics,
+        "covered_topics": quality.measured_covered_topics,
         "claimed_covered_topics": quality.covered_topics,
         "substantive_topic_ratio": quality.substantive_topic_ratio,
         "planned_targets": quality.planned_targets,

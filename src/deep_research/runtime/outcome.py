@@ -466,7 +466,10 @@ class ResearchOutcome:
         counted required target is answered — not the claimed one the snapshot
         also carries for historical artifacts. A field named on
         ``CoverageProgress`` as the measured reading must not publish a topic
-        the report never answered.
+        the report never answered. A snapshot written before the numerator
+        existed falls back to the count it does carry
+        (``measured_covered_topics``), so an old record never reads as zero
+        beside its own nonzero ratio.
         """
         quality = self.quality
         if quality is None:
@@ -478,7 +481,7 @@ class ResearchOutcome:
         )
         return CoverageProgress(
             planned_topics=quality.planned_topics,
-            covered_topics=quality.substantive_covered_topics,
+            covered_topics=quality.measured_covered_topics,
             substantive_topic_ratio=quality.substantive_topic_ratio,
             planned_targets=quality.planned_targets,
             required_targets=quality.required_targets,

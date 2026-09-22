@@ -1433,7 +1433,7 @@ def test_the_quality_line_names_the_claimed_topic_count() -> None:
     """
     joined = "\n".join(render_summary(composed_outcome(), verbose=False))
 
-    assert "Quality: accepted (critic 6/10; 3/7 topics claimed, 43%)" in joined
+    assert "Quality: partial (2/3 topics claimed, 67%)" in joined
     assert (
         "Coverage: 2/3 topics covered (substantive, 67%); "
         "2/3 required targets answered; 1/2 critical targets answered" in joined

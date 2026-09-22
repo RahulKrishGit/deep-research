@@ -1067,13 +1067,26 @@ class ReportQualitySnapshot(ContractModel):
     # --- Task 10: the substantive reading of the same denominator -----------
     substantive_topic_ratio: UnitScore = 0.0
     """Topics whose every counted required target is answered, over the plan."""
-    substantive_covered_topics: int = Field(default=0, ge=0)
+    substantive_covered_topics: int | None = Field(default=None, ge=0)
     """The numerator of ``substantive_topic_ratio``, as a count.
 
     ``covered_topics`` above is the *claimed* reading kept for historical
     artifacts; this is the measured one a reader-facing surface must report.
     They disagree exactly when a topic was claimed but never answered.
+
+    ``None`` on a record written before this field existed — such a snapshot
+    already carries ``substantive_topic_ratio`` and the claimed count, and
+    publishing a zero numerator beside a nonzero ratio would contradict itself
+    in one sentence. ``measured_covered_topics`` is the reading to publish.
     """
+
+    @property
+    def measured_covered_topics(self) -> int:
+        """The substantive count to publish, or the claimed one on a legacy row."""
+        if self.substantive_covered_topics is None:
+            return self.covered_topics
+        return self.substantive_covered_topics
+
     planned_targets: int = Field(default=0, ge=0)
     required_targets: int = Field(default=0, ge=0)
     answered_targets: int = Field(default=0, ge=0)
