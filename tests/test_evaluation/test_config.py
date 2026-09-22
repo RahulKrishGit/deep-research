@@ -763,7 +763,7 @@ CRITIC_PROMPT_FINGERPRINT = "2c80a78040b9"
 # The Fact Checker adjudication-contract pass re-pinned all six again
 # (`3172856c4bfc`/`d35dcbd0689a`/`e098e605abc4`/`efb73308d093`/
 # `27b2c2acc01c`/`3d6a1db27572` -> `7d0282b16bc5`/`7288d912bee3`/
-# `ad9e2afac12c`/`87fc0bb24c42`, and again to `96e265a90f59` for the shared excerpt budget, and `0b24ed022ed8` for the review fixes, and `d14573d8be42` for the widened evidence_not_admitted wording (the packet's own record of what it could not carry, the least-creditable duplicate row, and unclear stances that block without asserting)/`3a96c3e6293d`/`2c80a78040b9`). Real prompt
+# `ad9e2afac12c`/`87fc0bb24c42`, and again to `96e265a90f59` for the shared excerpt budget, and `0b24ed022ed8` for the review fixes, and `d14573d8be42` for the widened evidence_not_admitted wording, and `9c5cba6e9b39` for the unstated-scope reading (the packet's own record of what it could not carry, the least-creditable duplicate row, and unclear stances that block without asserting)/`3a96c3e6293d`/`2c80a78040b9`). Real prompt
 # drift: ``agents.prompts`` gained ``ADJUDICATION_INSTRUCTION``, the packet
 # path's own response contract — it asks for the record ``ClaimVerdictDraft``
 # actually accepts (assessment rows, selections by id) and states what
@@ -775,7 +775,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "7d0282b16bc5",
     "researcher": "7288d912bee3",
     "source_evaluator": "ad9e2afac12c",
-    "fact_checker": "d14573d8be42",
+    "fact_checker": "9c5cba6e9b39",
     "synthesizer": "3a96c3e6293d",
     "critic": "2c80a78040b9",
 }

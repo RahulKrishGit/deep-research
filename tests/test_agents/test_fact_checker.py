@@ -7164,6 +7164,89 @@ def test_an_unclear_stance_blocks_settlement_without_asserting_contradiction() -
     assert conflict.resolution == "unresolved"
 
 
+@pytest.mark.parametrize("stance", ["contradicts", "partial"])
+def test_a_refutation_with_no_stated_scope_blocks_settlement(stance: str) -> None:
+    """An unstated scope is not a claim that the scope differs.
+
+    ``scope_compatible`` defaulted to False, so a passage the model called
+    incompatible — or could not classify — while saying nothing about the
+    period was read as "a different period" and *resolved*, which dismissed the
+    conflict and let the claim settle as verified. Only an explicit ``false``
+    is a scope difference; silence is an open question.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+    draft = _two_supports_and_a_refutation().model_copy(
+        update={
+            "contradiction_ids": [],
+            "assessments": [
+                _row("ev-left", "supports"),
+                _row("ev-right", "supports"),
+                SupportAssessment(evidence_id="ev-third", stance=stance),
+            ],
+        }
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "verified"
+    assert claim.evidence_status != "verified_pair"
+    (conflict,) = claim.conflict_assessments
+    assert conflict.resolution == "unresolved"
+    assert conflict.material is True
+
+
+def test_an_explicitly_different_scope_still_resolves() -> None:
+    """The control: a stated scope difference is not over-blocked."""
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+    draft = _two_supports_and_a_refutation().model_copy(
+        update={
+            "assessments": [
+                _row("ev-left", "supports"),
+                _row("ev-right", "supports"),
+                _row("ev-third", "contradicts", complete=True, scope=False),
+            ]
+        }
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict == "verified"
+    (conflict,) = claim.conflict_assessments
+    assert conflict.resolution == "resolved"
+    assert conflict.material is False
+
+
+def test_a_support_with_no_stated_scope_is_still_not_admitted() -> None:
+    """An unstated scope never admits a support, exactly as before."""
+    packet = _verdict_packet(_eligibility(), _independent_second())
+    draft = ClaimVerdictDraft(
+        verdict="verified",
+        confidence=0.9,
+        assessments=[
+            SupportAssessment(
+                evidence_id="ev-left",
+                stance="supports",
+                complete_support=True,
+                dependence="primary",
+            ),
+            _row("ev-right", "supports"),
+        ],
+        support_ids=["ev-left", "ev-right"],
+        contradiction_ids=[],
+        rationale="One support left its scope unstated.",
+    )
+
+    claim = validate_adjudication(draft, packet, None)
+
+    assert claim.verdict != "verified"
+    assert claim.evidence_status != "verified_pair"
+    assert "ev-left" not in claim.evidence_selection
+
+
 def test_a_crowded_packet_still_shows_every_candidate() -> None:
     """The budget is shared out, so a full packet is still a full request.
 
