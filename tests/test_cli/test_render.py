@@ -1325,6 +1325,7 @@ def composed_state(**overrides: object) -> ResearchState:
             planned_topics=3,
             covered_topics=2,
             coverage_ratio=2 / 3,
+            substantive_covered_topics=2,
             substantive_topic_ratio=2 / 3,
             planned_targets=4,
             required_targets=3,
@@ -1386,6 +1387,39 @@ def test_the_summary_reports_assessed_cited_reads_works_and_publishers_apart() -
     assert (
         "Sources: 3 assessed, 1 cited; reads 3 (network 2, cache reuse 1), "
         "works 2, publishers 2, findings 0" in joined
+    )
+
+
+def test_the_coverage_line_reports_the_substantive_topic_count() -> None:
+    """The line says "substantive", so it prints the substantive numerator.
+
+    ``covered_topics`` on the snapshot is the claimed reading — topics some
+    claim recorded consuming — and the two disagree exactly when a topic was
+    claimed but never answered. Printing the claimed value next to a
+    substantive ratio published a topic as covered that the ratio itself
+    scored at zero.
+    """
+    joined = "\n".join(
+        render_summary(
+            composed_outcome(
+                quality=quality_snapshot(
+                    planned_topics=1,
+                    covered_topics=1,
+                    coverage_ratio=1.0,
+                    substantive_covered_topics=0,
+                    substantive_topic_ratio=0.0,
+                    planned_targets=1,
+                    required_targets=1,
+                    answered_targets=0,
+                )
+            ),
+            verbose=False,
+        )
+    )
+
+    assert (
+        "Coverage: 0/1 topics covered (substantive, 0%); "
+        "0/1 required targets answered" in joined
     )
 
 

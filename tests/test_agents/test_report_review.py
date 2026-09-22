@@ -2093,6 +2093,36 @@ def test_a_source_fitness_change_invalidates_both_review_fingerprints(
     assert fingerprint(source, restamped) == fingerprint(source, composition)
 
 
+def test_a_contradicted_claim_reads_as_contested_in_the_review_packet() -> None:
+    """The reviewer sees the label the reader sees, not the raw badge.
+
+    The badge is stamped before adjudication finishes, so a contradicted claim
+    can still carry ``verified_pair``. The packet labelled both the claim row
+    and the evidence batch from that raw badge, showing the reviewer
+    "independently corroborated" for a claim the reader report — and the
+    quality counts — call contested.
+    """
+    from deep_research.utils.types import EVIDENCE_BADGE_LABELS
+
+    contradicted = _claim(
+        "Break-even was reached.",
+        verdict="contradicted",
+        evidence_status="verified_pair",
+    )
+    composition = _composition(claims=(contradicted,))
+    packet = _packet(
+        _state(composition=composition, report="Break-even was reached.")
+    )
+    labels = {
+        item.badge_label
+        for batch in packet.evidence_batches
+        for item in batch.items
+    }
+
+    assert packet.claims[0].badge_label == EVIDENCE_BADGE_LABELS["contested"]
+    assert labels == {EVIDENCE_BADGE_LABELS["contested"]}
+
+
 def test_a_quality_snapshot_keeps_the_review_apart_from_its_diagnostics() -> None:
     snapshot = ReportQualitySnapshot(
         coverage_ratio=1.0,

@@ -27,6 +27,9 @@ from deep_research.agents.report import (
     ReportComposition,
     ReportPoint,
     ReportSection,
+    composition_statements,
+    fit_report_composition,
+    reader_word_count,
     render_evidence_ledger,
     render_reader_report,
 )
@@ -95,6 +98,7 @@ from deep_research.utils.types import (
     ScoredSource,
     SourceTemporal,
     SubTopic,
+    target_is_answered,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.research_fakes import FakeMemory, synthesizer_tools
@@ -872,6 +876,128 @@ def test_uncertainty_notes_may_carry_source_free_text() -> None:
 
     assert rejected == []
     assert composition.uncertainty_notes == ["Vendor numbers remain unaudited."]
+
+
+def test_the_composed_composition_is_the_reader_the_gates_judge() -> None:
+    """The fit runs where the composition is built, not inside the renderer.
+
+    A statement the word ceiling drops never reaches the reader, so it must
+    not be in the composition the gates, the reviewer and the quality record
+    read. ``compose_report`` therefore returns — and ``state_update`` stores —
+    the fitted composition, with the fit reasons recorded where the ledger
+    already reads this pass's dispositions. Before the fix the gates judged
+    the unfitted draft: a critical target whose only answer the ceiling
+    dropped was still counted as answered.
+    """
+    claim = _claim(urls=[SOURCE_URL, OTHER_URL], target_ids=["t1"])
+    cluster = ClaimCluster(
+        cluster_id=CLUSTER_ID,
+        proposition=AtomicProposition(
+            text=claim.text, value="1,200", unit="physical qubits"
+        ),
+        evidence_ids=[EVIDENCE_ID],
+        member_claim_ids=[claim.claim_id],
+        target_ids=["t1"],
+        source_urls=list(claim.source_urls),
+        verdicts=["verified"],
+        verdict_evidence={"verified": list(claim.source_urls)},
+        verdict_evidence_status={"verified": "verified_pair"},
+    )
+    filler = _claim(text="An unrelated measurement was recorded.")
+    target = _target("t1", dimensions=["scale"])
+    sub_topic = SubTopic(
+        coverage_id="topic-01",
+        title="Alpha",
+        rationale="The first thing to establish.",
+        search_queries=["alpha evidence"],
+        success_criteria=["a measured alpha result"],
+        priority=1,
+        evidence_targets=[target],
+    )
+    task = _grounded_task(
+        claims=[claim, filler],
+        claim_clusters={CLUSTER_ID: cluster},
+        sub_topics=[sub_topic],
+        answer_contract=AnswerContract(
+            question="How mature is quantum error correction?",
+            scope_statement="What the recorded evidence establishes.",
+            geographic_scope="unspecified",
+            as_of_date="2026-08-01",
+            evidence_period_requirement="current reported maturity",
+            assumptions=["the question names no geography"],
+            answer_kind="factual",
+            requested_word_limit=250,
+        ),
+    )
+    labels = {item.claim_id: label for label, item in claim_registry(task.claims)}
+    openers = (
+        "Another",
+        "A further",
+        "One more",
+        "Yet another",
+        "An additional",
+        "A subsequent",
+        "A related",
+        "A comparable",
+        "A later",
+        "A recent",
+        "A final",
+    )
+    points = [
+        _point_draft(
+            f"{opener} finding reports a measured result from the study that "
+            "was read for this topic and nothing beyond it.",
+            claim_ids=[labels[filler.claim_id]],
+        )
+        for opener in openers
+    ]
+    points.append(
+        _point_draft(
+            "Only this finding answers the obligation, and it is the one the "
+            "ceiling drops because it is the longest statement in the report "
+            "by a wide margin, with a great many more words than any other "
+            "finding in this section carries.",
+            claim_ids=[labels[claim.claim_id]],
+            source_urls=[OTHER_URL],
+        )
+    )
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[ReportSectionDraft(title="Error correction", points=points)],
+        uncertainty_notes=[],
+    )
+    unfitted, _ = build_report_composition(
+        task, draft, max_sections=1, limitations=[]
+    )
+    report, _ = compose_report(task, draft=draft, limitations=[])
+    fitted = report.composition
+
+    assert len(composition_statements(fitted)) < len(
+        composition_statements(unfitted)
+    )
+    assert any(
+        reason.startswith("length_budget_dropped")
+        for reason in fitted.statement_dispositions
+    )
+    assert "length_budget_dropped" in report.evidence_markdown
+    assert reader_word_count(report.markdown) <= 250
+    assert points[-1].text not in report.markdown
+
+    state = ResearchState(
+        session_id="session-1",
+        original_question=task.instruction,
+        composition=fitted,
+        sub_topics=list(fitted.sub_topics),
+    )
+
+    assert not target_is_answered(state, target)
+    # The unfitted composition is what the gates used to read: the same
+    # statement answered the target there, which is how a published report
+    # could omit its only answer and still pass.
+    assert target_is_answered(
+        state.model_copy(update={"composition": unfitted}), target
+    )
 
 
 def test_build_report_composition_rejects_a_zero_cap() -> None:

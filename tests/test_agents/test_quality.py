@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import json
+
 from deep_research.agents import (
     ReportQualitySnapshot as AgentReportQualitySnapshot,
 )
 from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
-from deep_research.agents.report import ReportComposition, ReportPoint, ReportSection
+from deep_research.agents.report import (
+    ReportComposition,
+    ReportPoint,
+    ReportSection,
+    render_quality_json,
+)
 from deep_research.utils import ReportQualitySnapshot as UtilsReportQualitySnapshot
 from deep_research.utils.types import (
     AcquisitionState,
@@ -436,8 +443,8 @@ def test_a_deferred_disposition_does_not_account_while_its_work_is_queued() -> (
     """
     state, composition = _deferred_state_and_composition()
     disposition = EvidenceDisposition(
-        item_id="read-1/p-3",
-        stage="read-selection",
+        item_id="t2",
+        stage="acquisition",
         reason="deferred_capacity",
         target_ids=["t2"],
     )
@@ -480,16 +487,18 @@ def test_a_deferred_disposition_does_not_account_while_its_work_is_queued() -> (
 def test_an_unattempted_target_with_a_recorded_reason_is_still_accounted() -> (
     None
 ):
-    """A disposition with a reason but no acquisition record stays accounted.
+    """A target-level record with no acquisition state stays accounted.
 
     Pins the predicate's ``None`` branch: a target that never got an
-    ``AcquisitionState`` entry at all — the shape most real dispositions
-    carry — must not be treated as having outstanding work.
+    ``AcquisitionState`` entry at all must not be treated as having
+    outstanding work. The record has to be about the obligation itself — the
+    item id is the target — because a per-passage omission is not a judgement
+    about whether the obligation can be met.
     """
     state, composition = _deferred_state_and_composition()
     disposition = EvidenceDisposition(
-        item_id="candidate-1",
-        stage="evidence_admission",
+        item_id="t2",
+        stage="acquisition",
         reason="every candidate for this obligation was denied",
         target_ids=["t2"],
     )
@@ -537,3 +546,97 @@ def test_quality_snapshot_requires_scope_and_as_of_declarations() -> None:
 
     assert "missing_scope" in snapshot.hard_failures
     assert "missing_as_of" in snapshot.hard_failures
+
+
+# --- Section 2.3 accounting: a passage-level omission is not a judgement
+# about the obligation itself. ---------------------------------------------
+
+
+def test_a_passage_level_disposition_does_not_account_for_a_target() -> None:
+    """Only a terminal record about the obligation accounts for it.
+
+    The producers write per-passage dispositions as a matter of course —
+    ``claim_pool_dispositions`` stamps the unit's target ids on an
+    ``out_of_scope`` row for every registry unit outside one packet, and the
+    extraction step writes ``irrelevant`` for every selected passage that
+    yielded no finding. Those say one passage was not used. Counting them as
+    the target's account turned the §2.3 gate off for nearly every target that
+    had a read: an unanswered required obligation then blocked nothing.
+    """
+    state, composition = _deferred_state_and_composition()
+    assert compute_report_quality(state, composition).unaccounted_target_ids == [
+        "t2"
+    ]
+
+    passage = EvidenceDisposition(
+        item_id="e9",
+        stage="adjudication-packet",
+        reason="out_of_scope",
+        target_ids=["t2"],
+    )
+    passage_state = state.model_copy(update={"evidence_dispositions": [passage]})
+    quality = compute_report_quality(passage_state, composition)
+
+    assert quality.unaccounted_target_ids == ["t2"]
+    assert "unaccounted_required_targets" in quality.hard_failures
+
+    # A record about the target itself is the §2.3 account.
+    terminal = EvidenceDisposition(
+        item_id="t2",
+        stage="acquisition",
+        reason="no candidate source was found for this obligation",
+        target_ids=["t2"],
+    )
+    terminal_state = passage_state.model_copy(
+        update={"evidence_dispositions": [terminal]}
+    )
+    assert (
+        compute_report_quality(terminal_state, composition).unaccounted_target_ids
+        == []
+    )
+
+    # And so is the acquisition trail the run writes itself: a denied read.
+    denied_state = passage_state.model_copy(
+        update={
+            "acquisition_state_by_target": {
+                "t2": AcquisitionState(
+                    target_id="t2", denied_urls=["https://example.test/denied"]
+                )
+            }
+        }
+    )
+    assert (
+        compute_report_quality(denied_state, composition).unaccounted_target_ids
+        == []
+    )
+
+
+def test_the_snapshot_keeps_the_claimed_and_substantive_topic_counts_apart() -> (
+    None
+):
+    """Two readings, two fields: a topic a claim consumed is not an answer.
+
+    ``covered_topics`` is the claimed count kept for historical artifacts.
+    The substantive numerator is the one the outcome and the CLI report, so
+    the snapshot has to carry it rather than let a caller read the claimed
+    field next to ``substantive_topic_ratio``.
+    """
+    state, composition = _complete_state_and_composition(4)
+    claimed_only = _claim("Topic 5 was asserted.", coverage_id="topic-05")
+    composition = composition.model_copy(
+        update={"claims": [*composition.claims, claimed_only]}
+    )
+
+    snapshot = compute_report_quality(state, composition)
+
+    assert snapshot.covered_topics == 5
+    assert snapshot.coverage_ratio == 1.0
+    assert snapshot.substantive_covered_topics == 4
+    assert snapshot.substantive_topic_ratio == 0.8
+    # The published record reads like the snapshot: the substantive count is
+    # what `covered_topics` means there, and the claimed one keeps a name that
+    # says what it is.
+    record = json.loads(render_quality_json(state, composition, None))
+    counts = record["counts"]
+    assert counts["covered_topics"] == 4
+    assert counts["claimed_covered_topics"] == 5

@@ -841,6 +841,87 @@ def test_a_contested_statement_does_not_answer_its_target() -> None:
     assert row.substantive is True
 
 
+def test_a_model_written_basis_cannot_relabel_a_contested_statement() -> None:
+    """The evidence decides the mode; the basis is prose, not a promotion.
+
+    ``derive_statement`` applied the model's basis first, so any non-empty
+    basis — and the basis is only validated when the text carries unattested
+    figures — made a statement ``inference`` whatever its claims recorded. A
+    statement resting on a contested claim then printed under the established
+    heading and satisfied a ``derivation`` target through the
+    ``inference and basis`` branch, which is the whole escape hatch.
+    """
+    contested = claim("Germany reported the figure.").model_copy(
+        update={
+            "cluster_id": "cluster-x",
+            "target_ids": ["target-01"],
+            "verdict": "insufficient_evidence",
+            "evidence_status": "contested",
+        }
+    )
+    clusters = {
+        "cluster-x": cluster(
+            "cluster-x", text="Germany reported the figure.", geography="Germany"
+        )
+    }
+    row = derive_statement(
+        statement_id="S1",
+        text="Germany reported the figure, compared with the cited study.",
+        claims=[contested],
+        clusters=clusters,
+        evidence={},
+        dimensions_by_target={"target-01": ["geography"]},
+        basis="compared with the cited study",
+    )
+    target = evidence_target(
+        required_dimensions=["geography"], support_policy="derivation"
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[contested]),
+    )
+
+    assert row.mode == "contested"
+    assert not target_is_answered(state, target)
+
+
+def test_a_derived_inference_on_attributed_evidence_still_answers() -> None:
+    """The control: a derivation whose premises are attributed still counts.
+
+    ``derivation`` accepts a recorded inference over attributed evidence and
+    must keep doing so — the guard narrows the escape, it does not close it.
+    """
+    attributed = attributed_claim("Germany reported the figure.").model_copy(
+        update={"cluster_id": "cluster-x", "target_ids": ["target-01"]}
+    )
+    clusters = {
+        "cluster-x": cluster(
+            "cluster-x", text="Germany reported the figure.", geography="Germany"
+        )
+    }
+    row = derive_statement(
+        statement_id="S1",
+        text="Germany reported the figure, compared with the cited study.",
+        claims=[attributed],
+        clusters=clusters,
+        evidence={},
+        dimensions_by_target={"target-01": ["geography"]},
+        basis="compared with the cited study",
+    )
+    target = evidence_target(
+        required_dimensions=["geography"], support_policy="derivation"
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[attributed]),
+    )
+
+    assert row.mode == "inference"
+    assert target_is_answered(state, target)
+
+
 def test_recorded_dimension_support_unions_to_the_answered_dimensions() -> None:
     """Per-cluster dimension attribution unions to today's pooled result.
 

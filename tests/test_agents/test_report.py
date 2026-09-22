@@ -50,6 +50,7 @@ from deep_research.agents.report import (
     composition_statements,
     evidence_status_bucket,
     evidence_status_counts,
+    fit_report_composition,
     reader_citations,
     reader_sections,
     reader_word_count,
@@ -2105,7 +2106,9 @@ def test_the_word_budget_never_drops_the_ranked_answer() -> None:
         sections=[ReportSection(title="Findings", points=findings)],
     )
 
-    reader = render_reader_report(composition)
+    # The fit is a build-time step now, so the test performs it explicitly.
+    fitted, _ = fit_report_composition(composition)
+    reader = render_reader_report(fitted)
 
     assert "Cordon tolling inside the central business district" in reader
     assert "Finding 11" not in reader
@@ -2150,8 +2153,12 @@ def test_the_ledger_describes_the_reader_the_reader_rendered() -> None:
         sections=[ReportSection(title="Findings", points=findings)],
     )
 
-    reader = render_reader_report(composition)
-    ledger = render_evidence_ledger(composition)
+    # One fit, at build time; both artifacts render the composition it
+    # produced. The fit reasons travel on the composition now, which is what
+    # lets the ledger describe a drop the reader never rendered.
+    fitted, _ = fit_report_composition(composition)
+    reader = render_reader_report(fitted)
+    ledger = render_evidence_ledger(fitted)
     references = [
         line
         for line in _section_body(reader, "## References").splitlines()
@@ -2165,6 +2172,162 @@ def test_the_ledger_describes_the_reader_the_reader_rendered() -> None:
     assert "length_budget_dropped" in _section_body(
         ledger, "## Statement support map"
     )
+
+
+def test_the_renderer_shows_the_composition_it_is_given() -> None:
+    """One statement set: the fit belongs to the build, not to each renderer.
+
+    A renderer that fits on its own renders a report the composition does not
+    describe, and every gate that reads the composition then judges a document
+    nobody was shown. The renderer's contract is now the composition it is
+    handed — which the build path has already fitted — so an over-long
+    composition renders whole rather than being silently trimmed here.
+    """
+    findings = [
+        _stated(
+            f"Finding {index} reports a measured result from the study that "
+            "was read for this topic and nothing beyond it.",
+            statement=_statement(
+                f"Finding {index} reports a measured result.",
+                statement_id=f"S{index}",
+            ),
+        )
+        for index in range(12)
+    ]
+    composition = _evidence_composition(
+        requested_word_limit=330,
+        summary=[],
+        constraints=[],
+        sections=[ReportSection(title="Findings", points=findings)],
+    )
+
+    reader = render_reader_report(composition)
+
+    assert "Finding 11" in reader
+    assert reader_word_count(reader) > 330
+
+
+def test_a_contradicted_claim_is_not_printed_as_corroborated() -> None:
+    """The reader's strength column reads the verdict, as the counts do.
+
+    The badge is written before adjudication finishes, so a claim an
+    independent source contradicted can still carry ``verified_pair``.
+    ``evidence_status_bucket`` — which the quality JSON's counts and the CLI
+    line already read through — maps that combination to contested, but the
+    reader's own column read the raw badge, so an accepted report could print
+    a contradicted fact as "independently corroborated" in the table a reader
+    is most likely to trust.
+    """
+    contradicted = _claim(verdict="contradicted", badge="verified_pair")
+    composition = _evidence_composition(
+        claims=[contradicted],
+        summary=[],
+        sections=[],
+        constraints=[
+            ReportConstraint(
+                text="Charge for driving inside the measured zone.",
+                deployment_mechanism="area licence with camera enforcement",
+                geography="not stated",
+                claim_ids=[contradicted.claim_id],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        answer_rows=[_answer_row()],
+    )
+
+    reader = render_reader_report(composition)
+
+    assert "contested; both sides recorded" in reader
+    assert "independently corroborated" not in reader
+    # The counts the quality record and the CLI publish read the same way.
+    assert evidence_status_counts([contradicted])["contested"] == 1
+
+
+def test_a_contradicting_passage_is_not_a_supporting_citation() -> None:
+    """A citation after a statement is its support, not its rebuttal.
+
+    ``_claim_urls`` added every recorded verification passage whatever its
+    stance, so a passage filed as contradicting the claim was printed as a
+    numbered citation supporting the statement it disputes — and counted by
+    ``reader_citations`` as a cited source, which is what the quality record's
+    ``cited`` field and ``cited_sources`` report.
+    """
+    claim = _claim(
+        verdict="insufficient_evidence",
+        passages=[
+            EvidencePassage(
+                source_url=SOURCE_URL,
+                source_title="QEC 2025",
+                locator="p. 1",
+                excerpt="The study reports the fall.",
+                stance="supports",
+            ),
+            EvidencePassage(
+                source_url=OTHER_URL,
+                source_title="Rebuttal",
+                locator="p. 2",
+                excerpt="The rebuttal disputes the fall.",
+                stance="contradicts",
+            ),
+        ],
+    )
+    composition = _evidence_composition(
+        claims=[claim],
+        sources=[_source(), _source(url=OTHER_URL, title="Rebuttal")],
+        summary=[_stated(claim_ids=[claim.claim_id], source_urls=[SOURCE_URL])],
+        sections=[],
+        constraints=[],
+    )
+    statement = composition.summary[0].statement
+    assert statement is not None
+
+    urls = statement_citation_urls(statement, composition)
+
+    assert SOURCE_URL in urls
+    assert OTHER_URL not in urls
+    assert OTHER_URL not in {
+        citation.url for citation in reader_citations(composition)
+    }
+
+
+def test_a_contradicted_verdicts_evidence_is_not_a_supporting_citation() -> None:
+    """A cluster's rebuttal citations do not support the statement either.
+
+    ``_cluster_urls`` unioned ``verdict_evidence`` across every recorded
+    verdict, so the URL filed under a ``contradicted`` verdict was printed
+    after the statement as one of its citations.
+    """
+    claim = _claim()
+    cluster = _cluster(
+        verdicts=["verified", "contradicted"],
+        verdict_evidence={"verified": [THIRD_URL], "contradicted": [OTHER_URL]},
+        verdict_evidence_status={
+            "verified": "verified_pair",
+            "contradicted": "contested",
+        },
+    )
+    composition = _evidence_composition(
+        claims=[claim],
+        claim_clusters={"cluster-1": cluster},
+        sources=[
+            _source(),
+            _source(url=THIRD_URL, title="Independent review"),
+            _source(url=OTHER_URL, title="Rebuttal"),
+        ],
+        summary=[_stated(statement=_statement(cluster_ids=["cluster-1"]))],
+        sections=[],
+        constraints=[],
+    )
+    statement = composition.summary[0].statement
+    assert statement is not None
+
+    urls = statement_citation_urls(statement, composition)
+
+    assert THIRD_URL in urls
+    assert OTHER_URL not in urls
+    assert OTHER_URL not in {
+        citation.url for citation in reader_citations(composition)
+    }
 
 
 def test_the_backmatter_boundary_is_the_last_methodology_heading() -> None:

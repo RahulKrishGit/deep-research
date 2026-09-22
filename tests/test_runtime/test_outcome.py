@@ -818,6 +818,7 @@ def test_the_outcome_reports_target_progress_apart_from_topic_progress() -> None
         quality=quality_snapshot(
             planned_topics=7,
             covered_topics=3,
+            substantive_covered_topics=3,
             substantive_topic_ratio=3 / 7,
             planned_targets=12,
             required_targets=9,
@@ -843,6 +844,35 @@ def test_the_outcome_reports_target_progress_apart_from_topic_progress() -> None
     assert coverage.unaccounted_target_ids == ("t-req-2",)
     # No quality pass judged this run, so no coverage is claimed for it.
     assert outcome_of(base_state()).coverage is None
+
+
+def test_the_outcome_reports_the_substantive_topic_count() -> None:
+    """``CoverageProgress.covered_topics`` is the measured reading.
+
+    The snapshot carries two numerators because historical artifacts carry the
+    claimed one; the outcome's field promises the substantive count — topics
+    whose every counted required target is answered — so it reads the field
+    that means that.
+    """
+    state = base_state(
+        quality=quality_snapshot(
+            planned_topics=1,
+            covered_topics=1,
+            substantive_covered_topics=0,
+            substantive_topic_ratio=0.0,
+            planned_targets=1,
+            required_targets=1,
+            answered_targets=0,
+            unaccounted_target_ids=[],
+        )
+    )
+
+    coverage = outcome_of(state).coverage
+
+    assert coverage is not None
+    assert coverage.planned_topics == 1
+    assert coverage.covered_topics == 0
+    assert coverage.substantive_topic_ratio == 0.0
 
 
 def test_the_outcome_counts_reads_works_and_citations_apart() -> None:
