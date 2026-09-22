@@ -23,6 +23,7 @@ from deep_research.agents.researcher import (
     SubTopicFindingsDraft,
     SubTopicTask,
     _cited_read_incidence,
+    _critic_queries_for,
     bound_sub_topic_findings,
     build_findings,
     existing_sources_for,
@@ -62,6 +63,7 @@ from deep_research.utils.types import (
     Finding,
     MemorySnapshot,
     ReadRecord,
+    RefinementTarget,
     ReportComposition,
     ReportPoint,
     ReportStatement,
@@ -504,6 +506,56 @@ def test_an_acquisition_gap_sends_an_answered_topic_back_to_research() -> None:
     )
 
     assert [row.title for row in select_sub_topics(state)] == ["Economics"]
+
+
+def test_a_review_defects_acquire_job_sends_an_answered_topic_back_to_research() -> (
+    None
+):
+    """The terminal review's repair jobs are work, not just routing.
+
+    ``refinement_targets_for`` turns a scored review's material defects into
+    typed jobs, and the refinement hop spends a pass on them — but the
+    Researcher decided what to research from ``state.critique.gaps`` alone. A
+    review that names an *answered* topic with ``repair_action="acquire"``
+    (stale data, a missing independent source) while the Critic raised no gap
+    at all was therefore dropped as satisfied: the pass ran, acquired nothing
+    for the defect, and the next review raised the same defect again.
+    """
+    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
+        update={"evidence_targets": [_required_target()]}
+    )
+    state = _state(
+        sub_topics=[topic],
+        critique=_critique(),
+        composition=_answering_composition("target-01"),
+    ).model_copy(
+        update={
+            "refinement_targets": [
+                RefinementTarget(
+                    coverage_id="topic-01",
+                    action="acquire",
+                    origin="review_defect",
+                    severity="major",
+                    queries=["2025 cost per tonne"],
+                    problem="The cost figure rests on a single publisher.",
+                )
+            ]
+        }
+    )
+
+    assert [row.title for row in select_sub_topics(state)] == ["Economics"]
+
+    queries = _critic_queries_for(state, topic)
+    assert queries == ["2025 cost per tonne"]
+    # And they reach the loop that does the acquiring: the sub-topic brief
+    # runs them before the planner's own.
+    guidance = render_sub_topic_guidance(
+        topic, [], prioritized_queries=queries
+    )
+    assert "Run these queries first:" in guidance
+    assert guidance.index("- 2025 cost per tonne") < guidance.index(
+        "- Economics 2025"
+    )
 
 
 def test_refinement_gap_target_is_selected_even_when_prior_findings_exist() -> None:
