@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from deep_research.agents.fact_checker import claimed_domains_for
@@ -199,9 +201,15 @@ def _registry_claims_an_honest_run_could_emit():
     really emit. Reading the declaration rather than naming an exempt case
     here keeps this file from becoming a second source of truth for which
     cases are excused.
+
+    The declaration excuses the defective claims and no others: a case earns
+    the flag with one claim an honest pass could not emit, so a state that
+    also carried sound claims would still have those held to the invariants.
     """
     for case, item in _registry_claims():
         if not case.expectations.state_is_the_defect:
+            yield case, item
+        elif not _carries_an_impossible_claim(item):
             yield case, item
 
 
@@ -284,6 +292,50 @@ def test_a_defective_state_really_carries_a_defect() -> None:
             _carries_an_impossible_claim(item)
             for item in case.state.verified_claims
         ), case.case_id
+
+
+def test_a_declared_defective_state_still_holds_its_honest_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exemption excuses the defect, not every claim beside it.
+
+    A case earns ``state_is_the_defect`` by seeding one claim an honest pass
+    could not emit, so that is the only claim it can excuse: a state that
+    mixed one defective claim with honest ones would otherwise have both
+    invariants lifted from the honest ones too, silently. Every registered
+    state is defective throughout today, which is why this drives the
+    generator over a mixed state directly rather than waiting for one to
+    land.
+    """
+    import tests.test_evaluation.test_cases_registry as registry_module
+
+    defective = SimpleNamespace(
+        verdict="insufficient_evidence",
+        source_urls=[],
+        verification_evidence=[SimpleNamespace(source_url="https://a.example.com/")],
+    )
+    honest = SimpleNamespace(
+        verdict="verified",
+        source_urls=["https://news.example.com/report"],
+        verification_evidence=[
+            SimpleNamespace(
+                source_url="https://independent.example.org/response",
+                stance="supports",
+            )
+        ],
+    )
+    case = SimpleNamespace(
+        case_id="synthetic-mixed-state",
+        expectations=SimpleNamespace(state_is_the_defect=True),
+        state=SimpleNamespace(verified_claims=[defective, honest]),
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "_registry_claims",
+        lambda: iter([(case, defective), (case, honest)]),
+    )
+
+    assert list(_registry_claims_an_honest_run_could_emit()) == [(case, honest)]
 
 
 def test_the_claim_builder_requires_independent_verification_passages() -> None:
