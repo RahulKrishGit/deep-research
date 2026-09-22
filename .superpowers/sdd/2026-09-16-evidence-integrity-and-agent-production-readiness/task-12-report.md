@@ -1,5 +1,289 @@
 # Task 12 report — Prove the real agents and CLI in an offline adversarial matrix
 
+## Round 6 - 18/18; both rulings landed as TDD commits and the last red row is green
+
+Both round-5 rulings were applied as asked. Ruling 4 - the acquisition-side
+audit-sequence collision, the more serious of the two - is fixed in shipped code
+with its own RED-then-GREEN test, and a run's sub-topics now keep their own
+manifests all the way to the end of the run. Ruling 3 - the row rebuilt for
+cross-session validated cache reuse - is delivered end to end: the harness seeds
+a genuine prior-session read artifact, this run validates and reuses it through
+the shipped `validate_cached_read` path, and the record the run files is
+`acquisition_kind == "cache"` carrying the reading session and the moment this
+session validated it. `validated-cache-reuse` holds for all three offline
+repetitions and **all eighteen rows are green** for the first time in this task.
+
+Dispatch settings: model `deepseek-v4-flash`, reasoning effort `max`. Worktree
+`...\.worktrees\agent-cli-quality-trace-plan`, branch
+`codex/agent-cli-quality-trace-plan`, started from `103d140` (round 5's head;
+baseline `1 failed, 4242 passed, 1 deselected, 2 warnings`, the failure being
+this row). I did not push, did not dispatch subagents, did not run `git stash`,
+and did not invoke the paid individual-agent evaluation CLI. Every run below was
+made with `PYTHONPATH=<worktree>\src` and the worktree as cwd, with the import
+target printed first (`python -c "import deep_research; print(deep_research.__file__)"`
+-> `...\agent-cli-quality-trace-plan\src\deep_research\__init__.py`).
+
+### 1. Ruling 4 - the run's policies share one acquisition sequence (`404050d`)
+
+Ruling 4 asked for the mechanism to be designed here rather than copied from
+Ruling 1, for a real RED that reproduces the cross-sub-topic overwrite, and for
+the fix to stay acquisition-side. All three are done.
+
+**What landed.** `ManifestSequence` (`src/deep_research/agents/acquisition.py`)
+is a one-field counter with a single `take()` - the sequence number to use, then
+increment - so the operator is named once and cannot be re-derived at four call
+sites. `AcquisitionPolicy` gains `audit_sequence: ManifestSequence | None` and
+an `_own_sequence` fallback, and `_next_sequence()` returns
+`(self.audit_sequence or self._own_sequence).take()`; all four write sites
+(admission, passage selection, adjudication packet, and the refusal path) read
+it. `ResearcherAgent.__init__` holds one `self._run_audit_sequence` for the run
+and `_policy_for_task` passes that same object to every sub-topic's policy, so
+the ids a run mints are unique across the run while every policy still writes
+into the one shared `boundary_audits` mapping. The fallback keeps a
+directly-constructed policy working as before. `ManifestSequence` is exported
+from `deep_research.agents` (`tests/test_imports.py` requires it).
+
+**RED.** `test_two_sub_topics_keep_their_own_acquisition_manifests`
+(`tests/test_agents/test_acquisition.py`) builds two real policies over one
+shared `_RecordingAudits` mapping and asserts the second sub-topic's manifests
+do not displace the first's. The first run of it is `scratch/r6-audit-red1.txt`:
+
+```
+E   ImportError: cannot import name 'ManifestSequence' from 'deep_research.agents.acquisition'
+```
+
+- the test names the seam before it exists. The collision itself is captured in
+`scratch/r6-audit-red2.txt` once the test can run:
+
+```
+E       assert ['audit-7bf6b...333f528ac9fb'] == []
+E         Left contains one more item: 'audit-7bf6b8f10ce3333f528ac9fb'
+FAILED tests/test_agents/test_acquisition.py::test_two_sub_topics_keep_their_own_acquisition_manifests
+1 failed, 30 deselected in 0.94s
+```
+
+**GREEN.** `scratch/r6-audit-green2.txt` - `2 passed, 29 deselected in 0.51s`;
+the whole module `scratch/r6-acq-final.txt` - `31 passed in 0.61s`; and the
+agents, imports and pin suites together `scratch/r6-ruling4-green.txt` -
+`1812 passed, 1 warning in 5.55s`.
+
+**The pin.** The fix changes the researcher module source, so its
+`agent_prompt_fingerprint` moves and the pin table in
+`tests/test_evaluation/test_config.py` is re-pinned
+`613603dc5cbd` -> `25fba5d22654` with an attributed comment, as every earlier
+re-pin in this task has been.
+`test_the_acquisition_sequence_repin_is_attributed_to_the_shared_counter`
+asserts the table value first, so it failed before the edit for the right
+reason (`scratch/r6-repin-red.txt`):
+
+```
+E       AssertionError: assert '613603dc5cbd' == '25fba5d22654'
+FAILED tests/test_evaluation/test_config.py::test_the_acquisition_sequence_repin_is_attributed_to_the_shared_counter
+1 failed, 71 deselected, 1 warning in 0.67s
+```
+
+and passes after it (`scratch/r6-config-green.txt`, `72 passed`).
+
+**Measured before and after.** Before the fix, on this same row
+(`scratch/r5-cache-probe5-final.txt`, quoted in round 5): twelve manifest writes
+over seven ids, eight of them replacing an existing id, for example
+
+```
+OVERWRITE[read] target=topic-02 id=audit-fc131260417ec9a6d872c0ed
+  was_op=read_admission fp=0eb33d05e4 -> op=read_admission fp=5af88bd12a
+OVERWRITE[read] target=topic-03 id=audit-ee599db2612369fa0003d721
+  was_op=passage_selection fp=0eb33d05e4 -> op=passage_selection fp=6e35ef489f
+```
+
+leaving seven audits and both surviving `read_admission` manifests belonging to
+`topic-03` alone. After the fix, the same driver run
+(`scratch/r6-vcr-auditfix.txt`) reports
+
+```
+audits: 13 Counter({'read_admission': 5, 'passage_selection': 5, 'adjudication_packet': 3})
+```
+
+- thirteen writes, thirteen ids, no overwrite, and the per-audit dump shows them
+spanning topic-01, topic-02 and topic-03, including topic-01's admissions. The
+run is `accepted`, exit 0, exactly as before - the loss was silent, which is why
+nothing but the ids could have caught it.
+
+**Scope.** The only production files touched are `acquisition.py`,
+`researcher.py` and `agents/__init__.py`. No adjudicated verdict, evidence
+identity or Fact-Checker-side audit behaviour changes: the Fact Checker's ids
+already carried its agent and operation names plus Ruling 1's session-wide
+sequence, and its manifests are counted unchanged in the "after" dump above
+(`adjudication_packet: 3`, the same three that survived before). This is
+acquisition-side only, as the ruling required.
+
+### 2. Ruling 3 - the row rebuilt for a real prior-session import (`b1f0ba4`)
+
+**What the fixture now is.** `ReplaySource` gained `cache_artifact`
+(`""` / `"valid"` / `"stale"` / `"forged"`) and `cached_text`, with
+`__post_init__` rules that keep a fixture honest: a `cached_text` needs an
+artifact kind, a `valid` artifact may not state a body (it must agree with the
+page), and `stale`/`forged` must state a body that differs from the live page -
+`stale` still containing the excerpt the case's citation rests on, `forged` not.
+The harness builds each artifact through the shipped
+`build_read_record_from_tool_result` from a reader-shaped payload under
+`PRIOR_SESSION_ID = "earlier-session"` and `PRIOR_READ_RETRIEVED_AT`, i.e. as if
+an earlier session had read it, and `build_replay_runtime` starts the run with
+them as its source cache - `read_cache=dict(stored_reads)` - while recording the
+pristine declaration separately as `ReplayRuntime.seeded_reads`. The run then
+reaches each of them through the ordinary cache-hit path: `before_action`
+intercepts the URL, `validate_cached_read` decides, and the admitted ones are
+filed with `acquisition_kind == "cache"`. Nothing in the fixture asserts the
+kind; the shipped code produces it.
+
+**The scoped production change the ruling anticipated.** Two, both minimal:
+
+1. `build_agent` / `build_agents` / `build_runtime` gained an optional
+   `read_cache` mapping, handed to the Researcher alone (it is the one agent
+   that looks a URL up before downloading it; the other five never fetch a
+   body). Absent, every run starts with an empty cache exactly as before.
+   RED for the seam - `scratch/r6-assembly-red.txt`:
+
+   ```
+   E       TypeError: build_agents() got an unexpected keyword argument 'read_cache'
+   FAILED tests/test_runtime/test_assembly.py::test_the_seeded_source_cache_reaches_the_researcher_alone
+   1 failed, 45 deselected in 1.45s
+   ```
+
+   GREEN - `scratch/r6-assembly-green.txt`, `46 passed in 1.15s`, with the test
+   asserting `agents.researcher._shared_cache is stored` and that the planner
+   and fact checker hold no cache at all.
+
+2. `AcquisitionPolicy._read_observed`'s import branch filed the pre-validation
+   original network record rather than the import, so no fixture of any shape
+   could put a `cache`-kind record into `state.read_records`: the reuse was
+   performed and then recorded as if this session had downloaded the bytes. It
+   now files the validated import - the record `validate_cached_read` returned,
+   with the reading session and this session's validation stamp - and does so
+   with `setdefault`, so a body the registry already holds (this run's own read,
+   or an earlier sub-topic's import) keeps the record it was filed as instead of
+   being re-stamped by each reuse. This is what makes `ReadRecord`'s own
+   contract true in the output: `cache` "only for a record this session
+   validated locally", `origin_session_id` "the session that read the bytes;
+   never the session that imported them", and `report._read_counts.cache_reads`
+   counting a reuse as a cache read.
+
+**The checker.** `cache_provenance_is_validated` is registered in
+`_REPLAY_INVARIANTS` and declared by the row. For each seeded artifact it
+locates the run's record and the fetched URLs, and asserts what the artifact
+claims: a `valid`/`stale` artifact must not have been fetched again, must have
+been filed as `cache` by the prior session, and must carry a validation stamp
+and the declared content hash; a `forged` artifact must not be what the run
+recorded, and what the run did record must be this session's own network read.
+It is asserted by the row, so `test_every_checker_is_asserted_by_a_case` holds.
+
+**RED, then the finding it produced.** The first end-to-end run of the rebuilt
+row (`scratch/r6-vcr-rebuild1.txt`):
+
+```
+case: validated-cache-reuse exit: 0 quality: accepted
+failures: ["invariant 'cache_provenance_is_validated' broken: the forged stored read for https://bureau3.example.test/widget-funding-2024-panel is what the run recorded"]
+```
+
+The cause was real and worth keeping: the seeded mapping *is* the run's live
+cache, so the run's own admission for that URL replaced the index entry in
+place, and comparing the run's cache against the declaration was comparing the
+run with itself. `build_replay_runtime` now hands the run a copy
+(`dict(stored_reads)`) and keeps the declaration untouched, which is also the
+honest model of "what an earlier session stored" being an input rather than a
+live index.
+
+**The checker is not vacuous.** Forcing it to return early
+(`if not seeded or True: return None`) makes its dedicated test fail
+(`scratch/r6-checker-mutation-red.txt`, `1 failed, 28 deselected`, the assertion
+showing the missing message), and reverting the mutation restores
+`1 passed, 28 deselected` (`scratch/r6-checker-green.txt`).
+
+**The green row** (`scratch/r6-vcr-rebuild2.txt`):
+
+```
+case: validated-cache-reuse exit: 0 quality: accepted
+failures: []
+errors: Counter({'researcher_sub_topic_skipped': 2, 'fact_checker_invalid_claim': 1})
+reads: {'read-3dbc3b2b1aaff222262cc96c': ('network', 'replay-validated-cache-reuse-r1', 'https://bureau3.example.test/widget-funding-2024-panel'), 'read-3e7af19414a7245b408b2e54': ('cache', 'earlier-session', 'https://agency11.example.test/adoption-2024'), 'read-4e60974ed7a75342f09309d5': ('cache', 'earlier-session', 'https://bureau11.example.test/adoption-panel-2024'), 'read-90866c270a1e4c960b84dc39': ('network', 'replay-validated-cache-reuse-r1', 'https://agency3.example.test/widget-funding-2024')}
+audits: 13 Counter({'passage_selection': 5, 'read_admission': 5, 'adjudication_packet': 3})
+fetched: Counter({'https://agency3.example.test/widget-funding-2024': 1, 'https://bureau3.example.test/widget-funding-2024-panel': 1})
+```
+
+Two records are `cache` imports from `earlier-session`, two are this session's
+own network reads, and the fetch log holds exactly the two pages this session
+had to download - the shared page and the stale panel were answered from the
+cache without a fetch, and the forged page was refused and then really fetched.
+Exit 0, accepted, and the three-repetition matrix test for the row passes.
+
+### 3. What the rebuilt row covers adversarially, and the one gap left
+
+The brief's clause for this row - stale, changed or forged cache provenance
+cannot silently pass - is covered end to end for three of its four shapes:
+
+| Shape | Behaviour asserted |
+| --- | --- |
+| Valid prior-session artifact | Reused with no fetch; filed `cache` by the reading session with a validation stamp and the declared hash |
+| Stale artifact (older body, still stating the cited figure) | Imported without a fetch; the report answers for it with the label, and the checker asserts kind, reading session, stamp and hash |
+| Forged artifact (metadata contradicting its own text) | `validate_cached_read` refuses it, the run re-fetches the page, and the record is this session's own network read |
+
+The fourth shape - an entry **changed since its citation** - is a refusal
+(`content_version_changed` / `content_hash_changed` in `cache_reuse_problem`)
+that remains unit-tested (`tests/test_agents/test_acquisition.py:731-765`)
+rather than exercised by a matrix row. A self-consistent stale artifact is
+importable **by design**; the harness answers for that with labelling rather
+than with a refusal, which the new checker asserts directly. This is recorded as
+a gap rather than dropped silently.
+
+### 4. Gates run this round (real output)
+
+Import target printed before the runs:
+`...\agent-cli-quality-trace-plan\src\deep_research\__init__.py`.
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| 1 | `python -m pytest tests/test_evaluation tests/test_e2e_evaluation tests/test_cli -q` | `1124 passed, 1 warning in 69.94s (0:01:09)`, exit 0 (`scratch/r6-gate1-final.txt`) |
+| 2 | `python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3` | three cases each `accepted` (`broad-constraints` coverage 1.00 / judge 1.00, `comparative-conflict` 1.00 / 0.81, `refinement-evidence-recovery` 1.00 / 0.86), `Suite: accepted (3 repetitions per case)`, `Network: zero (scripted dependencies only)`, exit 0 (`scratch/r6-gate2-final.txt`) |
+| 3 | `python -m pytest -q` | `4249 passed, 1 deselected, 2 warnings in 88.12s (0:01:28)`, exit 0 (`scratch/r6-gate-full.txt`) |
+| 4 | `python -m ruff check src tests` | `All checks passed!`, exit 0 |
+| 5 | `git diff --check` | exit 0; `git status --porcelain` filtered to tracked modifications prints nothing |
+
+Gate 3 is the baseline `1 failed, 4242 passed` plus the six new tests of this
+round and the row that was failing: 4242 + 6 + 1 = 4249, and no pass count
+dropped below the 4242 floor. The controlled tier still runs three cases, not
+the eighteen-row manifest - see open items.
+
+### 5. Commits this round
+
+| Commit | What it does |
+| --- | --- |
+| `404050d` `fix(researcher): keep acquisition audit ids unique across a run's sub-topics` | Ruling 4: `ManifestSequence`, the per-run sequence held by `ResearcherAgent` and passed to each sub-topic's `AcquisitionPolicy`, the researcher re-pin with attribution, and the collision RED-then-GREEN tests. 5 files, +199/-11. |
+| `b1f0ba4` `test(evaluation): exercise real agents and CLI against adversarial evidence` | Ruling 3: the cache-artifact fixture and `prior_session_reads`, the `read_cache` seam through `build_runtime`, the import-filing fix in `_read_observed`, the `cache_provenance_is_validated` invariant, the rebuilt `validated-cache-reuse` row, and the focused tests for all of it. 7 files, +643/-41. |
+
+### 6. Open items after 18/18
+
+- The controlled-tier suite still runs three cases (`broad-constraints`,
+  `comparative-conflict`, `refinement-evidence-recovery`) rather than the
+  eighteen-row manifest. Wiring the tier to the offline matrix is not cheap and
+  remains open, as rounds 3-5 recorded; the offline matrix itself runs all
+  eighteen rows at three repetitions.
+- The named mutation tests (monkeypatched `claim_evidence_pool` omitting a
+  required support, `statement_source_urls` returning an invented URL,
+  `query_memory`-as-read) remain not started - the last item of the brief's
+  evidence list that no round has reached.
+- The `validate_cached_read` / `cache_reuse_problem` focused test asked for
+  after 18/18 is satisfied: `tests/test_agents/test_evidence.py` covers each
+  refusal branch of `validate_cached_read` (incomplete-hash expectation, blank
+  id, non-network kind, ineligible version, incomplete extraction, hash
+  disagreement, missing and rewritten passages) and
+  `tests/test_agents/test_acquisition.py` covers all four
+  `cache_reuse_problem` verdicts; this round added the two end-to-end-shaped
+  ones - a genuine prior-session import is admitted as this session's cache
+  record, and a forged entry is refused and never filed.
+- Round 4's remaining notes stand unchanged (session-scoped reference
+  numbering; every harness run writes under a caller-supplied `root`, so
+  offline fixture output cannot land in the live evaluation namespace).
+---
+
 ## Round 5 — 17/18; both rulings landed as TDD commits; `validated-cache-reuse` stops on a new finding
 
 Round 4's two questions were ruled and both rulings landed: the boundary-audit
