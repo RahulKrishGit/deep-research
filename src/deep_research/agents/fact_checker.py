@@ -811,7 +811,8 @@ INSUFFICIENT_REASONS = {
     # prompt: which boundary lost the evidence, which identity test failed, or
     # which part of the support the model could not complete.
     "evidence_not_admitted": (
-        "The model selected an evidence id it was not shown."
+        "The model selected an evidence id the local test could not admit as "
+        "evidence."
     ),
     "handoff_loss": (
         "A passage or read this claim linked to never reached the registry."
@@ -894,8 +895,14 @@ class SupportAssessment(ContractModel):
     """``supports`` / ``contradicts`` / ``unrelated``; anything else is local."""
     complete_support: bool = False
     """True only when the passage supports the WHOLE atomic claim, not a part."""
-    scope_compatible: bool = False
-    """True when period, unit, and scope match the claim."""
+    scope_compatible: bool | None = None
+    """True when period, unit, and scope match the claim, False when they do not.
+
+    ``None`` means the model did not say, and it is deliberately not the same
+    as ``False``: reading silence as "a different period" dismissed the
+    conflict and let a refuted claim settle as verified. An unstated scope
+    never admits a support and never resolves a disagreement.
+    """
     dependence: str = "unknown"
     """``primary`` / ``independent_analysis`` / ``derivative`` / ``unknown``.
 
@@ -1964,21 +1971,28 @@ def _conflict_assessments(
     rows: list[ConflictAssessment] = []
     for evidence_id in contradicts:
         row = accepted.get(evidence_id)
-        scope_ok = bool(row is not None and row.scope_compatible)
         if row is None:
-            resolution, material = "unresolved", True
+            # Nobody examined the disagreement, and what was never examined
+            # cannot be dismissed.
+            same_scope, resolution, material = False, "unresolved", True
             rationale = "the contradicting passage was never assessed"
-        elif scope_ok:
-            resolution, material = "unresolved", True
-            rationale = "both passages claim to support the same scope"
-        else:
-            resolution, material = "resolved", False
+        elif row.scope_compatible is False:
+            # The only stated difference this contract can see.
+            same_scope, resolution, material = False, "resolved", False
             rationale = "the passages differ in period, unit, or scope"
+        elif row.scope_compatible is None:
+            # An unstated scope is not a claim that the scope differs: silence
+            # cannot resolve a disagreement.
+            same_scope, resolution, material = False, "unresolved", True
+            rationale = "the contradicting passage's scope was never stated"
+        else:
+            same_scope, resolution, material = True, "unresolved", True
+            rationale = "both passages claim to support the same scope"
         rows.append(
             ConflictAssessment(
                 claim_cluster_id=packet.claim_cluster_id,
                 evidence_ids=sorted({*supports, evidence_id}),
-                same_scope=scope_ok,
+                same_scope=same_scope,
                 material=material,
                 resolution=resolution,  # type: ignore[arg-type]
                 rationale=rationale,
