@@ -31,6 +31,7 @@ from deep_research.agents.errors import (
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence import (
     ReadDossier,
+    ReadIdentityRequest,
     TemporalClaim,
     build_read_dossiers,
     read_serving_host,
@@ -369,7 +370,9 @@ def _read_fitness_identity(
     """
     if read is None:
         return {"publisher_id": None, "work_id": None, "identity_anchors": {}}
-    ((identity, publisher_id),) = resolve_read_identities([(read, anchors)])
+    ((identity, publisher_id),) = resolve_read_identities(
+        [ReadIdentityRequest(read, anchors)]
+    )
     return {
         "publisher_id": publisher_id,
         "work_id": identity.key,

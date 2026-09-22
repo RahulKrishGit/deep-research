@@ -420,8 +420,10 @@ class ScoredSource(ContractModel):
     """The metadata anchors the read was shown to evidence, and nothing else.
 
     ``issuer``/``doi``/``year``/``report_number`` as validated against the
-    read, plus ``derived_from`` — the DOIs or report numbers the document
-    itself says its data come from. Persisted so work identity can be
+    read, plus ``derived_from`` — the works the document says its data come
+    from, as the ids a lineage comparison reads (``doi:<doi>``, or
+    ``report-number:<number>`` for a cited number, whose issuer namespace
+    belongs to the cited document). Persisted so work identity can be
     re-resolved across every read of a run without asking the model again.
     """
     work_identity: WorkIdentity | None = None

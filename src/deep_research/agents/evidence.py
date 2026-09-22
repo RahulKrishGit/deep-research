@@ -33,6 +33,7 @@ import re
 import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from pydantic import Field
@@ -85,6 +86,12 @@ DISPOSITION_REASONS = (
 # How many aliases one identity may carry, so a malformed metadata row cannot
 # grow a persisted record without limit.
 MAX_WORK_ALIASES = 64
+
+# The namespace a *citation* of a report number is recorded in. The number
+# itself belongs to the cited work's issuer, which a citing document does not
+# establish, so a lineage id names the number without claiming an issuer and
+# `shares_lineage` matches it against the issuer-namespaced keys it could name.
+REPORT_NUMBER_LINEAGE = "report-number:"
 
 _DIGEST_LENGTH = 24
 _HEX_DIGITS = frozenset("0123456789abcdef")
@@ -269,6 +276,15 @@ def _parse_row(row: object) -> _Row:
     # only when they share an identity alias.
     for link in _text_sequence(row, "identity_links"):
         parsed.derives_from.append(_related_id(link))
+
+    # A registered work key a snapshot already resolved, replayed because the
+    # anchors that produced it were not persisted (§2.2 rule 3). It joins
+    # exactly like the alias it is, so a record that named its work keeps
+    # naming it — and a body two records key differently stays ``conflicting``
+    # rather than being silently re-keyed to whichever arrived last.
+    stored = _text_field(row, "stored_work_id")
+    if _strong_work_alias(stored):
+        parsed.aliases.append(stored)
 
     parsed.title = _identity_words(_text_field(row, "title"))
     parsed.year = _year_text(row.get("year"))
@@ -466,14 +482,22 @@ def _normalized_doi(value: str) -> str:
 
 
 def _related_id(value: str) -> str:
-    """Normalize one evidenced link to a related work as a stable id."""
-    doi = _normalized_doi(value)
+    """Normalize one evidenced link to a related work as a stable id.
+
+    An id already in a work or citation namespace — a ``report:<issuer>:…`` key
+    or a ``report-number:…`` citation minted by :func:`_lineage_id` — is kept as
+    it is: re-wrapping it would move it into a namespace no comparison reads.
+    """
+    text = value.strip()
+    if _strong_work_alias(text) or text.startswith(REPORT_NUMBER_LINEAGE):
+        return text
+    doi = _normalized_doi(text)
     if doi:
         return f"doi:{doi}"
-    parts = urlsplit(value.strip())
+    parts = urlsplit(text)
     if parts.scheme and parts.netloc:
-        return f"link:{normalize_source_url(value)}"
-    return f"link:{_identifier_text(value)}"
+        return f"link:{normalize_source_url(text)}"
+    return f"link:{_identifier_text(text)}"
 
 
 def _complete_content_hash(row: Mapping[str, object]) -> str | None:
@@ -863,15 +887,53 @@ def _evidenced_lineage(read: ReadRecord, proposed: Sequence[str]) -> list[str]:
     """The proposed data sources this read itself names, normalized, in order.
 
     Each entry passes the same literal test as the ``doi`` and
-    ``report_number`` anchors. A DOI is kept in its normalized form, so the
-    link it becomes names exactly the key the cited work resolves to.
+    ``report_number`` anchors, and what is kept is the id of the *cited* work:
+    a DOI in its normalized form, and a report number as a bare citation —
+    ``report-number:`` — because the issuer whose namespace the number belongs
+    to is the cited document's, and a citing document does not establish it.
+    The issuer-namespaced key it names is matched at pair time, by
+    :func:`shares_lineage`.
     """
     kept: list[str] = []
     for entry in proposed:
-        value = _normalized_doi(entry) or _identifier_text(entry)
-        if value and value not in kept and _literal_evidenced(read, value):
+        printed = _printed_lineage(entry)
+        if not printed or not _literal_evidenced(read, printed):
+            continue
+        value = _lineage_id(entry)
+        if value and value not in kept:
             kept.append(value)
     return kept[:MAX_WORK_ALIASES]
+
+
+def _printed_lineage(entry: str) -> str:
+    """What the document itself prints for one proposed lineage entry.
+
+    A persisted anchor is re-validated on every load, and the id it is stored
+    as is not the text the document carries, so the namespace is stripped
+    before the literal test.
+    """
+    text = entry.strip()
+    if text.startswith(REPORT_NUMBER_LINEAGE):
+        text = text[len(REPORT_NUMBER_LINEAGE) :]
+    return _normalized_doi(text) or _identifier_text(text)
+
+
+def _lineage_id(entry: str) -> str:
+    """One cited work as the id a lineage comparison uses.
+
+    Idempotent: an id this function already minted is returned unchanged, so
+    re-validating a persisted anchor reproduces it rather than dropping it.
+    """
+    doi = _normalized_doi(entry)
+    if doi:
+        return f"doi:{doi}"
+    text = entry.strip()
+    if text.startswith(REPORT_NUMBER_LINEAGE):
+        text = text[len(REPORT_NUMBER_LINEAGE) :]
+    number = _identifier_text(text)
+    return f"{REPORT_NUMBER_LINEAGE}{number}" if number else ""
+
+
 
 
 def rejected_anchor_names(
@@ -912,10 +974,10 @@ def _anchor_accepted(
         return name in accepted
     kept = accepted.get(name) or []
     proposed = {
-        _normalized_doi(entry) or _identifier_text(entry)
-        for entry in _text_sequence(anchors, name)
+        _lineage_id(entry) for entry in _text_sequence(anchors, name)
     }
     return proposed <= set(kept)  # type: ignore[arg-type]
+
 
 
 def read_metadata_row(
@@ -949,22 +1011,44 @@ def read_metadata_row(
     return row
 
 
-def resolve_read_identities(
-    entries: Sequence[tuple[ReadRecord, Mapping[str, object]]],
-) -> list[tuple[WorkIdentity, str | None]]:
-    """``(work identity, publisher id)`` for each ``(read, anchors)``, jointly.
+class ReadIdentityRequest(NamedTuple):
+    """One read's identity inputs for a joint resolution.
 
-    Every entry contributes the row its anchors validate on, and all rows are
-    resolved in ONE :func:`resolve_work_identities` call — so a DOI-bearing
-    original and its byte-identical, DOI-less mirror resolve to one work,
-    which no per-read resolution can see. A single entry is the degenerate
-    batch, never a second rule. The publisher is the row's evidenced issuer,
-    else its serving host, else ``None`` for a partial read.
+    ``anchors`` are the metadata anchors the read was shown to evidence;
+    ``stored_work_id`` is a registered work key a snapshot already recorded for
+    this read's source, replayed so the record still names the work it was
+    assessed as (Section 2.2 rule 3).
+    """
+
+    read: ReadRecord
+    anchors: Mapping[str, object]
+    stored_work_id: str | None = None
+
+
+def resolve_read_identities(
+    requests: Sequence[ReadIdentityRequest],
+) -> list[tuple[WorkIdentity, str | None]]:
+    """``(work identity, publisher id)`` for each request, resolved jointly.
+
+    Every request contributes the row its anchors validate on — plus the strong
+    work key a snapshot stored for it, when its anchors were not persisted — and
+    all rows are resolved in ONE :func:`resolve_work_identities` call, so a
+    DOI-bearing original and its byte-identical, DOI-less mirror resolve to one
+    work, which no per-read resolution can see. A single request is the
+    degenerate batch, never a second rule. The publisher is the row's evidenced
+    issuer, else its serving host, else ``None`` for a partial read.
     """
     rows: list[dict[str, object]] = []
-    for index, (read, anchors) in enumerate(entries):
-        row = read_metadata_row(read, anchors=anchors)
-        # One read can stand behind two entries (a finding cited the requested
+    for index, request in enumerate(requests):
+        row = read_metadata_row(request.read, anchors=request.anchors)
+        if (
+            request.read.extraction_complete
+            and request.stored_work_id
+            and _strong_work_alias(request.stored_work_id)
+        ):
+            # Only a complete body may carry an identity edge, stored or read.
+            row["stored_work_id"] = request.stored_work_id
+        # One read can stand behind two requests (a finding cited the requested
         # URL, another the resolved one), so the row id is the position.
         row["source_id"] = str(index)
         rows.append(row)
@@ -984,8 +1068,14 @@ def resolve_source_identities(
     Each source is matched to its read by URL and resolved, with every other
     matched source, through :func:`resolve_read_identities` on its persisted
     ``identity_anchors``. ``work_identity``, ``work_id``, and ``publisher_id``
-    are replaced; order and every other field are preserved, and a source
-    with no read is returned unchanged.
+    are replaced; order and every other field are preserved, and a source with
+    no read is returned unchanged.
+
+    A source that carries an identity but no anchors was assessed by a release
+    that did not persist them, and the one it carries is kept (rule 3): the
+    anchors cannot be recovered from the read, so re-resolving would replace an
+    evidenced issuer with a serving host and a registered work key with a set
+    of bytes — an identity change in the direction of more independence.
     """
     by_url = _source_reads(reads)
     matched: list[tuple[int, ReadRecord]] = []
@@ -994,13 +1084,23 @@ def resolve_source_identities(
         if read is not None:
             matched.append((index, read))
     identities = resolve_read_identities(
-        [(read, sources[index].identity_anchors) for index, read in matched]
+        [
+            ReadIdentityRequest(
+                read=read,
+                anchors=sources[index].identity_anchors,
+                stored_work_id=_stored_strong_work_id(sources[index]),
+            )
+            for index, read in matched
+        ]
     )
     resolved = list(sources)
     for (index, _), (identity, publisher_id) in zip(
         matched, identities, strict=True
     ):
-        resolved[index] = sources[index].model_copy(
+        source = sources[index]
+        if _keeps_stored_identity(source, publisher_id):
+            continue
+        resolved[index] = source.model_copy(
             update={
                 "work_identity": identity,
                 "work_id": identity.key,
@@ -1008,6 +1108,35 @@ def resolve_source_identities(
             }
         )
     return resolved
+
+
+def _stored_strong_work_id(source: ScoredSource) -> str | None:
+    """The registered work key a source stored, when no anchors explain it.
+
+    Only a key that names a work — a normalized DOI, or a report number inside
+    its issuer's namespace — is replayable: it is the alias the record was
+    resolved by, so the group it joins is the group it named. A bare hash needs
+    no replay, because the read's own row already carries one.
+    """
+    if source.identity_anchors or not source.work_id:
+        return None
+    return source.work_id if _strong_work_alias(source.work_id) else None
+
+
+def _keeps_stored_identity(source: ScoredSource, publisher_id: str | None) -> bool:
+    """True when re-resolution would say *less* than the stored identity does.
+
+    Decided against the resolved row rather than on the presence of a stored
+    value: a record whose stored identity is exactly what the read reproduces
+    is re-stamped like any other, which is what keeps cross-read grouping (a
+    capped copy joining its original's work) working for fresh records.
+    """
+    if source.identity_anchors:
+        return False
+    if _stored_strong_work_id(source) is not None:
+        return True
+    return bool(source.publisher_id and source.publisher_id != publisher_id)
+
 
 
 def _source_reads(reads: Iterable[ReadRecord]) -> dict[str, ReadRecord]:
@@ -1244,11 +1373,42 @@ def shares_lineage(a: EvidenceEligibility, b: EvidenceEligibility) -> bool:
     account of the underlying figure however different their publishers and
     works are (Section 2.2 rules 5/6).
     """
-    return bool(
-        (a.work_id and a.work_id in b.derives_from_work_ids)
-        or (b.work_id and b.work_id in a.derives_from_work_ids)
-        or set(a.derives_from_work_ids).intersection(b.derives_from_work_ids)
+    return (
+        _cites(a, b)
+        or _cites(b, a)
+        or bool(set(a.derives_from_work_ids).intersection(b.derives_from_work_ids))
     )
+
+
+def _cites(source: EvidenceEligibility, cited: EvidenceEligibility) -> bool:
+    """True when the sources ``source`` names include ``cited``'s work.
+
+    A DOI is matched as itself. A cited report number is matched against the
+    issuer-namespaced key it names: the number is what the citing document
+    states, and the namespace is the cited work's, so comparing the whole key
+    to the citation could never succeed. Two report *keys* are never related by
+    a shared number — only a citation is read this way — so this cannot merge
+    two issuers' works with each other.
+    """
+    work_id = cited.work_id
+    if not work_id:
+        return False
+    for derived in source.derives_from_work_ids:
+        if derived == work_id:
+            return True
+        if derived.startswith(REPORT_NUMBER_LINEAGE) and _names_report(
+            derived, work_id
+        ):
+            return True
+    return False
+
+
+def _names_report(citation: str, work_id: str) -> bool:
+    """True when a report-number citation names this issuer-namespaced key."""
+    if not work_id.startswith("report:"):
+        return False
+    number = citation[len(REPORT_NUMBER_LINEAGE) :]
+    return bool(number) and number == work_id.rsplit(":", 1)[-1]
 
 
 def eligible_independent_pair(
