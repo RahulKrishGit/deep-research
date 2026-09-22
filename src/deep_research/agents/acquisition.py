@@ -576,6 +576,31 @@ class ToolPolicyDecision:
 
 
 @dataclass
+class ManifestSequence:
+    """The manifest sequence one shared audit mapping is written under.
+
+    A boundary-audit id is fingerprinted from its job, its agent, its
+    operation and its sequence, so a sequence that restarts is not a new name:
+    it is a name some earlier writer already used, under a different manifest.
+    One mapping can be written by several policies — the Researcher builds one
+    per sub-topic and hands every one of them the run's single
+    ``boundary_audits`` — and a counter each policy owns restarts at zero, so
+    the second sub-topic's first manifest replaces the first sub-topic's, with
+    nothing refusing the replacement: it happens locally, before any reducer
+    reads the mapping. The counter therefore belongs to whoever owns the
+    mapping, and every policy writing into it claims from that one counter.
+    """
+
+    value: int = 0
+
+    def take(self) -> int:
+        """Claim the next sequence, advancing the mapping's counter."""
+        claimed = self.value
+        self.value += 1
+        return claimed
+
+
+@dataclass
 class AcquisitionPolicy:
     """Stateful policy and post-call reducer for one acquisition consumer."""
 
@@ -601,10 +626,20 @@ class AcquisitionPolicy:
     one of these URLs is reusable only while it is still the read the citation
     was made against; everything else is fetched again.
     """
+    audit_sequence: ManifestSequence | None = None
+    """The manifest counter of the mapping this policy writes into.
+
+    Supplied by the caller when several policies of one run share one
+    ``boundary_audits`` mapping, as the Researcher's per-sub-topic policies
+    do. A policy with none of its own gets one of its own, which is correct
+    exactly when it is the only writer of its mapping.
+    """
     _seen_queries: set[str] = field(default_factory=set, init=False)
     _last_search_failed: bool = field(default=False, init=False)
     _network_read_ids: set[str] = field(default_factory=set, init=False)
-    _sequence: int = field(default=0, init=False)
+    _own_sequence: ManifestSequence = field(
+        default_factory=ManifestSequence, init=False
+    )
     _cache: dict[str, ReadRecord] = field(default_factory=dict, init=False)
     _document_fallback_urls: set[str] = field(default_factory=set, init=False)
     _read_titles: dict[str, str] = field(default_factory=dict, init=False)
@@ -637,6 +672,15 @@ class AcquisitionPolicy:
     def acquired_work_count(self) -> int:
         """Count unique network bodies, excluding cache admissions."""
         return len(self._network_read_ids)
+
+    def _next_sequence(self) -> int:
+        """Claim the next manifest sequence for the mapping this policy writes.
+
+        The run's counter when one was supplied, this policy's own otherwise:
+        the caller who shares a mapping is the caller who knows the counter
+        has to be shared with it.
+        """
+        return (self.audit_sequence or self._own_sequence).take()
 
     def _cited_identity(self, url: str) -> tuple[str, str] | None:
         """The read a citation was made against for this URL, if this run cited it."""
@@ -805,7 +849,7 @@ class AcquisitionPolicy:
             operation=PASSAGE_SELECTION_OPERATION,
             job_id=self.session_id,
             agent_name=self.origin,
-            sequence=self._sequence,
+            sequence=self._next_sequence(),
             target_ids=target_ids,
             input_ids=tuple(self.state.pending_passage_ids),
             selected_ids=tuple(selected_ids),
@@ -820,7 +864,6 @@ class AcquisitionPolicy:
             status="deferred" if terminal else "completed",
         )
         self.boundary_audits[audit.audit_id] = audit
-        self._sequence += 1
         # The reads whose batch was handed over are recorded as owed until the
         # extraction that consumes them succeeds. Clearing the list here (as
         # this used to do by never filling it) meant a failed extraction became
@@ -1249,7 +1292,7 @@ class AcquisitionPolicy:
                         operation=READ_ADMISSION_OPERATION,
                         job_id=self.session_id,
                         agent_name=self.origin,
-                        sequence=self._sequence,
+                        sequence=self._next_sequence(),
                         target_ids=target_ids,
                         input_ids=(validated.requested_url,),
                         returned_ids=(validated.read_id,),
@@ -1262,7 +1305,6 @@ class AcquisitionPolicy:
                     self.boundary_audits[admission_audit.audit_id] = (
                         admission_audit
                     )
-                    self._sequence += 1
                     read_urls = list(self.state.read_urls)
                     if validated.resolved_url not in read_urls:
                         read_urls.append(validated.resolved_url)
@@ -1281,10 +1323,9 @@ class AcquisitionPolicy:
             origin=self.origin,
             selected_limit=self.selected_passages_per_read,
             retrieved_at=self.retrieved_at(),
-            sequence=self._sequence,
+            sequence=self._next_sequence(),
             configuration_fingerprint=self.configuration_fingerprint,
         )
-        self._sequence += 1
         if admission is not None:
             read = self._resolve_read_title(admission.read, requested)
             if read.title != admission.read.title:
@@ -1470,7 +1511,7 @@ class AcquisitionPolicy:
             operation=PASSAGE_SELECTION_OPERATION,
             job_id=self.session_id,
             agent_name=self.origin,
-            sequence=self._sequence,
+            sequence=self._next_sequence(),
             target_ids=target_ids,
             input_ids=tuple(read.passages),
             selected_ids=tuple(
@@ -1492,7 +1533,6 @@ class AcquisitionPolicy:
             status="deferred" if omitted else "completed",
         )
         self.boundary_audits[audit.audit_id] = audit
-        self._sequence += 1
 
     def evidence_id_for(self, read_id: str, locator: str) -> str:
         """Resolve a selected unit ID without trusting a provider identifier."""

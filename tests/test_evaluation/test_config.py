@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from deep_research.agents import ManifestSequence
 from deep_research.agents.synthesizer import (
     evidence_report_filename,
     quality_report_filename,
@@ -701,9 +702,21 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # applied to. The shared `agents.prompts` library was not edited, and the
 # other five pins and the judge did not move (verified by recomputing all six
 # and the judge).
+#
+# The shared acquisition-audit sequence repair re-pinned the researcher alone
+# (`613603dc5cbd` -> `25fba5d22654`). As with the boundary-audit sequence repair
+# above, this is module-source drift and not prompt text: the researcher now
+# holds one ``ManifestSequence`` counter for the whole run and hands it to every
+# ``AcquisitionPolicy`` it spawns per sub-topic, so policies sharing one
+# ``boundary_audits`` mapping claim distinct sequence numbers and no sub-topic
+# overwrites another's admission or selection manifests. No instruction,
+# packet rendering, or verdict rule changed — the audit id is bookkeeping a
+# replay joins against, never a prompt input. The shared ``agents.prompts``
+# library was not edited, and the other five pins and the judge did not move
+# (verified by recomputing all six and the judge).
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "4fab1aa863d8",
-    "researcher": "613603dc5cbd",
+    "researcher": "25fba5d22654",
     "source_evaluator": "6c12c0fffc92",
     "fact_checker": "70fa432dfc6d",
     "synthesizer": "97cf77acbb15",
@@ -1121,6 +1134,31 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
     assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
     assert agent_prompt_fingerprint("synthesizer") == "97cf77acbb15"
     assert agent_prompt_fingerprint("synthesizer") != pre_task_11
+
+
+def test_the_acquisition_sequence_repin_is_attributed_to_the_shared_counter() -> None:
+    """Record that round 6's researcher re-pin is module-source drift, not text.
+
+    The pin above moved for the researcher in Task 12 round 6. The reason
+    recorded next to it is that the round made every ``AcquisitionPolicy`` a
+    sub-topic spawns draw its manifest sequence from one counter the researcher
+    owns for the whole run, so two sub-topics writing into the same shared
+    ``boundary_audits`` mapping no longer mint the same audit id and no longer
+    overwrite each other's admission and selection manifests. No prompt
+    instruction changed and the shared ``agents.prompts`` library was not
+    touched; the other five pins and the judge did not move. This test is the
+    evidence for that claim rather than a comment asserting it: the counter must
+    be the published mechanism, it must hand out distinct sequences to whoever
+    shares it, and the live fingerprint must be exactly the value this re-pin
+    recorded.
+    """
+    pre_round_6 = "613603dc5cbd"
+    counter = ManifestSequence()
+
+    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "25fba5d22654"
+    assert agent_prompt_fingerprint("researcher") == "25fba5d22654"
+    assert agent_prompt_fingerprint("researcher") != pre_round_6
+    assert (counter.take(), counter.take()) == (0, 1)
 
 
 def test_the_judge_fingerprint_is_pinned_beside_the_six_target_pins() -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import MutableMapping, Sequence
 from pathlib import Path
 
 import httpx
@@ -11,7 +11,9 @@ import pytest
 
 from deep_research.agents.acquisition import (
     PASSAGE_SELECTION_OPERATION,
+    READ_ADMISSION_OPERATION,
     AcquisitionPolicy,
+    ManifestSequence,
     build_acquisition_context,
     build_read_record_from_tool_result,
     cache_reuse_problem,
@@ -31,6 +33,7 @@ from deep_research.tools.document_reader import DocumentReaderTool
 from deep_research.tools.passage_selection import select_relevant_passages
 from deep_research.utils.types import (
     AcquisitionState,
+    BoundaryAudit,
     CandidateRecord,
     EvidenceUnit,
     ReadRecord,
@@ -844,6 +847,102 @@ def test_both_targets_survive_a_second_admission_of_one_body() -> None:
     # The registry the state merge sees is conflict-free: one unit per
     # (read_id, locator, excerpt), with additive targets.
     assert merge_evidence_units({}, dict(shared_evidence)) == shared_evidence
+
+
+class _RecordingAudits(MutableMapping[str, BoundaryAudit]):
+    """One run's boundary-audit mapping, remembering every write it is handed.
+
+    A dict shows only what survived: a manifest written once and a manifest a
+    later writer replaced in place are the same single entry. Recording the
+    writes is what makes the difference visible.
+    """
+
+    def __init__(self) -> None:
+        self.stored: dict[str, BoundaryAudit] = {}
+        self.writes: list[tuple[str, BoundaryAudit]] = []
+
+    def __setitem__(self, audit_id: str, audit: BoundaryAudit) -> None:
+        self.writes.append((audit_id, audit))
+        self.stored[audit_id] = audit
+
+    def __getitem__(self, audit_id: str) -> BoundaryAudit:
+        return self.stored[audit_id]
+
+    def __delitem__(self, audit_id: str) -> None:
+        del self.stored[audit_id]
+
+    def __iter__(self) -> object:
+        return iter(self.stored)
+
+    def __len__(self) -> int:
+        return len(self.stored)
+
+
+def test_two_sub_topics_keep_their_own_acquisition_manifests() -> None:
+    """One mapping, one run: a later sub-topic may not replace a sibling's.
+
+    The Researcher builds one policy per sub-topic and hands every one of them
+    the run's single ``boundary_audits`` mapping. A manifest id is
+    fingerprinted from its job, its agent, its operation and its sequence, and
+    the job and the agent are the same for every sub-topic of a run — so a
+    sequence that restarts at each policy mints the id a sibling already used,
+    with different contents, and the shared mapping keeps only the later one.
+    Nothing raises here: the replacement happens locally, before any reducer
+    reads the mapping, which is what separates it from an id collision the
+    merge would refuse. Both sub-topics' manifests have to survive, each under
+    its own id and each still the manifest its own write stored.
+    """
+    shared_reads: dict[str, ReadRecord] = {}
+    shared_evidence: dict[str, EvidenceUnit] = {}
+    shared_cache: dict[str, ReadRecord] = {}
+    shared_network: set[str] = set()
+    audits = _RecordingAudits()
+    sequence = ManifestSequence()
+
+    def _sub_topic_policy(target_id: str) -> AcquisitionPolicy:
+        return AcquisitionPolicy(
+            state=AcquisitionState(
+                target_id=target_id,
+                candidate_urls=[_STUDY_URL],
+                remaining_calls=2,
+            ),
+            session_id="session-1",
+            target_id=target_id,
+            query="queue delay commissioning",
+            reads=shared_reads,
+            evidence=shared_evidence,
+            boundary_audits=audits,
+            audit_sequence=sequence,
+            cache=shared_cache,
+            network_read_ids=shared_network,
+        )
+
+    first = _sub_topic_policy("topic-01")
+    first.after_action(
+        _document_step(_paged_result(1, text="queue delay commissioning"))
+    )
+    second = _sub_topic_policy("topic-02")
+    cached = second.before_action(
+        _read_decision("document_reader", _STUDY_URL), {"source": _STUDY_URL}
+    )
+    assert cached.result is not None
+    second.after_action(_document_step(cached.result))
+
+    stale = [
+        audit_id
+        for audit_id, audit in audits.writes
+        if audits.stored[audit_id] is not audit
+    ]
+    assert stale == [], "a later sub-topic replaced an earlier sub-topic's manifest"
+    assert {
+        (audit.operation, tuple(audit.target_ids))
+        for audit in audits.stored.values()
+    } == {
+        (READ_ADMISSION_OPERATION, ("topic-01",)),
+        (PASSAGE_SELECTION_OPERATION, ("topic-01",)),
+        (READ_ADMISSION_OPERATION, ("topic-02",)),
+        (PASSAGE_SELECTION_OPERATION, ("topic-02",)),
+    }
 
 
 def test_one_read_keeps_one_title_across_two_admissions() -> None:

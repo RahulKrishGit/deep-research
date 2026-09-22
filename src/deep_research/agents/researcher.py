@@ -21,6 +21,7 @@ from pydantic import Field, JsonValue, ValidationError
 
 from deep_research.agents.acquisition import (
     AcquisitionPolicy,
+    ManifestSequence,
 )
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
@@ -1241,6 +1242,13 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._run_evidence = {}
         self._run_dispositions = []
         self._run_boundary_audits = {}
+        # The one counter every sub-topic's policy claims its manifests from.
+        # A manifest id is fingerprinted from the job, the agent, the
+        # operation and the sequence, and the first three are the same for
+        # every sub-topic of a run, so a counter each policy owned would mint
+        # the id an earlier sub-topic already used, with different contents,
+        # and the shared mapping above would keep only the later one.
+        self._run_audit_sequence = ManifestSequence()
         self._run_acquisition_states = {}
         self._run_seen_target_ids: set[str] = set()
         self._run_cache: dict[str, ReadRecord] = {}
@@ -1326,6 +1334,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             evidence=self._run_evidence,
             dispositions=self._run_dispositions,
             boundary_audits=self._run_boundary_audits,
+            audit_sequence=self._run_audit_sequence,
             retrieved_at=lambda: self._clock().isoformat(),
             selected_passages_per_read=self._selected_passages_per_read,
             configuration_fingerprint=(

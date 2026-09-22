@@ -3,6 +3,7 @@
 from deep_research.agents.acquisition import (
     AcquisitionAction,
     AcquisitionPolicy,
+    ManifestSequence,
     OriginName,
     ReadAdmission,
     ToolPolicyDecision,
@@ -771,6 +772,7 @@ __all__ = [
     "CritiqueTask",
     "AcquisitionAction",
     "AcquisitionPolicy",
+    "ManifestSequence",
     "OriginName",
     "DecideCallback",
     "EvaluatedSources",
