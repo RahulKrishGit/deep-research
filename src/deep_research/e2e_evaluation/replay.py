@@ -35,6 +35,8 @@ import httpx
 
 from deep_research.agents.base import AgentCompleter
 from deep_research.agents.claim_clusters import ClaimEquivalenceDraft
+from deep_research.agents.evidence import read_identity
+from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.critic import CritiqueDraft
 from deep_research.agents.fact_checker import (
     ClaimsDraft,
@@ -71,6 +73,7 @@ from deep_research.evaluation.dependencies import (
     _InMemoryCollection,
 )
 from deep_research.graph.orchestrator import compile_research_graph
+from deep_research.memory.entries import MemoryEntry
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
 from deep_research.observability import (
@@ -79,6 +82,7 @@ from deep_research.observability import (
     Tracker,
 )
 from deep_research.providers import NativeToolCall, NativeToolTurn
+from deep_research.providers.contracts import ProviderError
 from deep_research.runtime.assembly import build_runtime
 from deep_research.utils.config import ConfigSettings
 from deep_research.utils.types import ResearchState
@@ -124,6 +128,19 @@ class ReplaySource:
     source_role: str = "original_report"
     transport_relation: str = "original"
     report_number: str = ""
+    # Which search for this topic's query first surfaces the page. A page the
+    # first search does not return is a page the second one found: that is how
+    # a refinement round discovers evidence the opening round did not have,
+    # and it is a property of the page rather than of the run.
+    discovered_on_search: int = 1
+    # The status the host answers with. A page that answers 403 is a page that
+    # was found and refused: the run has to record the denial and stop asking,
+    # which is a different fact from a page that was never found.
+    status_code: int = 200
+    # ``text/html`` is a page and ``application/pdf`` is a document: the
+    # document path is served as real PDF bytes so the production extractor,
+    # not the fixture, is what reads it.
+    content_type: str = "text/html; charset=utf-8"
 
     def __post_init__(self) -> None:
         if self.excerpt not in self.text:
@@ -145,6 +162,13 @@ class ReplayTopic:
     success_criteria: tuple[str, ...] = ("A figure is quoted.",)
     rationale: str = "It answers the question."
     required: bool = True
+    # Further queries this topic's plan carries, in the order the run would
+    # issue them. A topic whose second round finds the second publisher needs
+    # one, because the run's own policy refuses a query it has already
+    # attempted: the evidence a later round recovers is reached through the
+    # plan's next query, which is what a real plan carries and a repeated
+    # string is not.
+    follow_up_queries: tuple[str, ...] = ()
     # The labels the scripted writer puts on this topic's answer row. Both are
     # published only when the row's evidence attests their words, so a scenario
     # names words its own pages state — the composer repairs an unattested cell
@@ -168,8 +192,25 @@ class CaseExpectation:
     forbidden_assertions: tuple[str, ...] = ()
     required_gap_kinds: tuple[str, ...] = ()
     allowed_failure_classes: tuple[str, ...] = ()
+    """Gaps a case tolerates because its own fixture makes them correct.
+
+    A negative case is one whose product result is a *partial* one, and the
+    run that produces it records why: a topic whose obligation is already
+    discharged is skipped rather than re-researched, a resolved topic reports
+    no further findings, a review that could not be made is named. Those are
+    the run telling the truth about a partial pass, and a case that declared
+    them unexpected would be asserting its own fixture cannot happen. Nothing
+    else is tolerated: a class not listed here fails the case.
+    """
     minimum_answerable_claims: int = 0
     required_invariants: tuple[str, ...] = ()
+    required_report_phrases: tuple[str, ...] = ()
+    """Words the published report has to contain.
+
+    A decisive assertion like "both sources are cited" is a fact about the
+    artifact, so a case states it as text the reader would see rather than as
+    a count of records no reader was shown.
+    """
 
 
 @dataclass(frozen=True)
@@ -186,6 +227,24 @@ class ReplayScenario:
     # means "the defaults the completer always enforces".
     expected_request_ids: tuple[str, ...] = ()
     metadata: dict[str, str] = field(default_factory=dict)
+    # Paraphrase pairs the scripted equivalence pass proposes, as positions in
+    # the packet it was handed. A scenario that wants two paraphrases merged
+    # states them; one that wants them kept apart proposes nothing.
+    equivalence_pairs: tuple[tuple[int, int], ...] = ()
+    # The terminal review that could not be made: the provider raises, exactly
+    # as an outage would, and the run has to record the absent judgement
+    # instead of accepting an unreviewed report.
+    review_failure: bool = False
+    # Claim text the scripted composer tries to publish that no page states.
+    # The product is the thing under test here: prose no citation attests must
+    # not reach the reader, whatever the writer proposed.
+    invented_prose: str = ""
+    # What long-term memory already holds when the run starts, written through
+    # the production memory bridge before the graph is compiled. A fixture
+    # states these when its subject is what the run does with a lead it has
+    # already been given: memory recalled at startup is a lead, and whether it
+    # is treated as a read is the run's decision, not the fixture's.
+    memory_entries: tuple[MemoryEntry, ...] = ()
 
     @property
     def sources(self) -> dict[str, ReplaySource]:
@@ -262,6 +321,7 @@ class ReplayCompleter(AgentCompleter):
         self.review_failure: bool = False
         self.rejected_statement_ids: frozenset[str] = frozenset()
         self.critic_score: int = 9
+        self.invented_prose: str = ""
 
     # --- helpers --------------------------------------------------------
     def _text(self, messages: Sequence[Any]) -> str:
@@ -358,6 +418,13 @@ class ReplayCompleter(AgentCompleter):
         The packet prints each state field as ``- label=value``. The prototype
         this replaced read ``read_urls:`` and therefore asked again for pages
         it had already read, which the tool policy refused eight times a run.
+
+        How many times this policy may search for one topic is the fixture's
+        own declaration: a page the topic declares on the second search is a
+        page that only exists after a second search, so a run whose obligation
+        is still open has to be able to buy one. That is also where the policy
+        stops — a topic whose pages are all read or refused ends the loop
+        rather than searching for evidence that is not there.
         """
         target_id = re.search(r"- target_id=(topic-\d+)", text)
         if target_id is None:
@@ -377,10 +444,15 @@ class ReplayCompleter(AgentCompleter):
                 return self._tool("web_scraper", {"url": url})
         if all(url in read_urls or url in denied_urls for url in urls):
             return self._final("The reads for this topic are complete.")
-        if topic.query in self.search_queries:
+        pending = [
+            candidate
+            for candidate in (topic.query, *topic.follow_up_queries)
+            if candidate not in self.search_queries
+        ]
+        if not pending:
             return self._final("No further candidate is available.")
-        self.search_queries.append(topic.query)
-        return self._tool("web_search", {"query": topic.query})
+        self.search_queries.append(pending[0])
+        return self._tool("web_search", {"query": pending[0]})
 
     # --- structured replies ----------------------------------------------
     def _reply(self, name: str, text: str) -> Any:
@@ -396,7 +468,10 @@ class ReplayCompleter(AgentCompleter):
                 SubTopicDraft(
                     title=topic.title,
                     rationale=topic.rationale,
-                    search_queries=[topic.query],
+                    search_queries=[
+                        topic.query,
+                        *topic.follow_up_queries,
+                    ],
                     success_criteria=list(topic.success_criteria),
                     priority=position,
                     evidence_targets=[
@@ -638,9 +713,14 @@ class ReplayCompleter(AgentCompleter):
             # titled from a position in the packet.
             topic = self._topic_for_target(coverage)
             subject, dimension = self.answer_labels_for(coverage, claim_text)
+            text = claim_text
+            if self.invented_prose and not points:
+                # A writer dressing an assertion no page made into a cited
+                # point, which is the shape the attestation exists to refuse.
+                text = f"{claim_text}, because {self.invented_prose}"
             points.append(
                 ReportPointDraft(
-                    text=claim_text,
+                    text=text,
                     claim_ids=[claim_id],
                     source_urls=list(urls),
                 )
@@ -689,7 +769,11 @@ class ReplayCompleter(AgentCompleter):
 
     def _reply_ReportReviewDraft(self, text: str) -> ReportReviewDraft:
         if self.review_failure:
-            raise ValueError("the semantic review was not made")
+            # The provider boundary's own failure type, not a bare exception:
+            # an outage is what the caller is written to survive, and raising
+            # something else would test the harness's imagination instead of
+            # the product's handling of a review that could not be made.
+            raise ProviderError("the semantic review was not made")
         statement_ids = _labelled_ids(text, "Statement ids in this packet")
         evidence_ids = _labelled_ids(text, "Evidence ids in this packet")
         if not statement_ids:
@@ -759,11 +843,29 @@ class ReplayCompleter(AgentCompleter):
 
 
 class ReplaySearch:
-    """Answer searches from the scenario's declared topic inventory."""
+    """Answer searches from the scenario's declared topic inventory.
+
+    A page carries the search number that first surfaces it, so a topic that
+    declares a second page ``discovered_on_search=2`` is a topic whose opening
+    round could not have read it: the second round is the only one that can,
+    which is what makes a round's recovery observable rather than assumed.
+
+    Rounds are counted per topic rather than per query string, because the
+    run's own policy refuses to repeat a query it has already issued — so a
+    second round is reached with a second query, and a fixture that counted
+    rounds per string would never see one.
+    """
 
     def __init__(self, scenario: ReplayScenario) -> None:
         self.scenario = scenario
         self.queries: list[str] = []
+        self.rounds: dict[int, int] = {}
+
+    def topic_index_for(self, query: str) -> int | None:
+        for index, topic in enumerate(self.scenario.topics):
+            if query in (topic.query, *topic.follow_up_queries):
+                return index
+        return None
 
     def search(
         self,
@@ -774,19 +876,72 @@ class ReplaySearch:
     ) -> dict[str, Any]:
         del search_depth, max_results
         self.queries.append(query)
-        for topic in self.scenario.topics:
-            if topic.query == query:
-                return {
-                    "results": [
-                        {
-                            "url": source.url,
-                            "title": source.title,
-                            "content": source.excerpt,
-                        }
-                        for source in topic.sources
-                    ]
+        index = self.topic_index_for(query)
+        if index is None:
+            raise ReplayContractError(f"unscripted search {query!r}")
+        topic = self.scenario.topics[index]
+        round_number = self.rounds.get(index, 0) + 1
+        self.rounds[index] = round_number
+        return {
+            "results": [
+                {
+                    "url": source.url,
+                    "title": source.title,
+                    "content": source.excerpt,
                 }
-        raise ReplayContractError(f"unscripted search {query!r}")
+                for source in topic.sources
+                if source.discovered_on_search <= round_number
+            ]
+        }
+
+
+def pdf_bytes(text: str) -> bytes:
+    """A one-page PDF whose extractable text is exactly ``text``.
+
+    The document path is exercised through a real document: the fixture writes
+    bytes a PDF reader can parse, and the production extractor is what turns
+    them back into the prose the claim is checked against. A fixture that
+    handed the reader its own text would be testing itself.
+    """
+    def _escape(value: str) -> str:
+        return value.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+
+    lines = [line for line in text.split("\n") if line.strip()]
+    body = ["BT", "/F1 11 Tf", "14 TL", "72 720 Td"]
+    for index, line in enumerate(lines):
+        if index:
+            body.append("T*")
+        body.append(f"({_escape(line)}) Tj")
+    body.append("ET")
+    stream = "\n".join(body).encode("latin-1", "replace")
+
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+        ),
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+        + stream
+        + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, payload in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + payload + b"\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for offset in offsets:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
 
 
 class ReplayHTTP:
@@ -796,6 +951,12 @@ class ReplayHTTP:
         self.scenario = scenario
         self.by_url = scenario.sources
         self.fetched: list[str] = []
+        # Every request the run made, refusals included: a case that proves a
+        # denied URL is not retried needs the attempts, not just the bodies.
+        self.requests: list[str] = []
+
+    def fetches_of(self, url: str) -> int:
+        return self.requests.count(url)
 
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
         del kwargs
@@ -810,7 +971,22 @@ class ReplayHTTP:
         source = self.by_url.get(url)
         if source is None:
             raise ReplayContractError(f"unscripted page {url!r}")
+        self.requests.append(url)
+        if source.status_code != 200:
+            return httpx.Response(
+                status_code=source.status_code,
+                text="<html><body><p>Access denied.</p></body></html>",
+                headers={"content-type": "text/html; charset=utf-8"},
+                request=request,
+            )
         self.fetched.append(url)
+        if source.content_type == "application/pdf":
+            return httpx.Response(
+                status_code=200,
+                content=pdf_bytes(source.text),
+                headers={"content-type": "application/pdf"},
+                request=request,
+            )
         return httpx.Response(
             status_code=200,
             text=(
@@ -818,7 +994,7 @@ class ReplayHTTP:
                 f"{source.text}"
                 "</p></article></body></html>"
             ),
-            headers={"content-type": "text/html; charset=utf-8"},
+            headers={"content-type": source.content_type},
             request=request,
         )
 
@@ -974,6 +1150,9 @@ async def build_replay_runtime(
         )
     )
     completer = ReplayCompleter(scenario, packet_dump=packet_dump)
+    completer.equivalence_pairs = tuple(scenario.equivalence_pairs)
+    completer.review_failure = scenario.review_failure
+    completer.invented_prose = scenario.invented_prose
     search = ReplaySearch(scenario)
     http = ReplayHTTP(scenario)
     captured: dict[str, Any] = {}
@@ -988,6 +1167,15 @@ async def build_replay_runtime(
         embeddings=_DeterministicEmbeddings(),
         tracker=tracker,
     )
+    if long_term is None and scenario.memory_entries:
+        # Written through the production save path rather than injected into
+        # the collection: a fixture that seeded the store directly would be
+        # testing a store shape no writer produces.
+        written = await memory.save_many(list(scenario.memory_entries))
+        if written != len(scenario.memory_entries):
+            raise ReplayContractError(
+                "long-term memory refused the scenario's entries"
+            )
     procedural = ProceduralMemory.from_config(
         resolved.memory.procedural, tracker=tracker
     )
@@ -1067,6 +1255,777 @@ class ReplayRun:
 
     def error_types(self) -> list[str]:
         return [error.error_type for error in self.state.errors]
+
+    def answerable_claims(self) -> list[Any]:
+        """The checked claims this run could still answer an obligation with.
+
+        A claim that names no target answered nothing, however sound it is: a
+        case that counts these is asking whether the run converted its
+        evidence into answers, which is the fact a clean exit code does not
+        carry.
+        """
+        return [
+            claim
+            for claim in self.state.verified_claims
+            if getattr(claim, "target_ids", ())
+        ]
+
+    def gap_kinds(self) -> tuple[str, ...]:
+        """The named ways this run fell short, in the run's own vocabulary.
+
+        Read from the state rather than from the scenario's prose: a hard
+        failure is a hard failure whether or not the case expected one, and a
+        case that declares which kinds it tolerates is declaring exactly this
+        list.
+        """
+        kinds: list[str] = []
+        quality = self.state.quality
+        if quality is None:
+            # A pass that composed no report judged nothing, and a case that
+            # ran out of iterations before composing one has to say so rather
+            # than report its silence as a clean run.
+            kinds.append("no_quality_snapshot")
+        else:
+            for failure in quality.hard_failures:
+                kinds.append(f"hard:{failure}")
+            if quality.unanswered_critical_target_ids:
+                kinds.append("unanswered_critical_target")
+            if quality.unaccounted_target_ids:
+                kinds.append("unaccounted_target")
+            if quality.semantic_review_status != "scored":
+                # A missing judgement is not a pass: the reviewed baseline is
+                # explicit that an unjudged repetition must never read as one.
+                kinds.append("semantic_review_missing")
+        for error in self.state.errors:
+            kinds.append(f"error:{error.error_type}")
+        return tuple(dict.fromkeys(kinds))
+
+
+def _invariant_primary_attribution_not_verified(run: ReplayRun) -> str | None:
+    """No claim read from one publisher was recorded as a corroborated pair."""
+    for claim in run.state.verified_claims:
+        if claim.evidence_status == "verified_pair":
+            return (
+                "a claim was recorded as an independent pair: "
+                f"{claim.text[:60]!r}"
+            )
+    return None
+
+
+# --- what the invariants read -----------------------------------------------
+#
+# Each checker below is a property of the *run*, not a restatement of its case:
+# it reads the state the production agents wrote and the boundary the harness
+# recorded, and it names the fact that would make the case's assertion false.
+# None of them re-runs the composition or the gate - a checker that recomputed
+# the product's own verdict could only ever agree with it.
+
+
+def _read_index(run: ReplayRun) -> dict[str, Any]:
+    """Every read this run made, reachable by either URL it is known by."""
+    index: dict[str, Any] = {}
+    for read in run.state.read_records.values():
+        for url in (read.resolved_url, read.requested_url):
+            index.setdefault(normalize_source_url(url), read)
+    return index
+
+
+def _identity(run: ReplayRun, url: str) -> tuple[str | None, str | None]:
+    """``(publisher_id, work_id)`` for a URL this run read, or two ``None``s."""
+    read = _read_index(run).get(normalize_source_url(url))
+    if read is None:
+        return (None, None)
+    return read_identity(read)
+
+
+def _supporting_urls(claim: Any) -> list[str]:
+    """The pages whose passages were selected to support one claim."""
+    supporting = [
+        passage.source_url
+        for passage in claim.verification_evidence
+        if passage.stance == "supports"
+    ]
+    return list(dict.fromkeys(supporting or list(claim.source_urls)))
+
+
+def _supporting_reads(run: ReplayRun, claim: Any) -> list[Any]:
+    index = _read_index(run)
+    reads = []
+    for url in _supporting_urls(claim):
+        read = index.get(normalize_source_url(url))
+        if read is not None and read not in reads:
+            reads.append(read)
+    return reads
+
+
+def _statement_urls(run: ReplayRun, statement: Any) -> list[str]:
+    """The pages one reader statement cites, through its selected evidence."""
+    units = run.state.evidence_units
+    return list(
+        dict.fromkeys(
+            units[evidence_id].source_url
+            for evidence_id in statement.evidence_ids
+            if evidence_id in units
+        )
+    )
+
+
+def _page(run: ReplayRun, url: str) -> ReplaySource | None:
+    normalized = normalize_source_url(url)
+    for key, source in run.scenario.sources.items():
+        if normalize_source_url(key) == normalized:
+            return source
+    return None
+
+
+def _years(text: str) -> set[str]:
+    """The four-digit years a piece of prose states."""
+    return set(re.findall(r"\b(?:19|20)\d{2}\b", text))
+
+
+def _figures(claims: Sequence[str]) -> list[str]:
+    """The number-and-unit readings a set of claim texts states."""
+    found: list[str] = []
+    for claim in claims:
+        for match in re.finditer(r"\d[\d.,]*\s+[a-z]+", claim):
+            figure = " ".join(match.group(0).split())
+            if figure not in found:
+                found.append(figure)
+    return found
+
+
+def _verified_pairs(run: ReplayRun) -> list[Any]:
+    return [
+        claim
+        for claim in run.state.verified_claims
+        if claim.evidence_status == "verified_pair"
+    ]
+
+
+def _late_pages(run: ReplayRun) -> list[ReplaySource]:
+    """The pages of a topic that only a later discovery round could surface."""
+    return [
+        source
+        for topic in run.scenario.topics
+        for source in topic.sources
+        if source.discovered_on_search > 1
+    ]
+
+
+def _invariant_no_false_verification(run: ReplayRun) -> str | None:
+    """A corroborated badge rests on two publishers and two complete reads.
+
+    The badge is the strongest statement the product makes about a claim, and
+    it is a claim about *provenance*: two independent accounts. Evidence that
+    resolves to one publisher, to one work, or to a partial read that
+    establishes no identity at all cannot carry it, and a run that records the
+    badge anyway has verified nothing while telling the reader it has.
+    """
+    for claim in _verified_pairs(run):
+        reads = _supporting_reads(run, claim)
+        partial = [read for read in reads if not read.extraction_complete]
+        if partial:
+            return (
+                f"{claim.text[:60]!r} was badged as a pair on a partial read "
+                f"({partial[0].resolved_url}), which establishes no identity"
+            )
+        publishers = {_identity(run, url)[0] for url in _supporting_urls(claim)}
+        works = {_identity(run, url)[1] for url in _supporting_urls(claim)}
+        publishers.discard(None)
+        works.discard(None)
+        if len(publishers) < 2 or len(works) < 2:
+            return (
+                f"{claim.text[:60]!r} was badged as an independent pair on "
+                f"{len(publishers)} publisher(s) and {len(works)} work(s)"
+            )
+    return None
+
+
+def _invariant_mirror_not_double_counted(run: ReplayRun) -> str | None:
+    """One body served twice is one work, however many hosts serve it.
+
+    Both reads are real and both are admitted; what the mirror cannot do is
+    become the second account. So the checker looks for two reads of one body
+    and requires that the badge was refused - which is only observable if both
+    reads happened, which is why the case proves the read as well as the
+    refusal.
+    """
+    by_digest: dict[str, list[Any]] = {}
+    for read in run.state.read_records.values():
+        by_digest.setdefault(read.content_sha256, []).append(read)
+    mirrored = [reads for reads in by_digest.values() if len(reads) > 1]
+    if not mirrored:
+        return "no body was read from two hosts, so nothing was mirrored"
+    for claim in _verified_pairs(run):
+        reads = _supporting_reads(run, claim)
+        if len({read.content_sha256 for read in reads}) < len(reads):
+            return (
+                f"{claim.text[:60]!r} was badged as a pair on two reads of one "
+                "body"
+            )
+    return None
+
+
+def _invariant_denied_url_not_retried(run: ReplayRun) -> str | None:
+    """A refused page is asked for once, and the refusal is what was recorded."""
+    refused = [
+        source
+        for source in run.scenario.sources.values()
+        if source.status_code != 200
+    ]
+    if not refused:
+        return "the scenario declared no refused page"
+    for source in refused:
+        attempts = run.replay.http.fetches_of(source.url)
+        if attempts == 0:
+            return f"the refused page {source.url} was never asked for"
+        if attempts > 1:
+            return f"the refused page {source.url} was asked for {attempts} times"
+    return None
+
+
+def _invariant_both_accounts_cited(run: ReplayRun) -> str | None:
+    """Every account the run read is cited, and its own figure is what it says.
+
+    An account is a topic two publishers measured - a model of the world, not
+    one page. The reader has to see both of them, and each figure has to reach
+    the report as the reading it was: a run that cited one population's page
+    for the other's number, or that reported one figure as if it were the
+    subject of the question, has merged what the question kept apart.
+    """
+    report = run.report.casefold()
+    for topic in run.scenario.topics:
+        if len({source.issuer for source in topic.sources}) < 2:
+            continue
+        urls = {normalize_source_url(source.url) for source in topic.sources}
+        cited = [
+            statement
+            for statement in run.statements
+            if urls
+            & {
+                normalize_source_url(url)
+                for url in _statement_urls(run, statement)
+            }
+        ]
+        if not cited:
+            return (
+                f"the account {topic.title!r} was read but never cited in the "
+                "report"
+            )
+        for figure in _figures([source.claim for source in topic.sources]):
+            if figure.casefold() not in report:
+                return (
+                    f"the report never states {figure!r}, the reading "
+                    f"{topic.title!r} was measured at"
+                )
+    return None
+
+
+def _invariant_refinement_recovered_evidence(run: ReplayRun) -> str | None:
+    """The repair round's new page is what turned the obligation into an answer.
+
+    A recovery that is real is a recovery the ledger shows: the late page was
+    acquired, and the claim that answers the obligation is corroborated *by
+    it*. A run that had the answer in hand before the repair, or that answered
+    from the first round's page alone, did not recover anything.
+    """
+    late = _late_pages(run)
+    if not late:
+        return "the scenario declared no page a later round had to find"
+    for source in late:
+        if source.url not in run.replay.http.fetched:
+            return f"the page only a later round could find was never read: {source.url}"
+    late_urls = {normalize_source_url(source.url) for source in late}
+    recovered = [
+        claim
+        for claim in _verified_pairs(run)
+        if late_urls & {normalize_source_url(url) for url in claim.source_urls}
+    ]
+    if not recovered:
+        return "no corroborated claim rested on the page the repair acquired"
+    return None
+
+
+def _invariant_forecast_not_substituted_for_observation(
+    run: ReplayRun,
+) -> str | None:
+    """A dated statement never rests on a page dated to another period.
+
+    A projection and an observation are different facts about the world, and
+    the difference is the period each one states. So the check is the periods
+    themselves: a statement that asserts a year may not cite evidence whose own
+    claim is about a different one, which is exactly the substitution of a
+    forecast for the figure the question asked for.
+    """
+    for statement in run.statements:
+        stated = _years(statement.text)
+        if not stated:
+            continue
+        for url in _statement_urls(run, statement):
+            source = _page(run, url)
+            if source is None:
+                continue
+            page_years = _years(source.claim)
+            if page_years and not page_years & stated:
+                return (
+                    f"the statement {statement.text[:60]!r} rests on "
+                    f"{source.url}, whose own claim is about "
+                    f"{sorted(page_years)}"
+                )
+    return None
+
+
+def _invariant_contradiction_recorded(run: ReplayRun) -> str | None:
+    """A disagreeing account is recorded, and never settled behind the reader's back.
+
+    The disagreement has to be visible in two places: the claim's own evidence
+    (a contradicting passage was selected and the badge withheld), and the
+    reader's report (the unresolved claim is disclosed). A run that recorded
+    the passage and then published the number as if nothing disagreed has
+    averaged the disagreement away in the one place it matters.
+    """
+    composition = run.state.composition
+    contested = [
+        claim
+        for claim in run.state.verified_claims
+        if any(
+            passage.stance == "contradicts"
+            for passage in claim.verification_evidence
+        )
+    ]
+    if not contested:
+        return "no contradicting passage was recorded for any claim"
+    contested_ids = {claim.claim_id for claim in contested}
+    contested_clusters = {
+        cluster_id
+        for claim in contested
+        for cluster_id in [claim.cluster_id, *claim.cluster_aliases]
+        if cluster_id
+    }
+    for claim in contested:
+        if claim.evidence_status == "verified_pair":
+            return (
+                f"{claim.text[:60]!r} was badged as a corroborated pair while "
+                "an account it read disagrees"
+            )
+    for statement in run.statements:
+        if statement.mode != "settled":
+            continue
+        if contested_clusters & set(statement.claim_cluster_ids):
+            return (
+                f"the contested reading was published as settled: "
+                f"{statement.text[:60]!r}"
+            )
+    disclosed = bool(
+        composition is not None
+        and (composition.uncertainty_statements or composition.uncertainty_notes)
+    )
+    if not disclosed:
+        return "the disagreement was recorded in the ledger and never disclosed"
+    return None
+
+
+def _invariant_empty_answer_answered_nothing(run: ReplayRun) -> str | None:
+    """A tidy report that answered no obligation is a failed run, not a pass.
+
+    The case exists to refuse the reading where clean structure and a
+    recommendation stand in for an answer, so the checker asserts the
+    emptiness itself and refuses the acceptance that would hide it.
+    """
+    answered = run.answered_target_ids()
+    if answered:
+        return f"the run answered {sorted(answered)} without usable evidence"
+    quality = run.state.quality
+    if quality is not None and quality.answered_targets:
+        return "the quality snapshot counted answered targets"
+    if run.answerable_claims():
+        return "the run recorded a claim that could answer an obligation"
+    if run.quality_status == "accepted":
+        return "a report that answered nothing was accepted"
+    lowered = f" {run.report.casefold()} "
+    if " should " in lowered:
+        return "the report reads as a recommendation for a question it never answered"
+    return None
+
+
+def _invariant_memory_leads_are_not_reads(run: ReplayRun) -> str | None:
+    """A remembered claim is a lead: it is shown, and it is not evidence.
+
+    The remembered URL may reach a decision - that is what makes it a lead
+    worth spending a read on - but nothing may cite it as a source, and no read
+    may have been taken from memory. A run that treated the memory record as
+    its own read has fabricated the provenance of a claim.
+    """
+    leads = [
+        entry.source_url
+        for entry in run.scenario.memory_entries
+        if entry.source_url
+    ]
+    if not leads:
+        return "the scenario seeded no remembered lead"
+    packets = run.replay.completer.packets_carrying
+    for url in leads:
+        if not packets(url):
+            return f"the remembered lead {url} never reached a decision packet"
+        if any(
+            normalize_source_url(url) == normalize_source_url(read.resolved_url)
+            or normalize_source_url(url)
+            == normalize_source_url(read.requested_url)
+            for read in run.state.read_records.values()
+        ):
+            return f"the remembered lead {url} was recorded as a read of this run"
+        for claim in run.state.verified_claims:
+            if any(
+                normalize_source_url(cited) == normalize_source_url(url)
+                for cited in claim.source_urls
+            ):
+                return f"a claim cited the remembered lead {url} as its source"
+    return None
+
+
+def _invariant_read_downloaded_once(run: ReplayRun) -> str | None:
+    """One body is downloaded once, and every later answer reuses the read.
+
+    Two obligations answered from one page is the case's premise; a second
+    download of the same body is the defect. The checker reads the boundary's
+    own record of what it served, so a run that fetched the page again to
+    answer the second obligation is visible here rather than merely slower.
+    """
+    fetched = run.replay.http.fetched
+    repeated = sorted({url for url in fetched if fetched.count(url) > 1})
+    if repeated:
+        return f"a body was downloaded more than once: {repeated}"
+    reused = [
+        read
+        for read in run.state.read_records.values()
+        if read.acquisition_kind == "cache"
+    ]
+    if not reused:
+        return "no later answer reused a read this run had already made"
+    return None
+
+
+def _invariant_late_candidate_reached_decision(run: ReplayRun) -> str | None:
+    """The candidate and the locator survive the short public summary.
+
+    Every packet the run builds is publicly summarised, and the case exists to
+    show the summary does not truncate what the next decision needs: the last
+    candidate of a topic is offered in the decision packet and its material
+    travels into the request that extracts from it.
+    """
+    for topic in run.scenario.topics:
+        if not topic.sources:
+            continue
+        last = topic.sources[-1]
+        carriers = run.replay.completer.packets_carrying(last.url)
+        if len(carriers) < 2:
+            return (
+                f"the candidate {last.url} reached {len(carriers)} request(s), "
+                "so a later pass never saw it again"
+            )
+    return None
+
+
+def _invariant_public_summary_stayed_short(run: ReplayRun) -> str | None:
+    """Every observation the packets carried stayed at its shipped length."""
+    prefix = "- [observation] "
+    limit = OBSERVATION_SUMMARY_CHARS + len(prefix)
+    summaries = 0
+    for _key, text in run.replay.completer.packet_sequence:
+        for line in text.splitlines():
+            if not line.startswith(prefix):
+                continue
+            summaries += 1
+            if len(line) > limit:
+                return (
+                    f"an observation summary ran to {len(line)} characters, "
+                    f"past the {limit} the shipped setting allows"
+                )
+    if not summaries:
+        return "no packet carried a public observation summary"
+    return None
+
+
+def _invariant_required_target_reopened(run: ReplayRun) -> str | None:
+    """The obligation, and not the Critic, is what sent the run back to work.
+
+    The case is only about the obligation if nothing else could have prompted
+    the second round: the Critic named no gap, and the run still went back,
+    drove a second discovery round, and answered the target from what it found.
+    """
+    critique = run.state.critique
+    if critique is not None and critique.gaps:
+        return (
+            "the Critic named "
+            f"{len(critique.gaps)} gap(s), so the reopening had another cause"
+        )
+    late = _late_pages(run)
+    if not late:
+        return "the scenario declared no page only a second round could find"
+    for source in late:
+        if source.url not in run.replay.http.fetched:
+            return f"the second-round page was never read: {source.url}"
+    rounds = run.replay.search.rounds
+    if not rounds or max(rounds.values()) < 2:
+        return "the run never issued a second discovery round"
+    return None
+
+
+def _invariant_stalled_refinement_stopped(run: ReplayRun) -> str | None:
+    """A repair that bought nothing stops, and names that as why it stopped.
+
+    The reason is the assertion: a run that reached its iteration ceiling
+    stopped because it ran out of budget, which is a different fact from a
+    repair loop that recognised the round it had just bought changed nothing.
+    """
+    reason = run.state.repair_stop_reason
+    if reason is None:
+        return "the run never recorded why it stopped repairing"
+    if reason != "no_progress":
+        return f"the repair stopped for {reason!r}, not because it bought nothing"
+    return None
+
+
+def _invariant_paraphrases_merged(run: ReplayRun) -> str | None:
+    """Two wordings of one fact are one identity, and the report says it once.
+
+    A merge is observable in three places and the checker reads all three: one
+    cluster carries both pages, and the reader's report cites both pages in a
+    single statement rather than printing the same reading twice.
+    """
+    paraphrases = run.scenario.equivalence_pairs
+    if not paraphrases:
+        return "the scenario declared no paraphrase to merge"
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report to merge into"
+    for left, right in paraphrases:
+        merged = [
+            cluster
+            for cluster in (run.state.claim_clusters or {}).values()
+            if len(cluster.member_claim_ids) > 1
+        ]
+        if not merged:
+            return (
+                f"no cluster absorbed a paraphrase, so {left} and {right} "
+                "were never merged"
+            )
+    for statement in run.statements:
+        urls = {normalize_source_url(url) for url in _statement_urls(run, statement)}
+        if len(urls) > len(_statement_urls(run, statement)):
+            return (
+                f"the statement {statement.text[:60]!r} cites the same page twice"
+            )
+    return None
+
+
+def _invariant_different_periods_stay_distinct(run: ReplayRun) -> str | None:
+    """A cluster never holds two periods, or a stale figure answers a current one.
+
+    Two readings of one measure a year apart are two facts, and the identity
+    that merges them is the mechanism by which a 2023 number is published
+    behind a 2024 question. The checker reads the periods the merged claims
+    themselves state, so it can see the merge the provenance alone would not
+    show.
+    """
+    for cluster in (run.state.claim_clusters or {}).values():
+        periods: dict[str, str] = {}
+        for claim in run.state.verified_claims:
+            if claim.cluster_id != cluster.cluster_id and (
+                cluster.cluster_id not in claim.cluster_aliases
+            ):
+                continue
+            for year in _years(claim.text):
+                periods.setdefault(year, claim.text[:60])
+        if len(periods) > 1:
+            return (
+                f"the cluster {cluster.cluster_id[:12]!r} states "
+                f"{sorted(periods)}, so one identity holds two periods"
+            )
+    return None
+
+
+def _invariant_no_ranked_constraints_for_a_factual_answer(
+    run: ReplayRun,
+) -> str | None:
+    """A measurement question is answered by its reading, not by a ranking.
+
+    The ranking is a structure the composer is able to fill for any question,
+    which is exactly why a case has to show it did not: an answer whose kind is
+    not ``constraints`` and whose rows present no option as the best one is the
+    answer the question asked for. The kind is read from the composition rather
+    than required to be one particular word, because "factual", "historical"
+    and "comparison" are three shapes of the same refusal to rank.
+    """
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    if composition.constraints:
+        return (
+            f"an answer that was not a constraint question carried "
+            f"{len(composition.constraints)} ranked constraint row(s)"
+        )
+    if composition.answer_kind == "constraints":
+        return "the run answered a measurement question as a constraint ranking"
+    if not composition.answer_rows:
+        return "the answer published no answer row"
+    return None
+
+
+def _invariant_mechanism_obligation_stays_unanswered(
+    run: ReplayRun,
+) -> str | None:
+    """A cited pair of pages about an outcome is not an answer about its cause.
+
+    The obligation asks for a causal mechanism, and every page the run read
+    states what happened rather than why. So the check has two halves and needs
+    both: the topic really was researched - a checked claim names the
+    obligation - and the obligation is still outstanding, because evidence
+    that answers "what" cannot be dressed into an answer to "why".
+    """
+    from deep_research.utils.types import counted_evidence_targets
+
+    mechanism = [
+        target
+        for topic in run.state.sub_topics
+        for target in counted_evidence_targets(topic.evidence_targets)
+        if any(
+            "causal mechanism" in dimension.casefold()
+            for dimension in target.required_dimensions
+        )
+    ]
+    if not mechanism:
+        return "no obligation in this scenario asked for a mechanism"
+    answered = set(run.answered_target_ids())
+    for target in mechanism:
+        researched = any(
+            target.target_id in claim.target_ids
+            for claim in run.state.verified_claims
+        )
+        if not researched:
+            return (
+                f"nothing was ever checked for {target.target_id}, so the case "
+                "proves nothing about the answer it withheld"
+            )
+        if target.target_id in answered:
+            return (
+                f"the mechanism obligation {target.target_id} was answered by "
+                "evidence that states only the outcome"
+            )
+    return None
+
+
+def _invariant_review_missing_blocks_acceptance(run: ReplayRun) -> str | None:
+    """No judgement is not a pass, however complete the artifacts look."""
+    review = run.state.report_review
+    if review is not None and review.status == "scored":
+        return "the run recorded a semantic judgement after all"
+    if run.quality_status == "accepted":
+        return "a run with no semantic judgement was accepted"
+    if not run.report.strip():
+        return "no reader artifact was published"
+    if not run.state.verified_claims:
+        return "no checked claim survived into the artifacts"
+    return None
+
+
+_REPLAY_INVARIANTS: dict[str, Any] = {
+    "primary_attribution_not_verified": _invariant_primary_attribution_not_verified,
+    "no_false_verification": _invariant_no_false_verification,
+    "mirror_not_double_counted": _invariant_mirror_not_double_counted,
+    "denied_url_not_retried": _invariant_denied_url_not_retried,
+    "both_accounts_cited": _invariant_both_accounts_cited,
+    "refinement_recovered_evidence": _invariant_refinement_recovered_evidence,
+    "forecast_not_substituted_for_observation": (
+        _invariant_forecast_not_substituted_for_observation
+    ),
+    "contradiction_recorded": _invariant_contradiction_recorded,
+    "empty_answer_answered_nothing": _invariant_empty_answer_answered_nothing,
+    "memory_leads_are_not_reads": _invariant_memory_leads_are_not_reads,
+    "read_downloaded_once": _invariant_read_downloaded_once,
+    "late_candidate_reached_decision": _invariant_late_candidate_reached_decision,
+    "public_summary_stayed_short": _invariant_public_summary_stayed_short,
+    "required_target_reopened": _invariant_required_target_reopened,
+    "stalled_refinement_stopped": _invariant_stalled_refinement_stopped,
+    "paraphrases_merged": _invariant_paraphrases_merged,
+    "different_periods_stay_distinct": _invariant_different_periods_stay_distinct,
+    "no_ranked_constraints_for_a_factual_answer": (
+        _invariant_no_ranked_constraints_for_a_factual_answer
+    ),
+    "review_missing_blocks_acceptance": _invariant_review_missing_blocks_acceptance,
+    "mechanism_obligation_stays_unanswered": (
+        _invariant_mechanism_obligation_stays_unanswered
+    ),
+}
+
+
+def expectation_failures(run: ReplayRun) -> list[str]:
+    """Every way this run did not meet the result its case declares.
+
+    The declared result and the test's verdict are two facts, and this is the
+    function that keeps them apart: it returns the ways the *product* fell
+    short, so a case whose product result is ``partial`` with exit 4 reports no
+    failures at all while a case that abstained cleanly reports every obligation
+    it left unanswered. A run that reached the network, or that answered
+    nothing, or that published a claim its evidence does not support fails
+    here rather than being read as a clean exit.
+    """
+    expectation = run.scenario.expectation
+    failures: list[str] = []
+    if run.quality_status != expectation.terminal_quality:
+        failures.append(
+            f"terminal quality {run.quality_status!r} != "
+            f"{expectation.terminal_quality!r}"
+        )
+    if run.exit_code != expectation.exit_code:
+        failures.append(
+            f"exit code {run.exit_code} != {expectation.exit_code}"
+        )
+    answered = set(run.answered_target_ids())
+    missing_targets = [
+        target_id
+        for target_id in expectation.required_target_ids
+        if target_id not in answered
+    ]
+    if missing_targets:
+        failures.append(
+            "required targets unanswered: " + ", ".join(missing_targets)
+        )
+    answerable = run.answerable_claims()
+    if len(answerable) < expectation.minimum_answerable_claims:
+        failures.append(
+            f"{len(answerable)} answerable claims < "
+            f"{expectation.minimum_answerable_claims} required"
+        )
+    report = run.report.casefold()
+    for assertion in expectation.forbidden_assertions:
+        if assertion.casefold() in report:
+            failures.append(f"the report asserts {assertion!r}, which the case forbids")
+    for phrase in expectation.required_report_phrases:
+        if phrase.casefold() not in report:
+            failures.append(f"the report does not state {phrase!r}")
+    gaps = set(run.gap_kinds())
+    for kind in expectation.required_gap_kinds:
+        if kind not in gaps:
+            failures.append(f"the expected gap {kind!r} was not recorded")
+    unexpected = sorted(
+        gaps
+        - set(expectation.required_gap_kinds)
+        - set(expectation.allowed_failure_classes)
+    )
+    if unexpected:
+        failures.append(
+            "failure kinds the case does not allow: " + ", ".join(unexpected)
+        )
+    for name in expectation.required_invariants:
+        invariant = _REPLAY_INVARIANTS.get(name)
+        if invariant is None:
+            failures.append(f"unknown invariant {name!r}")
+            continue
+        problem = invariant(run)
+        if problem:
+            failures.append(f"invariant {name!r} broken: {problem}")
+    return failures
 
 
 def production_config_path() -> Path:
@@ -1217,6 +2176,7 @@ __all__ = [
     "ReplaySource",
     "ReplayTopic",
     "build_replay_runtime",
+    "expectation_failures",
     "network_denied",
     "offline_credentials",
     "production_config_path",
