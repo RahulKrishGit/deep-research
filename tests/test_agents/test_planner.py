@@ -3599,6 +3599,93 @@ async def test_the_planner_extends_the_plan_when_re_entered_with_an_extension_jo
 
 
 @pytest.mark.asyncio
+async def test_two_differing_omissions_both_reach_the_extension_request(
+    tracker: Tracker,
+) -> None:
+    """One extension pass names every omission it was purchased to close.
+
+    An original-question omission carries no plan id, no cluster and no
+    statement — both gaps are ``target_ids=["question"]`` and nothing else —
+    so ``RefinementTarget.identity`` folded the two into one job and kept the
+    more severe problem. A Critic reporting that the plan misses both the cost
+    question and the 2030 timeline then bought one extension for the timeline,
+    and the cost omission vanished from the pass bought to fix it.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(),
+            ResearchPlanDraft(
+                sub_topics=[
+                    _draft("Siting and permitting", priority=4),
+                    _draft("Cost trajectory to 2030", priority=5),
+                ]
+            ),
+        ],
+    )
+    agent = _planner(tracker, completer)
+    question = "What limits battery storage deployment?"
+
+    async with tracker.session_span("session-1", "q"):
+        first = await agent.run(_state(question))
+        planned = merge_research_state(_state(question), first.state_update)
+        asked = planned.model_copy(
+            update={
+                "refinement_targets": refinement_targets_for(
+                    planned.model_copy(
+                        update={
+                            "critique": Critique(
+                                score=3,
+                                gaps=[
+                                    CritiqueGap(
+                                        coverage_id=None,
+                                        target_ids=[QUESTION_TARGET_ID],
+                                        kind="coverage",
+                                        severity="major",
+                                        repair_action="extend_plan",
+                                        problem=(
+                                            "The question asks for a cost the "
+                                            "plan never targeted."
+                                        ),
+                                    ),
+                                    CritiqueGap(
+                                        coverage_id=None,
+                                        target_ids=[QUESTION_TARGET_ID],
+                                        kind="coverage",
+                                        severity="critical",
+                                        repair_action="extend_plan",
+                                        problem=(
+                                            "The question asks for a 2030 "
+                                            "timeline the plan never targeted."
+                                        ),
+                                    ),
+                                ],
+                                unsupported_claims=[],
+                                recommended_queries=[],
+                                should_continue=True,
+                                rationale="Both omissions are material.",
+                            )
+                        }
+                    )
+                )
+            }
+        )
+        extended = await agent.run(asked)
+
+    assert extended.result is not None
+    assert extended.result.extension is True
+    request = "\n".join(
+        message.content
+        for name, _fingerprint, messages in completer.calls
+        if name == "PlanExtensionDraft"
+        for message in messages
+    )
+    assert "cost the plan never targeted" in request
+    assert "2030 timeline the plan never targeted" in request
+
+
+@pytest.mark.asyncio
 async def test_an_extension_through_the_agent_keeps_both_inventories(
     tracker: Tracker,
 ) -> None:
