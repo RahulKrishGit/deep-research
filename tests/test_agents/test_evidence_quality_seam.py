@@ -102,7 +102,7 @@ def _select_every_shown_passage(
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             )
             for evidence_id in ids
         ],

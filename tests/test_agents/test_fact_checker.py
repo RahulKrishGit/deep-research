@@ -3356,10 +3356,9 @@ _SUPPORT_POLICIES = ("independent_pair", "primary_attribution", "derivation")
 def _lone_publisher_support() -> Claim:
     """The shape the packet path writes for one complete primary support.
 
-    One in-scope, complete support from the claim's own single publisher, and
-    judged exactly as the local test judges such a support — not independent
-    of the claim's origin — so the claim is ``insufficient_evidence`` beside
-    ``source_supported``: one publisher standing behind a claim is
+    One in-scope, complete, primary support from the claim's own single
+    publisher and nothing beside it, so the claim is ``insufficient_evidence``
+    beside ``source_supported``: one publisher standing behind a claim is
     attribution, not the independent pair a ``verified`` badge would show.
     """
     packet = _pair_packet(_eligibility(), _independent_second()).model_copy(
@@ -3375,7 +3374,7 @@ def _lone_publisher_support() -> Claim:
                     stance="supports",
                     complete_support=True,
                     scope_compatible=True,
-                    independent=False,
+                    dependence="primary",
                 )
             ],
             support_ids=["ev-left"],
@@ -3514,7 +3513,7 @@ def _partial_support_only() -> Claim:
                     stance="supports",
                     complete_support=False,
                     scope_compatible=True,
-                    independent=True,
+                    dependence="primary",
                 )
             ],
             support_ids=["ev-left"],
@@ -3781,7 +3780,7 @@ def _select_every_shown_id(
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             )
             for evidence_id in ids
         ],
@@ -3884,7 +3883,7 @@ async def test_a_locally_sufficient_pool_the_model_cannot_use_gets_one_retrieval
                         stance="supports",
                         complete_support=False,
                         scope_compatible=False,
-                        independent=True,
+                        dependence="primary",
                     )
                     for evidence_id in ids
                 ],
@@ -4031,7 +4030,7 @@ def test_a_boundary_loss_names_the_missing_read_and_never_verifies() -> None:
                     stance="supports",
                     complete_support=True,
                     scope_compatible=True,
-                    independent=True,
+                    dependence="primary",
                 )
                 for unit in pool
             ],
@@ -4350,7 +4349,7 @@ def _adjudication(
     verdict: str = "verified",
     complete: bool = True,
     scope: bool = True,
-    independent: bool = True,
+    dependence: str = "primary",
     stance: str = "supports",
     contradiction_ids: list[str] | None = None,
 ) -> tuple[Claim, list[str]]:
@@ -4367,7 +4366,7 @@ def _adjudication(
                     stance=stance,
                     complete_support=complete,
                     scope_compatible=scope,
-                    independent=independent,
+                    dependence=dependence,
                 )
                 for unit in packet.units
             ],
@@ -4450,25 +4449,23 @@ def test_no_pair_that_cannot_show_independence_ever_verifies(
 
 
 @pytest.mark.parametrize(
-    ("label", "complete", "scope", "independent"),
+    ("label", "complete", "scope"),
     [
-        ("period-mismatch", True, False, True),
-        ("unit-mismatch", False, True, True),
-        ("scope-mismatch", False, False, True),
-        ("compound-claim-partly-supported", False, True, True),
-        ("quoted-speculation", False, True, True),
-        ("stale-future-current-confusion", True, False, True),
+        ("period-mismatch", True, False),
+        ("unit-mismatch", False, True),
+        ("scope-mismatch", False, False),
+        ("compound-claim-partly-supported", False, True),
+        ("quoted-speculation", False, True),
+        ("stale-future-current-confusion", True, False),
     ],
 )
 def test_a_support_that_is_not_a_complete_in_scope_support_never_verifies(
-    label: str, complete: bool, scope: bool, independent: bool
+    label: str, complete: bool, scope: bool
 ) -> None:
     """Section 2.1: each passage must support the COMPLETE atomic claim."""
     packet = _pair_packet(_eligibility(), _independent_second())
 
-    claim = _adjudication(
-        packet, complete=complete, scope=scope, independent=independent
-    )
+    claim = _adjudication(packet, complete=complete, scope=scope)
 
     assert claim.verdict == "insufficient_evidence", label
     assert (
@@ -4481,7 +4478,7 @@ def test_a_faithful_primary_attribution_stays_source_supported() -> None:
     """One primary source is attribution, not independent corroboration."""
     packet = _pair_packet(_eligibility(), _independent_second())
 
-    claim = _adjudication(packet, independent=False)
+    claim = _adjudication(packet, dependence="derivative")
 
     assert claim.verdict == "insufficient_evidence"
     assert claim.evidence_status == "source_supported"
@@ -4503,14 +4500,14 @@ def _contradiction_draft(
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             ),
             SupportAssessment(
                 evidence_id="ev-right",
                 stance="contradicts",
                 complete_support=right_complete,
                 scope_compatible=right_scope,
-                independent=True,
+                dependence="primary",
             ),
         ],
         support_ids=["ev-left"],
@@ -4568,14 +4565,14 @@ def test_a_passage_about_another_question_is_not_a_conflict_at_all() -> None:
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             ),
             SupportAssessment(
                 evidence_id="ev-right",
                 stance="unrelated",
                 complete_support=False,
                 scope_compatible=False,
-                independent=True,
+                dependence="primary",
             ),
         ],
         support_ids=["ev-left"],
@@ -4602,14 +4599,14 @@ def test_a_material_unresolved_contradiction_precludes_settled_verified() -> Non
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             ),
             SupportAssessment(
                 evidence_id="ev-right",
                 stance="contradicts",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             ),
         ],
         support_ids=["ev-left"],
@@ -4638,7 +4635,7 @@ def test_an_id_the_model_was_never_shown_is_not_evidence() -> None:
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             )
         ],
         support_ids=["ev-invented"],
@@ -4876,7 +4873,7 @@ def test_the_manifest_ids_are_joinable_evidence_ids() -> None:
                     stance="supports",
                     complete_support=True,
                     scope_compatible=True,
-                    independent=True,
+                    dependence="primary",
                 )
                 for unit in packet.units
             ],
@@ -5035,7 +5032,7 @@ def test_a_handoff_loss_is_named_from_the_audit_not_the_test() -> None:
                     stance="supports",
                     complete_support=True,
                     scope_compatible=True,
-                    independent=True,
+                    dependence="primary",
                 )
                 for unit in packet.units
             ],
@@ -5095,14 +5092,14 @@ def test_a_wrong_causal_direction_never_counts_as_a_complete_support() -> None:
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             ),
             SupportAssessment(
                 evidence_id="ev-right",
                 stance="supports",
                 complete_support=False,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             ),
         ],
         support_ids=["ev-left", "ev-right"],
@@ -5384,21 +5381,21 @@ def test_the_manifest_refuses_are_visible_and_joinable() -> None:
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             ),
             SupportAssessment(
                 evidence_id="ev-right",
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             ),
             SupportAssessment(
                 evidence_id="ev-invented",
                 stance="supports",
                 complete_support=True,
                 scope_compatible=True,
-                independent=True,
+                dependence="primary",
             ),
         ],
         support_ids=["ev-left", "ev-right", "ev-invented"],
@@ -5465,7 +5462,7 @@ def test_a_mirror_pair_is_joined_by_id_not_by_excerpt() -> None:
                     stance="supports",
                     complete_support=True,
                     scope_compatible=True,
-                    independent=True,
+                    dependence="primary",
                 )
             ],
             support_ids=[left.evidence_id],
@@ -5513,7 +5510,7 @@ def test_the_packet_path_carries_and_gates_the_claims_obligations() -> None:
                     stance="supports",
                     complete_support=True,
                     scope_compatible=True,
-                    independent=True,
+                    dependence="primary",
                 )
                 for unit in packet.units
             ],

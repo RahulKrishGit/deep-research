@@ -493,9 +493,17 @@ def _mirror_run(
 
     ``supports`` is the pages the claim's badge rests on and ``references`` the
     list the report published. Three reads are registered: the running copy,
-    its mirror, and an account an independent publisher wrote.
+    its mirror, and an account an independent publisher wrote. Each read has
+    the assessed source the product records for it, identified by the
+    product's own batch resolution — the identity the checker reads.
     """
-    from deep_research.utils.types import Claim, EvidencePassage, ReadRecord
+    from deep_research.agents.evidence import resolve_source_identities
+    from deep_research.utils.types import (
+        Claim,
+        EvidencePassage,
+        ReadRecord,
+        ScoredSource,
+    )
 
     body = "the Acme widget adoption rate was 40 percent in 2024"
     reads = {
@@ -544,11 +552,28 @@ def _mirror_run(
         for number, url in enumerate(references, start=1)
     )
 
+    evaluated_sources = resolve_source_identities(
+        [
+            ScoredSource(
+                url=url,
+                title="Adoption report",
+                rationale="Recorded without a model judgement.",
+                evaluation_status="unscored_missing",
+            )
+            for url in reads
+        ],
+        read_records.values(),
+    )
+
     class _Run:
         state = type(
             "State",
             (),
-            {"read_records": read_records, "verified_claims": [claim]},
+            {
+                "read_records": read_records,
+                "verified_claims": [claim],
+                "evaluated_sources": evaluated_sources,
+            },
         )()
         statements: list[object] = []
 

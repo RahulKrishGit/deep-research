@@ -254,7 +254,7 @@ from deep_research.utils.config import (
 # edited; the module source is what the fingerprint hashes, so a routing fix
 # that lives in ``critic.py`` moves a value whose name implies a prompt change
 # — the same false positive the researcher's first re-pin records below.
-CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
+CRITIC_PROMPT_FINGERPRINT = "3d6a1db27572"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -728,13 +728,32 @@ CRITIC_PROMPT_FINGERPRINT = "9694e44926d3"
 # against, never a prompt input. The shared ``agents.prompts`` library was not
 # edited, and the other four pins and the judge did not move (verified by
 # recomputing all six and the judge).
+# The canonical source identity fix re-pinned all six together
+# (`4fab1aa863d8`/`70d8d679ea89`/`6c12c0fffc92`/`97de796ffb4a`/
+# `97cf77acbb15`/`9694e44926d3` -> `3172856c4bfc`/`d35dcbd0689a`/
+# `8e5bd6b86a3a`/`40afc3090052`/`27b2c2acc01c`/`3d6a1db27572`). This is real
+# prompt drift, and it is the intended kind: ``agents.prompts`` gained
+# ``ADJUDICATION_DEPENDENCE_INSTRUCTION``, which the adjudication request now
+# carries beside the response contract — the model is asked for each passage's
+# ``dependence`` and, when its figure comes from another candidate's origin,
+# for that origin's id — and the scoring instruction now asks for
+# ``derived_from``, the works a document says its data come from. Both are new
+# contract text the model has to read, so every agent that renders the shared
+# library moves with it. ``CLAIM_VERIFICATION_INSTRUCTION`` itself is
+# unchanged; the new section cites it rather than replacing it. The
+# source_evaluator's value moved a second time within the same change
+# (`8e5bd6b86a3a` -> `ae6aac567f2b`) for module-source drift alone: the private
+# single-read identity helper it now shares with the batch resolver was renamed
+# to ``_read_fitness_identity`` so no private name echoes the removed
+# ``evidence.read_identity``. No instruction changed; the other five did not
+# move.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "4fab1aa863d8",
-    "researcher": "70d8d679ea89",
-    "source_evaluator": "6c12c0fffc92",
-    "fact_checker": "97de796ffb4a",
-    "synthesizer": "97cf77acbb15",
-    "critic": "9694e44926d3",
+    "planner": "3172856c4bfc",
+    "researcher": "d35dcbd0689a",
+    "source_evaluator": "ae6aac567f2b",
+    "fact_checker": "40afc3090052",
+    "synthesizer": "27b2c2acc01c",
+    "critic": "3d6a1db27572",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
@@ -1146,7 +1165,7 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
         "report-probe-0-evidence.md"
     )
     assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
-    assert agent_prompt_fingerprint("synthesizer") == "97cf77acbb15"
+    assert agent_prompt_fingerprint("synthesizer") == "27b2c2acc01c"
     assert agent_prompt_fingerprint("synthesizer") != pre_task_11
 
 
@@ -1174,8 +1193,8 @@ def test_the_acquisition_sequence_repin_is_attributed_to_the_shared_counter() ->
     pre_bug_3 = "25fba5d22654"
     counter = ManifestSequence()
 
-    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "70d8d679ea89"
-    assert agent_prompt_fingerprint("researcher") == "70d8d679ea89"
+    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "d35dcbd0689a"
+    assert agent_prompt_fingerprint("researcher") == "d35dcbd0689a"
     assert agent_prompt_fingerprint("researcher") not in {pre_round_6, pre_bug_3}
     assert (counter.take(), counter.take()) == (0, 1)
 

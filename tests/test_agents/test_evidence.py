@@ -286,17 +286,62 @@ def test_conflicting_work_identifiers_are_preserved_not_merged() -> None:
         }
 
 
-def test_two_complete_hashes_for_one_doi_are_a_conflict() -> None:
-    """A version difference is ambiguity, never a silent join."""
+def test_two_complete_hashes_under_one_doi_are_one_work() -> None:
+    """The PDF and the HTML of one DOI are two renderings, not a conflict.
+
+    Section 2.2 rules 2/4: distinct bytes never prove distinct works, and one
+    registered identifier says they are one. Both hashes stay as aliases, so
+    either rendering found later still joins the work.
+    """
     rows = [
-        {"source_id": "v1", "doi": "10.1234/abc", "complete_content_sha256": "a" * 64},
-        {"source_id": "v2", "doi": "10.1234/abc", "complete_content_sha256": "b" * 64},
+        {"source_id": "pdf", "doi": "10.1234/abc", "complete_content_sha256": "a" * 64},
+        {"source_id": "html", "doi": "10.1234/abc", "complete_content_sha256": "b" * 64},
     ]
     resolved = resolve_work_identities(rows)
 
-    assert resolved["v1"].key is None
-    assert resolved["v2"].key is None
-    assert resolved["v1"].identity_status == "conflicting"
+    for source_id in ("pdf", "html"):
+        assert resolved[source_id].key == "doi:10.1234/abc"
+        assert resolved[source_id].identity_status == "known"
+        assert set(resolved[source_id].aliases) == {
+            "doi:10.1234/abc",
+            f"sha256:{'a' * 64}",
+            f"sha256:{'b' * 64}",
+        }
+
+
+def test_two_complete_hashes_under_two_issuers_report_numbers_stay_a_conflict() -> (
+    None
+):
+    """Without one registered identifier holding them together, bytes differ.
+
+    Two issuers' report numbers each name a work in their own namespace, and
+    they do not say the two bodies are one work, so the rule that forgives
+    distinct hashes does not apply.
+    """
+    rows = [
+        {
+            "source_id": "a",
+            "issuer": "Example Lab",
+            "report_number": "TR-1",
+            "complete_content_sha256": "a" * 64,
+        },
+        {
+            "source_id": "b",
+            "issuer": "Example Lab",
+            "report_number": "TR-1",
+            "complete_content_sha256": "b" * 64,
+        },
+        {
+            "source_id": "c",
+            "issuer": "Other Org",
+            "report_number": "TR-9",
+            "complete_content_sha256": "b" * 64,
+        },
+    ]
+    resolved = resolve_work_identities(rows)
+
+    assert resolved["a"].key is None
+    assert resolved["a"].identity_status == "conflicting"
 
 
 def test_different_editions_do_not_join_through_a_shared_title() -> None:

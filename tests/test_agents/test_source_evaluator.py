@@ -131,9 +131,6 @@ def _draft(
     year: str = "",
     derived_from: list[str] | None = None,
 ) -> SourceScoreDraft:
-    lineage: dict[str, object] = (
-        {} if derived_from is None else {"derived_from": list(derived_from)}
-    )
     return SourceScoreDraft(
         url=url,
         authority_score=authority,
@@ -152,7 +149,7 @@ def _draft(
         issuer=issuer,
         doi=doi,
         year=year,
-        **lineage,  # type: ignore[arg-type]
+        derived_from=list(derived_from or []),
     )
 
 
@@ -2020,7 +2017,10 @@ async def test_the_total_cap_records_unscored_identity_not_a_dropped_source() ->
         "unscored_cap",
     ]
     assert sources[1].overall_score is None
-    assert sources[1].work_id == f"sha256:{second.content_sha256}"
+    # The capped copy is byte-identical to the scored DOI original, so its
+    # identity is that work — resolved across both reads, not from its own.
+    assert first.content_sha256 == second.content_sha256
+    assert sources[1].work_id == sources[0].work_id == "doi:10.1234/grid.2025"
     assert source_origin_id(sources[1]) is None
 
 
