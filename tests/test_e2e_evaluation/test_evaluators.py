@@ -681,3 +681,56 @@ def test_an_incomplete_semantic_review_is_never_accepted() -> None:
     assert summary.missing is True
     assert summary.accepted is False
     assert summary.score is None
+
+
+def test_the_production_cli_parser_reads_the_line_the_formatter_prints() -> None:
+    """The parser grades the CLI line, so a regex drift silently mis-grades runs.
+
+    A wrongly-parsed quality line either fails an acceptance case that actually
+    passed or, worse, passes one whose numbers moved. This pins the parser
+    against the production formatter's own output rather than a hand-written
+    string that could drift away from it.
+    """
+    from deep_research.e2e_evaluation.evaluators import production_cli_summary
+
+    _, _, _, _, cli_output = _accepted_fixture_parts()
+    quality_line = next(
+        line for line in cli_output if line.startswith("Quality: ")
+    )
+
+    summary = production_cli_summary(cli_output)
+
+    assert summary["quality_status"] == quality_line.removeprefix(
+        "Quality: "
+    ).split(" ", 1)[0]
+    assert isinstance(summary["coverage_ratio"], float)
+
+
+def test_the_production_cli_parser_reads_the_claimed_reading_its_line_carries() -> None:
+    """The Quality line prints the CLAIMED count; the substantive one is Coverage.
+
+    The parser mirrors the line it grades, so a run whose two readings differ
+    must still resolve to the claimed ratio here: the substantive number is
+    published on the separate Coverage line, which this parser does not read.
+    """
+    from deep_research.e2e_evaluation.evaluators import production_cli_summary
+
+    summary = production_cli_summary(
+        [
+            "Quality: accepted (1/1 topics claimed, 100%)",
+            "Coverage: 0/1 topics covered (substantive, 0%); "
+            "0/1 required targets answered",
+        ]
+    )
+
+    assert summary["quality_status"] == "accepted"
+    assert summary["coverage_ratio"] == 1.0
+
+
+def test_the_production_cli_parser_invents_no_ratio_for_a_line_without_one() -> None:
+    from deep_research.e2e_evaluation.evaluators import production_cli_summary
+
+    summary = production_cli_summary(["Quality: partial (3 uncited points)"])
+
+    assert summary["quality_status"] == "partial"
+    assert "coverage_ratio" not in summary
