@@ -480,6 +480,32 @@ def _selectable_acquisition_keys(state: ResearchState) -> set[str]:
     return keys
 
 
+def _unattempted_repair_keys(state: ResearchState) -> set[str]:
+    """Routed repair errands the run never opened an acquisition for.
+
+    A typed ``acquire`` job a *review* or the Critic asked for is an errand the
+    hop has dispatched, so the stop decision must see it even when no
+    acquisition state exists yet for that topic — the key is the record of an
+    attempt, and its absence says the work has not started. Judged without it,
+    a run whose every *attempted* lead was spent published with the defect it
+    had just routed still open.
+
+    The mechanical ``unanswered_target`` jobs are deliberately excluded, and
+    that exclusion is the whole point of computing this from the routed list
+    rather than from ``_selectable_acquisition_keys``: that obligation is the
+    standing one ``no_progress`` is allowed to stop on, so counting an
+    never-attempted unmet topic as pending work would make the no-progress
+    rule unreachable — a run that changed nothing would keep buying passes.
+    """
+    return {
+        job.coverage_id
+        for job in state.refinement_targets
+        if job.action == "acquire"
+        and job.origin in ("critic_gap", "review_defect")
+        and job.coverage_id
+    }.difference(state.acquisition_state_by_target)
+
+
 def pending_repair_work(state: ResearchState) -> list[str]:
     """Every piece of evidence work this run still holds unprocessed.
 
@@ -496,6 +522,13 @@ def pending_repair_work(state: ResearchState) -> list[str]:
     the leftover can never be drained, and counting it held the stop reason
     open — the run bought every remaining macro pass and ended at the
     iteration ceiling rather than reporting the dead end it had established.
+
+    A routed repair errand whose target has *no* acquisition state is owed
+    work too, and is reported as such (``_unattempted_repair_keys``). Counting
+    only the keys the map happens to hold let the stop decision call a run
+    finished while the acquire job the hop had just routed for such a topic was
+    still open, which is the one shape the routed worklist exists to keep
+    alive.
     """
     items: list[str] = []
     selectable = _selectable_acquisition_keys(state)
@@ -518,6 +551,9 @@ def pending_repair_work(state: ResearchState) -> list[str]:
             for url, record in acquisition.candidate_records.items()
             if record.status in ("queued", "deferred")
         )
+    items.extend(
+        f"{key}:unattempted" for key in sorted(_unattempted_repair_keys(state))
+    )
     return list(dict.fromkeys(items))
 
 
@@ -627,7 +663,10 @@ def repair_capacity_spent(state: ResearchState) -> bool:
     The targets read are the ones a refinement pass will work on
     (``_selectable_acquisition_keys``), not every entry the run ever wrote: a
     topic the pass skips can hold no calls and no queue and neither fact says
-    anything about what this run could still buy.
+    anything about what this run could still buy. A routed repair errand with
+    no acquisition state at all has spent nothing
+    (``_unattempted_repair_keys``), so a run is never reported as having spent
+    capacity for work it never opened an acquisition with.
 
     The ceiling is read as "no pass can be opened", not "the next pass is the
     last": the refinement hop can open pass ``iteration + 1`` whenever
@@ -637,14 +676,13 @@ def repair_capacity_spent(state: ResearchState) -> bool:
     """
     if state.iteration >= state.max_iterations:
         return True
-    states = [
-        state.acquisition_state_by_target[key]
-        for key in sorted(_selectable_acquisition_keys(state))
-        if key in state.acquisition_state_by_target
-    ]
-    if not states:
+    selectable = _selectable_acquisition_keys(state)
+    if not selectable or _unattempted_repair_keys(state):
         return False
-    return all(entry.remaining_calls <= 0 for entry in states)
+    return all(
+        state.acquisition_state_by_target[key].remaining_calls <= 0
+        for key in selectable
+    )
 
 
 def _leads_exhausted(acquisition: AcquisitionState) -> bool:
