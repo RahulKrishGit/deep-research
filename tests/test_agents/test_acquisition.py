@@ -315,6 +315,119 @@ def test_a_web_read_is_split_into_bounded_paragraph_passages() -> None:
     ) == carrying
 
 
+def test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones() -> None:
+    """The lede is evidence even when relevance ranks another passage first.
+
+    Selection scores a page's passages by the query alone, and a release's
+    opening passage is its header. The audited run's market-monitor read
+    deferred its opening chunk — the headline "2025 U.S. Energy Storage
+    Installations Set New Record, Surpass 2024 by 52%" — in both batches
+    selection ran. A read's own first passage is therefore always selected: it
+    shares the bound when the ranking left room, and adds one passage when the
+    bound was already full, so the header can never be the one part of a page
+    no packet may show.
+    """
+    lede = (
+        "The U.S. installed 18.9 GW of utility, C&I, and residential battery "
+        "energy storage systems in 2025."
+    )
+    ranked = (
+        "Grid-scale battery storage capacity additions reached 18.9 GW in "
+        "2025, and 37,143 megawatt hours of storage capacity were added in "
+        "2024 by the same accounting."
+    )
+    unrelated = "Sunny days improved panel output across the southwest."
+    result = _chunked_document_result(lede, ranked, unrelated)
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+    assert read is not None
+    assert list(read.passages) == [
+        "page-1-chunk-0",
+        "page-1-chunk-1",
+        "page-1-chunk-2",
+    ]
+
+    admission = admit_read_result(
+        result,
+        session_id="session-1",
+        query="grid-scale battery storage capacity additions megawatt hours 2025",
+        selected_limit=1,
+    )
+
+    assert admission is not None
+    assert [unit.locator for unit in admission.evidence.values()] == [
+        "page-1-chunk-0",
+        "page-1-chunk-1",
+    ]
+    assert [unit.excerpt for unit in admission.evidence.values()] == [
+        lede,
+        ranked,
+    ]
+    # The passage neither the ranking nor the lede took is still accounted for.
+    assert [item.item_id for item in admission.dispositions] == [
+        f"{read.read_id}/page-1-chunk-2"
+    ]
+
+
+def test_verification_selects_by_relevance_without_the_lede() -> None:
+    """The opening-passage guarantee is an extraction rule, not a verdict rule.
+
+    A claim's packet must hold only passages that bear on the claim: an
+    unrelated lede admitted during verification turned a claim whose retrieval
+    found nothing relevant from a free ``no_candidate`` outcome into a paid
+    adjudication of a passage about something else.
+    """
+    lede = "Sunny days improved panel output across the southwest."
+    relevant = (
+        "Grid-scale battery storage capacity additions reached 18.9 GW in 2025."
+    )
+    result = _chunked_document_result(lede, relevant)
+    query = "grid-scale battery storage capacity additions 2025"
+
+    verifying = admit_read_result(
+        result,
+        session_id="session-1",
+        query=query,
+        origin="fact_checker",
+        selected_limit=1,
+        include_lede=False,
+    )
+    extracting = admit_read_result(
+        result, session_id="session-1", query=query, selected_limit=1
+    )
+
+    assert verifying is not None and extracting is not None
+    assert [unit.locator for unit in verifying.evidence.values()] == [
+        "page-1-chunk-1"
+    ]
+    assert [unit.locator for unit in extracting.evidence.values()] == [
+        "page-1-chunk-0",
+        "page-1-chunk-1",
+    ]
+
+
+def _chunked_document_result(*chunks: str) -> ToolResult:
+    """One document read laid out as the given page-1 chunks, in order."""
+    url = "https://example.test/storage-monitor.pdf"
+    body = "".join(chunks)
+    return ToolResult(
+        tool_name="document_reader",
+        success=True,
+        data={
+            "source": url,
+            "requested_source": url,
+            "resolved_source": url,
+            "title": "Storage monitor",
+            "chunks": [
+                {"text": text, "chunk_index": index, "page": 1}
+                for index, text in enumerate(chunks)
+            ],
+            "content_sha256": normalized_content_sha256(body),
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+
 def test_splitting_a_page_does_not_change_its_read_identity() -> None:
     """One body read twice in a session is one read, however it is laid out.
 
@@ -350,6 +463,8 @@ def test_a_split_page_defers_the_passages_past_the_selection_bound() -> None:
     Splitting a page must not turn the passage bound into a silent drop:
     everything the selection did not take stays visible as a disposition, so
     a passage nobody selected is never read as a passage that does not exist.
+    The batch here is the bound plus the read's own opening passage, which is
+    the one part of a page selection may not leave behind.
     """
     result = _eia_web_result()
     read = build_read_record_from_tool_result(result, session_id="session-1")
@@ -364,15 +479,23 @@ def test_a_split_page_defers_the_passages_past_the_selection_bound() -> None:
     )
 
     assert admission is not None
-    (selected,) = admission.evidence.values()
-    assert "18.2 GW" in selected.excerpt
+    selected = {unit.locator for unit in admission.evidence.values()}
+    # The bound, plus the read's own opening passage, and no more.
+    assert len(selected) == 2
+    assert "chunk-0" in selected
+    carrying = next(
+        unit
+        for unit in admission.evidence.values()
+        if "18.2 GW" in unit.excerpt
+    )
+    assert carrying.locator in selected
     assert [item.reason for item in admission.dispositions] == [
         "deferred_capacity"
-    ] * (len(read.passages) - 1)
+    ] * (len(read.passages) - len(selected))
     assert {item.item_id for item in admission.dispositions} == {
         f"{read.read_id}/{locator}"
         for locator in read.passages
-        if locator != selected.locator
+        if locator not in selected
     }
 
 
@@ -787,21 +910,26 @@ def _policy(
 def test_a_selection_miss_hands_over_a_bounded_second_passage_batch() -> None:
     """A page that matches no query term is not "there is no evidence".
 
-    The single chunk of a page whose text shares no term with the query is
-    omitted by the first (query-scored) batch. The gate then says "extract",
-    and the local step has to hand that chunk over anyway — in reader order —
-    or the target is frozen out of acquisition for the rest of the pass.
+    A page whose text shares no term with the query scores nothing, so the
+    first (query-scored) batch takes only the read's opening passage — the
+    one selection may never leave behind — and the gate then says "extract".
+    The local step has to hand the rest over anyway, in reader order, or the
+    target is frozen out of acquisition for the rest of the pass.
     """
     policy = _policy()
     policy.after_action(
-        _document_step(_paged_result(1, text="An unrelated cover page."))
+        _document_step(
+            _paged_result(2, text="An unrelated cover page and appendix.")
+        )
     )
     read_id = next(iter(policy.reads))
-    locator = f"{read_id}/page-1-chunk-0"
+    locator = f"{read_id}/page-2-chunk-0"
 
     assert policy.state.pending_passage_ids == [locator]
     assert next_acquisition_action(policy.state) == "extract"
-    assert policy.evidence == {}
+    assert [unit.locator for unit in policy.evidence.values()] == [
+        "page-1-chunk-0"
+    ]
 
     decision = ReActDecision(
         thought="Search again.",
@@ -814,9 +942,12 @@ def test_a_selection_miss_hands_over_a_bounded_second_passage_batch() -> None:
     assert allowed.allowed is True
     assert policy.state.pending_passage_ids == []
     assert next_acquisition_action(policy.state) != "extract"
-    (unit,) = policy.evidence.values()
-    assert unit.locator == "page-1-chunk-0"
-    assert unit.excerpt == policy.reads[read_id].passages["page-1-chunk-0"]
+    assert {unit.locator for unit in policy.evidence.values()} == {
+        "page-1-chunk-0",
+        "page-2-chunk-0",
+    }
+    for unit in policy.evidence.values():
+        assert unit.excerpt == policy.reads[read_id].passages[unit.locator]
 
 
 def test_the_second_passage_batch_is_bounded_and_terminates() -> None:
@@ -865,6 +996,72 @@ def test_the_second_passage_batch_is_bounded_and_terminates() -> None:
     # No third batch: the handoff is idempotent once the bound is reached.
     assert policy.complete_extraction() is None
     assert len(policy.evidence) == 8
+
+
+def test_a_focused_packet_shows_the_unit_it_was_narrowed_to_first() -> None:
+    """A re-extraction's packet must show the passage it is asking about.
+
+    The audited run's release is 27 passages, and the first sixteen of them are
+    navigation: at the researcher's ~4,000-character packet budget, a renderer
+    that prints every passage of the read before the units it was narrowed to
+    spends the whole budget on menu text and asks the model for a passage it
+    never shows. The focused unit's row, its passage, and its read lead the
+    packet instead.
+    """
+    page = "https://example.test/us-energy-storage-monitor"
+    navigation = {
+        f"chunk-{index}": f"Menu item {index} " * 20 for index in range(20)
+    }
+    figure = "The U.S. deployed 37,143 megawatt hours of storage in 2024."
+    body = {**navigation, "chunk-20": figure}
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=page,
+        resolved_url=page,
+        title="U.S. Energy Storage Monitor",
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text="".join(body.values()),
+        passages=body,
+        extraction_complete=True,
+        target_ids=["topic-01"],
+    )
+    unit = EvidenceUnit(
+        evidence_id="ev-mwh",
+        read_id=read.read_id,
+        source_url=page,
+        source_title=read.title,
+        locator="chunk-20",
+        excerpt=figure,
+        target_ids=["topic-01"],
+        origin="researcher",
+    )
+
+    packet = build_acquisition_context(
+        AcquisitionState(target_id="topic-01", remaining_calls=3),
+        {read.read_id: read},
+        {unit.evidence_id: unit},
+        limit=4000,
+        target_id="topic-01",
+        focus_ids=[unit.evidence_id],
+    )
+
+    assert figure in packet
+    assert f"evidence_id={unit.evidence_id}" in packet
+    assert packet.index(f"evidence_id={unit.evidence_id}") < packet.index(
+        "passage read_id="
+    )
+    # Without a focus the packet is exactly what it always was: the same rows,
+    # in the same order, bounded by the same budget.
+    unfocused = build_acquisition_context(
+        AcquisitionState(target_id="topic-01", remaining_calls=3),
+        {read.read_id: read},
+        {unit.evidence_id: unit},
+        limit=4000,
+        target_id="topic-01",
+    )
+    assert unfocused != packet
+    assert unfocused.splitlines()[0] == packet.splitlines()[0]
 
 
 def test_a_bound_of_one_batch_hands_everything_over_immediately() -> None:

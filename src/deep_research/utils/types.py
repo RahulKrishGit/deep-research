@@ -2027,6 +2027,67 @@ _CAUSAL_LINK = re.compile(
     re.I,
 )
 
+# The classes of publisher a source requirement can name. The plan writes the
+# class, not the publisher ("the market monitor's latest published outlook",
+# "the agency's published methodology documentation"), and a requirement that
+# names only the industry class asks for the industry's figure: the live
+# market-monitor target imposed no constraint at all, so the agency's own
+# projection answered it. A requirement naming both classes is a pair spec
+# ("the federal … agency's published capacity data and, independently, an
+# industry … market tracker"), and either half answers it; reading it as
+# government-only rejected the tracker's own figure (review rank 6).
+_INDUSTRY_SOURCE = re.compile(
+    r"\b(?:market[\s-](?:monitor|tracker|research)|industry|"
+    r"trade association|consultancy)\b",
+    re.I,
+)
+# Leading boundary only, as the substring test it replaces: "agency's" and
+# "governmental" name the class too.
+_GOVERNMENT_SOURCE = re.compile(r"\b(?:federal|government|agency)", re.I)
+# A definitional measure asks what one concept is — a threshold, a segment, the
+# facility types counted, a rating basis — and only a clause about that concept
+# answers it. Each pair is (the requirement's cue, the words a clause must use
+# to be about it). Without these, any measured clause with a subject answered
+# every methodology target: the live 10.4 GW and 19.6 GW additions bound the
+# threshold, facility-type and segment targets alongside their own figure
+# (review rank 6). "Utility-scale" and "grid-scale" are deliberately absent
+# from the segment words: nearly every capacity claim says one of them.
+_DEFINITIONAL_CUES: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
+    (
+        re.compile(r"\b(?:threshold|classification)\b", re.I),
+        re.compile(
+            r"\b(?:thresholds?|minimum|at least|(?:larger|greater|more) than|"
+            r"or (?:more|greater|larger)|classif\w*)\b",
+            re.I,
+        ),
+    ),
+    (
+        re.compile(r"\bsegments?\b", re.I),
+        re.compile(
+            r"\b(?:segments?|residential|commercial|c&i|"
+            r"behind[\s-]the[\s-]meter|front[\s-]of[\s-]the[\s-]meter|"
+            r"distributed)\b",
+            re.I,
+        ),
+    ),
+    (
+        re.compile(r"\b(?:facilit(?:y|ies)|types?)\b", re.I),
+        re.compile(
+            r"\b(?:types?|facilit\w*|includ\w*|exclud\w*|co-?located|hybrid|"
+            r"stand-?alone|count\w*)\b",
+            re.I,
+        ),
+    ),
+    (
+        re.compile(r"\b(?:basis|ratings?)\b", re.I),
+        re.compile(
+            r"\b(?:basis|ratings?|rated|nameplate|power capacity|"
+            r"energy capacity|ac|dc)\b",
+            re.I,
+        ),
+    ),
+)
+
 
 def qualifier_matches_requirement(
     proposition: AtomicProposition, requirement: str
@@ -2048,20 +2109,21 @@ def qualifier_matches_requirement(
                 return False
     if "source" in kind or "publisher" in kind or "issuer" in kind:
         government = _GOVERNMENT_ISSUER.search(proposition.attribution) is not None
-        independent = (
+        independent = _INDEPENDENT_ISSUER.search(proposition.attribution) is not None
+        names_industry = _INDUSTRY_SOURCE.search(detail) is not None
+        names_government = _GOVERNMENT_SOURCE.search(detail) is not None
+        explicit_independent = (
             "non-government" in detail
             or "independent publisher" in detail
             or ("distinct" in detail and "government" in detail)
         )
-        if independent and (government or not _INDEPENDENT_ISSUER.search(
-            proposition.attribution
-        )):
-            return False
-        if (
-            not independent
-            and ("federal" in detail or "government" in detail or "agency" in detail)
-            and not government
-        ):
+        if explicit_independent or (names_industry and not names_government):
+            if government or not independent:
+                return False
+        elif names_industry:
+            if not (government or independent):
+                return False
+        elif names_government and not government:
             return False
     if "measure" in kind or "capacity" in kind or "quantity" in kind:
         wanted = (
@@ -2089,6 +2151,9 @@ def qualifier_matches_requirement(
                 return False
         if "mechanism" in detail and _CAUSAL_LINK.search(proposition.text) is None:
             return False
+        for concept, clause_cue in _DEFINITIONAL_CUES:
+            if concept.search(detail) and clause_cue.search(proposition.text) is None:
+                return False
     return True
 
 
@@ -2495,6 +2560,9 @@ class ReportTerminalState(ContractModel):
     review_status: str = ""
     """The semantic review's status — ``scored`` / ``incomplete`` /
     ``provider_failed``, or ``""`` when none was recorded."""
+    review_score: float | None = None
+    """The semantic review's mean score when it was scored, else ``None``.
+    Carried so the reader sees the judgement, not only that one was made."""
     required_targets: int = Field(default=0, ge=0)
     answered_targets: int = Field(default=0, ge=0)
     critical_targets: int = Field(default=0, ge=0)

@@ -2960,13 +2960,18 @@ _NON_PROSE_DIMENSION_PREFIXES = ("evidence period:", "answer form:")
 # numeric made four of the live plan's eleven targets unanswerable by any claim
 # (audit #3, replay C10).
 #
-# Two explicit vocabularies decide it, in this order:
+# Three explicit vocabularies decide it, in this order:
 #
+# * a *unit* means the requirement asks for a number, whatever convention noun
+#   sits beside it: "capacity threshold applied for the utility-scale
+#   classification, in megawatts" asks how many megawatts, and reading it as
+#   qualitative let a forecast level with no threshold in it answer the live
+#   threshold target (review rank 6);
 # * a *convention* noun means the requirement asks what a rule, basis, or
 #   treatment is, whatever else the detail says ("… of the reported capacity
 #   figures" is about the basis, not the capacity);
-# * otherwise the requirement asks for a quantity when its detail names a unit,
-#   writes a number, or names a countable noun.
+# * otherwise the requirement asks for a quantity when its detail writes a
+#   number or names a countable noun.
 #
 # A requirement written as a bare dimension name ("value", "capacity") is the
 # plan's own vocabulary for the quantity itself and is never re-read as
@@ -3064,11 +3069,11 @@ _UNIT_WORD_PATTERN = re.compile(
 def _demands_a_quantity(detail: str) -> bool:
     """Whether a measure requirement's own detail asks for a number."""
     folded = _canonical(detail)
+    if "%" in folded or _UNIT_WORD_PATTERN.search(folded):
+        return True
     if _CONVENTION_NOUN_PATTERN.search(folded):
         return False
-    if "%" in folded or _NUMBER_TOKEN.search(folded):
-        return True
-    if _UNIT_WORD_PATTERN.search(folded):
+    if _NUMBER_TOKEN.search(folded):
         return True
     return _COUNTABLE_NOUN_PATTERN.search(folded) is not None
 

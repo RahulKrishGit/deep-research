@@ -872,6 +872,67 @@ def test_constraint_cells_are_checked_against_the_evidence_their_row_cites() -> 
     assert "unsupported_cell" in composition.statement_dispositions
 
 
+def test_a_drafted_statement_over_the_display_bound_is_cut_on_a_word_boundary() -> (
+    None
+):
+    """The audited report cut published text mid-word ("c...", "expect...").
+
+    A display bound that slices a word leaves a fragment that reads as the
+    source's own wording, and nothing in the statement says the sentence stops
+    there. The bound still bounds the published statement, and it says it cut.
+    """
+    sentence = " ".join(["measured alpha"] * 60)
+    claim = _claim(text=sentence)
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim]),
+        _summary_draft(sentence),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == []
+    shown = composition.summary[0].text
+    cut_at = shown.index(" […] (cut)")
+    body = shown[:cut_at]
+
+    assert sentence.startswith(body)
+    assert sentence[len(body)] == " "
+    assert len(shown) <= 600
+
+
+def test_a_published_cell_over_the_display_bound_is_cut_on_a_word_boundary() -> None:
+    """A table cell is published text too, and it is bounded the same way."""
+    mechanism = " ".join(["area licence with camera enforcement"] * 10)
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for driving inside the measured zone.",
+                deployment_mechanism=mechanism,
+                geography="not stated",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert rejected == []
+    shown = composition.constraints[0].deployment_mechanism
+    cut_at = shown.index(" […] (cut)")
+    body = shown[:cut_at]
+
+    assert mechanism.startswith(body)
+    assert mechanism[len(body)] == " "
+    assert len(shown) <= 120
+
+
 def test_uncertainty_notes_may_carry_source_free_text() -> None:
     composition, rejected = build_report_composition(
         _task(),

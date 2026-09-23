@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
+from deep_research.agents.acquisition import UNMINED_QUANTITY_REASON
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.evidence import build_read_record
 from deep_research.agents.identity import claim_fingerprint
@@ -3563,3 +3564,267 @@ async def test_the_scratchpad_does_not_leak_between_sub_topics(
 
     second_loop_body = completer.react_calls[1].messages[1].content
     assert "(no notes yet)" in second_loop_body
+
+
+# ---------------------------------------------------------------------------
+# The measure unit a target asks for, and the one bounded re-extraction for it
+# ---------------------------------------------------------------------------
+#
+# The audited run read WoodMac's market monitor and mined nothing from it: the
+# passage stating "12,314 megawatts (MW) and 37,143 megawatt hours (MWh)
+# deployed" in 2024 was selected, produced no finding, was disposed of as
+# "irrelevant", and the plan's own MWh target stayed unanswered — the report
+# then said no MWh figure "appears among the checked claims". The fixture is
+# that shape: the release's lede, then the sentence, read for a topic whose
+# planned target asks for the MWh figure. It is deliberately longer than one
+# passage, so the lede and the sentence are two selected units and the retry
+# has to be the thing that mines the second one.
+
+_QUANTITY_URL = (
+    "https://www.woodmac.com/press-releases/us-energy-storage-monitor-2024"
+)
+_QUANTITY_TITLE = "U.S. Energy Storage Monitor: 2024 year in review"
+_QUANTITY_LEDE = (
+    "Wood Mackenzie's U.S. Energy Storage Monitor is the industry's quarterly "
+    "accounting of the grid-scale, commercial, and residential battery "
+    "storage markets, and this year in review reports the largest annual "
+    "deployment on record across every segment the monitor covers. "
+) * 2
+_QUANTITY_SENTENCE = (
+    "In 2024, the United States deployed 12,314 megawatts (MW) and "
+    "37,143 megawatt hours (MWh) of grid-scale battery storage."
+)
+_QUANTITY_BODY = f"{_QUANTITY_LEDE}\n\n{_QUANTITY_SENTENCE}"
+_QUANTITY_TARGET_QUESTION = (
+    "How many megawatt hours of grid-scale battery storage energy capacity "
+    "was deployed in the United States in 2024?"
+)
+
+
+def _quantity_topic() -> SubTopic:
+    """The topic whose own target asks for the MWh figure."""
+    return _sub_topic(
+        "Grid-scale battery storage megawatt hours deployed in 2024", 1
+    ).model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id=PLANNED_TARGET_ID,
+                    coverage_id="topic-01",
+                    question=_QUANTITY_TARGET_QUESTION,
+                    required_dimensions=[
+                        "measure: grid-scale battery storage energy capacity "
+                        "deployed, in MWh"
+                    ],
+                    required=True,
+                    critical=True,
+                    support_policy="primary_attribution",
+                )
+            ]
+        }
+    )
+
+
+def _quantity_decisions() -> list[object]:
+    return [
+        use_tool(
+            "Find the market monitor.",
+            "web_search",
+            '{"query": "energy storage monitor 2024"}',
+        ),
+        use_tool(
+            "Read the release.",
+            "web_scraper",
+            f'{{"url": "{_QUANTITY_URL}"}}',
+        ),
+        finish("The release states the deployment.", _QUANTITY_SENTENCE),
+    ]
+
+
+def _packet_passage_for(
+    figure: str, packet: str
+) -> tuple[str, str, str]:
+    """``(read_id, locator, excerpt)`` of the packet's passage stating ``figure``.
+
+    Derived from the request the way a model must, and it fails loudly when
+    the packet never carried the passage — the whole failure this fixture
+    exists to catch.
+    """
+    for row in re.split(r"(?m)^- ", packet):
+        if not row.startswith("passage ") or figure not in row:
+            continue
+        read_id = re.search(r"read_id=(\S+)", row)
+        locator = re.search(r"locator=(\S+)", row)
+        assert read_id is not None and locator is not None, row
+        return (
+            read_id.group(1),
+            locator.group(1),
+            row.split(" text=", 1)[1].rstrip("\n"),
+        )
+    raise AssertionError(f"the extraction packet showed no passage with {figure}")
+
+
+def _quantity_retry_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The MWh finding the bounded second extraction is asked to return."""
+    del schema
+    read_id, locator, excerpt = _packet_passage_for(
+        "37,143 megawatt hours", messages[1].content
+    )
+    assert excerpt == _QUANTITY_SENTENCE
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "Wood Mackenzie's U.S. Energy Storage Monitor reports "
+                    "that the United States deployed 12,314 MW and 37,143 "
+                    "MWh of grid-scale battery storage in 2024."
+                ),
+                source_url=_QUANTITY_URL,
+                source_title=_QUANTITY_TITLE,
+                confidence=0.9,
+                read_id=read_id,
+                locator=locator,
+                excerpt=excerpt,
+                target_ids=[PLANNED_TARGET_ID],
+                data_period="2024",
+            )
+        ]
+    )
+
+
+def _packet_evidence_locators(packet: str) -> list[str]:
+    """The locator of every evidence row one rendered packet carries, in order."""
+    return [
+        match.group(1)
+        for match in re.finditer(
+            r"(?m)^- evidence_id=\S+ read_id=\S+ locator=(\S+)", packet
+        )
+    ]
+
+
+def _quantity_agent(tracker: Tracker, completer: ScriptedCompleter) -> ResearcherAgent:
+    """The researcher that reads the market monitor for the MWh topic."""
+    return _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=_QUANTITY_TITLE, url=_QUANTITY_URL)]
+        ),
+        http=page_client(title=_QUANTITY_TITLE, body=_QUANTITY_BODY),
+    )
+
+
+def _extraction_requests(completer: ScriptedCompleter) -> list[str]:
+    """The body of every extraction request the run made, in order."""
+    return [
+        call[2][1].content
+        for call in completer.calls
+        if call[0] == "SubTopicFindingsDraft"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_targets_measure_unit_is_mined_by_one_bounded_re_extraction(
+    tracker: Tracker,
+) -> None:
+    """A selected passage stating the target's own unit is mined again, once.
+
+    The first extraction returned no finding for the passage carrying 37,143
+    megawatt hours while the active topic's own target asks for megawatt
+    hours: the read the target needed was in hand, and the pass was about to
+    dispose of it as irrelevant. One bounded second extraction — over that
+    passage alone — is asked for the figure, and its finding is the run's.
+    """
+    completer = ScriptedCompleter(
+        decisions=_quantity_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            _quantity_retry_reply,
+        ],
+    )
+    agent = _quantity_agent(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_quantity_topic()]))
+
+    # The premise of the fixture: the lede and the sentence are two passages,
+    # and the sentence is not the lede, so the retry is what mines the figure.
+    read = next(iter(outcome.state_update["read_records"].values()))
+    carrying = [
+        locator
+        for locator, text in read.passages.items()
+        if "37,143 megawatt hours" in text
+    ]
+    assert len(carrying) == 1 and carrying[0] != "chunk-0"
+
+    requests = _extraction_requests(completer)
+    # One retry, never a loop: the first request and the one bounded second.
+    assert len(requests) == 2
+    # The first request carried both selected units; the retry carries the
+    # owed unit alone, so the model is not asked to find it again in the
+    # packet it was lost in.
+    assert sorted(_packet_evidence_locators(requests[0])) == ["chunk-0", "chunk-1"]
+    assert _packet_evidence_locators(requests[1]) == ["chunk-1"]
+    # And the retry says what its packet is for.
+    assert _QUANTITY_SENTENCE in requests[1]
+    assert "Passages owed a finding" in requests[1]
+    assert "Passages owed a finding" not in requests[0]
+
+    (finding,) = outcome.result.findings
+    assert finding.target_ids == [PLANNED_TARGET_ID]
+    assert "37,143 MWh" in finding.content
+    assert finding.source_url == _QUANTITY_URL
+    assert finding.data_period == "2024"
+
+
+@pytest.mark.asyncio
+async def test_a_measure_unit_left_unmined_is_disposed_of_by_its_own_reason(
+    tracker: Tracker,
+) -> None:
+    """The unit a retry cannot mine keeps a reason that says what happened.
+
+    The re-extraction is one call, never a loop. When it too returns nothing,
+    the selected passage that states a figure in the active target's own unit
+    is recorded with its own reason, so the ledger reports that the passage
+    was read and its figure was not mined — never that the passage was
+    irrelevant. A selected passage that states no such figure keeps the plain
+    reason, which is what it is for.
+    """
+    completer = ScriptedCompleter(
+        decisions=_quantity_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    agent = _quantity_agent(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_quantity_topic()]))
+
+    # Both passages of the release were selected, and the retry ran once.
+    units = outcome.state_update["evidence_units"]
+    assert len(units) == 2
+    assert len(_extraction_requests(completer)) == 2
+    unmined = next(
+        unit
+        for unit in units.values()
+        if "37,143 megawatt hours" in unit.excerpt
+    )
+    lede = next(
+        unit
+        for unit in units.values()
+        if unit.evidence_id != unmined.evidence_id
+    )
+    reasons = {
+        item.item_id: item.reason
+        for item in outcome.state_update["evidence_dispositions"]
+        if item.stage == "extraction"
+    }
+
+    assert reasons[unmined.evidence_id] == UNMINED_QUANTITY_REASON
+    assert reasons[unmined.evidence_id] != "irrelevant"
+    assert reasons[lede.evidence_id] == "irrelevant"
+

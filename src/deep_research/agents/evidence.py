@@ -81,6 +81,10 @@ DISPOSITION_REASONS = (
     "malformed",
     "deferred_capacity",
     "unsupported_excerpt",
+    # A selected passage that states a figure in its target's measure unit
+    # but yielded no finding even after one bounded re-extraction. Kept apart
+    # from "irrelevant" so the critic sees evidence that was held and unused.
+    "unmined_quantity",
 )
 
 # How many aliases one identity may carry, so a malformed metadata row cannot
@@ -572,7 +576,9 @@ _FRESHNESS_DATES = {
 # the document, so only these phrases — and only immediately before the name —
 # transfer ownership. "As reported by Acme" repeats someone's figure and
 # "written by" is authorship; neither says who published this page, and a
-# headline naming an organization does not either.
+# headline naming an organization does not either — unless the page is served
+# from that organization's own domain, which is the one case
+# ``_first_party_issuer_evidenced`` reads.
 _ATTRIBUTION_PHRASES = (
     r"published\s+by",
     r"published\s+on\s+behalf\s+of",
@@ -592,6 +598,12 @@ _ATTRIBUTION_PHRASES = (
 # words into each other.
 _NAME_GAP = r"[\W_]{1,4}"
 _ATTRIBUTION_GAP = r"[\s:,\u2013\u2014-]{0,4}"
+
+# The acronym a masthead prints in brackets beside the issuer's name — "(EIA)"
+# after "U.S. Energy Information Administration". It has to be spelled as an
+# acronym (all capitals) to name a domain: a lowercase bracket is a gloss, not
+# a name the organization's host is served under.
+_ISSUER_ACRONYM = r"\((?P<acronym>[A-Z][A-Z0-9]{1,})\)"
 
 # The anchors a model may propose about a document. Each is accepted only when
 # the read itself carries it; everything else is dropped rather than recorded.
@@ -849,6 +861,63 @@ def _token_forms(atom: str) -> set[str]:
     }
 
 
+def _issuer_name_pattern(issuer: str) -> str:
+    """The issuer's name as a pattern, its words separated by a real gap."""
+    return _NAME_GAP.join(
+        re.escape(word) for word in _identity_words(issuer).split()
+    )
+
+
+def _title_spellings(title: str, issuer: str) -> set[str]:
+    """The domain spellings ``title`` itself gives for ``issuer``.
+
+    A masthead that names its own publisher writes the name the way a domain
+    writes it: the whole name run together ("National Grid" on
+    nationalgrid.com), or the acronym it prints in brackets beside the name
+    ("U.S. Energy Information Administration (EIA)" on eia.gov). Both are
+    spellings the title states, so both may name the host serving it. The name
+    is matched in any case — a title is not a domain — while the acronym is
+    matched as one: a bracket that is not all capitals is a gloss, not a name.
+    """
+    words = _identity_words(issuer).split()
+    if not words:
+        return set()
+    name = re.compile(_issuer_name_pattern(issuer), re.IGNORECASE)
+    acronym = re.compile(rf"\s*{_ISSUER_ACRONYM}")
+    spellings = {"".join(words)}
+    for match in name.finditer(title):
+        printed = acronym.match(title, match.end())
+        if printed is not None:
+            spellings.add(printed.group("acronym").casefold())
+    return spellings
+
+
+def _serving_domain_label(read: ReadRecord) -> str:
+    """The registrable label of the host that served the read: ``eia``."""
+    label, _, suffix = publisher_identity(read.resolved_url).partition(".")
+    return label if suffix else ""
+
+
+def _first_party_issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
+    """True when the read's own host is the issuer's own domain, and says so.
+
+    A first-party page is the one document whose masthead is publication
+    evidence: the title names the issuer, and the host the bytes came from is
+    the spelling the title gives for it — the name run together, or the
+    acronym printed beside it. Every other page stays rejected, which is what
+    keeps a relay a relay: Energy Global's headline and body both name the
+    agency, and the domain that served them is Energy Global's.
+    """
+    name = _issuer_name_pattern(issuer)
+    if not name:
+        return False
+    titled = re.compile(rf"(?<![A-Za-z0-9]){name}(?![A-Za-z0-9])", re.IGNORECASE)
+    if not titled.search(read.title):
+        return False
+    label = _serving_domain_label(read)
+    return bool(label) and label in _title_spellings(read.title, issuer)
+
+
 def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
     """True when the read attributes the document to ``issuer``.
 
@@ -856,12 +925,15 @@ def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
     Example Lab", "Copyright 2026 Example Lab" — and said about *this*
     document. A body mention is not attribution, which is what keeps an
     article about a company from being recorded as that company's own
-    publication and inheriting its authority.
+    publication and inheriting its authority. The one other way a page can
+    evidence its own publisher is a first-party host: the organization's own
+    domain, serving a title that names it (see
+    :func:`_first_party_issuer_evidenced`).
     """
     words = _identity_words(issuer).split()
     if not words:
         return False
-    name = _NAME_GAP.join(re.escape(word) for word in words)
+    name = _issuer_name_pattern(issuer)
     haystack = _document_text(read)
     for phrase in _ATTRIBUTION_PHRASES:
         pattern = re.compile(
@@ -871,7 +943,7 @@ def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
         )
         if pattern.search(haystack):
             return True
-    return False
+    return _first_party_issuer_evidenced(read, issuer)
 
 
 def _literal_evidenced(read: ReadRecord, value: str) -> bool:

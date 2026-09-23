@@ -60,6 +60,7 @@ from deep_research.agents.report import (
     ReportConstraint,
     ReportPoint,
     ReportSection,
+    _display_clamp,
     canonical_claims,
     fit_report_composition,
     reader_citations,
@@ -131,7 +132,15 @@ DEFAULT_MAX_MEMORY_FINDINGS = 10
 # the page. They are bounds for *display* and never for a model's input: a
 # fragment shown to a writer is a fragment the writer may restate, so the
 # packet that reaches a model carries text whole and bounds how much of it
-# fits by count instead. `summarize_text` marks every cut it makes.
+# fits by count instead.
+#
+# A value that reaches an artifact is clamped by ``report._display_clamp``,
+# which cuts between words and marks the cut. The audited report published
+# "…at the end of 2026, c..." and "…with Texas and California expect...": a
+# fragment of a word reads as the source's own wording, and nothing in the
+# bullet said the sentence stopped there. The bounds whose text goes to a
+# *prompt* keep ``summarize_text``, whose ellipsis marks its cut the way the
+# packet omission markers do.
 _POINT_CHARS = 600
 _SECTION_TITLE_CHARS = 120
 _GUIDANCE_CHARS = 200
@@ -2155,12 +2164,12 @@ def _build_point(
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
     return ReportPoint(
-        text=summarize_text(text, limit=_POINT_CHARS),
+        text=_display_clamp(text, limit=_POINT_CHARS),
         claim_ids=[claim.claim_id for claim in claims],
         source_urls=accepted,
         statement=_statement_for_claims(
             statement_id=context.next_id(statement_prefix),
-            text=summarize_text(text, limit=_POINT_CHARS),
+            text=_display_clamp(text, limit=_POINT_CHARS),
             claims=claims,
             context=context,
             basis=basis,
@@ -2218,19 +2227,6 @@ def _unsupported_figures(
     return []
 
 
-def _optional_text(text: str, *, limit: int) -> str:
-    """A written value, clamped, or an empty string when nothing was written.
-
-    ``summarize_text`` renders a blank input as ``"(empty)"``, which is the
-    right placeholder inside a sentence but wrong inside a table cell: the
-    renderer's ``not stated`` is the honest value for a column the evidence
-    did not fill.
-    """
-    if not text.strip():
-        return ""
-    return summarize_text(text, limit=limit)
-
-
 def _build_cell(
     *,
     text: str,
@@ -2254,11 +2250,18 @@ def _build_cell(
     vacuously, and a fabricated period would then publish as an attributed
     statement with the row's evidence ids attached, which is worse than the
     context label it replaced: it would read as a checked fact.
+
+    The check runs on the whole written cell and the display bound is applied
+    afterwards, exactly as it is for a point: a cell that fits the evidence
+    may still be too long to publish, and its own cut marker is this project's
+    word, not one the evidence has to carry. Attesting the whole cell is the
+    stricter direction — every word the published prefix carries is a word the
+    evidence was asked about.
     """
-    written = _optional_text(text, limit=_CELL_CHARS)
-    if written.casefold().strip(" .") == "not stated":
-        written = ""
-    if not written:
+    raw = " ".join(text.split())
+    if raw.casefold().strip(" .") == "not stated":
+        raw = ""
+    if not raw:
         return "", ReportStatement(
             statement_id=context.next_id("C"),
             text="not stated",
@@ -2272,8 +2275,8 @@ def _build_cell(
     ]
     evidence_text = _cited_evidence(selected, context) or context.corpus
     unattested = [
-        *unattested_words(written, evidence_text),
-        *unattested_atoms(written, evidence_text),
+        *unattested_words(raw, evidence_text),
+        *unattested_atoms(raw, evidence_text),
     ]
     if unattested:
         context.note(
@@ -2282,13 +2285,16 @@ def _build_cell(
             "no evidence for this cell",
         )
         context.dispositions.append("returned_to_fact_checker")
-        context.returned.append(summarize_text(written, limit=_CELL_CHARS))
+        # The refusal names the cell at its own logging bound, which is what
+        # the fact checker is asked to adjudicate — never the display form.
+        context.returned.append(summarize_text(raw, limit=_CELL_CHARS))
         return "", ReportStatement(
             statement_id=context.next_id("C"),
             text="not stated",
             mode="context",
             basis="the cited evidence does not carry this cell",
         )
+    written = _display_clamp(raw, limit=_CELL_CHARS)
     statement = _statement_for_claims(
         statement_id=context.next_id("C"),
         text=written,
@@ -2432,7 +2438,7 @@ def _build_uncertainty_statements(
         statements.append(
             ReportStatement(
                 statement_id=context.next_id("U"),
-                text=summarize_text(repaired, limit=_POINT_CHARS),
+                text=_display_clamp(repaired, limit=_POINT_CHARS),
                 mode="context",
                 basis=_uncertainty_basis(repaired),
             )

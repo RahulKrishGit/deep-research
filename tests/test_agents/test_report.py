@@ -67,12 +67,14 @@ from deep_research.agents.report import (
     report_scope,
     statement_citation_urls,
     statement_source_urls,
+    terminal_report_state,
     validate_report_statements,
 )
 from deep_research.agents.researcher import sub_topic_skipped_error
 from deep_research.utils.types import (
     EVIDENCE_BADGE_LABELS,
     QUALITY_CONTRACT_VERSION,
+    REVIEW_DIMENSIONS,
     AtomicProposition,
     Claim,
     Critique,
@@ -95,6 +97,7 @@ from deep_research.utils.types import (
     answered_atom_dimensions,
     statement_mode_for_claims,
 )
+from tests.graph_fakes import fake_report_review
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 SOURCE_URL = "https://example.org/a"
@@ -584,6 +587,93 @@ def test_an_unstamped_pass_does_not_invent_a_terminal_status() -> None:
     assert "**Gate failures:**" not in reader
 
 
+def test_a_scored_review_states_the_score_it_recorded() -> None:
+    """The audited report printed ``scored`` and withheld the ``0.55``.
+
+    The number is the review's whole content: a reader who meets only the
+    status cannot tell a report the reviewer barely accepted from one it
+    nearly rejected, and the Critic's own score sits beside it in the same
+    block, so the omission reads as "this review has no score".
+    """
+    reader = render_reader_report(
+        _composition(
+            terminal=_terminal(
+                status="completed",
+                critic_status="reviewed",
+                critic_score=5,
+                review_status="scored",
+                review_score=0.55,
+                answered_targets=11,
+                answered_critical_targets=9,
+                gate_failures=[],
+            )
+        )
+    )
+
+    assert "**Report review:** scored 0.55" in reader
+
+
+def test_a_review_scored_without_a_number_says_so() -> None:
+    """A status with no number behind it must not read as a number."""
+    reader = render_reader_report(
+        _composition(terminal=_terminal(review_status="scored"))
+    )
+
+    assert "**Report review:** scored, with no score recorded" in reader
+
+
+def test_an_unscored_review_never_prints_a_score() -> None:
+    """Only a scored review has a mean, and only a recorded mean is printed.
+
+    The review contract refuses a score beside ``incomplete`` or
+    ``provider_failed`` — a missing judgement must not be averageable into an
+    acceptance — so a record carrying one anyway is printed as the status it
+    is, with no number for a reader to average.
+    """
+    reader = render_reader_report(
+        _composition(
+            terminal=_terminal(review_status="incomplete", review_score=0.55)
+        )
+    )
+
+    assert "**Report review:** unscored (incomplete)" in reader
+    assert "0.55" not in reader
+
+
+def test_the_terminal_record_carries_the_review_score_it_read() -> None:
+    """The score travels with the status; it is never re-derived at render time.
+
+    A terminal record that stamps ``scored`` and no number is exactly what made
+    the published status block print a bare status word, so the finalizer reads
+    the recorded review's own mean and stamps it.
+    """
+    composition = _evidence_composition()
+    review = fake_report_review(
+        dimensions={name: 0.55 for name in REVIEW_DIMENSIONS}
+    )
+    state = _record_state(composition).model_copy(
+        update={"report_review": review}
+    )
+
+    terminal = terminal_report_state(state, composition, run_status="completed")
+
+    assert terminal.review_status == "scored"
+    assert terminal.review_score == pytest.approx(0.55)
+
+
+def test_a_review_that_never_scored_stamps_no_score() -> None:
+    """An absent judgement stays absent in the record the report renders."""
+    composition = _evidence_composition()
+    state = _record_state(composition).model_copy(
+        update={"report_review": fake_report_review(status="incomplete")}
+    )
+
+    terminal = terminal_report_state(state, composition, run_status="completed")
+
+    assert terminal.review_status == "incomplete"
+    assert terminal.review_score is None
+
+
 def test_the_methodology_does_not_imply_the_terminal_gates_passed() -> None:
     """The ledger's placement is a fact; the gates' verdict is the run's.
 
@@ -734,6 +824,84 @@ def test_uncertainty_prints_gaps_conflicts_and_limitations_once_each() -> None:
     assert LIMITATION_REASONS["errors_recorded"] in section
     # A verified claim is not uncertain; it stays out of this section.
     assert "Logical error rates fell below break-even" not in section
+
+
+def test_a_claim_the_findings_already_state_is_not_printed_twice() -> None:
+    """Four of the audited report's sixteen claim bullets were reprints.
+
+    ``_reader_uncertainty`` lists every insufficient claim by its own text, and
+    a claim a finding already states arrives there word for word — so the same
+    sentence appears in two sections and a reader cannot tell a recap from a
+    second fact about the same figure. The claim is still accounted for: the
+    section says how many restatements it did not reprint.
+    """
+    text = (
+        "Clean Edge reported that 10.3 GW of utility-scale battery storage "
+        "was installed in the United States in 2024."
+    )
+    claim = _claim(text=text, verdict="insufficient_evidence")
+    composition = _composition(
+        claims=[claim],
+        summary=[],
+        sections=[
+            ReportSection(
+                title="Reported additions",
+                points=[_point(text=text, claim_ids=[claim.claim_id])],
+            )
+        ],
+    )
+
+    reader = render_reader_report(composition)
+    section = _section_body(
+        reader, "## Uncertainty and conflicting evidence"
+    )
+
+    assert reader.count(text) == 1
+    assert (
+        "1 checked claim(s) for this heading are already stated above"
+        in section
+    )
+    # The methodology's own repetition count is measured on what it renders,
+    # so a suppressed reprint is not counted as one and not disclosed as one.
+    assert "No statement above repeats another." in reader
+
+
+def test_a_clamped_bullet_is_cut_on_a_word_boundary_and_says_it_was_cut() -> None:
+    """The audited report cut two bullets mid-word (``c...``, ``expect...``).
+
+    A character-count cut leaves a fragment that reads as the source's own
+    wording, and nothing in the bullet says the sentence stops there. The
+    display bound still bounds the bullet: the marker is inside the limit and
+    the text before it ends where the source has a space.
+    """
+    text = " ".join(f"w{index}" * (index % 4 + 1) for index in range(60))
+    claim = _claim(text=text, verdict="insufficient_evidence")
+    composition = _composition(
+        claims=[claim],
+        summary=[],
+        sections=[
+            ReportSection(
+                title="Reported additions",
+                points=[_point(text="Another fact.", claim_ids=[claim.claim_id])],
+            )
+        ],
+    )
+
+    reader = render_reader_report(composition)
+    bullet = next(
+        line
+        for line in reader.splitlines()
+        if line.startswith("- ") and line[2:].startswith(text[:24])
+    )
+    # The bullet carries its citation marker after the clamped text, so the
+    # cut marker is what the *text* ends with, not the whole line.
+    shown = bullet[len("- ") :]
+    cut_at = shown.index(" […] (cut)")
+    body = shown[:cut_at]
+
+    assert text.startswith(body)
+    assert text[len(body)] == " "
+    assert len(body) + len(" […] (cut)") <= 240
 
 
 def test_methodology_is_a_compact_locally_generated_run_summary() -> None:

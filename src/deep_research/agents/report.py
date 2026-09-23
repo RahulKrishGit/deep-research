@@ -968,17 +968,52 @@ def render_citations(index: Sequence[Citation]) -> str:
     return "\n".join(lines) or "(no sources were cited)"
 
 
+#: What a display bound leaves where it cut. A cut that lands mid-word reads as
+#: the source's own wording — the audited report carried "…at the end of 2026,
+#: c..." and "…with Texas and California expect..." — so the cut falls between
+#: words and the marker says a cut was made, rather than trailing off into an
+#: ellipsis a reader cannot tell from the text itself. The synthesizer shares
+#: this bound: its own clamps feed the same artifacts.
+_DISPLAY_CUT = " […] (cut)"
+
+
+def _display_clamp(text: str, *, limit: int) -> str:
+    """Collapse whitespace and clamp to ``limit``, cutting between words.
+
+    This is the bound a *published* value goes through, which is why it is not
+    ``summarize_text``: that one cuts on the character count, which is right
+    for a prompt or a span output and produces a fragment of a word in an
+    artifact. The bound still bounds — the marker is counted inside ``limit``,
+    so a clamped value is never wider than an unclamped one would have been —
+    and a text with no space to cut on is cut on the count, because a single
+    longer word would otherwise overflow the cell it is printed in.
+    """
+    collapsed = " ".join(text.split())
+    if not collapsed:
+        # ``summarize_text``'s own placeholder, reached through it rather than
+        # restated here: a blank value says so in one place, not two.
+        return summarize_text(text, limit=limit)
+    if len(collapsed) <= limit:
+        return collapsed
+    if limit <= len(_DISPLAY_CUT):
+        return collapsed[:limit]
+    budget = limit - len(_DISPLAY_CUT)
+    boundary = collapsed[: budget + 1].rfind(" ")
+    cut = budget if boundary < 0 else boundary
+    return collapsed[:cut] + _DISPLAY_CUT
+
+
 def _cell(text: str, *, limit: int = _POINT_CHARS) -> str:
     """Collapse a value onto one Markdown table cell.
 
     Pipes are escaped rather than dropped: a title containing ``|`` would
     otherwise silently split the row into extra columns.
     """
-    return summarize_text(text, limit=limit).replace("|", "\\|")
+    return _display_clamp(text, limit=limit).replace("|", "\\|")
 
 
 def _clamped(text: str, *, limit: int) -> str:
-    return summarize_text(text, limit=limit)
+    return _display_clamp(text, limit=limit)
 
 
 def _marker_suffix(markers: str) -> str:
@@ -996,6 +1031,21 @@ def _table(header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
 
 def _bullets(lines: Sequence[str]) -> str:
     return "\n".join(f"- {line}" for line in lines)
+
+
+def _bullet_lines(markdown: str) -> list[str]:
+    """Every bullet ``markdown`` prints, whitespace-collapsed.
+
+    The one reader of "what bullets does this text carry", used both by the
+    methodology's repetition count and by the uncertainty section's own
+    suppression: measured one way and enforced another, the disclosed count
+    and the rendered list could disagree about the same report.
+    """
+    return [
+        " ".join(line.split())
+        for line in markdown.splitlines()
+        if line.strip().startswith("- ")
+    ]
 
 
 def render_limitations(reasons: Sequence[str]) -> str:
@@ -1273,7 +1323,13 @@ def _render_reader(
     summary = _reader_summary(composition, index)
     table = _reader_table(composition, index)
     findings = _reader_findings(composition, index)
-    uncertainty = _reader_uncertainty(composition, index)
+    uncertainty = _reader_uncertainty(
+        composition,
+        index,
+        # What the reader has already met when this section renders, so a claim
+        # that repeats a finding above is not printed a second time.
+        already="\n\n".join((summary, table, findings)),
+    )
     rendered = "\n\n".join((summary, table, findings, uncertainty))
     bodies = (
         summary,
@@ -1316,9 +1372,19 @@ def _critic_reading(terminal: ReportTerminalState) -> str:
 
 
 def _review_reading(terminal: ReportTerminalState) -> str:
-    """The terminal semantic review's outcome, or that there was none."""
+    """The terminal semantic review's outcome, or that there was none.
+
+    The recorded mean is printed when the review was scored, and only then.
+    The review contract refuses a score beside ``incomplete`` or
+    ``provider_failed`` — a missing judgement must not be averageable into an
+    acceptance — so a number beside one of those statuses is not a judgement
+    and a renderer must not print it as one. A ``scored`` review whose mean is
+    absent says so, the way the Critic's own reading does.
+    """
     if terminal.review_status == "scored":
-        return "scored"
+        if terminal.review_score is None:
+            return "scored, with no score recorded"
+        return f"scored {terminal.review_score:.2f}"
     if terminal.review_status:
         return f"unscored ({terminal.review_status})"
     return "unscored (no semantic review was recorded)"
@@ -1894,9 +1960,24 @@ def _uncertainty_group(basis: str | None) -> str:
 def _reader_uncertainty(
     composition: ReportComposition,
     index: Sequence[Citation],
+    *,
+    already: str = "",
 ) -> str:
+    """The uncertainty section, with each fact stated once.
+
+    Every insufficient claim is listed by its own text, and a claim a finding
+    above already states arrives here word for word — the audited report
+    repeated four of its sixteen claim bullets verbatim, which reads as a
+    second fact about the same figure rather than as a recap. ``already`` is
+    the text the reader has met above this section; a bullet that repeats one
+    of those lines is not printed again, and the group states how many claims
+    it did not reprint, so its heading still accounts for every claim under it.
+    The same rule holds inside the section: no bullet repeats one already
+    printed there either.
+    """
     blocks: list[str] = []
     cited = {citation.url for citation in index}
+    seen = set(_bullet_lines(already))
     ungrouped: list[str] = []
     grouped: dict[str, list[str]] = {
         heading: [] for _, heading, _ in UNCERTAINTY_GROUPS
@@ -1915,12 +1996,15 @@ def _reader_uncertainty(
         else:
             ungrouped.append(line)
     if ungrouped:
+        seen.update(_bullet_lines(_bullets(ungrouped)))
         blocks.append(_bullets(ungrouped))
     for _, heading, _ in UNCERTAINTY_GROUPS:
         if grouped[heading]:
+            seen.update(_bullet_lines(_bullets(grouped[heading])))
             blocks.append(f"### {heading}\n\n{_bullets(grouped[heading])}")
     for verdict, heading in _UNCERTAIN_VERDICTS:
         lines: list[str] = []
+        repeated = 0
         for claim in composition.claims:
             if claim.verdict != verdict:
                 continue
@@ -1930,12 +2014,30 @@ def _reader_uncertainty(
                 if claim.contradictions
                 else ""
             )
-            lines.append(
+            line = (
                 f"{_clamped(claim.text, limit=_CLAIM_TEXT_CHARS)}"
                 f"{_marker_suffix(markers)}{note}"
             )
-        if lines:
-            blocks.append(f"### {heading}\n\n{_bullets(lines)}")
+            # Keyed the way ``_bullet_lines`` reads a rendered report, so the
+            # line compared here is the line the reader would meet there.
+            key = " ".join(f"- {line}".split())
+            if key in seen:
+                repeated += 1
+                continue
+            seen.add(key)
+            lines.append(line)
+        if lines or repeated:
+            body = _bullets(lines)
+            if repeated:
+                # A sentence, not a bullet: it is the list's own note about
+                # itself, and two verdict groups that each withheld one claim
+                # would otherwise print the same bullet twice — the defect
+                # this suppression exists to remove.
+                body += (
+                    f"\n\n{repeated} checked claim(s) for this heading are "
+                    "already stated above and are not reprinted."
+                )
+            blocks.append(f"### {heading}\n\n{body}")
     if not blocks:
         blocks.append("(no unresolved claim was recorded for this pass)")
     blocks.append(
@@ -2001,11 +2103,7 @@ def _reader_methodology(
         for reason in composition.limitations
         if rendered.count(LIMITATION_REASONS[reason]) > 1
     ]
-    rendered_bullets = [
-        " ".join(line.split())
-        for line in rendered.splitlines()
-        if line.strip().startswith("- ")
-    ]
+    rendered_bullets = _bullet_lines(rendered)
     repeated_bullets = len(rendered_bullets) - len(set(rendered_bullets))
     lines = [
         f"{len(composition.sources)} reviewed source(s): {scored} scored, "
@@ -2831,6 +2929,13 @@ def terminal_report_state(
             else None
         ),
         review_status=review.status if review is not None else "",
+        review_score=(
+            # The review's own recorded mean, never re-derived. It is ``None``
+            # unless the review holds all seven dimensions, which the type
+            # refuses on a review that did not score — so a score exists
+            # exactly when a judgement was made.
+            review.mean_score if review is not None else None
+        ),
         required_targets=_counted(coverage["required_targets"]),
         answered_targets=_counted(coverage["answered_targets"]),
         critical_targets=_counted(coverage["critical_targets"]),

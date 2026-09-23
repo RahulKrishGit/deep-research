@@ -1163,6 +1163,14 @@ def _target_scope(
     return scope
 
 
+# A figure a claim or a question states, as it is written: ``10.3 GW``, ``26%``,
+# ``1 Megawatt``. ``_YEAR`` names the figures that are not measurements: a year
+# is shared by every account of a period, so it can never tell a passage about
+# this claim from a passage about another one.
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+_YEAR = re.compile(r"(?:19|20)\d{2}")
+
+
 def claim_evidence_pool(
     state: ResearchState,
     claim: Claim | ClaimDraft,
@@ -1185,6 +1193,17 @@ def claim_evidence_pool(
     registry belongs to other claims — admitting it would let a document about
     topic A settle a claim about topic B on the strength of having been read in
     the same run.
+
+    The obligation link admits a unit that *bears* on this claim, not every
+    unit of the sub-topic the obligation lives in. A sub-topic is a research
+    branch, not a fact: forty reads of one branch entered one claim's packet
+    and made ``packet_incomplete`` unavoidable, while a passage stating nothing
+    the claim states can settle nothing about it. A unit is admitted when it
+    shares one of the claim's figures, or when it clears the lexical floor the
+    request's own ordering scores with — the same test
+    :func:`claim_relevant_order` ranks by, so what may be a candidate and what
+    is offered first remain one rule. A contradicting passage shares the
+    claim's terms or its figures, so the floor keeps it in.
     """
     obligations = (
         set(target_ids)
@@ -1205,18 +1224,69 @@ def claim_evidence_pool(
         if normalize_source_url(read.resolved_url) in cited
         or normalize_source_url(read.requested_url) in cited
     }
+    claim_text = getattr(claim, "text", "") or ""
+    linked = [
+        unit
+        for unit in state.evidence_units.values()
+        if scope and scope.intersection(unit.target_ids)
+    ]
+    linked_ids = {unit.evidence_id for unit in linked}
+    wanted = _non_year_numbers(claim_text)
+    floor = _lexical_floor_ids(linked, claim_text)
     pool: list[EvidenceUnit] = []
     for unit in state.evidence_units.values():
         by_citation = unit.read_id in reads
-        by_target = bool(scope and scope.intersection(unit.target_ids))
         by_passage = (
             normalize_source_url(unit.source_url),
             unit.locator,
             unit.excerpt,
         ) in recorded
+        by_target = unit.evidence_id in linked_ids and (
+            bool(wanted.intersection(_non_year_numbers(unit.excerpt)))
+            or unit.evidence_id in floor
+        )
         if by_citation or by_target or by_passage:
             pool.append(unit)
     return pool
+
+
+def _non_year_numbers(text: str) -> set[str]:
+    """The figures a text states, with four-digit years left out.
+
+    A year is shared by every account of the period, so it can never tell a
+    unit about this claim from a unit about another one. What does is the
+    measurement, written the way the claim writes it.
+    """
+    return {
+        number
+        for number in _NUMBER.findall(text)
+        if not _YEAR.fullmatch(number)
+    }
+
+
+def _lexical_floor_ids(
+    units: Sequence[EvidenceUnit], claim_text: str
+) -> set[str]:
+    """The units that pass the request's own relevance floor for a claim.
+
+    ``select_relevant_passages`` returns only the passages that share a term
+    with the query — the same scoring :func:`claim_relevant_order` ranks the
+    pool by — so its result *is* the floor: a passage it does not return shares
+    nothing the claim says, and a passage it returns shares at least one term.
+    A claim with no text has nothing to be irrelevant to, so the floor admits:
+    the failure direction is extra work, never skipped evidence.
+    """
+    if not claim_text.strip():
+        return {unit.evidence_id for unit in units}
+    if not units:
+        return set()
+    return set(
+        select_relevant_passages(
+            {unit.evidence_id: unit.excerpt for unit in units},
+            claim_text,
+            len(units),
+        )
+    )
 
 
 def claim_pool_dispositions(
@@ -1328,11 +1398,6 @@ def memory_recall_count(run: ReActRun | None) -> int:
     )
 
 
-# A figure a claim or a question states, as it is written: ``10.3 GW``, ``26%``,
-# ``1 Megawatt``.
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
-
-
 def claim_relevant_order(
     pool: Sequence[EvidenceUnit], query: str
 ) -> list[EvidenceUnit]:
@@ -1427,6 +1492,28 @@ def claim_eligibility(
     )
 
 
+def adjudication_fingerprint(
+    claim_text: str, units: Sequence[EvidenceUnit]
+) -> str:
+    """The packet identity: the claim and the exact text of every candidate.
+
+    One formula for every packet, so two adjudications of the same claim over
+    the same evidence share it and a changed body, an added passage, a
+    re-worded claim, or a candidate deferred for capacity does not.
+    """
+    return hashlib.sha256(
+        "\x1f".join(
+            [
+                claim_fingerprint(claim_text),
+                *(
+                    f"{unit.evidence_id}\x1e{canonical_read_text(unit.excerpt)}"
+                    for unit in units
+                ),
+            ]
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def build_adjudication_packet(
     claim: ClaimDraft,
     pool: Sequence[EvidenceUnit],
@@ -1444,17 +1531,7 @@ def build_adjudication_packet(
     changed body, an added passage, or a re-worded claim does not.
     """
     units = list(pool)
-    fingerprint = hashlib.sha256(
-        "\x1f".join(
-            [
-                claim_fingerprint(claim.text),
-                *(
-                    f"{unit.evidence_id}\x1e{canonical_read_text(unit.excerpt)}"
-                    for unit in units
-                ),
-            ]
-        ).encode("utf-8")
-    ).hexdigest()
+    fingerprint = adjudication_fingerprint(claim.text, units)
     atoms = extract_text_atoms(claim.text)
     return AdjudicationPacket(
         claim_id=claim_fingerprint(claim.text),
@@ -1711,6 +1788,36 @@ def _passage_was_clipped(excerpt: str, text: str) -> bool:
     return text != " ".join(excerpt.split())
 
 
+def _render_order(packet: AdjudicationPacket) -> list[EvidenceUnit]:
+    """The packet's candidates in the order one request offers them.
+
+    The candidate that bears most on the claim leads, then the pair candidates,
+    then the rest — each group in the claim's own relevance order. Pair
+    candidates used to lead outright, so live claim #14's four pair-eligible
+    candidates that shared nothing with the claim went first and the passage
+    carrying the claim's own sentence was clipped into the last slot. The pair
+    rule still promotes what follows the lead, because a budget must never hide
+    the second member of a pair behind a passage that could corroborate
+    nothing.
+    """
+    ranking = claim_relevant_order(list(packet.units), packet.claim_text)
+    rank = {
+        unit.evidence_id: position for position, unit in enumerate(ranking)
+    }
+    lead = ranking[0].evidence_id if ranking else None
+    indices = sorted(
+        range(len(packet.units)),
+        key=lambda index: (
+            0
+            if packet.units[index].evidence_id == lead
+            else (1 if _pair_candidate(packet, packet.units[index]) else 2),
+            rank.get(packet.units[index].evidence_id, len(rank)),
+            index,
+        ),
+    )
+    return [packet.units[index] for index in indices]
+
+
 def plan_packet_rendering(
     packet: AdjudicationPacket,
     *,
@@ -1718,40 +1825,37 @@ def plan_packet_rendering(
 ) -> PacketRendering:
     """Split a packet's candidates into what one request carries, and how.
 
-    Pair candidates are offered first, so a budget can never hide the second
-    member of a pair behind a passage that could not corroborate anything.
-    What follows is carried whole whenever it fits: a request that prints a
-    prefix of a passage asks the model to judge text it cannot see, and a
-    figure past the cut reads as an absent one. Only a passage longer than
-    the whole request is ever cut, so a document page — which is what a
-    ``document_reader`` passage is — is carried whole and may stand as a
-    complete support. A longer passage is offered in part, and
-    recorded in ``partially_shown``; the candidates behind a full request are
-    returned rather than dropped, so the caller records them as explicit
-    omissions. An unassessed passage is never read as an absent one.
+    The candidate that bears most on the claim is offered first, then the pair
+    candidates (:func:`_render_order`), because a budget can never hide what a
+    claim is about behind passages that are not about it. What follows is
+    carried whole whenever it fits: a request that prints a prefix of a passage
+    asks the model to judge text it cannot see, and a figure past the cut reads
+    as an absent one. Only a passage longer than the whole request is ever cut,
+    so a document page — which is what a ``document_reader`` passage is — is
+    carried whole and may stand as a complete support. A longer passage is
+    offered in part, and recorded in ``partially_shown``; the candidates behind
+    a full request are returned rather than dropped, so the caller records them
+    as explicit omissions. An unassessed passage is never read as an absent
+    one.
     """
     if evidence_chars < 1:
         raise ValueError("evidence_chars must be at least 1")
-    order = sorted(
-        range(len(packet.units)),
-        key=lambda index: (
-            not _pair_candidate(packet, packet.units[index]),
-            index,
-        ),
-    )
+    ordered = _render_order(packet)
+    position = {
+        unit.evidence_id: index for index, unit in enumerate(packet.units)
+    }
     rendered: list[tuple[EvidenceUnit, str]] = []
     unrendered: list[int] = []
     partially_shown: list[str] = []
     used = 0
-    for index in order:
-        unit = packet.units[index]
+    for unit in ordered:
         # What this candidate may print: everything the request has left
         # once its own block's fixed text is paid for. The first candidate
         # is carried however little room is left, so a request is never
         # empty.
         room = evidence_chars - used - len(_candidate_block(packet, unit, ""))
         if room < 1 and rendered:
-            unrendered.append(index)
+            unrendered.append(position[unit.evidence_id])
             continue
         text = _bounded_passage_text(unit.excerpt, limit=max(room, 1))
         rendered.append((unit, text))
@@ -1877,6 +1981,109 @@ def adjudication_messages(
 
 
 
+def defer_beyond_budget(
+    packet: AdjudicationPacket,
+    *,
+    evidence_chars: int,
+) -> AdjudicationPacket:
+    """The packet reduced to the candidates one request can carry whole.
+
+    A packet larger than the request can print used to hold the candidates the
+    budget could not reach, so the packet's own candidate list, the request
+    that printed it, and the boundary audit described three different sets —
+    and the verdict was then refused over candidates the model was never shown.
+    What the request cannot carry is decided *here*, before the packet: the
+    candidate is removed from ``units`` and recorded as this claim's own
+    ``deferred_capacity`` disposition, so nothing the packet holds is
+    "unrendered" and the deferral is a reason a reader can act on rather than a
+    rendering accident.
+
+    A candidate longer than the whole request is deferred too: the request can
+    only ever print a prefix of it, and a prefix may never stand as a complete
+    support. The one exception is a packet where nothing else would be carried
+    — a request with no candidate could not be adjudicated at all, so the first
+    candidate is printed in part exactly as ``plan_packet_rendering`` says, and
+    recorded as partially shown.
+    """
+    if evidence_chars < 1:
+        raise ValueError("evidence_chars must be at least 1")
+    carried: list[EvidenceUnit] = []
+    used = 0
+    for unit in _render_order(packet):
+        text = " ".join(unit.excerpt.split())
+        block = len(_candidate_block(packet, unit, text))
+        if carried and used + block > evidence_chars:
+            # No room for this one whole. It is deferred by name, and the
+            # candidates behind it — which may still fit — are considered:
+            # stopping here is how one page-sized passage starved a packet of
+            # its own short passages.
+            continue
+        carried.append(unit)
+        used += block
+        if len(carried) == 1 and block > evidence_chars:
+            # A candidate longer than the whole request is the one exception:
+            # it is carried in part rather than deferred, because a request
+            # with no candidate could not be adjudicated at all.
+            break
+    carried_ids = {unit.evidence_id for unit in carried}
+    if len(carried_ids) == len(packet.units):
+        return packet
+    # Packet order, not offer order: the packet keeps the registry's order and
+    # the request renders in its own.
+    kept = [
+        unit for unit in packet.units if unit.evidence_id in carried_ids
+    ]
+    deferred = [
+        EvidenceDisposition(
+            item_id=unit.evidence_id,
+            stage="adjudication-packet",
+            reason="deferred_capacity",
+            target_ids=list(unit.target_ids),
+        )
+        for unit in packet.units
+        if unit.evidence_id not in carried_ids
+    ]
+    return packet.model_copy(
+        update={
+            "units": kept,
+            "eligibility": {
+                evidence_id: entry
+                for evidence_id, entry in packet.eligibility.items()
+                if evidence_id in carried_ids
+            },
+            # The new deferrals come first: they are the ones that describe
+            # this request, and the list is bounded.
+            "omitted": [*deferred, *packet.omitted][:MAX_PACKET_OMISSIONS],
+            "omitted_count": packet.omitted_count + len(deferred),
+            # Recomputed over the candidates the packet now holds, so the
+            # fingerprint still identifies exactly the text an adjudication
+            # was made over.
+            "fingerprint": adjudication_fingerprint(
+                packet.claim_text, kept
+            ),
+        }
+    )
+
+
+def deferred_candidates(packet: AdjudicationPacket) -> set[str]:
+    """The packet's own candidates this request could not carry.
+
+    Before the cap these were the units left in ``unrendered_ids``; now the
+    deferral is decided when the packet is built, so the unit is no longer in
+    ``units`` and its record is the disposition it was deferred with. The same
+    two tests apply to both spellings: a candidate nobody saw cannot settle the
+    claim it was deferred from. Read from the packet's own dispositions, which
+    are kept ahead of the other omissions, so the entry that keeps a claim from
+    settling can never be the one the bounded list truncates away.
+    """
+    return {
+        item.item_id
+        for item in packet.omitted
+        if item.stage == "adjudication-packet"
+        and item.reason == "deferred_capacity"
+    }
+
+
 def unshown_candidates(packet: AdjudicationPacket) -> set[str]:
     """The packet's own candidates that one request could not carry.
 
@@ -1916,8 +2123,10 @@ def validate_adjudication(
     # budget left out. An id in the packet but not in the request was never
     # shown to the model, so a row for it is refused exactly as an id that is
     # not in the packet at all — otherwise the model is credited with a passage
-    # it never saw, and that passage can be half of a pair.
-    unshown = unshown_candidates(packet)
+    # it never saw, and that passage can be half of a pair. The candidates the
+    # packet itself deferred for capacity count with them: the packet no longer
+    # holds them, and the model still never saw them.
+    unshown = unshown_candidates(packet) | deferred_candidates(packet)
     shown = {
         unit.evidence_id: unit
         for unit in packet.units
@@ -1929,6 +2138,11 @@ def validate_adjudication(
     # support and none may be read as an absent one.
     partial = partially_shown_candidates(packet)
     flags: list[str] = []
+    # The flags a standing complete support earns, kept apart from the packet's
+    # own: what kept the claim from settling is what the reason must say, and
+    # the packet's rendering and admission flags are audit facts about the
+    # request rather than the verdict's explanation.
+    analysis: list[str] = []
     if packet.missing_read_ids:
         # A read this claim is linked to never reached the packet. That is the
         # first thing to say about the claim, because it explains a thin packet
@@ -2133,8 +2347,11 @@ def validate_adjudication(
             status, badge_flags = _settled_badge(
                 packet, shown, supports, eligibility, accepted
             )
+            identity_flags = _insufficient_flags(eligibility, supports)
             flags.extend(badge_flags)
-            flags.extend(_insufficient_flags(eligibility, supports))
+            flags.extend(identity_flags)
+            analysis.extend(badge_flags)
+            analysis.extend(identity_flags)
         else:
             flags.append(_no_support_reason(partial, unshown))
     elif verified_pair is not None:
@@ -2145,8 +2362,11 @@ def validate_adjudication(
         status, badge_flags = _settled_badge(
             packet, shown, supports, eligibility, accepted
         )
+        identity_flags = _insufficient_flags(eligibility, supports)
         flags.extend(badge_flags)
-        flags.extend(_insufficient_flags(eligibility, supports))
+        flags.extend(identity_flags)
+        analysis.extend(badge_flags)
+        analysis.extend(identity_flags)
     elif selected_support_candidates:
         # The model selected a support and no complete support stands: the
         # passage said something, and not the whole claim. The primary badge is
@@ -2180,7 +2400,23 @@ def validate_adjudication(
         )
         for evidence_id in selected
     ]
-    reason = flags[0] if verdict == "insufficient_evidence" and flags else None
+    # The published reason. When a complete support stood, the reason says what
+    # kept it from settling the claim — identity_unknown, single_primary_only,
+    # relay_source — because that is the only thing a reader can act on, and
+    # `packet_incomplete` (the first flag the packet's own cut appends) said
+    # nothing about the claim at all: it was the reason every claim whose
+    # supporting passage was shown and accepted published. It stays an audit
+    # flag, and every other flag keeps its precedence, because a lost read or a
+    # refused id is a fact about this claim's own evidence.
+    if verdict == "insufficient_evidence" and flags:
+        candidates = (
+            [flag for flag in flags if flag != "packet_incomplete"]
+            if analysis
+            else flags
+        )
+        reason = (candidates or flags)[0]
+    else:
+        reason = None
     claim = Claim(
         claim_id=packet.claim_id,
         text=packet.claim_text,
@@ -2418,6 +2654,81 @@ def _packet_has_pair(
             if eligible_independent_pair(left, right):
                 return True
     return False
+
+
+def issuer_passage_carried(
+    packet: AdjudicationPacket,
+    *,
+    shown: Sequence[str] | None = None,
+) -> bool:
+    """True when the request carries the claim's own issuer's passage.
+
+    The local half of :func:`_issuer_passage_stands`, asked before any model
+    call: the claim cites an issuer and a candidate of the request is that
+    issuer's own reading — by the publisher the Source Evaluator resolved or by
+    the URL's own publisher, the same two spellings the badge reads. Whether
+    the passage supports the claim is the model's judgement; this only says the
+    account an obligation on the claim's own issuer needs is already in hand.
+
+    ``shown`` restricts the test to the candidates one request actually carries,
+    and a candidate carried only in part never counts: a passage nobody saw
+    whole may not stand as a complete support.
+    """
+    issuers = _issuer_publishers(packet)
+    if not issuers:
+        return False
+    carried = (
+        None
+        if shown is None
+        else set(shown) - set(packet.partially_shown_ids)
+    )
+    for unit in packet.units:
+        if carried is not None and unit.evidence_id not in carried:
+            continue
+        eligibility = packet.eligibility.get(unit.evidence_id)
+        if eligibility is None or not eligibility.read_valid:
+            continue
+        if eligibility.publisher_id in issuers:
+            return True
+        if publisher_identity(unit.source_url) in issuers:
+            return True
+    return False
+
+
+def single_source_suffices(
+    packet: AdjudicationPacket,
+    policies: Mapping[str, str] | None,
+    *,
+    shown: Sequence[str] | None = None,
+) -> bool:
+    """True when no obligation needs a second source and the issuer is carried.
+
+    An obligation whose policy is answered by one primary-source attributed
+    reading — ``primary_attribution``, or ``derivation`` — is answered by the
+    claim's own issuer's passage, and nothing retrieval finds can answer it
+    instead: a passage from another publisher is not that issuer's account. So
+    when *every* obligation of the claim is one of those and the request
+    already carries the issuer's reading, no further retrieval can change the
+    verdict and the loop's tool budget is spent for nothing. All 18 claim loops
+    of the audited run ran to their limit this way, finding 0 independent
+    sources.
+
+    An obligation with no policy recorded, or any obligation that requires an
+    independent pair, answers ``False``: retrieval stays the claim's only path
+    to settlement, which is the failure direction that costs work rather than
+    evidence. The claim's own adjudication is unchanged either way — a pair
+    the packet happens to carry still verifies, and a claim whose support does
+    not stand still comes back unsettled, with one bounded retrieval to
+    repair it.
+    """
+    if not policies or not packet.claim_target_ids:
+        return False
+    if any(
+        policy not in ("primary_attribution", "derivation")
+        for policy in policies.values()
+    ):
+        return False
+    return issuer_passage_carried(packet, shown=shown)
 
 
 def _packet_independent_publishers(
@@ -3388,6 +3699,17 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             claim_fingerprint(draft.text), ClaimAttribution()
         ).target_ids
 
+    def _policies_for(self, draft: ClaimDraft) -> dict[str, str]:
+        """The support policy of each obligation this draft reached for.
+
+        Read beside ``_obligations_for``: the packet's sufficiency test needs
+        the pair requirement before the loop starts, and the policy is what the
+        plan assigned it.
+        """
+        return self._pending_provenance.get(
+            claim_fingerprint(draft.text), ClaimAttribution()
+        ).target_policies
+
     # --- Task 6: the claim-specific evidence union --------------------------
 
     def _claim_source(self, unit: EvidenceUnit) -> ScoredSource | None:
@@ -3430,13 +3752,20 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         draft: ClaimDraft,
         *,
         target_ids: Sequence[str] = (),
+        policies: Mapping[str, str] | None = None,
     ) -> tuple[AdjudicationPacket | None, bool]:
-        """The claim's packet and whether a qualifying pair already exists.
+        """The claim's packet and whether retrieval is still worth its budget.
 
         ``None`` means this run has no read registry at all, so the legacy
         passage path applies. A packet with no units is not ``None``: it is a
         claim whose claim-specific union is empty, and the honest answer to
         that is ``no_candidate``, not a global URL pool.
+
+        ``policies`` is the support policy of each of the claim's obligations.
+        Retrieval is skipped when the request already carries a pair (Section
+        2.1) and also when nothing the claim answers needs one: a
+        ``primary_attribution`` obligation is answered by the issuer's own
+        reading, which is either in the request or cannot be fetched into it.
         """
         if not state.evidence_units and not self._run_reads:
             return None, True
@@ -3466,8 +3795,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         plan = plan_packet_rendering(
             packet, evidence_chars=self._evidence_chars
         )
-        return packet, not _packet_has_pair(
-            packet, shown=[unit.evidence_id for unit, _ in plan.rendered]
+        shown = [unit.evidence_id for unit, _ in plan.rendered]
+        if _packet_has_pair(packet, shown=shown):
+            return packet, False
+        return packet, not single_source_suffices(
+            packet, policies, shown=shown
         )
 
     async def _augment_packet(
@@ -3501,6 +3833,14 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 query=task.claim.text,
                 origin="fact_checker",
                 selected_limit=self._passages_per_read,
+                # Verification selects by the claim and never by the page's
+                # header. The lede rule exists for extraction, where a
+                # release's opening passage is what the page is about; a
+                # claim's packet holds only the passages that bear on the
+                # claim, and an unrelated lede admitted here is noise that
+                # turns a free ``no_candidate`` outcome into a paid
+                # adjudication over a page the claim says nothing about.
+                include_lede=False,
                 # The run's registry stands for a body it already holds: this
                 # loop's own URLs are the ones the state hands it, so a second
                 # spelling (`www.`), a layout difference, or a reader's
@@ -3569,17 +3909,19 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
     ) -> AdjudicationPacket | None:
         """The packet one request reads, once no more evidence will be added.
 
-        The candidates this request can carry are the ones the model is shown,
-        each in full wherever it fits; a candidate the request could not carry
-        is recorded as an explicit omission, and one it could only carry in
-        part is recorded as partially shown — so the request, the verdict
-        validated against the same packet, and the boundary audit all describe
-        one packet, and no passage is judged by a text it is not.
+        The candidates this request can carry are decided before the packet:
+        what does not fit the request whole is deferred by name with its
+        reason, so the packet's owner list, the request that prints it, and the
+        boundary audit describe one set and nothing the packet holds is
+        "unrendered". A candidate longer than the whole request is the one
+        exception, and is recorded as partially shown — so no passage is judged
+        by a text it is not.
         """
         if packet is None:
             return None
         return with_render_boundaries(
-            packet, evidence_chars=self._evidence_chars
+            defer_beyond_budget(packet, evidence_chars=self._evidence_chars),
+            evidence_chars=self._evidence_chars,
         )
 
     def _record_packet_audit(
@@ -4434,7 +4776,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             for draft in (outstanding[position] for position in picked):
                 index += 1
                 packet, retrieval_needed = self._packet_for(
-                    state, draft, target_ids=self._obligations_for(draft)
+                    state,
+                    draft,
+                    target_ids=self._obligations_for(draft),
+                    policies=self._policies_for(draft),
                 )
                 task = self.claim_task(
                     base_task,
@@ -4465,9 +4810,13 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                     if (
                         claim is not None
                         and not retrieval_needed
-                        and claim.verdict == "insufficient_evidence"
                         and task.packet is not None
-                        and not unshown_candidates(task.packet)
+                        and _packet_has_pair(task.packet)
+                        and claim.verdict == "insufficient_evidence"
+                        and not (
+                            unshown_candidates(task.packet)
+                            | deferred_candidates(task.packet)
+                        )
                     ):
                         # The pool looked sufficient and the model could not use
                         # it. Two identities existing is never the same as two
@@ -4479,7 +4828,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                         # nesting another retry is the point. A candidate the
                         # request could not carry is excluded: retrieval cannot
                         # fix a rendering shortfall, and spending tool calls on
-                        # one would not show the model the passage it lacks.
+                        # one would not show the model the passage it lacks — and
+                        # a deferral would keep the pair refused after it. The
+                        # pair test is what keeps this a repair: a loop skipped
+                        # because no obligation needs a second source is not
+                        # retrieved for one, because no retrieval can answer it.
                         react = await self._check_claim(task)
                         task = task.model_copy(
                             update={

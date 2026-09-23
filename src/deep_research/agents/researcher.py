@@ -13,7 +13,8 @@ still considered high priority.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+import re
+from collections.abc import Callable, Collection, Mapping, MutableMapping, Sequence
 from datetime import datetime, timezone
 from typing import NamedTuple
 
@@ -22,6 +23,7 @@ from pydantic import Field, JsonValue, ValidationError
 from deep_research.agents.acquisition import (
     AcquisitionPolicy,
     ManifestSequence,
+    build_acquisition_context,
 )
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
@@ -59,6 +61,7 @@ from deep_research.utils.types import (
     ContractModel,
     CritiqueGap,
     EvidenceTarget,
+    EvidenceUnit,
     Finding,
     ReadRecord,
     ResearchError,
@@ -66,6 +69,8 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     SubTopic,
+    _ENERGY_UNIT,
+    _POWER_UNIT,
     _canonical_acquisition_url,
     counted_evidence_targets,
     sub_topic_owes_evidence,
@@ -661,6 +666,104 @@ def render_planned_targets(targets: Sequence[EvidenceTarget]) -> str:
     )
 
 
+# A passage "states a figure in the target's own measure unit" when a numeral
+# stands beside a unit of the base that target names. The bases are power (W)
+# and energy (Wh); the unit vocabulary is ``utils.types``' own — the very
+# patterns ``qualifier_matches_requirement`` reads an atom's unit with — so
+# what a passage owes and what the gate accepts cannot drift apart.
+_MEASURE_UNITS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("energy", _ENERGY_UNIT),
+    ("power", _POWER_UNIT),
+)
+
+# A numeral standing immediately before a unit, allowing the whitespace and
+# brackets a figure is written with: "37,143 megawatt hours", "12,314 (MW)".
+# "in 2020," is a year and a comma, not a figure, and "measured in MW" states
+# no quantity at all.
+_TRAILING_NUMERAL = re.compile(r"\d+(?:[.,]\d+)*[\s(]*$")
+
+
+def _unit_mentions(text: str) -> list[tuple[str, re.Match[str]]]:
+    """Every unit mention in ``text``, each with the base it measures.
+
+    "megawatt hours" is the energy unit *and* contains the power word
+    "megawatt", so an energy match owns its span and the power pattern is read
+    only outside it. Without that rule the market monitor's "37,143 megawatt
+    hours" would read as a power figure, and a target asking for megawatts
+    would claim a figure that is somebody else's unit.
+    """
+    mentions: list[tuple[str, re.Match[str]]] = []
+    energy_spans: list[tuple[int, int]] = []
+    for base, pattern in _MEASURE_UNITS:
+        for match in pattern.finditer(text):
+            if base == "power" and any(
+                start < match.end() and match.start() < end
+                for start, end in energy_spans
+            ):
+                continue
+            if base == "energy":
+                energy_spans.append(match.span())
+            mentions.append((base, match))
+    return mentions
+
+
+def _measure_bases(targets: Sequence[EvidenceTarget]) -> frozenset[str]:
+    """The measure bases ("power", "energy") these targets ask for.
+
+    A target asks for a quantity when its own prose names a unit: "in MW" is
+    power, "in MWh" is energy. The question and the required dimensions are
+    read together, because either carries the unit and neither is the whole
+    obligation. A target that names no unit asks for no quantity, so no
+    passage can owe it one — "measure: inclusion rule and counting treatment"
+    must not turn every figure in the packet into extraction debt.
+    """
+    return frozenset(
+        base
+        for target in targets
+        for text in (target.question, *target.required_dimensions)
+        for base, _match in _unit_mentions(text)
+    )
+
+
+def _states_a_figure(text: str, bases: Collection[str]) -> bool:
+    """True when ``text`` states a numeral in one of the given measure bases."""
+    for base, match in _unit_mentions(text):
+        if base not in bases:
+            continue
+        if _TRAILING_NUMERAL.search(text[: match.start()]):
+            return True
+    return False
+
+
+def _units_owing_a_figure(
+    evidence: Mapping[str, EvidenceUnit],
+    *,
+    target_ids: Sequence[str],
+    bases: Collection[str],
+    used: Collection[tuple[str, str]],
+) -> list[EvidenceUnit]:
+    """Selected units that state a figure in the target's own unit, unmined.
+
+    Only units selected for the active target are asked, and only those no
+    admitted finding used: a passage that produced a finding owes nothing, and
+    a passage fetched for another topic is that topic's business. What is left
+    and states a figure in a base the target asks for is evidence the
+    extraction walked past — the audited run's "12,314 megawatts (MW) and
+    37,143 megawatt hours (MWh) deployed" passage, selected, disposed of as
+    irrelevant, and never mined for the MWh target that needed it.
+    """
+    admitted = set(used)
+    owing: list[EvidenceUnit] = []
+    for unit in evidence.values():
+        if target_ids and not set(target_ids).intersection(unit.target_ids):
+            continue
+        if (unit.read_id, unit.locator) in admitted:
+            continue
+        if _states_a_figure(unit.excerpt, bases):
+            owing.append(unit)
+    return owing
+
+
 def extraction_messages(
     task: SubTopicTask,
     run: ReActRun,
@@ -668,6 +771,7 @@ def extraction_messages(
     evidence_chars: int,
     acquisition_context: str | None = None,
     planned_targets: Sequence[EvidenceTarget] = (),
+    owed_passages: bool = False,
 ) -> list[ChatMessage]:
     """Build the messages that extract findings from one finished loop.
 
@@ -678,6 +782,12 @@ def extraction_messages(
     target it was shown. An empty sequence (a legacy plan, or a caller with no
     plan in hand) leaves the request without a list to bind against, which is
     what it was before this parameter existed.
+
+    ``owed_passages`` marks the one bounded re-extraction's request. Its packet
+    carries the selected passages a previous extraction returned no finding
+    for even though each states a number in a unit a planned target asks for,
+    so the request says what the packet is for instead of looking like a
+    second helping of the evidence the model already declined.
     """
     criteria = "\n".join(
         f"- {criterion}" for criterion in task.sub_topic.success_criteria
@@ -714,6 +824,17 @@ def extraction_messages(
             "content answers one of these questions names it in target_ids, "
             "whichever sub-topic the read was fetched for:\n"
             + render_planned_targets(planned_targets)
+        )
+    if owed_passages:
+        sections.append(
+            "# Passages owed a finding\n"
+            "The passages below are selected evidence a previous extraction "
+            "returned no finding for, and each states a number in a unit one "
+            "of the planned targets asks for — the figure a target needs and "
+            "the extraction walked past. Mine every passage here for every "
+            "planned target whose question its content answers, in the same "
+            "registry shape and with the same target ids the contract below "
+            "requires."
         )
     sections.extend(
         [
@@ -1221,6 +1342,38 @@ def extraction_provider_error(
     )
 
 
+def owed_extraction_provider_error(
+    run: ReActRun,
+    error: Exception,
+) -> ResearchError:
+    """Record that a sub-topic's bounded re-extraction could not reach the model.
+
+    Recoverable, unlike the first extraction call's failure: the re-extraction
+    is an improvement on evidence already in hand, so its outage costs the
+    retry alone. The findings the first call extracted stand, the pass
+    continues to the remaining sub-topics, and every passage the retry would
+    have mined keeps its explicit ``unmined_quantity`` disposition, which is
+    what the ledger discloses. ``details`` carries the static operation, the
+    safe provider snapshot, and counts, never ``str(error)`` — the same
+    redaction discipline the rest of this module follows.
+    """
+    return agent_error(
+        agent_name=RESEARCHER_NAME,
+        error_type="researcher_re_extraction_provider_error",
+        message=(
+            "The model provider failed while re-extracting a sub-topic's "
+            "unmined quantity passages; those passages were recorded as "
+            "unmined and the research pass continued."
+        ),
+        details=agent_provider_failure_details(
+            "researcher_owed_passage_extraction",
+            error,
+            iterations=run.iterations,
+            tool_calls=run.tool_calls,
+        ),
+    )
+
+
 class ResearcherAgent(BaseAgent[ResearchFindings]):
     """Run one bounded ReAct loop per selected sub-topic and extract findings.
 
@@ -1533,32 +1686,97 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
         admitted_keys: list[tuple[str, str]] = []
         unplanned_target_ids: list[str] = []
-        findings, rejected = build_findings(
-            draft,
-            sub_topic=task.sub_topic,
-            extracted_at=self._clock().isoformat(),
-            known_urls=retrieved,
-            known_reads=(
-                {
-                    read_id: read
-                    for read_id, read in policy.reads.items()
-                    if read.resolved_url in policy.state.read_urls
-                }
-                if policy is not None
-                else None
-            ),
-            valid_target_ids=(
-                [target.target_id for target in planned_targets]
-                if planned_targets
-                else None
-            ),
-            admitted_evidence_keys=admitted_keys,
-            dropped_target_ids=unplanned_target_ids,
+        known_reads = (
+            {
+                read_id: read
+                for read_id, read in policy.reads.items()
+                if read.resolved_url in policy.state.read_urls
+            }
+            if policy is not None
+            else None
         )
+        valid_target_ids = (
+            [target.target_id for target in planned_targets]
+            if planned_targets
+            else None
+        )
+
+        def mine(
+            draft: SubTopicFindingsDraft,
+        ) -> tuple[list[Finding], list[str]]:
+            """Stamp one provider reply into validated findings and drops."""
+            return build_findings(
+                draft,
+                sub_topic=task.sub_topic,
+                extracted_at=self._clock().isoformat(),
+                known_urls=retrieved,
+                known_reads=known_reads,
+                valid_target_ids=valid_target_ids,
+                admitted_evidence_keys=admitted_keys,
+                dropped_target_ids=unplanned_target_ids,
+            )
+
+        findings, rejected = mine(draft)
+        errors: list[ResearchError] = []
+        owed: list[EvidenceUnit] = []
         if policy is not None:
+            # The selected passages this sub-topic's own targets ask a figure
+            # for and no admitted finding used. Only the units selected for
+            # this target are asked, and only its own targets' measure units
+            # decide what a passage owes.
+            owed = _units_owing_a_figure(
+                policy.evidence,
+                target_ids=(
+                    () if policy.target_id is None else (policy.target_id,)
+                ),
+                bases=_measure_bases(
+                    counted_evidence_targets(task.sub_topic.evidence_targets)
+                ),
+                used=admitted_keys,
+            )
+            if owed:
+                # ONE bounded second extraction, never a loop: a first packet
+                # ranks dozens of passages, and the passage that carries the
+                # figure the target asks for is exactly what a ranking can
+                # bury. The re-ask is over those passages alone, so the model
+                # is not asked to find them again in a packet they were lost
+                # in. A provider failure here costs the retry only: the
+                # findings already extracted stand, and every owed unit keeps
+                # its own disposition, which is what the ledger discloses.
+                try:
+                    retry_draft = await self.provider.complete_structured(
+                        extraction_messages(
+                            task,
+                            run,
+                            evidence_chars=self._evidence_chars,
+                            acquisition_context=build_acquisition_context(
+                                policy.state,
+                                policy.reads,
+                                {unit.evidence_id: unit for unit in owed},
+                                limit=self._evidence_packet_chars,
+                                target_id=policy.target_id,
+                                dispositions=policy.dispositions,
+                                focus_ids=[unit.evidence_id for unit in owed],
+                            ),
+                            planned_targets=planned_targets,
+                            owed_passages=True,
+                        ),
+                        SubTopicFindingsDraft,
+                        agent_name=self.name,
+                    )
+                except ProviderError as error:
+                    errors.append(owed_extraction_provider_error(run, error))
+                else:
+                    retry_findings, retry_rejected = mine(retry_draft)
+                    findings = [*findings, *retry_findings]
+                    rejected = [*rejected, *retry_rejected]
             # Unit-level, so a passage is "used" only when that exact passage
-            # produced an admitted finding.
-            policy.record_extraction_dispositions(admitted_keys)
+            # produced an admitted finding. Whatever the re-extraction left
+            # unmined says so in its own reason rather than "irrelevant".
+            policy.record_extraction_dispositions(
+                admitted_keys,
+                unmined_quantity_ids=[unit.evidence_id for unit in owed],
+            )
             # The obligation this pass completed is the ACTIVE topic's, and a
             # finding bound to another topic's target does not complete it.
             # Mining a read for every planned target would otherwise let one
@@ -1581,7 +1799,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     for finding in bound
                 )
             self._last_target_obligation_completed = completed
-        errors = []
         if unplanned_target_ids:
             # Recorded even though the finding was kept: an id the plan never
             # issued is invisible in state otherwise, and every later stage

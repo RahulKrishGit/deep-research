@@ -519,18 +519,30 @@ PLAN_INSTRUCTION = (
     # ended with 0 of 11 targets answered (audit #3, #10). The demand now
     # belongs to the policy the evidence earns, and the policy is a field the
     # plan states per target.
+    #
+    # Pairing a quantity "more than one body measures" was still an invitation
+    # to the wrong pair. The plan read EIA's inventory and, independently, an
+    # industry tracker as two measurements of the same 2024 addition, although
+    # the two publish different segments — so the target demanded a pair that
+    # cannot exist, exactly as the single-issuer figures did (review rank 2).
+    # Two figures that are not the same measurement are two targets.
     "Name every target's support_policy, and let the evidence settle it. Use "
-    "independent_pair when a second, independent measurement of the fact can "
-    "exist — a comparison, or a quantity more than one body measures — and "
-    "then require that pair in the success criterion: state that at least "
-    "two sources from different publishers must state the number or finding, "
-    "and say how a reader would recognise the second one. Use "
-    "primary_attribution when a single authoritative issuer settles the fact "
-    "— its own count, rule, definition, or methodology — and then do not "
-    "demand a second publisher for it: a fact only one source states is "
-    "recorded as unverified no matter how authoritative that source is, no "
-    "independent pair of one agency's figure exists, and a criterion that "
-    "demands one leaves the obligation unanswered.\n"
+    "independent_pair when a second, independent measurement of the same "
+    "fact can exist — a comparison or ranking, or one quantity that two "
+    "independent bodies measure on the same basis — and then require that "
+    "pair in the success criterion: state that at least two sources from "
+    "different publishers must state the number or finding, and say how a "
+    "reader would recognise the second one. Two bodies that publish "
+    "differently scoped figures — different segments, units, or vintages — "
+    "are not that pair, because differently scoped figures are different "
+    "measurements: give each issuer its own primary_attribution target "
+    "instead of one independent_pair target. Use primary_attribution when a "
+    "single authoritative issuer settles the fact — its own count, rule, "
+    "definition, or methodology — and then do not demand a second publisher "
+    "for it: a fact only one source states is recorded as unverified no "
+    "matter how authoritative that source is, no independent pair of one "
+    "agency's figure exists, and a criterion that demands one leaves the "
+    "obligation unanswered.\n"
     "Aim the queries at primary sources — regulations, standards, filings, "
     "and datasets that state the facts directly — and say which class of "
     "source each query should reach. For a target planned under "
@@ -1035,13 +1047,42 @@ _RANKING_MARKERS = (
     "largest",
     "least",
     "lowest",
-    "most",
     "safer",
     "safest",
     "smallest",
     "worse",
     "worst",
 )
+
+# "most" is the one ranking word that also heads every phrase a question about
+# a current figure uses. "the most recently published outlook", "the most
+# recent inventory" and "the most current data" rank nothing: they name one
+# body's vintage. Matching the bare word read the question under audit as a
+# ranking and stamped ``independent_pair`` on all three of its forecast
+# targets, whose single-agency figures no second measurement can corroborate —
+# the plan override that keeps a target unanswerable (review rank 2). The word
+# is therefore matched on its own, by a pattern that only fires when a
+# currency word does not follow it (hyphenated or spaced): "added the most
+# capacity" still ranks.
+_MOST_CURRENCY_FOLLOWERS = ("current", "currently", "recent", "recently")
+_MOST_RANKING_PATTERN = re.compile(
+    r"(?<![a-z0-9])most(?![a-z0-9])(?![\s-]+(?:"
+    + "|".join(_MOST_CURRENCY_FOLLOWERS)
+    + r")(?![a-z0-9]))"
+)
+
+
+def _mentions_ranking(normalized: str) -> bool:
+    """True when the question ranks measured quantities against each other.
+
+    Two halves, because "most" is two words: a superlative determiner that
+    ranks ("added the most capacity"), and the head of a currency phrase that
+    does not ("the most recently published outlook"). The other markers rank
+    in every form they take, so they are matched as tokens.
+    """
+    return _mentions(normalized, _RANKING_MARKERS) or (
+        _MOST_RANKING_PATTERN.search(normalized) is not None
+    )
 
 
 def _earned_support_policy(
@@ -1080,7 +1121,7 @@ def _earned_support_policy(
         return "primary_attribution"
     if comparison_evidence == "ambiguous" or _mentions(
         normalized, _COMPARATIVE_CUES
-    ) or _mentions(normalized, _RANKING_MARKERS):
+    ) or _mentions_ranking(normalized):
         return "independent_pair"
     if _mentions(normalized, _CAUSAL_MARKERS):
         return "independent_pair"

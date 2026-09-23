@@ -4,6 +4,7 @@ from deep_research.agents.acquisition import (
     AcquisitionAction,
     AcquisitionPolicy,
     ManifestSequence,
+    UNMINED_QUANTITY_REASON,
     WEB_PASSAGE_CHARS,
     OriginName,
     ReadAdmission,
@@ -13,6 +14,7 @@ from deep_research.agents.acquisition import (
     build_read_record_from_tool_result,
     cache_reuse_problem,
     next_acquisition_action,
+    select_passages_with_lede,
     split_read_body,
 )
 from deep_research.agents.base import (
@@ -227,6 +229,7 @@ from deep_research.agents.fact_checker import (
     adjudication_messages,
     adjudication_repaired_event,
     admitted_target_ids,
+    adjudication_fingerprint,
     build_adjudication_packet,
     build_claim,
     build_claim_drafts,
@@ -242,6 +245,8 @@ from deep_research.agents.fact_checker import (
     claim_relevant_order,
     claim_verification_messages,
     claim_verification_provider_error,
+    defer_beyond_budget,
+    deferred_candidates,
     claimed_domains_for,
     claims_extracted_event,
     claims_pending_event,
@@ -250,6 +255,7 @@ from deep_research.agents.fact_checker import (
     evidence_targets_by_title,
     fact_check_completed_event,
     independent_domains,
+    issuer_passage_carried,
     insufficient_claim,
     invalid_claim_error,
     known_source_urls,
@@ -264,6 +270,7 @@ from deep_research.agents.fact_checker import (
     provider_failure_reason,
     refutes,
     resolve_verdict,
+    single_source_suffices,
     retrieved_source_urls,
     supporting_publisher_count,
     target_ids_by_title,
@@ -516,6 +523,7 @@ from deep_research.agents.researcher import (
     extraction_provider_error,
     is_high_priority,
     merge_react_runs,
+    owed_extraction_provider_error,
     no_findings_error,
     render_evidence,
     render_planned_targets,
@@ -1293,4 +1301,15 @@ __all__ = [
     "terminal_report_state",
     "unattached_qualifiers",
     "PACKET_SUPPORT_CHARS",
+    # Report-quality fixes from the live-cycle review (08b9b469): the owed-
+    # figure re-extraction, the lede-first passage selection, and the packet's
+    # capacity cap and single-source sufficiency. Appended as one block.
+    "UNMINED_QUANTITY_REASON",
+    "select_passages_with_lede",
+    "owed_extraction_provider_error",
+    "adjudication_fingerprint",
+    "defer_beyond_budget",
+    "deferred_candidates",
+    "issuer_passage_carried",
+    "single_source_suffices",
 ]

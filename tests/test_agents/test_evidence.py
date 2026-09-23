@@ -1868,6 +1868,101 @@ def test_a_body_mention_does_not_transfer_issuer_ownership() -> None:
     )
 
 
+# The audited run's own EIA read: the agency's Today in Energy page, whose
+# title names the agency and prints the acronym its host is named by. There is
+# no "published by" imprint anywhere on the page, which is the whole difficulty:
+# the one document that states the answer carries no attribution phrase, so the
+# issuer anchor was dropped and the agency's own report could corroborate
+# nothing.
+AGENCY_URL = "https://www.eia.gov/todayinenergy/detail.php?id=67925"
+AGENCY_TITLE = (
+    "Battery storage capacity averaged 70% growth over the last three years - "
+    "U.S. Energy Information Administration (EIA)"
+)
+AGENCY_TEXT = (
+    "Battery storage capacity averaged 70% growth over the last three years - "
+    "U.S. Energy Information Administration (EIA) In-brief analysis August 7, "
+    "2026 Battery storage capacity averaged 70% growth over the last three "
+    "years Data source: U.S. Energy Information Administration, Preliminary "
+    "Monthly Electric Generator Inventory By the end of 2025, the U.S. power "
+    "system had operational battery storage capacity of 43.6 gigawatts (GW)."
+)
+AGENCY_ISSUER = "U.S. Energy Information Administration"
+
+# The relay that quotes the same inventory: Energy Global's own page, which
+# names the agency in its headline and quotes it by name in its body.
+RELAY_URL = (
+    "https://energyglobal.com/energy-storage/13032025/"
+    "eia-find-that-us-battery-capacity-increased-by-66-in-2024"
+)
+RELAY_TITLE = (
+    "EIA find that US battery capacity increased by 66% in 2024 | Energy Global"
+)
+RELAY_TEXT = (
+    "EIA find that US battery capacity increased by 66% in 2024 | Energy Global "
+    "In the US, cumulative utility-scale battery storage capacity exceeded "
+    "26 GW in 2024, according to the US Energy Information Administration "
+    "(EIA)'s 'January 2025 Preliminary Monthly Electric Generator Inventory'. "
+    "Generators added 10.4 GW of new battery storage capacity in 2024."
+)
+
+
+def test_a_first_party_read_evidences_the_issuer_its_host_is_named_by() -> None:
+    """The agency's own page publishes itself: its title and host say so.
+
+    EIA's Today in Energy page states the answer and carries no attribution
+    phrase, so the issuer the model read off its masthead was dropped — and
+    with it the source's role, its origin, and every chance its own report
+    could ever be half of a corroboration pair. The page is served from the
+    domain the agency is named by and its title names the agency and prints
+    the acronym (EIA) that domain spells, so the anchor is evidenced after
+    all. A relay cannot claim the same: its host is not the issuer's.
+    """
+    read = _web_read(AGENCY_URL, title=AGENCY_TITLE, text=AGENCY_TEXT)
+    proposed = {"issuer": AGENCY_ISSUER}
+
+    row = read_metadata_row(read, anchors=proposed)
+
+    assert row["issuer"] == AGENCY_ISSUER
+    assert canonical_publisher_id(row) == "u s energy information administration"
+    assert rejected_anchor_names(read, proposed) == []
+
+
+def test_a_relay_never_evidences_the_issuer_it_quotes() -> None:
+    """A relay's host is not the agency's, so its mentions stay mentions.
+
+    Energy Global names the agency by acronym in its headline and quotes it by
+    name in its body. Accepting either would hand the relay the agency's
+    authority and let two relays of one press release stand in as two
+    first-party reports.
+    """
+    read = _web_read(RELAY_URL, title=RELAY_TITLE, text=RELAY_TEXT)
+    proposed = {"issuer": AGENCY_ISSUER}
+
+    row = read_metadata_row(read, anchors=proposed)
+
+    assert "issuer" not in row
+    assert rejected_anchor_names(read, proposed) == ["issuer"]
+    assert canonical_publisher_id(row) == "energyglobal.com"
+
+
+def test_a_domain_that_only_spells_the_acronym_is_not_the_issuer() -> None:
+    """The host must *be* the spelling the issuer is named by, not contain it.
+
+    "eia-digest.example" is a republisher whose name echoes the agency's. The
+    domain label is the whole of the identity check, so a label that merely
+    contains the acronym — like a title that merely mentions the name —
+    publishes nobody.
+    """
+    read = _web_read(
+        "https://eia-digest.example/today",
+        title=AGENCY_TITLE,
+        text=AGENCY_TEXT,
+    )
+
+    assert "issuer" not in read_metadata_row(read, anchors={"issuer": AGENCY_ISSUER})
+
+
 def test_a_stated_attribution_phrase_is_accepted_with_its_fillers() -> None:
     """Genuine publication phrasing still resolves, however it is written."""
     for text in (

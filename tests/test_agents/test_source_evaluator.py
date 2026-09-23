@@ -1137,6 +1137,86 @@ async def test_the_original_report_becomes_a_read_backed_origin() -> None:
     assert source.cited_sub_topics == []
 
 
+# The audited run's own EIA read and the relay that quotes the same inventory.
+# The agency's page carries no attribution phrase, so the issuer the model read
+# off its masthead was dropped, and with it every source-level identity the
+# page could contribute. The relay's headline names the agency by acronym, so
+# the two pages are exactly the pair a host check has to tell apart.
+AGENCY_URL = "https://www.eia.gov/todayinenergy/detail.php?id=67925"
+AGENCY_TITLE = (
+    "Battery storage capacity averaged 70% growth over the last three years - "
+    "U.S. Energy Information Administration (EIA)"
+)
+AGENCY_TEXT = (
+    "Battery storage capacity averaged 70% growth over the last three years - "
+    "U.S. Energy Information Administration (EIA) In-brief analysis Data "
+    "source: U.S. Energy Information Administration, Preliminary Monthly "
+    "Electric Generator Inventory By the end of 2025, the U.S. power system "
+    "had operational battery storage capacity of 43.6 gigawatts (GW)."
+)
+AGENCY_ISSUER = "U.S. Energy Information Administration"
+RELAY_URL = (
+    "https://energyglobal.com/energy-storage/13032025/"
+    "eia-find-that-us-battery-capacity-increased-by-66-in-2024"
+)
+RELAY_TITLE = (
+    "EIA find that US battery capacity increased by 66% in 2024 | Energy Global"
+)
+RELAY_TEXT = (
+    "EIA find that US battery capacity increased by 66% in 2024 | Energy Global "
+    "In the US, cumulative utility-scale battery storage capacity exceeded "
+    "26 GW in 2024, according to the US Energy Information Administration "
+    "(EIA)'s 'January 2025 Preliminary Monthly Electric Generator Inventory'."
+)
+
+
+def _agency_draft(**overrides: object) -> SourceScoreDraft:
+    fields: dict[str, object] = {
+        "url": AGENCY_URL,
+        "authority": 0.9,
+        "recency": 0.8,
+        "relevance": 0.9,
+        "rationale": "The agency's own page, carrying its own inventory.",
+        "source_role": "original_report",
+        "transport_relation": "original",
+        "self_interest": "none",
+        "issuer": AGENCY_ISSUER,
+    }
+    fields.update(overrides)
+    return _draft(**fields)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_a_first_party_read_becomes_an_origin_the_agency_stands_behind() -> None:
+    """The agency's own page contributes an origin; the relay quoting it does not.
+
+    Both records propose the same issuer and the same role, and only the host
+    tells them apart: eia.gov is the domain the agency is named by, so its own
+    report resolves a publisher, an ``original_report`` role, and an origin it
+    can be a corroborating half of. Energy Global's article about that report
+    is not the agency's, and a version of this code that accepted its headline
+    would let one press release stand in as two independent origins.
+    """
+    agency = _read(AGENCY_URL, title=AGENCY_TITLE, text=AGENCY_TEXT)
+    relay = _read(RELAY_URL, title=RELAY_TITLE, text=RELAY_TEXT)
+
+    sources, completer = await _assess(
+        [agency, relay], [_scores(_agency_draft(), _agency_draft(url=RELAY_URL))]
+    )
+
+    assert completer.calls[0][0] == "SourceScoresDraft"
+    by_url = {normalize_source_url(source.url): source for source in sources}
+    own = by_url[normalize_source_url(AGENCY_URL)]
+    quoted = by_url[normalize_source_url(RELAY_URL)]
+    assert own.source_role == "original_report"
+    assert own.serving_host == "eia.gov"
+    assert own.publisher_id == "u s energy information administration"
+    assert source_origin_id(own) is not None
+    assert quoted.source_role == "unknown"
+    assert quoted.publisher_id == "energyglobal.com"
+    assert source_origin_id(quoted) is None
+
+
 @pytest.mark.asyncio
 async def test_the_official_mirror_is_usable_but_adds_no_origin() -> None:
     """A mirror is evidence; it is not a second publisher or a second work."""

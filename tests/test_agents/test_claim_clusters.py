@@ -3412,6 +3412,10 @@ def test_a_qualitative_measure_never_demands_a_numeric_value(
         "measure: grid-scale battery power capacity added, in MW",
         "measure: projected battery storage capacity additions, in MW",
         "measure: minimum nameplate capacity threshold, in MW",
+        # A unit asks for a number even beside a convention noun: the live
+        # threshold target was read as qualitative and bound forecast levels.
+        "measure: capacity threshold applied for the utility-scale "
+        "classification, in megawatts",
         "measure: annual ridership",
         "value",
         "capacity",
@@ -3726,6 +3730,177 @@ def test_a_government_figure_does_not_answer_an_independent_publisher_target() -
         for atom in regulatory
     )
 
+
+_LIVE_EVIDENCE_PERIOD = (
+    "evidence period: the period the question names (2024, 2025); answer it "
+    "as of 2025-12-31 and never substitute today's figures"
+)
+_LIVE_ANSWER_FORM = (
+    "answer form: the specific fact asked for, with its value, unit, and the "
+    "date the value applies to"
+)
+
+
+def _live_target(
+    target_id: str,
+    question: str,
+    measure: str,
+    period: str,
+    source: str,
+    support_policy: str,
+) -> EvidenceTarget:
+    return EvidenceTarget(
+        target_id=target_id,
+        coverage_id=target_id.rsplit("-target-", 1)[0],
+        question=question,
+        required_dimensions=[
+            f"measure: {measure}",
+            f"period: {period}",
+            "geography: United States",
+            f"source: {source}",
+            _LIVE_ANSWER_FORM,
+            _LIVE_EVIDENCE_PERIOD,
+        ],
+        required=True,
+        critical=support_policy == "independent_pair",
+        support_policy=support_policy,
+    )
+
+
+# The live plan's figure and methodology targets, verbatim from the traced run
+# whose 10.4 GW and 19.6 GW claims bound every methodology target and the
+# market monitor's outlook as well as their own figure (review rank 6).
+_LIVE_TARGETS = (
+    _live_target(
+        "topic-01-target-01",
+        "How much battery storage capacity, in megawatts, was added at grid "
+        "scale in the United States in 2024?",
+        "battery storage capacity added, in megawatts",
+        "calendar year 2024",
+        "the federal energy statistical agency's published capacity data and, "
+        "independently, an industry energy-storage market tracker",
+        "independent_pair",
+    ),
+    _live_target(
+        "topic-02-target-01",
+        "What 2025 addition of utility-scale battery storage capacity in the "
+        "United States, in megawatts, does the federal energy statistical "
+        "agency's most recently published outlook project?",
+        "projected battery storage capacity additions, in megawatts",
+        "forecast year 2025",
+        "the forecasting agency's latest published outlook",
+        "independent_pair",
+    ),
+    _live_target(
+        "topic-02-target-02",
+        "What 2025 addition of grid-scale battery storage capacity in the "
+        "United States, in megawatts, does the industry energy-storage market "
+        "monitor's most recently published outlook project?",
+        "projected battery storage capacity additions, in megawatts",
+        "forecast year 2025",
+        "the market monitor's latest published outlook",
+        "independent_pair",
+    ),
+    _live_target(
+        "topic-03-target-01",
+        "What capacity threshold, in megawatts, does the federal energy "
+        "statistical agency use to classify battery storage as utility-scale "
+        "in its United States capacity data?",
+        "capacity threshold applied for the utility-scale classification, in "
+        "megawatts",
+        "the classification in force for the 2024 and 2025 data years",
+        "the agency's published methodology documentation",
+        "primary_attribution",
+    ),
+    _live_target(
+        "topic-03-target-02",
+        "Which facility types does the federal energy statistical agency "
+        "include when it counts utility-scale battery storage capacity "
+        "additions in the United States?",
+        "facility types included in the utility-scale battery storage "
+        "capacity count",
+        "the 2024 and 2025 data years",
+        "the agency's published methodology documentation",
+        "primary_attribution",
+    ),
+    _live_target(
+        "topic-03-target-03",
+        "Which storage segment does the industry energy-storage market monitor "
+        "count in its grid-scale United States additions figures?",
+        "storage segment covered by the grid-scale additions figures",
+        "the 2024 and 2025 data years",
+        "the market monitor's published methodology documentation",
+        "primary_attribution",
+    ),
+)
+_LIVE_TARGET_IDS = frozenset(target.target_id for target in _LIVE_TARGETS)
+
+
+@pytest.mark.parametrize(
+    ("text", "binds", "refuses"),
+    [
+        # The agency's 2024 figure answers the 2024 figure target, whose pair
+        # source names the agency, and no definitional target: it states no
+        # threshold, facility type, or segment.
+        (
+            "The U.S. Energy Information Administration reported that "
+            "generators added 10.4 GW (10,400 MW) of new battery storage "
+            "capacity in the United States in 2024.",
+            {"topic-01-target-01"},
+            _LIVE_TARGET_IDS - {"topic-01-target-01"},
+        ),
+        # The agency's projection answers the agency outlook, not the market
+        # monitor's outlook of the same measure.
+        (
+            "The U.S. Energy Information Administration projected that U.S. "
+            "battery storage capacity growth could set a record in 2025, with "
+            "operators reporting plans to add 19.6 GW (19,600 MW) of "
+            "utility-scale battery storage capacity in the United States.",
+            {"topic-02-target-01"},
+            _LIVE_TARGET_IDS - {"topic-02-target-01"},
+        ),
+        # A cumulative level is no addition, and a forecast level names no
+        # threshold: it was bound to two methodology targets live.
+        (
+            "EIA's Short Term Energy Outlook projected that U.S. utility-scale "
+            "battery storage capacity will reach nearly 65 GW in 2025.",
+            set(),
+            _LIVE_TARGET_IDS,
+        ),
+        # The threshold target asks for a number in megawatts, and a clause
+        # that states the threshold with its number answers it.
+        (
+            "According to EIA, battery storage projects larger than 1 MW in "
+            "the electric power sector are counted in U.S. utility-scale "
+            "battery storage capacity for 2024.",
+            {"topic-03-target-01"},
+            set(),
+        ),
+        # The pair source names the industry tracker too, so the tracker's own
+        # 2024 figure answers its half; a 2024 figure answers no 2025 outlook.
+        (
+            "Wood Mackenzie reported that U.S. developers added 12,314 MW of "
+            "battery storage capacity in the United States in 2024.",
+            {"topic-01-target-01"},
+            {"topic-02-target-01", "topic-02-target-02"},
+        ),
+    ],
+)
+def test_a_live_claim_binds_only_the_targets_it_answers(
+    text: str, binds: set[str], refuses: set[str]
+) -> None:
+    atoms = extract_text_atoms(text)
+    bound = {
+        target.target_id
+        for target in _LIVE_TARGETS
+        if any(
+            atom_answers_target(atom, target, question=target.question)
+            for atom in atoms
+        )
+    }
+
+    assert binds <= bound
+    assert not bound & refuses
 
 @pytest.mark.parametrize(
     ("claim", "expected"),

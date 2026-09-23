@@ -4914,5 +4914,100 @@ def test_the_earned_policy_is_published_for_the_consumer_that_judges_it() -> Non
     )
 
 
+# The live ``topic-02-target-01`` question from the 1-iteration run whose report
+# failed all five criteria. Its figure is one agency's own outlook number, and
+# the two bodies the plan named publish differently scoped ones (review rank 2).
+_LIVE_FORECAST_TARGET_QUESTION = (
+    "What 2025 addition of utility-scale battery storage capacity in the "
+    "United States, in megawatts, does the federal energy statistical "
+    "agency's most recently published outlook project?"
+)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        _LIVE_FORECAST_TARGET_QUESTION,
+        (
+            "What does the most recent federal statistical-agency forecast "
+            "project for 2025 additions, in MW?"
+        ),
+        "What does the latest published outlook project for 2025 additions?",
+        "What did the most-recent inventory report for 2024 additions?",
+    ],
+)
+def test_a_currency_phrase_is_not_a_ranking(question: str) -> None:
+    """A phrase that names one body's vintage ranks nothing, so it earns nothing.
+
+    The bare ranking marker ``most`` matched the currency phrase and returned
+    ``independent_pair`` for all three of the run's forecast targets, which a
+    single agency's own figure can never satisfy — no second measurement of it
+    exists (review rank 2). A question whose form earns nothing has to reach
+    ``support_policy_for_target`` as ``None``, or the plan's own proposal is
+    overridden by a ranking the question does not make.
+    """
+    assert earned_support_policy(question) is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Which state added the most battery storage capacity in 2024?",
+        "Which state added the largest battery storage capacity in 2024?",
+        "Which state had the highest battery storage capacity in 2024?",
+    ],
+)
+def test_a_real_ranking_still_earns_independent_pair(question: str) -> None:
+    """Excluding the currency phrase must not exclude the ranking around it.
+
+    ``the most`` in "added the most capacity" ranks measured quantities against
+    each other and is settled only by comparing accounts, so it keeps the pair
+    the question's own form earns.
+    """
+    assert earned_support_policy(question) == "independent_pair"
+
+
+def test_the_live_forecast_target_takes_the_plans_own_policy() -> None:
+    """With the false ranking gone, the plan's own per-issuer call decides.
+
+    ``primary_attribution`` is the honest ceiling for an agency's published
+    figure, and it has to reach the target the researcher is handed — not just
+    the helper both stamping paths call, because the false ranking overrode
+    the plan's proposal on all three of the run's forecast targets (review
+    rank 2).
+    """
+    assert (
+        support_policy_for_target(
+            question=_LIVE_FORECAST_TARGET_QUESTION,
+            proposed="primary_attribution",
+        )
+        == "primary_attribution"
+    )
+    stamped = _stamped(
+        _LIVE_FORECAST_TARGET_QUESTION,
+        _target(
+            _LIVE_FORECAST_TARGET_QUESTION, policy="primary_attribution"
+        ),
+    )
+    assert stamped.support_policy == "primary_attribution"
+
+
+def test_planner_regression_instruction_splits_differently_scoped_figures() -> None:
+    """Two bodies' differently scoped figures are two targets, not one pair.
+
+    The instruction invited ``independent_pair`` for "a quantity more than one
+    body measures", and the run's plan proposed it for the 2024 addition target
+    whose evidence names EIA's inventory and, independently, a tracker that
+    counts other segments — a pair that cannot be verified, because the two
+    figures are different measurements (review rank 2).
+    """
+    task = AgentTask(instruction=_LIVE_FORECAST_TARGET_QUESTION)
+    messages = plan_messages(task, _run())
+    rendered = " ".join(message.content for message in messages)
+    assert "a quantity more than one body measures" not in rendered
+    assert "its own primary_attribution target" in rendered
+    assert "different segments, units, or vintages" in rendered
+
+
 
 

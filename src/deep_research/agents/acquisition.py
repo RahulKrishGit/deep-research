@@ -81,6 +81,14 @@ _DISCOVERED_VIA = frozenset({"search", "memory", "document_link"})
 # growing a pending list acquisition can never leave.
 _DEFAULT_PASSAGE_BATCH_LIMIT = 2
 
+# The disposition a selected unit gets when it states a figure in a measure
+# unit the active target asks for and no finding was extracted from it — not
+# by the extraction, and not by the one bounded re-extraction that follows it.
+# Deliberately not ``irrelevant``: such a passage is not beside the point, it
+# carries the figure the target asks for and the extraction walked past it,
+# and the ledger has to be able to say so.
+UNMINED_QUANTITY_REASON = "unmined_quantity"
+
 
 def next_acquisition_action(state: AcquisitionState) -> AcquisitionAction:
     """Return the next deterministic local acquisition action."""
@@ -431,6 +439,37 @@ def _adopt_recorded_read(
     )
 
 
+def select_passages_with_lede(
+    passages: Mapping[str, str],
+    query: str,
+    limit: int,
+    *,
+    lede: str,
+) -> list[str]:
+    """The relevance-selected passages, led by the read's own opening passage.
+
+    Selection scores a page's passages by the query alone, and a release's
+    opening passage is its header — the title and lede the publisher wrote to
+    say what the page is. The audited run's market-monitor read deferred its
+    opening chunk ("2025 U.S. Energy Storage Installations Set New Record,
+    Surpass 2024 by 52%") in both batches selection ran, so the headline of
+    the page the run cited never became evidence. The opening passage is
+    therefore always taken — inside ``limit`` when the ranking left room for
+    it, and one past it when the bound was already full — and the relevance
+    ranking decides everything else. It is the read's *first* passage which is
+    guaranteed, not every passage a ranking can miss: a figure deep in a long
+    page is what the ranking, and then the bounded re-extraction, are for.
+
+    ``lede`` is the read's own first locator, not necessarily the first key of
+    ``passages``: a caller selecting from a subset (a continuation batch) must
+    not mistake the subset's first entry for the read's opening passage.
+    """
+    selected = select_relevant_passages(passages, query, limit)
+    if lede not in passages or lede in selected:
+        return selected
+    return [lede, *selected]
+
+
 def admit_read_result(
     result: ToolResult,
     *,
@@ -443,6 +482,7 @@ def admit_read_result(
     sequence: int = 0,
     configuration_fingerprint: str = "acquisition-v1",
     recorded_reads: Mapping[str, ReadRecord] | None = None,
+    include_lede: bool = True,
 ) -> ReadAdmission | None:
     """Admit a read and select exact target-bearing passages from its body.
 
@@ -452,6 +492,13 @@ def admit_read_result(
     identities, and the deferred locators all describe the run's own copy of
     that body instead of a restatement of it. A caller that holds no registry
     passes nothing, which is the first admission of a read.
+
+    ``include_lede`` guarantees the read's opening passage a place beside the
+    relevance-selected ones (see :func:`select_passages_with_lede`). That is a
+    rule for *extraction*, where a release's headline carries what the page
+    is about. Verification passes ``False``: a claim's packet holds only the
+    passages that bear on the claim, and an unrelated lede admitted there is
+    noise that turns a free ``no_candidate`` outcome into a paid adjudication.
     """
     if selected_limit < 1:
         raise ValueError("selected_limit must be at least 1")
@@ -466,8 +513,15 @@ def admit_read_result(
     if recorded_reads:
         read = _adopt_recorded_read(read, recorded_reads)
     target_ids = () if target_id is None else (target_id,)
-    selected_locators = select_relevant_passages(
-        read.passages, query, selected_limit
+    selected_locators = (
+        select_passages_with_lede(
+            read.passages,
+            query,
+            selected_limit,
+            lede=next(iter(read.passages)),
+        )
+        if include_lede
+        else select_relevant_passages(read.passages, query, selected_limit)
     )
     evidence: dict[str, EvidenceUnit] = {}
     dispositions: list[EvidenceDisposition] = []
@@ -909,6 +963,8 @@ class AcquisitionPolicy:
     def record_extraction_dispositions(
         self,
         admitted: Sequence[tuple[str, str]],
+        *,
+        unmined_quantity_ids: Sequence[str] = (),
     ) -> None:
         """Account for exactly the selected units no accepted finding used.
 
@@ -919,8 +975,17 @@ class AcquisitionPolicy:
         passage of the same read did, which is the approximation this replaces.
         Every other selected unit for the active target gets its explicit
         reason here, so no selected passage can disappear unaccounted for.
+
+        ``unmined_quantity_ids`` names the units whose own text states a figure
+        in a measure unit the active target asks for — the passages a bounded
+        re-extraction was run over, and which it too left unmined. They are
+        disposed of as :data:`UNMINED_QUANTITY_REASON`, never as
+        ``irrelevant``: the extraction walked past the figure the target asks
+        for, which is a different fact from the passage being beside the
+        point, and it is the fact the ledger and the Critic have to read.
         """
         used = {(read_id, locator) for read_id, locator in admitted}
+        unmined = set(unmined_quantity_ids)
         target_id = self.target_id
         known = {(item.stage, item.item_id) for item in self.dispositions}
         for evidence_id, unit in self.evidence.items():
@@ -934,7 +999,11 @@ class AcquisitionPolicy:
                 EvidenceDisposition(
                     item_id=evidence_id,
                     stage="extraction",
-                    reason="irrelevant",
+                    reason=(
+                        UNMINED_QUANTITY_REASON
+                        if evidence_id in unmined
+                        else "irrelevant"
+                    ),
                     target_ids=list(() if target_id is None else (target_id,)),
                 )
             )
@@ -995,8 +1064,11 @@ class AcquisitionPolicy:
                 continue
             handed_over.append(read_id)
             texts = {locator: read.passages[locator] for locator in locators}
-            selected = select_relevant_passages(
-                texts, self.query, self.selected_passages_per_read
+            selected = select_passages_with_lede(
+                texts,
+                self.query,
+                self.selected_passages_per_read,
+                lede=next(iter(read.passages)),
             )
             if not selected:
                 selected = locators[: self.selected_passages_per_read]
@@ -1481,10 +1553,11 @@ class AcquisitionPolicy:
                     # was filed as rather than being re-stamped by each reuse.
                     self.reads.setdefault(validated.read_id, validated)
                     validated = self._resolve_read_title(validated, requested)
-                    selected = select_relevant_passages(
+                    selected = select_passages_with_lede(
                         validated.passages,
                         self.query,
                         self.selected_passages_per_read,
+                        lede=next(iter(validated.passages)),
                     )
                     target_ids = (
                         () if self.target_id is None else (self.target_id,)
@@ -1835,6 +1908,7 @@ def build_acquisition_context(
     limit: int,
     target_id: str | None = None,
     dispositions: Sequence[EvidenceDisposition] = (),
+    focus_ids: Sequence[str] = (),
 ) -> str:
     """Render complete acquisition records, with explicit continuation IDs.
 
@@ -1845,6 +1919,15 @@ def build_acquisition_context(
     A record is atomic for packet purposes: if it does not fit, its complete
     text is omitted and its ID is listed for continuation. No serialized
     search/PDF payload is sliced into a misleading prefix.
+
+    ``focus_ids`` names the units this packet is *about* — the bounded
+    re-extraction's owed passages — and their evidence rows, passages, and
+    reads are rendered directly after the state, ahead of the other reads'
+    passage dumps. Order is the only priority a bounded packet has: the
+    audited run's release is 27 passages whose first sixteen are navigation,
+    so a packet that renders the read before the unit it was narrowed to
+    spends its whole budget on menu text and asks the model for a passage it
+    never shows. Empty (the ordinary packet) leaves the order untouched.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -1863,6 +1946,36 @@ def build_acquisition_context(
         or target_id in read.target_ids
         or read_id in selected_read_ids
     }
+    focused = [
+        evidence_id
+        for evidence_id in dict.fromkeys(focus_ids)
+        if evidence_id in selected_evidence
+    ]
+    focus_rows: list[tuple[str, str]] = []
+    focused_reads: set[str] = set()
+    for evidence_id in focused:
+        unit = selected_evidence[evidence_id]
+        targets = ",".join(unit.target_ids) or "-"
+        focus_rows.append(
+            (
+                f"evidence:{evidence_id}",
+                f"evidence_id={evidence_id} read_id={unit.read_id} "
+                f"locator={unit.locator} targets={targets} excerpt={unit.excerpt}",
+            )
+        )
+        read = selected_reads.get(unit.read_id)
+        if read is not None and unit.locator in read.passages:
+            focus_rows.append(
+                (
+                    f"passage:{read.read_id}/{unit.locator}",
+                    f"passage read_id={read.read_id} locator={unit.locator} "
+                    f"text={read.passages[unit.locator]}",
+                )
+            )
+        if read is not None and read.read_id not in focused_reads:
+            focused_reads.add(read.read_id)
+            focus_rows.append((f"read:{read.read_id}", _render_read(read)))
+    focused_ids = {identifier for identifier, _row in focus_rows}
     rows: list[tuple[str, str]] = [
         ("state", f"target_id={state.target_id or '-'}"),
         (
@@ -1907,14 +2020,18 @@ def build_acquisition_context(
                 else "read candidate"
             ),
         ),
+        *focus_rows,
     ]
     for candidate in state.candidate_records.values():
         rows.append(
             (f"candidate:{candidate.candidate_id}", _render_candidate(candidate))
         )
     for read_id, read in selected_reads.items():
-        rows.append((f"read:{read_id}", _render_read(read)))
+        if f"read:{read_id}" not in focused_ids:
+            rows.append((f"read:{read_id}", _render_read(read)))
         for locator, text in read.passages.items():
+            if f"passage:{read_id}/{locator}" in focused_ids:
+                continue
             rows.append(
                 (
                     f"passage:{read_id}/{locator}",
@@ -1922,6 +2039,8 @@ def build_acquisition_context(
                 )
             )
     for evidence_id, unit in selected_evidence.items():
+        if f"evidence:{evidence_id}" in focused_ids:
+            continue
         targets = ",".join(unit.target_ids) or "-"
         rows.append(
             (
@@ -1965,10 +2084,12 @@ __all__ = [
     "AcquisitionPolicy",
     "ReadAdmission",
     "ToolPolicyDecision",
+    "UNMINED_QUANTITY_REASON",
     "admit_read_result",
     "build_acquisition_context",
     "build_read_record_from_tool_result",
     "next_acquisition_action",
+    "select_passages_with_lede",
     "select_relevant_passages",
     "split_read_body",
 ]

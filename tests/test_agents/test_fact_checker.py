@@ -76,6 +76,7 @@ from deep_research.agents.fact_checker import (
     claim_verification_messages,
     claimed_domains_for,
     consumed_provenance,
+    defer_beyond_budget,
     fact_check_completed_event,
     independent_domains,
     insufficient_claim,
@@ -7203,8 +7204,10 @@ async def test_a_candidate_the_request_cannot_carry_is_recorded_in_the_audit(
         ]
     )
     agent = _checker(tracker, completer)
-    # Enough for the two pair candidates, not for the long third passage.
-    agent._evidence_chars = 400
+    # Enough for both pair candidates whole and nothing near the long third
+    # passage: what enters the packet is what the request can carry, so the
+    # budget has to be one the pair actually fits in.
+    agent._evidence_chars = 500
 
     async with tracker.session_span(state.session_id, state.original_question):
         outcome = await agent.run(state)
@@ -8050,9 +8053,11 @@ def test_the_request_carries_the_passages_that_bear_on_the_claim() -> None:
     The request shows what it can carry whole, so pool order decides what the
     model reads. Claim 4 of the audited run was shown a page's opening while
     the sentence carrying its 18.2 GW figure sat in the same packet, deferred
-    behind candidates that happened to be admitted earlier. The pool is now
-    ordered by how much each passage bears on the claim itself, and the
-    passages that bear least are the ones recorded as deferred.
+    behind candidates that happened to be admitted earlier. A passage that
+    shares neither a term nor a figure with the claim is not a candidate at all
+    — the pool's floor drops it and the packet records it as another unit's —
+    and the candidates that do bear on the claim are offered in relevance
+    order.
     """
     state = _ab_state()
     noise_text = "Detail. " * 400
@@ -8100,9 +8105,15 @@ def test_the_request_carries_the_passages_that_bear_on_the_claim() -> None:
     assert A_TEXT in body
     assert B_TEXT in body
     assert "Detail. Detail." not in body
+    # The passage that shares nothing with the claim is not this claim's
+    # candidate at all, and the packet still names it rather than dropping it
+    # silently.
+    assert noise_unit.evidence_id not in {
+        unit.evidence_id for unit in packet.units
+    }
     assert any(
         item.item_id == noise_unit.evidence_id
-        and item.reason == "deferred_capacity"
+        and item.reason == "out_of_scope"
         for item in final.omitted
     )
 
@@ -8475,6 +8486,68 @@ async def test_the_claims_own_retrieved_passage_is_ranked_with_the_pool() -> Non
     assert order.index(own) < order.index(fillers[0])
     assert own not in final.unrendered_ids
 
+
+@pytest.mark.asyncio
+async def test_a_verification_read_is_selected_by_the_claim_not_by_its_lede() -> None:
+    """The verifier's own read enters the packet by relevance, never by header.
+
+    A read's opening passage is what the page is about, which is the rule
+    extraction needs: the audited run's market-monitor read deferred its own
+    headline ("2025 U.S. Energy Storage Installations Set New Record") in every
+    batch selection ran. A claim's packet is not extraction — it holds only the
+    passages that bear on the claim — so an unrelated lede admitted here is
+    noise that turns a free ``no_candidate`` outcome into a paid adjudication
+    over a page the claim says nothing about.
+    """
+    unrelated_url = "https://water-board.test/notices"
+    unrelated = (
+        "The county water utility replaced 40 kilometres of pipe in 2019. "
+        "Two pumping stations were repaired."
+    )
+    state = _ab_state()
+    agent = _reread_agent(state)
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+    assert packet is not None
+    before = [unit.evidence_id for unit in packet.units]
+
+    enlarged = await FactCheckerAgent._augment_packet(
+        agent,
+        packet,
+        ReActRun(
+            agent_name="fact_checker",
+            stop_reason="finished",
+            steps=[
+                _tool_step(
+                    1,
+                    "web_scraper",
+                    {
+                        "text": unrelated,
+                        "requested_url": unrelated_url,
+                        "resolved_url": unrelated_url,
+                        "title": "Water board notices",
+                    },
+                )
+            ],
+            tool_calls=1,
+        ),
+        ClaimTask(
+            instruction="Verify.",
+            claim=draft,
+            target_ids=[TASK6_TARGET],
+            packet=packet,
+        ),
+    )
+
+    assert enlarged is not None
+    # The read is admitted to the registry and contributes no candidate: the
+    # page states neither a term nor a figure this claim states.
+    assert [unit.evidence_id for unit in enlarged.units] == before
+    assert all(unit.source_url != unrelated_url for unit in enlarged.units)
+
+
 def test_a_reader_specific_failure_does_not_refuse_the_other_reader() -> None:
     """The PDF fallback is not blocked by the refusal that calls for it.
 
@@ -8705,3 +8778,389 @@ def test_a_passage_that_states_the_claims_own_figure_is_offered_first() -> None:
     ordered = claim_relevant_order(units, claim_text)
 
     assert ordered[0].evidence_id == "ev-figure"
+
+
+# ---------------------------------------------------------------------------
+# Review round 3: the pool's own scope, the packet's capacity, the order the
+# request reads, and the reason a standing support publishes.
+#
+# The audited pass produced 18 packets and only 1 was complete at
+# FACT_CHECK_EVIDENCE_CHARS: 91 candidates were deferred from the single bound
+# packet, 17 of 18 claims published `packet_incomplete` — the first flag the
+# packet's own cut appends — as their reason, and every claim loop ran to its
+# tool limit finding 0 independent sources. Claim #14 had its figure-bearing
+# candidate clipped behind four pair-eligible candidates sharing nothing with
+# it.
+# ---------------------------------------------------------------------------
+
+# The live claim the audited run extracted for the 2024 outturn (trace run
+# 01a0cfdd-e969), the page it cites, and the figure the two share.
+CLAIM_10_4_TEXT = (
+    "The U.S. EIA reported that generators added 10.4 GW (10,400 MW) of new "
+    "battery storage capacity in the United States in 2024."
+)
+CITED_10_4_URL = "https://www.eia.gov/todayinenergy/detail.php?id=64705"
+CITED_10_4_TEXT = (
+    "According to our January 2025 Preliminary Monthly Electric Generator "
+    "Inventory, generators added 10.4 GW of new battery storage capacity in "
+    "the United States in 2024, and another 19.6 GW is planned for 2025."
+)
+# A sub-topic's read that shares no term and no figure with the claim: the
+# obligation link admits it, and nothing in it bears on this claim.
+_NOISE_TEXT = (
+    "The county water utility replaced 40 kilometres of pipe in 2019 and "
+    "repaired two pumping stations."
+)
+# A passage whose OTHERS terms are the figure alone: nothing here is a term
+# the claim states, so the shared number is what has to admit it.
+_FIGURE_ONLY_TEXT = "The appendix records 10.4 for that period."
+
+
+def _scope_read(
+    read_id: str, url: str, title: str, text: str, target_id: str
+) -> object:
+    return _ab_read(read_id, url, title, text).model_copy(
+        update={"target_ids": [target_id]}
+    )
+
+
+def _scope_state(*, noise: int = 40) -> ResearchState:
+    """One cited read, ``noise`` sub-topic reads, and a page-sized passage.
+
+    The ids are the product's own: the obligation is ``topic-01-target-01``
+    while the acquisition layer registers every read against the sub-topic it
+    was taken for (``topic-01``) — the expansion that admitted a whole
+    sub-topic's units into one claim's packet.
+    """
+    target_id = "topic-01-target-01"
+    topic_id = "topic-01"
+    reads = [
+        _scope_read(
+            "read-cited", CITED_10_4_URL, "EIA inventory", CITED_10_4_TEXT, topic_id
+        ),
+        _scope_read(
+            "read-figure-a", "https://table.test/a", "Table A", _FIGURE_ONLY_TEXT, topic_id
+        ),
+        _scope_read(
+            "read-figure-b", "https://table.test/b", "Table B", _FIGURE_ONLY_TEXT, topic_id
+        ),
+        # A page-sized passage of this sub-topic: it bears on the claim, and
+        # no request of this size can carry it whole.
+        _scope_read(
+            "read-page",
+            "https://www.eia.gov/analysis/inventory",
+            "Inventory page",
+            CITED_10_4_TEXT
+            + " "
+            + ("Battery storage capacity additions are listed below. " * 120),
+            topic_id,
+        ),
+        *(
+            _scope_read(
+                f"read-noise-{index}",
+                f"https://water-{index}.test/{index}",
+                f"Water {index}",
+                _NOISE_TEXT,
+                topic_id,
+            )
+            for index in range(noise)
+        ),
+    ]
+    units = {
+        unit.evidence_id: unit
+        for unit in (
+            build_evidence_unit(
+                read=read,
+                locator="chunk-0",
+                excerpt=read.passages["chunk-0"],
+                origin="researcher",
+                target_ids=[topic_id],
+            )
+            for read in reads
+        )
+    }
+    return ResearchState(
+        session_id="session-1",
+        original_question="How much battery storage capacity was added?",
+        initial_target_ids=[target_id],
+        sub_topics=[_targeted_topic(topic_id, "2024 additions", target_id)],
+        raw_findings=[
+            _check_finding(
+                CITED_10_4_URL, content=CITED_10_4_TEXT, sub_topic="2024 additions"
+            )
+        ],
+        read_records={read.read_id: read for read in reads},
+        evidence_units=units,
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+        memory_context=MemorySnapshot(),
+    )
+
+
+def _ids_by_url(state: ResearchState) -> dict[str, str]:
+    """Each read's evidence id, keyed by the URL the read was requested for.
+
+    Keyed by the request, not by ``unit.source_url``: a read record's resolved
+    URL is the reader's own canonical form, which is not always the string the
+    acquisition layer was handed.
+    """
+    by_read = {
+        unit.read_id: unit.evidence_id
+        for unit in state.evidence_units.values()
+    }
+    return {
+        read.requested_url: by_read[read_id]
+        for read_id, read in state.read_records.items()
+        if read_id in by_read
+    }
+
+
+def test_a_sub_topic_offers_the_claim_only_the_units_that_bear_on_it() -> None:
+    """A sub-topic's units are candidates, not evidence, for one claim.
+
+    Topic-01 held forty units that say nothing the claim says. Every one of
+    them entered the packet through the obligation link and made it
+    ``packet_incomplete`` by construction, while a unit whose passage says
+    nothing about the claim can settle nothing about it. The link admits a
+    unit that shares one of the claim's own figures, or one that clears the
+    same lexical floor the request's ordering scores with.
+    """
+    state = _scope_state()
+    draft = ClaimDraft(text=CLAIM_10_4_TEXT, source_urls=[CITED_10_4_URL])
+    ids = _ids_by_url(state)
+
+    pool = claim_evidence_pool(
+        state, draft, target_ids=["topic-01-target-01"]
+    )
+    admitted = {unit.evidence_id for unit in pool}
+
+    assert ids[CITED_10_4_URL] in admitted
+    # A figure the claim states is enough on its own, whatever the prose says.
+    assert ids["https://table.test/a"] in admitted
+    assert ids["https://table.test/b"] in admitted
+    # A relevant page of the same sub-topic still arrives, and so does the
+    # claim's own citation.
+    assert len(pool) == 4
+    assert not admitted & {
+        ids[f"https://water-{index}.test/{index}"] for index in range(40)
+    }
+
+    # And what enters the packet is what the request can carry whole: the page
+    # is deferred with its reason, not held as a candidate nobody can show.
+    agent = _packet_agent(state)
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=["topic-01-target-01"]
+    )
+    assert packet is not None
+    final = FactCheckerAgent._final_packet(agent, packet)
+
+    assert final is not None
+    assert {
+        item.item_id
+        for item in final.omitted
+        if item.reason == "deferred_capacity"
+    } == {ids["https://www.eia.gov/analysis/inventory"]}
+    assert final.partially_shown_ids == []
+    assert (
+        with_render_boundaries(
+            final, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+        ).unrendered_ids
+        == []
+    )
+
+
+def test_a_relevant_passage_is_never_deferred_behind_pair_eligible_noise() -> None:
+    """The pair rule may not hide the passage that bears on the claim.
+
+    Live claim #14's packet offered four pair-eligible candidates that shared
+    nothing with the claim first, because pair eligibility was the only sort
+    key the request had; the candidate carrying the claim's own sentence was
+    clipped into the last slot. The top candidate of the claim's relevance
+    order is offered first, and the pair rule promotes what follows it.
+    """
+    figure = "The audited filing states wind capacity reached 10 GW in 2025."
+    filler = "The county water utility replaced 40 kilometres of pipe. " * 12
+    units = [
+        _pair_unit(
+            f"noise-{index}", f"https://noise-{index}.test/{index}", filler
+        )
+        for index in range(4)
+    ]
+    units.append(_pair_unit("figure", "https://filing.test/page", figure))
+    relevant = units[-1]
+    packet = AdjudicationPacket(
+        claim_id="claim-1",
+        claim_text=TASK6_CLAIM,
+        claim_source_urls=["https://filing.test/page"],
+        claim_cluster_id="cluster-1",
+        units=units,
+        eligibility={
+            unit.evidence_id: _eligibility(
+                publisher_id=f"publisher-{unit.evidence_id}",
+                work_id=f"sha256:{unit.evidence_id}",
+                origin_group_id=f"publisher:{unit.evidence_id}",
+                corroboration_eligible=unit is not relevant,
+            )
+            for unit in units
+        },
+        fingerprint="fingerprint-1",
+    )
+
+    plan = plan_packet_rendering(packet, evidence_chars=1000)
+    body = "\n".join(
+        message.content
+        for message in adjudication_messages(packet, evidence_chars=1000)
+    )
+
+    (first, shown), = plan.rendered[:1]
+    assert first.evidence_id == relevant.evidence_id
+    # Whole, not a prefix: a clipped candidate can never stand as a complete
+    # support, which is exactly what the live packet asked of this passage.
+    assert shown == " ".join(figure.split())
+    assert figure in body
+
+
+def test_a_standing_support_names_its_own_reason_not_the_capacity_cut() -> None:
+    """`packet_incomplete` is an audit fact, not the reason a claim failed.
+
+    It was appended for any candidate the request could not carry and then
+    read back as ``flags[0]``, so every claim whose supporting passage was
+    shown and accepted published "the packet was incomplete" instead of the
+    identity reason its support actually earned.
+    """
+    page_sized = SUPPORT_TEXT + " " + ("Detail. " * 200)
+    packet = defer_beyond_budget(
+        _verdict_packet(
+            _eligibility(),
+            _independent_second(),
+            _third_origin(),
+            texts=(SUPPORT_TEXT, page_sized, REFUTATION_TEXT),
+        ),
+        evidence_chars=800,
+    )
+
+    # The packet holds only what this request carries whole; the candidate too
+    # long for it is recorded, by name, as this claim's own capacity deferral —
+    # and the short candidate behind it is still carried.
+    assert [unit.evidence_id for unit in packet.units] == ["ev-left", "ev-third"]
+    assert {
+        item.item_id
+        for item in packet.omitted
+        if item.reason == "deferred_capacity"
+    } == {"ev-right"}
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.7,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="The operator's own report states the figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.evidence_status == "source_supported"
+    assert claim.insufficient_reason == "single_primary_only"
+    assert "packet_incomplete" in claim.audit_flags
+    # The rule the reason never weakens: a candidate nobody saw cannot settle
+    # the claim it was deferred from.
+    assert unshown_candidates(packet) == set()
+    assert claim.verdict == "insufficient_evidence"
+
+
+def test_a_single_source_obligation_needs_no_retrieval_once_the_issuer_is_carried() -> None:
+    """The loop's tool budget is not spent where no second source can help.
+
+    All 18 claim loops of the audited run ran to their limit and found 0
+    independent sources. An obligation whose policy is answered by one
+    primary-source reading needs no retrieval at all once the cited issuer's
+    own passage is in the request — and one that requires a pair still does.
+    """
+    state = _ab_state(units_for_b=False)
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+    agent = _packet_agent(state)
+
+    _, pair_needed = FactCheckerAgent._packet_for(
+        agent,
+        state,
+        draft,
+        target_ids=[TASK6_TARGET],
+        policies={TASK6_TARGET: "independent_pair"},
+    )
+    _, primary_needed = FactCheckerAgent._packet_for(
+        agent,
+        state,
+        draft,
+        target_ids=[TASK6_TARGET],
+        policies={TASK6_TARGET: "primary_attribution"},
+    )
+
+    assert pair_needed is True
+    assert primary_needed is False
+
+
+def _primary_attribution_state() -> ResearchState:
+    """The run's own read of the cited page, under a single-source rule."""
+    base = _ab_state(units_for_b=False)
+    (topic,) = base.sub_topics
+    (target,) = topic.evidence_targets
+    return base.model_copy(
+        update={
+            "sub_topics": [
+                topic.model_copy(
+                    update={
+                        "evidence_targets": [
+                            target.model_copy(
+                                update={
+                                    "support_policy": "primary_attribution"
+                                }
+                            )
+                        ]
+                    }
+                )
+            ]
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_loop_stops_when_only_the_cited_issuer_can_answer(
+    tracker: Tracker,
+) -> None:
+    """Zero retrieval, and the obligation still answered, end to end.
+
+    The claim's own entry in the plan is the page that states the figure, so
+    the request carries the primary account the obligation asks for before the
+    loop starts. Retrieval there can only spend the budget: nothing it finds
+    can answer a target that needs one primary-source reading.
+    """
+    state = _primary_attribution_state()
+    claim_text = "Lab A reported that wind capacity reached 10 GW in 2025."
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(
+                claims=[ClaimDraft(text=claim_text, source_urls=[A_URL])]
+            ),
+            _select_every_shown_id,
+        ]
+    )
+    client = _NoDownloadClient()
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(tracker, http=client),  # type: ignore[arg-type]
+    )
+
+    outcome = await _task6_run(agent, state, tracker)
+
+    (claim,) = outcome.result.claims
+    assert completer.react_calls == []
+    assert outcome.react.tool_calls == 0
+    assert client.calls == 0
+    # One support is a badge, never a pair; and the obligation survives the
+    # skipped loop, so the target is answered rather than burned.
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status == "source_supported"
+    assert claim.target_ids == [TASK6_TARGET]
