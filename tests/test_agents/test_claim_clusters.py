@@ -142,6 +142,53 @@ def test_a_comparator_between_the_preposition_and_the_value_keeps_the_kind(
     assert not atomic_compatible(a, b)
 
 
+@pytest.mark.parametrize(
+    ("text", "subject"),
+    [
+        ("Output was at least 10 GW in 2024.", "Output"),
+        ("Output was at most 10 GW in 2024.", "Output"),
+        ("Output was no less than 10 GW in 2024.", "Output"),
+        ("Output was no more than 10 GW in 2024.", "Output"),
+        ("Output was up to 10 GW in 2024.", "Output"),
+    ],
+)
+def test_a_bounded_clause_keeps_its_measured_thing_as_the_subject(
+    text: str, subject: str
+) -> None:
+    """A comparator ends the subject run; it is not part of the subject.
+
+    The run is read backwards from the measurement, so it meets the phrase's
+    last word first: ``"Output was at least 10 GW"`` yielded a subject ending
+    in ``least``. Every bounded clause carried that corruption, and a bound
+    compared against its complement was refused by the subject rather than by
+    the qualifier dimension — right answer, accidental reason.
+    """
+    atom = extract_text_atoms(text, claim_id="a")[0]
+
+    assert atom.subject == subject
+
+
+def test_a_bound_pair_is_refused_by_its_qualifier_not_its_subject() -> None:
+    """``up to`` against ``at least`` differs in the qualifier, and only there."""
+    up_to = extract_text_atoms("Output was up to 10 GW in 2024.", claim_id="a")[0]
+    at_least = extract_text_atoms(
+        "Output was at least 10 GW in 2024.", claim_id="b"
+    )[0]
+
+    assert up_to.subject == at_least.subject == "Output"
+    assert up_to.comparator != at_least.comparator
+    assert not atomic_compatible(up_to, at_least)
+
+
+def test_a_plain_value_keeps_its_subject_and_still_merges() -> None:
+    """The control: no comparator, no change to the subject or the merge."""
+    stated = extract_text_atoms("Output was 10 GW in 2024.", claim_id="a")[0]
+    reworded = extract_text_atoms("In 2024, Output was 10 GW.", claim_id="b")[0]
+
+    assert stated.subject == "Output"
+    assert atomic_compatible(stated, reworded)
+
+
 def test_a_qualifier_stated_the_same_way_still_merges() -> None:
     """The refusal is about a difference, not about having a qualifier."""
     stated = extract_text_atoms("Capacity rose to 10 GW in 2024.", claim_id="a")[0]

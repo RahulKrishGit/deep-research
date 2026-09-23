@@ -1278,6 +1278,34 @@ def _is_guarded_head(clause: str, head: re.Match[str]) -> bool:
     return False
 
 
+_COMPARATOR_WORDS = frozenset(
+    word for phrase, _ in _COMPARATOR_PHRASES for word in phrase.split()
+)
+"""Every word a comparator phrase is built from, as subject stop words.
+
+Derived from the phrase table so the two cannot drift: a comparator added
+there stops a subject run here without a second edit.
+"""
+
+
+def _stops_subject_run(word: str) -> bool:
+    """True when this word ends a subject run instead of joining it.
+
+    ``_SUBJECT_STOPWORDS`` covers the connectives and prepositions; the
+    comparator phrases are multi-word ("at least", "up to", "no less than"),
+    and a run read backwards meets their last word first, so ``"Output was at
+    least 10 GW"`` yielded a subject ending in ``least``. Every bounded clause
+    therefore carried a corrupted subject, and ``"up to 10 GW"`` against
+    ``"at least 10 GW"`` was refused by the *subject* comparison rather than by
+    the qualifier dimension the comparator belongs to: right answer, accidental
+    reason, and the same corruption for every other bounded phrasing. The
+    table's own words are stop words too, so a comparator added later cannot be
+    forgotten here.
+    """
+    folded = word.casefold()
+    return folded in _SUBJECT_STOPWORDS or folded in _COMPARATOR_WORDS
+
+
 def _run_before(
     clause: str,
     *,
@@ -1332,7 +1360,7 @@ def _run_before(
                 break
             erased = True
             continue
-        if folded in _SUBJECT_STOPWORDS:
+        if _stops_subject_run(folded):
             if collected:
                 break
             continue
@@ -1371,7 +1399,7 @@ def _entity_after_relation(
         folded = match.group(0).casefold()
         if folded in _LIGHT_VERBS:
             break
-        if folded in _SUBJECT_STOPWORDS:
+        if _stops_subject_run(folded):
             if collected:
                 break
             continue
