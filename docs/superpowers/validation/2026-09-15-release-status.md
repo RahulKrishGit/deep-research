@@ -45,7 +45,7 @@ revision of any line before it.
 
 [The controlled real-agent validation](2026-09-16-real-agent-controlled-validation.md)
 now exists. It certifies the **Task 12 evaluation harness** at candidate
-`27c45b9c1b6e2e32e26420c72b4befd16eb48da5` on a confirmed-clean tree, and it
+`7f5f36299e1ba9176b4ba7fe9b5a9ee9f7cf0c1b` on a confirmed-clean tree, and it
 carries the verdict **`CONTROLLED READY / LIVE NOT VALIDATED`**.
 
 **This does not move the release bar and it does not change any criterion in
@@ -59,9 +59,14 @@ statement about the apparatus; its `LIVE NOT VALIDATED` half is why
 
 Two limitations are also recorded in that document rather than only in the
 ledger: the `content_version_changed`/`content_hash_changed` cache-provenance
-shape remains unit-tested only, and three Minor/Informational findings from the
-whole-branch re-review remain open and are explicitly non-blocking per that
-review.
+shape remains unit-tested only, and the whole-branch review's two remaining
+findings — **N2** (an `assess_source` repair cannot re-assess a source that only
+the Fact Checker read) and **N3** (a point citing two claims that each carry
+their own URL passes the synthesizer's union rule but fails the gate's per-claim
+rule; identical on `main`) — are open and explicitly **non-blocking** per that
+review. The re-review finding this subsection previously recorded as open was
+closed by `bab55d6`, and the remediation's F1-F7 were closed at `663def2`; both
+documents now record the same open set.
 
 ## 1. The ten criteria, against the run this document was written from
 
