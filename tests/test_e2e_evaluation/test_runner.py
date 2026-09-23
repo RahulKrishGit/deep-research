@@ -1000,6 +1000,26 @@ def test_the_case_command_rejects_an_unknown_id(capsys) -> None:
     assert error.value.code == 2
 
 
+@pytest.mark.parametrize("tier", ("controlled", "live"))
+def test_the_case_command_stamps_no_harness_on_a_live_id(tier, capsys) -> None:
+    """The live tier has no runner, so nothing may say one produced this.
+
+    ``case`` accepts the live ids because the tier is declared, and the
+    disclosure it printed for them described a harness that never ran: the
+    command is refused before ``run_case``. The disclosure is a claim about
+    which agents produced a result, so it belongs only to a run that happens —
+    and the refusal names the live tier rather than reporting the id as an
+    unknown controlled case.
+    """
+    code = campaign_runner.main(
+        ["case", LIVE_CASE_IDS[0], "--tier", tier, "--repetitions", "3"]
+    )
+    printed = capsys.readouterr().out.splitlines()
+
+    assert code == 2
+    assert printed == [f"error: {LIVE_TIER_NOT_RUN}"]
+
+
 def test_cli_accepts_a_live_case_id_without_executing_it() -> None:
     options = build_parser().parse_args(
         ["case", LIVE_CASE_IDS[0], "--tier", "live"]
