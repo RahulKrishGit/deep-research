@@ -7745,6 +7745,69 @@ def test_a_sub_topic_scoped_read_is_reported_as_a_handoff_loss() -> None:
     assert claim.insufficient_reason == "handoff_loss"
 
 
+def test_the_request_carries_the_passages_that_bear_on_the_claim() -> None:
+    """The candidates that share the claim's words are the ones offered first.
+
+    The request shows what it can carry whole, so pool order decides what the
+    model reads. Claim 4 of the audited run was shown a page's opening while
+    the sentence carrying its 18.2 GW figure sat in the same packet, deferred
+    behind candidates that happened to be admitted earlier. The pool is now
+    ordered by how much each passage bears on the claim itself, and the
+    passages that bear least are the ones recorded as deferred.
+    """
+    state = _ab_state()
+    noise_text = "Detail. " * 120
+    noise_read = _ab_read(
+        "read-noise", "https://lab-noise.test/notes", "Lab notes", noise_text
+    )
+    noise_unit = build_evidence_unit(
+        read=noise_read,
+        locator="chunk-0",
+        excerpt=noise_text,
+        origin="researcher",
+        target_ids=[TASK6_TARGET],
+    )
+    # Registry order puts the passage that shares nothing with the claim first,
+    # and no candidate is pair-eligible — so nothing but the pool's own order
+    # decides which candidates the request offers first.
+    state = state.model_copy(
+        update={
+            "read_records": {
+                noise_read.read_id: noise_read,
+                **state.read_records,
+            },
+            "evidence_units": {
+                noise_unit.evidence_id: noise_unit,
+                **state.evidence_units,
+            },
+            "evaluated_sources": [],
+        }
+    )
+    agent = _packet_agent(state)
+    # Enough for the two passages that state the figure, not for the noise.
+    agent._evidence_chars = 600
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+
+    assert packet is not None
+    final = with_render_boundaries(packet, evidence_chars=600)
+    body = "\n".join(
+        message.content
+        for message in adjudication_messages(final, evidence_chars=600)
+    )
+    assert A_TEXT in body
+    assert B_TEXT in body
+    assert "Detail. Detail." not in body
+    assert any(
+        item.item_id == noise_unit.evidence_id
+        and item.reason == "deferred_capacity"
+        for item in final.omitted
+    )
+
+
 def _packet_agent(state: ResearchState) -> FactCheckerAgent:
     """A checker with exactly what ``_packet_for`` reads."""
     agent = object.__new__(FactCheckerAgent)

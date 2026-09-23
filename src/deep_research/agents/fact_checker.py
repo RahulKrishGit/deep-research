@@ -28,6 +28,7 @@ from deep_research.agents.acquisition import (
     admit_read_result,
     build_acquisition_context,
     build_boundary_audit,
+    select_relevant_passages,
 )
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.claim_clusters import (
@@ -1244,6 +1245,33 @@ def memory_recall_count(run: ReActRun | None) -> int:
         and step.tool_result is not None
         and step.tool_result.success
     )
+
+
+def claim_relevant_order(
+    pool: Sequence[EvidenceUnit], query: str
+) -> list[EvidenceUnit]:
+    """The pool ordered by how much each passage bears on the claim itself.
+
+    The request shows only the candidates it can carry whole, so the order the
+    pool hands them over in decides what the adjudicator reads. Registry order
+    is the order reads were *admitted*, which is about the sub-topic a read was
+    fetched for, not about this claim: a passage that shares none of the
+    claim's words could be offered, and deferred, ahead of the sentence that
+    states its figure. Passages that share no term with the claim — a rendering
+    bound must still name them — keep their registry order behind the rest.
+    """
+    if not pool:
+        return list(pool)
+    ranked = select_relevant_passages(
+        {unit.evidence_id: unit.excerpt for unit in pool},
+        query,
+        len(pool),
+    )
+    by_id = {unit.evidence_id: unit for unit in pool}
+    ordered = [by_id[evidence_id] for evidence_id in ranked]
+    seen = set(ranked)
+    ordered.extend(unit for unit in pool if unit.evidence_id not in seen)
+    return ordered
 
 
 def claim_eligibility(
@@ -3197,7 +3225,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         """
         if not state.evidence_units and not self._run_reads:
             return None, True
-        pool = claim_evidence_pool(state, draft, target_ids=target_ids)
+        pool = claim_relevant_order(
+            claim_evidence_pool(state, draft, target_ids=target_ids),
+            draft.text,
+        )
         eligibility = self._claim_eligibility(pool)
         omitted = claim_pool_dispositions(state, pool)
         packet = build_adjudication_packet(
