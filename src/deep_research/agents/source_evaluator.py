@@ -96,7 +96,7 @@ DEFAULT_MAX_TOTAL_SOURCES = 36
 # Compatibility alias for callers that imported the old cap constant. The
 # old single-pass cap is now represented by ``max_total_sources``.
 DEFAULT_MAX_SOURCES = DEFAULT_MAX_TOTAL_SOURCES
-DEFAULT_EXCERPT_CHARS = 400
+DEFAULT_EXCERPT_CHARS = 600
 _RATIONALE_CHARS = 400
 
 # Enumerated, project-generated reasons a source was recorded without a
@@ -598,6 +598,7 @@ async def assess_new_sources(
     existing: Sequence[ScoredSource] = (),
     *,
     cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
+    queries: Mapping[str, str] | None = None,
     reputations: Mapping[str, float] | None = None,
     instruction: str = "Score each source on its fitness for the research.",
     batch_size: int = DEFAULT_BATCH_SIZE,
@@ -635,6 +636,7 @@ async def assess_new_sources(
     dossiers = build_read_dossiers(
         reads,
         cited_sub_topics=cited_sub_topics,
+        queries=queries,
         excerpt_chars=excerpt_chars,
     )
     if not dossiers:

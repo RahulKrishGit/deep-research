@@ -3387,10 +3387,16 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         if admitted_reads:
             # Resolved over every read of the run, not only the new ones: a
             # verifier-read copy of an upstream report is that report's work.
+            # The claim's own words order each new read's dossier, so the
+            # evaluator judges the passages this claim was read for.
             self._run_sources = await assess_new_sources(
                 self.provider,
                 admitted_reads,
                 self._run_sources,
+                queries={
+                    read.resolved_url: task.claim.text
+                    for read in admitted_reads
+                },
                 known_reads=self._run_reads.values(),
             )
         merged_dispositions = [*packet.omitted, *claim_dispositions]

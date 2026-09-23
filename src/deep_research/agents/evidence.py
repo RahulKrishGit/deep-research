@@ -645,9 +645,12 @@ _VALUE_PERIOD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# How much of one read's own text a dossier shows the model.
+# How much of one read's own text a dossier shows the model. Each excerpt is a
+# whole passage of the read, so the bound is one passage's length: a passage
+# longer than this is a document chunk rather than a paragraph, and is clipped
+# to keep a single long chunk from filling the request.
 DEFAULT_DOSSIER_EXCERPTS = 4
-DEFAULT_DOSSIER_EXCERPT_CHARS = 400
+DEFAULT_DOSSIER_EXCERPT_CHARS = 600
 
 
 def read_serving_host(read: ReadRecord) -> str:
@@ -1726,6 +1729,7 @@ def build_read_dossiers(
     reads: Sequence[ReadRecord],
     *,
     cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
+    queries: Mapping[str, str] | None = None,
     excerpt_chars: int = DEFAULT_DOSSIER_EXCERPT_CHARS,
     max_excerpts: int = DEFAULT_DOSSIER_EXCERPTS,
 ) -> list[ReadDossier]:
@@ -1734,6 +1738,11 @@ def build_read_dossiers(
     One URL has one current read: the complete read wins over a partial one,
     and the latest observation wins over an earlier one, so a re-read that
     recovered a lost page is assessed instead of the failure it replaced.
+
+    ``queries`` maps a URL to what this source is being judged *for* — a
+    claim's own words, or the sub-topic a source was read for. Where one is
+    given, the passages that answer it are shown first; where none is, the
+    read's passages are shown in document order.
     """
     if excerpt_chars < 1 or max_excerpts < 1:
         raise EvidenceContractError(
@@ -1742,6 +1751,11 @@ def build_read_dossiers(
     cited = {
         normalize_source_url(url): list(topics)
         for url, topics in (cited_sub_topics or {}).items()
+    }
+    wanted = {
+        normalize_source_url(url): query
+        for url, query in (queries or {}).items()
+        if isinstance(query, str) and query.strip()
     }
     chosen: dict[str, ReadRecord] = {}
     for read in reads:
@@ -1755,7 +1769,10 @@ def build_read_dossiers(
             url=url,
             serving_host=read_serving_host(read),
             excerpts=_dossier_excerpts(
-                read, excerpt_chars=excerpt_chars, max_excerpts=max_excerpts
+                read,
+                excerpt_chars=excerpt_chars,
+                max_excerpts=max_excerpts,
+                query=wanted.get(url, ""),
             ),
             assessment_revision=read_assessment_revision(read),
             cited_sub_topics=cited.get(url, []),
@@ -1770,20 +1787,46 @@ def _prefer_read(candidate: ReadRecord, current: ReadRecord) -> bool:
     return candidate.retrieved_at >= current.retrieved_at
 
 
+def _document_order(locator: str) -> tuple[int, ...]:
+    """The position a locator names, so ``chunk-10`` follows ``chunk-2``.
+
+    Reading the locators as strings put every ``chunk-1*`` ahead of
+    ``chunk-2``, which is the order a page's navigation is *not* in.
+    """
+    return tuple(int(part) for part in re.findall(r"\d+", locator)) or (0,)
+
+
 def _dossier_excerpts(
     read: ReadRecord,
     *,
     excerpt_chars: int,
     max_excerpts: int,
+    query: str = "",
 ) -> list[str]:
-    """The read's own text at its first locators, bounded for the prompt.
+    """The read's own passages, in the order that answers the question asked.
 
     Deliberately the document's words rather than a finding's paraphrase: the
     judgement being asked for is about the document, and a paraphrase is the
-    model's own earlier summary of it.
+    model's own earlier summary of it. Each excerpt is a *whole* passage — a
+    prefix of one ends before the sentence the source is being judged for, and
+    the model has no way to tell a page that states nothing from a page whose
+    statement sat past the cut.
     """
+    if query:
+        # Imported here, not at module scope: ``deep_research.tools`` builds
+        # its package from modules that import this one, and this module is the
+        # read contract they are built on.
+        from deep_research.tools.passage_selection import (
+            select_relevant_passages,
+        )
+
+        ordered = select_relevant_passages(read.passages, query, max_excerpts)
+    else:
+        ordered = []
+    if not ordered:
+        ordered = sorted(read.passages, key=_document_order)
     excerpts: list[str] = []
-    for locator in sorted(read.passages):
+    for locator in ordered:
         text = " ".join(read.passages[locator].split())
         if not text:
             continue
