@@ -192,6 +192,11 @@ _REFERENCES = {
         "forbidden_gap_kinds": ["coverage", "acquisition"],
         "expected_repair_actions": ["adjudicate"],
         "forbidden_repair_actions": ["acquire", "extend_plan"],
+        # The obligation the defect lives in: the reduction whose two
+        # passages share one publisher. Declared so the typed metrics can
+        # refuse a correctly phrased gap aimed at a different claim.
+        "defective_cluster_ids": [CALIBRATION_CLUSTER_IDS["emissions"]],
+        "defective_target_ids": [CALIBRATION_TARGET_IDS["emissions"]],
         "minimum_score": 2,
         "maximum_score": 6,
     },

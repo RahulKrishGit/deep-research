@@ -3150,6 +3150,13 @@ def _typed_gaps_answer_with(
     saying nothing would be cheaper than saying the wrong thing. That is what
     makes both metrics fail a confident approval, which is the anti-abstention
     direction the case needs.
+
+    A case that also declares *where* its defect lives — the claim clusters
+    and targets the seeded defect is in — requires at least one material gap
+    to name one of them. Without that, a correctly phrased gap against an
+    unrelated claim was indistinguishable from the diagnosis the case is
+    calibrating: the words are an answer about an obligation, and the
+    obligation is part of the answer.
     """
     expected = {
         value
@@ -3166,6 +3173,8 @@ def _typed_gaps_answer_with(
     gaps = _material_typed_gaps(_typed_critique(output))
     if not gaps:
         return False
+    if not _names_the_declared_defect(gaps, case):
+        return False
     for gap in gaps:
         value = selected(gap)
         if value in forbidden:
@@ -3173,6 +3182,33 @@ def _typed_gaps_answer_with(
         if expected and value not in expected:
             return False
     return True
+
+
+def _names_the_declared_defect(
+    gaps: Sequence[CritiqueGap], case: EvaluationCase
+) -> bool:
+    """Whether one material gap names the obligation the case seeded.
+
+    True when the case declares no defective ids at all: a case that does not
+    say where its defect lives is not scored on naming it.
+    """
+    clusters = {
+        value
+        for value in case.expectations.reference.get("defective_cluster_ids", [])
+        if isinstance(value, str)
+    }
+    targets = {
+        value
+        for value in case.expectations.reference.get("defective_target_ids", [])
+        if isinstance(value, str)
+    }
+    if not clusters and not targets:
+        return True
+    return any(
+        clusters.intersection(gap.claim_cluster_ids)
+        or targets.intersection(gap.target_ids)
+        for gap in gaps
+    )
 
 
 def _gap_kind_correct_passes(

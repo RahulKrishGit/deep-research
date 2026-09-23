@@ -2273,6 +2273,14 @@ _TYPED_GAP_REFERENCE = {
     "forbidden_gap_kinds": ["coverage", "acquisition"],
     "expected_repair_actions": ["adjudicate"],
     "forbidden_repair_actions": ["acquire", "extend_plan"],
+    # Which obligation the defect lives in. The two typed metrics read these
+    # to refuse a gap that is typed and routed correctly but names an
+    # unrelated claim: the case exists because the *emissions* reduction's
+    # corroboration is one publisher, so a review that raises an identity
+    # defect against the cost obligation has answered a question nobody
+    # asked, however well phrased it is.
+    "defective_cluster_ids": [CALIBRATION_CLUSTER_IDS["emissions"]],
+    "defective_target_ids": [CALIBRATION_TARGET_IDS["emissions"]],
     "minimum_score": 2,
     "maximum_score": 6,
 }
@@ -2341,13 +2349,14 @@ _TYPED_GAP_CASE = build_case(
                 "gap_kind_correct",
                 0.35,
                 "Every material gap is typed as a kind this defect may be, "
-                "and at least one material gap is named.",
+                "and at least one names the obligation the defect lives in.",
             ),
             (
                 "repair_action_routed",
                 0.35,
                 "Every material gap routes to a repair action this defect "
-                "may be closed by.",
+                "may be closed by, and at least one names the obligation the "
+                "defect lives in.",
             ),
             (
                 "conservative_score",
