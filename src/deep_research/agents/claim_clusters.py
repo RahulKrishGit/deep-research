@@ -962,6 +962,24 @@ _NAME_STOPWORDS = frozenset(
         "not",
         "other",
         "another",
+        # The possessives and quantifiers, which are the same closed class as
+        # the determiners above: "Our analysis found that …" and "Every study
+        # found that …" report nothing, and no name opens with "our" (re-review
+        # ND1).
+        "our",
+        "your",
+        "his",
+        "her",
+        "my",
+        "its",
+        "their",
+        "every",
+        "each",
+        "few",
+        "several",
+        "either",
+        "neither",
+        "any",
     }
 )
 
@@ -1075,46 +1093,99 @@ _NAME_MODIFIER_TOKENS = frozenset(
 
 # The nouns a sentence about people in general opens with. One title-case token
 # that opens a clause is a common noun by default — "Analysts reported …",
-# "Grid operators … said" — and only a reported clause in front of it earns the
-# reading of a publisher's name: "Reuters reported that …" names Reuters, while
-# none of these ever does (review F1, re-review N2).
+# "Grid operators … said", "Media reported …", "Study found …" — and only a
+# token that is not one of these is read as a publisher's name: "Reuters
+# reported that …" names Reuters, "Reports stated that …" names nobody (review
+# F1, re-reviews N2 and ND1).
+#
+# Every word here is a common noun that takes a determiner ("the media", "the
+# study", "the government") or a plural of one, which is what tells it from a
+# publisher's name; the list is the same kind of bounded vocabulary as the
+# marker tables above, and it is the only signal the text itself offers. A
+# single token that is not here and reports something is credited — recall is
+# traded for the F1 refusal, deliberately.
 _SINGLE_TOKEN_NON_ISSUERS = frozenset(
     {
+        "agencies",
+        "agency",
+        "analyses",
+        "analysis",
         "analysts",
+        "authorities",
+        "authority",
         "authors",
+        "body",
+        "bureau",
+        "bureaus",
         "buyers",
         "commentators",
+        "commission",
+        "commissions",
+        "companies",
+        "company",
         "critics",
         "customers",
         "data",
+        "department",
+        "departments",
         "developers",
         "engineers",
+        "evidence",
+        "expert",
         "experts",
         "figures",
         "firms",
+        "government",
         "grid",
         "groups",
         "industry",
         "investors",
+        "journal",
+        "journals",
         "lawmakers",
         "market",
         "markets",
+        "media",
+        "model",
+        "models",
         "nobody",
+        "number",
+        "numbers",
         "observers",
+        "office",
+        "offices",
         "officials",
         "operators",
         "owners",
+        "panel",
+        "panels",
+        "paper",
+        "papers",
         "plants",
+        "press",
+        "projections",
         "providers",
         "regulators",
+        "report",
         "reporters",
+        "reports",
+        "research",
         "researchers",
+        "review",
+        "reviews",
         "sales",
         "sources",
         "staff",
+        "statistic",
+        "statistics",
+        "studies",
+        "study",
         "suppliers",
+        "survey",
+        "surveys",
         "teams",
         "utilities",
+        "utility",
         "vendors",
         "workers",
     }
@@ -1122,8 +1193,15 @@ _SINGLE_TOKEN_NON_ISSUERS = frozenset(
 
 # A clause whose subject is nobody reports nothing: "Nobody at EIA reported that
 # …" states that no one at EIA said it, so no name inside that phrase is the
-# clause's issuer however the phrase continues (review F1).
-_NO_ISSUER_SUBJECT = re.compile(r"(?i)\b(?:nobody|no one|none)\b")
+# clause's issuer (review F1). The pronoun scopes the phrase it belongs to, not
+# the whole clause: in "No one expected the growth, but EIA reported that …" the
+# denial is an earlier assertion and EIA is still the issuer, so the guard fires
+# only where the pronoun stands immediately in front of the name, with nothing
+# between them but one preposition (re-review ND2).
+_NO_ISSUER_LEAD = re.compile(
+    r"(?i)\b(?:nobody|no one|none)\b"
+    r"(?:\s+(?:at|of|in|from|for|with|on|by|among|within|inside))?\s*$"
+)
 
 # The months and the years that end a name. A document phrase states its date
 # and then its publisher — "the December 2024 Preliminary Monthly Electric
@@ -1160,10 +1238,34 @@ _MONTH_TOKENS = frozenset(
 )
 
 
+def _is_month(token: str) -> bool:
+    """Whether one token is a month name."""
+    return token.strip(".,;:").casefold() in _MONTH_TOKENS
+
+
 def _names_a_date(token: str) -> bool:
     """Whether one token is a date rather than a name: a month, or a year."""
-    folded = token.strip(".,;:").casefold()
-    return folded in _MONTH_TOKENS or (folded.isdigit() and len(folded) == 4)
+    folded = token.strip(".,;:")
+    return _is_month(folded) or (folded.isdigit() and len(folded) == 4)
+
+
+def _opens_with_a_date(tokens: Sequence[str]) -> bool:
+    """Whether a name opens with a date rather than naming someone.
+
+    A month *and* the date it belongs to — "December 2024 Preliminary Monthly
+    Electric Generator Inventory" — is a document's date, and a bare year is
+    one too. A lone month token may still open a publisher's name ("March
+    Advisors", "May Advisors"), so a month is refused only where a date follows
+    it (re-review ND3).
+    """
+    first = tokens[0].strip(".,;:")
+    if first.isdigit() and len(first) == 4:
+        return True
+    return (
+        _is_month(first)
+        and len(tokens) > 1
+        and tokens[1].strip(".,;:")[:1].isdigit()
+    )
 
 # A clause that points at its country without naming it. Only a claim that
 # names a place can resolve one: "the nation's fleet" in a claim about no
@@ -1533,7 +1635,7 @@ def _clean_issuer(
             break
     if not cleaned or cleaned.casefold() in _NAME_STOPWORDS:
         return ""
-    if _names_a_date(cleaned.split()[0]):
+    if _opens_with_a_date(cleaned.split()):
         return ""
     if _is_united_states(cleaned):
         return ""
@@ -1575,24 +1677,18 @@ def _has_internal_capital(name: str) -> bool:
     return any(character.isupper() for character in name[1:])
 
 
-def _single_token_names_an_issuer(name: str, *, clause: str, verb_end: int) -> bool:
+def _single_token_names_an_issuer(name: str) -> bool:
     """Whether one title-case token that opens a clause names an issuer.
 
-    Two narrow ways to earn it, and a common noun earns neither. A token with
-    an internal capital is a brand spelling and not a common noun at all
-    ("OpenEI reported 10.4 GW …"). A token in plain title case is an issuer
-    only when its verb states a reported clause — "Reuters reported that …",
-    "Texas reported that …" — and the token is not one of the plural nouns a
-    sentence about people in general opens with ("Analysts reported that …",
-    "Grid operators … said", review F1). A single unknown title-case token with
-    a stated object and no reported clause — "Fluence reported 10.4 GW" — is
-    the reading this refusal keeps unattributed (re-review N2).
+    Two ways to earn it, and a common noun earns neither. A token with an
+    internal capital is a brand spelling and not a common noun at all
+    ("OpenEI reported 10.4 GW …"). Any token that is not one of the nouns a
+    sentence about people in general opens with is a name: "Reuters reported
+    that …", "Fluence reported 10.4 GW", "Texas reported that …", where
+    "Reports stated that …", "Media reported …" and "Study found …" name
+    nobody (review F1, re-reviews N2 and ND1).
     """
-    if _has_internal_capital(name):
-        return True
-    if name.casefold() in _SINGLE_TOKEN_NON_ISSUERS:
-        return False
-    return _REPORTED_THAT.match(clause[verb_end:]) is not None
+    return name.casefold() not in _SINGLE_TOKEN_NON_ISSUERS
 
 
 def _accepted_issuer(
@@ -1604,9 +1700,9 @@ def _accepted_issuer(
     claim_places: frozenset[str] = frozenset(),
 ) -> str:
     """The issuer one captured name names, or "" when the grammar refuses it."""
-    if _NO_ISSUER_SUBJECT.search(clause[:start]):
-        # "Nobody at EIA reported that …" reports nothing, however the phrase
-        # continues past the pronoun that scopes it (review F1).
+    if _NO_ISSUER_LEAD.search(clause[:start]):
+        # "Nobody at EIA reported that …" reports nothing, and the name inside
+        # that phrase is not the clause's issuer (review F1).
         return ""
     name = _clean_issuer(candidate, claim_places=claim_places)
     if not name:
@@ -1618,9 +1714,7 @@ def _accepted_issuer(
         opens_the_clause
         and " " not in name
         and not _is_acronym(name)
-        and not _single_token_names_an_issuer(
-            name, clause=clause, verb_end=verb_end
-        )
+        and not _single_token_names_an_issuer(name)
     ):
         return ""
     return name

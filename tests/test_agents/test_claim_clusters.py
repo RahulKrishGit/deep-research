@@ -3042,8 +3042,11 @@ def test_a_named_issuer_still_attributes_after_the_grammar_tightening(
         # A brand spelling with an internal capital is a name however it is
         # cased, whatever follows its verb.
         ("OpenEI reported 10.4 GW of additions in 2024.", "OpenEI"),
-        # The run's real spelling of the same form.
+        # A name whose verb states an object rather than a reported clause is
+        # still a name, and a scope phrase in front of it is not part of it.
+        ("Fluence reported 10.4 GW in 2024.", "Fluence"),
         ("Texas reported that 4 GW was added in 2024.", "Texas"),
+        ("In 2024 Texas reported 4 GW of additions in 2024.", "Texas"),
     ],
 )
 def test_a_single_token_publisher_still_names_its_claim(
@@ -3055,20 +3058,84 @@ def test_a_single_token_publisher_still_names_its_claim(
     assert atom.attribution == expected
 
 
-def test_a_single_token_with_no_name_evidence_stays_unattributed() -> None:
-    """The refusal the single-title-case rule keeps: a stated object is no proof.
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A determiner or pronoun that opens a clause reports nothing (ND1).
+        "Our analysis found that 10.4 GW of battery storage was added in the United States in 2024.",
+        "Every study found that 10.4 GW was added in 2024.",
+        "Several reported that 10.4 GW was added in 2024.",
+        # A common noun that opens a clause is not a publisher.
+        "Reports stated that 10.4 GW was added in 2024.",
+        "Media reported that 10.4 GW was added in 2024.",
+        "Press reported that 10.4 GW was added in 2024.",
+        "Government reported that 10.4 GW was added in 2024.",
+        "Study found that 10.4 GW was added in 2024.",
+        "Studies found that 10.4 GW was added in 2024.",
+        "Analysis found that 10.4 GW was added in 2024.",
+        "Utilities reported that 10.4 GW was added in 2024.",
+    ],
+)
+def test_a_common_noun_that_opens_a_clause_names_no_issuer(text: str) -> None:
+    """One title-case token is a name only when nothing reads it as a noun.
 
-    "Fluence reported 10.4 GW" is one unknown title-case token with an object
-    rather than a reported clause, and "Grid operators … said" is a plural
-    common noun; neither earns the form (re-review N2, review F1).
+    A determiner ("Our", "Every", "Several") is a closed-class word, and a
+    singular common noun ("Media", "Study", "Analysis") is a noun like the
+    plurals the F1 negatives already cover. Crediting either one recorded a
+    fabricated issuer for a claim that named none.
     """
-    assert extract_text_atoms("Fluence reported 10.4 GW in 2024.")[0].attribution == ""
-    assert (
-        extract_text_atoms(
-            "Utilities reported that 10.4 GW was added in 2024."
-        )[0].attribution
-        == ""
-    )
+    assert extract_text_atoms(text)[0].attribution == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The denial is the earlier assertion, not the name phrase (ND2).
+        (
+            "No one expected the growth, but EIA reported that 10.4 GW was "
+            "added in 2024.",
+            "EIA",
+        ),
+        (
+            "None of the earlier forecasts matched, and EIA reported that "
+            "10.4 GW was added in 2024.",
+            "EIA",
+        ),
+        (
+            "Nobody in the industry had forecast it, but Wood Mackenzie "
+            "reported that U.S. storage grew 10.4 GW in 2024.",
+            "Wood Mackenzie",
+        ),
+    ],
+)
+def test_an_earlier_denial_does_not_disqualify_a_later_issuer(
+    text: str, expected: str
+) -> None:
+    """The nobody-pronoun scopes the phrase it belongs to, not the whole clause."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A month is only a date when a date follows it (ND3).
+        ("According to March Advisors, 10.4 GW was added in 2024.", "March Advisors"),
+        (
+            "May Advisors reported that 10.4 GW was added in the United "
+            "States in 2024.",
+            "May Advisors",
+        ),
+    ],
+)
+def test_a_publisher_whose_name_opens_with_a_month_is_still_a_name(
+    text: str, expected: str
+) -> None:
+    """A lone month token may name a firm; "December 2024" is a date."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
 
 
 def test_a_document_date_is_not_the_issuer_the_document_belongs_to() -> None:
