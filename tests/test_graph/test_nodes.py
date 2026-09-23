@@ -40,6 +40,7 @@ from deep_research.graph.state import (
     is_halted,
     load_state,
     progress_snapshot,
+    repair_is_terminal,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
@@ -54,6 +55,7 @@ from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     REPAIR_ACTIONS,
+    AcquisitionState,
     Critique,
     CritiqueGap,
     EvidenceTarget,
@@ -632,6 +634,141 @@ async def test_an_unchanged_route_is_recorded_once() -> None:
         for event in loaded.events
         if event.event_type == "graph.route.decided"
     ] == []
+
+
+def _two_topic_state(**overrides: object) -> ResearchState:
+    """topic-01 satisfied (a finding names it), topic-02 still owed.
+
+    The previous hop's snapshot is recorded too, so the stop decision is
+    actually evaluated rather than skipped for a first refinement.
+    """
+    satisfied = fake_sub_topic()
+    owed = fake_sub_topic(
+        title="Cost curve", coverage_id="topic-02", priority=2
+    ).model_copy(
+        update={
+            "evidence_targets": [
+                _evidence_target("topic-02-target-01", coverage_id="topic-02")
+            ]
+        }
+    )
+    payload: dict[str, object] = {
+        "sub_topics": [satisfied, owed],
+        "raw_findings": [fake_finding()],
+        "critique": fake_critique(should_continue=False, score=9),
+        "max_iterations": 3,
+        "iteration": 1,
+    }
+    payload.update(overrides)
+    state = fake_research_state(**payload)
+    return state.model_copy(
+        update={"progress_history": [progress_snapshot(state)]}
+    )
+
+
+def _spent_topic_02() -> AcquisitionState:
+    return AcquisitionState(
+        target_id="topic-02",
+        remaining_calls=0,
+        empty_searches=2,
+        denied_urls=["https://lab.example/denied"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_stop_decision_reads_the_worklist_the_hop_routes() -> None:
+    """A job this hop no longer routes must not hold the run open.
+
+    The hop evaluated the stop decision against the *previous* hop's
+    ``refinement_targets`` and only computed the list it dispatches on
+    afterwards, so the accounting judged work no pass would run. A topic that
+    was owed last hop and is satisfied now kept its queue counted, capacity
+    looked unspent, and the run bought passes it could not use.
+    """
+    state = _two_topic_state(
+        refinement_targets=[
+            RefinementTarget(
+                coverage_id="topic-01",
+                target_ids=["target-01"],
+                action="acquire",
+                origin="unanswered_target",
+                severity="major",
+                problem="One obligation is unmet.",
+            )
+        ],
+        acquisition_state_by_target={
+            "topic-01": AcquisitionState(
+                target_id="topic-01",
+                remaining_calls=3,
+                candidate_urls=["https://lab.example/untouched"],
+            ),
+            "topic-02": _spent_topic_02(),
+        },
+    )
+
+    recorded = load_state(await refine_node(dump_state(state)))
+
+    # The routed worklist names the owed topic only, so topic-01's leftover
+    # queue is not work this run can spend, and the leads that were all tried
+    # are reported as the dead end they are.
+    assert [
+        job.coverage_id
+        for job in recorded.refinement_targets
+        if job.action == "acquire"
+    ] == ["topic-02"]
+    assert recorded.repair_stop_reason == "evidence_unavailable"
+    assert recorded.progress_history[-1].pending_work_ids == []
+
+
+@pytest.mark.asyncio
+async def test_a_review_defect_the_hop_routes_opens_the_pass_it_was_routed_for() -> (
+    None
+):
+    """The stop decision must see the jobs this hop just routed.
+
+    A scored review that names a *satisfied* topic is a repair job the
+    refinement hop routes to the Researcher. Judged against the previous hop's
+    list — which said nothing about that topic, because the review had not run
+    yet — the run called every lead spent, went terminal and published with
+    the material defect it had just routed still open, dropping the queue the
+    repair needed.
+    """
+    state = _two_topic_state(
+        report_review=fake_report_review(
+            defects=[
+                CritiqueGap(
+                    gap_id="review-01",
+                    coverage_id="topic-01",
+                    target_ids=["target-01"],
+                    kind="missing_support",
+                    severity="major",
+                    repair_action="acquire",
+                    problem="The cost figure rests on a single publisher.",
+                )
+            ]
+        ),
+        acquisition_state_by_target={
+            "topic-01": AcquisitionState(
+                target_id="topic-01",
+                remaining_calls=3,
+                candidate_urls=["https://lab.example/queued"],
+            ),
+            "topic-02": _spent_topic_02(),
+        },
+    )
+
+    recorded = load_state(await refine_node(dump_state(state)))
+
+    assert "topic-01" in {
+        job.coverage_id
+        for job in recorded.refinement_targets
+        if job.action == "acquire"
+    }
+    assert recorded.repair_stop_reason is None
+    assert recorded.progress_history[-1].pending_work_ids == [
+        "topic-01:candidate:https://lab.example/queued"
+    ]
+    assert not repair_is_terminal(recorded)
 
 
 def test_a_review_defect_becomes_a_typed_refinement_job() -> None:

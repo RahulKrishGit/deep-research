@@ -1464,6 +1464,29 @@ def test_a_production_declaration_the_harness_cannot_run_is_not_release_evidence
     assert experiment_metadata(runtime, settings)["release_evidence"] is False
 
 
+def test_production_declaring_another_thinking_mode_is_not_release_evidence() -> (
+    None
+):
+    """Production declares the mode on ``llm``, not only per agent.
+
+    ``thinking_mode`` is a field of ``LLMConfig`` itself, so a production that
+    declares no ``model_overrides`` entry for this agent still runs the mode it
+    names there — and the harness, which runs one hard-wired mode, still cannot
+    reproduce it. Comparing the mode only on the production-sourced path left
+    this case labelled release evidence while every call it made differed from
+    the shipped configuration.
+    """
+    settings = ConfigSettings(llm=LLMConfig(thinking_mode="disabled"))
+
+    runtime = build(settings=settings, agent_name="researcher")
+
+    assert settings.llm.resolve_for("researcher").thinking_mode == "disabled"
+    assert runtime.target_profile_source == "evaluation"
+    assert runtime.experiment_only is True
+    assert runtime.release_evidence is False
+    assert experiment_metadata(runtime, settings)["release_evidence"] is False
+
+
 def test_a_frozen_parity_profile_whose_thinking_mode_changed_is_refused() -> None:
     """Fail preflight: the frozen label named a mode the run no longer matches.
 
