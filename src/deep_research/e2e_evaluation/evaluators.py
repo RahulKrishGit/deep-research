@@ -319,11 +319,15 @@ def _expected_cli_summary(
     )
     return {
         "quality_status": quality_status,
+        # The formatter prints the *claimed* ratio on its Quality line
+        # ("N/M topics claimed, X%"), so the comparison is against that
+        # reading — the graded one is the substantive ratio, and comparing the
+        # CLI's claim against it would fail every run the two disagree about.
         "coverage_ratio": round(
             float(
                 quality.coverage_ratio
                 if quality is not None
-                else metrics["coverage_ratio"]
+                else metrics["claimed_coverage_ratio"]
             ),
             2,
         ),
@@ -462,7 +466,7 @@ def deterministic_evaluation(
     citation_count = len(points)
     citation_linkage_ratio = linked_points / citation_count if citation_count else 0.0
 
-    covered_ids = {
+    claimed_covered_ids = {
         coverage_id
         for claim in claims_by_id.values()
         for coverage_id in claim.consumed_coverage_ids
@@ -479,12 +483,36 @@ def deterministic_evaluation(
                 finding.related_sub_topic == topic.title
                 for finding in state.raw_findings
             )
-            or topic.coverage_id in covered_ids
+            or topic.coverage_id in claimed_covered_ids
         }
     planned_topics = len(topics)
-    covered_topics = len(covered_ids)
+    claimed_covered_topics = len(claimed_covered_ids)
+    claimed_coverage_ratio = (
+        claimed_covered_topics / planned_topics if planned_topics else 0.0
+    )
+    # The graded reading is the product's own (Task 12, Section 2.3). A topic
+    # some claim recorded consuming is not a topic whose obligations were
+    # answered, and computing the ratio a second way here — from
+    # ``consumed_coverage_ids`` alone — accepted runs the product's own
+    # substantive gate reports as uncovered. The claimed reading is still
+    # published beside it, because the campaign record has to show both.
+    #
+    # A plan that declares no obligations at all cannot be judged
+    # substantively: there is nothing to answer, so it keeps the claimed
+    # reading rather than scoring every topic uncovered. That is exactly the
+    # rule ``compute_report_quality`` applies to the same shape, and the
+    # controlled fixtures are that shape.
+    covered_topics = (
+        quality.measured_covered_topics
+        if quality.planned_targets
+        else claimed_covered_topics
+    )
+    coverage_ratio = (
+        quality.substantive_topic_ratio
+        if quality.planned_targets
+        else claimed_coverage_ratio
+    )
     attempted_topics = len(attempted_ids)
-    coverage_ratio = covered_topics / planned_topics if planned_topics else 0.0
 
     contradicted = sum(
         claim.verdict == "contradicted" for claim in claims_by_id.values()
@@ -560,6 +588,8 @@ def deterministic_evaluation(
 
     raw_metrics: dict[str, Any] = {
         "coverage_ratio": coverage_ratio,
+        "claimed_coverage_ratio": claimed_coverage_ratio,
+        "claimed_covered_topics": claimed_covered_topics,
         "cited_sources": len(cited_urls),
         "scored_cited_sources": scored_cited,
         "duplicate_claims": duplicate_claims,
@@ -644,6 +674,8 @@ def deterministic_evaluation(
         attempted_topics=attempted_topics,
         covered_topics=covered_topics,
         coverage_ratio=coverage_ratio,
+        claimed_covered_topics=claimed_covered_topics,
+        claimed_coverage_ratio=claimed_coverage_ratio,
         read_sources=len(read_urls.intersection(source_url_set)),
         cited_sources=len(cited_urls),
         scored_cited_sources=scored_cited,
@@ -737,6 +769,7 @@ def build_judge_input(
     report = state.report or render_reader_report(composition)
     metrics_payload: dict[str, float | int | bool] = {
         "coverage_ratio": metrics.coverage_ratio,
+        "claimed_coverage_ratio": metrics.claimed_coverage_ratio,
         # How much of the scoped plan the reader report actually presents as
         # ranked points. ``case.sub_topics`` cardinality is a property of the
         # fixture; this is a property of the report.

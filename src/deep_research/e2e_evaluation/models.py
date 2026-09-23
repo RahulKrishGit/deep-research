@@ -188,7 +188,29 @@ class DeterministicEvaluation(ContractModel):
     planned_topics: int = Field(ge=0)
     attempted_topics: int = Field(ge=0)
     covered_topics: int = Field(ge=0)
+    """Topics every counted obligation of which was answered (Section 2.3).
+
+    The substantive reading, taken from the quality snapshot's own
+    ``measured_covered_topics``, because that is the measurement the product's
+    broad-plan gate and this campaign both judge. On a plan declaring no
+    counted obligation at all it is the claimed count, which is the reading
+    ``compute_report_quality`` falls back to on the same shape.
+    """
     coverage_ratio: float = Field(ge=0.0, le=1.0)
+    """``covered_topics`` over ``planned_topics`` — the ratio the gates read."""
+    claimed_covered_topics: int = Field(default=0, ge=0)
+    """Topics some claim recorded consuming, whether or not they were answered.
+
+    Published beside the graded count rather than instead of it: a run whose
+    claim consumed a topic it never answered is exactly the case the two
+    readings disagree about, and the record has to show both.
+    """
+    claimed_coverage_ratio: float = Field(default=0.0, ge=0.0, le=1.0)
+    """``claimed_covered_topics`` over ``planned_topics``.
+
+    The formatter prints this one on its Quality line, so the CLI comparison
+    is made against it; it is a diagnostic, never the graded ratio.
+    """
     read_sources: int = Field(ge=0)
     cited_sources: int = Field(ge=0)
     scored_cited_sources: int = Field(ge=0)
