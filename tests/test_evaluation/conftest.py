@@ -1282,7 +1282,7 @@ def scoped_target_output(scoped_targets_case) -> PlannerOutput:
                                 "utility-scale generators?"
                             ),
                             required_dimensions=[
-                                "measure: the study fee in dollars",
+                                "amount: the study fee in dollars",
                                 "instrument: the official fee schedule",
                                 "geography: the United States",
                             ],

@@ -2081,23 +2081,47 @@ def _targets_declared_passes(
     return all(minimum <= len(targets) <= maximum for targets in planned)
 
 
+def _counted_targets(output: TargetOutput) -> list[EvidenceTarget] | None:
+    """Every counted obligation of the plan, flattened, or ``None``.
+
+    The flattened list is what "this plan declares no obligation" means. An
+    iteration over the per-sub-topic groups cannot express it: a plan whose
+    every sub-topic carries an empty target list is a non-empty list of empty
+    lists, so ``all()`` over its (absent) targets is vacuously true and the
+    metric passes a plan that owes nothing.
+    """
+    planned = _planned_targets(output)
+    if planned is None:
+        return None
+    return [target for targets in planned for target in targets]
+
+
 def _dimensions_are_checkable_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    """Every obligation carries a dimension the recorded evidence can credit.
+    """Every obligation carries only dimensions the recorded evidence can credit.
 
     The question is not whether a dimension is phrased well but whether any
     proposition could ever answer it, so the check is made against the
     dimension probe rather than against a list of acceptable wordings.
+
+    Every required dimension must be creditable, not merely one of them.
+    Production ``target_is_answered`` requires ``required.issubset(answered)``
+    and ``answered_dimensions`` can only hold dimensions this same helper
+    credits, so an obligation carrying one uncreditable dimension can never be
+    answered by any statement — reading the helper's list as a truthy/falsey
+    whole called exactly that plan checkable.
     """
-    planned = _planned_targets(output)
-    if not planned:
+    targets = _counted_targets(output)
+    if not targets:
         return False
     return all(
-        answered_required_dimensions(
-            target.required_dimensions, (_TARGET_DIMENSION_PROBE,)
+        set(target.required_dimensions)
+        <= set(
+            answered_required_dimensions(
+                target.required_dimensions, (_TARGET_DIMENSION_PROBE,)
+            )
         )
-        for targets in planned
         for target in targets
     )
 
@@ -2133,16 +2157,20 @@ def _support_policy_not_downgraded_passes(
 def _no_vague_dimensions_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    """No obligation rests on a dimension that names nothing answerable."""
-    planned = _planned_targets(output)
-    if not planned:
+    """No obligation rests on a dimension that names nothing answerable.
+
+    Fails closed on a plan that declares no obligation, like every other
+    scoping metric: an ``any()`` over a plan with no targets is false, so
+    reading it directly passed a plan that owes nothing.
+    """
+    targets = _counted_targets(output)
+    if not targets:
         return False
     phrases = _reference_strings(case, "vague_dimension_phrases")
     if not phrases:
         return True
     return not any(
         _mentions_phrase(dimension, phrases)
-        for targets in planned
         for target in targets
         for dimension in target.required_dimensions
     )

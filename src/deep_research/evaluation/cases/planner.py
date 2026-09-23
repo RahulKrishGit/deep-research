@@ -185,8 +185,8 @@ _SCOPED = build_case(
             (
                 "dimensions_are_checkable",
                 0.20,
-                "Every target carries at least one required dimension a "
-                "recorded proposition can credit.",
+                "Every required dimension of every target is one a recorded "
+                "proposition can credit.",
             ),
             (
                 "support_policy_not_downgraded",
