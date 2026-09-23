@@ -497,7 +497,13 @@ class _LedgerProvider(FakeStructuredProvider):
         self._repair = repair
 
     async def complete_structured(
-        self, messages, schema, *, agent_name=None, max_tokens=None
+        self,
+        messages,
+        schema,
+        *,
+        agent_name=None,
+        max_tokens=None,
+        reasoning_effort=None,
     ):
         attempts = (1, 2) if self._repair else (1,)
         for attempt in attempts:
@@ -519,6 +525,7 @@ class _LedgerProvider(FakeStructuredProvider):
                         schema,
                         agent_name=agent_name,
                         max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
                     )
             except StructuredOutputError:
                 if attempt == len(attempts):

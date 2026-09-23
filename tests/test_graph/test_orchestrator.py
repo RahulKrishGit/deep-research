@@ -14,7 +14,7 @@ from deep_research.agents.planner import (
     ResearchPlanDraft,
 )
 from deep_research.agents.synthesizer import SynthesizerAgent
-from deep_research.cli import EXIT_GRAPH_FAILED
+from deep_research.cli import EXIT_GRAPH_FAILED, EXIT_QUALITY_UNACCEPTED
 from deep_research.cli import main as cli_main
 from deep_research.graph.nodes import ReportPublisher
 from deep_research.graph.orchestrator import (
@@ -41,8 +41,12 @@ from deep_research.graph.state import (
     load_state,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderResponseError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseError,
+    ProviderResponseTelemetry,
+)
 from deep_research.runtime.outcome import build_outcome
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -72,6 +76,18 @@ from tests.research_fakes import planner_tools, synthesizer_tools
 from tests.test_agents.test_planner import _draft, _review, _sorting_plan
 
 QUESTION = "How mature is quantum error correction?"
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    """One truncated reply, typed as the provider boundary raises it."""
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
 
 
 async def _run(agents, *, max_iterations: int = 3) -> ResearchState:
@@ -321,6 +337,80 @@ async def test_a_real_critic_provider_outage_fails_closed_through_cli(
     assert (
         cli_main([QUESTION], runner=lambda **_: outcome, stream=io.StringIO())
         == EXIT_GRAPH_FAILED
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_double_truncation_publishes_unscored_instead_of_failing(
+    tracker: Tracker,
+) -> None:
+    """The output-limit rule end to end: two truncations, a published report.
+
+    The live failure this pins ended a finished run: the Critic's review was
+    truncated at its cap, the failure was fatal, and the artifacts were
+    published under ``Status: failed`` with exit 3. Two truthful options exist
+    and the run takes the better one — the report is complete and publishable,
+    so it publishes, and what is missing is a judgement of it. That is the
+    ``missing_critique`` state the graph already had: nothing can be accepted,
+    nothing routes a refinement, and the CLI's *quality* exit code (4 under
+    ``--require-quality``) says "finished, not accepted" instead of "the run
+    failed".
+    """
+    provider = ScriptedCompleter(
+        outputs=[_output_limit_error(), _output_limit_error()]
+    )
+    critic = CriticAgent(
+        provider=provider,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="critic", max_entries=20
+        ),
+        tools=(),
+        config=AgentRuntimeConfig(max_iterations=3, tool_budget=0),
+    )
+    publisher = FakePublisher()
+    agents = fake_research_agents(
+        synthesizer=FakeAgent(
+            "synthesizer", [], update_factory=fake_synthesis_update
+        ),
+        critic=critic,
+        publisher=publisher,
+    )
+
+    async with tracker.session_span("session-1", QUESTION):
+        state = await _run(agents)
+
+    assert [call[0] for call in provider.calls] == ["CritiqueDraft"] * 2
+    assert provider.efforts == [None, "high"]
+    assert state.critique is None
+    assert not is_halted(state)
+    assert graph_route(state) == ("finalize", "missing_critique")
+    assert graph_status(state) == "incomplete"
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+    assert state.report_path is not None
+    assert publisher.memory_writes == 0
+    assert [error.error_type for error in state.errors] == [
+        "critic_review_output_limit_retry",
+        "critic_review_unavailable",
+    ]
+
+    outcome = build_outcome(
+        GraphRun(
+            session_id="session-1",
+            state=state,
+            status=graph_status(state),
+            trace_url=None,
+        ),
+        metrics=(),
+    )
+
+    assert (
+        cli_main(
+            [QUESTION, "--require-quality"],
+            runner=lambda **_: outcome,
+            stream=io.StringIO(),
+        )
+        == EXIT_QUALITY_UNACCEPTED
     )
 
 

@@ -200,6 +200,31 @@ def _accepted_text(values: frozenset[str]) -> str:
     return ", ".join(sorted(values))
 
 
+def with_reasoning_effort(
+    effective: EffectiveModelConfig, override: str | None
+) -> EffectiveModelConfig:
+    """Return ``effective`` with a per-call reasoning-effort override applied.
+
+    A request-level setting, not a profile edit: it changes what *this one*
+    request resolves to and nothing the agent's own configuration carries, so
+    a retry can reason at another effort while every later call from the same
+    agent keeps the configured one. ``None`` returns the configuration
+    unchanged, which is what every ordinary call sends.
+
+    The result is validated by :func:`resolve_request_settings` like any other
+    effective configuration, so an unsupported level is refused before the SDK
+    is touched, and a model whose thinking is disabled keeps sending no effort
+    at all.
+
+    ``model_copy`` is what applies the override: it is a copy rather than a
+    mutation, which is what a frozen configuration requires, and the value is
+    validated by the registry immediately below rather than by the copy.
+    """
+    if override is None:
+        return effective
+    return effective.model_copy(update={"reasoning_effort": override})
+
+
 def capability_for(provider: ProviderName, model: str) -> ModelCapability:
     """Return the capability whose anchored pattern matches ``model``.
 

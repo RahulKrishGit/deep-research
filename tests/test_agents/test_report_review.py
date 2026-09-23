@@ -28,7 +28,16 @@ from deep_research.agents.report_review import (
     review_report,
     semantic_review_passes,
 )
-from deep_research.observability import LangSmithRuntimeConfig, Tracker
+from deep_research.observability import (
+    LangSmithRuntimeConfig,
+    TokenUsage,
+    Tracker,
+)
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseTelemetry,
+)
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     UNREVIEWED_STATEMENT_DISPOSITION,
     Claim,
@@ -66,6 +75,18 @@ def _tracker() -> Tracker:
     return Tracker(
         LangSmithRuntimeConfig(
             tracing_enabled=False, project="review-tests", api_key=None
+        )
+    )
+
+
+def _output_limit_error() -> ProviderOutputLimitError:
+    """One truncated reply, typed as the provider boundary raises it."""
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
         )
     )
 
@@ -955,6 +976,95 @@ async def test_a_missing_evidence_batch_is_incomplete_not_a_default_pass() -> No
     assert "e2" in review.omitted_evidence_ids
     assert review.reviewed_batch_ids == []
     assert not semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_review_call_is_re_asked_once_at_a_high_effort() -> None:
+    """The output-limit rule's terminal-review half, and its record.
+
+    A truncated cross-section request is re-asked once under the same output
+    budget at the effort that leaves more of that budget for the answer, and
+    the judgement then proceeds normally. The retry is recorded because it was
+    a second paid call: without the record nothing in the artifacts tells this
+    review apart from one that took a single request.
+    """
+    state = _state(composition=_composition(), report="Break-even was reached.")
+    completer = ScriptedCompleter(
+        outputs=[_output_limit_error(), _draft_payload()]
+    )
+    reviewer = ReportReviewer(
+        provider=completer,
+        config=AgentRuntimeConfig(report_review_max_tokens=4096),
+    )
+
+    review = await reviewer.review(_packet(state))
+
+    assert review.status == "scored"
+    assert completer.budgets == [4096, 4096]
+    assert completer.efforts == [None, "high"]
+    assert [error.error_type for error in reviewer.review_records] == [
+        "report_review_output_limit_retry"
+    ]
+    retry = reviewer.review_records[0]
+    assert retry.recoverable is True
+    assert retry.source == f"agent.{REPORT_JUDGE_ROLE}"
+    assert retry.details["outcome"] == "answered"
+    assert retry.details["max_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_a_second_truncation_keeps_the_non_fatal_unjudged_path() -> None:
+    """Two truncations leave the report unjudged, and never fail the run.
+
+    This reviewer's double-truncation outcome is the one it already had for a
+    provider failure: no score, no judgement, and the graph's
+    ``graph_report_review_unavailable`` record beside it. What the retry adds
+    is one more attempt and its record — not a new terminal state and never a
+    fatal one.
+    """
+    state = _state(composition=_composition(), report="Break-even was reached.")
+    completer = ScriptedCompleter(
+        outputs=[_output_limit_error(), _output_limit_error()]
+    )
+    reviewer = ReportReviewer(
+        provider=completer,
+        config=AgentRuntimeConfig(report_review_max_tokens=4096),
+    )
+
+    review = await reviewer.review(_packet(state))
+
+    assert review.status == "provider_failed"
+    assert review.dimensions == {}
+    assert not semantic_review_passes(review)
+    assert completer.efforts == [None, "high"]
+    retry = reviewer.review_records[0]
+    assert retry.error_type == "report_review_output_limit_retry"
+    assert retry.details["outcome"] == "truncated"
+    assert retry.recoverable is True
+
+
+@pytest.mark.asyncio
+async def test_a_reused_review_records_no_retry() -> None:
+    """Records describe the review just made, never the one it reused.
+
+    A stored judgement of identical material costs nothing, so a second pass
+    over unchanged content must not report a retry it did not make.
+    """
+    state = _state(composition=_composition(), report="Break-even was reached.")
+    completer = ScriptedCompleter(
+        outputs=[_output_limit_error(), _draft_payload()]
+    )
+    reviewer = ReportReviewer(
+        provider=completer,
+        config=AgentRuntimeConfig(report_review_max_tokens=4096),
+    )
+
+    first = await reviewer.review(_packet(state))
+    second = await reviewer.review(_packet(state), previous=first)
+
+    assert second is first
+    assert len(completer.calls) == 2
+    assert reviewer.review_records == ()
 
 
 @pytest.mark.asyncio

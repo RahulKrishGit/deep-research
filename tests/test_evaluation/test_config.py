@@ -255,7 +255,7 @@ from deep_research.utils.config import (
 # edited; the module source is what the fingerprint hashes, so a routing fix
 # that lives in ``critic.py`` moves a value whose name implies a prompt change
 # — the same false positive the researcher's first re-pin records below.
-CRITIC_PROMPT_FINGERPRINT = "aedce1ccca9e"
+CRITIC_PROMPT_FINGERPRINT = "99e1ca09d28e"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -839,13 +839,19 @@ CRITIC_PROMPT_FINGERPRINT = "aedce1ccca9e"
 # returns the same order and the same text the unlabelled list always had, so
 # the repair request the model reads is byte-identical to the one the previous
 # pin covered. The other five pins and the judge are unchanged.
+# The output-limit pass moved the critic alone, ``aedce1ccca9e`` ->
+# ``99e1ca09d28e``: a review call truncated by its output limit is re-asked
+# once at ``high`` under the same cap, and a second truncation leaves the run
+# without a critique instead of ending it. Module source only — no prompt
+# string was edited and the shared ``agents.prompts`` library was not touched,
+# which the other five pins and the judge prove.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "cd1480236a3b",
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "340b8267dbe9",
     "synthesizer": "a41d1f86be3b",
-    "critic": "aedce1ccca9e",
+    "critic": "99e1ca09d28e",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
@@ -1347,7 +1353,7 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
     } == {
         "source_evaluator": "ad9e2afac12c",
         "synthesizer": "a41d1f86be3b",
-        "critic": "aedce1ccca9e",
+        "critic": "99e1ca09d28e",
     }
     assert agent_prompt_fingerprint("planner") not in {
         "7d0282b16bc5",
@@ -1486,7 +1492,7 @@ def test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text() -
     pre_target_view = "2c80a78040b9"
 
     assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
-    assert agent_prompt_fingerprint("critic") == "aedce1ccca9e"
+    assert agent_prompt_fingerprint("critic") == "99e1ca09d28e"
     assert agent_prompt_fingerprint("critic") != pre_target_view
     assert {
         name: agent_prompt_fingerprint(name)

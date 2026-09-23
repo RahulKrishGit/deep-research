@@ -51,6 +51,7 @@ from deep_research.agents.prompts import (
 from deep_research.agents.steps import ReActRun
 from deep_research.evaluation.cases.critic import LIVE_CASES
 from deep_research.graph.nodes import REPAIR_NODES
+from deep_research.graph.state import HALTING_ERROR_TYPES
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -1602,20 +1603,35 @@ async def test_a_missing_report_is_recorded_without_a_provider_call(
 
 
 @pytest.mark.asyncio
-async def test_a_provider_failure_still_routes_and_stops(
+async def test_an_http_provider_failure_still_routes_and_stops(
     tracker: Tracker,
 ) -> None:
-    agent = _critic(
-        tracker, ScriptedCompleter(outputs=[_output_limit_error()])
+    """An outage is not an output limit: it is never re-asked.
+
+    The retry rule is specific to a truncated reply, which is the one failure
+    a different request can fix. A provider that is down says nothing about
+    the request, so this path keeps its single attempt, its failed review, and
+    the provider snapshot on the record.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            ProviderResponseError(
+                "provider returned an HTTP error",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+                failure_origin="sdk",
+            )
+        ]
     )
+    agent = _critic(tracker, completer)
 
     async with tracker.session_span("session-1", "question"):
         outcome = await agent.run(_critic_state())
 
-    critique = outcome.result
-    assert critique is not None
-    assert critique.should_continue is False
-    assert critique.score == MIN_CRITIC_SCORE
+    assert [call[0] for call in completer.calls] == ["CritiqueDraft"]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
     assert outcome.react.stop_reason == "provider_error"
     error = next(
         error
@@ -1624,40 +1640,6 @@ async def test_a_provider_failure_still_routes_and_stops(
     )
     assert error.recoverable is False
     assert error.details["operation"] == "critic_report_review"
-    provider = error.details["provider_failure"]
-    assert provider["kind"] == "output_limit"
-    assert provider["configured_max_tokens"] == 4096
-    assert provider["request_attempt"] == 1
-
-
-@pytest.mark.asyncio
-async def test_an_http_provider_failure_still_routes_and_stops(
-    tracker: Tracker,
-) -> None:
-    agent = _critic(
-        tracker,
-        ScriptedCompleter(
-            outputs=[
-                ProviderResponseError(
-                    "provider returned an HTTP error",
-                    retryable=True,
-                    failure_category="http",
-                    http_status_code=503,
-                    failure_origin="sdk",
-                )
-            ]
-        ),
-    )
-
-    async with tracker.session_span("session-1", "question"):
-        outcome = await agent.run(_critic_state())
-
-    assert outcome.react.stop_reason == "provider_error"
-    error = next(
-        error
-        for error in outcome.errors
-        if error.error_type == "critic_review_provider_error"
-    )
     provider = error.details["provider_failure"]
     assert provider["kind"] == "provider_http"
     assert provider["http_status_code"] == 503
@@ -1703,6 +1685,118 @@ async def test_a_request_rejected_for_size_fails_closed(
     assert [error.error_type for error in outcome.errors] == [
         "critic_review_provider_error"
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_review_is_re_asked_once_at_a_high_effort(
+    tracker: Tracker,
+) -> None:
+    """The output-limit rule's critic half: one retry, then the review stands.
+
+    A truncated reply is the one failure that a *different* request can fix:
+    the same packet under the same output budget, with the effort that leaves
+    more of that budget for the answer. The run must proceed on the retry's
+    review, and the retry must be recorded — the effort used, the budget it
+    kept, and the outcome — because otherwise a paid second call is invisible.
+    """
+    completer = ScriptedCompleter(outputs=[_output_limit_error(), _draft(score=8)])
+    agent = _critic(tracker, completer)
+    cap = agent.config.critic_review_max_tokens
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert [call[0] for call in completer.calls] == ["CritiqueDraft"] * 2
+    assert completer.budgets == [cap, cap]
+    assert completer.efforts == [None, "high"]
+    critique = outcome.result
+    assert critique is not None
+    assert critique.review_status == "reviewed"
+    assert critique.score == 8
+    assert outcome.react.stop_reason == "finished"
+    assert [error.error_type for error in outcome.errors] == [
+        "critic_review_output_limit_retry"
+    ]
+    retry = outcome.errors[0]
+    assert retry.recoverable is True
+    assert retry.error_type not in HALTING_ERROR_TYPES
+
+
+@pytest.mark.asyncio
+async def test_two_truncations_leave_the_report_unjudged_without_ending_the_run(
+    tracker: Tracker,
+) -> None:
+    """Two truncations are not worth a run: they are worth a record.
+
+    Nothing about the report changes between two truncated calls, so a third
+    would truncate too, and the run's only truthful options are "no critique
+    exists" and "say so". It must not end: the report is complete and
+    publishable, and the graph has a state for exactly this — no critique, no
+    acceptance, and the reason on the record. Other provider failures keep
+    their own path; only the output limit degrades.
+    """
+    completer = ScriptedCompleter(
+        outputs=[_output_limit_error(), _output_limit_error()]
+    )
+    agent = _critic(tracker, completer)
+    cap = agent.config.critic_review_max_tokens
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert completer.budgets == [cap, cap]
+    assert completer.efforts == [None, "high"]
+    # No critique was made, so the state carries none: an unavailable review
+    # must not arrive as a floor score with no gaps, which is what an accepted
+    # one looks like. The key is written with ``None`` rather than omitted,
+    # because an omitted key would leave an *earlier* pass's judgement in place
+    # and the router reads that judgement.
+    assert outcome.result is None
+    assert outcome.state_update["critique"] is None
+    assert outcome.react.stop_reason == "provider_error"
+    assert [error.error_type for error in outcome.errors] == [
+        "critic_review_output_limit_retry",
+        "critic_review_unavailable",
+    ]
+    assert all(error.recoverable for error in outcome.errors)
+    assert not any(
+        error.error_type in HALTING_ERROR_TYPES for error in outcome.errors
+    )
+    retry = outcome.errors[0]
+    assert retry.details["outcome"] == "truncated"
+    assert retry.details["reasoning_effort"] == "high"
+    assert retry.details["max_tokens"] == cap
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_truncation_retry_keeps_the_repair_allowance(
+    tracker: Tracker,
+) -> None:
+    """A malformed reply *after* the retry still gets its one repair.
+
+    The retry is one more review attempt, not a replacement for the repair
+    flow: an unparseable answer is the failure the repair exists for, whatever
+    attempt produced it. The retry is still recorded — it happened, and its own
+    outcome is that the reply it returned was not usable.
+    """
+    completer = ScriptedCompleter(
+        outputs=[_output_limit_error(), {"not": "a draft"}, _draft(score=7)]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == ["CritiqueDraft"] * 3
+    assert completer.efforts == [None, "high", None]
+    critique = outcome.result
+    assert critique is not None
+    assert critique.score == 7
+    assert [error.error_type for error in outcome.errors] == [
+        "critic_review_output_limit_retry",
+        "critic_review_repaired",
+    ]
+    assert outcome.errors[0].details["outcome"] == "answered"
 
 
 @pytest.mark.asyncio

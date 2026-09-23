@@ -56,6 +56,7 @@ from deep_research.observability import Tracker
 from deep_research.providers import (
     ChatMessage,
     ProviderError,
+    ProviderOutputLimitError,
     StructuredOutputError,
     StructuredValidationDiagnostic,
 )
@@ -136,6 +137,49 @@ CRITIC_EVIDENCE_BATCH_CHARS = 4000
 # single transport-level repair; this is the agent-level re-ask that carries
 # the schema diagnostics back to the model.
 CRITIC_REVIEW_ATTEMPTS = 2
+
+CRITIC_REVIEW_OPERATION = "critic_report_review"
+"""The operation label every record about this agent's one call carries.
+
+The provider failure, the output-limit retry, and an unavailable review all
+point at the same request, so a reader grouping a run's warnings by operation
+sees them together instead of wondering which call each one is about.
+"""
+
+OUTPUT_LIMIT_RETRY_EFFORT = "high"
+"""The effort a truncated review call is re-asked at, for either reviewer.
+
+A reasoning token is a completion token, so the same output budget buys more
+answer at a lower effort — and the Critic's own profile reasons at ``max``, so
+the retry is where the effort comes *down*. Lower rather than higher on
+purpose: this is a second attempt at getting the reply the run could not get,
+not a request for a better one, and the budget is deliberately unchanged.
+
+One value for both reviewers, imported rather than repeated: the terminal
+report review follows the same rule, and two copies of "high" would let the two
+halves of one rule drift apart.
+"""
+
+REVIEW_RETRY_OUTCOMES = ("answered", "truncated")
+"""What one retry can come back with.
+
+``answered`` is a reply — whether the review used it or the repair had to
+re-ask it, which is the caller's own record to make; ``truncated`` is the same
+truncation a second time. Two outcomes of the *retry call*, never a verdict
+about the report, so the record cannot disagree with the review it precedes.
+"""
+
+REVIEW_ATTEMPT_EFFORTS: tuple[str | None, ...] = (
+    None,
+    OUTPUT_LIMIT_RETRY_EFFORT,
+)
+"""The efforts one review is attempted at, in order, and there are never more.
+
+``None`` is the agent's own configured effort, which the first attempt always
+uses, so an ordinary review is one call whose request is byte-identical to the
+one this agent has always sent. The second entry is reached only by an
+output-limit truncation of the first.
+"""
 
 PACKET_FINGERPRINT_CHARS = 12
 
@@ -358,6 +402,11 @@ ROUTING_REASONS = {
     "review_failed": (
         "The model's review never validated, so the report was not judged; "
         "the run ended rather than accepting an unreviewed report."
+    ),
+    "review_unavailable": (
+        "Both review calls were truncated by the output limit, so no "
+        "judgement of the report exists; the run publishes it unscored rather "
+        "than ending."
     ),
 }
 
@@ -2117,7 +2166,83 @@ def critique_provider_error(error: Exception) -> ResearchError:
             "research pass was ended rather than repeated."
         ),
         recoverable=False,
-        details=agent_provider_failure_details("critic_report_review", error),
+        details=agent_provider_failure_details(CRITIC_REVIEW_OPERATION, error),
+    )
+
+
+def review_output_limit_retry(
+    error: Exception,
+    *,
+    reasoning_effort: str,
+    max_tokens: int,
+    outcome: str,
+) -> ResearchError:
+    """Record that a truncated review call was re-asked at another effort.
+
+    The retry is a second paid request, so it is recorded even when it works:
+    without the record, "this review took two calls at two efforts" is
+    unrecoverable from the artifacts, and a run that spent an extra call looks
+    exactly like one that did not. Recoverable either way — a retry that
+    recovers produced the review, and a retry that truncates leaves the run an
+    honest statement that no review exists.
+
+    The call, the effort, the budget it kept, and what the retry returned are in
+    the *message* rather than only in ``details``. Details are published only
+    for the error types whose projection this project has vetted, and a reader
+    who cannot see the effort cannot tell a retry from a repeat.
+    """
+    if outcome not in REVIEW_RETRY_OUTCOMES:
+        raise ValueError(f"unknown retry outcome: {outcome!r}")
+    return agent_error(
+        agent_name=CRITIC_NAME,
+        error_type="critic_review_output_limit_retry",
+        message=(
+            f"The {CRITIC_REVIEW_OPERATION} review call was truncated by the "
+            f"output limit; it was re-asked once at reasoning_effort "
+            f"{reasoning_effort} with the same {max_tokens}-token output "
+            "budget, and "
+            + (
+                "the retry returned a reply."
+                if outcome == "answered"
+                else "the retry was truncated as well, so no review exists "
+                "from it."
+            )
+        ),
+        recoverable=True,
+        details=agent_provider_failure_details(
+            CRITIC_REVIEW_OPERATION,
+            error,
+            attempt=2,
+            reasoning_effort=reasoning_effort,
+            max_tokens=max_tokens,
+            outcome=outcome,
+        ),
+    )
+
+
+def review_unavailable(error: Exception, *, max_tokens: int) -> ResearchError:
+    """Record that no review of this report exists, without ending the run.
+
+    Recoverable by construction: the run continues to publication with the
+    report it has and no judgement of it. Nothing about the report is claimed —
+    the critique is absent rather than floored, so the graph cannot accept an
+    unreviewed report and cannot route a refinement from it.
+    """
+    return agent_error(
+        agent_name=CRITIC_NAME,
+        error_type="critic_review_unavailable",
+        message=(
+            "The report was never judged: both review calls were truncated by "
+            "the output limit, so this run publishes its report unscored "
+            "rather than ending."
+        ),
+        recoverable=True,
+        details=agent_provider_failure_details(
+            CRITIC_REVIEW_OPERATION,
+            error,
+            truncated_calls=2,
+            max_tokens=max_tokens,
+        ),
     )
 
 
@@ -2181,6 +2306,36 @@ def critique_completed_event(
             "max_iterations": max_iterations,
             "tool_calls": run.tool_calls,
             "stop_reason": run.stop_reason,
+        },
+    )
+
+
+def critique_unavailable_event(
+    *,
+    reason: str,
+    iteration: int,
+    max_iterations: int,
+    tool_calls: int,
+    stop_reason: str,
+) -> ResearchEvent:
+    """Report that the review produced no judgement, and why.
+
+    The counterpart of ``critique_completed_event`` for the one path that ends
+    with no critique at all. There is no score, no gap count, and no
+    recommendation, so this event carries the enumerated reason and the loop's
+    own facts instead of null-valued fields a consumer could read as a
+    judgement. ``reason`` is a ``ROUTING_REASONS`` key, never provider text.
+    """
+    return agent_event(
+        agent_name=CRITIC_NAME,
+        event_type="critic.critique.unavailable",
+        message="Report review produced no judgement.",
+        metadata={
+            "reason": reason,
+            "iteration": iteration,
+            "max_iterations": max_iterations,
+            "tool_calls": tool_calls,
+            "stop_reason": stop_reason,
         },
     )
 
@@ -2269,7 +2424,7 @@ class CriticAgent(BaseAgent[Critique]):
         run: ReActRun | None = None,
         *,
         state: ResearchState | None = None,
-    ) -> tuple[Critique, str, list[ResearchError], bool]:
+    ) -> tuple[Critique | None, str, list[ResearchError], bool]:
         """Judge one candidate from its packet.
 
         Returns ``(critique, reason, errors, provider_failed)``. No provider
@@ -2279,6 +2434,14 @@ class CriticAgent(BaseAgent[Critique]):
         which re-reads the packet this review was opened on; when that too
         fails, the review is recorded as failed with its bounded diagnostics
         rather than scored.
+
+        An output-limit truncation is the one failure a different request can
+        fix, so it is re-asked once at a lower effort under the same output
+        budget. If that is truncated too, ``critique`` is ``None``: no
+        judgement of this report exists, and the run continues without one
+        instead of ending. A floor-scored fallback critique would be
+        indistinguishable from an accepted one — the same score floor and the
+        same empty gap list — so the absence is what the graph routes on.
 
         ``state`` is the state this review was built from. The repair path uses
         it to rebuild the packet and prove the repair is about the same text,
@@ -2296,45 +2459,139 @@ class CriticAgent(BaseAgent[Critique]):
 
         opened = packet.fingerprint
         messages = critique_messages(task, run)
-        try:
-            draft = await self._complete_review(messages)
-            critique, reason = build_critique(
-                draft,
-                iteration=task.iteration,
-                max_iterations=task.max_iterations,
-                packet=packet,
+        truncations: list[ProviderOutputLimitError] = []
+        for position, effort in enumerate(REVIEW_ATTEMPT_EFFORTS):
+            last_attempt = position + 1 == len(REVIEW_ATTEMPT_EFFORTS)
+            try:
+                draft = await self._complete_review(
+                    messages, reasoning_effort=effort
+                )
+                critique, reason = build_critique(
+                    draft,
+                    iteration=task.iteration,
+                    max_iterations=task.max_iterations,
+                    packet=packet,
+                )
+            except (StructuredOutputError, CritiqueContractViolation) as error:
+                repaired = await self._repair_review(
+                    task,
+                    error,
+                    run,
+                    state=state,
+                    reviewed_fingerprint=opened,
+                )
+                return self._with_retry_records(repaired, truncations)
+            except ValidationError as error:
+                # A reply that never went through the schema — the provider
+                # bound objects, or a caller built a draft by hand. Same route
+                # as a malformed one, with the same bounded diagnostic.
+                repaired = await self._repair_review(
+                    task,
+                    schema_error_from_validation(error),
+                    run,
+                    state=state,
+                    reviewed_fingerprint=opened,
+                )
+                return self._with_retry_records(repaired, truncations)
+            except ProviderOutputLimitError as error:
+                truncations.append(error)
+                if last_attempt:
+                    return self._unavailable_review(task, truncations)
+                continue
+            except ProviderError as error:
+                critique, reason = fallback_critique(
+                    reason="provider_unavailable",
+                    iteration=task.iteration,
+                    max_iterations=task.max_iterations,
+                )
+                return critique, reason, [critique_provider_error(error)], True
+            return (
+                critique,
+                reason,
+                self._retry_records(truncations, "answered"),
+                False,
             )
-        except (StructuredOutputError, CritiqueContractViolation) as error:
-            return await self._repair_review(
-                task,
-                error,
-                run,
-                state=state,
-                reviewed_fingerprint=opened,
-            )
-        except ValidationError as error:
-            # A reply that never went through the schema — the provider bound
-            # objects, or a caller built a draft by hand. Same route as a
-            # malformed one, with the same bounded diagnostic.
-            return await self._repair_review(
-                task,
-                schema_error_from_validation(error),
-                run,
-                state=state,
-                reviewed_fingerprint=opened,
-            )
-        except ProviderError as error:
-            critique, reason = fallback_critique(
-                reason="provider_unavailable",
-                iteration=task.iteration,
-                max_iterations=task.max_iterations,
-            )
-            return critique, reason, [critique_provider_error(error)], True
+        raise AssertionError("a review attempt must produce a critique or a route")
 
-        return critique, reason, [], False
+    def _retry_records(
+        self,
+        truncations: Sequence[ProviderOutputLimitError],
+        outcome: str,
+    ) -> list[ResearchError]:
+        """The retry record for a review that was re-asked, or nothing.
+
+        Empty when the first attempt was not truncated, so an ordinary review
+        adds nothing to the run's records. Reached by every exit that can follow
+        a retry — the review, a reply the repair then had to fix, and a second
+        truncation — so the retry is a fact in the artifacts whichever way it
+        went.
+        """
+        if not truncations:
+            return []
+        return [
+            review_output_limit_retry(
+                truncations[0],
+                reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
+                max_tokens=self.config.critic_review_max_tokens,
+                outcome=outcome,
+            )
+        ]
+
+    def _with_retry_records(
+        self,
+        reviewed: tuple[Critique, str, list[ResearchError], bool],
+        truncations: Sequence[ProviderOutputLimitError],
+    ) -> tuple[Critique, str, list[ResearchError], bool]:
+        """A repaired review's own result, with the retry record in front.
+
+        The retry happened before the repair did, so it belongs first in the
+        list a reader walks in order — and it must survive the repair, or a
+        retry that led somewhere is a call nobody can see. The outcome is
+        ``answered``: the retry's reply arrived and the repair is what did the
+        rest, which the repair's own record states.
+        """
+        critique, reason, errors, provider_failed = reviewed
+        return (
+            critique,
+            reason,
+            [*self._retry_records(truncations, "answered"), *errors],
+            provider_failed,
+        )
+
+    def _unavailable_review(
+        self,
+        task: CritiqueTask,
+        truncations: Sequence[ProviderOutputLimitError],
+    ) -> tuple[None, str, list[ResearchError], bool]:
+        """Continue without a review, and record that none exists.
+
+        The output-limit rule's last step, reached only when the retry was
+        truncated too. The report is complete and publishable and the run does
+        not end: what is missing is a judgement of it, and the graph already
+        has that state — no critique, nothing acceptable, nothing to route a
+        refinement from. This is deliberately *not* the provider-failure
+        fallback: that one records a failed review with a floor score, which
+        the graph turns into ``critique_failed`` and a failed run, and it is
+        the right reading of an outage that says nothing about the request.
+        Two truncations of the same request are a statement about the request,
+        and the honest response is to publish the report unscored.
+        """
+        cap = self.config.critic_review_max_tokens
+        return (
+            None,
+            "review_unavailable",
+            [
+                *self._retry_records(truncations, "truncated"),
+                review_unavailable(truncations[-1], max_tokens=cap),
+            ],
+            True,
+        )
 
     async def _complete_review(
-        self, messages: Sequence[ChatMessage]
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        reasoning_effort: str | None = None,
     ) -> CritiqueDraft:
         """One structured review request under this operation's output budget.
 
@@ -2345,15 +2602,23 @@ class CriticAgent(BaseAgent[Critique]):
         skip every validator. Re-validating the dumped object is what makes "one
         trustworthy validation boundary" true of the *values* rather than only
         of the transport, and it costs one pass over a small payload.
+
+        ``reasoning_effort`` is the retry's own setting and is ``None`` on the
+        first attempt, which keeps the request each ordinary review sends
+        exactly as it was. The output budget is the operation's configured cap
+        on both attempts: the rule is one retry, never a larger cap.
         """
         self.fingerprint_call(
-            "CritiqueDraft", output_limit=self.config.critic_review_max_tokens
+            "CritiqueDraft",
+            output_limit=self.config.critic_review_max_tokens,
+            reasoning_effort=reasoning_effort,
         )
         reply = await self.provider.complete_structured(
             messages,
             CritiqueDraft,
             agent_name=self.name,
             max_tokens=self.config.critic_review_max_tokens,
+            reasoning_effort=reasoning_effort,
         )
         payload = (
             reply.model_dump(mode="python")
@@ -2398,7 +2663,7 @@ class CriticAgent(BaseAgent[Critique]):
                         error_type="critic_review_repair_refused",
                         message=str(refusal),
                         recoverable=False,
-                        details={"operation": "critic_report_review"},
+                        details={"operation": CRITIC_REVIEW_OPERATION},
                     ),
                 ],
                 # No provider call failed here: the repair was refused locally,
@@ -2525,11 +2790,16 @@ class CriticAgent(BaseAgent[Critique]):
         result: Critique | None,
         run: ReActRun,
     ) -> ResearchStateUpdate:
-        """The critique and errors only. ``run`` adds the progress events."""
-        update: ResearchStateUpdate = {"errors": list(run.errors)}
-        if result is not None:
-            update["critique"] = result
-        return update
+        """The critique and errors only. ``run`` adds the progress events.
+
+        The critique key is written even when there is no critique. An omitted
+        key means "unchanged" to the state merge, so a review that produced
+        nothing would leave an *earlier* pass's judgement in place — and the
+        router reads that judgement, which is how an unavailable review would
+        come back as an acceptance. Writing ``None`` is what makes "no
+        judgement was made this pass" a fact about this pass.
+        """
+        return {"errors": list(run.errors), "critique": result}
 
     async def run(self, state: ResearchState) -> AgentRun[Critique]:
         """Review the packet, then score and route.
@@ -2564,21 +2834,37 @@ class CriticAgent(BaseAgent[Critique]):
                 react = react.model_copy(update={"stop_reason": "provider_error"})
             react = react.model_copy(update={"errors": errors})
             events.append(
-                critique_completed_event(
-                    critique,
-                    react,
-                    reason=reason,
-                    iteration=task.iteration,
-                    max_iterations=task.max_iterations,
+                (
+                    critique_completed_event(
+                        critique,
+                        react,
+                        reason=reason,
+                        iteration=task.iteration,
+                        max_iterations=task.max_iterations,
+                    )
+                    if critique is not None
+                    else critique_unavailable_event(
+                        reason=reason,
+                        iteration=task.iteration,
+                        max_iterations=task.max_iterations,
+                        tool_calls=react.tool_calls,
+                        stop_reason=react.stop_reason,
+                    )
                 )
             )
             span.set_outputs(
                 {
                     "agent_name": self.name,
-                    "score": critique.score,
-                    "review_status": critique.review_status,
-                    "gap_count": len(critique.gaps),
-                    "should_continue": critique.should_continue,
+                    "score": None if critique is None else critique.score,
+                    "review_status": (
+                        "unavailable"
+                        if critique is None
+                        else critique.review_status
+                    ),
+                    "gap_count": 0 if critique is None else len(critique.gaps),
+                    "should_continue": (
+                        False if critique is None else critique.should_continue
+                    ),
                     "reason": reason,
                     "packet_fingerprint": (
                         task.packet.fingerprint if task.packet else ""

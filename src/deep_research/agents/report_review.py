@@ -44,9 +44,15 @@ from deep_research.agents.base import (
     call_configuration_fingerprint,
 )
 from deep_research.agents.critic import (
+    OUTPUT_LIMIT_RETRY_EFFORT,
+    REVIEW_RETRY_OUTCOMES,
     CritiqueContractViolation,
     CritiqueGapDraft,
     normalize_gaps,
+)
+from deep_research.agents.errors import (
+    agent_error,
+    agent_provider_failure_details,
 )
 from deep_research.agents.quality import compute_substantive_coverage
 from deep_research.agents.report import (
@@ -58,6 +64,7 @@ from deep_research.observability import Tracker
 from deep_research.providers import (
     ChatMessage,
     ProviderError,
+    ProviderOutputLimitError,
     StructuredOutputError,
 )
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
@@ -73,6 +80,7 @@ from deep_research.utils.types import (
     CritiqueGap,
     ReportReview,
     ReportStatement,
+    ResearchError,
     ResearchState,
     ScoredSource,
     SourceTemporal,
@@ -106,6 +114,63 @@ reasoning the Critic's review budget exists for.
 
 REPORT_REVIEW_EVIDENCE_BATCH_CHARS = 4000
 """How much rendered evidence one batch carries before the next one starts."""
+
+REPORT_REVIEW_OPERATION = "report_review"
+"""The operation label this reviewer's records carry.
+
+One role makes one kind of request — the cross-section judgement and the
+follow-ups that complete it — so one label names them all, and a reader
+grouping the run's warnings by operation sees this reviewer's records together.
+"""
+
+
+def report_review_output_limit_retry(
+    error: Exception,
+    *,
+    schema: str,
+    reasoning_effort: str,
+    max_tokens: int,
+    outcome: str,
+) -> ResearchError:
+    """Record that a truncated review request was re-asked at another effort.
+
+    The Critic's rule, on this reviewer's requests: one retry, the same output
+    budget, and no run ending. The record exists because the retry is a second
+    paid call — without it, a review that took two requests is indistinguishable
+    in the artifacts from one that took a single request.
+
+    The request, the effort, the budget it kept, and what came back are in the
+    *message*, not only in ``details``: this project publishes details only for
+    the error types whose projection it has vetted, and an effort a reader
+    cannot see is a retry a reader cannot find.
+    """
+    if outcome not in REVIEW_RETRY_OUTCOMES:
+        raise ValueError(f"unknown retry outcome: {outcome!r}")
+    return agent_error(
+        agent_name=REPORT_JUDGE_ROLE,
+        error_type="report_review_output_limit_retry",
+        message=(
+            f"The {schema} review request was truncated by the output limit; "
+            f"it was re-asked once at reasoning_effort {reasoning_effort} with "
+            f"the same {max_tokens}-token output budget, and "
+            + (
+                "the retry returned a reply."
+                if outcome == "answered"
+                else "the retry was truncated as well, so no judgement was "
+                "made from it."
+            )
+        ),
+        recoverable=True,
+        details=agent_provider_failure_details(
+            REPORT_REVIEW_OPERATION,
+            error,
+            attempt=2,
+            schema=schema,
+            reasoning_effort=reasoning_effort,
+            max_tokens=max_tokens,
+            outcome=outcome,
+        ),
+    )
 
 MAX_REVIEW_DEFECTS = 12
 """How many distinct defects one review may carry before it is refused."""
@@ -1813,6 +1878,7 @@ class ReportReviewer:
         self._config = config or AgentRuntimeConfig()
         self._model_profile = model_profile
         self._call_fingerprints: dict[str, str] = {}
+        self._review_records: list[ResearchError] = []
 
     @property
     def provider(self) -> StructuredCompleter:
@@ -1832,19 +1898,30 @@ class ReportReviewer:
         return dict(self._call_fingerprints)
 
     def fingerprint_call(
-        self, label: str, *, output_limit: int | None = None
+        self,
+        label: str,
+        *,
+        output_limit: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
-        """Fingerprint one review request and record it, as an agent does."""
+        """Fingerprint one review request and record it, as an agent does.
+
+        A per-call ``reasoning_effort`` override stands in for the profile's
+        value when one is passed, exactly as it does for an agent's call.
+        """
         profile = self._model_profile
+        effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else ("unresolved" if profile is None else profile.reasoning_effort)
+        )
         value = call_configuration_fingerprint(
             agent_name=self.name,
             model="unresolved" if profile is None else profile.model,
             thinking_mode=(
                 "unresolved" if profile is None else profile.thinking_mode
             ),
-            reasoning_effort=(
-                "unresolved" if profile is None else profile.reasoning_effort
-            ),
+            reasoning_effort=effort,
             output_limit=output_limit,
             context_limit=self._config.prompt_context_entries,
             schema_name=label,
@@ -1864,8 +1941,11 @@ class ReportReviewer:
         Reuse is by fingerprint and nothing else: a stored review of different
         content is not a review of this report, and a stored review that is not
         ``scored`` is not a review at all. There is no second attempt loop
-        here — one request per batch, and the outcome is recorded.
+        here — one request per batch, and the outcome is recorded — but a
+        request the provider truncated is re-asked once, and
+        ``review_records`` reports what that cost.
         """
+        self._review_records = []
         if (
             previous is not None
             and previous.status == "scored"
@@ -1879,6 +1959,17 @@ class ReportReviewer:
             reviewer=self,
         )
 
+    @property
+    def review_records(self) -> tuple[ResearchError, ...]:
+        """The records the most recent review produced, provider-free.
+
+        Empty for a review that needed no retry — including one this reviewer
+        reused instead of making — so a consumer publishing these beside the
+        review cannot report an operational fact about a call that never
+        happened. A whole review produces at most one, the output-limit retry.
+        """
+        return tuple(self._review_records)
+
     async def _request(
         self,
         messages: Sequence[ChatMessage],
@@ -1888,12 +1979,10 @@ class ReportReviewer:
             schema.__name__,
             output_limit=self._config.report_review_max_tokens,
         )
-        reply = await self._provider.complete_structured(
-            messages,
-            schema,
-            agent_name=self.name,
-            max_tokens=self._config.report_review_max_tokens,
-        )
+        try:
+            reply = await self._structured_request(messages, schema)
+        except ProviderOutputLimitError as error:
+            reply = await self._re_ask_truncated(messages, schema, error)
         payload = (
             reply.model_dump(mode="python")
             if isinstance(reply, schema)
@@ -1904,6 +1993,75 @@ class ReportReviewer:
         # object whose fields were never checked. One trustworthy validation
         # boundary means the *values* are checked, not just the transport.
         return schema.model_validate(payload)
+
+    async def _structured_request(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[Any],
+        *,
+        reasoning_effort: str | None = None,
+    ) -> Any:
+        """One structured request for this review, at this request's effort.
+
+        ``reasoning_effort`` is the retry's own setting: ``None`` on every
+        ordinary request, which keeps the request this reviewer has always sent
+        byte-identical, and the shared retry effort on the second attempt. The
+        output budget is the operation's configured cap on both.
+        """
+        return await self._provider.complete_structured(
+            messages,
+            schema,
+            agent_name=self.name,
+            max_tokens=self._config.report_review_max_tokens,
+            reasoning_effort=reasoning_effort,
+        )
+
+    async def _re_ask_truncated(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[Any],
+        error: ProviderOutputLimitError,
+    ) -> Any:
+        """Re-ask a truncated review request once, or report it stayed truncated.
+
+        The same allowance the Critic's review gets, for the same reason: a
+        truncated reply is the one failure a different request can fix, so it
+        is re-asked once under the same output budget at the effort that leaves
+        more of that budget for the answer. A second truncation is re-raised to
+        the caller, which is where this reviewer's non-fatal "no judgement
+        exists" path lives — an unjudged report never ends the run.
+
+        The raised copy is fresh telemetry rather than the caught object, so
+        the traceback this reaches the ledger through does not carry the
+        provider response the truncation was detected on.
+        """
+        try:
+            reply = await self._structured_request(
+                messages, schema, reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT
+            )
+        except ProviderOutputLimitError as retry_error:
+            self._review_records.append(
+                report_review_output_limit_retry(
+                    error,
+                    schema=schema.__name__,
+                    reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
+                    max_tokens=self._config.report_review_max_tokens,
+                    outcome="truncated",
+                )
+            )
+            raise retry_error.redacted_copy(
+                ProviderOutputLimitError.SAFE_MESSAGE
+            ) from None
+        self._review_records.append(
+            report_review_output_limit_retry(
+                error,
+                schema=schema.__name__,
+                reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
+                max_tokens=self._config.report_review_max_tokens,
+                outcome="answered",
+            )
+        )
+        return reply
 
 
 async def review_report(

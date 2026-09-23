@@ -109,11 +109,18 @@ class StructuredCompleter(Protocol):
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> _SchemaT:
         """Return validated structured output for ``schema``.
 
         ``max_tokens`` is a per-call output-budget override for this request
         only; ``None`` means the provider's configured global cap.
+        ``reasoning_effort`` is the same kind of override for the effort this
+        request reasons at: ``None`` means the effort the agent's own profile
+        resolves to, which is what every ordinary call sends, and a value is
+        validated against the same capability registry the configured effort
+        goes through. It exists so a truncated call can be re-asked at another
+        effort without editing the agent's configuration.
         """
         raise NotImplementedError
 
@@ -237,23 +244,32 @@ class BaseAgent(ABC, Generic[ResultT]):
         label: str,
         *,
         output_limit: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         """Fingerprint one provider call and record it for this run.
 
         Called at the call site, so the label names the request actually being
         made (a schema name, or ``"ReactDecision"``) and the output limit is
         that request's own budget rather than a single run-wide number.
+
+        A per-call ``reasoning_effort`` override is part of what a request is
+        configured by, so it stands in for the profile's value here when one is
+        passed; ``None`` fingerprints the profile's own effort, which is what
+        every ordinary call sends.
         """
         profile = self._model_profile
+        effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else ("unresolved" if profile is None else profile.reasoning_effort)
+        )
         value = call_configuration_fingerprint(
             agent_name=self._name,
             model="unresolved" if profile is None else profile.model,
             thinking_mode=(
                 "unresolved" if profile is None else profile.thinking_mode
             ),
-            reasoning_effort=(
-                "unresolved" if profile is None else profile.reasoning_effort
-            ),
+            reasoning_effort=effort,
             output_limit=output_limit,
             context_limit=self._config.prompt_context_entries,
             schema_name=label,

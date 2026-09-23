@@ -505,6 +505,7 @@ class FakeReviewer:
     def __init__(self, reviews: Sequence[ReportReview] = ()) -> None:
         self._reviews = list(reviews) or [fake_report_review()]
         self.packets: list[object] = []
+        self.review_records: tuple[ResearchError, ...] = ()
 
     @property
     def calls(self) -> int:

@@ -132,6 +132,7 @@ class ScriptedCompleter:
         self._outputs: list[Any] = list(outputs)
         self.calls: list[tuple[str, str | None, list[ChatMessage]]] = []
         self.budgets: list[int | None] = []
+        self.efforts: list[str | None] = []
         self.react_calls: list[ReactCall] = []
         self.react_budgets: list[int | None] = []
 
@@ -166,12 +167,14 @@ class ScriptedCompleter:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Any:
         # Recorded *before* the refusal on purpose: a guard test asserting
         # that no call ever names ``ReActDecision`` can only carry weight if a
         # refused attempt is visible in ``calls``.
         self.calls.append((schema.__name__, agent_name, list(messages)))
         self.budgets.append(max_tokens)
+        self.efforts.append(reasoning_effort)
         if schema is ReActDecision:
             raise AssertionError(
                 "ReAct decisions must be requested through complete_react"

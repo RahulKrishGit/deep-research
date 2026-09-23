@@ -19,7 +19,10 @@ from typing import Annotated, Any, TypeVar, Union, cast, get_args, get_origin
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
-from deep_research.providers.capabilities import resolve_request_settings
+from deep_research.providers.capabilities import (
+    resolve_request_settings,
+    with_reasoning_effort,
+)
 from deep_research.providers.contracts import (
     MAX_STRUCTURED_REPAIR_RECORDS,
     ChatMessage,
@@ -653,8 +656,12 @@ def _set_span_result(span: Any, telemetry: ProviderResponseTelemetry) -> None:
 def _responses_request_options(
     config: LLMConfig,
     agent_name: str | None,
+    *,
+    reasoning_effort: str | None = None,
 ) -> tuple[EffectiveModelConfig, dict[str, object], dict[str, JsonValue]]:
-    effective = config.resolve_for(agent_name)
+    effective = with_reasoning_effort(
+        config.resolve_for(agent_name), reasoning_effort
+    )
     resolved = resolve_request_settings("deepseek", effective)
     request: dict[str, object] = {
         "model": effective.model,
@@ -745,7 +752,10 @@ class DeepSeekChatProvider:
         return self._last_model_returned
 
     def _request_options(
-        self, agent_name: str | None
+        self,
+        agent_name: str | None,
+        *,
+        reasoning_effort: str | None = None,
     ) -> tuple[EffectiveModelConfig, dict[str, object], dict[str, JsonValue]]:
         """Resolve and validate request settings for one effective model.
 
@@ -753,8 +763,14 @@ class DeepSeekChatProvider:
         unsupported model, thinking mode, or effort raises before the SDK
         is touched. Span metadata carries only model-span facts; message
         content never appears.
+
+        ``reasoning_effort`` is a per-call override for this request only;
+        ``None`` keeps the effort ``agent_name``'s own profile resolves to,
+        which is what every ordinary call sends.
         """
-        effective = self._config.resolve_for(agent_name)
+        effective = with_reasoning_effort(
+            self._config.resolve_for(agent_name), reasoning_effort
+        )
         resolved = resolve_request_settings("deepseek", effective)
         request: dict[str, object] = {
             "model": effective.model,
@@ -945,13 +961,16 @@ class DeepSeekChatProvider:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> SchemaT:
         if not messages:
             raise ValueError("messages must contain at least one item")
         resolved_max_tokens = _resolve_max_tokens(
             self._config.max_tokens, max_tokens
         )
-        effective, request, metadata = self._request_options(agent_name)
+        effective, request, metadata = self._request_options(
+            agent_name, reasoning_effort=reasoning_effort
+        )
         request = {**request, "max_tokens": resolved_max_tokens}
         instruction = _json_instruction(schema)
         current_messages = [
@@ -1349,6 +1368,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> SchemaT:
         if not messages:
             raise ValueError("messages must contain at least one item")
@@ -1356,7 +1376,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
             self._config.max_tokens, max_tokens
         )
         effective, request, metadata = _responses_request_options(
-            self._config, agent_name
+            self._config, agent_name, reasoning_effort=reasoning_effort
         )
         instruction = _json_instruction(schema)
         current_messages = [

@@ -429,6 +429,75 @@ async def test_openai_structured_applies_the_per_call_max_tokens_override() -> N
 
 
 @pytest.mark.asyncio
+async def test_openai_structured_applies_the_per_call_reasoning_effort_override() -> (
+    None
+):
+    """One request reasons at another effort without a profile edit.
+
+    The output-limit rule re-asks a truncated call at ``high`` with the same
+    output budget, so the override has to reach the wire for that request
+    alone, and ``None`` has to keep resolving to the configured effort.
+    """
+    responses = RecordingResponses(
+        response(parsed=Outline(title="A", points=[])),
+        response(parsed=Outline(title="B", points=[])),
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(
+            model="gpt-5.6-luna",
+            thinking_mode="enabled",
+            reasoning_effort="max",
+        ),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="Create an outline")],
+            Outline,
+            reasoning_effort="high",
+        )
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="Create an outline")],
+            Outline,
+            reasoning_effort=None,
+        )
+
+    assert [call["reasoning"] for call in responses.parse_calls] == [
+        {"effort": "high"},
+        {"effort": "max"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_structured_rejects_an_unsupported_per_call_effort() -> None:
+    """The override is validated like the configured value, before the SDK."""
+    responses = RecordingResponses(response(parsed=Outline(title="A", points=[])))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(
+            model="gpt-5.6-luna",
+            thinking_mode="enabled",
+            reasoning_effort="high",
+        ),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    with pytest.raises(ProviderConfigurationError, match="reasoning_effort"):
+        async with tracker.session_span("session-1", "question"):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="Create an outline")],
+                Outline,
+                reasoning_effort="turbo",
+            )
+
+    assert responses.parse_calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_max_tokens", [0, -1])
 async def test_openai_structured_rejects_non_positive_per_call_max_tokens(
     invalid_max_tokens: int,
@@ -794,8 +863,8 @@ async def test_openai_structured_failure_drops_provider_and_request_frames(
     )
     original_options = provider._request_options
 
-    def marked_options(agent_name):
-        effective, request, metadata = original_options(agent_name)
+    def marked_options(agent_name, **kwargs):
+        effective, request, metadata = original_options(agent_name, **kwargs)
         return effective, {**request, "request_marker": request_marker}, metadata
 
     monkeypatch.setattr(provider, "_request_options", marked_options)

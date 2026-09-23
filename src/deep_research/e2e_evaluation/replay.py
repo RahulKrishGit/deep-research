@@ -432,8 +432,9 @@ class ReplayCompleter(AgentCompleter):
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Any:
-        del max_tokens
+        del max_tokens, reasoning_effort
         name = schema.__name__
         text = self._text(messages)
         self._record(agent_name, name, text)

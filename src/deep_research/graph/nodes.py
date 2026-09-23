@@ -138,7 +138,15 @@ class ReportReviewerLike(Protocol):
     satisfies it, and so does a two-line double in a graph test — which is why
     a graph test can exercise "the review refused the report" without a
     provider, a prompt, or a tracker.
+
+    ``review_records`` is what the review just made *cost*: the records the
+    reviewer produced about its own calls, which the node publishes beside the
+    judgement so an operational fact about the request — a truncated call that
+    had to be re-asked — lands where the run's other warnings do instead of
+    only in a trace. A double that makes no such calls reports none.
     """
+
+    review_records: tuple[ResearchError, ...]
 
     async def review(
         self,
@@ -797,7 +805,7 @@ async def _review_report(
             False,
         )
     review = await reviewer.review(packet, previous=previous)
-    errors: list[ResearchError] = []
+    errors: list[ResearchError] = list(reviewer.review_records)
     if review.status != "scored":
         errors.append(
             report_review_unavailable_error(

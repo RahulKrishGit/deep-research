@@ -805,8 +805,10 @@ async def test_deepseek_judge_responses_failure_drops_provider_and_request_frame
     )
     original_options = deepseek_module._responses_request_options
 
-    def marked_options(config, agent_name):
-        effective, request, metadata = original_options(config, agent_name)
+    def marked_options(config, agent_name, **kwargs):
+        effective, request, metadata = original_options(
+            config, agent_name, **kwargs
+        )
         return effective, {**request, "request_marker": request_marker}, metadata
 
     monkeypatch.setattr(
@@ -1447,8 +1449,8 @@ async def test_deepseek_structured_failure_drops_provider_and_request_frames(
     )
     original_options = provider._request_options
 
-    def marked_options(agent_name):
-        effective, request, metadata = original_options(agent_name)
+    def marked_options(agent_name, **kwargs):
+        effective, request, metadata = original_options(agent_name, **kwargs)
         return effective, {**request, "request_marker": request_marker}, metadata
 
     monkeypatch.setattr(provider, "_request_options", marked_options)
@@ -1976,6 +1978,84 @@ async def test_deepseek_structured_applies_the_per_call_max_tokens_override() ->
         )
 
     assert completions.calls[0]["max_tokens"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_applies_the_per_call_reasoning_effort_override() -> (
+    None
+):
+    """One request reasons at another effort without a profile edit.
+
+    The output-limit rule re-asks a truncated call at ``high`` with the same
+    output budget, so the override has to reach the wire for that request
+    alone. The configured effort here is ``max`` — what the Critic's own
+    profile resolves to — and it must not be what the retry sends.
+    """
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(reasoning_effort="max"),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            reasoning_effort="high",
+        )
+
+    assert completions.calls[0]["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_keeps_the_configured_effort_without_an_override() -> (
+    None
+):
+    """``None`` is today's resolution: the agent's own configured effort."""
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(reasoning_effort="max"),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            reasoning_effort=None,
+        )
+
+    assert completions.calls[0]["reasoning_effort"] == "max"
+
+
+@pytest.mark.asyncio
+async def test_deepseek_structured_rejects_an_unsupported_per_call_effort() -> None:
+    """The override is validated like the configured value, before the SDK."""
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    with pytest.raises(ProviderConfigurationError, match="reasoning_effort"):
+        async with tracker.session_span("session-1", "question"):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")],
+                TinyAnswer,
+                reasoning_effort="turbo",
+            )
+
+    assert completions.calls == []
 
 
 @pytest.mark.asyncio

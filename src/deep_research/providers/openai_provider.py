@@ -15,7 +15,10 @@ from typing import Any, TypeVar
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
-from deep_research.providers.capabilities import resolve_request_settings
+from deep_research.providers.capabilities import (
+    resolve_request_settings,
+    with_reasoning_effort,
+)
 from deep_research.providers.contracts import (
     ChatMessage,
     ChatResult,
@@ -409,7 +412,10 @@ class OpenAIChatProvider:
         return self._last_model_returned
 
     def _request_options(
-        self, agent_name: str | None
+        self,
+        agent_name: str | None,
+        *,
+        reasoning_effort: str | None = None,
     ) -> tuple[EffectiveModelConfig, dict[str, object], dict[str, JsonValue]]:
         """Resolve and validate request settings for one effective model.
 
@@ -417,8 +423,14 @@ class OpenAIChatProvider:
         unsupported model, thinking mode, or effort raises before the SDK
         is touched. Span metadata carries only model-span facts; message
         content never appears.
+
+        ``reasoning_effort`` is a per-call override for this request only;
+        ``None`` keeps the effort ``agent_name``'s own profile resolves to,
+        which is what every ordinary call sends.
         """
-        effective = self._config.resolve_for(agent_name)
+        effective = with_reasoning_effort(
+            self._config.resolve_for(agent_name), reasoning_effort
+        )
         resolved = resolve_request_settings("openai", effective)
         request: dict[str, object] = {
             "model": effective.model,
@@ -719,13 +731,16 @@ class OpenAIChatProvider:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> SchemaT:
         if not messages:
             raise ValueError("messages must contain at least one item")
         resolved_max_tokens = _resolve_max_tokens(
             self._config.max_tokens, max_tokens
         )
-        effective, request, metadata = self._request_options(agent_name)
+        effective, request, metadata = self._request_options(
+            agent_name, reasoning_effort=reasoning_effort
+        )
         request = {**request, "max_output_tokens": resolved_max_tokens}
         current_messages = list(messages)
 
