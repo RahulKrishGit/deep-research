@@ -8,6 +8,10 @@ from pathlib import Path
 
 import pytest
 
+from deep_research.agents.quality import (
+    compute_report_quality,
+    compute_substantive_coverage,
+)
 from deep_research.agents.report import render_reader_report
 from deep_research.e2e_evaluation.cases import (
     _terminal_state,
@@ -21,7 +25,7 @@ from deep_research.e2e_evaluation.evaluators import (
 )
 from deep_research.e2e_evaluation.models import WholeReportJudgeInput
 from deep_research.e2e_evaluation.runner import run_case
-from deep_research.utils.types import ResearchEvent
+from deep_research.utils.types import EvidenceTarget, ResearchEvent
 
 
 def _accepted_fixture_parts(case_id: str = "broad-constraints"):
@@ -72,6 +76,93 @@ def test_deterministic_evaluator_covers_all_integrity_surfaces() -> None:
     assert metrics.repeated_source_snapshot_passes >= 1
     assert metrics.repeated_claim_snapshot_passes >= 1
     assert dependencies.network_zero
+
+
+def test_the_coverage_leg_grades_the_reading_the_product_gates_on() -> None:
+    """A topic a claim consumed is not a covered topic.
+
+    Task 12/§2.3: the product grades coverage with
+    ``compute_substantive_coverage`` — a topic counts only when every counted
+    obligation it declared is answered — while this evaluator graded the ratio
+    built from ``claim.consumed_coverage_ids``. A run whose plan declared an
+    obligation and left it unanswered therefore scored ``coverage_ratio`` 1.0
+    here with no ``coverage_below_0.80``, and the campaign gate accepted a run
+    the product itself reports as uncovered. The harness must read the same
+    measurement it certifies.
+    """
+    case, state, dependencies, _metrics, cli_output = _accepted_fixture_parts()
+    counted = state.sub_topics[0]
+    unanswered = EvidenceTarget(
+        target_id="t-unanswered",
+        coverage_id=counted.coverage_id,
+        question="What does this obligation require, and who reported it?",
+        required_dimensions=["finding"],
+        required=True,
+        critical=False,
+        support_policy="primary_attribution",
+    )
+    sub_topics = [
+        counted.model_copy(update={"evidence_targets": [unanswered]}),
+        *state.sub_topics[1:],
+    ]
+    composition = state.composition.model_copy(
+        update={"sub_topics": sub_topics}
+    )
+    plan_state = state.model_copy(update={"sub_topics": sub_topics})
+    plan_state = plan_state.model_copy(
+        update={"composition": composition}
+    ).model_copy(
+        update={"quality": compute_report_quality(plan_state, composition)}
+    )
+
+    substantive = compute_substantive_coverage(plan_state, composition)
+    assert substantive.planned_targets == 1
+    assert substantive.covered_topics == 0
+
+    metrics = deterministic_evaluation(
+        case,
+        plan_state,
+        dependencies=dependencies,
+        cli_output=cli_output,
+    )
+
+    assert metrics.coverage_ratio == substantive.topic_ratio == 0.0
+    assert "coverage_below_0.80" in metrics.integrity_failures
+    # The claim still records consuming the topic, so the claimed reading is
+    # untouched — and it is published as the claimed reading, not graded.
+    assert metrics.claimed_coverage_ratio == 1.0
+
+
+def test_a_plan_declaring_no_obligations_keeps_the_claimed_reading() -> None:
+    """The legacy plan shape is not scored as a plan that answered nothing.
+
+    ``compute_report_quality`` reads a plan that declares no counted target the
+    same way: it cannot be judged substantively because it owes nothing, so the
+    claimed ratio stands rather than every topic reading as uncovered. The
+    harness has to apply that rule too, or the campaign would fail every
+    controlled fixture on a denominator change instead of on a defect.
+    """
+    case, state, dependencies, accepted, cli_output = _accepted_fixture_parts()
+
+    assert not any(
+        target
+        for topic in state.sub_topics
+        for target in topic.evidence_targets
+    )
+    substantive = compute_substantive_coverage(state, state.composition)
+    assert substantive.planned_targets == 0
+    assert substantive.covered_topics == 0
+
+    metrics = deterministic_evaluation(
+        case,
+        state,
+        dependencies=dependencies,
+        cli_output=cli_output,
+    )
+
+    assert metrics.coverage_ratio == accepted.coverage_ratio == 1.0
+    assert "coverage_below_0.80" not in metrics.integrity_failures
+    assert metrics.covered_topics == accepted.covered_topics
 
 
 def test_judge_contract_contains_only_bounded_report_inputs() -> None:
