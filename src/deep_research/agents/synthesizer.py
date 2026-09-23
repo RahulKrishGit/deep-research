@@ -125,11 +125,16 @@ SYNTHESIS_OPEN_QUESTIONS_CHARS = 2000
 DEFAULT_MEMORY_CONFIDENCE = 0.7
 DEFAULT_MAX_MEMORY_FINDINGS = 10
 
+# Render bounds: each clamps one rendered cell, bullet, or audit record, so a
+# long model-written sentence cannot push a rendered table or a ledger row off
+# the page. They are bounds for *display* and never for a model's input: a
+# fragment shown to a writer is a fragment the writer may restate, so the
+# packet that reaches a model carries text whole and bounds how much of it
+# fits by count instead. `summarize_text` marks every cut it makes.
 _POINT_CHARS = 600
 _SECTION_TITLE_CHARS = 120
 _GUIDANCE_CHARS = 200
 _CLAIM_TEXT_CHARS = 240
-_EVIDENCE_CHARS = 200
 _CELL_CHARS = 120
 
 # What a factual assertion introduces that a paraphrase does not. A statement
@@ -312,9 +317,67 @@ STATEMENT_DISPOSITIONS = (
     "unsupported_recommendation",
     "unsupported_limitation",
     "unsupported_extrapolation",
+    "unsupported_modality",
+    "unsupported_qualifier",
+    "unsupported_scope_fact",
     "duplicate_statement",
     "unlinked_statement",
     "returned_to_fact_checker",
+)
+
+# The modality markers a claim may carry and a statement may not drop. A
+# statement may reword its evidence; it may not out-assert it. The audited
+# report turned "capacity growth from battery storage could set a record" into
+# "would set a record" and published the source's own uncertainty as a fact.
+#
+# Deliberately narrow: every entry is a word that marks uncertainty on its
+# own, so a statement drawn from a hedged claim is refused only when it is
+# genuinely unhedged. "preliminary" is absent on purpose — it qualifies a
+# document's title ("Preliminary Monthly Electric Generator Inventory"), not
+# an assertion, and reading it as a hedge would refuse an accurate sentence.
+_HEDGE_PATTERN = re.compile(
+    r"\b(?:could|might|possibly|potentially|perhaps|may|expects|expected|"
+    r"projected|forecast|forecasts|anticipates|plans|planned|intends|"
+    r"suggests|suggested|implies|implied|appears|seems|likely|unlikely|"
+    r"reportedly|allegedly|estimated|approximately|roughly)\b",
+    re.IGNORECASE,
+)
+# ``may`` is the one marker that collides with a month name, so it is matched
+# separately and refused when a date follows it.
+_HEDGE_MAY_PATTERN = re.compile(r"\bmay\b(?!\s+\d)", re.IGNORECASE)
+
+# The words that name a scope convention rather than a measurement, and the
+# capacity qualifiers a figure may or may not carry. Both are checks about
+# what a statement *asserts*: a scope fact is a finding, so it needs a checked
+# claim behind it, and a qualifier is part of the quantity, so the evidence has
+# to attach it to the same figure.
+_SCOPE_MARKERS = (
+    "behind-the-meter",
+    "behind the meter",
+    "front-of-meter",
+    "front of meter",
+    "outside the reported",
+    "outside these totals",
+    "reported totals",
+    "utility-scale only",
+    "utility scale only",
+    "does not include",
+    "do not include",
+    "not included",
+    "excludes",
+    "excluding",
+    "excluded",
+    "scoped to",
+    "covers only",
+)
+_QUALIFIER_WORDS = (
+    "nameplate",
+    "operational",
+    "installed",
+    "cumulative",
+    "planned",
+    "proposed",
+    "existing",
 )
 
 # Characters kept verbatim in a report filename. Narrow on purpose:
@@ -697,8 +760,9 @@ def bounded_claim_packet(
         )
     maximum = min(limit, len(ranked))
     # Select the largest ranked prefix whose *actual prompt representation*
-    # fits.  This includes labels, verdict syntax, rendered text truncation,
-    # URLs, coverage, separators, and the omission notice.
+    # fits.  This includes labels, verdict syntax, the claims' own text, URLs,
+    # coverage, separators, and the omission notice — so a smaller packet is
+    # one that carries fewer claims, never one that carries a claim in part.
     for size in range(maximum, -1, -1):
         packet = ranked[:size]
         omitted = len(ranked) - size
@@ -918,16 +982,21 @@ def _evidence_lines(
     evidence_ids: Sequence[str],
     evidence: Mapping[str, EvidenceUnit],
 ) -> list[str]:
-    """``id locator "excerpt"`` for each selected passage, in selected order."""
+    """``id locator "excerpt"`` for each selected passage, in selected order.
+
+    The excerpt is published whole. It is the passage a claim rests on, and
+    the writer may only restate what it can see: clamping it to the ledger's
+    200-character display bound hid figures sitting below a page's navigation
+    — the same shape that made the audited run's fact checker miss nine of its
+    fourteen verdicts. What bounds this packet is how many claims it carries,
+    and what it left out is stated rather than hidden.
+    """
     lines: list[str] = []
     for evidence_id in evidence_ids:
         unit = evidence.get(evidence_id)
         if unit is None:
             continue
-        lines.append(
-            f"{evidence_id} {unit.locator} "
-            f'"{summarize_text(unit.excerpt, limit=_EVIDENCE_CHARS)}"'
-        )
+        lines.append(f'{evidence_id} {unit.locator} "{unit.excerpt}"')
     return lines
 
 
@@ -1079,7 +1148,13 @@ def build_canonical_packet(
                 label=claim_label(position),
                 claim_id=claim.claim_id,
                 cluster_id=claim.cluster_id,
-                text=summarize_text(claim.text, limit=_CLAIM_TEXT_CHARS),
+                # The claim as it was checked. A bound for a rendered table
+                # cell is not a bound for a model's input: a 289-character
+                # claim reached the writer as a cut sentence, and the report
+                # then published "the claim is recorded only in part" — an
+                # uncertainty invented by a display constant. The claim
+                # block's own character budget decides how many claims fit.
+                text=claim.text,
                 verdict=claim.verdict,
                 confidence=claim.confidence,
                 evidence_status=claim.evidence_status,
@@ -1408,6 +1483,90 @@ def unattested_words(text: str, corpus: str) -> list[str]:
     return [token for token in _content_tokens(text) if token not in tokens]
 
 
+def hedge_marker(text: str) -> str:
+    """The first modality marker a text carries, or ``""`` for none."""
+    match = _HEDGE_PATTERN.search(text) or _HEDGE_MAY_PATTERN.search(text)
+    return match.group(0).casefold() if match else ""
+
+
+def dropped_modality(text: str, claims: Sequence[Claim]) -> str:
+    """The modality a statement dropped, or ``""`` when it dropped none.
+
+    Read from the claims the statement rests on: an assertion drawn from a
+    hedged claim has to carry that hedge, because the hedge is what the
+    evidence supports. A claim that states no modality is a claim a statement
+    may state plainly, which is why this returns empty rather than requiring a
+    hedge of every statement.
+    """
+    if hedge_marker(text):
+        return ""
+    for claim in claims:
+        marker = hedge_marker(claim.text)
+        if marker:
+            return marker
+    return ""
+
+
+def scope_fact(text: str) -> str:
+    """The scope convention a text asserts, or ``""`` for none.
+
+    A scope fact — which plants a total includes, which it leaves out, which
+    issuer's boundary it follows — is a finding, and a finding needs checked
+    evidence behind it. This is what tells a source-free note that it has
+    stopped describing this pass and started asserting the world.
+    """
+    lowered = text.casefold()
+    for marker in _SCOPE_MARKERS:
+        if marker in lowered:
+            return marker
+    return ""
+
+
+def _qualifier_attachments(text: str) -> set[tuple[str, str]]:
+    """The (figure, qualifier) pairs a text asserts, by nearest-figure attachment.
+
+    A capacity qualifier describes the nearest figure to its left in its own
+    sentence, and the nearest figure to its right when none precedes it. That
+    is the dominant form both ways round — "operational ... of 43.6 GW" and
+    "52 GW of nameplate capacity" — and it is what keeps one sentence naming
+    two figures from attaching one figure's qualifier to the other.
+    """
+    pairs: set[tuple[str, str]] = set()
+    for sentence in re.split(r"(?<=[.!?])\s+", text.casefold()):
+        figures = [
+            (match.start(), _figure_number(match.group(0)))
+            for match in _FIGURE_PATTERN.finditer(sentence)
+        ]
+        if not figures:
+            continue
+        for word in _QUALIFIER_WORDS:
+            for match in re.finditer(rf"\b{word}\b", sentence):
+                left = [item for item in figures if item[0] < match.start()]
+                figure = (
+                    max(left, key=lambda item: item[0])[1]
+                    if left
+                    else min(figures, key=lambda item: item[0])[1]
+                )
+                pairs.add((figure, word))
+    return pairs
+
+
+def unattached_qualifiers(text: str, corpus: str) -> list[str]:
+    """Qualifiers a statement attaches to a figure its evidence does not.
+
+    The audited report called 43.6 GW "nameplate" while its source gave 43.6 GW
+    as *operational* capacity and nearly 52 GW of nameplate capacity. Both
+    words are in the corpus, so a word-level test passes that sentence; the
+    pairing is the claim, and the pairing is what is checked here.
+    """
+    attested = _qualifier_attachments(corpus)
+    return [
+        f"{qualifier} {figure}"
+        for figure, qualifier in sorted(_qualifier_attachments(text))
+        if (figure, qualifier) not in attested
+    ]
+
+
 def _is_recommendation(text: str) -> bool:
     lowered = f" {text.casefold()} "
     return any(marker in lowered for marker in _PRESCRIPTIVE_MARKERS)
@@ -1553,6 +1712,26 @@ def _build_point(
             "unsupported_recommendation",
             where,
             "a recommendation outside the answer",
+        )
+        context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
+        return None
+    lowered = dropped_modality(text, claims)
+    if lowered:
+        context.note(
+            "unsupported_modality",
+            where,
+            "the statement drops the modality its evidence carries",
+        )
+        context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
+        return None
+    qualifiers = unattached_qualifiers(
+        text, _cited_evidence(claims, context) or context.corpus
+    )
+    if qualifiers:
+        context.note(
+            "unsupported_qualifier",
+            where,
+            "an unsupported figure qualification",
         )
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
@@ -1827,6 +2006,14 @@ def _build_uncertainty_statements(
                 "unsupported_limitation",
                 where,
                 f"no recorded disposition for a {unrecorded} read",
+            )
+            continue
+        asserted_scope = scope_fact(text)
+        if asserted_scope:
+            context.note(
+                "unsupported_scope_fact",
+                where,
+                "a scope fact with no checked claim behind it",
             )
             continue
         repaired = _strip_unsupported_figures(text, context.note_corpus)

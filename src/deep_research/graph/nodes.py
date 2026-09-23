@@ -35,6 +35,7 @@ from deep_research.agents.report import (
     render_evidence_ledger,
     render_quality_json,
     render_reader_report,
+    terminal_report_state,
 )
 from deep_research.agents.report_review import (
     ReportReviewInput,
@@ -85,6 +86,7 @@ from deep_research.graph.state import (
     dump_state,
     graph_quality_status,
     graph_route,
+    graph_status,
     is_halted,
     load_state,
     progress_snapshot,
@@ -410,6 +412,7 @@ def _terminal_artifacts(
     state's own text is published as it stands.
     """
     composition = state.composition
+    run_status = graph_status(state)
     if composition is None:
         reader = state.report or ""
         evidence = state.report_evidence or ""
@@ -422,10 +425,17 @@ def _terminal_artifacts(
                 "evidence_markdown": evidence,
             },
             quality_status=status,
+            session_status=run_status,
         )
         return reader, evidence, quality, None
     finalized = composition.model_copy(
-        update={"quality_status": status, "errors": list(state.errors)}
+        update={
+            "quality_status": status,
+            "errors": list(state.errors),
+            "terminal": terminal_report_state(
+                state, composition, run_status=run_status
+            ),
+        }
     )
     reader = render_reader_report(finalized).strip()
     evidence = render_evidence_ledger(finalized).strip()
@@ -437,6 +447,7 @@ def _terminal_artifacts(
             "reader_markdown": reader,
             "evidence_markdown": evidence,
         },
+        session_status=run_status,
     )
     return reader, evidence, quality, finalized
 

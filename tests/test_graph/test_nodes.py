@@ -1134,6 +1134,87 @@ async def test_the_published_ledger_carries_the_records_made_after_synthesis(
 
 
 @pytest.mark.asyncio
+async def test_the_finalizer_stamps_the_runs_terminal_checks_onto_the_report(
+) -> None:
+    """The reader report is the artifact a decision-maker receives.
+
+    The audited run published one saying ``Quality status: partial`` and
+    nothing else: not that the run ended failed, not that the critic never
+    judged it, not that the semantic review was never scored, not that no
+    required target was answered, and not which gates rejected it. Every one
+    of those facts was already in state when the report was written.
+    """
+    publisher = FakePublisher()
+    state = _finalized_state(
+        quality=fake_quality(
+            hard_failures=[
+                "unanswered_critical_targets",
+                "unaccounted_required_targets",
+            ]
+        ).model_copy(
+            update={
+                "required_targets": 11,
+                "answered_targets": 0,
+                "critical_targets": 9,
+                "unanswered_critical_target_ids": [f"t{index}" for index in range(9)],
+            }
+        )
+    )
+    composition = fake_reader_composition(state)
+    critique = fake_critique(should_continue=False, score=1).model_copy(
+        update={"review_status": "failed"}
+    )
+    review = fake_report_review(status="provider_failed")
+
+    result = await finalize_report_node(publisher)(
+        dump_state(
+            state.model_copy(
+                update={
+                    "composition": composition,
+                    "critique": critique,
+                    "report_review": review,
+                }
+            )
+        )
+    )
+    final = load_state(result)
+    reader = publisher.document_named("report-session-1-0.md")[1]
+    ledger = publisher.document_named("-evidence.md")[1]
+    record = json.loads(publisher.document_named("-quality.json")[1])
+
+    assert "**Run status:** failed" in reader
+    assert "**Critic:** never judged" in reader
+    assert "**Report review:** unscored (provider_failed)" in reader
+    assert (
+        "**Coverage:** 0 of 11 required targets answered; "
+        "0 of 9 critical targets answered" in reader
+    )
+    assert (
+        "**Gate failures:** unanswered_critical_targets, "
+        "unaccounted_required_targets" in reader
+    )
+    # The ledger states the same terminal record the reader does.
+    assert "**Run status:** failed" in ledger
+    assert "**Report review:** unscored (provider_failed)" in ledger
+    # The record names the same three statuses, and the composition the
+    # finalizer stored carries them.
+    assert record["statuses"] == {
+        "session": "failed",
+        "critic": "failed",
+        "critic_score": 1,
+        "review": "provider_failed",
+    }
+    assert final.composition is not None
+    assert final.composition.terminal.status == "failed"
+    assert final.composition.terminal.answered_targets == 0
+    assert final.composition.terminal.required_targets == 11
+    assert final.composition.terminal.gate_failures == [
+        "unanswered_critical_targets",
+        "unaccounted_required_targets",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_the_finalizer_publishes_every_artifact_exactly_once() -> None:
     publisher = FakePublisher()
 

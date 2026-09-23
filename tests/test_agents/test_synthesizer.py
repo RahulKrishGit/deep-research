@@ -1630,6 +1630,149 @@ def test_a_truncation_limitation_with_a_recorded_disposition_is_kept() -> None:
     assert len(composition.uncertainty_statements) == 1
 
 
+def _summary_draft(text: str) -> ReportDraft:
+    """One drafted executive-summary point, and nothing else."""
+    return ReportDraft(
+        executive_summary=[_point_draft(text)],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+
+def test_a_statement_that_drops_its_claims_modality_is_refused() -> None:
+    """The audited report turned "could set a record" into "would set a record".
+
+    A statement may reword its evidence; it may not out-assert it. "could" is
+    the source's own uncertainty, and a report that prints "would" has made a
+    claim the evidence did not.
+    """
+    claim = _claim(
+        text=(
+            "EIA said capacity growth from battery storage could set a record "
+            "as it expects 18.2 GW to be added in 2025."
+        )
+    )
+    draft = _summary_draft(
+        "EIA said battery storage growth would set a record with 18.2 GW "
+        "added in 2025."
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim]), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.summary == []
+    assert rejected == [
+        "executive summary point 1: the statement drops the modality its "
+        "evidence carries"
+    ]
+
+
+def test_a_statement_that_keeps_the_modality_is_published() -> None:
+    """The same point, worded the way the claim words it, reaches the report."""
+    claim = _claim(
+        text=(
+            "EIA said capacity growth from battery storage could set a record "
+            "as it expects 18.2 GW to be added in 2025."
+        )
+    )
+    draft = _summary_draft(
+        "EIA said battery storage growth could set a record with 18.2 GW "
+        "added in 2025."
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim]), draft, max_sections=4, limitations=[]
+    )
+
+    assert rejected == []
+    assert composition.summary[0].text.startswith("EIA said battery storage")
+    assert "could set a record" in composition.summary[0].text
+
+
+def test_a_source_free_note_asserting_a_scope_fact_is_refused() -> None:
+    """A scope fact is a finding, and a finding needs a claim behind it.
+
+    The audited report stated as fact that the totals exclude behind-the-meter
+    storage — a convention its own source never mentions. A note is this
+    pass's own framing and may be source-free; it may not be a finding.
+    """
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[
+            "Reported totals exclude behind-the-meter storage, so the figures "
+            "cover utility-scale capacity only."
+        ],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.uncertainty_statements == []
+    assert rejected == [
+        "uncertainty note 1: a scope fact with no checked claim behind it"
+    ]
+
+
+def test_a_qualifier_its_evidence_does_not_attach_to_a_figure_is_refused() -> None:
+    """The audited report called 43.6 GW "nameplate"; its source said "operational".
+
+    The source gives 43.6 GW of *operational* capacity and nearly 52 GW of
+    nameplate capacity. Attaching the other figure's qualifier to this one
+    states a quantity the evidence never did.
+    """
+    excerpt = (
+        "By the end of 2025 the United States had 43.6 gigawatts of "
+        "operational battery storage capacity, reaching nearly 52 GW of "
+        "nameplate battery storage capacity."
+    )
+    claim = _claim(text="Battery storage capacity reached 43.6 GW by the end of 2025.")
+    draft = _summary_draft(
+        "Battery storage reached 43.6 GW of nameplate capacity by the end "
+        "of 2025."
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim], evidence_units={EVIDENCE_ID: _unit(excerpt=excerpt)}),
+        draft,
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary == []
+    assert rejected == [
+        "executive summary point 1: an unsupported figure qualification"
+    ]
+
+
+def test_a_qualifier_its_evidence_does_attach_is_published() -> None:
+    """The same figure under the qualifier its source gives it is fine."""
+    excerpt = (
+        "By the end of 2025 the United States had 43.6 gigawatts of "
+        "operational battery storage capacity, reaching nearly 52 GW of "
+        "nameplate battery storage capacity."
+    )
+    claim = _claim(text="Battery storage capacity reached 43.6 GW by the end of 2025.")
+    draft = _summary_draft(
+        "Battery storage reached 43.6 GW of operational capacity by the end "
+        "of 2025."
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim], evidence_units={EVIDENCE_ID: _unit(excerpt=excerpt)}),
+        draft,
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == []
+    assert composition.summary[0].text.startswith("Battery storage reached")
+
+
 def test_an_uncertainty_sentence_cannot_print_an_unchecked_figure() -> None:
     """The reader must explain the gap without printing the figure."""
     draft = ReportDraft(
@@ -2415,6 +2558,72 @@ def test_the_canonical_packet_lists_omitted_ids_and_continuation_batches() -> No
     assert len(packet.continuation_batches) == 2
     assert "continuation batch 1:" in rendered
     assert "cannot be cited by this draft" in rendered
+
+
+def test_the_writer_is_shown_every_checked_claim_whole() -> None:
+    """The claim the writer receives is the claim that was checked.
+
+    ``render_report_claim_packet`` clamped every claim to 240 characters, and
+    a 289-character claim reached the writer as a cut sentence. The writer
+    then reported that the claim "is recorded only in part" — an uncertainty
+    invented by a display bound. The character budget still decides how many
+    claims fit; it no longer decides how much of one is shown.
+    """
+    text = (
+        "PUDL covers electric power plants with 1 megawatt or greater combined "
+        "nameplate capacity that are connected to the local or regional "
+        "electric power grid, which is the respondent scope this pass recorded "
+        "in full and which answers this topic's second obligation."
+    )
+    assert len(text) > 240
+    claim = _claim(text=text, target_ids=["t1"])
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={},
+        evidence={EVIDENCE_ID: _unit()},
+        targets=[_target()],
+        sources=[_source()],
+        limit=10,
+    )
+    rendered = render_canonical_packet(packet)
+    labelled = render_report_claim_packet([(packet.entries[0].label, claim)])
+
+    assert packet.entries[0].text == text
+    assert text in rendered
+    assert text in labelled
+
+
+def test_the_writer_sees_a_passage_past_the_page_head() -> None:
+    """The passage the writer is shown is not the first 200 characters of it.
+
+    The audited run's adjudicator saw site navigation and missed the figures
+    below it; the writer's packet had the same shape, so a support line could
+    not carry the sentence the claim rested on. A display bound is not a
+    model-input bound.
+    """
+    navigation = "Skip to main content Advertisement Register " * 8
+    figure = "Generators added 10.4 GW of new battery storage capacity in 2024."
+    assert len(navigation) > 200
+    # The claim belongs to the cluster that selected the passage, which is how
+    # the packet resolves its support.
+    claim = _claim(target_ids=["t1"]).model_copy(
+        update={"cluster_id": CLUSTER_ID}
+    )
+    unit = _unit(excerpt=navigation + figure)
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={CLUSTER_ID: _cluster(evidence_ids=[EVIDENCE_ID])},
+        evidence={EVIDENCE_ID: unit},
+        targets=[_target()],
+        sources=[_source()],
+        limit=10,
+    )
+    rendered = render_canonical_packet(packet)
+
+    assert figure in rendered
+    assert any(figure in line for line in packet.entries[0].support)
 
 
 def test_the_packet_selects_the_evidence_ids_and_not_the_stances() -> None:

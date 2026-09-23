@@ -788,7 +788,7 @@ def render_report_claim_packet(
     packet: Sequence[tuple[str, Claim]],
     *,
     omitted: int = 0,
-    limit: int = 240,
+    limit: int | None = None,
 ) -> str:
     """Render the labelled checked-claim packet a report draft cites.
 
@@ -797,12 +797,24 @@ def render_report_claim_packet(
     string that does not name a checked claim. Claims the packet's budget left
     out are counted here rather than silently missing, so the model knows the
     packet is partial.
+
+    ``limit`` is ``None`` by default and that is the point: this is what the
+    writer is *shown*, so a claim reaches it as the claim it can cite. The
+    caller's character budget bounds how many claims fit and this goes on to
+    name the ones that did not, which is a faithful packet; clamping each
+    claim to a rendered-cell width was not, and a writer handed a cut sentence
+    reported that the claim itself was recorded only in part. ``limit`` stays
+    available for a caller that genuinely wants a bounded digest.
     """
     if omitted < 0:
         raise ValueError("omitted must not be negative")
     lines: list[str] = []
     for label, claim in packet:
-        text = summarize_text(claim.text, limit=limit)
+        text = (
+            summarize_text(claim.text, limit=limit)
+            if limit is not None
+            else claim.text
+        )
         urls = ", ".join(claim.source_urls)
         coverage = ", ".join(claim.consumed_coverage_ids)
         suffix = f" coverage={coverage}" if coverage else ""

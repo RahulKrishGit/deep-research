@@ -919,9 +919,16 @@ def _stdout_metrics(stdout: str) -> dict[str, int | str]:
         re.MULTILINE,
     )
     quality = re.search(
-        r"^Quality: (?P<status>\S+) \(critic (?P<score>\d+)/10; "
-        r"(?P<covered>\d+)/(?P<planned>\d+) topics claimed, "
-        r"(?P<ratio>\d+)%\)$",
+        r"^Quality: (?P<status>\S+)(?: \(critic (?P<score>\d+)/10\))?$",
+        stdout,
+        re.MULTILINE,
+    )
+    # The claimed topic count is its own row now: it used to sit inside the
+    # verdict line, where "N/N topics claimed" above "0/N topics covered" read
+    # as one run answering one question two ways.
+    claimed = re.search(
+        r"^Coverage claimed: (?P<covered>\d+)/(?P<planned>\d+) topics "
+        r"recorded as consumed by a checked claim \((?P<ratio>\d+)%\)$",
         stdout,
         re.MULTILINE,
     )
@@ -951,15 +958,16 @@ def _stdout_metrics(stdout: str) -> dict[str, int | str]:
     assert evidence is not None, stdout
     assert integrity is not None, stdout
     assert quality is not None, stdout
+    assert claimed is not None, stdout
     assert claims is not None, stdout
     assert sources is not None, stdout
     assert review is not None, stdout
     return {
         "quality_status": quality.group("status"),
         "critic_score": int(quality.group("score")),
-        "covered_topics": int(quality.group("covered")),
-        "planned_topics": int(quality.group("planned")),
-        "coverage_ratio": int(quality.group("ratio")),
+        "covered_topics": int(claimed.group("covered")),
+        "planned_topics": int(claimed.group("planned")),
+        "coverage_ratio": int(claimed.group("ratio")),
         "cited_sources": int(evidence.group("cited")),
         "scored_cited_sources": int(evidence.group("scored")),
         "verified_claims": int(evidence.group("verified")),
