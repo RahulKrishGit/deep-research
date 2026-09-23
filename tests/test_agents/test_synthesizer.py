@@ -1873,6 +1873,38 @@ def test_a_pass_phrase_in_one_clause_does_not_excuse_another() -> None:
     assert scope_fact(
         f"{audited}.This report cannot convert the figures."
     ) == "behind-the-meter"
+    # A clause about the evidence is not this pass describing its own scope.
+    assert scope_fact(
+        "The checked evidence is thin, behind-the-meter storage is excluded "
+        "from EIA's totals."
+    ) == "behind-the-meter"
+    # The clause carries two subjects; the contract is that it is refused.
+    assert (
+        scope_fact(
+            "The checked evidence is thin, behind-the-meter storage is "
+            "excluded from the reported totals."
+        )
+        != ""
+    )
+    # A source's totals are a source's boundary however the note opens — the
+    # guard belongs to the asserting clause, not to the one introducing it.
+    assert scope_fact(
+        "In this pass, behind-the-meter storage is excluded from EIA's totals."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        "In this pass, behind-the-meter storage is excluded from the totals "
+        "of the agency that publishes them."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        "In this pass, EIA totals exclude behind-the-meter storage."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        "In this pass, the source's totals exclude behind-the-meter storage."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        "In this pass, behind-the-meter storage is outside the totals the "
+        "publisher reports."
+    ) == "behind-the-meter"
 
 
 def test_a_cut_with_no_sentence_break_lands_on_a_word_boundary() -> None:
@@ -2001,8 +2033,12 @@ def test_a_note_that_describes_the_pass_is_not_a_scope_assertion() -> None:
         "State-level breakdowns are not included in this report.",
         "Behind-the-meter storage is discussed in the plan but no note "
         "about its size is included here.",
+        "In this pass, behind-the-meter storage is excluded from the totals "
+        "this report considered, because no read covered it.",
         "In this pass, behind-the-meter storage is not included in the "
         "totals considered, because no read covered it.",
+        "In this pass, behind-the-meter storage is excluded from the totals "
+        "this report considered, because no read covered it.",
     ]
 
     composition, rejected = build_report_composition(

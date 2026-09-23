@@ -414,6 +414,17 @@ _SCOPE_VERBS = (
 # What marks a note as this pass describing *itself* rather than a source's
 # boundary. A note about what was or was not researched is the framing a
 # source-free note exists to carry, whatever words it borrows from the totals.
+# The phrases that exempt an *introducing* clause. Narrower than
+# ``_PASS_PHRASES``: only a clause about what this pass, this report or the
+# plan did is the pass describing itself. "The checked evidence is thin" is a
+# judgement about the evidence, and exempting the clause after it published
+# "behind-the-meter storage is excluded from EIA's totals" — a source's
+# boundary, which is the assertion this check exists to refuse.
+_SCOPE_SELF_PHRASES = (
+    "this pass",
+    "this report",
+    "the plan",
+)
 _PASS_PHRASES = (
     "this pass",
     "this report",
@@ -1719,6 +1730,41 @@ def hardened_modality(text: str, corpus: str) -> str:
     return ""
 
 
+# The third-party nouns a note can hand a total to without naming anyone.
+_THIRD_PARTY_NOUNS = (
+    "the agency",
+    "the authority",
+    "the issuer",
+    "the publisher",
+    "the source",
+)
+
+
+def attributes_a_source(text: str) -> bool:
+    """True when a note hands a total to someone other than this pass.
+
+    Conservative on purpose: the question is not *which* words appear but
+    whether the note can be read as this pass describing itself, and a single
+    name anywhere in it says it cannot. A possessive total, a "totals of"
+    phrase, a third-party noun, an acronym, or any capitalised word that is
+    not a sentence opener is attribution — so "EIA totals exclude …",
+    "EIA's totals" and "the totals of the agency" are all sources' boundaries
+    whatever clause they sit in, while "the totals this report considered" is
+    this pass's own coverage and stays self-description.
+    """
+    folded = text.casefold()
+    if any(noun in folded for noun in _THIRD_PARTY_NOUNS):
+        return True
+    if re.search(r"(?:'s|\u2019s)\s+totals?\b|\btotals?\s+of\b", folded):
+        return True
+    if _ACRONYM_PATTERN.search(text):
+        return True
+    return any(
+        not _SENTENCE_INITIAL.search(text[: match.start()])
+        for match in _PROPER_NOUN_PATTERN.finditer(text)
+    )
+
+
 def scope_fact(text: str) -> str:
     """The scope convention a text asserts, or ``""`` for none.
 
@@ -1751,10 +1797,18 @@ def scope_fact(text: str) -> str:
         if (
             index
             and subject != _REPORTED_TOTALS
-            and any(phrase in clauses[index - 1] for phrase in _PASS_PHRASES)
+            and any(
+                phrase in clauses[index - 1]
+                for phrase in _SCOPE_SELF_PHRASES
+            )
             and not any(
                 name in clauses[index - 1] for name in _SCOPE_SUBJECTS
             )
+            # A pass phrase licenses self-description, never a claim about a
+            # source: "In this pass, behind-the-meter storage is excluded from
+            # EIA's totals" is a boundary however it opens, while "…from the
+            # totals this report considered" is this pass's own coverage.
+            and not attributes_a_source(text)
         ):
             continue
         # The exemption is per clause *and* positional: a note that opens by
