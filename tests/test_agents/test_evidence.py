@@ -1963,6 +1963,78 @@ def test_a_domain_that_only_spells_the_acronym_is_not_the_issuer() -> None:
     assert "issuer" not in read_metadata_row(read, anchors={"issuer": AGENCY_ISSUER})
 
 
+def test_a_lookalike_host_is_not_the_issuer_however_the_title_reads() -> None:
+    """The registrable domain has to be the issuer's own, suffix and all.
+
+    "eia.news" is a commercial registration whose label spells the agency's
+    acronym, and a page there can copy the agency's masthead word for word.
+    The label alone cannot tell the two apart; the suffix is the half a
+    registrant cannot choose, and ".gov" is issued to government bodies only
+    while ".news" is sold to anyone. Accepting the lookalike would let any
+    registrant publish as the agency.
+    """
+    read = _web_read(
+        "https://eia.news/batteries",
+        title="U.S. Energy Information Administration (EIA) says batteries grew",
+        text=(
+            "U.S. Energy Information Administration (EIA) says batteries grew "
+            "Battery storage capacity grew by 70% in 2025."
+        ),
+    )
+
+    assert "issuer" not in read_metadata_row(read, anchors={"issuer": AGENCY_ISSUER})
+
+
+def test_a_commercial_domain_is_refused_even_when_its_title_names_it() -> None:
+    """A .com masthead is a claim, not an ownership record.
+
+    cleanedge.com's own title does name Clean Edge, and on an institutional
+    suffix that would be first-party evidence. Nothing about a .com
+    registration is controlled — "cleanedge.news" and "clean-edge.com" are one
+    purchase away — so the same match would accept a squatter, and the rule
+    refuses the commercial case deliberately. The cost is bounded: the pages
+    it keeps are the institutionally served ones the audited run needed.
+    """
+    read = _web_read(
+        "https://cleanedge.com/data-dive/"
+        "u-s-electric-utility-scale-capacity-additions-by-fuel-type-2",
+        title=(
+            "U.S. Electric Utility-Scale Capacity Additions, by Fuel Type - "
+            "Clean Edge"
+        ),
+        text=(
+            "U.S. Electric Utility-Scale Capacity Additions, by Fuel Type - "
+            "Clean Edge Clean Edge reported that 10.3 GW was added in 2024."
+        ),
+    )
+
+    assert "issuer" not in read_metadata_row(read, anchors={"issuer": "Clean Edge"})
+
+
+def test_a_national_institutional_suffix_still_carries_a_first_party_claim() -> None:
+    """The rule is "institutionally registered", not "American".
+
+    ons.gov.uk is the Office for National Statistics' own domain — the .gov.uk
+    registry issues to public bodies — and its title names the office and
+    prints the acronym its label spells, so the same evidence a .gov page
+    carries is admitted here too.
+    """
+    read = _web_read(
+        "https://www.ons.gov.uk/economy/energy",
+        title="Energy storage in the UK - Office for National Statistics (ONS)",
+        text=(
+            "Energy storage in the UK - Office for National Statistics (ONS) "
+            "Storage capacity grew by 1.2 GW in 2025."
+        ),
+    )
+
+    row = read_metadata_row(
+        read, anchors={"issuer": "Office for National Statistics"}
+    )
+
+    assert row["issuer"] == "Office for National Statistics"
+
+
 def test_a_stated_attribution_phrase_is_accepted_with_its_fillers() -> None:
     """Genuine publication phrasing still resolves, however it is written."""
     for text in (

@@ -3483,6 +3483,10 @@ def test_the_run_spelling_keeps_its_value_and_place_across_the_period() -> None:
         "measure: inclusion rule and counting treatment for hybrid plants",
         "measure: inclusion or exclusion of behind-the-meter storage in the "
         "reported total",
+        # A unit list names the units a convention chooses between, so it asks
+        # what the convention is, not how much (integration review P2).
+        "measure: rating basis of the reported figures (AC or DC MW)",
+        "measure: whether capacity is reported in MW or MWh",
     ],
 )
 def test_a_qualitative_measure_never_demands_a_numeric_value(
@@ -3822,6 +3826,53 @@ def test_a_government_figure_does_not_answer_an_independent_publisher_target() -
     )
 
 
+@pytest.mark.parametrize(
+    ("publisher", "text", "binds"),
+    [
+        # An industry-class requirement rejects a government attribution but
+        # does not demand a hard-coded list of trackers (integration review P2).
+        (
+            "the market monitor's latest published outlook",
+            "Solar Energy Industries Association reported that generators in "
+            "the United States added 10.4 GW of grid-scale battery storage "
+            "capacity in 2024.",
+            True,
+        ),
+        (
+            "the market monitor's latest published outlook",
+            "EIA reported that generators in the United States added 10.4 GW "
+            "of grid-scale battery storage capacity in 2024.",
+            False,
+        ),
+        # A requirement that names the agency in its own words is a government
+        # requirement, even when it also says "industry".
+        (
+            "EIA's survey of the electric power industry",
+            "EIA reported that generators in the United States added 10.4 GW "
+            "of grid-scale battery storage capacity in 2024.",
+            True,
+        ),
+        (
+            "the Energy Information Administration's industry data",
+            "EIA reported that generators in the United States added 10.4 GW "
+            "of grid-scale battery storage capacity in 2024.",
+            True,
+        ),
+    ],
+)
+def test_a_source_requirement_turns_on_the_publisher_class_it_names(
+    publisher: str, text: str, binds: bool
+) -> None:
+    target = _battery_binding_target(publisher=publisher)
+    assert (
+        any(
+            atom_answers_target(atom, target, question=target.question)
+            for atom in extract_text_atoms(text)
+        )
+        is binds
+    )
+
+
 _LIVE_EVIDENCE_PERIOD = (
     "evidence period: the period the question names (2024, 2025); answer it "
     "as of 2025-12-31 and never substitute today's figures"
@@ -3992,6 +4043,46 @@ def test_a_live_claim_binds_only_the_targets_it_answers(
 
     assert binds <= bound
     assert not bound & refuses
+
+
+@pytest.mark.parametrize(
+    "measure",
+    [
+        # The planner writes the measure detail freely, so a cue noun in a
+        # qualifier may not constrain the clause: each of these wordings must
+        # still accept the headline 10.4 GW claim (integration review P1).
+        "battery storage capacity added at utility-scale facilities, in "
+        "megawatts",
+        "battery storage capacity added across all facility types, in "
+        "megawatts",
+        "battery storage capacity added on a nameplate basis, in megawatts",
+        "battery storage capacity added in the utility-scale segment, in "
+        "megawatts",
+    ],
+)
+def test_a_qualifier_word_in_a_measure_never_constrains_the_clause(
+    measure: str,
+) -> None:
+    target = _live_target(
+        "topic-01-target-01",
+        "How much battery storage capacity, in megawatts, was added at grid "
+        "scale in the United States in 2024?",
+        measure,
+        "calendar year 2024",
+        "the federal energy statistical agency's published capacity data and, "
+        "independently, an industry energy-storage market tracker",
+        "independent_pair",
+    )
+    claim = (
+        "The U.S. Energy Information Administration reported that generators "
+        "added 10.4 GW (10,400 MW) of new battery storage capacity in the "
+        "United States in 2024."
+    )
+
+    assert any(
+        atom_answers_target(atom, target, question=target.question)
+        for atom in extract_text_atoms(claim)
+    )
 
 @pytest.mark.parametrize(
     ("claim", "expected"),

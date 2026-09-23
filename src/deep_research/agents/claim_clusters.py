@@ -3229,12 +3229,30 @@ _COUNTABLE_NOUN_PATTERN = re.compile(
 )
 # The unit forms, minus the bare sign, which needs its own test because "40%"
 # leaves no letter boundary in front of it.
+_UNIT_FORM_ALTERNATION = "|".join(
+    re.escape(form) for form in _UNIT_FORMS if form != "%"
+)
 _UNIT_WORD_PATTERN = re.compile(
-    r"(?<![a-z0-9])(?:"
-    + "|".join(
-        re.escape(form) for form in _UNIT_FORMS if form != "%"
-    )
-    + r")(?![a-z0-9])",
+    r"(?<![a-z0-9])(?:" + _UNIT_FORM_ALTERNATION + r")(?![a-z0-9])",
+    re.IGNORECASE,
+)
+# Two unit spellings joined by a connector name the units a convention chooses
+# between ("MW or MWh", "AC or DC kW"), so the requirement asks *which* unit the
+# figures use, not how many. Read as a quantity ask it demanded a number that no
+# clause about the convention states (integration review P2).
+_UNIT_LIST_PATTERN = re.compile(
+    r"(?<![a-z0-9])(?:" + _UNIT_FORM_ALTERNATION + r")(?![a-z0-9])"
+    r"\s*(?:,|or|/)\s*(?:the\s+)?"
+    r"(?:" + _UNIT_FORM_ALTERNATION + r")(?![a-z0-9])",
+    re.IGNORECASE,
+)
+# An amount asked for: "in megawatts", "in the reported megawatts", "how many
+# megawatts", "the amount of capacity". A unit the detail merely mentions is no
+# amount ask, so a convention noun beside one stays qualitative.
+_AMOUNT_ASKED_PATTERN = re.compile(
+    r"\bin\s+(?:the\s+)?(?:[a-z-]+\s+){0,2}?(?:" + _UNIT_FORM_ALTERNATION + r"|%)"
+    r"(?![a-z0-9])"
+    r"|\bhow\s+(?:many|much)\b|\bamounts?\b",
     re.IGNORECASE,
 )
 
@@ -3242,10 +3260,12 @@ _UNIT_WORD_PATTERN = re.compile(
 def _demands_a_quantity(detail: str) -> bool:
     """Whether a measure requirement's own detail asks for a number."""
     folded = _canonical(detail)
+    if _UNIT_LIST_PATTERN.search(folded):
+        return False
+    if _CONVENTION_NOUN_PATTERN.search(folded):
+        return _AMOUNT_ASKED_PATTERN.search(folded) is not None
     if "%" in folded or _UNIT_WORD_PATTERN.search(folded):
         return True
-    if _CONVENTION_NOUN_PATTERN.search(folded):
-        return False
     if _NUMBER_TOKEN.search(folded):
         return True
     return _COUNTABLE_NOUN_PATTERN.search(folded) is not None

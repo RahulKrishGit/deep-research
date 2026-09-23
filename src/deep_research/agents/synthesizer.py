@@ -55,6 +55,7 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
 )
 from deep_research.agents.report import (
+    ANSWER_TABLE_COLUMNS,
     QUALITY_STATUS_NOT_GATED,
     ReportComposition,
     ReportConstraint,
@@ -83,6 +84,7 @@ from deep_research.providers import (
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    ANSWERING_STATEMENT_MODES,
     EVIDENCE_BADGE_LABELS,
     AcquisitionState,
     AnswerContract,
@@ -333,6 +335,7 @@ STATEMENT_DISPOSITIONS = (
     "duplicate_statement",
     "unlinked_statement",
     "returned_to_fact_checker",
+    "answer_rows_derived",
 )
 
 # The modality markers a claim may carry and a statement may not drop. A
@@ -2268,11 +2271,7 @@ def _build_cell(
             mode="context",
             basis="the row's evidence does not state this cell",
         )
-    selected = [
-        claim
-        for claim in context.approved.values()
-        if claim.claim_id in set(row.claim_ids)
-    ]
+    selected = _selected_claims(row, context)
     evidence_text = _cited_evidence(selected, context) or context.corpus
     unattested = [
         *unattested_words(raw, evidence_text),
@@ -2666,6 +2665,16 @@ def build_report_composition(
             draft.uncertainty_notes, context=context
         )
     contract = task.answer_contract
+    if not rows:
+        # A draft that supplied no rows is not a report with no answer: the
+        # statements that answer the question are already validated here, so
+        # the table is derived from them rather than asked for again.
+        rows = _derive_answer_rows(
+            answer_kind=contract.answer_kind if contract is not None else None,
+            summary=summary,
+            sections=sections,
+            context=context,
+        )
     composition = ReportComposition(
         question=task.instruction,
         session_id=task.session_id,
@@ -2798,6 +2807,191 @@ def _build_answer_rows(
         )
         if row is not None:
             rows.append(row)
+    return rows
+
+
+# The recorded proposition atom each *label* column of an answer-kind table is
+# filled from when the draft supplied no rows at all. The column names are the
+# renderer's own (``report.ANSWER_TABLE_COLUMNS``), and the order inside each
+# entry is the order they are preferred in: what the clause asserts about, then
+# what it measured, then the period it covers. Every one of them is something
+# the extractor recorded when the claim was split, and never wording this pass
+# composed to fill a cell. A column whose recorded atoms are all empty reads
+# "not stated", exactly as a drafted cell the evidence does not carry does.
+#
+# ``population`` is *last* rather than beside ``quantity_noun``: it is the
+# loosest read of the three — the atom splitter filled it with the "U" of
+# "The U.S." on the traced pass — while the quantity noun and the observation
+# period are the two dimensions the plan's own vocabulary asks an answer to
+# name ("measure: …", "period: …"). Preferred order costs nothing when the
+# earlier atom is recorded and keeps a fragment out of a reader's cell when it
+# is not, which is why the period stands in for a comparison's basis of
+# comparison only when the clause records no measurand at all.
+_ANSWER_LABEL_ATOMS: dict[str, tuple[str, ...]] = {
+    "subject": ("subject", "population", "quantity_noun"),
+    "option": ("subject", "population", "quantity_noun"),
+    "dimension": ("quantity_noun", "observation_period", "population"),
+    "period": ("observation_period",),
+}
+# The shortest atom that can fill a cell. A one-character proposition field is
+# the atom splitter's fragment rather than a label — "The U.S." was recorded as
+# the population "U" — and a column that printed it would be publishing an
+# artifact of extraction as the dimension of a fact.
+_MIN_LABEL_CHARS = 2
+
+
+def _selected_claims(
+    point: ReportPoint,
+    context: DraftContext,
+) -> list[Claim]:
+    """The checked claims a rendered point names, in registry order."""
+    wanted = set(point.claim_ids)
+    return [
+        claim for claim in context.approved.values() if claim.claim_id in wanted
+    ]
+
+
+def _answering_statement(point: ReportPoint) -> ReportStatement | None:
+    """The statement this point answers with, or ``None`` when it answers none.
+
+    Two conditions, both about what the point already carries. The mode has to
+    be one that answers — a recorded disagreement that settles nothing is not
+    an answer, and neither is this pass's own framing. And the text has to
+    state a figure with a unit: the plan asks every factual answer for "the
+    specific fact asked for, with its value, unit, and the date the value
+    applies to", so a value with a unit is what makes a validated statement an
+    answer rather than true prose about the pass ("no energy-capacity figure
+    appears among the checked claims"). A factual answer that is not a
+    measurement at all — a name, a date, a yes or no — keeps the honest empty
+    table rather than publishing a row the form did not ask for.
+    """
+    statement = point.statement
+    if statement is None or point.mode not in ANSWERING_STATEMENT_MODES:
+        return None
+    measured = any(
+        token != _figure_number(token)
+        for token in _significant_figures(point.text)
+    )
+    return statement if measured else None
+
+
+def _recorded_label_atom(
+    point: ReportPoint,
+    atoms: Sequence[str],
+    context: DraftContext,
+) -> str:
+    """The first atom one of a point's cited clusters records, or ``""``.
+
+    Read from the clusters the statement cites, not from its prose: those are
+    the qualifiers the extractor recorded for the claim the reader statement
+    was validated against, so a label taken from them states what the cited
+    evidence itself carries.
+    """
+    for cluster_id in point.claim_cluster_ids:
+        cluster = context.clusters.get(cluster_id)
+        if cluster is None:
+            continue
+        proposition = cluster.proposition
+        for atom in atoms:
+            value = " ".join(getattr(proposition, atom, "").split())
+            if len(value) >= _MIN_LABEL_CHARS:
+                return value
+    return ""
+
+
+def _derived_label(
+    *,
+    point: ReportPoint,
+    column: str,
+    claims: Sequence[Claim],
+    context: DraftContext,
+) -> ReportStatement:
+    """One derived label cell: a recorded atom, or the contract's own sentinel.
+
+    The repair branch is the drafted path's own repair — ``_build_cell``
+    returns the same text, mode and basis for a cell its row's evidence does
+    not state — because a cell this pass cannot source is "not stated" rather
+    than something composed to fill the column.
+    """
+    atom = _recorded_label_atom(
+        point, _ANSWER_LABEL_ATOMS.get(column, ()), context
+    )
+    if not atom:
+        return ReportStatement(
+            statement_id=context.next_id("C"),
+            text="not stated",
+            mode="context",
+            basis="the row's evidence does not state this cell",
+        )
+    return _statement_for_claims(
+        statement_id=context.next_id("C"),
+        text=_display_clamp(atom, limit=_CELL_CHARS),
+        claims=claims,
+        context=context,
+        basis="cell carried by the row's evidence",
+        # The drafted path's own reading of a cell with no selected claim
+        # behind it (``_build_cell``): the wording is published as framing
+        # rather than as an assertion with an evidence link it does not have.
+        mode="attributed" if claims else "context",
+    )
+
+
+def _derive_answer_rows(
+    *,
+    answer_kind: str | None,
+    summary: Sequence[ReportPoint],
+    sections: Sequence[ReportSection],
+    context: DraftContext,
+) -> list[ReportAnswerRow]:
+    """The answer-kind rows of a pass whose draft supplied none.
+
+    ``answer_rows`` is optional in the request schema, and the draft that
+    counts is the *retry*: the 08b9b469 pass answered both halves of its
+    question, published "(no factual row was drafted for this pass)", and
+    recorded no refusal, because the retry after a truncated call came back
+    without the field. Asking again is not the fix — the report call is
+    already at its output limit — and nothing has to be asked: the composition
+    holds the statements the pass settled, so the rows are derived from those.
+
+    A row is derived only for a point that answers with a figure
+    (``_answering_statement``), and only for the answer forms whose second
+    section is a table of facts. The summary is read first: it is the pass's
+    own answer-first selection and the findings restate it, so the findings
+    stand in only when the summary answers nothing and one fact never becomes
+    two rows. Every label comes from the cited claims' recorded propositions
+    and the finding is the statement the pass already validated, so a derived
+    row cites exactly the sources its statement does.
+    """
+    columns = ANSWER_TABLE_COLUMNS.get(answer_kind or "")
+    if not columns:
+        return []
+    answering: list[tuple[ReportPoint, ReportStatement]] = []
+    for point in summary:
+        statement = _answering_statement(point)
+        if statement is not None:
+            answering.append((point, statement))
+    if not answering:
+        for section in sections:
+            for point in section.points:
+                statement = _answering_statement(point)
+                if statement is not None:
+                    answering.append((point, statement))
+    rows: list[ReportAnswerRow] = []
+    for point, statement in answering:
+        claims = _selected_claims(point, context)
+        cells = [
+            _derived_label(
+                point=point,
+                column=column.casefold(),
+                claims=claims,
+                context=context,
+            )
+            for column in columns
+        ]
+        cells.append(statement)
+        rows.append(ReportAnswerRow(cells=cells))
+    if rows:
+        context.dispositions.append("answer_rows_derived")
     return rows
 
 

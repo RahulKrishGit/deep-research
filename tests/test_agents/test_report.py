@@ -866,6 +866,72 @@ def test_a_claim_the_findings_already_state_is_not_printed_twice() -> None:
     assert "No statement above repeats another." in reader
 
 
+def _unestablished_bullet_composition(
+    *, where: str, verdict: str = "insufficient_evidence"
+) -> tuple[ReportComposition, str]:
+    """One composition whose one claim appears only as a reader bullet.
+
+    ``where`` is the section that prints the bullet: the summary and the
+    findings are the two places whose lines the uncertainty section reads as
+    "already stated above".
+    """
+    text = (
+        "Clean Edge reported that 10.3 GW of utility-scale battery storage "
+        "was installed in the United States in 2024."
+    )
+    claim = _claim(text=text, verdict=verdict)
+    point = _point(text=text, claim_ids=[claim.claim_id])
+    composition = _composition(
+        claims=[claim],
+        summary=[point] if where == "summary" else [],
+        sections=(
+            []
+            if where == "summary"
+            else [ReportSection(title="Reported additions", points=[point])]
+        ),
+    )
+    return composition, text
+
+
+@pytest.mark.parametrize("where", ["summary", "findings"])
+def test_a_bullet_stating_an_unestablished_claim_says_so(where: str) -> None:
+    """A suppressed reprint must not be the only word on the claim's status.
+
+    The audited run's uncertainty section withheld four claims whose words the
+    findings already carried, and those findings carried no reading of their
+    own: a reader met "Clean Edge reported that 10.3 GW … in 2024" as an
+    ordinary bullet and could not tell the claim was never established. The
+    claim is still not reprinted — the bullet that states those words carries
+    the verdict instead.
+    """
+    composition, text = _unestablished_bullet_composition(where=where)
+
+    reader = render_reader_report(composition)
+    heading = "## Executive summary" if where == "summary" else "## Findings"
+    body = _section_body(reader, heading)
+    uncertainty = _section_body(
+        reader, "## Uncertainty and conflicting evidence"
+    )
+
+    assert f"- {text} (Insufficient independent evidence) [1]" in body
+    assert reader.count(text) == 1
+    assert "1 checked claim(s) for this heading are already stated above" in (
+        uncertainty
+    )
+
+
+def test_a_bullet_stating_an_established_claim_carries_no_verdict_note() -> None:
+    """The note is the recorded verdict, not a marker every bullet acquires."""
+    composition, text = _unestablished_bullet_composition(
+        where="findings", verdict="verified"
+    )
+
+    body = _section_body(render_reader_report(composition), "## Findings")
+
+    assert f"- {text} [1]" in body
+    assert "Insufficient independent evidence" not in body
+
+
 def test_a_clamped_bullet_is_cut_on_a_word_boundary_and_says_it_was_cut() -> None:
     """The audited report cut two bullets mid-word (``c...``, ``expect...``).
 

@@ -37,6 +37,8 @@ from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.claim_clusters import (
     LEGACY_COVERAGE_DIMENSION,
     ClaimConsolidation,
+    _VALUE_UNIT_PATTERN,
+    _canonical_unit,
     atom_answers_target,
     claim_cluster_id,
     claim_meets_support_policy,
@@ -99,6 +101,11 @@ from deep_research.providers.contracts import (
     StructuredRepairRecord,
 )
 from deep_research.tools.base import BaseTool
+from deep_research.tools.passage_selection import (
+    _expanded_terms,
+    _score,
+    _tokens,
+)
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     MAX_CONSUMED_COVERAGE_IDS,
@@ -121,6 +128,8 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     ScoredSource,
+    _ENERGY_UNIT,
+    _POWER_UNIT,
 )
 
 FACT_CHECKER_NAME = "fact_checker"
@@ -1170,6 +1179,12 @@ def _target_scope(
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
 _YEAR = re.compile(r"(?:19|20)\d{2}")
 
+# The floor an obligation-linked passage clears for a claim that states no
+# figure. One shared term is not a floor: "capacity" is in every passage of an
+# energy sub-topic, so the link admitted the sub-topic again the moment the
+# claim had no figure to match on.
+_RELEVANCE_FLOOR_TERMS = 2
+
 
 def claim_evidence_pool(
     state: ResearchState,
@@ -1196,14 +1211,15 @@ def claim_evidence_pool(
 
     The obligation link admits a unit that *bears* on this claim, not every
     unit of the sub-topic the obligation lives in. A sub-topic is a research
-    branch, not a fact: forty reads of one branch entered one claim's packet
-    and made ``packet_incomplete`` unavoidable, while a passage stating nothing
-    the claim states can settle nothing about it. A unit is admitted when it
-    shares one of the claim's figures, or when it clears the lexical floor the
-    request's own ordering scores with — the same test
-    :func:`claim_relevant_order` ranks by, so what may be a candidate and what
-    is offered first remain one rule. A contradicting passage shares the
-    claim's terms or its figures, so the floor keeps it in.
+    branch, not a fact: on the audited run's data the link admitted 47 of the
+    48 passages registered against the claim about the 2024 additions, because
+    any passage about batteries shares "battery"/"storage"/"capacity" with it —
+    and 47 candidates then deferred most of themselves, which is the state a
+    claim can never settle out of. A linked passage is this claim's evidence
+    when it states one of the claim's own figures, or another value of the
+    same quantity (:func:`_linked_bears_on`) — and a claim that states no
+    figure at all keeps a lexical floor of two shared terms, stronger than the
+    single shared word every passage of a sub-topic has.
     """
     obligations = (
         set(target_ids)
@@ -1225,14 +1241,16 @@ def claim_evidence_pool(
         or normalize_source_url(read.requested_url) in cited
     }
     claim_text = getattr(claim, "text", "") or ""
+    figures = _non_year_numbers(claim_text)
+    families = {_unit_family(unit) for _, unit in _measured_pairs(claim_text)}
+    claim_years = _years(claim_text)
     linked = [
         unit
         for unit in state.evidence_units.values()
         if scope and scope.intersection(unit.target_ids)
     ]
     linked_ids = {unit.evidence_id for unit in linked}
-    wanted = _non_year_numbers(claim_text)
-    floor = _lexical_floor_ids(linked, claim_text)
+    floor = set() if figures else _lexical_floor_ids(linked, claim_text)
     pool: list[EvidenceUnit] = []
     for unit in state.evidence_units.values():
         by_citation = unit.read_id in reads
@@ -1242,12 +1260,88 @@ def claim_evidence_pool(
             unit.excerpt,
         ) in recorded
         by_target = unit.evidence_id in linked_ids and (
-            bool(wanted.intersection(_non_year_numbers(unit.excerpt)))
-            or unit.evidence_id in floor
+            _linked_bears_on(
+                unit.excerpt,
+                figures=figures,
+                families=families,
+                years=claim_years,
+            )
+            if figures
+            else unit.evidence_id in floor
         )
         if by_citation or by_target or by_passage:
             pool.append(unit)
     return pool
+
+
+def _measured_pairs(text: str) -> list[tuple[str, str]]:
+    """Every ``value + unit`` a text states, as written and as folded.
+
+    A year is never a measurement — "in 2024" is a period, and the unit is what
+    makes the two different — and the unit is folded by the same rule the claim
+    parser folds it with, so one spelling never reads as two units.
+    """
+    pairs: list[tuple[str, str]] = []
+    for match in _VALUE_UNIT_PATTERN.finditer(text):
+        value = " ".join(match.group("value").split())
+        if _YEAR.fullmatch(value):
+            continue
+        pairs.append((value, _canonical_unit(match.group("unit"))))
+    return pairs
+
+
+def _years(text: str) -> set[str]:
+    """The four-digit years a text states, as periods rather than figures."""
+    return {
+        number for number in _NUMBER.findall(text) if _YEAR.fullmatch(number)
+    }
+
+
+def _unit_family(unit: str) -> str:
+    """The quantity a unit measures: power, energy, or the unit itself.
+
+    Scale is not a family: ``10.4 GW`` and ``12,314 MW`` are two measurements
+    of one quantity, and a rival figure at another scale is exactly what an
+    adjudication has to be able to see. ``GWh`` against ``GW`` is a different
+    quantity, and the two never stand for each other. The classification is the
+    one the target qualifier already uses, so a claim and a passage cannot
+    disagree about what a unit is.
+    """
+    if _POWER_UNIT.search(unit):
+        return "power"
+    if _ENERGY_UNIT.search(unit):
+        return "energy"
+    return unit
+
+
+def _linked_bears_on(
+    excerpt: str,
+    *,
+    figures: set[str],
+    families: set[str],
+    years: set[str],
+) -> bool:
+    """True when a linked passage is about this claim's own measurement.
+
+    Two ways, and only these. It writes one of the claim's figures as the claim
+    writes it; or it states a value in the same quantity — a different number
+    for the same measure, which is a rival figure or an independent measurement
+    of it, and either way has to stay adjudicable. A passage whose stated
+    period contradicts the claim's measures something else, so the period has
+    to be compatible: unstated, or one of the claim's own years.
+    """
+    if figures.intersection(_non_year_numbers(excerpt)):
+        return True
+    if not families:
+        return False
+    stated_years = _years(excerpt)
+    for _, unit in _measured_pairs(excerpt):
+        if _unit_family(unit) not in families:
+            continue
+        if years and stated_years and not years.intersection(stated_years):
+            continue
+        return True
+    return False
 
 
 def _non_year_numbers(text: str) -> set[str]:
@@ -1267,26 +1361,27 @@ def _non_year_numbers(text: str) -> set[str]:
 def _lexical_floor_ids(
     units: Sequence[EvidenceUnit], claim_text: str
 ) -> set[str]:
-    """The units that pass the request's own relevance floor for a claim.
+    """The units that clear the floor for a claim that states no figure.
 
-    ``select_relevant_passages`` returns only the passages that share a term
-    with the query — the same scoring :func:`claim_relevant_order` ranks the
-    pool by — so its result *is* the floor: a passage it does not return shares
-    nothing the claim says, and a passage it returns shares at least one term.
-    A claim with no text has nothing to be irrelevant to, so the floor admits:
+    One shared term is not a floor: "capacity" appears in every passage of an
+    energy sub-topic, so a figure-less claim — a definition, a method, a
+    comparison — admitted the whole sub-topic again the moment it was linked.
+    The floor is two shared terms of the same expanded query the request ranks
+    by, so what may be a candidate and what is offered first stay one rule. A
+    claim with no text has nothing to be irrelevant to, so the floor admits:
     the failure direction is extra work, never skipped evidence.
     """
     if not claim_text.strip():
         return {unit.evidence_id for unit in units}
     if not units:
         return set()
-    return set(
-        select_relevant_passages(
-            {unit.evidence_id: unit.excerpt for unit in units},
-            claim_text,
-            len(units),
-        )
-    )
+    terms = _expanded_terms(claim_text)
+    tokens = _tokens(claim_text)
+    return {
+        unit.evidence_id
+        for unit in units
+        if _score(unit.excerpt, terms, tokens)[0] >= _RELEVANCE_FLOOR_TERMS
+    }
 
 
 def claim_pool_dispositions(
@@ -2716,10 +2811,12 @@ def single_source_suffices(
     An obligation with no policy recorded, or any obligation that requires an
     independent pair, answers ``False``: retrieval stays the claim's only path
     to settlement, which is the failure direction that costs work rather than
-    evidence. The claim's own adjudication is unchanged either way — a pair
-    the packet happens to carry still verifies, and a claim whose support does
-    not stand still comes back unsettled, with one bounded retrieval to
-    repair it.
+    evidence. The claim's own adjudication is unchanged either way — a pair the
+    packet happens to carry still verifies — and a claim whose support does not
+    stand is not stranded: the one thing retrieval can still bring such an
+    obligation is a *second page from the same issuer*, so
+    :func:`repair_retrieval_warranted` spends one bounded retrieval on exactly
+    that, and nothing at all when the carried passage earned the badge.
     """
     if not policies or not packet.claim_target_ids:
         return False
@@ -2729,6 +2826,39 @@ def single_source_suffices(
     ):
         return False
     return issuer_passage_carried(packet, shown=shown)
+
+
+def repair_retrieval_warranted(
+    packet: AdjudicationPacket,
+    policies: Mapping[str, str] | None,
+    claim: Claim,
+) -> bool:
+    """True when one bounded retrieval could still change this claim's verdict.
+
+    The loop is skipped for one of two reasons, and each has its own repair. A
+    pair was already possible, and the model could not turn two identities into
+    two supporting passages: the claim is not settled on them, so one bounded
+    retrieval runs over the enlarged union. Or no obligation needed a pair and
+    the request already carried the issuer's own reading: nothing retrieval
+    finds can answer such an obligation *except a second page from that same
+    issuer*, so the retrieval runs exactly when the carried passage did not
+    stand as the support — a claim that earned its badge is answered already and
+    spends nothing. That second repair is why all 18 loops of the audited run
+    ran to their tool limit: 17 of them had nothing to repair.
+
+    A candidate nobody saw stops both, because neither can fix it: a rendering
+    shortfall is not a retrieval problem, and a deferral would keep the pair
+    refused after the retrieval had been paid for.
+    """
+    if claim.verdict != "insufficient_evidence":
+        return False
+    if unshown_candidates(packet) or deferred_candidates(packet):
+        return False
+    if _packet_has_pair(packet):
+        return True
+    return single_source_suffices(packet, policies) and (
+        claim.evidence_status != "source_supported"
+    )
 
 
 def _packet_independent_publishers(
@@ -4811,28 +4941,19 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                         claim is not None
                         and not retrieval_needed
                         and task.packet is not None
-                        and _packet_has_pair(task.packet)
-                        and claim.verdict == "insufficient_evidence"
-                        and not (
-                            unshown_candidates(task.packet)
-                            | deferred_candidates(task.packet)
+                        and repair_retrieval_warranted(
+                            task.packet, task.target_policies, claim
                         )
                     ):
-                        # The pool looked sufficient and the model could not use
-                        # it. Two identities existing is never the same as two
-                        # passages supporting the claim, so the claim is not
-                        # settled on them: ONE bounded targeted retrieval runs,
-                        # its read is admitted and assessed like any other, and
-                        # the claim is re-adjudicated over the enlarged union.
-                        # Reusing the loop's own bounded budget rather than
-                        # nesting another retry is the point. A candidate the
-                        # request could not carry is excluded: retrieval cannot
-                        # fix a rendering shortfall, and spending tool calls on
-                        # one would not show the model the passage it lacks — and
-                        # a deferral would keep the pair refused after it. The
-                        # pair test is what keeps this a repair: a loop skipped
-                        # because no obligation needs a second source is not
-                        # retrieved for one, because no retrieval can answer it.
+                        # The skipped loop is still repairable: a pair the model
+                        # could not use, or a single-source obligation whose
+                        # carried issuer passage did not stand. ONE bounded
+                        # targeted retrieval runs, its read is admitted and
+                        # assessed like any other, and the claim is
+                        # re-adjudicated over the enlarged union. Reusing the
+                        # loop's own bounded budget rather than nesting another
+                        # retry is the point, and the predicate is where the
+                        # cases that no retrieval can help are kept out.
                         react = await self._check_claim(task)
                         task = task.model_copy(
                             update={

@@ -8824,7 +8824,18 @@ def _scope_read(
     )
 
 
-def _scope_state(*, noise: int = 40) -> ResearchState:
+# A sub-topic's ordinary prose: it shares the claim's own subject terms and
+# states no figure at all. On the audited run's data 47 of the 48 units linked
+# to the claim about the 2024 additions were of this kind.
+_TERM_NOISE_TEXT = (
+    "The battery storage capacity additions were compiled for the grid "
+    "operator and reported in the annual review of the market."
+)
+
+
+def _scope_state(
+    *, noise: int = 40, noise_text: str = _NOISE_TEXT, page: bool = True
+) -> ResearchState:
     """One cited read, ``noise`` sub-topic reads, and a page-sized passage.
 
     The ids are the product's own: the obligation is ``topic-01-target-01``
@@ -8844,23 +8855,32 @@ def _scope_state(*, noise: int = 40) -> ResearchState:
         _scope_read(
             "read-figure-b", "https://table.test/b", "Table B", _FIGURE_ONLY_TEXT, topic_id
         ),
-        # A page-sized passage of this sub-topic: it bears on the claim, and
-        # no request of this size can carry it whole.
-        _scope_read(
-            "read-page",
-            "https://www.eia.gov/analysis/inventory",
-            "Inventory page",
-            CITED_10_4_TEXT
-            + " "
-            + ("Battery storage capacity additions are listed below. " * 120),
-            topic_id,
+        *(
+            [
+                # A page-sized passage of this sub-topic: it bears on the
+                # claim, and no request of this size can carry it whole.
+                _scope_read(
+                    "read-page",
+                    "https://www.eia.gov/analysis/inventory",
+                    "Inventory page",
+                    CITED_10_4_TEXT
+                    + " "
+                    + (
+                        "Battery storage capacity additions are listed "
+                        "below. " * 120
+                    ),
+                    topic_id,
+                )
+            ]
+            if page
+            else []
         ),
         *(
             _scope_read(
                 f"read-noise-{index}",
                 f"https://water-{index}.test/{index}",
                 f"Water {index}",
-                _NOISE_TEXT,
+                noise_text,
                 topic_id,
             )
             for index in range(noise)
@@ -8896,6 +8916,28 @@ def _scope_state(*, noise: int = 40) -> ResearchState:
     )
 
 
+def _linked_unit(
+    state: ResearchState, label: str, text: str, *, target_id: str = "topic-01"
+) -> ResearchState:
+    """The same state with one more read for the sub-topic, and its unit."""
+    read = _scope_read(
+        f"read-{label}", f"https://{label}.test/notes", label, text, target_id
+    )
+    unit = build_evidence_unit(
+        read=read,
+        locator="chunk-0",
+        excerpt=read.passages["chunk-0"],
+        origin="researcher",
+        target_ids=[target_id],
+    )
+    return state.model_copy(
+        update={
+            "read_records": {**state.read_records, read.read_id: read},
+            "evidence_units": {**state.evidence_units, unit.evidence_id: unit},
+        }
+    )
+
+
 def _ids_by_url(state: ResearchState) -> dict[str, str]:
     """Each read's evidence id, keyed by the URL the read was requested for.
 
@@ -8921,8 +8963,9 @@ def test_a_sub_topic_offers_the_claim_only_the_units_that_bear_on_it() -> None:
     them entered the packet through the obligation link and made it
     ``packet_incomplete`` by construction, while a unit whose passage says
     nothing about the claim can settle nothing about it. The link admits a
-    unit that shares one of the claim's own figures, or one that clears the
-    same lexical floor the request's ordering scores with.
+    unit that states one of the claim's own figures, one that states another
+    value of the same quantity, or — for a claim that states no figure at all
+    — one that clears the floor of two shared terms.
     """
     state = _scope_state()
     draft = ClaimDraft(text=CLAIM_10_4_TEXT, source_urls=[CITED_10_4_URL])
@@ -9123,6 +9166,159 @@ def _primary_attribution_state() -> ResearchState:
             ]
         }
     )
+
+
+def test_a_linked_passage_that_states_no_figure_is_not_this_claims_evidence() -> None:
+    """Same sub-topic is not the same measurement.
+
+    The obligation link admitted a whole sub-topic: on the audited run's data
+    it admitted 47 of the 48 passages linked to the claim about the 2024
+    additions, because any passage about batteries shares
+    "battery"/"storage"/"capacity" with it. Forty-seven candidates then
+    deferred 43 of them, and a candidate nobody saw keeps a pair from settling
+    — the starvation this slice exists to remove. A sentence that shares the
+    claim's words and states no figure at all is prose about the subject, not
+    evidence of the measurement.
+    """
+    state = _scope_state(noise=48, noise_text=_TERM_NOISE_TEXT, page=False)
+    draft = ClaimDraft(text=CLAIM_10_4_TEXT, source_urls=[CITED_10_4_URL])
+    ids = _ids_by_url(state)
+
+    pool = claim_evidence_pool(
+        state, draft, target_ids=["topic-01-target-01"]
+    )
+
+    assert {unit.evidence_id for unit in pool} == {
+        ids[CITED_10_4_URL],
+        ids["https://table.test/a"],
+        ids["https://table.test/b"],
+    }
+
+    agent = _packet_agent(state)
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=["topic-01-target-01"]
+    )
+    assert packet is not None
+    final = FactCheckerAgent._final_packet(agent, packet)
+
+    assert final is not None
+    # Every candidate the pool admitted is in the request, and nothing was
+    # deferred for capacity: the pool is the size the request can carry.
+    assert {
+        item.item_id
+        for item in final.omitted
+        if item.reason == "deferred_capacity"
+    } == set()
+    assert {unit.evidence_id for unit in final.units} == {
+        unit.evidence_id for unit in pool
+    }
+    assert (
+        with_render_boundaries(
+            final, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+        ).unrendered_ids
+        == []
+    )
+
+
+def test_a_linked_measurement_of_the_same_quantity_stays_admissible() -> None:
+    """A different value for the same quantity is a candidate contradiction.
+
+    Rival figures are how a claim is refuted or re-based: the audited run's
+    market monitor measured 12,314 MW where the agency published 10.4 GW, and
+    the passage stating it has to stay adjudicable. A measurement of another
+    period is another fact and never a refutation of this one, and prose stating
+    no measurement is not evidence of one.
+    """
+    state = _scope_state(noise=0, page=False)
+    for label, text in (
+        ("rival", "A rival monitor measured 12.1 GW across the year."),
+        ("older", "The same monitor reported 9.8 GW in 2019."),
+        ("prose", "The battery storage capacity additions were compiled."),
+    ):
+        state = _linked_unit(state, label, text)
+    draft = ClaimDraft(text=CLAIM_10_4_TEXT, source_urls=[CITED_10_4_URL])
+    ids = _ids_by_url(state)
+
+    pool = claim_evidence_pool(
+        state, draft, target_ids=["topic-01-target-01"]
+    )
+    admitted = {unit.evidence_id for unit in pool}
+
+    # The same quantity (power) in a compatible period, whatever its value.
+    assert ids["https://rival.test/notes"] in admitted
+    assert ids["https://older.test/notes"] not in admitted
+    assert ids["https://prose.test/notes"] not in admitted
+
+
+@pytest.mark.asyncio
+async def test_a_single_source_skip_still_gets_its_one_bounded_retrieval(
+    tracker: Tracker,
+) -> None:
+    """A refused issuer passage is repaired once, never run to the limit.
+
+    The loop is skipped because the request already carries the issuer's own
+    reading: no other publisher can answer an obligation that needs one
+    primary-source account. A *second* page from that same issuer can, so when
+    the carried passage does not stand as the support, that one bounded
+    retrieval runs — and when it does stand, no retrieval is spent at all.
+    """
+    state = _primary_attribution_state()
+    claim_text = "Lab A reported that wind capacity reached 10 GW in 2025."
+    second = "https://lab-a.test/second"
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool(
+                "Read the operator's own second release.",
+                "web_scraper",
+                f'{{"url": "{second}"}}',
+            ),
+            finish("I have the operator's own account.", "Checked."),
+        ],
+        outputs=[
+            ClaimsDraft(
+                claims=[ClaimDraft(text=claim_text, source_urls=[A_URL])]
+            ),
+            # The first adjudication refuses the passage it was shown.
+            lambda messages, schema: schema(
+                verdict="insufficient_evidence",
+                confidence=0.2,
+                assessments=[],
+                support_ids=[],
+                contradiction_ids=[],
+                rationale="The page does not state the whole claim.",
+            ),
+            SourceScoresDraft(
+                sources=[
+                    SourceScoreDraft(
+                        url=second,
+                        authority_score=0.9,
+                        recency_score=0.9,
+                        relevance_score=0.9,
+                        source_role="independent_research",
+                        issuer="Lab A",
+                        rationale="The operator's own second release.",
+                    )
+                ]
+            ),
+            _select_every_shown_id,
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            http=page_client(title="Lab A second release", body=claim_text),
+        ),
+    )
+
+    outcome = await _task6_run(agent, state, tracker)
+
+    (claim,) = outcome.result.claims
+    # Exactly two adjudications: the skipped initial one and the repaired one.
+    assert len(_adjudication_requests(completer)) == 2
+    assert claim.evidence_status == "source_supported"
+    assert claim.target_ids == [TASK6_TARGET]
 
 
 @pytest.mark.asyncio

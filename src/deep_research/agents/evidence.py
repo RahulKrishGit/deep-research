@@ -605,6 +605,35 @@ _ATTRIBUTION_GAP = r"[\s:,\u2013\u2014-]{0,4}"
 # a name the organization's host is served under.
 _ISSUER_ACRONYM = r"\((?P<acronym>[A-Z][A-Z0-9]{1,})\)"
 
+# The suffixes whose registrations a state or an accreditation body controls,
+# which is what makes a domain the organization's own: the .gov registry issues
+# to government bodies only, and the national forms are the same rule one level
+# down ("ons.gov.uk"). A registrable label that matches the issuer's name means
+# nothing on a suffix anyone can buy — "eia.news" spells the agency's acronym
+# exactly as "eia.gov" does — so only these suffixes may carry a first-party
+# claim, and a commercial or news one is refused however the title reads. The
+# list is deliberately short: an unknown suffix is refused, and a registry of
+# issuers' own domains, which this module has no way to read, would be consulted
+# here.
+_INSTITUTIONAL_SUFFIXES = (
+    "edu",
+    "gc.ca",
+    "go.jp",
+    "gob.es",
+    "gov",
+    "gov.au",
+    "gov.br",
+    "gov.cn",
+    "gov.in",
+    "gov.it",
+    "gov.uk",
+    "gov.za",
+    "gouv.fr",
+    "govt.nz",
+    "int",
+    "mil",
+)
+
 # The anchors a model may propose about a document. Each is accepted only when
 # the read itself carries it; everything else is dropped rather than recorded.
 # ``derived_from`` is a list: the DOIs or report numbers the document says its
@@ -892,10 +921,21 @@ def _title_spellings(title: str, issuer: str) -> set[str]:
     return spellings
 
 
-def _serving_domain_label(read: ReadRecord) -> str:
-    """The registrable label of the host that served the read: ``eia``."""
+def _institutional_domain_label(read: ReadRecord) -> str:
+    """The label of the read's host, when that host is institutionally served.
+
+    The suffix is the half of a domain a registrant cannot choose, so it is the
+    half that says who is allowed to serve it: "eia.gov" is the agency's because
+    the .gov registry issues to government bodies only, while "eia.news" is its
+    registrant's and nobody else's. Both carry the same label and the same
+    masthead, so a rule that reads the label alone accepts a lookalike; this one
+    refuses every commercial and news suffix and returns the label only for the
+    suffixes in :data:`_INSTITUTIONAL_SUFFIXES`.
+    """
     label, _, suffix = publisher_identity(read.resolved_url).partition(".")
-    return label if suffix else ""
+    if not label or suffix not in _INSTITUTIONAL_SUFFIXES:
+        return ""
+    return label
 
 
 def _first_party_issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
@@ -903,10 +943,11 @@ def _first_party_issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
 
     A first-party page is the one document whose masthead is publication
     evidence: the title names the issuer, and the host the bytes came from is
-    the spelling the title gives for it — the name run together, or the
-    acronym printed beside it. Every other page stays rejected, which is what
-    keeps a relay a relay: Energy Global's headline and body both name the
-    agency, and the domain that served them is Energy Global's.
+    institutionally served under the spelling the title gives for it — the name
+    run together, or the acronym printed beside it. Every other page stays
+    rejected, which is what keeps a relay a relay: Energy Global's headline and
+    body both name the agency, and the domain that served them is Energy
+    Global's.
     """
     name = _issuer_name_pattern(issuer)
     if not name:
@@ -914,7 +955,7 @@ def _first_party_issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
     titled = re.compile(rf"(?<![A-Za-z0-9]){name}(?![A-Za-z0-9])", re.IGNORECASE)
     if not titled.search(read.title):
         return False
-    label = _serving_domain_label(read)
+    label = _institutional_domain_label(read)
     return bool(label) and label in _title_spellings(read.title, issuer)
 
 

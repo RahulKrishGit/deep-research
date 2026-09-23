@@ -2089,6 +2089,28 @@ _DEFINITIONAL_CUES: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
 )
 
 
+# The words that end a measure's head: a definitional requirement names its
+# concept there, before the first preposition or comma ("capacity threshold
+# applied …", "facility types included …", "storage segment covered …"). A cue
+# noun after one of them is a qualifier on the quantity, not the concept asked
+# about: "capacity added at utility-scale facilities, in megawatts" asks how
+# many megawatts and was refused for five different wordings of the same target
+# (integration review P1).
+_MEASURE_HEAD_END = re.compile(
+    r"(?<!\w)(?:of|in|for|to|at|by|on|with|across|within|from|per|among|"
+    r"between|during|under|over|into|via|about|against|through|after|"
+    r"before|since|until|than|including)(?!\w)",
+    re.I,
+)
+
+
+def _measure_head(detail: str) -> str:
+    """The words of a measure detail that name the concept it asks about."""
+    head = detail.split(",", 1)[0]
+    boundary = _MEASURE_HEAD_END.search(head)
+    return head[: boundary.start()] if boundary else head
+
+
 def qualifier_matches_requirement(
     proposition: AtomicProposition, requirement: str
 ) -> bool:
@@ -2110,20 +2132,35 @@ def qualifier_matches_requirement(
     if "source" in kind or "publisher" in kind or "issuer" in kind:
         government = _GOVERNMENT_ISSUER.search(proposition.attribution) is not None
         independent = _INDEPENDENT_ISSUER.search(proposition.attribution) is not None
-        names_industry = _INDUSTRY_SOURCE.search(detail) is not None
-        names_government = _GOVERNMENT_SOURCE.search(detail) is not None
+        # The class the requirement names in its own words, rather than the
+        # class it leaves to the issuer's name. An agency named in the detail
+        # is that class: "EIA's survey of the electric power industry" and "the
+        # Energy Information Administration's industry data" are government
+        # requirements, and reading them as industry-only refused EIA itself
+        # (integration review P2).
+        named_government = (
+            _GOVERNMENT_SOURCE.search(detail) is not None
+            or _GOVERNMENT_ISSUER.search(detail) is not None
+        )
+        named_industry = _INDUSTRY_SOURCE.search(detail) is not None
         explicit_independent = (
             "non-government" in detail
             or "independent publisher" in detail
             or ("distinct" in detail and "government" in detail)
         )
-        if explicit_independent or (names_industry and not names_government):
+        if explicit_independent:
             if government or not independent:
                 return False
-        elif names_industry:
+        elif named_industry and named_government:
+            # A pair spec names both classes, so either class answers its half.
             if not (government or independent):
                 return False
-        elif names_government and not government:
+        elif named_industry:
+            # An industry-only requirement asks for somebody other than the
+            # government's own series; it does not name a publisher.
+            if government:
+                return False
+        elif named_government and not government:
             return False
     if "measure" in kind or "capacity" in kind or "quantity" in kind:
         wanted = (
@@ -2151,8 +2188,9 @@ def qualifier_matches_requirement(
                 return False
         if "mechanism" in detail and _CAUSAL_LINK.search(proposition.text) is None:
             return False
+        head = _measure_head(detail)
         for concept, clause_cue in _DEFINITIONAL_CUES:
-            if concept.search(detail) and clause_cue.search(proposition.text) is None:
+            if concept.search(head) and clause_cue.search(proposition.text) is None:
                 return False
     return True
 

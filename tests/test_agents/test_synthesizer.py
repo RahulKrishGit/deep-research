@@ -2992,6 +2992,267 @@ def test_the_ledger_keeps_the_confidence_number_beside_its_caveat() -> None:
     assert "Confidence" in registry
 
 
+# --- key facts derived from the statements that answer -------------------------
+#
+# The 08b9b469 pass answered both halves of a two-part factual question and
+# published "(no factual row was drafted for this pass)" instead of a Key facts
+# table: the accepted draft was a retry after a truncated call, and it came
+# back with no ``answer_rows`` at all. The composition already held the
+# statements that answer the question, so the rows are derived from those
+# statements rather than asked for again.
+
+FACT_TEXT = (
+    "Generators added 10.4 GW of new battery storage capacity in the United "
+    "States in 2024."
+)
+FACT_EXCERPT = (
+    "Generators added 10.4 GW of new battery storage capacity in the United "
+    "States in 2024, according to the federal energy statistical agency."
+)
+FACT_WITHOUT_FIGURE = (
+    "Generators added new battery storage capacity in the United States in "
+    "2024."
+)
+
+
+def _fact_claim(*, verdict: str = "verified") -> Claim:
+    return _claim(text=FACT_TEXT, verdict=verdict)
+
+
+def _fact_cluster(claim: Claim, **recorded: str) -> ClaimCluster:
+    """One cluster whose recorded proposition carries the row's label atoms."""
+    atoms: dict[str, str] = {
+        "text": FACT_TEXT,
+        "subject": "generators",
+        "predicate": "increases_by",
+        "quantity_noun": "new battery storage capacity",
+        "observation_period": "2024",
+        "change_kind": "delta",
+    }
+    atoms.update(recorded)
+    return _cluster(
+        cluster_id=CLUSTER_ID, claim_ids=[claim.claim_id]
+    ).model_copy(update={"proposition": AtomicProposition(**atoms)})
+
+
+def _factual_task(
+    *, claim: Claim | None = None, **overrides: object
+) -> SynthesisTask:
+    """One factual pass whose evidence states 10.4 GW for 2024."""
+    fact = claim if claim is not None else _fact_claim()
+    payload: dict[str, object] = {
+        "claims": [fact],
+        "evidence_units": {EVIDENCE_ID: _unit(excerpt=FACT_EXCERPT)},
+        "claim_clusters": {CLUSTER_ID: _fact_cluster(fact)},
+        "answer_contract": AnswerContract(
+            question="How much battery storage capacity was added in 2024?",
+            scope_statement="2024 additions in the United States.",
+            geographic_scope="United States",
+            as_of_date="2025-12-31",
+            evidence_period_requirement="the 2024 addition",
+            assumptions=[],
+            answer_kind="factual",
+        ),
+    }
+    payload.update(overrides)
+    return _task(**payload)
+
+
+def _factual_draft(
+    *, summary: str = FACT_TEXT, **overrides: object
+) -> ReportDraft:
+    """The accepted draft of that pass: no rows, because the model sent none."""
+    payload: dict[str, object] = {
+        "executive_summary": [_point_draft(summary)],
+        "ranked_constraints": [],
+        "sections": [],
+        "uncertainty_notes": [],
+        "answer_rows": [],
+    }
+    payload.update(overrides)
+    return ReportDraft(**payload)
+
+
+def _table_rows(markdown: str, heading: str) -> list[str]:
+    """The body rows of the table under one H2 heading, header dropped."""
+    body = markdown.split(heading, 1)[1].split("\n## ", 1)[0]
+    return [
+        line for line in body.splitlines() if line.startswith("| ")
+    ][2:]
+
+
+def test_a_factual_pass_with_no_drafted_rows_derives_its_key_facts() -> None:
+    """The live defect: the draft omitted the rows, so the table said none.
+
+    Every field the row prints is recorded — the label atoms come from the
+    cited claims' own propositions, and the finding is the statement the pass
+    already validated — so nothing here is a second model call, a new figure,
+    or a source the row did not already cite.
+    """
+    composition, rejected = build_report_composition(
+        _factual_task(), _factual_draft(), max_sections=4, limitations=[]
+    )
+
+    assert rejected == []
+    assert len(composition.answer_rows) == 1
+    row = composition.answer_rows[0]
+    assert [cell.text for cell in row.cells] == [
+        "generators",
+        "new battery storage capacity",
+        FACT_TEXT,
+    ]
+    assert row.statement is composition.summary[0].statement
+    assert row.labels[0].mode == "attributed"
+    # The row cites exactly what its finding cites: both records are derived
+    # from the same checked claims, so a label can never widen the sources.
+    assert row.labels[0].evidence_ids == row.statement.evidence_ids
+    assert row.labels[0].evidence_ids == [EVIDENCE_ID]
+    assert "answer_rows_derived" in composition.statement_dispositions
+
+    reader = render_reader_report(composition)
+    assert _table_rows(reader, "## Key facts") == [
+        "| generators | new battery storage capacity | "
+        f"{FACT_TEXT} [1] | independently corroborated |"
+    ]
+
+
+def test_a_derived_row_label_nothing_recorded_is_not_stated() -> None:
+    """A label is a recorded atom or the contract's own "not stated"."""
+    claim = _fact_claim()
+    task = _factual_task(
+        claim_clusters={
+            CLUSTER_ID: _fact_cluster(
+                claim,
+                subject="",
+                quantity_noun="",
+                observation_period="",
+            )
+        }
+    )
+
+    composition, _ = build_report_composition(
+        task, _factual_draft(), max_sections=4, limitations=[]
+    )
+
+    row = composition.answer_rows[0]
+    assert [cell.text for cell in row.cells] == [
+        "not stated",
+        "not stated",
+        FACT_TEXT,
+    ]
+    assert row.labels[0].mode == "context"
+    assert "| not stated | not stated | " in render_reader_report(composition)
+
+
+def test_a_factual_pass_whose_statements_state_no_figure_keeps_its_empty_table() -> (
+    None
+):
+    """A prose statement is not a key fact, so the honest table stays possible."""
+    composition, _ = build_report_composition(
+        _factual_task(),
+        _factual_draft(summary=FACT_WITHOUT_FIGURE),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.answer_rows == []
+    assert (
+        "(no factual row was drafted for this pass)"
+        in render_reader_report(composition)
+    )
+
+
+def test_a_factual_pass_whose_summary_answers_nothing_uses_its_findings() -> None:
+    """The findings stand in when the summary states no answer of its own."""
+    composition, _ = build_report_composition(
+        _factual_task(),
+        _factual_draft(
+            summary=FACT_WITHOUT_FIGURE,
+            sections=[
+                ReportSectionDraft(
+                    title="Reported additions",
+                    points=[_point_draft(FACT_TEXT)],
+                )
+            ],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert [cell.text for cell in composition.answer_rows[0].cells] == [
+        "generators",
+        "new battery storage capacity",
+        FACT_TEXT,
+    ]
+
+
+def test_a_chronology_derives_its_own_columns() -> None:
+    """Each form's columns are filled from the atoms those columns name."""
+    task = _factual_task(
+        answer_contract=AnswerContract(
+            question="How much battery storage capacity was added in 2024?",
+            scope_statement="2024 additions in the United States.",
+            geographic_scope="United States",
+            as_of_date="2025-12-31",
+            evidence_period_requirement="the 2024 addition",
+            assumptions=[],
+            answer_kind="historical",
+        )
+    )
+
+    composition, _ = build_report_composition(
+        task, _factual_draft(), max_sections=4, limitations=[]
+    )
+
+    assert [cell.text for cell in composition.answer_rows[0].cells] == [
+        "2024",
+        "generators",
+        FACT_TEXT,
+    ]
+    assert "| Period | Subject | Evidenced finding |" in render_reader_report(
+        composition
+    )
+
+
+def test_a_contested_statement_is_not_a_key_fact_however_it_is_worded() -> None:
+    """A disagreement recorded without settling it does not answer."""
+    composition, _ = build_report_composition(
+        _factual_task(claim=_fact_claim(verdict="contradicted")),
+        _factual_draft(),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.answer_rows == []
+
+
+def test_a_draft_that_supplies_its_own_rows_keeps_exactly_those() -> None:
+    """The derivation is a fallback: drafted rows are never added to."""
+    composition, _ = build_report_composition(
+        _factual_task(),
+        _factual_draft(
+            answer_rows=[
+                AnswerRowDraft(
+                    subject="2024",
+                    dimension="capacity added",
+                    finding=FACT_TEXT,
+                    claim_ids=["C001"],
+                    source_urls=[SOURCE_URL],
+                )
+            ]
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert len(composition.answer_rows) == 1
+    assert [cell.text for cell in composition.answer_rows[0].cells] == [
+        "2024",
+        "capacity added",
+        FACT_TEXT,
+    ]
+
+
 def test_a_new_factual_assertion_is_returned_to_the_fact_checker() -> None:
     draft = ReportDraft(
         executive_summary=[],

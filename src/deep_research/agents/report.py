@@ -1320,15 +1320,28 @@ def _render_reader(
     compact_backmatter: int,
 ) -> str:
     index = reader_citations(composition)
-    summary = _reader_summary(composition, index)
     table = _reader_table(composition, index)
-    findings = _reader_findings(composition, index)
+    # The lines the reader meets before the uncertainty section, rendered
+    # without the verdict notes. This is what the section compares against
+    # when it decides a claim is already stated above, and a note is part of
+    # the line: marking a bullet before that comparison would un-suppress the
+    # very claim the note explains, and the report would state it twice.
+    earlier = "\n\n".join(
+        (
+            _reader_summary(composition, index, notes={}),
+            table,
+            _reader_findings(composition, index, notes={}),
+        )
+    )
+    notes = _unestablished_notes(composition, index, earlier)
+    summary = _reader_summary(composition, index, notes=notes)
+    findings = _reader_findings(composition, index, notes=notes)
     uncertainty = _reader_uncertainty(
         composition,
         index,
         # What the reader has already met when this section renders, so a claim
         # that repeats a finding above is not printed a second time.
-        already="\n\n".join((summary, table, findings)),
+        already=earlier,
     )
     rendered = "\n\n".join((summary, table, findings, uncertainty))
     bodies = (
@@ -1438,22 +1451,78 @@ def _reader_header(composition: ReportComposition) -> str:
     return "\n\n".join(lines)
 
 
+def _note_key(text: str) -> str:
+    """A statement's words, as both the note map and a bullet key them.
+
+    Clamped at the bound the uncertainty section prints *claims* at, because
+    that is the line the suppression compares: a claim longer than that is
+    never suppressed — the section's own line is cut and cannot match a bullet
+    — so a longer statement needs no note and gets none.
+    """
+    return " ".join(_clamped(text, limit=_CLAIM_TEXT_CHARS).split())
+
+
 def _point_line(
     point: ReportPoint,
     composition: ReportComposition,
     index: Sequence[Citation],
     *,
     vintage: str = "",
+    notes: Mapping[str, str] | None = None,
 ) -> str:
-    """One rendered statement: its text, its vintage note and its markers."""
+    """One rendered statement: its text, its notes and its markers.
+
+    A bullet whose words are a claim this pass could not establish carries that
+    reading as a parenthetical, between the vintage note and the citation
+    markers. The uncertainty section does not reprint a claim the reader has
+    already met above it, so without the note the bullet would be the report's
+    only word on that claim and would say nothing about its status: a reader
+    could not tell an established finding from one no independent source
+    supported.
+    """
     markers = citation_markers(
         _statement_urls_for_point(point, composition), index
     )
+    note = (notes or {}).get(_note_key(point.text), "")
     return (
         f"{_clamped(point.text, limit=_POINT_CHARS)}"
         f"{vintage}"
+        f"{note}"
         f"{_marker_suffix(markers)}"
     )
+
+
+def _unestablished_notes(
+    composition: ReportComposition,
+    index: Sequence[Citation],
+    already: str,
+) -> dict[str, str]:
+    """The reading to print on each bullet whose claim is already stated above.
+
+    Keyed by the claim's words, so the note lands on the bullet that states
+    them — in the summary or in the findings, whichever the pass put them in,
+    and on both when it restated them in both.
+
+    The test is the uncertainty section's own: only a claim whose line the
+    reader has already met is suppressed there, and that suppression is
+    exactly what this note replaces — a note on a claim the section still
+    lists would state the same reading twice. ``already`` is therefore the
+    rendering *without* notes: the note is part of the line, and a marked
+    bullet would no longer match the claim it marks.
+    """
+    seen = set(_bullet_lines(already))
+    notes: dict[str, str] = {}
+    for verdict, heading in _UNCERTAIN_VERDICTS:
+        for claim in composition.claims:
+            if claim.verdict != verdict:
+                continue
+            markers = citation_markers(claim.source_urls, index)
+            text = _clamped(claim.text, limit=_CLAIM_TEXT_CHARS)
+            line = f"- {text}{_marker_suffix(markers)}"
+            if " ".join(line.split()) not in seen:
+                continue
+            notes.setdefault(_note_key(claim.text), f" ({heading})")
+    return notes
 
 
 def asks_for_the_latest(question: str) -> bool:
@@ -1626,6 +1695,8 @@ def _summary_entries(
 def _reader_summary(
     composition: ReportComposition,
     index: Sequence[Citation],
+    *,
+    notes: Mapping[str, str],
 ) -> str:
     """The answer first: what is established, what would change it, and the
     limitation that matters most — each part driven by statement modes.
@@ -1633,7 +1704,9 @@ def _reader_summary(
     A contested statement is *not* what the evidence establishes, so it is
     grouped separately rather than printed as a settled finding; the summary's
     limitation line names the topic and leaves the sentence itself to the
-    uncertainty section, which states it once.
+    uncertainty section, which states it once. ``notes`` carries the reading a
+    bullet states about its own claim when the uncertainty section does not
+    reprint it; see ``_unestablished_notes``.
     """
     if not composition.summary:
         return REPORT_SUMMARY_FALLBACK
@@ -1650,7 +1723,9 @@ def _reader_summary(
             f"{ESTABLISHED_ANSWER_HEADING}\n\n"
             + _bullets(
                 [
-                    _point_line(point, composition, index, vintage=vintage)
+                    _point_line(
+                        point, composition, index, vintage=vintage, notes=notes
+                    )
                     for point, vintage in established
                 ]
             )
@@ -1660,7 +1735,9 @@ def _reader_summary(
             f"{ATTRIBUTED_ANSWER_HEADING}\n\n"
             + _bullets(
                 [
-                    _point_line(point, composition, index, vintage=vintage)
+                    _point_line(
+                        point, composition, index, vintage=vintage, notes=notes
+                    )
                     for point, vintage in attributed
                 ]
             )
@@ -1670,7 +1747,9 @@ def _reader_summary(
             f"{COUNTERFACTUAL_ANSWER_HEADING}\n\n"
             + _bullets(
                 [
-                    _point_line(point, composition, index, vintage=vintage)
+                    _point_line(
+                        point, composition, index, vintage=vintage, notes=notes
+                    )
                     for point, vintage in contested
                 ]
             )
@@ -1679,7 +1758,9 @@ def _reader_summary(
         blocks.append(
             _bullets(
                 [
-                    _point_line(point, composition, index, vintage=vintage)
+                    _point_line(
+                        point, composition, index, vintage=vintage, notes=notes
+                    )
                     for point, vintage in context
                 ]
             )
@@ -1931,6 +2012,8 @@ def _reader_explanation(
 def _reader_findings(
     composition: ReportComposition,
     index: Sequence[Citation],
+    *,
+    notes: Mapping[str, str],
 ) -> str:
     blocks: list[str] = []
     for section in composition.sections:
@@ -1940,7 +2023,7 @@ def _reader_findings(
             f"### {_clamped(section.title, limit=120)}\n\n"
             + _bullets(
                 [
-                    _point_line(point, composition, index)
+                    _point_line(point, composition, index, notes=notes)
                     for point in section.points
                 ]
             )
