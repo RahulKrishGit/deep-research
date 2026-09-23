@@ -1968,6 +1968,23 @@ def _strip_unsupported_figures(text: str, corpus: str) -> str:
     return " ".join(sentences).strip()
 
 
+def date_basis_for(contract: AnswerContract) -> str:
+    """Which period the question is about, and the date the answer is as of.
+
+    Both halves are things a reader checks: the frozen ``as_of_date`` is the
+    date the answer claims to be current for, and the requirement is the period
+    the plan decided the question means. The planner's own requirement
+    frequently names that date already, and appending it again would print one
+    fact twice on one line — a reader counting two dates there reads two
+    claims — so the frozen date is added only when the requirement does not
+    state it.
+    """
+    requirement = contract.evidence_period_requirement.strip()
+    if contract.as_of_date in requirement:
+        return requirement
+    return f"{requirement}; as of {contract.as_of_date}"
+
+
 def build_report_composition(
     task: SynthesisTask,
     draft: ReportDraft | None,
@@ -2073,10 +2090,7 @@ def build_report_composition(
         returned_to_fact_checker=list(dict.fromkeys(context.returned)),
         generated_on=task.generated_on,
         date_basis=(
-            f"{contract.evidence_period_requirement}; "
-            f"as of {contract.as_of_date}"
-            if contract is not None
-            else ""
+            date_basis_for(contract) if contract is not None else ""
         ),
         requested_word_limit=(
             contract.requested_word_limit if contract is not None else None
