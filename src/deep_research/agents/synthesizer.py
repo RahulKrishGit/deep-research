@@ -363,6 +363,31 @@ _HEDGE_MAY_PATTERN = re.compile(r"\bmay\b(?!\s+\d)", re.IGNORECASE)
 # page said "could", so the claim alone cannot witness the loss.
 _STRONG_MODALS = ("would", "will")
 
+# What separates one assertion from the next inside a sentence. The modality
+# and scope checks both decide per *clause*: a statement that hardens one
+# clause is not excused by a hedge in another, and a note that asserts a
+# source's boundary is not excused by a later clause about this pass. Without
+# the conjunctions and dashes a single comma carried the whole decision.
+# A terminator only separates when a space or the end follows it: "18.2" is a
+# figure, not a sentence, and splitting on that full stop cut a reporting verb
+# away from the clause it governs.
+_CLAUSE_SPLIT = re.compile(
+    r"[,;]|[:!?](?=\s|$)|\.(?=\s|$)"
+    r'|[\u2014\u2013()\[\]\u201c\u201d"|/]'
+    r"|\b(?:and|but|while|which|so|thus|therefore)\b"
+)
+
+
+def _clause_around(text: str, position: int) -> str:
+    """The clause of ``text`` containing the character at ``position``."""
+    start = 0
+    for match in _CLAUSE_SPLIT.finditer(text):
+        if match.start() > position:
+            return text[start : match.start()]
+        start = match.end()
+    return text[start:]
+
+
 # What a *source's* totals include or exclude. A note is refused only when it
 # names one of these subjects *and* an inclusion or exclusion verb: the
 # question's own plan carries a behind-the-meter topic, so every honest note
@@ -441,13 +466,14 @@ _CAPACITY_FIGURE = re.compile(
     r"(\d[\d,.'\u2019]*)\s*(" + "|".join(_CAPACITY_UNITS) + r")\b",
     re.IGNORECASE,
 )
-# The selected evidence the writer's packet may carry, whole. A *model-input*
-# bound, deliberately its own constant and never a display bound: passages are
-# carried until the budget is spent, a passage too large to fit at all is cut
-# between sentences, and every passage that did not fit is named — so the
-# writer always knows what it was not shown and never restates a fragment. The
-# rendered artifacts keep their own cell bounds. Without this, one claim whose
-# read is a whole page adds roughly 22k input tokens by itself.
+# The selected evidence the writer's packet may carry. A *model-input* bound,
+# deliberately its own constant and never a display bound: every claim with a
+# selected passage keeps a share for its first one, the rest of the budget is
+# spent on the passages behind it, and what does not fit is either cut between
+# sentences with its withheld count stated or named — so the writer always
+# knows what it was not shown and never restates a fragment. The rendered
+# artifacts keep their own cell bounds. Without this, one claim whose read is a
+# whole page adds roughly 22k input tokens by itself.
 PACKET_SUPPORT_CHARS = 16000
 # What a passage that cannot fit the budget at all is cut with. The cut lands
 # on a sentence boundary — a partial sentence is exactly the fragment a
@@ -1147,8 +1173,10 @@ def build_canonical_packet(
     is listed in ``omitted_ids`` and grouped into continuation batches, so the
     prompt states what it is missing instead of presenting a truncated packet
     as the whole record. ``support_budget`` bounds the selected evidence the
-    whole packet carries, across every claim: the first passages are carried
-    whole until it is spent, and the rest are named.
+    whole packet carries, across every claim: each claim with a selected
+    passage reserves a first-passage share, the depth pass spends the rest,
+    and a passage over what is left is cut between sentences with its
+    withheld count stated — or named, when nothing is shown for that claim.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -1162,16 +1190,25 @@ def build_canonical_packet(
     # before any claim takes a second passage. Spending the budget in claim
     # order let one oversized first passage starve every later claim of its
     # only support, which the omission notice named without saying whose.
-    slots = max(1, min(limit, len(ranked)))
-    share = max(1, support_budget // slots)
+    carried = ranked[: max(1, min(limit, len(ranked)))]
     selected_by_claim = {
         claim.claim_id: _selected_ids(
             claim, clusters.get(claim.cluster_id or "")
         )
-        for claim in ranked[:slots]
+        for claim in carried
     }
+    # Only the claims that actually have a selected passage hold a share: a
+    # claim with nothing to show reserved one anyway, and the budget it never
+    # spent was unavailable to the claims that needed it — 10,603 characters
+    # of a 16,000-character budget left unused while a 7,610-character
+    # passage was cut. The depth pass then spends whatever is left, so a
+    # passage that fits the free budget is carried whole.
+    showing = [claim for claim in carried if selected_by_claim[claim.claim_id]]
+    share = max(1, support_budget // max(1, len(showing)))
     support_by_claim: dict[str, list[str]] = {}
-    for claim in ranked[:slots]:
+    for claim in carried:
+        if not selected_by_claim[claim.claim_id]:
+            continue
         lines = _evidence_lines(
             selected_by_claim[claim.claim_id][:1],
             evidence,
@@ -1179,11 +1216,11 @@ def build_canonical_packet(
         )
         remaining -= _support_cost(lines)
         support_by_claim[claim.claim_id] = lines
-    for claim in ranked[:slots]:
+    for claim in carried:
         rest = selected_by_claim[claim.claim_id][1:]
         if not rest or remaining <= 0:
             continue
-        lines = _evidence_lines(rest, evidence, budget=min(share, remaining))
+        lines = _evidence_lines(rest, evidence, budget=remaining)
         remaining -= _support_cost(lines)
         support_by_claim[claim.claim_id] = [
             *support_by_claim[claim.claim_id],
@@ -1665,12 +1702,17 @@ def hardened_modality(text: str, corpus: str) -> str:
     modal what the evidence hedged; a statement that carries the evidence's own
     uncertainty, or hedges in any other way, states no more than it was shown.
     """
-    if hedge_marker(text):
-        return ""
     if not hedge_marker(corpus):
         return ""
     for modal in _STRONG_MODALS:
-        if re.search(rf"\b{modal}\b", text, re.IGNORECASE):
+        for match in re.finditer(rf"\b{modal}\b", text, re.IGNORECASE):
+            # The exemption is the modal's own clause. A statement that
+            # reports a figure ("EIA forecast 18.2 GW …") and then asserts an
+            # outcome in the next clause ("which would set a record") hedged
+            # nothing about that outcome, and exempting the whole statement on
+            # the reporting verb published the audited hardening.
+            if hedge_marker(_clause_around(text, match.start())):
+                continue
             return modal
     return ""
 
@@ -1688,19 +1730,26 @@ def scope_fact(text: str) -> str:
     what a source counted.
     """
     lowered = " ".join(text.casefold().split())
-    for clause in re.split(r"[,;.]\s+|\band\b", lowered):
+    for clause in _CLAUSE_SPLIT.split(lowered):
         subject = next(
             (name for name in _SCOPE_SUBJECTS if name in clause), ""
         )
         if not subject:
             continue
-        # The exemption is per *clause*: a note that describes this pass in one
-        # clause and asserts a source's boundary in another is the assertion,
-        # and exempting the whole note on one substring published it.
-        if any(phrase in clause for phrase in _PASS_PHRASES):
+        if not any(verb in clause for verb in _SCOPE_VERBS):
             continue
-        if any(verb in clause for verb in _SCOPE_VERBS):
-            return subject
+        # The exemption is per clause *and* positional: a note that opens by
+        # describing this pass ("in this pass, behind-the-meter storage …") is
+        # the pass describing itself, while a note that asserts the boundary
+        # first and mentions this report afterwards is the assertion. A
+        # substring test anywhere in the note published the audited sentence
+        # with six words appended.
+        if any(
+            phrase in clause[: clause.index(subject)]
+            for phrase in _PASS_PHRASES
+        ):
+            continue
+        return subject
     return ""
 
 
@@ -1760,11 +1809,13 @@ def unattached_qualifiers(text: str, corpus: str) -> list[str]:
 
 
 def _bounded_passage(text: str, *, limit: int) -> str:
-    """One passage carrying at most ``limit`` characters, cut between sentences.
+    """One passage carrying at most ``limit`` characters, cut at a boundary.
 
-    The cut lands on a sentence boundary and says how much was withheld. A
-    partial sentence is the fragment a writer must not restate, which is why
-    this never cuts one.
+    The cut lands on a sentence boundary when there is one inside the budget
+    and on the last word boundary otherwise, and either way it says how much
+    was withheld and whether the cut is a sentence end. A partial word is a
+    token the writer cannot read; a partial sentence is a fragment it must not
+    restate, which the marker states.
     """
     if len(text) <= limit:
         return text
@@ -1790,14 +1841,14 @@ def _evidence_lines(
 ) -> list[str]:
     """``id locator "excerpt"`` for each selected passage, in selected order.
 
-    The excerpt is published whole. It is the passage a claim rests on, and
-    the writer may only restate what it can see: clamping it to the ledger's
-    200-character display bound hid figures sitting below a page's navigation
-    — the same shape that made the audited run's fact checker miss nine of its
-    fourteen verdicts. ``budget`` bounds the whole group as a *model input*
-    and never cuts a passage mid-sentence: whole passages are carried until it
-    is spent, a passage too large to fit at all is cut between sentences, and
-    the passages that did not fit are named rather than silently dropped.
+    The excerpt is published whole wherever it fits. It is the passage a claim
+    rests on, and the writer may only restate what it can see: clamping it to
+    the ledger's 200-character display bound hid figures sitting below a page's
+    navigation — the same shape that made the audited run's fact checker miss
+    nine of its fourteen verdicts. ``budget`` is a *model-input* bound: whole
+    passages are carried until it is spent, a passage that cannot fit is cut
+    between sentences and its withheld count stated, and the passages that were
+    not shown at all are named rather than silently dropped.
     """
     if budget <= 0:
         if not evidence_ids:

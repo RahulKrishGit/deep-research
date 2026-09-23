@@ -1770,8 +1770,7 @@ def test_a_hardened_modality_is_read_from_the_evidence_not_the_claim() -> None:
     )
 
     assert hardened_modality(
-        "EIA's February 24, 2025 forecast of 18.2 GW of additions for 2025, "
-        "which would set a record.",
+        "EIA forecast 18.2 GW of additions in 2025, which would set a record.",
         evidence.casefold(),
     ) == "would"
     assert hardened_modality(
@@ -1853,6 +1852,20 @@ def test_a_pass_phrase_in_one_clause_does_not_excuse_another() -> None:
     assert scope_fact(
         "State-level breakdowns are not included in this report."
     ) == ""
+    # The same bypass without a comma, and with the other separators.
+    assert scope_fact(
+        f"{audited} so this report cannot convert the figures into a "
+        "whole-market total."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        f"{audited} \u2014 this report cannot convert the figures."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        f"{audited} (this report covers utility-scale capacity only)."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        f"{audited}: this report cannot convert the figures."
+    ) == "behind-the-meter"
 
 
 def test_a_cut_with_no_sentence_break_lands_on_a_word_boundary() -> None:
@@ -1874,17 +1887,18 @@ def test_a_cut_with_no_sentence_break_lands_on_a_word_boundary() -> None:
 
 def test_no_claim_loses_all_of_its_support_to_an_earlier_claims_length() -> None:
     """One oversized first passage must not starve every later claim."""
-    huge = "field name " * 20_000
+    huge = "field name " * 760
     small = "Generators added 10.4 GW of new battery storage capacity in 2024."
-    first = _claim(text="A very long read was taken.", target_ids=["t1"]).model_copy(
+    first = _claim(text="A long read was taken.", target_ids=["t1"]).model_copy(
         update={"cluster_id": CLUSTER_ID}
     )
     second = _claim(text="Additions reached 10.4 GW.", target_ids=["t2"]).model_copy(
         update={"cluster_id": "cluster-2"}
     )
+    third = _claim(text="A third claim with no selected evidence.", target_ids=["t3"])
 
     packet = build_canonical_packet(
-        claims=[first, second],
+        claims=[first, second, third],
         clusters={
             CLUSTER_ID: _cluster(
                 claim_ids=[first.claim_id], evidence_ids=["e-big"]
@@ -1899,13 +1913,19 @@ def test_no_claim_loses_all_of_its_support_to_an_earlier_claims_length() -> None
             "e-big": _unit(evidence_id="e-big", excerpt=huge),
             "e-small": _unit(evidence_id="e-small", excerpt=small),
         },
-        targets=[_target("t1"), _target("t2")],
+        targets=[_target("t1"), _target("t2"), _target("t3")],
         sources=[_source()],
         limit=10,
     )
     support = {entry.label: entry.support for entry in packet.entries}
 
     assert any(small in line for line in support["C002"])
+    # A carried claim with no selected evidence holds no share, so the budget
+    # it would have reserved stays available: the one passage there is, is
+    # carried whole.
+    assert support["C001"] and support["C002"]
+    # C003 selects nothing, so it holds no share and shows nothing.
+    assert not support["C003"]
     assert any(huge.startswith(line.split('"', 2)[1].split(" […", 1)[0]) or
                " […" in line for line in support["C001"])
 
@@ -1936,8 +1956,8 @@ def test_a_statement_that_hardens_its_evidences_modality_is_refused() -> None:
     refused, rejected = build_report_composition(
         task,
         _summary_draft(
-            "EIA's February 24, 2025 forecast of 18.2 GW of additions for "
-            "2025, which would set a record."
+            "EIA forecast 18.2 GW of additions in 2025, which would set a "
+            "record."
         ),
         max_sections=4,
         limitations=[],
@@ -1972,8 +1992,8 @@ def test_a_note_that_describes_the_pass_is_not_a_scope_assertion() -> None:
         "The checked evidence does not include a full-year 2025 outturn for "
         "U.S. battery storage additions.",
         "State-level breakdowns are not included in this report.",
-        "Behind-the-meter storage is discussed in the plan but no note about "
-        "its size is included here.",
+        "In the plan, behind-the-meter storage is discussed but no note "
+        "about its size is included here.",
     ]
 
     composition, rejected = build_report_composition(
