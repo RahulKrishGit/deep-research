@@ -2283,7 +2283,7 @@ def distinct_retention_counts(
             read.acquisition_kind == "network" for read in reads
         ),
         "cache_reads": sum(read.acquisition_kind == "cache" for read in reads),
-        "unique_works": retained_work_count(urls, reads),
+        "unique_works": retained_work_count(urls, reads, sources=sources),
         "publishers": len(
             {source.publisher_id for source in sources if source.publisher_id}
         ),
@@ -2501,6 +2501,9 @@ def render_quality_record(
         else []
     )
     statements = composition.statements if composition is not None else []
+    from deep_research.agents.evidence import (  # noqa: PLC0415
+        resolve_source_work_keys,
+    )
     from deep_research.agents.report_review import (  # noqa: PLC0415
         composition_semantic_fingerprint,
     )
@@ -2583,16 +2586,10 @@ def render_quality_record(
         # The sources' own persisted identity, so this map and ``sources`` can
         # never disagree — a re-resolution of the reads without the anchors the
         # Source Evaluator validated would split an original from its mirror.
-        "work_keys": {
-            url: key
-            for url, key in sorted(
-                {
-                    normalize_source_url(source.url): source.work_id
-                    for source in sources
-                    if source.work_id
-                }.items()
-            )
-        },
+        # The works count below is taken from this same resolution, because a
+        # count derived a second way is how this record came to publish one
+        # work in this map and two in ``unique_works``.
+        "work_keys": dict(sorted(resolve_source_work_keys(sources).items())),
         "evidence": [
             {
                 "evidence_id": unit.evidence_id,
