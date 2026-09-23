@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import get_args
 
 import pytest
@@ -171,6 +172,7 @@ def _check_finding(
     *,
     content: str = "Logical error rates fell below break-even in 2025.",
     sub_topic: str = "Alpha",
+    target_ids: Sequence[str] = (),
 ) -> Finding:
     return Finding(
         content=content,
@@ -179,6 +181,7 @@ def _check_finding(
         extracted_at=CHECK_EXTRACTED_AT,
         confidence=0.8,
         related_sub_topic=sub_topic,
+        target_ids=list(target_ids),
     )
 
 
@@ -3143,6 +3146,118 @@ def test_the_evidence_period_obligation_does_not_veto_attribution() -> None:
     assert _attributed(
         draft, target, question="How much capacity was withheld in Texas?"
     ).target_ids == ["target-1"]
+
+
+# --------------------------------------------------------------------------
+# A finding's own target binding seeds the claim's candidate targets
+# --------------------------------------------------------------------------
+#
+# The researcher keeps the planned target each finding answers. The read that
+# carried the audited run's 19.6 GW forecast was fetched for the 2024-additions
+# topic, so without that binding the forecast target is not even a candidate
+# the claim's prose may be checked against.
+
+
+def _attribution_targets() -> dict[str, list[EvidenceTarget]]:
+    """Two topics' targets: the fetching one, and the one the finding names.
+
+    The fetching topic's target carries a requirement this contract cannot
+    check, so no prose can ever earn it — the existing spelling of "this
+    topic's own targets are not the answer here". Whatever the claim earns
+    below therefore came from the finding's own binding.
+    """
+    return {
+        "alpha": [
+            _attribution_target(
+                target_id="target-1",
+                required_dimensions=["deployment mechanism"],
+            )
+        ],
+        "beta": [
+            _attribution_target(
+                target_id="topic-02-target-01",
+                coverage_id="topic-02",
+            )
+        ],
+    }
+
+
+def _seeded_attribution(
+    finding: Finding,
+    draft: ClaimDraft,
+    *,
+    question: str = "How much capacity was withheld in Texas?",
+):
+    return claim_attribution(
+        draft,
+        findings=[finding],
+        coverage_ids={"alpha": "topic-01", "beta": "topic-02"},
+        targets=_attribution_targets(),
+        question=question,
+    )
+
+
+def test_a_findings_target_ids_seed_the_claims_candidate_targets() -> None:
+    """The binding the researcher kept is where the claim's candidates start.
+
+    The finding came from a read fetched for the alpha topic and names the beta
+    topic's target, which the fetching topic's own targets cannot supply.
+    """
+    finding = _check_finding(
+        content="1,200 MW was withheld in Texas in 2024.",
+        target_ids=["topic-02-target-01"],
+    )
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    attribution = _seeded_attribution(finding, draft)
+
+    assert attribution.target_ids == ["topic-02-target-01"]
+    assert attribution.target_policies == {"topic-02-target-01": "independent_pair"}
+
+
+def test_a_seeded_target_still_has_to_be_answered_by_the_prose() -> None:
+    """A seed is a candidate, never an award: the dimensions still decide."""
+    finding = _check_finding(
+        content="1,200 MW was withheld in 2024.",
+        target_ids=["topic-02-target-01"],
+    )
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    assert _seeded_attribution(finding, draft).target_ids == []
+
+
+def test_an_unplanned_target_id_seeds_nothing_beyond_the_topic() -> None:
+    """An id the plan never issued is not a target any claim can earn."""
+    finding = _check_finding(
+        content="1,200 MW was withheld in Texas in 2024.",
+        target_ids=["topic-09-target-01"],
+    )
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    assert _seeded_attribution(finding, draft).target_ids == []
+
+
+def test_a_finding_without_target_ids_keeps_its_topics_targets() -> None:
+    """Legacy findings bind exactly as they did: by the topic that fetched them."""
+    finding = _check_finding(
+        content="1,200 MW was withheld in Texas in 2024.",
+        sub_topic="Beta",
+    )
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    assert _seeded_attribution(finding, draft).target_ids == ["topic-02-target-01"]
 
 
 # --------------------------------------------------------------------------

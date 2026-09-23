@@ -502,6 +502,14 @@ def claim_attribution(
     claim can never be credited with an obligation it does not meet. Both are
     derived from the same consumed findings, so a claim can never answer a
     topic it cited nothing from either.
+
+    The candidates a claim's prose is checked against start with the planned
+    targets its findings named — the researcher's extraction keeps that
+    binding, and it is what lets a read fetched for one topic answer another
+    topic's target. The finding's own sub-topic stays a candidate source too,
+    so a finding extracted before the binding existed (one carrying no target
+    ids) is judged exactly as it was, and a named target the plan does not
+    contain contributes nothing: only the plan can issue an obligation.
     """
     fingerprints, consumed_coverage = consumed_provenance(
         draft, findings=findings, coverage_ids=coverage_ids
@@ -509,8 +517,13 @@ def claim_attribution(
     atoms = extract_text_atoms(draft.text)
     obligations: list[str] = []
     policies: dict[str, str] = {}
+    planned = {
+        target.target_id: target
+        for group in targets.values()
+        for target in group
+    }
     for finding in _attributed_findings(draft, findings=findings).values():
-        for target in targets.get(_collapsed(finding.related_sub_topic), ()):
+        for target in _candidate_targets(finding, targets=targets, planned=planned):
             if any(
                 atom_answers_target(atom, target, question=question)
                 for atom in atoms
@@ -525,6 +538,36 @@ def claim_attribution(
             target_id: policies[target_id] for target_id in obligations
         },
     )
+
+
+def _candidate_targets(
+    finding: Finding,
+    *,
+    targets: Mapping[str, Sequence[EvidenceTarget]],
+    planned: Mapping[str, EvidenceTarget],
+) -> list[EvidenceTarget]:
+    """The plan targets one finding makes a claim eligible for, in order.
+
+    The finding's own named targets lead, because they are the specific
+    obligation its content answers; the targets of the sub-topic that fetched
+    it follow, which is the whole candidate set before findings carried a
+    binding. Ids resolve through the plan, so a target id no plan issued is
+    simply absent rather than invented.
+    """
+    candidates: list[EvidenceTarget] = []
+    seen: set[str] = set()
+    for target_id in finding.target_ids:
+        target = planned.get(target_id)
+        if target is None or target.target_id in seen:
+            continue
+        seen.add(target.target_id)
+        candidates.append(target)
+    for target in targets.get(_collapsed(finding.related_sub_topic), ()):
+        if target.target_id in seen:
+            continue
+        seen.add(target.target_id)
+        candidates.append(target)
+    return candidates
 
 
 def ordered_findings_for_extraction(
