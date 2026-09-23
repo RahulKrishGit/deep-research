@@ -2612,6 +2612,24 @@ _LONG_BODY = (
 _LONG_URL = "https://example.test/long-study.md"
 
 
+def _document_client(document: str) -> httpx.AsyncClient:
+    """A client serving one markdown document, for layout-scoped tests."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200, text="User-agent: *\nAllow: /", request=request
+            )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/markdown; charset=utf-8"},
+            text=document,
+            request=request,
+        )
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
 def _long_study_client() -> httpx.AsyncClient:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
@@ -2634,11 +2652,26 @@ async def test_a_selected_passage_no_finding_used_gets_its_own_disposition(
 ) -> None:
     """Disposition follows the passage, not the URL the passage came from.
 
-    The document is split into two chunks and both are selected. The extracted
-    finding cites chunk 0 only, so chunk 1 is not "used" — the earlier
+    The document is read as two passages and both are selected. The extracted
+    finding cites the first only, so the second is not "used" — the earlier
     URL-level check would have called it used because a different passage of
     the same read produced a finding.
     """
+    from deep_research.agents.acquisition import split_read_body
+
+    document = (
+        (
+            "A named source about Alpha confirms queue delay commissioning "
+            "cost. " * 6
+        )
+        + "\n\n"
+        + ("A second section about Beta reports nothing relevant. " * 6)
+    )
+    passages = {
+        f"chunk-{index}": passage
+        for index, passage in enumerate(split_read_body(document))
+    }
+    assert sorted(passages) == ["chunk-0", "chunk-1"]
     draft = SubTopicFindingsDraft(
         findings=[
             FindingDraft(
@@ -2653,15 +2686,12 @@ async def test_a_selected_passage_no_finding_used_gets_its_own_disposition(
                     resolved_url=_LONG_URL,
                     title="Alpha long study",
                     retrieved_at=EXTRACTED_AT,
-                    text=_LONG_BODY,
-                    passages={
-                        "chunk-0": _LONG_BODY[:8000],
-                        "chunk-1": _LONG_BODY[8000:],
-                    },
+                    text=document,
+                    passages=passages,
                     extraction_complete=True,
                 ).read_id,
                 locator="chunk-0",
-                excerpt=_LONG_BODY[:8000],
+                excerpt=passages["chunk-0"],
                 target_ids=["topic-01"],
             )
         ]
@@ -2684,7 +2714,7 @@ async def test_a_selected_passage_no_finding_used_gets_its_own_disposition(
         search=FakeSearchClient(
             [search_response(title="Alpha long study", url=_LONG_URL)]
         ),
-        http=_long_study_client(),
+        http=_document_client(document),
     )
 
     async with tracker.session_span("session-1", "q"):

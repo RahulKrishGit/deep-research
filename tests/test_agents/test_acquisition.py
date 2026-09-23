@@ -14,12 +14,18 @@ from deep_research.agents.acquisition import (
     READ_ADMISSION_OPERATION,
     AcquisitionPolicy,
     ManifestSequence,
+    WEB_PASSAGE_CHARS,
+    admit_read_result,
     build_acquisition_context,
     build_read_record_from_tool_result,
     cache_reuse_problem,
     next_acquisition_action,
 )
-from deep_research.agents.evidence import build_read_record, merge_evidence_units
+from deep_research.agents.evidence import (
+    build_read_record,
+    merge_evidence_units,
+    normalized_content_sha256,
+)
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.researcher import (
     FindingDraft,
@@ -207,6 +213,169 @@ def test_short_access_shell_is_not_admitted_as_usable_evidence() -> None:
     )
 
 
+# The navigation block, the solar paragraph, and the battery-storage paragraph
+# of the EIA Today in Energy page the audited run read (detail.php?id=64586),
+# in the page's own order: site navigation and a headline first, the figure
+# that answers the question last. Stored as one passage — which is what the run
+# did — the figure sits past every character a packet could show, and the claim
+# that states it was recorded as unsupported.
+_EIA_NAVIGATION = (
+    "Solar, battery storage to lead new U.S. generating capacity additions in "
+    "2025 - U.S. Energy Information Administration (EIA) Skip to "
+    "sub-navigation U.S. Energy Information Administration - EIA - Independent "
+    "Statistics and Analysis Menu Statistics Analysis Tools Education News "
+    "Search Today in Energy Skip to page content Recent articles Browse by tag "
+    "liquid fuels natural gas electricity oil/petroleum production/supply "
+    "crude oil consumption/demand generation prices map states exports/imports "
+    "international coal renewables weather forecasts/projections gasoline "
+    "capacity steo (short-term energy outlook) Prices Archive About Glossary "
+    "FAQS In-brief analysis February 24, 2025"
+)
+_EIA_SOLAR_PARAGRAPH = (
+    "Solar. In 2024, generators added a record 30 GW of utility-scale solar "
+    "to the U.S. grid, accounting for 61% of capacity additions last year. We "
+    "expect this trend will continue in 2025, with 32.5 GW of new "
+    "utility-scale solar capacity to be added. Texas (11.6 GW) and California "
+    "(2.9 GW) will account for almost half of the new utility-scale solar "
+    "capacity addition in 2025."
+)
+_EIA_BATTERY_PARAGRAPH = (
+    "Battery storage. In 2025, capacity growth from battery storage could set "
+    "a record as we expect 18.2 GW of utility-scale battery storage to be "
+    "added to the grid. U.S. battery storage already achieved record growth "
+    "in 2024 when power providers added 10.3 GW of new battery storage "
+    "capacity."
+)
+_EIA_PAGE_URL = "https://www.eia.gov/todayinenergy/detail.php?id=64586"
+_EIA_PAGE_TITLE = (
+    "Solar, battery storage to lead new U.S. generating capacity additions "
+    "in 2025"
+)
+
+
+def _eia_page_body() -> str:
+    return "\n\n".join(
+        (_EIA_NAVIGATION, _EIA_SOLAR_PARAGRAPH, _EIA_BATTERY_PARAGRAPH)
+    )
+
+
+def _eia_web_result() -> ToolResult:
+    return ToolResult(
+        tool_name="web_scraper",
+        success=True,
+        data={
+            "url": _EIA_PAGE_URL,
+            "requested_url": _EIA_PAGE_URL,
+            "resolved_url": _EIA_PAGE_URL,
+            "title": _EIA_PAGE_TITLE,
+            "text": _eia_page_body(),
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+
+def test_a_web_read_is_split_into_bounded_paragraph_passages() -> None:
+    """A page is several passages, so a packet can address the figure's sentence.
+
+    The audited run stored every web page as one passage, so the first
+    characters of the page — its site navigation — were all an adjudicator
+    could be shown, and claims whose figures sat 2,000 characters in were
+    recorded as unsupported.
+    """
+    result = _eia_web_result()
+
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+
+    assert read is not None
+    body = str(result.data["text"])
+    assert list(read.passages) == [
+        f"chunk-{index}" for index in range(len(read.passages))
+    ]
+    assert len(read.passages) > 1
+    # Lossless: the passages are the body, cut at paragraph boundaries, and a
+    # complete read's identity is its body hash, so the split cannot renumber
+    # the read or change what it is.
+    assert "".join(read.passages.values()) == body
+    assert read.content_sha256 == normalized_content_sha256(body)
+    assert all(
+        passage.strip() and len(passage) <= WEB_PASSAGE_CHARS
+        for passage in read.passages.values()
+    )
+
+    carrying = [
+        locator
+        for locator, passage in read.passages.items()
+        if "18.2 GW" in passage
+    ]
+    assert len(carrying) == 1
+    assert carrying[0] != "chunk-0"
+    assert select_relevant_passages(
+        read.passages, "18.2 GW battery storage forecast for 2025", 1
+    ) == carrying
+
+
+def test_splitting_a_page_does_not_change_its_read_identity() -> None:
+    """One body read twice in a session is one read, however it is laid out.
+
+    The passage split is a layout of the body, not part of its identity: the
+    same bytes read as one passage and as paragraph passages must resolve to
+    one ``read_id``, or a later stage's citation to the page would name a
+    different read than the one the registry holds.
+    """
+    result = _eia_web_result()
+    body = str(result.data["text"])
+
+    split = build_read_record_from_tool_result(result, session_id="session-1")
+    unsplit = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=_EIA_PAGE_URL,
+        resolved_url=_EIA_PAGE_URL,
+        title=_EIA_PAGE_TITLE,
+        retrieved_at="2026-09-23T00:00:00+00:00",
+        text=body,
+        passages={"chunk-0": body},
+        extraction_complete=True,
+    )
+
+    assert split is not None
+    assert split.read_id == unsplit.read_id
+    assert split.content_sha256 == unsplit.content_sha256
+
+
+def test_a_split_page_defers_the_passages_past_the_selection_bound() -> None:
+    """Selection still hands over a bounded batch; the rest is recorded.
+
+    Splitting a page must not turn the passage bound into a silent drop:
+    everything the selection did not take stays visible as a disposition, so
+    a passage nobody selected is never read as a passage that does not exist.
+    """
+    result = _eia_web_result()
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+    assert read is not None
+    assert len(read.passages) > 2
+
+    admission = admit_read_result(
+        result,
+        session_id="session-1",
+        query="18.2 GW battery storage forecast for 2025",
+        selected_limit=1,
+    )
+
+    assert admission is not None
+    (selected,) = admission.evidence.values()
+    assert "18.2 GW" in selected.excerpt
+    assert [item.reason for item in admission.dispositions] == [
+        "deferred_capacity"
+    ] * (len(read.passages) - 1)
+    assert {item.item_id for item in admission.dispositions} == {
+        f"{read.read_id}/{locator}"
+        for locator in read.passages
+        if locator != selected.locator
+    }
+
+
 def test_shared_successful_read_cache_reselects_for_a_second_target() -> None:
     shared_reads = {}
     shared_evidence = {}
@@ -306,8 +475,19 @@ def test_acquisition_context_keeps_ids_when_a_complete_record_overflows() -> Non
     assert "pending_passage_ids=" in context
     assert "continuation_ids=" in context
     assert tail not in context
-    assert read.passages["page-80-chunk-0"] not in context
-    assert f"passage:{read.read_id}/page-80-chunk-0" in context
+    # No passage is sliced: whatever the packet could not carry is named for
+    # continuation, and everything it did carry is there whole.
+    assert "continuation_ids=" in context
+    for locator, passage in read.passages.items():
+        collapsed = " ".join(passage.split())
+        if collapsed in context:
+            continue
+        # Named for continuation, or the packet's own overflow marker when even
+        # the id list could not fit.
+        assert (
+            f"passage:{read.read_id}/{locator}" in context
+            or "continuation_ids=packet_overflow" in context
+        )
     # The packet carries no heading of its own: the decision prompt's renderer
     # adds "## Acquisition context" exactly once.
     assert "## Acquisition context" not in context
@@ -1972,3 +2152,242 @@ async def test_a_contents_only_fixture_cannot_supply_a_measurement(
 
     assert findings == []
     assert rejected == ["finding 1: excerpt was not admitted at locator"]
+
+def test_a_hard_cut_never_splits_a_decomposed_character() -> None:
+    """A cut lands on a character boundary even where there is no whitespace.
+
+    A passage must be verbatim text of the body *after* NFC normalization: a
+    cut between the pieces of a decomposed character produces a passage the
+    body no longer contains, ``build_read_record`` refuses it, and the whole
+    page — which the base admitted — is dropped.
+    """
+    import unicodedata
+
+    # Three-code-point syllables first, then two: the bound falls inside one
+    # of the two-code-point characters.
+    body = unicodedata.normalize(
+        "NFD", "\uac01" * 199 + "\uac00" * 500
+    )
+    assert len(body) > WEB_PASSAGE_CHARS
+    result = ToolResult(
+        tool_name="web_scraper",
+        success=True,
+        data={
+            "url": "https://hangul.test/page",
+            "requested_url": "https://hangul.test/page",
+            "resolved_url": "https://hangul.test/page",
+            "title": "Decomposed page",
+            "text": body,
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+
+    assert read is not None
+    assert "".join(read.passages.values()) == body
+    for passage in read.passages.values():
+        assert unicodedata.normalize("NFC", passage) in unicodedata.normalize(
+            "NFC", body
+        )
+
+# Two real slices of the stored document page the run read (unit
+# ev-6e27eec03e00aa5dcf3abc6d, page-7-chunk-6 of the grid-storage FAQ, 6,005
+# characters) and of the EIA-860 instructions page, used to a length past the
+# 4,000-character request budget: a whole PDF page is a document_reader
+# passage, and a page longer than the request was carried alone, cut, and
+# could never be a complete support.
+_NREL_PAGE_TEXT = (
+    "Grid-Scale Battery Storage: Frequently Asked Questions 7 of batteries in "
+    "the market could distort prices, affecting storage for energy arbitrage, "
+    "while the rest is withheld for maintaining grid systems and conventional "
+    "generators alike (Bhatnagar 2013). frequency during unexpected outages "
+    "until other, slower generators can be brought online (AEMO 2018). In "
+    "2017, after a large coal plant tripped offline unexpectedly, the "
+    "Hornsdale Power reserve was able to inject several megawatts of power "
+    "into the grid within milliseconds, arresting the fall in grid frequency. "
+    "Battery storage systems are an emerging technology that exhibit more "
+    "risk for investors than conventional generator investments. These risks "
+    "include the technical aspects of battery storage systems, which may be "
+    "less understood by stakeholders and are changing faster than for other "
+    "technologies, as well as the market and regulatory treatment of storage."
+)
+_FORM_860_INSTRUCTIONS = (
+    "REQUIRED Existing plants are required to respond to the EIA-860 if: "
+    "RESPONDENTS The plant's total generator nameplate capacity is 1 Megawatt "
+    "(MW) or greater and The plant's generator(s), or the facility in which "
+    "the generator(s) resides, are connected to the local or regional "
+    "electric power grid and have the ability to draw power from or deliver "
+    "power to the grid. If the existing plant is jointly-owned, only the "
+    "operator of the plant is required to respond, and the operator must "
+    "submit a complete survey form for the entire plant."
+)
+
+
+def _long_page_body() -> str:
+    page = "\n\n".join(
+        (_NREL_PAGE_TEXT, _FORM_860_INSTRUCTIONS) * 3
+    )
+    assert len(page) > 4000
+    return page
+
+
+def _long_page_result() -> ToolResult:
+    page = _long_page_body()
+    return ToolResult(
+        tool_name="document_reader",
+        success=True,
+        data={
+            "source": "https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+            "requested_source": "https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+            "resolved_source": "https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+            "title": "Grid-Scale Battery Storage: Frequently Asked Questions",
+            "chunks": [{"text": page, "chunk_index": 6, "page": 7}],
+            "content_sha256": normalized_content_sha256(page),
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+
+def test_a_document_page_is_split_into_bounded_passages() -> None:
+    """A PDF page is several passages, so one page cannot be one cut candidate.
+
+    ``document_reader`` chunks are whole pages of up to 8,000 characters while
+    the adjudication request holds 4,000: a page longer than the request was
+    carried alone, cut, and could never be a complete support — the run's own
+    reads hold six such pages (6,005 to 4,090 characters). Splitting at
+    admission is lossless, so the body hash a complete read is identified by is
+    unchanged.
+    """
+    page = _long_page_body()
+    result = _long_page_result()
+
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+
+    assert read is not None
+    assert len(read.passages) > 1
+    assert "".join(read.passages.values()) == page
+    assert read.content_sha256 == normalized_content_sha256(page)
+    assert all(
+        passage.strip() and len(passage) <= WEB_PASSAGE_CHARS
+        for passage in read.passages.values()
+    )
+    # The reader's own locator names the page's first passage; the rest follow
+    # it, so the page and its numbering both survive the split.
+    assert list(read.passages)[0] == "page-7-chunk-6"
+    assert list(read.passages) == [
+        f"page-7-chunk-{6 + index}" for index in range(len(read.passages))
+    ]
+    # The page is a layout of the body, not part of its identity.
+    unsplit = build_read_record(
+        session_id="session-1",
+        reader="document_reader",
+        requested_url="https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+        resolved_url="https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+        title="Grid-Scale Battery Storage: Frequently Asked Questions",
+        retrieved_at="2026-09-23T00:00:00+00:00",
+        text=page,
+        passages={"page-7-chunk-0": page},
+        extraction_complete=True,
+    )
+    assert read.read_id == unsplit.read_id
+
+
+def test_every_exported_acquisition_name_exists() -> None:
+    """``__all__`` names the module actually has.
+
+    A rename that leaves the old name in ``__all__`` breaks ``import *`` for
+    every consumer while the module still imports.
+    """
+    import deep_research.agents.acquisition as module
+
+    assert [
+        name for name in module.__all__ if not hasattr(module, name)
+    ] == []
+
+
+def test_a_malformed_document_chunk_index_is_refused_not_invented() -> None:
+    """A reader's own index is required, exactly as the read contract says.
+
+    ``passages_from_chunks`` raises for a missing, non-integer, or boolean
+    ``chunk_index``; a page split must not launder that into a plausible
+    locator, or a malformed payload becomes evidence under a name nobody
+    reported.
+    """
+    for index in (None, "0", True):
+        data = {
+            "source": "https://example.test/report.pdf",
+            "requested_source": "https://example.test/report.pdf",
+            "resolved_source": "https://example.test/report.pdf",
+            "title": "Report",
+            "chunks": [{"text": "A page of the report.", "chunk_index": index}],
+            "extraction_complete": True,
+        }
+        if index is None:
+            del data["chunks"][0]["chunk_index"]
+        result = ToolResult(
+            tool_name="document_reader", success=True, data=data, latency_ms=0
+        )
+        assert (
+            build_read_record_from_tool_result(result, session_id="session-1")
+            is None
+        ), index
+
+
+def test_a_dossier_accepts_a_url_with_no_query() -> None:
+    """A caller that states no query for a URL still gets a dossier."""
+    from deep_research.agents.evidence import build_read_dossiers
+
+    result = _eia_web_result()
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+    assert read is not None
+
+    (dossier,) = build_read_dossiers(
+        [read], queries={read.resolved_url: None}
+    )
+
+    assert dossier.excerpts
+    assert dossier.excerpts[0].startswith("Solar, battery storage to lead")
+
+
+def test_a_dossier_leads_with_the_query_that_states_a_figure() -> None:
+    """Findings that carry a figure outrank navigation prose for the slots.
+
+    A source cited for several findings contributed four nav-sentence queries
+    before its obligations' queries, and rank-major interleaving filled all
+    four excerpts from them: the page's figures never appeared, though the
+    plan text alone had shown them.
+    """
+    from deep_research.agents.evidence import build_read_dossiers
+
+    nav = "Skip to main content. ".ljust(600, "n")
+    figure = (
+        "We expect 18.2 GW of utility-scale battery storage to be added to "
+        "the grid in 2025, up from 10.3 GW added in 2024."
+    )
+    body = "\n\n".join((nav, figure))
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=_EIA_PAGE_URL,
+        resolved_url=_EIA_PAGE_URL,
+        title=_EIA_PAGE_TITLE,
+        retrieved_at="2026-09-23T00:00:00+00:00",
+        text=body,
+        passages={"chunk-0": nav, "chunk-1": figure},
+        extraction_complete=True,
+    )
+    nav_queries = [
+        f"Skip to main content section {index} of the site navigation."
+        for index in range(4)
+    ]
+
+    (dossier,) = build_read_dossiers(
+        [read],
+        queries={read.resolved_url: [*nav_queries, "18.2 GW battery forecast"]},
+    )
+
+    shown = "\n".join(dossier.excerpts)
+    assert "18.2 GW" in shown

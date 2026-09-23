@@ -1639,6 +1639,80 @@ def _web_read(
     )
 
 
+# Three passages of the EIA Today in Energy page the audited run read
+# (detail.php?id=64586): site navigation, the data-source note, and the
+# paragraph that carries the 18.2 GW forecast.
+_EIA_NAVIGATION = (
+    "Solar, battery storage to lead new U.S. generating capacity additions in "
+    "2025 - U.S. Energy Information Administration (EIA) Skip to "
+    "sub-navigation U.S. Energy Information Administration - EIA - Independent "
+    "Statistics and Analysis Menu Statistics Analysis Tools Education News "
+    "Search Today in Energy Skip to page content Recent articles Browse by tag "
+    "liquid fuels natural gas electricity oil/petroleum production/supply "
+    "crude oil consumption/demand generation prices map states exports/imports "
+    "international coal renewables weather forecasts/projections gasoline "
+    "capacity steo (short-term energy outlook) Prices Archive About Glossary "
+    "FAQS In-brief analysis February 24, 2025"
+)
+_EIA_METHODS = (
+    "Data source: Preliminary Monthly Electric Generator Inventory. The "
+    "inventory covers utility-scale generators of 1 megawatt or greater, "
+    "including hybrid co-located plants, and is published monthly with a "
+    "three-month lag behind the reporting period it describes."
+)
+_EIA_BATTERY_PARAGRAPH = (
+    "Battery storage. In 2025, capacity growth from battery storage could set "
+    "a record as we expect 18.2 GW of utility-scale battery storage to be "
+    "added to the grid. U.S. battery storage already achieved record growth "
+    "in 2024 when power providers added 10.3 GW of new battery storage "
+    "capacity. This growth highlights the importance of battery storage when "
+    "used with renewable energy, helping to balance supply and demand and "
+    "improve grid stability."
+)
+
+
+def test_a_dossier_shows_the_reads_passages_not_the_top_of_the_page() -> None:
+    """The evaluator judges the document, not a 400-character head of it.
+
+    Audit finding #1's source half: ess-news was scored 0.10 "low", and "the
+    substantive 2024 capacity number is not visible" was published about it,
+    while its stored read carries the 18.2 GW sentence 2,215 characters in.
+    The dossier's excerpts are whole passages in document order, and a query
+    puts the passages the source is being judged for first.
+    """
+    from deep_research.agents.evidence import build_read_dossiers
+
+    nav = _EIA_NAVIGATION
+    methods = _EIA_METHODS
+    figure = _EIA_BATTERY_PARAGRAPH
+    read = _web_read(
+        "https://www.eia.gov/todayinenergy/detail.php?id=64586",
+        title="Solar, battery storage to lead new U.S. capacity additions",
+        text="\n\n".join((nav, methods, figure)),
+        passages={"chunk-0": nav, "chunk-1": methods, "chunk-2": figure},
+    )
+
+    (dossier,) = build_read_dossiers([read])
+
+    # Document order, and the passage that carries the figure arrives whole:
+    # the 400-character head it used to be clipped to stops before the
+    # sentence with the number in it.
+    assert len(dossier.excerpts) == 3
+    assert dossier.excerpts[0].startswith("Solar, battery storage to lead")
+    assert dossier.excerpts[1] == " ".join(methods.split())
+    assert dossier.excerpts[2] == " ".join(figure.split())
+    assert len(dossier.excerpts[2]) > 400
+
+    (ranked,) = build_read_dossiers(
+        [read],
+        queries={
+            read.resolved_url: "18.2 GW battery storage forecast for 2025"
+        },
+    )
+
+    assert ranked.excerpts[0] == " ".join(figure.split())
+
+
 def test_a_mirror_read_keeps_the_issuer_it_evidences() -> None:
     """The serving host is not the publisher when the document names one."""
     original = _web_read("https://lab.example/report")

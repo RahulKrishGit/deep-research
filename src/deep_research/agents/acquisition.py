@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import unicodedata
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -48,6 +50,17 @@ OriginName = Literal["researcher", "fact_checker"]
 # fit inside the configured budget. Kept short so it fits wherever a packet is
 # allowed to exist at all, and never a sliced record.
 _CONTEXT_OVERFLOW = "continuation_ids=packet_overflow"
+
+# How much text one passage of a web page may carry. A page is not one passage:
+# it is read as paragraph-bounded passages, so selection and packets can
+# address the sentence that carries a figure instead of the site navigation
+# that happens to precede it.
+WEB_PASSAGE_CHARS = 600
+
+# The end of a paragraph, separator included. ``\r\n\r\n`` and a line of spaces
+# between two blocks are both a break; the cut always falls *after* it, so a
+# passage keeps the whitespace that belongs to it and the split stays lossless.
+_PARAGRAPH_BREAK = re.compile(r"\n[ \t\r]*\n")
 
 # How much text a page may carry and still be read as an automated-access
 # shell. A browser check, a consent wall, or a denial page is always a few
@@ -115,6 +128,84 @@ def _chunk_text(chunks: Sequence[Mapping[str, object]]) -> str:
     )
 
 
+def _split_survives_normalization(text: str, cut: int) -> bool:
+    """True when ``text`` may be divided at ``cut`` without losing a character.
+
+    A passage is verified as verbatim text of the read body *after* NFC
+    normalization, so a cut between a base character and its combining marks
+    produces two passages the body does not contain: the read contract refuses
+    them and the whole page is dropped. The check is exact, and the caller only
+    ever backs a cut off by the length of one character.
+    """
+    return unicodedata.normalize("NFC", text[:cut]) + unicodedata.normalize(
+        "NFC", text[cut:]
+    ) == unicodedata.normalize("NFC", text)
+
+
+def split_read_body(
+    text: str, *, limit: int = WEB_PASSAGE_CHARS
+) -> list[str]:
+    """Split a read body into contiguous, non-blank, bounded passages.
+
+    Every passage is verbatim text of the body and the passages concatenate
+    back to it exactly, so the content hash of a read — and therefore its
+    identity — is what one unsplit read of the same bytes would have. Cuts
+    fall after a paragraph break where one fits inside the bound, otherwise
+    after the last whitespace, so a passage ends mid-word only where the
+    document has no whitespace to cut on.
+
+    A body shorter than the bound is one passage, which is what a short page
+    or a short document chunk was before; the split only ever changes how a
+    long body is addressed. Both readers use it: a ``document_reader`` chunk is
+    a whole PDF page of up to 8,000 characters, while the adjudication request
+    holds 4,000, so without this a page longer than the request would be
+    carried alone and cut and could never be a complete support.
+    """
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    cuts = [0]
+    position = 0
+    length = len(text)
+    while length - position > limit:
+        window = position + limit
+        breaks = [
+            match.end()
+            for match in _PARAGRAPH_BREAK.finditer(text, position, window)
+        ]
+        cut = breaks[-1] if breaks and breaks[-1] > position else 0
+        if not cut:
+            whitespace = max(
+                text.rfind(" ", position, window),
+                text.rfind("\n", position, window),
+                text.rfind("\t", position, window),
+            )
+            cut = whitespace + 1 if whitespace >= position else window
+        if cut <= position:
+            cut = window
+        # Never between a base character and its combining marks.
+        while cut > position + 1 and not _split_survives_normalization(
+            text, cut
+        ):
+            cut -= 1
+        cuts.append(cut)
+        position = cut
+    cuts.append(length)
+    passages = [text[start:end] for start, end in zip(cuts, cuts[1:])]
+    # A passage that holds nothing but whitespace is not a passage the contract
+    # admits, and it is not text the body does not have: it joins its
+    # neighbour, so the split stays lossless and every locator is readable.
+    merged: list[str] = []
+    for passage in passages:
+        if merged and not passage.strip():
+            merged[-1] += passage
+        else:
+            merged.append(passage)
+    if len(merged) > 1 and not merged[0].strip():
+        merged[1] = merged[0] + merged[1]
+        merged = merged[1:]
+    return merged
+
+
 def _payload_read_parts(
     result: ToolResult,
 ) -> tuple[str, str, str, str, str, dict[str, str], bool, str | None] | None:
@@ -134,7 +225,8 @@ def _payload_read_parts(
         if not (text and requested and resolved):
             return None
         chunks: list[Mapping[str, object]] = [
-            {"text": text, "chunk_index": 0}
+            {"text": passage, "chunk_index": index}
+            for index, passage in enumerate(split_read_body(text))
         ]
         reader = "web_scraper"
         title = _text(data.get("title")) or resolved
@@ -142,9 +234,47 @@ def _payload_read_parts(
         raw_chunks = data.get("chunks")
         if not isinstance(raw_chunks, list) or not raw_chunks:
             return None
-        chunks = [item for item in raw_chunks if isinstance(item, Mapping)]
-        if len(chunks) != len(raw_chunks):
+        if any(not isinstance(item, Mapping) for item in raw_chunks):
             return None
+        # A page is laid out as bounded passages, exactly as a web body is: the
+        # reader's own chunk bound (8,000) is larger than a request (4,000), and
+        # a page split here is what keeps every passage a candidate the model
+        # can read whole. The page number and a document-wide chunk index are
+        # kept, so the locator vocabulary is unchanged.
+        chunks: list[Mapping[str, object]] = []
+        # A locator is ``page-N-chunk-M``, so what must be unique is the pair:
+        # a reader that numbers its chunks per page (page 1 chunk 0, page 2
+        # chunk 0) keeps that scheme, and a page split here claims the next free
+        # index on its own page only.
+        claimed: set[tuple[object, int]] = set()
+        for item in raw_chunks:
+            piece_text = item.get("text")
+            if not isinstance(piece_text, str) or not piece_text.strip():
+                return None
+            page = item.get("page")
+            reported = item.get("chunk_index")
+            if isinstance(reported, bool) or not isinstance(reported, int):
+                # The reader's index is required by the read contract; a
+                # missing or malformed one is a payload this project did not
+                # produce, never a reason to invent locators.
+                return None
+            index = reported
+            for passage in split_read_body(piece_text):
+                # The reader's own index stands for the passage it labelled, and
+                # a page split into several passages claims the next free
+                # indices, so a multi-page document keeps the locator scheme it
+                # had and no two passages share a name.
+                while (page, index) in claimed:
+                    index += 1
+                chunk: dict[str, object] = {
+                    "text": passage,
+                    "chunk_index": index,
+                }
+                claimed.add((page, index))
+                index += 1
+                if page is not None:
+                    chunk["page"] = page
+                chunks.append(chunk)
         text = _chunk_text(chunks)
         requested = _text(data.get("requested_source")) or _text(
             data.get("source")
@@ -1840,4 +1970,5 @@ __all__ = [
     "build_read_record_from_tool_result",
     "next_acquisition_action",
     "select_relevant_passages",
+    "split_read_body",
 ]

@@ -645,9 +645,42 @@ _VALUE_PERIOD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# How much of one read's own text a dossier shows the model.
+# How much of one read's own text a dossier shows the model. Each excerpt is a
+# whole passage of the read, so the bound is one passage's length: a passage
+# longer than this is a document chunk rather than a paragraph, and is clipped
+# to keep a single long chunk from filling the request.
 DEFAULT_DOSSIER_EXCERPTS = 4
-DEFAULT_DOSSIER_EXCERPT_CHARS = 400
+
+# A *figure* as a document writes one: a number with a unit or percent
+# (``18.2 GW``, ``26%``, ``1 Megawatt``) or a decimal (``43.6``, ``5.9``). A
+# bare year does not qualify — a page's navigation is full of dates, and a
+# publication date is not the quantity an obligation asks for.
+_QUANTITY = re.compile(
+    r"\d+(?:[.,]\d+)?\s*"
+    r"(?:%|percent|GW|MW|GWh|MWh|kW|kWh|gigawatt|megawatt|kilowatt)",
+    re.IGNORECASE,
+)
+_DECIMAL = re.compile(r"\d+[.,]\d+")
+
+
+def _numbers(text: str) -> set[str]:
+    return set(_NUMBER_PATTERN.findall(text))
+
+
+def _states_a_figure(text: str, wanted: set[str]) -> bool:
+    """True when the passage carries a quantity, not merely a date.
+
+    ``wanted`` is what the obligation itself states, so a passage repeating the
+    question's own numbers also counts: the question is what the source was
+    read for.
+    """
+    if _DECIMAL.search(text) or _QUANTITY.search(text):
+        return True
+    return bool(wanted and wanted.intersection(_numbers(text)))
+
+
+_NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)?")
+DEFAULT_DOSSIER_EXCERPT_CHARS = 600
 
 
 def read_serving_host(read: ReadRecord) -> str:
@@ -1726,6 +1759,8 @@ def build_read_dossiers(
     reads: Sequence[ReadRecord],
     *,
     cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
+    queries: Mapping[str, Sequence[str]] | None = None,
+    obligation_queries: Mapping[str, Sequence[str]] | None = None,
     excerpt_chars: int = DEFAULT_DOSSIER_EXCERPT_CHARS,
     max_excerpts: int = DEFAULT_DOSSIER_EXCERPTS,
 ) -> list[ReadDossier]:
@@ -1734,6 +1769,11 @@ def build_read_dossiers(
     One URL has one current read: the complete read wins over a partial one,
     and the latest observation wins over an earlier one, so a re-read that
     recovered a lost page is assessed instead of the failure it replaced.
+
+    ``queries`` maps a URL to what this source is being judged *for* — a
+    claim's own words, or the sub-topic a source was read for. Where one is
+    given, the passages that answer it are shown first; where none is, the
+    read's passages are shown in document order.
     """
     if excerpt_chars < 1 or max_excerpts < 1:
         raise EvidenceContractError(
@@ -1742,6 +1782,14 @@ def build_read_dossiers(
     cited = {
         normalize_source_url(url): list(topics)
         for url, topics in (cited_sub_topics or {}).items()
+    }
+    wanted = {
+        normalize_source_url(url): _query_list(queries_for_url)
+        for url, queries_for_url in (queries or {}).items()
+    }
+    reserved = {
+        normalize_source_url(url): _query_list(queries_for_url)
+        for url, queries_for_url in (obligation_queries or {}).items()
     }
     chosen: dict[str, ReadRecord] = {}
     for read in reads:
@@ -1755,7 +1803,11 @@ def build_read_dossiers(
             url=url,
             serving_host=read_serving_host(read),
             excerpts=_dossier_excerpts(
-                read, excerpt_chars=excerpt_chars, max_excerpts=max_excerpts
+                read,
+                excerpt_chars=excerpt_chars,
+                max_excerpts=max_excerpts,
+                queries=wanted.get(url, ()),
+                obligation_queries=reserved.get(url, ()),
             ),
             assessment_revision=read_assessment_revision(read),
             cited_sub_topics=cited.get(url, []),
@@ -1770,20 +1822,121 @@ def _prefer_read(candidate: ReadRecord, current: ReadRecord) -> bool:
     return candidate.retrieved_at >= current.retrieved_at
 
 
+def _document_order(locator: str) -> tuple[int, ...]:
+    """The position a locator names, so ``chunk-10`` follows ``chunk-2``.
+
+    Reading the locators as strings put every ``chunk-1*`` ahead of
+    ``chunk-2``, which is the order a page's navigation is *not* in.
+    """
+    return tuple(int(part) for part in re.findall(r"\d+", locator)) or (0,)
+
+
+def _query_list(value: object) -> list[str]:
+    """One URL's queries, from a string, a sequence, or nothing at all.
+
+    A caller that states no query for a URL — ``None``, an empty sequence —
+    gets the read's passages in document order, exactly as a dossier did
+    before queries existed.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidates: tuple[object, ...] = (value,)
+    else:
+        try:
+            candidates = tuple(value)  # type: ignore[arg-type]
+        except TypeError:
+            return []
+    return [
+        query
+        for query in candidates
+        if isinstance(query, str) and query.strip()
+    ]
+
+
 def _dossier_excerpts(
     read: ReadRecord,
     *,
     excerpt_chars: int,
     max_excerpts: int,
+    queries: Sequence[str] = (),
+    obligation_queries: Sequence[str] = (),
 ) -> list[str]:
-    """The read's own text at its first locators, bounded for the prompt.
+    """The read's own passages, in the order that answers the questions asked.
 
     Deliberately the document's words rather than a finding's paraphrase: the
     judgement being asked for is about the document, and a paraphrase is the
-    model's own earlier summary of it.
+    model's own earlier summary of it. Each excerpt is a *whole* passage — a
+    prefix of one ends before the sentence the source is being judged for, and
+    the model has no way to tell a page that states nothing from a page whose
+    statement sat past the cut.
+
+    One query per obligation, interleaved rather than concatenated: a source
+    cited for two sub-topics is judged for both, and a merged query's lexical
+    winner can drop the passage that states the second one's figure. Whatever
+    the queries leave is filled in document order, so a marked-up source still
+    shows its own opening.
     """
+    ordered: list[str] = []
+    # Imported here, not at module scope: ``deep_research.tools`` builds its
+    # package from modules that import this one, and this module is the read
+    # contract they are built on.
+    from deep_research.tools.passage_selection import select_relevant_passages
+
+    # Each obligation reserves an excerpt first, from its own *complete*
+    # ranking: the passage that answers an obligation can sit below navigation
+    # prose lexically, and a group's findings must not take every slot before
+    # the obligation is consulted at all. The passage that states a figure is
+    # taken ahead of the obligation's first choice, because a figure is what an
+    # obligation for a value is looking for.
+    for query in obligation_queries:
+        if len(ordered) >= max_excerpts:
+            break
+        wanted = _numbers(query)
+        ranking = select_relevant_passages(
+            read.passages, query, len(read.passages)
+        )
+        # The walk skips what another obligation already reserved, so a second
+        # obligation contributes its own passage rather than nothing; it takes
+        # the first passage in its ranking that states a figure, and its first
+        # remaining choice only when the read carries no figure at all.
+        fresh = [locator for locator in ranking if locator not in ordered]
+        figures = [
+            locator
+            for locator in fresh
+            if _states_a_figure(read.passages[locator], wanted)
+        ]
+        # The obligation's own numbers first, then the passage stating the most
+        # quantities — a page's incidental measurement is one figure, the
+        # passage that answers a figure obligation usually states several (a
+        # value and its comparison) — then the obligation's first choice.
+        figures.sort(
+            key=lambda locator: (
+                -len(wanted.intersection(_numbers(read.passages[locator]))),
+                -len(_QUANTITY.findall(read.passages[locator])),
+            )
+        )
+        pick = figures[0] if figures else (fresh[0] if fresh else None)
+        if pick is not None:
+            ordered.append(pick)
+    if queries:
+        ranked = [
+            select_relevant_passages(read.passages, query, max_excerpts)
+            for query in queries
+        ]
+        for rank in range(max_excerpts):
+            for picks in ranked:
+                if len(ordered) >= max_excerpts:
+                    break
+                if rank < len(picks) and picks[rank] not in ordered:
+                    ordered.append(picks[rank])
+    ordered.extend(
+        locator
+        for locator in sorted(read.passages, key=_document_order)
+        if locator not in ordered
+    )
     excerpts: list[str] = []
-    for locator in sorted(read.passages):
+    for locator in ordered:
         text = " ".join(read.passages[locator].split())
         if not text:
             continue

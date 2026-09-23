@@ -2811,4 +2811,307 @@ def test_a_legacy_strong_work_id_still_names_the_group_it_joins() -> None:
         f"sha256:{read.content_sha256}",
     }
 
+def test_a_scoring_dossier_shows_the_passages_that_serve_the_plan() -> None:
+    """The scoring pass judges the passages that answer its own obligation.
 
+    The Source Evaluator's own path passed no query, so a dossier was the
+    read's first four passages in document order: the EIA 65964 page's 5.9 GW
+    and 7.0 GW sat past that window, and PUDL's "1 megawatt" with them — the
+    pass that judges relevance and identity scored the page's opening. The
+    plan is the query this path has, and these are the passages it names.
+    """
+    from deep_research.agents.source_evaluator import (
+        DEFAULT_EXCERPT_CHARS,
+        SourceEvaluatorAgent,
+        dossier_queries,
+    )
+    from deep_research.utils.types import (
+        QUALITY_CONTRACT_VERSION,
+        EvidenceTarget,
+        Finding,
+        ResearchState,
+        SubTopic,
+    )
+
+    opening = "Skip to main content. Recent articles. ".ljust(
+        DEFAULT_EXCERPT_CHARS, "x"
+    )
+    middle = "Sign up for our newsletter. ".ljust(DEFAULT_EXCERPT_CHARS, "y")
+    other = "About the data. ".ljust(DEFAULT_EXCERPT_CHARS, "z")
+    figure = (
+        "Battery storage. We expect 5.9 GW of new battery storage capacity in "
+        "the first half of 2025, and 7.0 GW in Texas alone."
+    )
+    body = "\n\n".join((opening, middle, other, figure))
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url="https://eia.gov/todayinenergy/detail.php?id=65964",
+        resolved_url="https://eia.gov/todayinenergy/detail.php?id=65964",
+        title="EIA capacity additions",
+        retrieved_at="2026-08-20T00:00:00+00:00",
+        text=body,
+        passages={
+            "chunk-0": opening,
+            "chunk-1": middle,
+            "chunk-2": other,
+            "chunk-3": figure,
+        },
+        extraction_complete=True,
+    )
+    sub_topic = SubTopic(
+        coverage_id="topic-02",
+        title="Latest 2025 forecasts",
+        rationale="The question asks what the latest forecast is.",
+        search_queries=["2025 utility-scale battery storage forecast"],
+        success_criteria=[
+            "The 2025 forecast figure for battery storage additions in GW"
+        ],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id="topic-02-target-01",
+                coverage_id="topic-02",
+                question=(
+                    "How much battery storage capacity is projected for the "
+                    "first half of 2025, and in Texas?"
+                ),
+                required_dimensions=["value"],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            )
+        ],
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="How much battery capacity was added in 2024?",
+        sub_topics=[sub_topic],
+        raw_findings=[
+            Finding(
+                content="Battery storage additions are forecast for 2025.",
+                source_url="https://eia.gov/todayinenergy/detail.php?id=65964",
+                source_title="EIA capacity additions",
+                extracted_at="2026-08-20T00:00:00+00:00",
+                confidence=0.8,
+                related_sub_topic=sub_topic.title,
+            )
+        ],
+        read_records={read.read_id: read},
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+    )
+    agent = object.__new__(SourceEvaluatorAgent)
+    agent._excerpt_chars = DEFAULT_EXCERPT_CHARS
+
+    queries = dossier_queries([sub_topic.title], [sub_topic])
+    assert queries
+    assert "5.9 GW" not in " ".join(queries)
+
+    task = agent.build_task(state)
+
+    (dossier,) = task.dossiers.values()
+    assert dossier.excerpts, dossier.excerpts
+    assert any("5.9 GW" in excerpt for excerpt in dossier.excerpts)
+
+
+def test_a_scoring_dossier_shows_each_obligations_figures_behind_navigation() -> None:
+    """Navigation first, figures later, and every obligation still visible.
+
+    The scoring path judges relevance and identity from four excerpts. A page
+    whose opening is site navigation, whose middle states one obligation's
+    figure and whose end states another's, must show both: the excerpts come
+    from what the run extracted from the source and from the plan text of each
+    obligation it was cited for, not from the page's first characters.
+    """
+    from deep_research.agents.source_evaluator import (
+        DEFAULT_EXCERPT_CHARS,
+        SourceEvaluatorAgent,
+    )
+    from deep_research.utils.types import (
+        QUALITY_CONTRACT_VERSION,
+        EvidenceTarget,
+        Finding,
+        ResearchState,
+        SubTopic,
+    )
+
+    url = "https://www.eia.gov/todayinenergy/detail.php?id=64586"
+    navigation = "Skip to main content. ".ljust(700, "n")
+    forecast = (
+        "Battery storage. In 2025, capacity growth from battery storage could "
+        "set a record as we expect 18.2 GW of utility-scale battery storage to "
+        "be added to the grid, up from the 10.3 GW added in 2024."
+    )
+    other = "About the data. ".ljust(400, "o")
+    half_year = (
+        "Battery storage accounted for 26% (5.9 GW) of capacity additions in "
+        "the first half of 2025, with 7.0 GW expected in Texas."
+    )
+    body = "\n\n".join((navigation, forecast, other, half_year))
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title="EIA capacity additions",
+        retrieved_at="2026-08-20T00:00:00+00:00",
+        text=body,
+        passages={
+            "chunk-0": navigation,
+            "chunk-1": forecast,
+            "chunk-2": other,
+            "chunk-3": half_year,
+        },
+        extraction_complete=True,
+    )
+
+    def topic(coverage_id: str, title: str, question: str) -> SubTopic:
+        return SubTopic(
+            coverage_id=coverage_id,
+            title=title,
+            rationale="The question asks for it.",
+            search_queries=["utility-scale battery storage capacity additions"],
+            success_criteria=["The stated figure in GW"],
+            priority=1,
+            evidence_targets=[
+                EvidenceTarget(
+                    target_id=f"{coverage_id}-target-01",
+                    coverage_id=coverage_id,
+                    question=question,
+                    required_dimensions=["value"],
+                    required=True,
+                    critical=False,
+                    support_policy="primary_attribution",
+                )
+            ],
+        )
+
+    topics = [
+        topic("topic-01", "2024 actuals", "How much was added in 2024?"),
+        topic("topic-02", "2025 forecasts", "How much is expected in 2025?"),
+    ]
+    state = ResearchState(
+        session_id="session-1",
+        original_question="How much battery capacity was added and forecast?",
+        sub_topics=topics,
+        raw_findings=[
+            Finding(
+                content=(
+                    "The EIA forecast that 18.2 GW of utility-scale battery "
+                    "storage would be added in 2025."
+                ),
+                source_url=url,
+                source_title="EIA capacity additions",
+                extracted_at="2026-08-20T00:00:00+00:00",
+                confidence=0.8,
+                related_sub_topic=topics[1].title,
+            ),
+            Finding(
+                content=(
+                    "Battery storage accounted for 26% (5.9 GW) of capacity "
+                    "additions in the first half of 2025."
+                ),
+                source_url=url,
+                source_title="EIA capacity additions",
+                extracted_at="2026-08-20T00:00:00+00:00",
+                confidence=0.8,
+                related_sub_topic=topics[1].title,
+            ),
+        ],
+        read_records={read.read_id: read},
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+    )
+    agent = object.__new__(SourceEvaluatorAgent)
+    agent._excerpt_chars = DEFAULT_EXCERPT_CHARS
+
+    task = agent.build_task(state)
+
+    (dossier,) = task.dossiers.values()
+    shown = "\n".join(dossier.excerpts)
+    assert len(dossier.excerpts) <= 4
+    assert "18.2 GW" in shown
+    assert "5.9 GW" in shown
+    assert "7.0 GW" in shown
+    assert "1 Megawatt" not in shown  # the control: nothing invented
+
+
+def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
+    """The reservation itself yields the figures, with no findings at all.
+
+    The real 64586 shape: the navigation and the data note carry the plan's
+    words and dates ("February 24, 2025"), the passage that states the figures
+    sits below them, and an incidental measurement ("678.7 MW") sits beside it.
+    Two obligations, two reserved excerpts, and four slots. What is reserved
+    must be a *quantity* — a date is not a figure — and a second obligation
+    must take its own passage rather than the one the first already reserved.
+    """
+    from deep_research.agents.evidence import build_read_dossiers
+    from deep_research.agents.source_evaluator import DEFAULT_EXCERPT_CHARS
+
+    url = "https://www.eia.gov/todayinenergy/detail.php?id=64586"
+    navigation = (
+        "Solar, battery storage to lead new U.S. generating capacity "
+        "additions in 2025 - U.S. Energy Information Administration (EIA) "
+        "Statistics Analysis Tools Education News Search Today in Energy Skip "
+        "to page content Recent articles liquid fuels natural gas electricity "
+        "utility-scale battery storage capacity additions generator inventory "
+        "In-brief analysis February 24, 2025 "
+    )
+    data_note = (
+        "Data source: Preliminary Monthly Electric Generator Inventory, "
+        "published February 24, 2025. The inventory covers utility-scale "
+        "battery storage capacity additions behind the reporting period."
+    )
+    solar = "In 2024, generators added a record 30 GW of utility-scale solar."
+    project = (
+        "The Intermountain Power Project in Utah and the 678.7-MW Magnolia "
+        "Power project are among the plants the inventory records."
+    )
+    figure = (
+        "Battery storage. In 2025, capacity growth from battery storage could "
+        "set a record as we expect 18.2 GW of utility-scale battery storage to "
+        "be added to the grid, up from the 10.3 GW added in 2024."
+    )
+    glossary = "Glossary and archive of every previous edition of this note."
+    body = "\n\n".join(
+        (navigation, data_note, solar, project, figure, glossary)
+    )
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title="EIA capacity additions",
+        retrieved_at="2026-08-20T00:00:00+00:00",
+        text=body,
+        passages={
+            "chunk-0": navigation,
+            "chunk-1": data_note,
+            "chunk-2": solar,
+            "chunk-3": project,
+            "chunk-4": figure,
+            "chunk-5": glossary,
+        },
+        extraction_complete=True,
+    )
+    actuals = (
+        "2024 U.S. grid-scale battery capacity additions reported actuals EIA "
+        "electric generator inventory utility-scale battery storage capacity"
+    )
+    forecast = (
+        "Latest 2025 forecasts for U.S. grid-scale battery capacity additions "
+        "expected utility-scale battery storage to be added this year"
+    )
+
+    (dossier,) = build_read_dossiers(
+        [read],
+        obligation_queries={read.resolved_url: [actuals, forecast]},
+        excerpt_chars=DEFAULT_EXCERPT_CHARS,
+    )
+
+    shown = "\n".join(dossier.excerpts)
+    assert len(dossier.excerpts) == 4
+    assert "18.2 GW" in shown
+    assert "10.3 GW" in shown
+    # Two obligations, two distinct reserved passages.
+    assert dossier.excerpts[0] != dossier.excerpts[1]

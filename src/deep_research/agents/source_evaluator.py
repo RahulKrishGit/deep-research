@@ -73,6 +73,7 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     ScoredSource,
+    SubTopic,
 )
 
 SOURCE_EVALUATOR_NAME = "source_evaluator"
@@ -96,7 +97,7 @@ DEFAULT_MAX_TOTAL_SOURCES = 36
 # Compatibility alias for callers that imported the old cap constant. The
 # old single-pass cap is now represented by ``max_total_sources``.
 DEFAULT_MAX_SOURCES = DEFAULT_MAX_TOTAL_SOURCES
-DEFAULT_EXCERPT_CHARS = 400
+DEFAULT_EXCERPT_CHARS = 600
 _RATIONALE_CHARS = 400
 
 # Enumerated, project-generated reasons a source was recorded without a
@@ -598,6 +599,8 @@ async def assess_new_sources(
     existing: Sequence[ScoredSource] = (),
     *,
     cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
+    queries: Mapping[str, str] | None = None,
+    obligation_queries: Mapping[str, Sequence[str]] | None = None,
     reputations: Mapping[str, float] | None = None,
     instruction: str = "Score each source on its fitness for the research.",
     batch_size: int = DEFAULT_BATCH_SIZE,
@@ -635,6 +638,8 @@ async def assess_new_sources(
     dossiers = build_read_dossiers(
         reads,
         cited_sub_topics=cited_sub_topics,
+        queries=queries,
+        obligation_queries=obligation_queries,
         excerpt_chars=excerpt_chars,
     )
     if not dossiers:
@@ -767,6 +772,54 @@ class SourceEvaluationTask(AgentTask):
     groups: list[SourceGroup] = Field(default_factory=list)
     reputations: dict[str, float] = Field(default_factory=dict)
     dossiers: dict[str, ReadDossier] = Field(default_factory=dict)
+
+
+# How much of one obligation's plan text a passage-selection query may carry.
+# The selector is lexical, and a long query dilutes it until the page's opening
+# outranks the passage that states the figure.
+DOSSIER_QUERY_CHARS = 400
+
+
+def dossier_queries(
+    labels: Sequence[str], sub_topics: Sequence[SubTopic]
+) -> list[str]:
+    """One passage-selection query per obligation a source was cited for.
+
+    The Source Evaluator's own path scored from a read's first characters in
+    document order, so a figure past that window was invisible to the pass that
+    judges relevance and identity. The plan is the query that path has: one
+    query per cited sub-topic, from its title, the searches it was made with,
+    its success criteria, and the question of each evidence target.
+
+    One query *per obligation*, never one merged string: the citations are
+    ranked separately and interleaved, so the passage that states the second
+    sub-topic's figure is not dropped by the first sub-topic's lexical winner.
+    A label the plan does not name is kept as itself, so a record written
+    before the plan was labelled still orders its passages.
+    """
+    by_label: dict[str, str] = {}
+    for topic in sub_topics:
+        parts = [
+            part
+            for part in (
+                topic.title,
+                *topic.search_queries,
+                *topic.success_criteria,
+                *(target.question for target in topic.evidence_targets),
+            )
+            if isinstance(part, str) and part.strip()
+        ]
+        if not parts:
+            continue
+        text = " ".join(parts)[:DOSSIER_QUERY_CHARS]
+        by_label[topic.coverage_id.casefold()] = text
+        by_label.setdefault(topic.title.casefold(), text)
+    queries: list[str] = []
+    for label in labels:
+        query = by_label.get(label.casefold(), label)
+        if query and query not in queries:
+            queries.append(query)
+    return queries
 
 
 def scoring_messages(
@@ -1023,6 +1076,22 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 list(state.read_records.values()),
                 cited_sub_topics={
                     group.url: group.sub_topics for group in groups
+                },
+                # What this run extracted from the source, and the plan text
+                # of every obligation it was cited for. The obligations are
+                # passed separately because each of them reserves an excerpt.
+                queries={
+                    group.url: [
+                        finding.content[:DOSSIER_QUERY_CHARS]
+                        for finding in group.findings
+                    ]
+                    for group in groups
+                },
+                obligation_queries={
+                    group.url: dossier_queries(
+                        group.sub_topics, state.sub_topics
+                    )
+                    for group in groups
                 },
                 excerpt_chars=self._excerpt_chars,
             )
