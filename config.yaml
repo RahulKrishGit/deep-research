@@ -50,8 +50,11 @@ llm:
   retry_initial_delay: 1.0
   retry_max_delay: 16.0
   temperature: 0.7
-  # Output budget ceiling. Every request type now carries a generous budget:
-  # the global cap and each operation-specific budget are all 32768. A low cap
+  # Output budget ceiling. Every request type carries a generous budget. The
+  # global cap and every operation-specific budget resolve to 32768, with one
+  # documented exception: the planner's plan requests, whose budget is larger
+  # because the planner reasons at `max` effort and a reasoning token is a
+  # completion token (see agents.planner_final_max_tokens below). A low cap
   # does not save money when it is unused, but it does cost a whole repetition
   # when it truncates a large structured reply. If a particular operation
   # proves slow, reduce its prompt rather than this ceiling.
