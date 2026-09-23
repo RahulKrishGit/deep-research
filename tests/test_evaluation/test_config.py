@@ -255,7 +255,7 @@ from deep_research.utils.config import (
 # edited; the module source is what the fingerprint hashes, so a routing fix
 # that lives in ``critic.py`` moves a value whose name implies a prompt change
 # — the same false positive the researcher's first re-pin records below.
-CRITIC_PROMPT_FINGERPRINT = "2c80a78040b9"
+CRITIC_PROMPT_FINGERPRINT = "aedce1ccca9e"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -779,13 +779,23 @@ CRITIC_PROMPT_FINGERPRINT = "2c80a78040b9"
 # returns the fitted composition with its fit reasons recorded on it, which is
 # a module-source edit and therefore a fingerprint move. The other five and the
 # judge were recomputed and did not move.
+# The branch-review target-view pass moved the critic alone, ``2c80a78040b9``
+# -> ``aedce1ccca9e`` (§2.1): ``CriticTarget.open`` stopped being a second
+# definition of coverage — a boolean the packet derived by pooling
+# ``answered_dimensions`` across every statement naming the target — and the
+# packet now records ``answered`` straight from ``target_is_answered``, the
+# gate that decides coverage, with ``open`` as its negation. Again a
+# module-source edit with no prompt instruction and no shared-prompts edit,
+# which the other five pins prove: they hash that same module and none of them
+# moved. ``test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text``
+# is the evidence for that claim rather than this comment asserting it.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "d2d7dec17bcd",
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "53c371093ae9",
     "synthesizer": "26372cb8f056",
-    "critic": "2c80a78040b9",
+    "critic": "aedce1ccca9e",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
@@ -1261,14 +1271,17 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
     assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
     assert agent_prompt_fingerprint("fact_checker") == "53c371093ae9"
     # The other three target pins are untouched by this step, and the judge
-    # fingerprint with them: no prompt text moved anywhere.
+    # fingerprint with them: no prompt text moved anywhere. The critic's value
+    # is the one the later target-view pass recorded, which is attributed and
+    # asserted in
+    # ``test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text``.
     assert {
         name: agent_prompt_fingerprint(name)
         for name in ("source_evaluator", "synthesizer", "critic")
     } == {
         "source_evaluator": "ad9e2afac12c",
         "synthesizer": "26372cb8f056",
-        "critic": "2c80a78040b9",
+        "critic": "aedce1ccca9e",
     }
     assert agent_prompt_fingerprint("planner") not in {
         "7d0282b16bc5",
@@ -1288,6 +1301,39 @@ def test_the_judge_fingerprint_is_pinned_beside_the_six_target_pins() -> None:
 
     assert judge == PINNED_JUDGE_PROMPT_FINGERPRINT
     assert judge not in set(PINNED_TARGET_PROMPT_FINGERPRINTS.values())
+
+
+def test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text() -> (
+    None
+):
+    """Record why the target-view pass moved the Critic's fingerprint alone.
+
+    ``agent_prompt_fingerprint`` hashes each agent module's own source, so a
+    structural edit moves it exactly as a prompt edit does. ``critic.py``
+    changed when the Critic's target view stopped keeping a second definition
+    of coverage: ``open`` is now the negation of an ``answered`` field the
+    packet reads straight from ``target_is_answered``, the gate that decides
+    coverage (§2.1). No prompt instruction changed and the shared
+    ``agents.prompts`` library was not touched — which the other five pins
+    prove, because every one of them hashes that same module and none moved.
+    """
+    pre_target_view = "2c80a78040b9"
+
+    assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
+    assert agent_prompt_fingerprint("critic") == "aedce1ccca9e"
+    assert agent_prompt_fingerprint("critic") != pre_target_view
+    assert {
+        name: agent_prompt_fingerprint(name)
+        for name in AGENT_NAMES
+        if name != "critic"
+    } == {
+        name: value
+        for name, value in PINNED_TARGET_PROMPT_FINGERPRINTS.items()
+        if name != "critic"
+    }
+    assert PINNED_JUDGE_PROMPT_FINGERPRINT == judge_prompt_fingerprint(
+        rubric_version=1
+    )
 
 
 def test_the_target_fingerprint_covers_the_shared_prompt_module() -> None:
