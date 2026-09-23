@@ -253,11 +253,12 @@ def _payload_read_parts(
                 return None
             page = item.get("page")
             reported = item.get("chunk_index")
-            index = (
-                reported
-                if isinstance(reported, int) and not isinstance(reported, bool)
-                else 0
-            )
+            if isinstance(reported, bool) or not isinstance(reported, int):
+                # The reader's index is required by the read contract; a
+                # missing or malformed one is a payload this project did not
+                # produce, never a reason to invent locators.
+                return None
+            index = reported
             for passage in split_read_body(piece_text):
                 # The reader's own index stands for the passage it labelled, and
                 # a page split into several passages claims the next free
@@ -1969,5 +1970,5 @@ __all__ = [
     "build_read_record_from_tool_result",
     "next_acquisition_action",
     "select_relevant_passages",
-    "split_web_read_body",
+    "split_read_body",
 ]

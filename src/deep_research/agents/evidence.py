@@ -650,6 +650,9 @@ _VALUE_PERIOD_PATTERN = re.compile(
 # longer than this is a document chunk rather than a paragraph, and is clipped
 # to keep a single long chunk from filling the request.
 DEFAULT_DOSSIER_EXCERPTS = 4
+
+# A figure as a query writes one: ``18.2 GW``, ``26%``, ``1 Megawatt``.
+_FIGURES = re.compile(r"\d")
 DEFAULT_DOSSIER_EXCERPT_CHARS = 600
 
 
@@ -1753,15 +1756,7 @@ def build_read_dossiers(
         for url, topics in (cited_sub_topics or {}).items()
     }
     wanted = {
-        normalize_source_url(url): [
-            query
-            for query in (
-                (queries_for_url,)
-                if isinstance(queries_for_url, str)
-                else queries_for_url
-            )
-            if isinstance(query, str) and query.strip()
-        ]
+        normalize_source_url(url): _query_list(queries_for_url)
         for url, queries_for_url in (queries or {}).items()
     }
     chosen: dict[str, ReadRecord] = {}
@@ -1803,6 +1798,29 @@ def _document_order(locator: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", locator)) or (0,)
 
 
+def _query_list(value: object) -> list[str]:
+    """One URL's queries, from a string, a sequence, or nothing at all.
+
+    A caller that states no query for a URL — ``None``, an empty sequence —
+    gets the read's passages in document order, exactly as a dossier did
+    before queries existed.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidates: tuple[object, ...] = (value,)
+    else:
+        try:
+            candidates = tuple(value)  # type: ignore[arg-type]
+        except TypeError:
+            return []
+    return [
+        query
+        for query in candidates
+        if isinstance(query, str) and query.strip()
+    ]
+
+
 def _dossier_excerpts(
     read: ReadRecord,
     *,
@@ -1827,6 +1845,13 @@ def _dossier_excerpts(
     """
     ordered: list[str] = []
     if queries:
+        # The query that states a figure comes first: a source cited for
+        # several findings contributes several navigation-sentence queries, and
+        # rank-major interleaving let them fill every excerpt before the
+        # obligation's own query was reached.
+        queries = sorted(
+            queries, key=lambda query: (0 if _FIGURES.search(query) else 1)
+        )
         # Imported here, not at module scope: ``deep_research.tools`` builds
         # its package from modules that import this one, and this module is the
         # read contract they are built on.

@@ -2293,3 +2293,101 @@ def test_a_document_page_is_split_into_bounded_passages() -> None:
         extraction_complete=True,
     )
     assert read.read_id == unsplit.read_id
+
+
+def test_every_exported_acquisition_name_exists() -> None:
+    """``__all__`` names the module actually has.
+
+    A rename that leaves the old name in ``__all__`` breaks ``import *`` for
+    every consumer while the module still imports.
+    """
+    import deep_research.agents.acquisition as module
+
+    assert [
+        name for name in module.__all__ if not hasattr(module, name)
+    ] == []
+
+
+def test_a_malformed_document_chunk_index_is_refused_not_invented() -> None:
+    """A reader's own index is required, exactly as the read contract says.
+
+    ``passages_from_chunks`` raises for a missing, non-integer, or boolean
+    ``chunk_index``; a page split must not launder that into a plausible
+    locator, or a malformed payload becomes evidence under a name nobody
+    reported.
+    """
+    for index in (None, "0", True):
+        data = {
+            "source": "https://example.test/report.pdf",
+            "requested_source": "https://example.test/report.pdf",
+            "resolved_source": "https://example.test/report.pdf",
+            "title": "Report",
+            "chunks": [{"text": "A page of the report.", "chunk_index": index}],
+            "extraction_complete": True,
+        }
+        if index is None:
+            del data["chunks"][0]["chunk_index"]
+        result = ToolResult(
+            tool_name="document_reader", success=True, data=data, latency_ms=0
+        )
+        assert (
+            build_read_record_from_tool_result(result, session_id="session-1")
+            is None
+        ), index
+
+
+def test_a_dossier_accepts_a_url_with_no_query() -> None:
+    """A caller that states no query for a URL still gets a dossier."""
+    from deep_research.agents.evidence import build_read_dossiers
+
+    result = _eia_web_result()
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+    assert read is not None
+
+    (dossier,) = build_read_dossiers(
+        [read], queries={read.resolved_url: None}
+    )
+
+    assert dossier.excerpts
+    assert dossier.excerpts[0].startswith("Solar, battery storage to lead")
+
+
+def test_a_dossier_leads_with_the_query_that_states_a_figure() -> None:
+    """Findings that carry a figure outrank navigation prose for the slots.
+
+    A source cited for several findings contributed four nav-sentence queries
+    before its obligations' queries, and rank-major interleaving filled all
+    four excerpts from them: the page's figures never appeared, though the
+    plan text alone had shown them.
+    """
+    from deep_research.agents.evidence import build_read_dossiers
+
+    nav = "Skip to main content. ".ljust(600, "n")
+    figure = (
+        "We expect 18.2 GW of utility-scale battery storage to be added to "
+        "the grid in 2025, up from 10.3 GW added in 2024."
+    )
+    body = "\n\n".join((nav, figure))
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=_EIA_PAGE_URL,
+        resolved_url=_EIA_PAGE_URL,
+        title=_EIA_PAGE_TITLE,
+        retrieved_at="2026-09-23T00:00:00+00:00",
+        text=body,
+        passages={"chunk-0": nav, "chunk-1": figure},
+        extraction_complete=True,
+    )
+    nav_queries = [
+        f"Skip to main content section {index} of the site navigation."
+        for index in range(4)
+    ]
+
+    (dossier,) = build_read_dossiers(
+        [read],
+        queries={read.resolved_url: [*nav_queries, "18.2 GW battery forecast"]},
+    )
+
+    shown = "\n".join(dossier.excerpts)
+    assert "18.2 GW" in shown
