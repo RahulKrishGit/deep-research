@@ -827,8 +827,20 @@ CRITIC_PROMPT_FINGERPRINT = "aedce1ccca9e"
 # two problem lists and the label, which is a module-source change like the
 # one above — no prompt string moved, and the other five pins and the judge
 # are unchanged.
+# The review round on that pass moved the planner a third time,
+# ``44d9a4e8842d`` -> ``cd1480236a3b``: ``target_problems`` was partitioned
+# into structural and advisory problems (the target count and the question
+# form decide whether a plan can be executed, the anchor and tolerance lints
+# do not), the lint repair now degrades to a draft that is still researchable
+# instead of ending the run, the review's findings are recorded against the
+# plan that stands on both review-repair fallbacks, and the model-facing
+# repair request is back to unlabelled problem lines. Module source only, as
+# before — and for this move that is the whole story: ``_plan_problems``
+# returns the same order and the same text the unlabelled list always had, so
+# the repair request the model reads is byte-identical to the one the previous
+# pin covered. The other five pins and the judge are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "44d9a4e8842d",
+    "planner": "cd1480236a3b",
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "340b8267dbe9",
@@ -1321,7 +1333,7 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
     (``00e2229ad4fa`` -> ``340b8267dbe9``), which is attributed in
     ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``.
     """
-    assert agent_prompt_fingerprint("planner") == "44d9a4e8842d"
+    assert agent_prompt_fingerprint("planner") == "cd1480236a3b"
     assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
     assert agent_prompt_fingerprint("fact_checker") == "340b8267dbe9"
     # The other three target pins are untouched by this step, and the judge

@@ -1126,6 +1126,223 @@ async def test_a_plan_that_stays_invalid_fails_the_session(
     )
 
 
+def _targetless_plan() -> ResearchPlanDraft:
+    """One sub-topic carries no evidence target at all."""
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft("Queue totals", priority=1),
+            _draft("Withdrawn capacity", priority=2),
+            _draft("Reforms", priority=3, evidence_targets=[]),
+        ]
+    )
+
+
+def _assertion_plan() -> ResearchPlanDraft:
+    """Every target is written as an assertion rather than a question."""
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft(
+                title,
+                priority=index,
+                evidence_targets=[_target("Alpha reports the benchmark result.")],
+            )
+            for index, title in enumerate(
+                ("Queue totals", "Withdrawn capacity", "Reforms"), start=1
+            )
+        ]
+    )
+
+
+def _stale_draft() -> ResearchPlanDraft:
+    """A usable draft whose only defect is an advisory stale anchor."""
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft(
+                "Interconnection",
+                priority=1,
+                evidence_targets=[
+                    _target("What are the latest 2019 interconnection figures?")
+                ],
+            ),
+            _draft("Queue totals", priority=2),
+            _draft("Reforms", priority=3),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_sub_topic_without_targets_is_structurally_fatal(
+    tracker: Tracker,
+) -> None:
+    """A sub-topic carrying no target cannot be researched, so it still stops.
+
+    The 1-4 target count is a structural rule, not an advisory one: a plan with
+    an empty sub-topic is one no pass can execute. Filing the count line under
+    the advisory list let exactly that plan reach the researcher with nothing
+    but a recoverable record, where the parent commit raised on the same input.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_targetless_plan(), _targetless_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert failure.value.problems == (
+        "draft: topic-03 proposes 0 evidence targets; every sub-topic carries "
+        "between 1 and 4",
+        "repair: topic-03 proposes 0 evidence targets; every sub-topic carries "
+        "between 1 and 4",
+    )
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "ResearchPlanDraft",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_assertion_target_is_structurally_fatal(tracker: Tracker) -> None:
+    """A target written as an assertion is not an obligation to research.
+
+    Like the target count, the question form is structural: a criterion phrased
+    as a finding asks the researcher to confirm what the plan already assumes.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_assertion_plan(), _assertion_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as failure:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    assert list(failure.value.problems) == [
+        f"{plan}: topic-0{index}-target-01 is written as an assertion; request "
+        "the unknown as a question instead"
+        for plan in ("draft", "repair")
+        for index in (1, 2, 3)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_target_level_structural_defect_falls_back_to_a_valid_repair(
+    tracker: Tracker,
+) -> None:
+    """Only the both-invalid case is fatal; a repair that fixes it is used."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_targetless_plan(), _sorting_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result is not None
+    assert [sub_topic.title for sub_topic in outcome.result.sub_topics] == [
+        "Cryptography",
+        "Hardware timelines",
+        "Mitigations",
+    ]
+    assert outcome.result.repair_attempted is True
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+    ]
+    assert _plan_defects(outcome.state_update["errors"]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_lint_repair_keeps_a_usable_draft(tracker: Tracker) -> None:
+    """A repair that cannot be produced does not end a run whose draft is usable.
+
+    Repairs are the heaviest plan request — live run 2 truncated on one — and a
+    draft that is structurally researchable is worth more than no report at all.
+    The failed repair is recorded against the repair, and the draft's own
+    advisory defect stays recorded against the draft.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_stale_draft(), _output_limit_error(), _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What are the current interconnection constraints?")
+        )
+
+    assert outcome.result is not None
+    assert [sub_topic.title for sub_topic in outcome.result.sub_topics] == [
+        "Interconnection",
+        "Queue totals",
+        "Reforms",
+    ]
+    assert outcome.result.repair_attempted is True
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+    ]
+    records = _plan_defects(outcome.state_update["errors"])
+    assert [record.details for record in records] == [
+        {
+            "stage": "plan_repair",
+            "plan": "repair",
+            "problems": [
+                "repair: the plan repair raised ProviderOutputLimitError",
+                "repair: the planner provider failed while requesting the "
+                "final plan draft",
+            ],
+        },
+        {
+            "stage": "plan_checks",
+            "plan": "draft",
+            "problems": [
+                "draft: topic-01-target-01 anchors currency to 2019 for a "
+                "session as of 2026-09-16; ask for the latest available "
+                "evidence instead"
+            ],
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_lint_repair_request_carries_unlabelled_problems(
+    tracker: Tracker,
+) -> None:
+    """The labels belong to the records, not to the model's request.
+
+    Every problem the planner reports is labelled with the plan it came from,
+    but the corrective instruction the model reads is the one it has always
+    read: a plan label in the prompt is text no model needs, and a silent
+    change to model-visible input.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_stale_draft(), _sorting_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_state("What are the current interconnection constraints?"))
+
+    repair_request = completer.calls[1][2][1].content
+    assert repair_request.split("# Repair\n", 1)[1].split(
+        "\n\n# Reply format", 1
+    )[0] == (
+        "The previous plan was rejected. Fix every problem listed below and "
+        "return a corrected plan.\n"
+        "- topic-01-target-01 anchors currency to 2019 for a session as of "
+        "2026-09-16; ask for the latest available evidence instead"
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_provider_failure_fails_the_session_without_a_plan_request(
     tracker: Tracker,
@@ -2970,8 +3187,9 @@ async def test_a_truncated_review_repair_falls_back_to_the_reviewed_plan(
     Live run 2 died exactly here: the third structured call hit the output cap,
     ``ProviderOutputLimitError`` is not repairable by design, and the run ended
     with no plan and nothing published. The plan the review judged is still
-    structurally researchable, so it is the plan the run continues with, and
-    the failed repair is recorded against it.
+    structurally researchable, so it is the plan the run continues with — and
+    the findings the review made against *that* plan are recorded too, because
+    they are what the research about to run will carry unaddressed.
     """
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
@@ -3005,16 +3223,89 @@ async def test_a_truncated_review_repair_falls_back_to_the_reviewed_plan(
         "ResearchPlanDraft",
     ]
     records = _plan_defects(outcome.state_update["errors"])
-    assert records[0].details == {
-        "stage": "review_repair",
-        "plan": "review_repair",
-        "problems": [
-            "review_repair: the plan review repair raised "
-            "ProviderOutputLimitError",
-            "review_repair: the planner provider failed while requesting the "
-            "final plan draft",
+    assert [record.details for record in records] == [
+        {
+            "stage": "review",
+            "plan": "draft",
+            "problems": [
+                "draft: plan review found a missing dimension: siting and "
+                "permitting"
+            ],
+        },
+        {
+            "stage": "review_repair",
+            "plan": "review_repair",
+            "problems": [
+                "review_repair: the plan review repair raised "
+                "ProviderOutputLimitError",
+                "review_repair: the planner provider failed while requesting "
+                "the final plan draft",
+            ],
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_review_repair_keeps_the_reviewed_plan(
+    tracker: Tracker,
+) -> None:
+    """A review repair that is not researchable keeps the plan it was repairing.
+
+    The other half of the same fallback: the repair came back, and nothing in
+    it can be handed to the researcher. Its own structural defects are recorded
+    against the repair, and the review's findings are recorded against the plan
+    that stands.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(
+                sound=False,
+                missing_dimensions=["siting and permitting"],
+                repair_instruction="Add a sub-topic for siting and permitting.",
+            ),
+            _targetless_plan(),
+            _review(sound=False, missing_dimensions=["siting and permitting"]),
         ],
-    }
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What limits grid-scale battery storage deployment?")
+        )
+
+    assert outcome.result is not None
+    assert [sub_topic.title for sub_topic in outcome.result.sub_topics] == [
+        "Cryptography",
+        "Hardware timelines",
+        "Mitigations",
+    ]
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+        "ResearchPlanDraft",
+    ]
+    records = _plan_defects(outcome.state_update["errors"])
+    assert [record.details for record in records] == [
+        {
+            "stage": "review",
+            "plan": "draft",
+            "problems": [
+                "draft: plan review found a missing dimension: siting and "
+                "permitting"
+            ],
+        },
+        {
+            "stage": "review_repair",
+            "plan": "review_repair",
+            "problems": [
+                "review_repair: topic-03 proposes 0 evidence targets; every "
+                "sub-topic carries between 1 and 4"
+            ],
+        },
+    ]
 
 
 @pytest.mark.asyncio

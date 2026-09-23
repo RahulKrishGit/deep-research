@@ -98,6 +98,10 @@ _PLAN_DEFECT_MESSAGES: dict[str, str] = {
         "The repair of the plan's local defects was not usable, so the earlier "
         "plan stands"
     ),
+    "review": (
+        "The plan review reported defects that no repair removed, so they are "
+        "recorded against the plan that stands"
+    ),
     "review_repair": (
         "The repair of the plan review's findings was not usable, so the plan "
         "the review judged stands"
@@ -1467,6 +1471,120 @@ def invented_tolerances(text: str, *, question: str) -> list[str]:
     ]
 
 
+@dataclass(frozen=True)
+class _PlanProblem:
+    """One problem a plan carries, and whether it decides the plan's fate.
+
+    ``structural`` marks the problems that decide whether anything can be
+    researched at all: a sub-topic with no evidence target, and a target
+    written as an assertion rather than a question. Those are the ones a run
+    still stops on. Everything else is advisory — a stale anchor and an
+    invented tolerance are judgements about meaning, which the review owns, and
+    a run that dies on one has thrown away a researchable plan.
+    """
+
+    text: str
+    kind: Literal["structural", "advisory"]
+
+
+def _plan_problems(
+    sub_topics: Sequence[SubTopic],
+    contract: AnswerContract,
+) -> list[_PlanProblem]:
+    """Every problem one plan carries, in report order, each tagged.
+
+    One pass, so the order the repair prompt reads is exactly the order the
+    records keep, and ``target_problems`` — the unpartitioned view — stays
+    byte-identical to the list it produced before the two kinds were told
+    apart.
+    """
+    problems: list[_PlanProblem] = []
+    as_of_year = int(contract.as_of_date[:4])
+    question_years = frozenset(_past_years(contract.question))
+    for sub_topic in sub_topics:
+        count = len(sub_topic.evidence_targets)
+        if count < MIN_TARGETS_PER_TOPIC or count > MAX_TARGETS_PER_TOPIC:
+            problems.append(
+                _PlanProblem(
+                    f"{sub_topic.coverage_id} proposes {count} evidence "
+                    f"targets; every sub-topic carries between "
+                    f"{MIN_TARGETS_PER_TOPIC} and {MAX_TARGETS_PER_TOPIC}",
+                    "structural",
+                )
+            )
+            continue
+        for target in sub_topic.evidence_targets:
+            if not target.question.rstrip().endswith("?"):
+                problems.append(
+                    _PlanProblem(
+                        f"{target.target_id} is written as an assertion; "
+                        "request the unknown as a question instead",
+                        "structural",
+                    )
+                )
+            stale = stale_year_anchors(
+                target.question,
+                as_of_year=as_of_year,
+                question_years=question_years,
+            )
+            if stale:
+                problems.append(
+                    _PlanProblem(
+                        f"{target.target_id} anchors currency to "
+                        f"{', '.join(str(year) for year in stale)} for a "
+                        f"session as of {contract.as_of_date}; ask for the "
+                        "latest available evidence instead",
+                        "advisory",
+                    )
+                )
+            invented = invented_tolerances(
+                target.question, question=contract.question
+            )
+            if invented:
+                problems.append(
+                    _PlanProblem(
+                        f"{target.target_id} requires a numeric agreement "
+                        f"tolerance ({', '.join(invented)}) that the question "
+                        "does not state and no measurement basis establishes",
+                        "advisory",
+                    )
+                )
+        for criterion in sub_topic.success_criteria:
+            stale = stale_year_anchors(
+                criterion,
+                as_of_year=as_of_year,
+                question_years=question_years,
+            )
+            if stale:
+                # The measured defect lived here: a criterion that required
+                # "current" numbers pinned to 2024. A criterion that is *about*
+                # an older year is untouched — only a currency frame is read.
+                problems.append(
+                    _PlanProblem(
+                        f"{sub_topic.coverage_id} anchors currency to "
+                        f"{', '.join(str(year) for year in stale)} in a "
+                        f"success criterion for a session as of "
+                        f"{contract.as_of_date}; ask for the latest available "
+                        "evidence instead",
+                        "advisory",
+                    )
+                )
+            invented = invented_tolerances(
+                criterion, question=contract.question
+            )
+            if invented:
+                problems.append(
+                    _PlanProblem(
+                        f"{sub_topic.coverage_id} sets a numeric agreement "
+                        f"tolerance ({', '.join(invented)}) in a success "
+                        "criterion that the question does not state and no "
+                        "measurement basis establishes",
+                        "advisory",
+                    )
+                )
+    return problems
+
+
 def target_problems(
     sub_topics: Sequence[SubTopic],
     contract: AnswerContract,
@@ -1481,73 +1599,13 @@ def target_problems(
     left behind, and that nothing invents a numeric agreement tolerance. The
     years the frozen question itself names are exempt from the anchor check:
     they are the question's subject, not a claim that an older year is current.
+
+    Every problem is returned here, structural and advisory alike, because
+    this is the view a caller that reports everything wants — ``extend_plan``
+    refuses an extension on any of them. ``_plan_problems`` is the tagged view,
+    and it is what decides which of them a planning pass can survive.
     """
-    problems: list[str] = []
-    as_of_year = int(contract.as_of_date[:4])
-    question_years = frozenset(_past_years(contract.question))
-    for sub_topic in sub_topics:
-        count = len(sub_topic.evidence_targets)
-        if count < MIN_TARGETS_PER_TOPIC or count > MAX_TARGETS_PER_TOPIC:
-            problems.append(
-                f"{sub_topic.coverage_id} proposes {count} evidence targets; "
-                f"every sub-topic carries between {MIN_TARGETS_PER_TOPIC} and "
-                f"{MAX_TARGETS_PER_TOPIC}"
-            )
-            continue
-        for target in sub_topic.evidence_targets:
-            if not target.question.rstrip().endswith("?"):
-                problems.append(
-                    f"{target.target_id} is written as an assertion; request "
-                    "the unknown as a question instead"
-                )
-            stale = stale_year_anchors(
-                target.question,
-                as_of_year=as_of_year,
-                question_years=question_years,
-            )
-            if stale:
-                problems.append(
-                    f"{target.target_id} anchors currency to "
-                    f"{', '.join(str(year) for year in stale)} for a session "
-                    f"as of {contract.as_of_date}; ask for the latest "
-                    "available evidence instead"
-                )
-            invented = invented_tolerances(
-                target.question, question=contract.question
-            )
-            if invented:
-                problems.append(
-                    f"{target.target_id} requires a numeric agreement "
-                    f"tolerance ({', '.join(invented)}) that the question does "
-                    "not state and no measurement basis establishes"
-                )
-        for criterion in sub_topic.success_criteria:
-            stale = stale_year_anchors(
-                criterion,
-                as_of_year=as_of_year,
-                question_years=question_years,
-            )
-            if stale:
-                # The measured defect lived here: a criterion that required
-                # "current" numbers pinned to 2024. A criterion that is *about*
-                # an older year is untouched — only a currency frame is read.
-                problems.append(
-                    f"{sub_topic.coverage_id} anchors currency to "
-                    f"{', '.join(str(year) for year in stale)} in a success "
-                    f"criterion for a session as of {contract.as_of_date}; ask "
-                    "for the latest available evidence instead"
-                )
-            invented = invented_tolerances(
-                criterion, question=contract.question
-            )
-            if invented:
-                problems.append(
-                    f"{sub_topic.coverage_id} sets a numeric agreement "
-                    f"tolerance ({', '.join(invented)}) in a success "
-                    "criterion that the question does not state and no "
-                    "measurement basis establishes"
-                )
-    return problems
+    return [problem.text for problem in _plan_problems(sub_topics, contract)]
 
 
 def apply_answer_contract(
@@ -2110,12 +2168,19 @@ class _PlanAttempt:
         return not self.structural
 
     @property
+    def problems(self) -> list[str]:
+        """Every problem this attempt carries, unlabelled and in order.
+
+        This is what the model's repair request reads: the labels are for the
+        records, and a plan prefix inside the prompt is a silent change to
+        model-visible input.
+        """
+        return [*self.structural, *self.advisory]
+
+    @property
     def labelled(self) -> list[str]:
         """Every problem this attempt carries, labelled with its own plan."""
-        return [
-            f"{self.plan}: {problem}"
-            for problem in (*self.structural, *self.advisory)
-        ]
+        return [f"{self.plan}: {problem}" for problem in self.problems]
 
     @property
     def labelled_advisory(self) -> list[str]:
@@ -2133,6 +2198,26 @@ def _exception_name(error: BaseException) -> str:
     """
     cause = error.__cause__ if error.__cause__ is not None else error
     return type(cause).__name__
+
+
+def _raised_problems(
+    error: PlanningError,
+    *,
+    label: str,
+    what: str,
+) -> list[str]:
+    """The lines one failed plan request is recorded under, labelled.
+
+    ``what`` names the request in project words, ``_exception_name`` gives the
+    failure class, and the request's own static lines follow — each prefixed
+    with the plan it concerns, like every other problem this planner reports,
+    so a truncated repair is distinguishable from a schema failure without
+    publishing anything a provider wrote.
+    """
+    return [
+        f"{label}: {what} raised {_exception_name(error)}",
+        *[f"{label}: {problem}" for problem in error.problems],
+    ]
 
 
 class PlannerAgent(BaseAgent[ResearchPlan]):
@@ -2432,9 +2517,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
 
         The two problem lists are kept apart on purpose. A draft that fails
         ``validate_plan_draft`` is not stamped at all — there is nothing to
-        stamp — and its problems are structural; a draft that passes may still
-        carry the contract-level advisory ones, which no longer decide a run's
-        fate but are recorded against the plan that carries them.
+        stamp — and its problems are structural. A draft that passes may still
+        fail the contract-level checks, and those split too: the target count
+        and the question form decide whether the plan can be executed at all,
+        while a stale anchor or an invented tolerance is a judgement about
+        meaning that the review owns.
         """
         sub_topics, structural = validate_plan_draft(draft)
         if structural:
@@ -2445,11 +2532,20 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 advisory=[],
             )
         stamped = apply_answer_contract(sub_topics, contract)
+        problems = _plan_problems(stamped, contract)
         return _PlanAttempt(
             plan=plan,
             sub_topics=stamped,
-            structural=[],
-            advisory=target_problems(stamped, contract),
+            structural=[
+                problem.text
+                for problem in problems
+                if problem.kind == "structural"
+            ],
+            advisory=[
+                problem.text
+                for problem in problems
+                if problem.kind == "advisory"
+            ],
         )
 
     async def _review_plan(
@@ -2556,11 +2652,12 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         The bounds are unchanged — one repair of the local checks, one semantic
         review, at most one repair of what the review named, and one confirming
         review — but a surviving defect no longer ends the run. Planning raises
-        only when there is no structurally valid plan to hand the researcher:
-        a draft and its repair that both fail ``validate_plan_draft``. Anything
-        else continues with the structurally valid candidate, and the defects
-        that outlived their one repair are recorded as
-        ``planner_plan_defects_unresolved``.
+        only when no structurally valid plan exists: when both the draft and
+        its repair fail the structural checks, which are the target count, the
+        question form, and ``validate_plan_draft``. Anything else continues
+        with the structurally valid candidate, and the defects that outlived
+        their one repair — including the review's findings against a plan kept
+        without one — are recorded as ``planner_plan_defects_unresolved``.
 
         That is the deliberate reading of the planner's own design: its lints
         disclaim authority over meaning ("the plan review call is what judges
@@ -2570,10 +2667,14 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         than remove them. Three of four live CLI runs ended at
         ``graph_planning_failed`` before any research and none published a
         report; two of those three died on one false lint, and the third on a
-        truncated repair. A repair that cannot be produced at all — a provider
-        failure, a truncation, a schema failure — falls back to the plan the
-        review actually judged, and an unavailable or unsound confirming review
-        keeps the repaired plan rather than discarding it.
+        truncated repair.
+
+        A repair request that cannot be produced at all — a provider failure,
+        a truncation, a schema failure — is recorded and the run continues with
+        the plan that stands: the draft it was repairing, or the plan the
+        review judged. That matters most for the lint repair, which is the
+        heaviest plan request of the cycle, so only a draft that is itself
+        structurally invalid stays fatal when its repair fails.
         """
         if not run.succeeded:
             raise planning_provider_error("react_loop")
@@ -2584,33 +2685,57 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         )
         repaired = False
         if attempt.structural or attempt.advisory:
-            reattempt = await self._request_plan(
-                task,
-                run,
-                contract=contract,
-                repair=format_plan_problems(attempt.labelled),
-                plan=_PLAN_REPAIR_LABEL,
-            )
             repaired = True
-            if reattempt.structural and attempt.structural:
-                raise PlanningError(
-                    "The planner could not produce a structurally valid "
-                    "research plan after one repair attempt.",
-                    problems=[*attempt.labelled, *reattempt.labelled],
+            try:
+                reattempt = await self._request_plan(
+                    task,
+                    run,
+                    contract=contract,
+                    repair=format_plan_problems(attempt.problems),
+                    plan=_PLAN_REPAIR_LABEL,
                 )
-            if reattempt.usable:
-                attempt = reattempt
-            else:
-                # The repair is not a plan anyone can research. The earlier
-                # attempt is structurally valid — the branch above returned
-                # otherwise — so it stands and the repair's defects are
-                # recorded against the repair.
+            except PlanningError as error:
+                # A repair that cannot be produced is not a reason to end a run
+                # whose draft is researchable: repairs are the heaviest plan
+                # request, and live run 2 truncated on one. When the draft is
+                # not researchable either, there is nothing left to hand the
+                # researcher, so the failure stays fatal and carries the
+                # draft's own labelled problems.
+                failures = _raised_problems(
+                    error, label=_PLAN_REPAIR_LABEL, what="the plan repair"
+                )
+                if not attempt.usable:
+                    raise PlanningError(
+                        str(error),
+                        problems=[*attempt.labelled, *failures],
+                        operation=error.operation,
+                    ) from error
                 self._record_defects(
                     run,
                     stage="plan_repair",
-                    plan=reattempt.plan,
-                    problems=reattempt.labelled,
+                    plan=_PLAN_REPAIR_LABEL,
+                    problems=failures,
                 )
+            else:
+                if reattempt.structural and attempt.structural:
+                    raise PlanningError(
+                        "The planner could not produce a structurally valid "
+                        "research plan after one repair attempt.",
+                        problems=[*attempt.labelled, *reattempt.labelled],
+                    )
+                if reattempt.usable:
+                    attempt = reattempt
+                else:
+                    # The repair is not a plan anyone can research, while the
+                    # earlier attempt is — the branch above returned otherwise
+                    # — so the draft stands and the repair's defects are
+                    # recorded against the repair.
+                    self._record_defects(
+                        run,
+                        stage="plan_repair",
+                        plan=reattempt.plan,
+                        problems=reattempt.labelled,
+                    )
         self._record_defects(
             run,
             stage="plan_checks",
@@ -2623,6 +2748,13 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             return self._plan_from(attempt, contract=contract, repaired=repaired)
 
         requested = format_review_problems(review)
+        # The findings the review made against the plan that stands. They are
+        # recorded on both fallbacks below, because the research about to run
+        # is the research that carries them unaddressed.
+        rejected = [
+            f"{attempt.plan}: {problem}"
+            for problem in requested_problems(review)
+        ]
         try:
             reattempt = await self._request_plan(
                 task,
@@ -2637,19 +2769,28 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             # nothing yet, which is strictly better than no report at all.
             self._record_defects(
                 run,
+                stage="review",
+                plan=attempt.plan,
+                problems=rejected,
+            )
+            self._record_defects(
+                run,
                 stage="review_repair",
                 plan=_PLAN_REVIEW_REPAIR_LABEL,
-                problems=[
-                    f"{_PLAN_REVIEW_REPAIR_LABEL}: the plan review repair "
-                    f"raised {_exception_name(error)}",
-                    *[
-                        f"{_PLAN_REVIEW_REPAIR_LABEL}: {problem}"
-                        for problem in error.problems
-                    ],
-                ],
+                problems=_raised_problems(
+                    error,
+                    label=_PLAN_REVIEW_REPAIR_LABEL,
+                    what="the plan review repair",
+                ),
             )
             return self._plan_from(attempt, contract=contract, repaired=True)
         if not reattempt.usable:
+            self._record_defects(
+                run,
+                stage="review",
+                plan=attempt.plan,
+                problems=rejected,
+            )
             self._record_defects(
                 run,
                 stage="review_repair",
@@ -2674,14 +2815,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 run,
                 stage="confirming_review",
                 plan=attempt.plan,
-                problems=[
-                    f"{attempt.plan}: the confirming plan review raised "
-                    f"{_exception_name(error)}",
-                    *[
-                        f"{attempt.plan}: {problem}"
-                        for problem in error.problems
-                    ],
-                ],
+                problems=_raised_problems(
+                    error,
+                    label=attempt.plan,
+                    what="the confirming plan review",
+                ),
             )
         if confirming is not None and not confirming.sound:
             self._record_defects(
