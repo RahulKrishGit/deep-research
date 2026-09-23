@@ -255,7 +255,7 @@ from deep_research.utils.config import (
 # edited; the module source is what the fingerprint hashes, so a routing fix
 # that lives in ``critic.py`` moves a value whose name implies a prompt change
 # — the same false positive the researcher's first re-pin records below.
-CRITIC_PROMPT_FINGERPRINT = "8207599d7f6c"
+CRITIC_PROMPT_FINGERPRINT = "4d3c1233230a"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -790,7 +790,7 @@ CRITIC_PROMPT_FINGERPRINT = "8207599d7f6c"
 # moved. ``test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text``
 # is the evidence for that claim rather than this comment asserting it.
 # The merge-conditions pass moved two together, ``53c371093ae9`` ->
-# ``00e2229ad4fa`` and ``26372cb8f056`` -> ``a41d1f86be3b``, for two structural
+# ``00e2229ad4fa`` and ``26372cb8f056`` -> ``dadb72078555``, for two structural
 # edits: the Fact Checker's ``state_update`` now publishes the cumulative
 # source snapshot beside the reads it just made, so a document read during
 # verification is saved with the assessment of it, and the Synthesizer stamps
@@ -857,18 +857,28 @@ CRITIC_PROMPT_FINGERPRINT = "8207599d7f6c"
 # without a critique instead of ending it. Module source only — no prompt
 # string was edited and the shared ``agents.prompts`` library was not touched,
 # which the other five pins and the judge prove. The same pass then moved it a
-# second time, ``99e1ca09d28e`` -> ``8207599d7f6c``, when the Critic's one
+# second time, ``99e1ca09d28e`` -> ``4d3c1233230a``, when the Critic's one
 # repair got the same one-retry rule: the repair request is the longest review
 # request the run makes, and a truncation there now degrades instead of ending
 # the run. Module source only, again — no prompt string edited, the other five
 # pins and the judge unchanged.
+# The report-call pass moved two at once. The critic moved a third time,
+# ``8207599d7f6c`` -> ``4d3c1233230a``, when the shared retry values
+# (``OUTPUT_LIMIT_RETRY_EFFORT``, ``OUTPUT_LIMIT_RETRY_OUTCOMES``,
+# ``OUTPUT_LIMIT_ATTEMPT_EFFORTS``) moved out of ``agents.critic`` into
+# ``agents.base``, the module that owns the structured-call contract all three
+# callers go through; the synthesizer moved ``a41d1f86be3b`` ->
+# ``dadb72078555`` because its own report call — the largest output the run asks
+# for, 27,301 of 32,768 tokens live — now gets that same one retry. Module
+# source only for both, and no prompt string or shared prompt library was
+# touched: the other four pins and the judge are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "062766ba4600",
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "340b8267dbe9",
-    "synthesizer": "a41d1f86be3b",
-    "critic": "8207599d7f6c",
+    "synthesizer": "dadb72078555",
+    "critic": "4d3c1233230a",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
@@ -1278,7 +1288,7 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
     structural edit moves it exactly as a prompt edit does — which is what this
     test exists to make visible.
 
-    The merge-conditions pass moved it a fourth time, to ``a41d1f86be3b``, when
+    The merge-conditions pass moved it a fourth time, to ``dadb72078555``, when
     the composition's ``generated_on`` began coming from the run clock the agent
     now takes as an injected dependency and its ``as_of`` began coming from the
     recorded evidence timestamps alone. That move is attributed, with the Fact
@@ -1294,7 +1304,7 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
         "report-probe-0-evidence.md"
     )
     assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
-    assert agent_prompt_fingerprint("synthesizer") == "a41d1f86be3b"
+    assert agent_prompt_fingerprint("synthesizer") == "dadb72078555"
     assert agent_prompt_fingerprint("synthesizer") != pre_task_11
 
 
@@ -1369,8 +1379,8 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
         for name in ("source_evaluator", "synthesizer", "critic")
     } == {
         "source_evaluator": "ad9e2afac12c",
-        "synthesizer": "a41d1f86be3b",
-        "critic": "8207599d7f6c",
+        "synthesizer": "dadb72078555",
+        "critic": "4d3c1233230a",
     }
     assert agent_prompt_fingerprint("planner") not in {
         "7d0282b16bc5",
@@ -1410,7 +1420,7 @@ def test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text() -> 
     }
     moved = {
         "fact_checker": "340b8267dbe9",
-        "synthesizer": "a41d1f86be3b",
+        "synthesizer": "dadb72078555",
     }
 
     assert {
@@ -1509,7 +1519,7 @@ def test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text() -
     pre_target_view = "2c80a78040b9"
 
     assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
-    assert agent_prompt_fingerprint("critic") == "8207599d7f6c"
+    assert agent_prompt_fingerprint("critic") == "4d3c1233230a"
     assert agent_prompt_fingerprint("critic") != pre_target_view
     assert {
         name: agent_prompt_fingerprint(name)

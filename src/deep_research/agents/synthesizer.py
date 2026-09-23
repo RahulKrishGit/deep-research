@@ -28,7 +28,14 @@ from collections.abc import Mapping, Sequence
 
 from pydantic import Field, JsonValue
 
-from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.base import (
+    OUTPUT_LIMIT_ATTEMPT_EFFORTS,
+    OUTPUT_LIMIT_RETRY_EFFORT,
+    OUTPUT_LIMIT_RETRY_OUTCOMES,
+    AgentCompleter,
+    AgentRun,
+    BaseAgent,
+)
 from deep_research.agents.claim_clusters import resolved_verdict_and_status
 from deep_research.agents.errors import (
     AgentConfigurationError,
@@ -66,7 +73,11 @@ from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import ChatMessage, ProviderError
+from deep_research.providers import (
+    ChatMessage,
+    ProviderError,
+    ProviderOutputLimitError,
+)
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
@@ -2330,6 +2341,50 @@ def report_provider_error(error: Exception) -> ResearchError:
     )
 
 
+def report_output_limit_retry(
+    error: Exception,
+    *,
+    reasoning_effort: str,
+    outcome: str,
+) -> ResearchError:
+    """Record that a truncated report call was re-asked at another effort.
+
+    The retry is a second paid call, so it is recorded even when it works.
+    Recoverable either way: a retry that answers produced the prose, and one
+    that truncates again leaves this call's own non-recoverable record beside
+    this note of what was tried first.
+
+    The message names the call, the effort and the outcome, and deliberately
+    names no token figure: this call sends no per-operation output budget, so
+    the budget it keeps is the provider's global cap — a number this agent does
+    not own and must not invent.
+    """
+    if outcome not in OUTPUT_LIMIT_RETRY_OUTCOMES:
+        raise ValueError(f"unknown retry outcome: {outcome!r}")
+    return agent_error(
+        agent_name=SYNTHESIZER_NAME,
+        error_type="synthesizer_report_output_limit_retry",
+        message=(
+            "The synthesizer_report_draft call was truncated by the output "
+            f"limit; it was re-asked once at reasoning_effort {reasoning_effort} "
+            "under the same output budget (the provider's global cap), and "
+            + (
+                "the retry returned a reply."
+                if outcome == "answered"
+                else "the retry was truncated as well."
+            )
+        ),
+        recoverable=True,
+        details=agent_provider_failure_details(
+            "synthesizer_report_draft",
+            error,
+            attempt=2,
+            reasoning_effort=reasoning_effort,
+            outcome=outcome,
+        ),
+    )
+
+
 def invalid_draft_error(rejected: Sequence[str]) -> ResearchError:
     """Warn that some drafted report content was refused."""
     return agent_error(
@@ -2518,22 +2573,72 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
         Makes no provider call when there is no evidence at all, so the
         writing step can never invent a report out of nothing. The third
         element is ``True`` only when the call itself failed.
+
+        An output-limit truncation is re-asked once at the lower effort, under
+        the same output budget — the global cap, since this call sends no
+        per-operation budget of its own. This is the largest output the run
+        asks for (27,301 of 32,768 tokens on the audited live pass) and it has
+        no fallback: without a synthesis there is no truthful report, so a
+        second truncation keeps this call's own failure path rather than
+        degrading. A provider outage is not re-asked at all.
         """
         if not task.claims and not task.sources and not task.findings:
             return None, [no_evidence_error()], False
-        try:
-            draft = await self.provider.complete_structured(
-                report_messages(
-                    task,
-                    finding_digest=self._finding_digest,
-                    claim_digest=self._claim_digest,
-                ),
-                ReportDraft,
-                agent_name=self.name,
+        messages = report_messages(
+            task,
+            finding_digest=self._finding_digest,
+            claim_digest=self._claim_digest,
+        )
+        truncations: list[ProviderOutputLimitError] = []
+        for position, effort in enumerate(OUTPUT_LIMIT_ATTEMPT_EFFORTS):
+            last_attempt = position + 1 == len(OUTPUT_LIMIT_ATTEMPT_EFFORTS)
+            try:
+                draft = await self.provider.complete_structured(
+                    messages,
+                    ReportDraft,
+                    agent_name=self.name,
+                    reasoning_effort=effort,
+                )
+            except ProviderOutputLimitError as error:
+                truncations.append(error)
+                if last_attempt:
+                    return (
+                        None,
+                        [
+                            *self._retry_records(truncations, "truncated"),
+                            report_provider_error(error),
+                        ],
+                        True,
+                    )
+                continue
+            except ProviderError as error:
+                return (
+                    None,
+                    [*self._retry_records(truncations, "answered"), report_provider_error(error)],
+                    True,
+                )
+            return draft, self._retry_records(truncations, "answered"), False
+        raise AssertionError("a report attempt must produce a draft or a route")
+
+    def _retry_records(
+        self,
+        truncations: Sequence[ProviderOutputLimitError],
+        outcome: str,
+    ) -> list[ResearchError]:
+        """The record of this call's one retry, or nothing.
+
+        Empty when the first attempt was not truncated, so an ordinary pass
+        adds nothing to the run's records.
+        """
+        if not truncations:
+            return []
+        return [
+            report_output_limit_retry(
+                truncations[0],
+                reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
+                outcome=outcome,
             )
-        except ProviderError as error:
-            return None, [report_provider_error(error)], True
-        return draft, [], False
+        ]
 
     def compose(
         self,

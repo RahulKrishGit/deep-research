@@ -79,6 +79,7 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
     ProviderOutputLimitError,
+    ProviderResponseError,
     ProviderResponseTelemetry,
     ProviderTimeoutError,
 )
@@ -2710,15 +2711,32 @@ async def test_a_failed_publish_returns_the_tools_own_failure(
 async def test_a_provider_failure_still_produces_a_cited_report(
     tracker: Tracker, tmp_path: Path
 ) -> None:
+    """An outage keeps this call's own failure path, with no retry.
+
+    A provider that is down says nothing about the request, so the output-limit
+    rule does not apply: one attempt, a non-recoverable record naming the
+    operation and the provider's own failure, and the artifacts composed from
+    the evidence the run already recorded.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            ProviderResponseError(
+                "provider returned an HTTP error",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+                failure_origin="sdk",
+            )
+        ]
+    )
     agent = _synthesizer(
-        tracker,
-        ScriptedCompleter(outputs=[_output_limit_error()]),
-        synthesizer_tools(tracker, output_root=tmp_path),
+        tracker, completer, synthesizer_tools(tracker, output_root=tmp_path)
     )
 
     async with tracker.session_span("session-1", "question"):
         outcome = await agent.run(_state())
 
+    assert [call[0] for call in completer.calls] == ["ReportDraft"]
     assert outcome.result is not None
     assert REPORT_SUMMARY_FALLBACK in outcome.result.markdown
     assert "The model provider failed while this report was written" in (
@@ -2726,18 +2744,97 @@ async def test_a_provider_failure_still_produces_a_cited_report(
     )
     assert outcome.react.stop_reason == "provider_error"
     errors = {error.error_type: error for error in outcome.errors}
+    assert set(errors) == {"synthesizer_report_provider_error"}
     assert errors["synthesizer_report_provider_error"].recoverable is False
     details = errors["synthesizer_report_provider_error"].details
     assert details["operation"] == "synthesizer_report_draft"
     provider = details["provider_failure"]
-    assert provider["kind"] == "output_limit"
-    assert provider["configured_max_tokens"] == 4096
-    assert provider["request_attempt"] == 1
+    assert provider["kind"] == "provider_http"
+    assert provider["http_status_code"] == 503
     # The ledger is still composed from the recorded evidence.
     assert "Logical error rates fell below break-even in 2025." in (
         outcome.result.evidence_markdown
     )
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_report_call_is_re_asked_once_at_a_high_effort(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """The output-limit rule on the run's largest request.
+
+    The audited live pass spent 27,301 of this call's 32,768 output tokens, so
+    a truncation here is a matter of when rather than whether. It is re-asked
+    once under the same budget — the global cap, since this call sends no
+    per-operation budget of its own — at the effort that leaves more of that
+    budget for the prose, and the report is then written normally.
+    """
+    completer = ScriptedCompleter(
+        outputs=[_output_limit_error(), _draft()]
+    )
+    agent = _synthesizer(
+        tracker, completer, synthesizer_tools(tracker, output_root=tmp_path)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_state())
+
+    assert [call[0] for call in completer.calls] == ["ReportDraft", "ReportDraft"]
+    assert completer.budgets == [None, None]
+    assert completer.efforts == [None, "high"]
+    assert outcome.result is not None
+    assert "Break-even was reached in 2025." in outcome.result.markdown
+    assert outcome.react.stop_reason == "finished"
+    assert [error.error_type for error in outcome.errors] == [
+        "synthesizer_report_output_limit_retry"
+    ]
+    retry = outcome.errors[0]
+    assert retry.recoverable is True
+    assert retry.details["outcome"] == "answered"
+    assert retry.details["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_a_twice_truncated_report_call_still_fails_as_it_did(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """A retry that truncates too leaves this call's failure path unchanged.
+
+    This call has no fallback: without a synthesis there is no truthful report,
+    so a second truncation is still the failure it always was — non-recoverable
+    record, the artifacts composed from recorded evidence, and the loop stopped
+    on the provider — with the retry recorded beside it, because a second paid
+    call nobody can see is a spend nobody can audit.
+    """
+    completer = ScriptedCompleter(
+        outputs=[_output_limit_error(), _output_limit_error()]
+    )
+    agent = _synthesizer(
+        tracker, completer, synthesizer_tools(tracker, output_root=tmp_path)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_state())
+
+    assert completer.efforts == [None, "high"]
+    assert outcome.result is not None
+    assert REPORT_SUMMARY_FALLBACK in outcome.result.markdown
+    assert outcome.react.stop_reason == "provider_error"
+    errors = {error.error_type: error for error in outcome.errors}
+    assert set(errors) == {
+        "synthesizer_report_output_limit_retry",
+        "synthesizer_report_provider_error",
+    }
+    retry = errors["synthesizer_report_output_limit_retry"]
+    assert retry.recoverable is True
+    assert retry.details["outcome"] == "truncated"
+    assert retry.details["reasoning_effort"] == "high"
+    failure = errors["synthesizer_report_provider_error"]
+    assert failure.recoverable is False
+    provider = failure.details["provider_failure"]
+    assert provider["kind"] == "output_limit"
+    assert provider["configured_max_tokens"] == 4096
 
 
 @pytest.mark.asyncio

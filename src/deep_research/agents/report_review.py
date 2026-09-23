@@ -40,12 +40,13 @@ from typing import Any, ClassVar
 from pydantic import Field, ValidationError
 
 from deep_research.agents.base import (
+    OUTPUT_LIMIT_ATTEMPT_EFFORTS,
+    OUTPUT_LIMIT_RETRY_EFFORT,
+    OUTPUT_LIMIT_RETRY_OUTCOMES,
     StructuredCompleter,
     call_configuration_fingerprint,
 )
 from deep_research.agents.critic import (
-    OUTPUT_LIMIT_RETRY_EFFORT,
-    REVIEW_RETRY_OUTCOMES,
     CritiqueContractViolation,
     CritiqueGapDraft,
     normalize_gaps,
@@ -144,7 +145,7 @@ def report_review_output_limit_retry(
     the error types whose projection it has vetted, and an effort a reader
     cannot see is a retry a reader cannot find.
     """
-    if outcome not in REVIEW_RETRY_OUTCOMES:
+    if outcome not in OUTPUT_LIMIT_RETRY_OUTCOMES:
         raise ValueError(f"unknown retry outcome: {outcome!r}")
     return agent_error(
         agent_name=REPORT_JUDGE_ROLE,

@@ -31,7 +31,14 @@ from typing import Annotated, ClassVar
 
 from pydantic import Field, ValidationError, model_validator
 
-from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.base import (
+    OUTPUT_LIMIT_ATTEMPT_EFFORTS,
+    OUTPUT_LIMIT_RETRY_EFFORT,
+    OUTPUT_LIMIT_RETRY_OUTCOMES,
+    AgentCompleter,
+    AgentRun,
+    BaseAgent,
+)
 from deep_research.agents.errors import (
     AgentConfigurationError,
     agent_error,
@@ -144,41 +151,6 @@ CRITIC_REVIEW_OPERATION = "critic_report_review"
 The provider failure, the output-limit retry, and an unavailable review all
 point at the same request, so a reader grouping a run's warnings by operation
 sees them together instead of wondering which call each one is about.
-"""
-
-OUTPUT_LIMIT_RETRY_EFFORT = "high"
-"""The effort a truncated review call is re-asked at, for either reviewer.
-
-A reasoning token is a completion token, so the same output budget buys more
-answer at a lower effort — and the Critic's own profile reasons at ``max``, so
-the retry is where the effort comes *down*. Lower rather than higher on
-purpose: this is a second attempt at getting the reply the run could not get,
-not a request for a better one, and the budget is deliberately unchanged.
-
-One value for both reviewers, imported rather than repeated: the terminal
-report review follows the same rule, and two copies of "high" would let the two
-halves of one rule drift apart.
-"""
-
-REVIEW_RETRY_OUTCOMES = ("answered", "truncated")
-"""What one retry can come back with.
-
-``answered`` is a reply — whether the review used it or the repair had to
-re-ask it, which is the caller's own record to make; ``truncated`` is the same
-truncation a second time. Two outcomes of the *retry call*, never a verdict
-about the report, so the record cannot disagree with the review it precedes.
-"""
-
-REVIEW_ATTEMPT_EFFORTS: tuple[str | None, ...] = (
-    None,
-    OUTPUT_LIMIT_RETRY_EFFORT,
-)
-"""The efforts one review is attempted at, in order, and there are never more.
-
-``None`` is the agent's own configured effort, which the first attempt always
-uses, so an ordinary review is one call whose request is byte-identical to the
-one this agent has always sent. The second entry is reached only by an
-output-limit truncation of the first.
 """
 
 PACKET_FINGERPRINT_CHARS = 12
@@ -2191,7 +2163,7 @@ def review_output_limit_retry(
     for the error types whose projection this project has vetted, and a reader
     who cannot see the effort cannot tell a retry from a repeat.
     """
-    if outcome not in REVIEW_RETRY_OUTCOMES:
+    if outcome not in OUTPUT_LIMIT_RETRY_OUTCOMES:
         raise ValueError(f"unknown retry outcome: {outcome!r}")
     return agent_error(
         agent_name=CRITIC_NAME,
@@ -2460,8 +2432,8 @@ class CriticAgent(BaseAgent[Critique]):
         opened = packet.fingerprint
         messages = critique_messages(task, run)
         truncations: list[ProviderOutputLimitError] = []
-        for position, effort in enumerate(REVIEW_ATTEMPT_EFFORTS):
-            last_attempt = position + 1 == len(REVIEW_ATTEMPT_EFFORTS)
+        for position, effort in enumerate(OUTPUT_LIMIT_ATTEMPT_EFFORTS):
+            last_attempt = position + 1 == len(OUTPUT_LIMIT_ATTEMPT_EFFORTS)
             try:
                 draft = await self._complete_review(
                     messages, reasoning_effort=effort
@@ -2673,8 +2645,8 @@ class CriticAgent(BaseAgent[Critique]):
 
         repair_messages = critique_repair_messages(task, error, run)
         truncations: list[ProviderOutputLimitError] = []
-        for position, effort in enumerate(REVIEW_ATTEMPT_EFFORTS):
-            last_attempt = position + 1 == len(REVIEW_ATTEMPT_EFFORTS)
+        for position, effort in enumerate(OUTPUT_LIMIT_ATTEMPT_EFFORTS):
+            last_attempt = position + 1 == len(OUTPUT_LIMIT_ATTEMPT_EFFORTS)
             try:
                 draft = await self._complete_review(
                     repair_messages, reasoning_effort=effort

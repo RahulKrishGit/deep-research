@@ -92,6 +92,42 @@ def call_configuration_fingerprint(
     return hashlib.sha256(encoded).hexdigest()[:12]
 
 
+OUTPUT_LIMIT_RETRY_EFFORT = "high"
+"""The effort a truncated structured call is re-asked at.
+
+A reasoning token is a completion token, so the same output budget buys more
+answer at a lower effort — and every agent whose calls are large enough to hit
+a cap reasons at ``max``, so the retry is where the effort comes *down*. Lower
+rather than higher on purpose: this is a second attempt at getting the reply
+the run could not get, not a request for a better one, and the budget is
+deliberately unchanged. The rule it belongs to is branch-level — one retry
+under the same cap, then the caller's own failure path — and it lives here
+because base is the module that owns the structured-call contract every one of
+those callers goes through. One value, never a copy per agent.
+"""
+
+OUTPUT_LIMIT_RETRY_OUTCOMES = ("answered", "truncated")
+"""What one retry can come back with.
+
+``answered`` is a reply — whether the caller used it or had to re-ask it, which
+is the caller's own record to make; ``truncated`` is the same truncation a
+second time. Two outcomes of the *retry call*, never a verdict about the
+artifact it feeds, so the record cannot disagree with what follows it.
+"""
+
+OUTPUT_LIMIT_ATTEMPT_EFFORTS: tuple[str | None, ...] = (
+    None,
+    OUTPUT_LIMIT_RETRY_EFFORT,
+)
+"""The efforts one call is attempted at, in order, and there are never more.
+
+``None`` is the agent's own configured effort, which the first attempt always
+uses, so an ordinary call is one request whose shape is byte-identical to the
+one this project has always sent. The second entry is reached only by an
+output-limit truncation of the first.
+"""
+
+
 class StructuredCompleter(Protocol):
     """The structured-output capability the agent runtime needs.
 
