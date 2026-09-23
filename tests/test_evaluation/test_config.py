@@ -835,10 +835,22 @@ CRITIC_PROMPT_FINGERPRINT = "99e1ca09d28e"
 # instead of ending the run, the review's findings are recorded against the
 # plan that stands on both review-repair fallbacks, and the model-facing
 # repair request is back to unlabelled problem lines. Module source only, as
-# before — and for this move that is the whole story: ``_plan_problems``
-# returns the same order and the same text the unlabelled list always had, so
-# the repair request the model reads is byte-identical to the one the previous
-# pin covered. The other five pins and the judge are unchanged.
+# before. ``_plan_problems`` returns the same *lines* the unlabelled list
+# always had, in the same report order, but the repair request is not
+# byte-identical to the one the previous pin covered in one case: when one
+# sub-topic carries an advisory problem and another a structural one, the
+# attempt's ``problems`` renders them grouped structural-first, and the
+# pre-partition list rendered them in source order. Same lines, different
+# order, and only in that mixed case — a plan whose problems are all one kind
+# renders exactly what ``f536a09`` rendered. The other five pins and the judge
+# are unchanged.
+# The scratch-docstring pass moved the planner a fourth time,
+# ``cd1480236a3b`` -> ``062766ba4600``: ``_PlanAttempt``'s docstring said
+# structural problems were ``validate_plan_draft``'s alone, and they have also
+# been the two local ones that make a plan unexecutable — the 1-4 target count
+# and the question form — since the partition above. Documentation only, so no
+# behaviour moved: no prompt string was edited, and the other five pins and
+# the judge are unchanged.
 # The output-limit pass moved the critic alone, ``aedce1ccca9e`` ->
 # ``99e1ca09d28e``: a review call truncated by its output limit is re-asked
 # once at ``high`` under the same cap, and a second truncation leaves the run
@@ -846,7 +858,7 @@ CRITIC_PROMPT_FINGERPRINT = "99e1ca09d28e"
 # string was edited and the shared ``agents.prompts`` library was not touched,
 # which the other five pins and the judge prove.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "cd1480236a3b",
+    "planner": "062766ba4600",
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "340b8267dbe9",
@@ -1339,7 +1351,7 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
     (``00e2229ad4fa`` -> ``340b8267dbe9``), which is attributed in
     ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``.
     """
-    assert agent_prompt_fingerprint("planner") == "cd1480236a3b"
+    assert agent_prompt_fingerprint("planner") == "062766ba4600"
     assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
     assert agent_prompt_fingerprint("fact_checker") == "340b8267dbe9"
     # The other three target pins are untouched by this step, and the judge

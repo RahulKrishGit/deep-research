@@ -2151,10 +2151,13 @@ class _PlanAttempt:
 
     ``plan`` is the label every problem this attempt carries is published
     under. The two problem lists are split because they are not equally fatal:
-    ``structural`` problems are ``validate_plan_draft``'s and decide whether
-    anything can be researched at all, while ``advisory`` problems come from
-    the contract-level checks — a stale anchor, an invented tolerance — and are
-    a judgement about meaning, which is the review's to make.
+    ``structural`` problems decide whether anything can be researched at all —
+    ``validate_plan_draft``'s own, plus the two local ones that make a plan
+    unexecutable (a sub-topic carrying outside 1-4 evidence targets, and a
+    target written as an assertion rather than a question) — while ``advisory``
+    problems come from the contract-level checks — a stale anchor, an invented
+    tolerance — and are a judgement about meaning, which is the review's to
+    make.
     """
 
     plan: str
