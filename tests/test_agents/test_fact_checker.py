@@ -89,7 +89,7 @@ from deep_research.agents.fact_checker import (
     valid_verification_passages,
     validate_adjudication,
     verdict_counts,
-    with_unrendered_omissions,
+    with_render_boundaries,
 )
 from deep_research.agents.identity import (
     claim_fingerprint,
@@ -3536,25 +3536,143 @@ def _partial_support_only() -> Claim:
     )
 
 
-def test_a_reading_with_no_complete_support_carries_no_publisher() -> None:
-    """The floor's invariant: this branch publishes no supporting passage.
+def test_a_reading_with_no_complete_support_carries_no_primary_badge() -> None:
+    """No complete supporting passage, no primary-source attribution.
 
-    ``no_complete_support`` writes ``source_supported`` beside
-    ``insufficient_evidence`` for a claim no complete support stands behind.
-    The admission floor (``supporting_publishers >= 1``) is the only thing
-    keeping that badge from crediting a target, and it holds *because* this
-    branch records no supporting passage: the supports list was filtered to
-    complete supports and is empty here, so the claim carries no publisher.
-    Nothing asserted that directly — it was emergent. A change that recorded
-    refused or partial selections as supporting passages would start reporting
-    a publisher for a claim no source fully supports, reopening the hole with
-    the suite green.
+    ``no_complete_support`` used to write ``source_supported`` beside
+    ``insufficient_evidence`` for a claim no complete support stood behind: the
+    audited run published "primary-source attribution" for claims 8 and 11,
+    whose recorded evidence selection was empty. The badge is the reader's
+    "primary-source attribution" line, so it is written only where a complete
+    supporting passage stands behind the claim. The admission floor
+    (``supporting_publishers >= 1``) still holds *because* this branch records
+    no supporting passage: the supports list was filtered to complete supports
+    and is empty here, so the claim carries no publisher.
     """
     claim = _partial_support_only()
 
-    assert claim.evidence_status == "source_supported"
+    assert claim.evidence_status is None
     assert "no_complete_support" in claim.audit_flags
     assert supporting_publisher_count(claim) == 0
+    assert admitted_target_ids(
+        claim, {TASK6_TARGET: "primary_attribution"}
+    ) == []
+
+
+def test_a_relay_support_is_not_primary_attribution() -> None:
+    """The primary badge needs the passage the claim's issuer published.
+
+    Claim 1 of the audited run — "EIA reported that generators … added 10.4 GW"
+    — was published as "primary-source attribution", although its only
+    supporting passage came from a trade-press relay of EIA's figure. A relay
+    supports as a relay: the passage is still recorded behind the claim, and
+    the badge is not awarded on it.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    ).model_copy(
+        update={"claim_source_urls": ["https://eia.test/todayinenergy"]}
+    )
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="A relay repeats the agency's figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status is None
+    assert claim.insufficient_reason == "relay_source"
+    assert "relay_source" in claim.audit_flags
+    # The relay still supports: the passage the model selected is recorded as
+    # the claim's supporting evidence, and the claim still answers nothing.
+    assert [item.source_url for item in claim.verification_evidence] == [
+        "https://left.test/left"
+    ]
+
+
+def test_a_complete_support_from_the_issuer_still_earns_the_badge() -> None:
+    """The issuer test tightens the badge without emptying it.
+
+    The same shape as the relay claim, with the packet citing the supporting
+    passage's own publisher, is what the audited run's claims 2 and 5 were:
+    the issuer's own account, completely supporting the claim.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    ).model_copy(update={"claim_target_ids": [TASK6_TARGET]})
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="The agency's own account states the figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.evidence_status == "source_supported"
+    assert "relay_source" not in claim.audit_flags
+    assert admitted_target_ids(
+        claim, {TASK6_TARGET: "primary_attribution"}
+    ) == [TASK6_TARGET]
+
+
+def test_a_clipped_candidate_is_never_judged_as_no_complete_support() -> None:
+    """A passage the request could only show in part was never judged whole.
+
+    The packet clipped every candidate to a uniform share, then recorded
+    ``no_complete_support`` for claims whose figures sat past the cut: a
+    verdict about text the model never saw. A candidate longer than the
+    request may carry is recorded as partially shown instead — its
+    incompleteness is an open question, and the claim says the passage was cut.
+    """
+    long_support = SUPPORT_TEXT + " " + ("Detail. " * 400)
+    packet = with_render_boundaries(
+        _verdict_packet(
+            _eligibility(),
+            _independent_second(),
+            _third_origin(),
+            texts=(long_support, AUDIT_TEXT, REFUTATION_TEXT),
+        ),
+        evidence_chars=FACT_CHECK_EVIDENCE_CHARS,
+    )
+    plan = plan_packet_rendering(
+        packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+    )
+    shown = {unit.evidence_id: text for unit, text in plan.rendered}
+
+    assert shown["ev-left"] != " ".join(long_support.split())
+    assert plan.partially_shown == ["ev-left"]
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="The operator's own report states the figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.evidence_status is None
+    assert "partially_shown" in claim.audit_flags
+    assert "no_complete_support" not in claim.audit_flags
+    assert claim.insufficient_reason == "partially_shown"
     assert admitted_target_ids(
         claim, {TASK6_TARGET: "primary_attribution"}
     ) == []
@@ -4711,6 +4829,8 @@ def test_every_adjudication_reason_is_enumerated() -> None:
         "same_publisher",
         "shared_origin",
         "no_complete_support",
+        "partially_shown",
+        "relay_source",
         "single_primary_only",
         "provider_unavailable",
         "schema_failed",
@@ -6793,7 +6913,7 @@ def test_the_request_shows_every_candidate_and_omits_only_what_it_cannot() -> No
 
     # Under a budget nothing can fit in, what is left out is recorded, never
     # silently dropped.
-    tiny = with_unrendered_omissions(packet, evidence_chars=200)
+    tiny = with_render_boundaries(packet, evidence_chars=200)
     assert tiny.omitted_count == len(tiny.omitted) > 0
     assert {item.item_id for item in tiny.omitted} == {
         "ev-right",
@@ -6821,7 +6941,7 @@ def test_the_adjudication_request_keeps_the_pair_and_the_refutation_together() -
     assert _packet_has_pair(packet) is True
     shown = [
         unit.evidence_id
-        for unit in with_unrendered_omissions(
+        for unit in with_render_boundaries(
             packet, evidence_chars=200
         ).units[:1]
     ]
@@ -7195,7 +7315,7 @@ def test_a_never_carried_candidate_named_as_a_contradiction_is_refused() -> None
     instead of refusing.
     """
     long_left = SUPPORT_TEXT + " " + ("Detail. " * 200)
-    packet = with_unrendered_omissions(
+    packet = with_render_boundaries(
         _verdict_packet(
             _eligibility(),
             _independent_second(),
@@ -7244,7 +7364,7 @@ def test_a_saturated_omission_list_still_records_an_unrendered_candidate() -> No
         for index in range(MAX_PACKET_OMISSIONS)
     )
     long_left = SUPPORT_TEXT + " " + ("Detail. " * 200)
-    packet = with_unrendered_omissions(
+    packet = with_render_boundaries(
         _verdict_packet(
             _eligibility(),
             _independent_second(),
@@ -7430,16 +7550,16 @@ def test_a_support_with_no_stated_scope_is_still_not_admitted() -> None:
     assert "ev-left" not in claim.evidence_selection
 
 
-def test_a_crowded_packet_still_shows_every_candidate() -> None:
-    """The budget is shared out, so a full packet is still a full request.
+def test_a_crowded_packet_shows_every_passage_it_can_carry_whole() -> None:
+    """Every passage the request carries is the passage, not a prefix of it.
 
-    Six candidates with whole-page bodies used to fill the request between
-    them and leave the last ones unshown — and, on the packet path, unshown
-    candidates withhold the badge. Dividing what is left after the blocks'
-    fixed text lets every candidate carry a readable excerpt instead, so the
-    omission path is reserved for packets that genuinely cannot fit.
+    A packet of whole-page candidates used to be clipped to a uniform share
+    until all of them fitted, which is how a claim whose figure sat past the
+    cut came to be judged over text nobody saw. The request now carries the
+    passages it can show whole and records the rest as deferred, so no
+    candidate is judged on a fragment and none is silently dropped.
     """
-    text = SUPPORT_TEXT + " " + ("Detail. " * 400)
+    text = SUPPORT_TEXT + " " + ("Detail. " * 45)
     units = [
         _pair_unit(name, f"https://{name}.test/{name}", text)
         for name in ("left", "right", "third", "fourth", "fifth", "sixth")
@@ -7464,20 +7584,61 @@ def test_a_crowded_packet_still_shows_every_candidate() -> None:
     plan = plan_packet_rendering(
         packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
     )
-
-    assert plan.unrendered == []
     body = "\n".join(
         message.content
         for message in adjudication_messages(
             packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
         )
     )
+
+    # A passage-sized candidate is carried whole, and the plan says so.
+    assert plan.unrendered == []
+    assert plan.partially_shown == []
+    for unit, text_shown in plan.rendered:
+        assert text_shown == " ".join(unit.excerpt.split())
     for unit in units:
         assert f"id: {unit.evidence_id}" in body
     assert (
         len(body.split("# Claim")[1].split("# Response contract")[0])
         <= FACT_CHECK_EVIDENCE_CHARS * 2
     )
+
+
+def test_a_candidate_the_request_cannot_carry_whole_is_deferred_or_marked() -> None:
+    """Whole-page candidates no longer fit, so the request says what it did.
+
+    One page-sized candidate is longer than a request may carry for a single
+    candidate: it is shown in part and *recorded* as partially shown, so a
+    verdict may not read it as a complete passage. The candidates behind it
+    that no longer fit are omitted and deferred by name.
+    """
+    page_sized = SUPPORT_TEXT + " " + ("Detail. " * 400)
+    packet = _verdict_packet(
+        _eligibility(),
+        _independent_second(),
+        _third_origin(),
+        texts=(page_sized, AUDIT_TEXT, REFUTATION_TEXT),
+    )
+
+    plan = plan_packet_rendering(
+        packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+    )
+
+    assert len(plan.rendered) + len(plan.unrendered) == len(packet.units)
+    assert plan.partially_shown == ["ev-left"]
+
+    bounded = with_render_boundaries(
+        packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+    )
+    assert set(bounded.partially_shown_ids) == {"ev-left"}
+    body = "\n".join(
+        message.content
+        for message in adjudication_messages(
+            bounded, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+        )
+    )
+    for unit in packet.units:
+        assert f"id: {unit.evidence_id}" in body
 
 
 def test_packet_incomplete_is_about_this_claims_own_candidates() -> None:
@@ -7604,7 +7765,7 @@ def test_an_id_the_request_never_carried_is_never_admitted() -> None:
     packet at all.
     """
     long_left = SUPPORT_TEXT + " " + ("Detail. " * 200)
-    packet = with_unrendered_omissions(
+    packet = with_render_boundaries(
         _verdict_packet(
             _eligibility(),
             _independent_second(),

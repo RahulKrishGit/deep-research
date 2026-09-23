@@ -145,11 +145,9 @@ MAX_REPORTED_PENDING_CLAIMS = 16
 FACT_CHECK_EVIDENCE_CHARS = 4000
 MAX_PASSAGE_EXCERPT_CHARS = 1000
 
-# The shortest candidate excerpt worth showing. Below this the model would be
-# judging a fragment rather than the document's own statement, so the candidate
-# is recorded as an omission instead — which, on the packet path, withholds the
-# verified badge rather than settling the claim on evidence nobody read.
-MIN_CANDIDATE_CHARS = 200
+# How long a candidate's locator may be in a rendered block. Locators are
+# project-minted (``chunk-3``, ``page-12-chunk-0``), so this is a shape bound,
+# not a content one.
 MAX_PASSAGE_LOCATOR_CHARS = 200
 # How many distinct schema field paths one repaired-reply event reports. The
 # diagnostic count is exact; the paths are bounded so an event never grows with
@@ -832,6 +830,14 @@ INSUFFICIENT_REASONS = {
     "no_complete_support": (
         "No selected passage supported the complete atomic claim."
     ),
+    "partially_shown": (
+        "The passage that may support the claim was shown only in part, so "
+        "the supporting text may lie beyond what was read."
+    ),
+    "relay_source": (
+        "The supporting passage repeats the claim's issuer rather than being "
+        "the issuer's own account of it."
+    ),
     "single_primary_only": (
         "Primary-source attribution: independent corroboration not established."
     ),
@@ -1032,6 +1038,15 @@ class AdjudicationPacket(ContractModel):
     claims' units, so a busy registry could truncate away the entry that says a
     candidate was never carried — and a verdict would then be validated against
     a passage nobody saw. Bounded by the packet's own size, so it needs no cap.
+    """
+    partially_shown_ids: list[str] = Field(default_factory=list)
+    """Candidates this packet carried only in part.
+
+    A candidate the request could not print in full was shown as a prefix, so
+    the model judged a fragment: whether the rest of the passage would have
+    supported the claim is unanswerable from what it saw. Such a candidate is
+    recorded here — it may still be selected, and it may never stand as a
+    *complete* support, exactly like the deferral ``deferred_capacity`` records.
     """
     fingerprint: str = ""
 
@@ -1410,15 +1425,84 @@ def _row_credit(row: SupportAssessment) -> int:
     return 6
 
 
+def partially_shown_candidates(packet: AdjudicationPacket) -> set[str]:
+    """The packet's own candidates the request could print only in part.
+
+    Read from the packet's own record, exactly as :func:`unshown_candidates`
+    reads the unrendered ones: the model saw a prefix of these passages, so a
+    support selected over one is a judgement about the words that were shown,
+    never about the passage.
+    """
+    return {unit.evidence_id for unit in packet.units}.intersection(
+        packet.partially_shown_ids
+    )
+
+
+def _issuer_publishers(packet: AdjudicationPacket) -> set[str]:
+    """The publishers the claim itself cites: who the claim attributes to.
+
+    A claim's cited URLs are the sources its own finding came from, so they
+    name the issuer whose fact the claim states ("EIA reported that …" cites
+    the EIA page). A passage from one of them is that issuer's own account; a
+    passage from anywhere else is a relay or another publisher's telling,
+    however complete it reads.
+    """
+    return {
+        publisher_identity(url)
+        for url in packet.claim_source_urls
+        if isinstance(url, str) and url.strip()
+    }
+
+
+def _issuer_passage_stands(
+    packet: AdjudicationPacket,
+    units: Mapping[str, EvidenceUnit],
+    supports: Sequence[str],
+    eligibility: Mapping[str, EvidenceEligibility],
+) -> bool:
+    """True when one complete support is the claim's issuer's own passage.
+
+    Both the URL's own publisher and the identity the Source Evaluator
+    resolved are read: a mirror that evidences its issuer is that issuer's
+    account, and a host that merely repeats the figure is not, whichever way
+    the two were spelled.
+    """
+    issuers = _issuer_publishers(packet)
+    if not issuers:
+        return False
+    for evidence_id in supports:
+        unit = units.get(evidence_id)
+        if unit is None:
+            continue
+        if eligibility[evidence_id].publisher_id in issuers:
+            return True
+        if publisher_identity(unit.source_url) in issuers:
+            return True
+    return False
+
+
 class PacketRendering(NamedTuple):
-    """Which candidates one adjudication request carries, and which it cannot.
+    """Which candidates one adjudication request carries, and how.
 
     ``rendered`` pairs each candidate with the exact text the request prints
-    for it; ``unrendered`` is what the budget left out, in packet order.
+    for it; ``partially_shown`` names the candidates whose printed text is a
+    prefix of the passage rather than the passage; ``unrendered`` is what the
+    budget left out, in packet order.
     """
 
     rendered: list[tuple[EvidenceUnit, str]]
     unrendered: list[EvidenceUnit]
+    partially_shown: list[str] = []
+
+
+def _passage_was_clipped(excerpt: str, text: str) -> bool:
+    """True when ``text`` is a cut-down form of ``excerpt``.
+
+    ``_bounded_passage_text`` returns the passage itself whenever it fits the
+    bound, so equality after whitespace collapse is the exact test: a candidate
+    that fails it printed only part of what the passage says.
+    """
+    return text != " ".join(excerpt.split())
 
 
 def plan_packet_rendering(
@@ -1427,24 +1511,20 @@ def plan_packet_rendering(
     evidence_chars: int,
     unit_chars: int = MAX_PASSAGE_EXCERPT_CHARS,
 ) -> PacketRendering:
-    """Split a packet's candidates into what fits one request and what cannot.
+    """Split a packet's candidates into what one request carries, and how.
 
     Pair candidates are offered first, so a budget can never hide the second
-    member of a pair behind a passage that could not corroborate anything, and
-    every excerpt is bounded, so one whole-page read cannot consume the budget
-    by itself and push the candidates behind it out of the model's sight. What
-    does not fit is returned rather than dropped: the caller records it as an
-    explicit omission, and an unassessed passage is never read as an absent one.
+    member of a pair behind a passage that could not corroborate anything.
+    What follows is carried whole whenever it fits: a request that prints a
+    prefix of a passage asks the model to judge text it cannot see, and a
+    figure past the cut reads as an absent one. A candidate only longer than
+    the request may carry for one candidate is still offered, in part, and
+    recorded in ``partially_shown``; the candidates behind a full request are
+    returned rather than dropped, so the caller records them as explicit
+    omissions. An unassessed passage is never read as an absent one.
     """
     if evidence_chars < 1 or unit_chars < 1:
         raise ValueError("evidence_chars and unit_chars must be at least 1")
-    # The budget is shared out across the packet's candidates rather than spent
-    # on the first few: each block's fixed text is measured once, and what is
-    # left divides by how many candidates there are. One whole-page read can
-    # then no longer push its neighbours out of the request.
-    fixed = sum(len(_candidate_block(packet, unit, "")) for unit in packet.units)
-    share = (evidence_chars - fixed) // max(len(packet.units), 1)
-    bound = min(unit_chars, max(share, MIN_CANDIDATE_CHARS))
     order = sorted(
         range(len(packet.units)),
         key=lambda index: (
@@ -1454,19 +1534,23 @@ def plan_packet_rendering(
     )
     rendered: list[tuple[EvidenceUnit, str]] = []
     unrendered: list[int] = []
+    partially_shown: list[str] = []
     used = 0
     for index in order:
         unit = packet.units[index]
-        text = _bounded_passage_text(unit.excerpt, limit=bound)
+        text = _bounded_passage_text(unit.excerpt, limit=unit_chars)
         block = _candidate_block(packet, unit, text)
         if used + len(block) > evidence_chars and rendered:
             unrendered.append(index)
             continue
         rendered.append((unit, text))
         used += len(block)
+        if _passage_was_clipped(unit.excerpt, text):
+            partially_shown.append(unit.evidence_id)
     return PacketRendering(
         rendered=rendered,
         unrendered=[packet.units[index] for index in sorted(unrendered)],
+        partially_shown=partially_shown,
     )
 
 
@@ -1490,23 +1574,27 @@ def _candidate_block(
     )
 
 
-def with_unrendered_omissions(
+def with_render_boundaries(
     packet: AdjudicationPacket,
     *,
     evidence_chars: int,
     unit_chars: int = MAX_PASSAGE_EXCERPT_CHARS,
 ) -> AdjudicationPacket:
-    """The same packet, with every candidate this request cannot show omitted.
+    """The same packet, recording every candidate this request cannot show whole.
 
-    The omission is what tells the validator — and the audit that reads it —
-    that a passage existed and was not judged, so a verdict can never rest on
-    silence about it. At the production budget nothing is normally left out;
-    when something is, it is named.
+    Two records, because the two conditions differ. A candidate the request
+    did not carry is *omitted*: an explicit disposition, deferred like
+    ``deferred_capacity``, so nothing a run read disappears silently. A
+    candidate the request carried only in part is *partially shown*: the model
+    saw a prefix, so its text may say something the passage does not and the
+    passage may say something its text does not — the validator may not read a
+    complete support out of it. At the production budget only a passage longer
+    than one candidate may carry is ever partially shown.
     """
     plan = plan_packet_rendering(
         packet, evidence_chars=evidence_chars, unit_chars=unit_chars
     )
-    if not plan.unrendered:
+    if not plan.unrendered and not plan.partially_shown:
         return packet
     unrendered = [unit.evidence_id for unit in plan.unrendered]
     omitted = [
@@ -1528,6 +1616,7 @@ def with_unrendered_omissions(
             "omitted": omitted[:MAX_PACKET_OMISSIONS],
             "omitted_count": packet.omitted_count + len(unrendered),
             "unrendered_ids": unrendered,
+            "partially_shown_ids": list(plan.partially_shown),
         }
     )
 
@@ -1625,6 +1714,11 @@ def validate_adjudication(
         for unit in packet.units
         if unit.evidence_id not in unshown
     }
+    # The candidates the request carried only in part. They were shown, so the
+    # model's selection of one is real and is recorded; but a prefix cannot
+    # establish what the whole passage says, so none may stand as a complete
+    # support and none may be read as an absent one.
+    partial = partially_shown_candidates(packet)
     flags: list[str] = []
     if packet.missing_read_ids:
         # A read this claim is linked to never reached the packet. That is the
@@ -1747,8 +1841,14 @@ def validate_adjudication(
                 flags.append("model_disagreement")
         eligibility[evidence_id] = base.model_copy(
             update={
+                # A candidate the request could only print in part was judged
+                # on a prefix: the model's "complete support" is a claim about
+                # the words it was shown, so the passage cannot stand as a
+                # complete support for anything beyond them.
                 "complete_support": bool(
-                    row.complete_support and row.scope_compatible
+                    row.complete_support
+                    and row.scope_compatible
+                    and evidence_id not in partial
                 ),
                 "origin_group_id": origin,
                 # Section 2.2 rule 7: only a primary account or an independent
@@ -1816,26 +1916,48 @@ def validate_adjudication(
         # said was incompatible: the claim cannot settle over it, and nothing
         # is published as a contradiction for it.
         verdict = "insufficient_evidence"
-        status = "source_supported" if supports else None
+        status, badge_flags = _settled_badge(
+            packet, shown, supports, eligibility
+        )
+        flags.extend(badge_flags)
         if supports:
             flags.extend(_insufficient_flags(eligibility, supports))
         else:
-            flags.append("no_complete_support")
+            flags.append(
+                "partially_shown" if partial else "no_complete_support"
+            )
     elif verified_pair is not None:
         verdict = "verified"
         status = "verified_pair"
     elif supports:
         verdict = "insufficient_evidence"
-        status = "source_supported"
+        status, badge_flags = _settled_badge(
+            packet, shown, supports, eligibility
+        )
+        flags.extend(badge_flags)
         flags.extend(_insufficient_flags(eligibility, supports))
     elif selected_support_candidates:
+        # The model selected a support and no complete support stands: the
+        # passage said something, and not the whole claim. The primary badge is
+        # not written for it — it is the reader's "this is the issuer's own
+        # account of the fact" line, and no complete passage carries the claim.
         verdict = "insufficient_evidence"
-        status = "source_supported"
-        flags.append("no_complete_support")
+        status = None
+        flags.append(
+            "partially_shown"
+            if any(item in partial for item in selected_support_candidates)
+            else "no_complete_support"
+        )
     else:
         verdict = "insufficient_evidence"
         status = None
-        flags.append("no_candidate" if not shown else "no_complete_support")
+        if not shown:
+            flags.append("no_candidate")
+        else:
+            # Nothing complete supports the claim — but a candidate the request
+            # could only print in part may hold the supporting text past the
+            # cut, so the honest reason is the cut, not an absence.
+            flags.append("partially_shown" if partial else "no_complete_support")
     if normalize_verdict(draft.verdict) == "verified" and verdict != "verified":
         # The model proposed the strict badge and the local test refused it.
         # Kept as a flag, never as an override: the proposal is not evidence.
@@ -1894,6 +2016,25 @@ def validate_adjudication(
         refused_evidence_ids=sorted(refused),
     )
     return claim
+
+
+def _settled_badge(
+    packet: AdjudicationPacket,
+    units: Mapping[str, EvidenceUnit],
+    supports: Sequence[str],
+    eligibility: Mapping[str, EvidenceEligibility],
+) -> tuple[str | None, list[str]]:
+    """The badge complete supports earn, and the flag when they earn none.
+
+    ``source_supported`` is published as "primary-source attribution", so it is
+    written only where a complete supporting passage *is* the claim's issuer's
+    own account. A relay — a trade-press story repeating an agency's figure —
+    still supports the claim and is still recorded as its evidence; it is not
+    the issuer's account of it, and the badge says what the evidence is.
+    """
+    if _issuer_passage_stands(packet, units, supports, eligibility):
+        return "source_supported", []
+    return None, ["relay_source"]
 
 
 def _insufficient_flags(
@@ -3173,14 +3314,15 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         """The packet one request reads, once no more evidence will be added.
 
         The candidates this request can carry are the ones the model is shown,
-        and every candidate it cannot carry is recorded as an explicit
-        omission — so the request, the verdict validated against the same
-        packet, and the boundary audit all describe one packet, and a passage
-        nobody could show is named rather than silently absent.
+        each in full wherever it fits; a candidate the request could not carry
+        is recorded as an explicit omission, and one it could only carry in
+        part is recorded as partially shown — so the request, the verdict
+        validated against the same packet, and the boundary audit all describe
+        one packet, and no passage is judged by a text it is not.
         """
         if packet is None:
             return None
-        return with_unrendered_omissions(
+        return with_render_boundaries(
             packet, evidence_chars=self._evidence_chars
         )
 
