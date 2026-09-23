@@ -102,6 +102,39 @@ AGENTS_SCRIPTED = (
     "        This mode is not release evidence for the real agents.",
 )
 
+# The suffix the graph-historical inventory's ids carry, so one inventory's
+# evidence cannot be read as the other's.
+GRAPH_HISTORICAL_ID_SUFFIX = "-graph"
+
+
+def graph_historical_case_ids() -> tuple[str, ...]:
+    """The graph-historical inventory's own case ids, in manifest order.
+
+    The form ``list`` prints under that mode's label, and the form ``case``
+    accepts. Derived from the manifest rather than restated, so an inventory
+    that gains a row cannot leave the accepted ids behind.
+    """
+    return tuple(entry.case_id for entry in GRAPH_ONLY_HISTORICAL_MANIFEST)
+
+
+def legacy_case_id(case_id: str) -> str:
+    """The legacy controlled case one accepted ``case`` id names.
+
+    The ``case`` command runs the scripted doubles, so every id it accepts is
+    a graph-historical row: either the ``<id>-graph`` form the manifest — and
+    therefore ``list`` — uses, or the legacy id that row was built from. Both
+    name one run, and ``list`` shows the legacy ids under the real-agent
+    label, which is why the command must not let either form pass for a
+    real-agent result without saying which harness produced it.
+
+    A manifest lookup rather than a suffix strip, so an id that names nothing
+    is passed through unchanged and fails in ``case_by_id`` instead of
+    silently resolving to some other case.
+    """
+    if case_id in graph_historical_case_ids():
+        return case_id.removesuffix(GRAPH_HISTORICAL_ID_SUFFIX)
+    return case_id
+
 _AS_OF_PREFIX = "**As of:**"
 _REFERENCE_LINE = re.compile(r"^(\d+)\. (.*)$")
 _CITATION = re.compile(r"\[(\d+)\]")
@@ -624,7 +657,16 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list", help="list controlled case ids")
     case_parser = subparsers.add_parser("case", help="run one whole-report case")
-    case_parser.add_argument("case_id", choices=(*CONTROLLED_CASE_IDS, *LIVE_CASE_IDS))
+    # Both inventories' ids for the same three runs: the legacy id, and the
+    # ``<id>-graph`` form the graph-historical manifest — and `list` — uses.
+    case_parser.add_argument(
+        "case_id",
+        choices=(
+            *CONTROLLED_CASE_IDS,
+            *graph_historical_case_ids(),
+            *LIVE_CASE_IDS,
+        ),
+    )
     case_parser.add_argument(
         "--tier", choices=("controlled", "live"), default="controlled"
     )
@@ -673,8 +715,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"  {case_id}")
             return 0
         if options.command == "case":
+            # Every id this command accepts runs the scripted doubles — the
+            # three legacy controlled cases are the graph-historical
+            # inventory, and the manifest's ``-graph`` ids name the same runs
+            # — so the harness is disclosed before the result, exactly as the
+            # suite's own output does. A per-case line reading "accepted" is a
+            # claim about which agents produced it.
+            print(graph_historical_mode_label(len(GRAPH_ONLY_HISTORICAL_MANIFEST)))
+            for line in AGENTS_SCRIPTED:
+                print(line)
             result = run_case(
-                options.case_id,
+                legacy_case_id(options.case_id),
                 tier=options.tier,
                 repetitions=options.repetitions,
             )

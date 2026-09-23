@@ -981,7 +981,9 @@ Agents: SCRIPTED DOUBLES, not production classes — historical regression only.
 This is the harness with judge-score acceptance floors: 0.70 for every
 repetition and 0.80 for the three-run mean, with coverage and evidence gates
 applied separately. `case <id>` runs one of its three cases alone under the
-same floors.
+same floors, accepts both the id `list` prints under this label
+(`broad-constraints-graph`) and the legacy id the row was built from, and
+prints the same two disclosure lines as `suite` before its result.
 
 The live tier is *declared only*: the three live cases exist as typed
 definitions with `tier="live"` and `authorization_required=True`, and
@@ -1006,8 +1008,9 @@ python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
 # Run the graph-historical campaign instead (scripted doubles, judge-scored).
 python -m deep_research.e2e_evaluation suite --tier controlled --mode graph-historical --repetitions 3
 
-# Run one legacy case three times.
-python -m deep_research.e2e_evaluation case broad-constraints --tier controlled --repetitions 3
+# Run one legacy case three times. `-graph` is the id `list` prints for it;
+# the legacy id it was built from names the same run.
+python -m deep_research.e2e_evaluation case broad-constraints-graph --tier controlled --repetitions 3
 ```
 
 Each suite writes its own JSON artifact under `output/evaluations/e2e/`:
