@@ -372,9 +372,10 @@ _STRONG_MODALS = ("would", "will")
 # figure, not a sentence, and splitting on that full stop cut a reporting verb
 # away from the clause it governs.
 _CLAUSE_SPLIT = re.compile(
-    r"[,;]|[:!?](?=\s|$)|\.(?=\s|$)"
+    r"[,;]|[:!?](?=\s|$)|\.(?=\s|$|[A-Z])"
     r'|[\u2014\u2013()\[\]\u201c\u201d"|/]'
-    r"|\b(?:and|but|while|which|so|thus|therefore)\b"
+    r"|(?<=\s)-(?=\s)"
+    r"|\b(?:and|but|while|which|so|thus|therefore|though|although)\b"
 )
 
 
@@ -394,12 +395,13 @@ def _clause_around(text: str, position: int) -> str:
 # about that gap contains the word, and "state-level breakdowns are not
 # included in this report" is this pass describing itself, not a claim about
 # what EIA counted.
+_REPORTED_TOTALS = "reported totals"
 _SCOPE_SUBJECTS = (
+    _REPORTED_TOTALS,
     "behind-the-meter",
     "behind the meter",
     "front-of-meter",
     "front of meter",
-    "reported totals",
 )
 _SCOPE_VERBS = (
     "exclud",
@@ -1730,13 +1732,30 @@ def scope_fact(text: str) -> str:
     what a source counted.
     """
     lowered = " ".join(text.casefold().split())
-    for clause in _CLAUSE_SPLIT.split(lowered):
+    clauses = _CLAUSE_SPLIT.split(lowered)
+    for index, clause in enumerate(clauses):
         subject = next(
             (name for name in _SCOPE_SUBJECTS if name in clause), ""
         )
         if not subject:
             continue
         if not any(verb in clause for verb in _SCOPE_VERBS):
+            continue
+        # A clause that only describes this pass introduces the one that
+        # follows: "In this pass, behind-the-meter storage is excluded from
+        # the totals" is the pass describing itself. Only the *preceding*
+        # clause exempts — exempting on a following one would let the audited
+        # note through by appending ", so this report cannot convert …".
+        # "Reported totals" is never this pass's own coverage: a note naming
+        # them is a claim about what a source counted, so it is never exempt.
+        if (
+            index
+            and subject != _REPORTED_TOTALS
+            and any(phrase in clauses[index - 1] for phrase in _PASS_PHRASES)
+            and not any(
+                name in clauses[index - 1] for name in _SCOPE_SUBJECTS
+            )
+        ):
             continue
         # The exemption is per clause *and* positional: a note that opens by
         # describing this pass ("in this pass, behind-the-meter storage …") is

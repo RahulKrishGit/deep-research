@@ -1866,6 +1866,13 @@ def test_a_pass_phrase_in_one_clause_does_not_excuse_another() -> None:
     assert scope_fact(
         f"{audited}: this report cannot convert the figures."
     ) == "behind-the-meter"
+    # The ASCII hyphen is a separator too, and a period needs no space after it.
+    assert scope_fact(
+        f"{audited} - this report cannot convert the figures."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        f"{audited}.This report cannot convert the figures."
+    ) == "behind-the-meter"
 
 
 def test_a_cut_with_no_sentence_break_lands_on_a_word_boundary() -> None:
@@ -1992,8 +1999,10 @@ def test_a_note_that_describes_the_pass_is_not_a_scope_assertion() -> None:
         "The checked evidence does not include a full-year 2025 outturn for "
         "U.S. battery storage additions.",
         "State-level breakdowns are not included in this report.",
-        "In the plan, behind-the-meter storage is discussed but no note "
+        "Behind-the-meter storage is discussed in the plan but no note "
         "about its size is included here.",
+        "In this pass, behind-the-meter storage is not included in the "
+        "totals considered, because no read covered it.",
     ]
 
     composition, rejected = build_report_composition(
