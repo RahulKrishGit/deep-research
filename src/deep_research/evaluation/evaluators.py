@@ -2561,20 +2561,25 @@ def _mirror_not_a_new_work_passes(
 ) -> bool:
     """No page carrying another's work is recorded as a second original.
 
-    One shape invents a work: a page whose ``publisher_id`` differs from the
-    original's, whatever ``transport_relation`` it records. The relation is
-    not the discriminator — no production consumer gives a copy the
-    original's publisher by relation alone. ``source_origin_id`` ignores
-    ``transport_relation`` for an ordinary source, and the copied-transport
-    rule that does read it refuses a *fallback*, never an evidenced issuer; a
-    copy carrying a different evidenced publisher therefore keeps it on
-    record. Skipping every row the case called derivative let exactly that
-    row through, which is the rubric's failure verbatim: the serving host
-    recorded as the publisher of a page it merely copies.
+    Two shapes invent a work, and the rubric names both ("The serving host is
+    recorded as the publisher, or a copy is recorded as an original
+    publication"): a same-work row whose ``publisher_id`` differs from the
+    original's, and a same-work row recorded under a recognized-work role.
 
-    A page that records no publisher at all asserted no new identity —
+    The relation is not a discriminator for either. No production consumer
+    gives a copy the original's publisher by relation alone —
+    ``source_origin_id`` ignores ``transport_relation`` for an ordinary
+    source, and the copied-transport rule that does read it refuses a
+    *fallback*, never an evidenced issuer — so a copy carrying a different
+    evidenced publisher keeps it on record, and skipping the rows the case
+    called derivative let exactly that row through. The role half is the
+    claim a publisher may not be the only way to make: a page labelled
+    ``original_report`` is presented as a work of its own whatever publisher
+    it carries.
+
+    A row that makes neither claim passes. It asserted no new identity —
     unknown identity can establish neither sameness nor independence, so it
-    is not a false pair either. Refusing that last shape is
+    is not a false pair — and refusing that shape is
     ``independent_work_recognized``'s job, not this one's.
     """
     reference = case.expectations.reference
@@ -2592,6 +2597,8 @@ def _mirror_not_a_new_work_passes(
             continue
         entry = rows.get(normalize_source_url(url))
         if entry is None:
+            return False
+        if _field(entry, "source_role") in _RECOGNIZED_WORK_ROLES:
             return False
         publisher = _field(entry, "publisher_id")
         if publisher is not None and publisher != original_publisher:

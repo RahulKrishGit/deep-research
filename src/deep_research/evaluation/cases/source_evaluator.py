@@ -541,8 +541,8 @@ _WORK_ROLE = build_case(
                 "mirror_not_a_new_work",
                 0.30,
                 "No page carrying the survey is recorded as a second "
-                "original: every copy inherits the institute as its "
-                "publisher, whatever transport relation it records.",
+                "original: no copy carries another's publisher, and no copy "
+                "is recorded as an original publication.",
             ),
             (
                 "independent_work_recognized",
