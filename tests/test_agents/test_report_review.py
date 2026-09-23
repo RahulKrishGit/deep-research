@@ -35,6 +35,7 @@ from deep_research.observability import (
 )
 from deep_research.providers import (
     ProviderOutputLimitError,
+    ProviderResponseError,
     ProviderResponseTelemetry,
 )
 from deep_research.utils.config import AgentRuntimeConfig
@@ -1010,6 +1011,46 @@ async def test_a_truncated_review_call_is_re_asked_once_at_a_high_effort() -> No
     assert retry.source == f"agent.{REPORT_JUDGE_ROLE}"
     assert retry.details["outcome"] == "answered"
     assert retry.details["max_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_a_review_retry_that_hits_an_outage_is_recorded_as_failed() -> None:
+    """A retry that fails at the provider is recorded, and the path is unchanged.
+
+    The cross-section request was truncated and its retry hit an outage, so the
+    review is ``provider_failed`` exactly as an outage always made it — and the
+    second paid call is in the records, with an outcome that says no reply
+    arrived.
+    """
+    state = _state(composition=_composition(), report="Break-even was reached.")
+    completer = ScriptedCompleter(
+        outputs=[
+            _output_limit_error(),
+            ProviderResponseError(
+                "provider unavailable",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+                failure_origin="sdk",
+            ),
+        ]
+    )
+    reviewer = ReportReviewer(
+        provider=completer,
+        config=AgentRuntimeConfig(report_review_max_tokens=4096),
+    )
+
+    review = await reviewer.review(_packet(state))
+
+    assert completer.efforts == [None, "high"]
+    assert review.status == "provider_failed"
+    assert review.dimensions == {}
+    assert [error.error_type for error in reviewer.review_records] == [
+        "report_review_output_limit_retry"
+    ]
+    retry = reviewer.review_records[0]
+    assert retry.details["outcome"] == "failed"
+    assert retry.recoverable is True
 
 
 @pytest.mark.asyncio

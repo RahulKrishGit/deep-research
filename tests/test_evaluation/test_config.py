@@ -255,7 +255,7 @@ from deep_research.utils.config import (
 # edited; the module source is what the fingerprint hashes, so a routing fix
 # that lives in ``critic.py`` moves a value whose name implies a prompt change
 # — the same false positive the researcher's first re-pin records below.
-CRITIC_PROMPT_FINGERPRINT = "4d3c1233230a"
+CRITIC_PROMPT_FINGERPRINT = "aa57f0d23b20"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -877,8 +877,8 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "340b8267dbe9",
-    "synthesizer": "dadb72078555",
-    "critic": "4d3c1233230a",
+    "synthesizer": "1dcbd8f7e3be",
+    "critic": "aa57f0d23b20",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
@@ -1304,7 +1304,7 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
         "report-probe-0-evidence.md"
     )
     assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
-    assert agent_prompt_fingerprint("synthesizer") == "dadb72078555"
+    assert agent_prompt_fingerprint("synthesizer") == "1dcbd8f7e3be"
     assert agent_prompt_fingerprint("synthesizer") != pre_task_11
 
 
@@ -1379,8 +1379,8 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
         for name in ("source_evaluator", "synthesizer", "critic")
     } == {
         "source_evaluator": "ad9e2afac12c",
-        "synthesizer": "dadb72078555",
-        "critic": "4d3c1233230a",
+        "synthesizer": "1dcbd8f7e3be",
+        "critic": "aa57f0d23b20",
     }
     assert agent_prompt_fingerprint("planner") not in {
         "7d0282b16bc5",
@@ -1420,7 +1420,7 @@ def test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text() -> 
     }
     moved = {
         "fact_checker": "340b8267dbe9",
-        "synthesizer": "dadb72078555",
+        "synthesizer": "1dcbd8f7e3be",
     }
 
     assert {
@@ -1519,7 +1519,7 @@ def test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text() -
     pre_target_view = "2c80a78040b9"
 
     assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
-    assert agent_prompt_fingerprint("critic") == "4d3c1233230a"
+    assert agent_prompt_fingerprint("critic") == "aa57f0d23b20"
     assert agent_prompt_fingerprint("critic") != pre_target_view
     assert {
         name: agent_prompt_fingerprint(name)

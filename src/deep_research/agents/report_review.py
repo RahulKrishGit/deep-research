@@ -41,6 +41,7 @@ from pydantic import Field, ValidationError
 
 from deep_research.agents.base import (
     OUTPUT_LIMIT_ATTEMPT_EFFORTS,
+    OUTPUT_LIMIT_RETRY_READINGS,
     OUTPUT_LIMIT_RETRY_EFFORT,
     OUTPUT_LIMIT_RETRY_OUTCOMES,
     StructuredCompleter,
@@ -154,12 +155,7 @@ def report_review_output_limit_retry(
             f"The {schema} review request was truncated by the output limit; "
             f"it was re-asked once at reasoning_effort {reasoning_effort} with "
             f"the same {max_tokens}-token output budget, and "
-            + (
-                "the retry returned a reply."
-                if outcome == "answered"
-                else "the retry was truncated as well, so no judgement was "
-                "made from it."
-            )
+            f"{OUTPUT_LIMIT_RETRY_READINGS[outcome]}"
         ),
         recoverable=True,
         details=agent_provider_failure_details(
@@ -2041,28 +2037,36 @@ class ReportReviewer:
                 messages, schema, reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT
             )
         except ProviderOutputLimitError as retry_error:
-            self._review_records.append(
-                report_review_output_limit_retry(
-                    error,
-                    schema=schema.__name__,
-                    reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
-                    max_tokens=self._config.report_review_max_tokens,
-                    outcome="truncated",
-                )
-            )
+            self._record_retry(error, schema, outcome="truncated")
             raise retry_error.redacted_copy(
                 ProviderOutputLimitError.SAFE_MESSAGE
             ) from None
+        except ProviderError as retry_error:
+            # The retry failed at the provider: no reply arrived, the review
+            # takes its own provider-failed path, and the retry is recorded as
+            # what it was.
+            self._record_retry(error, schema, outcome="failed")
+            raise retry_error.redacted_copy(str(retry_error)) from None
+        self._record_retry(error, schema, outcome="answered")
+        return reply
+
+    def _record_retry(
+        self,
+        truncation: ProviderOutputLimitError,
+        schema: type[Any],
+        *,
+        outcome: str,
+    ) -> None:
+        """Record this request's retry, under the outcome it had."""
         self._review_records.append(
             report_review_output_limit_retry(
-                error,
+                truncation,
                 schema=schema.__name__,
                 reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
                 max_tokens=self._config.report_review_max_tokens,
-                outcome="answered",
+                outcome=outcome,
             )
         )
-        return reply
 
 
 async def review_report(

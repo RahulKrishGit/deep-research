@@ -106,13 +106,27 @@ because base is the module that owns the structured-call contract every one of
 those callers goes through. One value, never a copy per agent.
 """
 
-OUTPUT_LIMIT_RETRY_OUTCOMES = ("answered", "truncated")
+OUTPUT_LIMIT_RETRY_OUTCOMES = ("answered", "truncated", "failed")
 """What one retry can come back with.
 
 ``answered`` is a reply — whether the caller used it or had to re-ask it, which
 is the caller's own record to make; ``truncated`` is the same truncation a
-second time. Two outcomes of the *retry call*, never a verdict about the
-artifact it feeds, so the record cannot disagree with what follows it.
+second time; ``failed`` is a provider failure that is neither, where no reply
+arrived at all and the caller's own failure path takes over. Three outcomes of
+the *retry call*, never a verdict about the artifact it feeds, so the record
+cannot disagree with what follows it.
+"""
+
+OUTPUT_LIMIT_RETRY_READINGS: dict[str, str] = {
+    "answered": "the retry returned a reply.",
+    "truncated": "the retry was truncated as well.",
+    "failed": "the retry failed at the provider.",
+}
+"""The sentence one outcome contributes to its record's message.
+
+Shared by every call that records a retry, so the same outcome cannot read two
+ways in two artifacts, and so a record whose outcome is not in
+``OUTPUT_LIMIT_RETRY_OUTCOMES`` cannot be built at all.
 """
 
 OUTPUT_LIMIT_ATTEMPT_EFFORTS: tuple[str | None, ...] = (

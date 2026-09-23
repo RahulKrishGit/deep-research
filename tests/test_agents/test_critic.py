@@ -1723,6 +1723,91 @@ async def test_a_truncated_review_is_re_asked_once_at_a_high_effort(
 
 
 @pytest.mark.asyncio
+async def test_a_review_retry_that_hits_an_outage_is_still_recorded(
+    tracker: Tracker,
+) -> None:
+    """A retry that fails at the provider is recorded as exactly that.
+
+    The first attempt was truncated and the second hit an outage, so no reply
+    arrived and the run fails the way an outage always failed it. The retry is
+    still a second paid call: it is recorded, with an outcome that says the
+    provider failed rather than that a reply came back.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            _output_limit_error(),
+            ProviderResponseError(
+                "provider unavailable",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+                failure_origin="sdk",
+            ),
+        ]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_critic_state())
+
+    assert completer.efforts == [None, "high"]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    assert outcome.react.stop_reason == "provider_error"
+    assert [error.error_type for error in outcome.errors] == [
+        "critic_review_output_limit_retry",
+        "critic_review_provider_error",
+    ]
+    assert outcome.errors[0].details["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_repair_retry_that_hits_an_outage_is_recorded_as_failed(
+    tracker: Tracker,
+) -> None:
+    """The repair's retry: no reply arrived, so it did not "answer".
+
+    A malformed first reply, a truncated repair, and an outage on the repair's
+    own retry: the review fails as it always did, and the retry record says the
+    retry failed at the provider rather than that it returned something.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            _schema_error("missing"),
+            _output_limit_error(),
+            ProviderResponseError(
+                "provider unavailable",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+                failure_origin="sdk",
+            ),
+        ]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert completer.efforts == [None, None, "high"]
+    assert outcome.result is not None
+    assert outcome.result.review_status == "failed"
+    # The schema record comes first because the repair itself is what the
+    # schema failure explains; the retry and the provider failure follow it.
+    assert [error.error_type for error in outcome.errors] == [
+        "critic_review_schema_error",
+        "critic_review_output_limit_retry",
+        "critic_review_provider_error",
+    ]
+    retry = next(
+        error
+        for error in outcome.errors
+        if error.error_type == "critic_review_output_limit_retry"
+    )
+    assert retry.details["outcome"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_two_truncations_leave_the_report_unjudged_without_ending_the_run(
     tracker: Tracker,
 ) -> None:

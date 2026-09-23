@@ -30,6 +30,7 @@ from pydantic import Field, JsonValue
 
 from deep_research.agents.base import (
     OUTPUT_LIMIT_ATTEMPT_EFFORTS,
+    OUTPUT_LIMIT_RETRY_READINGS,
     OUTPUT_LIMIT_RETRY_EFFORT,
     OUTPUT_LIMIT_RETRY_OUTCOMES,
     AgentCompleter,
@@ -2368,11 +2369,7 @@ def report_output_limit_retry(
             "The synthesizer_report_draft call was truncated by the output "
             f"limit; it was re-asked once at reasoning_effort {reasoning_effort} "
             "under the same output budget (the provider's global cap), and "
-            + (
-                "the retry returned a reply."
-                if outcome == "answered"
-                else "the retry was truncated as well."
-            )
+            f"{OUTPUT_LIMIT_RETRY_READINGS[outcome]}"
         ),
         recoverable=True,
         details=agent_provider_failure_details(
@@ -2612,9 +2609,14 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
                     )
                 continue
             except ProviderError as error:
+                # An outage is not an answer: the retry is recorded as failed,
+                # and this call's own failure path is unchanged.
                 return (
                     None,
-                    [*self._retry_records(truncations, "answered"), report_provider_error(error)],
+                    [
+                        *self._retry_records(truncations, "failed"),
+                        report_provider_error(error),
+                    ],
                     True,
                 )
             return draft, self._retry_records(truncations, "answered"), False

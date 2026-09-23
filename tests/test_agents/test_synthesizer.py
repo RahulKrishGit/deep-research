@@ -2796,6 +2796,48 @@ async def test_a_truncated_report_call_is_re_asked_once_at_a_high_effort(
 
 
 @pytest.mark.asyncio
+async def test_a_report_retry_that_hits_an_outage_is_recorded_as_failed(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """A truncated call whose retry hits an outage: recorded, and still fails.
+
+    No reply arrived, so the retry is recorded as having failed at the provider
+    rather than as having answered, and the call keeps its own non-recoverable
+    record and its loop stop.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            _output_limit_error(),
+            ProviderResponseError(
+                "provider unavailable",
+                retryable=True,
+                failure_category="http",
+                http_status_code=503,
+                failure_origin="sdk",
+            ),
+        ]
+    )
+    agent = _synthesizer(
+        tracker, completer, synthesizer_tools(tracker, output_root=tmp_path)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_state())
+
+    assert completer.efforts == [None, "high"]
+    assert outcome.react.stop_reason == "provider_error"
+    errors = {error.error_type: error for error in outcome.errors}
+    assert set(errors) == {
+        "synthesizer_report_output_limit_retry",
+        "synthesizer_report_provider_error",
+    }
+    assert errors["synthesizer_report_output_limit_retry"].details["outcome"] == (
+        "failed"
+    )
+    assert errors["synthesizer_report_provider_error"].recoverable is False
+
+
+@pytest.mark.asyncio
 async def test_a_twice_truncated_report_call_still_fails_as_it_did(
     tracker: Tracker, tmp_path: Path
 ) -> None:

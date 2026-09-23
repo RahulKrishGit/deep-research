@@ -33,6 +33,7 @@ from pydantic import Field, ValidationError, model_validator
 
 from deep_research.agents.base import (
     OUTPUT_LIMIT_ATTEMPT_EFFORTS,
+    OUTPUT_LIMIT_RETRY_READINGS,
     OUTPUT_LIMIT_RETRY_EFFORT,
     OUTPUT_LIMIT_RETRY_OUTCOMES,
     AgentCompleter,
@@ -2172,13 +2173,7 @@ def review_output_limit_retry(
             f"The {CRITIC_REVIEW_OPERATION} review call was truncated by the "
             f"output limit; it was re-asked once at reasoning_effort "
             f"{reasoning_effort} with the same {max_tokens}-token output "
-            "budget, and "
-            + (
-                "the retry returned a reply."
-                if outcome == "answered"
-                else "the retry was truncated as well, so no review exists "
-                "from it."
-            )
+            f"budget, and {OUTPUT_LIMIT_RETRY_READINGS[outcome]}"
         ),
         recoverable=True,
         details=agent_provider_failure_details(
@@ -2471,12 +2466,22 @@ class CriticAgent(BaseAgent[Critique]):
                     return self._unavailable_review(task, truncations)
                 continue
             except ProviderError as error:
+                # A retry that failed at the provider is still a retry: the
+                # record says so, and the route below is untouched.
                 critique, reason = fallback_critique(
                     reason="provider_unavailable",
                     iteration=task.iteration,
                     max_iterations=task.max_iterations,
                 )
-                return critique, reason, [critique_provider_error(error)], True
+                return (
+                    critique,
+                    reason,
+                    [
+                        *self._retry_records(truncations, "failed"),
+                        critique_provider_error(error),
+                    ],
+                    True,
+                )
             return (
                 critique,
                 reason,
@@ -2698,11 +2703,14 @@ class CriticAgent(BaseAgent[Critique]):
                     if isinstance(failure, StructuredOutputError)
                     else list(diagnostics)
                 )
+                # A malformed second reply is an answer the repair then had to
+                # work with; an outage is not an answer at all, and the record
+                # must not claim one arrived.
                 extra = (
                     self._retry_records(truncations, "answered")
                     if isinstance(failure, StructuredOutputError)
                     else [
-                        *self._retry_records(truncations, "answered"),
+                        *self._retry_records(truncations, "failed"),
                         critique_provider_error(failure),
                     ]
                 )
