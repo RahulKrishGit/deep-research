@@ -3036,32 +3036,46 @@ def test_a_scoring_dossier_shows_each_obligations_figures_behind_navigation() ->
 
 
 def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
-    """Update-round shape: date-only findings, and the figure deep in a ranking.
+    """The real update-round shape: boilerplate that carries the plan's words.
 
-    The real 64586 group holds four findings that each name a date and no
-    figure, while the figure sits at rank 3 of its obligation's ranking. Rank-
-    major interleaving gave every slot to the findings' rank-0 passages, and
-    even the obligation's *first* choice was not the figure. Each obligation
-    therefore reserves an excerpt, taken from its own ranking and preferring
-    the passage that states a figure, and the findings fill what is left.
+    On 64586 the navigation and the data note contain the obligation's terms —
+    "battery storage", "capacity additions", "utility-scale", "generator
+    inventory" — while the passage stating the figure sits at rank 3 of that
+    obligation's ranking, and the group's four findings each name only a date.
+    Rank-major interleaving over one query list gave every slot to the
+    findings' picks. Each obligation therefore reserves an excerpt, taken from
+    its own complete ranking and preferring the passage that states a figure.
     """
-    from deep_research.agents.source_evaluator import DEFAULT_EXCERPT_CHARS
     from deep_research.agents.evidence import build_read_dossiers
+    from deep_research.agents.source_evaluator import DEFAULT_EXCERPT_CHARS
 
     url = "https://www.eia.gov/todayinenergy/detail.php?id=64586"
-    navigation = "Skip to main content. ".ljust(700, "n")
-    annual = (
-        "In 2024, generators added a record 30 GW of utility-scale solar, and "
-        "battery storage followed the same trend through the year."
+    navigation = (
+        "Solar, battery storage to lead new U.S. generating capacity "
+        "additions in 2025 - U.S. Energy Information Administration (EIA) "
+        "Statistics Analysis Tools Education News Search Today in Energy Skip "
+        "to page content Recent articles liquid fuels natural gas electricity "
+        "utility-scale battery storage capacity additions generator inventory "
+        "prices map states exports imports coal renewables forecasts "
+        "projections gasoline capacity steo short-term energy outlook Archive "
+        "About Glossary FAQS In-brief analysis February 24, 2025 "
     )
-    outlook = "About the data and the outlook. ".ljust(560, "o")
+    solar = (
+        "In 2024, generators added a record 30 GW of utility-scale solar to "
+        "the U.S. grid, accounting for 61% of capacity additions last year."
+    )
+    data_note = (
+        "Data source: Preliminary Monthly Electric Generator Inventory. The "
+        "inventory covers utility-scale battery storage capacity additions and "
+        "is published monthly with a three-month lag behind the period."
+    )
     figure = (
         "Battery storage. In 2025, capacity growth from battery storage could "
         "set a record as we expect 18.2 GW of utility-scale battery storage to "
         "be added to the grid, up from the 10.3 GW added in 2024."
     )
-    other = "Glossary and archive. ".ljust(540, "g")
-    body = "\n\n".join((navigation, annual, outlook, figure, other))
+    glossary = "Glossary and archive of every previous edition of this note."
+    body = "\n\n".join((navigation, solar, data_note, figure, glossary))
     read = build_read_record(
         session_id="session-1",
         reader="web_scraper",
@@ -3072,10 +3086,10 @@ def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
         text=body,
         passages={
             "chunk-0": navigation,
-            "chunk-1": annual,
-            "chunk-2": outlook,
+            "chunk-1": solar,
+            "chunk-2": data_note,
             "chunk-3": figure,
-            "chunk-4": other,
+            "chunk-4": glossary,
         },
         extraction_complete=True,
     )
@@ -3084,10 +3098,8 @@ def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
         "electric generator inventory utility-scale battery storage capacity"
     )
     date_only_findings = [
-        "The EIA article is dated February 24, 2025 and covers capacity.",
-        "The February 24, 2025 article discusses the 2024 additions.",
-        "The article was published on February 24, 2025 by the agency.",
-        "The piece, dated February 24, 2025, describes the market.",
+        f"The EIA article is dated February {day}, 2025 and covers capacity."
+        for day in (2, 14, 20, 24)
     ]
 
     (dossier,) = build_read_dossiers(
