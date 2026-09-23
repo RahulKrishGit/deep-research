@@ -475,8 +475,19 @@ def test_acquisition_context_keeps_ids_when_a_complete_record_overflows() -> Non
     assert "pending_passage_ids=" in context
     assert "continuation_ids=" in context
     assert tail not in context
-    assert read.passages["page-80-chunk-0"] not in context
-    assert f"passage:{read.read_id}/page-80-chunk-0" in context
+    # No passage is sliced: whatever the packet could not carry is named for
+    # continuation, and everything it did carry is there whole.
+    assert "continuation_ids=" in context
+    for locator, passage in read.passages.items():
+        collapsed = " ".join(passage.split())
+        if collapsed in context:
+            continue
+        # Named for continuation, or the packet's own overflow marker when even
+        # the id list could not fit.
+        assert (
+            f"passage:{read.read_id}/{locator}" in context
+            or "continuation_ids=packet_overflow" in context
+        )
     # The packet carries no heading of its own: the decision prompt's renderer
     # adds "## Acquisition context" exactly once.
     assert "## Acquisition context" not in context
@@ -2180,3 +2191,105 @@ def test_a_hard_cut_never_splits_a_decomposed_character() -> None:
         assert unicodedata.normalize("NFC", passage) in unicodedata.normalize(
             "NFC", body
         )
+
+# Two real slices of the stored document page the run read (unit
+# ev-6e27eec03e00aa5dcf3abc6d, page-7-chunk-6 of the grid-storage FAQ, 6,005
+# characters) and of the EIA-860 instructions page, used to a length past the
+# 4,000-character request budget: a whole PDF page is a document_reader
+# passage, and a page longer than the request was carried alone, cut, and
+# could never be a complete support.
+_NREL_PAGE_TEXT = (
+    "Grid-Scale Battery Storage: Frequently Asked Questions 7 of batteries in "
+    "the market could distort prices, affecting storage for energy arbitrage, "
+    "while the rest is withheld for maintaining grid systems and conventional "
+    "generators alike (Bhatnagar 2013). frequency during unexpected outages "
+    "until other, slower generators can be brought online (AEMO 2018). In "
+    "2017, after a large coal plant tripped offline unexpectedly, the "
+    "Hornsdale Power reserve was able to inject several megawatts of power "
+    "into the grid within milliseconds, arresting the fall in grid frequency. "
+    "Battery storage systems are an emerging technology that exhibit more "
+    "risk for investors than conventional generator investments. These risks "
+    "include the technical aspects of battery storage systems, which may be "
+    "less understood by stakeholders and are changing faster than for other "
+    "technologies, as well as the market and regulatory treatment of storage."
+)
+_FORM_860_INSTRUCTIONS = (
+    "REQUIRED Existing plants are required to respond to the EIA-860 if: "
+    "RESPONDENTS The plant's total generator nameplate capacity is 1 Megawatt "
+    "(MW) or greater and The plant's generator(s), or the facility in which "
+    "the generator(s) resides, are connected to the local or regional "
+    "electric power grid and have the ability to draw power from or deliver "
+    "power to the grid. If the existing plant is jointly-owned, only the "
+    "operator of the plant is required to respond, and the operator must "
+    "submit a complete survey form for the entire plant."
+)
+
+
+def _long_page_body() -> str:
+    page = "\n\n".join(
+        (_NREL_PAGE_TEXT, _FORM_860_INSTRUCTIONS) * 3
+    )
+    assert len(page) > 4000
+    return page
+
+
+def _long_page_result() -> ToolResult:
+    page = _long_page_body()
+    return ToolResult(
+        tool_name="document_reader",
+        success=True,
+        data={
+            "source": "https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+            "requested_source": "https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+            "resolved_source": "https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+            "title": "Grid-Scale Battery Storage: Frequently Asked Questions",
+            "chunks": [{"text": page, "chunk_index": 6, "page": 7}],
+            "content_sha256": normalized_content_sha256(page),
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+
+def test_a_document_page_is_split_into_bounded_passages() -> None:
+    """A PDF page is several passages, so one page cannot be one cut candidate.
+
+    ``document_reader`` chunks are whole pages of up to 8,000 characters while
+    the adjudication request holds 4,000: a page longer than the request was
+    carried alone, cut, and could never be a complete support — the run's own
+    reads hold six such pages (6,005 to 4,090 characters). Splitting at
+    admission is lossless, so the body hash a complete read is identified by is
+    unchanged.
+    """
+    page = _long_page_body()
+    result = _long_page_result()
+
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+
+    assert read is not None
+    assert len(read.passages) > 1
+    assert "".join(read.passages.values()) == page
+    assert read.content_sha256 == normalized_content_sha256(page)
+    assert all(
+        passage.strip() and len(passage) <= WEB_PASSAGE_CHARS
+        for passage in read.passages.values()
+    )
+    # The reader's own locator names the page's first passage; the rest follow
+    # it, so the page and its numbering both survive the split.
+    assert list(read.passages)[0] == "page-7-chunk-6"
+    assert list(read.passages) == [
+        f"page-7-chunk-{6 + index}" for index in range(len(read.passages))
+    ]
+    # The page is a layout of the body, not part of its identity.
+    unsplit = build_read_record(
+        session_id="session-1",
+        reader="document_reader",
+        requested_url="https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+        resolved_url="https://docs.nrel.gov/docs/fy19osti/74426.pdf",
+        title="Grid-Scale Battery Storage: Frequently Asked Questions",
+        retrieved_at="2026-09-23T00:00:00+00:00",
+        text=page,
+        passages={"page-7-chunk-0": page},
+        extraction_complete=True,
+    )
+    assert read.read_id == unsplit.read_id

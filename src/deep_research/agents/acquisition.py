@@ -142,10 +142,10 @@ def _split_survives_normalization(text: str, cut: int) -> bool:
     ) == unicodedata.normalize("NFC", text)
 
 
-def split_web_read_body(
+def split_read_body(
     text: str, *, limit: int = WEB_PASSAGE_CHARS
 ) -> list[str]:
-    """Split a web page body into contiguous, non-blank, bounded passages.
+    """Split a read body into contiguous, non-blank, bounded passages.
 
     Every passage is verbatim text of the body and the passages concatenate
     back to it exactly, so the content hash of a read — and therefore its
@@ -155,7 +155,11 @@ def split_web_read_body(
     document has no whitespace to cut on.
 
     A body shorter than the bound is one passage, which is what a short page
-    was before; the split only ever changes how a long page is addressed.
+    or a short document chunk was before; the split only ever changes how a
+    long body is addressed. Both readers use it: a ``document_reader`` chunk is
+    a whole PDF page of up to 8,000 characters, while the adjudication request
+    holds 4,000, so without this a page longer than the request would be
+    carried alone and cut and could never be a complete support.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -222,7 +226,7 @@ def _payload_read_parts(
             return None
         chunks: list[Mapping[str, object]] = [
             {"text": passage, "chunk_index": index}
-            for index, passage in enumerate(split_web_read_body(text))
+            for index, passage in enumerate(split_read_body(text))
         ]
         reader = "web_scraper"
         title = _text(data.get("title")) or resolved
@@ -230,9 +234,46 @@ def _payload_read_parts(
         raw_chunks = data.get("chunks")
         if not isinstance(raw_chunks, list) or not raw_chunks:
             return None
-        chunks = [item for item in raw_chunks if isinstance(item, Mapping)]
-        if len(chunks) != len(raw_chunks):
+        if any(not isinstance(item, Mapping) for item in raw_chunks):
             return None
+        # A page is laid out as bounded passages, exactly as a web body is: the
+        # reader's own chunk bound (8,000) is larger than a request (4,000), and
+        # a page split here is what keeps every passage a candidate the model
+        # can read whole. The page number and a document-wide chunk index are
+        # kept, so the locator vocabulary is unchanged.
+        chunks: list[Mapping[str, object]] = []
+        # A locator is ``page-N-chunk-M``, so what must be unique is the pair:
+        # a reader that numbers its chunks per page (page 1 chunk 0, page 2
+        # chunk 0) keeps that scheme, and a page split here claims the next free
+        # index on its own page only.
+        claimed: set[tuple[object, int]] = set()
+        for item in raw_chunks:
+            piece_text = item.get("text")
+            if not isinstance(piece_text, str) or not piece_text.strip():
+                return None
+            page = item.get("page")
+            reported = item.get("chunk_index")
+            index = (
+                reported
+                if isinstance(reported, int) and not isinstance(reported, bool)
+                else 0
+            )
+            for passage in split_read_body(piece_text):
+                # The reader's own index stands for the passage it labelled, and
+                # a page split into several passages claims the next free
+                # indices, so a multi-page document keeps the locator scheme it
+                # had and no two passages share a name.
+                while (page, index) in claimed:
+                    index += 1
+                chunk: dict[str, object] = {
+                    "text": passage,
+                    "chunk_index": index,
+                }
+                claimed.add((page, index))
+                index += 1
+                if page is not None:
+                    chunk["page"] = page
+                chunks.append(chunk)
         text = _chunk_text(chunks)
         requested = _text(data.get("requested_source")) or _text(
             data.get("source")

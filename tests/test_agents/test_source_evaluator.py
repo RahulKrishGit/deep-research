@@ -2823,7 +2823,7 @@ def test_a_scoring_dossier_shows_the_passages_that_serve_the_plan() -> None:
     from deep_research.agents.source_evaluator import (
         DEFAULT_EXCERPT_CHARS,
         SourceEvaluatorAgent,
-        dossier_query,
+        dossier_queries,
     )
     from deep_research.utils.types import (
         QUALITY_CONTRACT_VERSION,
@@ -2903,8 +2903,9 @@ def test_a_scoring_dossier_shows_the_passages_that_serve_the_plan() -> None:
     agent = object.__new__(SourceEvaluatorAgent)
     agent._excerpt_chars = DEFAULT_EXCERPT_CHARS
 
-    query = dossier_query([sub_topic.title], [sub_topic])
-    assert "5.9 GW" not in query
+    queries = dossier_queries([sub_topic.title], [sub_topic])
+    assert queries
+    assert "5.9 GW" not in " ".join(queries)
 
     task = agent.build_task(state)
 

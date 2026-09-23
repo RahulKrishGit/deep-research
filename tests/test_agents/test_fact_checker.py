@@ -8343,3 +8343,111 @@ def test_a_reader_specific_failure_does_not_refuse_the_other_reader() -> None:
     )
     assert retry.allowed is False
     assert "already refused" in retry.reason
+
+def test_a_document_page_longer_than_the_request_can_still_support() -> None:
+    """No single passage may starve the request or lose complete support.
+
+    A page longer than the whole request used to be carried alone and cut: it
+    consumed the budget (so the candidates behind it were deferred) and could
+    never be a complete support. A document page is now several bounded
+    passages at admission, so the one that states the threshold is carried
+    whole, beside the other candidates, and earns the badge.
+    """
+    from deep_research.agents.acquisition import admit_read_result
+    from deep_research.agents.fact_checker import build_adjudication_packet
+
+    page = "\n\n".join(
+        (
+            "Grid-Scale Battery Storage: Frequently Asked Questions 7 of "
+            "batteries in the market could distort prices, affecting storage "
+            "for energy arbitrage, while the rest is withheld for maintaining "
+            "grid systems and conventional generators alike.",
+            "REQUIRED Existing plants are required to respond to the EIA-860 "
+            "if: RESPONDENTS The plant's total generator nameplate capacity is "
+            "1 Megawatt (MW) or greater and The plant's generator(s), or the "
+            "facility in which the generator(s) resides, are connected to the "
+            "local or regional electric power grid.",
+            "Battery storage systems are an emerging technology that exhibit "
+            "more risk for investors than conventional generator investments. "
+            "These risks include the technical aspects of battery storage "
+            "systems, which may be less understood by stakeholders.",
+        )
+    )
+    result = ToolResult(
+        tool_name="document_reader",
+        success=True,
+        data={
+            "source": "https://eia.gov/survey/form/eia_860/instructions.pdf",
+            "requested_source": (
+                "https://eia.gov/survey/form/eia_860/instructions.pdf"
+            ),
+            "resolved_source": (
+                "https://eia.gov/survey/form/eia_860/instructions.pdf"
+            ),
+            "title": "Form EIA-860 instructions",
+            "chunks": [{"text": page, "chunk_index": 0, "page": 1}],
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+    claim_text = (
+        "The EIA-860 instructions state that plants with a total generator "
+        "nameplate capacity of 1 Megawatt or greater must respond."
+    )
+    admission = admit_read_result(
+        result,
+        session_id="session-1",
+        query=claim_text,
+        origin="fact_checker",
+        selected_limit=4,
+    )
+
+    assert admission is not None
+    packet = build_adjudication_packet(
+        ClaimDraft(
+            text=claim_text,
+            source_urls=["https://eia.gov/survey/form/eia_860/instructions.pdf"],
+        ),
+        list(admission.evidence.values()),
+    )
+    bounded = with_render_boundaries(
+        packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+    )
+    plan = plan_packet_rendering(
+        bounded, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+    )
+    shown = {unit.evidence_id: text for unit, text in plan.rendered}
+    carrying = [
+        unit.evidence_id
+        for unit in packet.units
+        if "1 Megawatt" in unit.excerpt
+    ]
+
+    assert carrying, "the fixture must present the passage with the threshold"
+    # Carried whole, and the request still holds more than one candidate.
+    assert all(
+        shown[evidence_id] == " ".join(
+            next(u for u in packet.units if u.evidence_id == evidence_id)
+            .excerpt.split()
+        )
+        for evidence_id in carrying
+        if evidence_id in shown
+    )
+    assert plan.partially_shown == []
+    assert len(plan.rendered) > 1
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.7,
+            assessments=[
+                _row(evidence_id, "supports") for evidence_id in carrying
+            ],
+            support_ids=list(carrying),
+            contradiction_ids=[],
+            rationale="The form's own instructions state the threshold.",
+        ),
+        bounded,
+        None,
+    )
+    assert claim.evidence_status == "source_supported"

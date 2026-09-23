@@ -1729,7 +1729,7 @@ def build_read_dossiers(
     reads: Sequence[ReadRecord],
     *,
     cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
-    queries: Mapping[str, str] | None = None,
+    queries: Mapping[str, Sequence[str]] | None = None,
     excerpt_chars: int = DEFAULT_DOSSIER_EXCERPT_CHARS,
     max_excerpts: int = DEFAULT_DOSSIER_EXCERPTS,
 ) -> list[ReadDossier]:
@@ -1753,9 +1753,16 @@ def build_read_dossiers(
         for url, topics in (cited_sub_topics or {}).items()
     }
     wanted = {
-        normalize_source_url(url): query
-        for url, query in (queries or {}).items()
-        if isinstance(query, str) and query.strip()
+        normalize_source_url(url): [
+            query
+            for query in (
+                (queries_for_url,)
+                if isinstance(queries_for_url, str)
+                else queries_for_url
+            )
+            if isinstance(query, str) and query.strip()
+        ]
+        for url, queries_for_url in (queries or {}).items()
     }
     chosen: dict[str, ReadRecord] = {}
     for read in reads:
@@ -1772,7 +1779,7 @@ def build_read_dossiers(
                 read,
                 excerpt_chars=excerpt_chars,
                 max_excerpts=max_excerpts,
-                query=wanted.get(url, ""),
+                queries=wanted.get(url, ()),
             ),
             assessment_revision=read_assessment_revision(read),
             cited_sub_topics=cited.get(url, []),
@@ -1801,9 +1808,9 @@ def _dossier_excerpts(
     *,
     excerpt_chars: int,
     max_excerpts: int,
-    query: str = "",
+    queries: Sequence[str] = (),
 ) -> list[str]:
-    """The read's own passages, in the order that answers the question asked.
+    """The read's own passages, in the order that answers the questions asked.
 
     Deliberately the document's words rather than a finding's paraphrase: the
     judgement being asked for is about the document, and a paraphrase is the
@@ -1811,8 +1818,15 @@ def _dossier_excerpts(
     prefix of one ends before the sentence the source is being judged for, and
     the model has no way to tell a page that states nothing from a page whose
     statement sat past the cut.
+
+    One query per obligation, interleaved rather than concatenated: a source
+    cited for two sub-topics is judged for both, and a merged query's lexical
+    winner can drop the passage that states the second one's figure. Whatever
+    the queries leave is filled in document order, so a marked-up source still
+    shows its own opening.
     """
-    if query:
+    ordered: list[str] = []
+    if queries:
         # Imported here, not at module scope: ``deep_research.tools`` builds
         # its package from modules that import this one, and this module is the
         # read contract they are built on.
@@ -1820,11 +1834,19 @@ def _dossier_excerpts(
             select_relevant_passages,
         )
 
-        ordered = select_relevant_passages(read.passages, query, max_excerpts)
-    else:
-        ordered = []
-    if not ordered:
-        ordered = sorted(read.passages, key=_document_order)
+        ranked = [
+            select_relevant_passages(read.passages, query, max_excerpts)
+            for query in queries
+        ]
+        for rank in range(max_excerpts):
+            for picks in ranked:
+                if rank < len(picks) and picks[rank] not in ordered:
+                    ordered.append(picks[rank])
+    ordered.extend(
+        locator
+        for locator in sorted(read.passages, key=_document_order)
+        if locator not in ordered
+    )
     excerpts: list[str] = []
     for locator in ordered:
         text = " ".join(read.passages[locator].split())

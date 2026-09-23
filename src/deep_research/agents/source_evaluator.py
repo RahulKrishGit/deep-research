@@ -772,20 +772,32 @@ class SourceEvaluationTask(AgentTask):
     dossiers: dict[str, ReadDossier] = Field(default_factory=dict)
 
 
-def dossier_query(labels: Sequence[str], sub_topics: Sequence[SubTopic]) -> str:
-    """The plan text one source was cited for, as a passage-selection query.
+# How much of one obligation's plan text a passage-selection query may carry.
+# The selector is lexical, and a long query dilutes it until the page's opening
+# outranks the passage that states the figure.
+DOSSIER_QUERY_CHARS = 400
+
+
+def dossier_queries(
+    labels: Sequence[str], sub_topics: Sequence[SubTopic]
+) -> list[str]:
+    """One passage-selection query per obligation a source was cited for.
 
     The Source Evaluator's own path scored from a read's first characters in
-    document order, so a figure that sits past that window was invisible to the
-    pass that judges relevance and identity. The plan is the query that path
-    has: the sub-topic's title, the searches it was made with, its success
-    criteria, and the question of each evidence target. A label the plan does
-    not name is kept as itself, so a record written before the plan was
-    labelled still orders its passages.
+    document order, so a figure past that window was invisible to the pass that
+    judges relevance and identity. The plan is the query that path has: one
+    query per cited sub-topic, from its title, the searches it was made with,
+    its success criteria, and the question of each evidence target.
+
+    One query *per obligation*, never one merged string: the citations are
+    ranked separately and interleaved, so the passage that states the second
+    sub-topic's figure is not dropped by the first sub-topic's lexical winner.
+    A label the plan does not name is kept as itself, so a record written
+    before the plan was labelled still orders its passages.
     """
     by_label: dict[str, str] = {}
     for topic in sub_topics:
-        text = " ".join(
+        parts = [
             part
             for part in (
                 topic.title,
@@ -794,13 +806,18 @@ def dossier_query(labels: Sequence[str], sub_topics: Sequence[SubTopic]) -> str:
                 *(target.question for target in topic.evidence_targets),
             )
             if isinstance(part, str) and part.strip()
-        )
-        if not text:
+        ]
+        if not parts:
             continue
+        text = " ".join(parts)[:DOSSIER_QUERY_CHARS]
         by_label[topic.coverage_id.casefold()] = text
         by_label.setdefault(topic.title.casefold(), text)
-    parts = [by_label.get(label.casefold(), label) for label in labels]
-    return " ".join(dict.fromkeys(part for part in parts if part))
+    queries: list[str] = []
+    for label in labels:
+        query = by_label.get(label.casefold(), label)
+        if query and query not in queries:
+            queries.append(query)
+    return queries
 
 
 def scoring_messages(
@@ -1059,9 +1076,12 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                     group.url: group.sub_topics for group in groups
                 },
                 queries={
-                    group.url: dossier_query(
-                        group.sub_topics, state.sub_topics
-                    )
+                    group.url: [
+                        # What this run actually extracted from the source, then
+                        # the plan text of every obligation it was cited for.
+                        *(finding.content[:DOSSIER_QUERY_CHARS] for finding in group.findings),
+                        *dossier_queries(group.sub_topics, state.sub_topics),
+                    ]
                     for group in groups
                 },
                 excerpt_chars=self._excerpt_chars,

@@ -3425,7 +3425,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 admitted_reads,
                 self._run_sources,
                 queries={
-                    read.resolved_url: task.claim.text
+                    read.resolved_url: [task.claim.text]
                     for read in admitted_reads
                 },
                 known_reads=self._run_reads.values(),
