@@ -2803,8 +2803,133 @@ def test_the_subject_verb_form_does_not_override_a_named_source() -> None:
 
 
 # --------------------------------------------------------------------------
-# A qualitative measure names a fact, not a number
+# Geography: a place named without a preposition is still the place
 # --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The run's own claim prose (audit #2, replay C8): the place is named
+        # adjectivally, so no target that requires the geography could bind.
+        (
+            "EIA stated that cumulative U.S. utility-scale battery storage "
+            "capacity exceeded 26 GW in 2024.",
+            "United States",
+        ),
+        (
+            "EIA reported that battery storage accounted for the "
+            "second-largest share of U.S. capacity additions in the first "
+            "half of 2025.",
+            "United States",
+        ),
+        (
+            "EIA forecast that 18.2 GW would be added to the U.S. grid in "
+            "2025.",
+            "United States",
+        ),
+        (
+            "An EIA article stated that U.S. power providers added 10.3 GW of "
+            "new battery storage capacity in 2024.",
+            "United States",
+        ),
+        # The other spellings of the same place, and the ones a claim uses
+        # when it introduces the place before naming it adjectivally.
+        ("According to EIA, US battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, USA battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, American battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, United States battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, U.S. battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, the U.S. battery capacity reached 26 GW in 2024.", "United States"),
+    ],
+)
+def test_a_place_named_without_a_preposition_is_the_geography(
+    text: str, expected: str
+) -> None:
+    """``U.S. capacity additions`` names the same place as ``in the United States``.
+
+    The atom already reads a prepositional locative; a clause that names the
+    place adjectivally stated no geography at all, which is what left the
+    run's own claims unable to bind a target that requires one.
+    """
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.geography == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A pronoun is not a country: "tell us about …" names no place.
+        "EIA reported that the plan tells us about battery capacity in 2024.",
+        # A currency code is not a country.
+        "According to EIA, the contract was worth 26 million USD in 2024.",
+        "According to EIA, the contract was worth US$26 million in 2024.",
+        # Where a thing was made is not the place the clause's fact covers.
+        "According to the agency, Canadian plants imported U.S.-made "
+        "inverters in 2024.",
+        # Another region's adjective is not the United States.
+        "According to the agency, Latin American capacity reached 26 GW in 2024.",
+        "According to the agency, South American capacity reached 26 GW in 2024.",
+    ],
+)
+def test_an_alias_that_names_no_place_is_not_a_geography(text: str) -> None:
+    """The negatives the alias list must not over-match."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.geography == ""
+
+
+def test_the_prepositional_place_still_wins_over_an_adjectival_one() -> None:
+    """A clause about Canada that mentions U.S. firms stays about Canada."""
+    atom = extract_text_atoms(
+        "According to the agency, U.S. firms added 26 GW of capacity in Canada "
+        "in 2024."
+    )[0]
+
+    assert atom.geography == "Canada"
+
+
+def test_a_nations_own_reference_is_the_place_the_claim_names() -> None:
+    """"The nation's fleet" is the country its claim names, and nobody else's."""
+    claim = _claim(
+        "EIA reported that U.S. battery capacity grew. The nation's storage "
+        "fleet reached 26 GW in 2024."
+    )
+
+    named, anaphor = extract_atoms(claim)
+
+    assert named.geography == "United States"
+    assert anaphor.geography == "United States"
+
+
+def test_a_nations_own_reference_with_no_named_country_stays_unnamed() -> None:
+    """The control: "the nation" alone names no place this contract can read."""
+    claim = _claim("The nation's storage fleet reached 26 GW in 2024.")
+
+    (atom,) = extract_atoms(claim)
+
+    assert atom.geography == ""
+
+
+def test_the_two_spellings_of_one_place_state_one_geography() -> None:
+    """So both answer the one dimension the plan stamps: "geography: United States"."""
+    prepositional = _claim(
+        "According to EIA, capacity reached 26 GW in the United States in 2024."
+    )
+    adjectival = _claim(
+        "According to EIA, U.S. capacity reached 26 GW in 2024."
+    )
+
+    (prepositional_atom,) = extract_atoms(prepositional)
+    (adjectival_atom,) = extract_atoms(adjectival)
+
+    assert prepositional_atom.geography == adjectival_atom.geography
+    for atom in (prepositional_atom, adjectival_atom):
+        assert atom_answers_dimensions(
+            atom, ["geography: United States"], question=_AUDIT_QUESTION
+        )
+
 
 
 @pytest.mark.parametrize(

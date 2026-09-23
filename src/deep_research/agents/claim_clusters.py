@@ -775,6 +775,18 @@ _CAUSAL_CONNECTIVE = re.compile(
     r"therefore|thus)\s+)\s*",
     re.IGNORECASE,
 )
+
+# A sentence ends at a period, a question mark, or an exclamation mark, and
+# the whitespace after it is where the split falls. What precedes that
+# whitespace decides whether it really is an end; see :func:`_sentences`.
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_ABBREVIATED_END = re.compile(
+    r"(?:"
+    r"(?:[A-Za-z]\.){2,}"
+    r"|Mr|Mrs|Ms|Dr|Prof|Inc|Ltd|Co|Corp|St|No|Fig|vs|etc|approx"
+    r"|e\.g|i\.e|a\.m|p\.m"
+    r")\.?$"
+)
 _NEGATION = re.compile(
     r"\b(?:not|no|never|without|nor|neither|isn't|aren't|wasn't|weren't|"
     r"doesn't|don't|didn't|cannot|can't|fails? to|failed to)\b",
@@ -930,6 +942,44 @@ _GEOGRAPHY = re.compile(
     r"\b(?:in|across|within|for)\s+(?P<geography>"
     r"(?:the\s+)?[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,4})"
 )
+
+# The place a clause names without a preposition: "U.S. capacity additions",
+# "the U.S. grid", "American plants". The run's own claims used this spelling
+# for every figure they carried ("cumulative U.S. utility-scale battery storage
+# capacity", "share of U.S. capacity additions"), so with only the prepositional
+# form read they stated no geography at all and no target requiring one could
+# bind (audit #2, replay C8).
+#
+# The alias list is closed and each entry is one spelling of one country:
+#
+# * "U.S.", "US", "USA", "United States" — the country's own name and its
+#   initialism. Case matters: the lowercase pronoun ("tell us about …") is
+#   never read as the country, and a following word character or a currency
+#   sign refuses "USD" and "US$26 million" (a currency code names no place).
+# * "American" — the standard adjectival form, accepted only unqualified:
+#   "Latin American", "South American", "North American" and "Central
+#   American" name other regions that share the adjective.
+#
+# The trailing lookahead also refuses the hyphenated compound ("U.S.-made"):
+# where a thing was made is not the place a clause's fact covers, and reading
+# it as one told a claim about Canada that it was about the United States.
+_UNITED_STATES_ALIASES = frozenset(
+    {"american", "u.s", "u.s.a", "united states", "us", "usa"}
+)
+_UNITED_STATES = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?<!Latin\s)(?<!South\s)(?<!North\s)(?<!Central\s)"
+    r"(?P<geography>U\.S\.A\.?|U\.S\.|USA|US|United\s+States|American)"
+    r"(?![\w$-])"
+)
+
+# A clause that points at its country without naming it. Only a claim that
+# names a place can resolve one: "the nation's fleet" in a claim about no
+# country in particular stays unnamed rather than guessed.
+_NATION_ANAPHOR = re.compile(
+    r"(?i:\bthe\s+(?:nation|country)'?s?\b|\bnationwide\b)"
+)
+
 _FORECAST = re.compile(
     r"\b(?P<forecast>projected|projection|forecast|forecasted|expected|"
     r"anticipated|estimated|observed|measured|actual)\b",
@@ -1142,6 +1192,27 @@ OVER_CAP_SUBJECT_PREFIX = "over-cap:"
 OVER_CAP_SUBJECT_DIGEST_CHARS = 32
 
 
+def _sentences(text: str) -> list[str]:
+    """Split prose at its sentence ends, and never inside an abbreviation.
+
+    A period after a dotted initialism ("U.S.", "U.K.", "E.U.") or a common
+    abbreviation ("Inc.", "No.", "e.g.") is not a sentence end. Splitting there
+    cut a claim in half and the half that carried the place, the figure, or the
+    issuer was the half left behind: the run's "cumulative U.S. utility-scale
+    battery storage capacity" became "cumulative U" beside "S. utility-scale …",
+    so no geography could be read from it at all.
+    """
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_END.finditer(text):
+        if _ABBREVIATED_END.search(text[: match.start()]):
+            continue
+        sentences.append(text[start : match.start()])
+        start = match.end()
+    sentences.append(text[start:])
+    return sentences
+
+
 def _split_clauses(text: str) -> list[str]:
     """Split a claim's prose into one clause per assertion it makes.
 
@@ -1151,7 +1222,7 @@ def _split_clauses(text: str) -> list[str]:
     is the opposite of atomizing.
     """
     clauses: list[str] = []
-    for sentence in re.split(r"(?<=[.!?])\s+", text):
+    for sentence in _sentences(text):
         for stated in re.split(r"\s*;\s*", sentence):
             clauses.extend(_CAUSAL_CONNECTIVE.split(stated))
     cleaned: list[str] = []
@@ -1292,6 +1363,62 @@ def _claim_issuer(text: str) -> str:
             named = _subject_verb_attribution(clause)
         if named:
             return named
+    return ""
+
+
+def _canonical_place(name: str) -> str:
+    """The geography a place name states, in the spelling the contract uses.
+
+    Only the United States' own spellings are folded, and only onto the one
+    spelling the frozen answer contract carries ("United States"): a clause
+    that writes "U.S." and a clause that writes "in the United States" name
+    one place, so the two may still merge and both match the plan's own
+    "geography: United States". Every other place is kept exactly as the
+    clause wrote it — this normalizes spelling, never geography.
+    """
+    cleaned = " ".join(name.split())
+    folded = _canonical(cleaned).strip(" .")
+    for suffix in ("'s", "s'", "'"):
+        if folded.endswith(suffix):
+            folded = folded[: -len(suffix)].strip(" .")
+            break
+    if folded.startswith("the "):
+        folded = folded[4:]
+    if folded in _UNITED_STATES_ALIASES:
+        return "United States"
+    return cleaned
+
+
+def _geography_for(clause: str, *, claim_geography: str) -> str:
+    """The place one clause states, or "".
+
+    Three spellings, in precedence order. The prepositional locative wins
+    whenever the clause states one — "U.S. firms added capacity in Canada" is
+    about Canada — then the adjectival or possessive mention of the United
+    States ("U.S. capacity additions"), then the claim's own place when the
+    clause points at it without naming it ("the nation's fleet" in a claim
+    that names one country). A clause with none of them states no geography,
+    and this contract does not invent one.
+    """
+    named = _first_group(_GEOGRAPHY, clause)
+    if named:
+        return _canonical_place(named)
+    alias = _first_group(_UNITED_STATES, clause)
+    if alias:
+        return _canonical_place(alias)
+    if claim_geography and _NATION_ANAPHOR.search(clause):
+        return claim_geography
+    return ""
+
+
+def _claim_geography(text: str) -> str:
+    """The first place a claim names anywhere, for its own-nation clauses."""
+    for clause in _split_clauses(text):
+        place = _first_group(_GEOGRAPHY, clause)
+        if not place:
+            place = _first_group(_UNITED_STATES, clause)
+        if place:
+            return _canonical_place(place)
     return ""
 
 
@@ -1800,6 +1927,7 @@ def extract_text_atoms(
     shared_evidence = list(evidence_ids)
     shared_targets = list(target_ids)
     issuer = _claim_issuer(text)
+    claim_geography = _claim_geography(text)
     atoms: list[AtomicProposition] = []
     for index, clause in enumerate(_split_clauses(text), start=1):
         period_match = _PERIOD_PATTERN.search(clause)
@@ -1863,7 +1991,9 @@ def extract_text_atoms(
                 value=value,
                 unit=unit,
                 observation_period=period,
-                geography=_first_group(_GEOGRAPHY, clause),
+                geography=_geography_for(
+                    clause, claim_geography=claim_geography
+                ),
                 quantity_noun=(
                     " ".join(
                         clause[unit_noun_span[0]: unit_noun_span[1]].split()
