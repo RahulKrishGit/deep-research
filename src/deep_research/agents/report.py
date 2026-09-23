@@ -2502,7 +2502,7 @@ def render_quality_record(
     )
     statements = composition.statements if composition is not None else []
     from deep_research.agents.evidence import (  # noqa: PLC0415
-        resolve_source_work_keys,
+        resolve_retained_work_keys,
     )
     from deep_research.agents.report_review import (  # noqa: PLC0415
         composition_semantic_fingerprint,
@@ -2583,13 +2583,23 @@ def render_quality_record(
             }
             for read in reads
         ],
-        # The sources' own persisted identity, so this map and ``sources`` can
-        # never disagree — a re-resolution of the reads without the anchors the
-        # Source Evaluator validated would split an original from its mirror.
-        # The works count below is taken from this same resolution, because a
-        # count derived a second way is how this record came to publish one
-        # work in this map and two in ``unique_works``.
-        "work_keys": dict(sorted(resolve_source_work_keys(sources).items())),
+        # Every retained source URL's work key, from the function the works
+        # count counts over — so ``unique_works`` is exactly this map's
+        # distinct values, and a source whose identity was never established
+        # keeps the key its own read supports instead of vanishing from the
+        # account while the count still holds it. Where identity *was*
+        # established the key is the persisted one: a re-resolution of the
+        # reads without the anchors the Source Evaluator validated would split
+        # an original from its mirror.
+        "work_keys": dict(
+            sorted(
+                resolve_retained_work_keys(
+                    [source.url for source in sources],
+                    reads,
+                    sources=sources,
+                ).items()
+            )
+        ),
         "evidence": [
             {
                 "evidence_id": unit.evidence_id,

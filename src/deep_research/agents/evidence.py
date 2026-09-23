@@ -1265,16 +1265,12 @@ def resolve_source_work_keys(sources: Sequence[ScoredSource]) -> dict[str, str]:
 
     This is the persisted identity — the ``work_id`` the Source Evaluator's
     one-per-snapshot resolution stamped, which is ``work_identity.key`` — and
-    it is the only work key a record may publish or count. ``work_identity``
-    is read as the fallback for a row written before ``work_id`` carried it,
-    and a source whose identity was never established registers nothing at
-    all: an unknown work is not a new one, so the caller falls back to the
-    read-derived evidence rather than minting a key here.
-
-    Published as its own function because two consumers inside one quality
-    record need it — the ``work_keys`` map and the ``unique_works`` count —
-    and a second definition of "which work is this" is how one record came to
-    name one work in its map while counting two.
+    it is what a record may publish *as* that identity. ``work_identity`` is
+    read as the fallback for a row written before ``work_id`` carried it, and
+    a source whose identity was never established registers nothing here at
+    all: an unknown work is not a new one, so a caller that needs a key for
+    every URL resolves the rest through :func:`resolve_retained_work_keys`
+    rather than minting one here.
     """
     keys: dict[str, str] = {}
     for source in sources:
@@ -1282,6 +1278,40 @@ def resolve_source_work_keys(sources: Sequence[ScoredSource]) -> dict[str, str]:
         key = source.work_id or (identity.key if identity is not None else None)
         if key:
             keys[normalize_source_url(source.url)] = key
+    return keys
+
+
+def resolve_retained_work_keys(
+    source_urls: Sequence[str],
+    reads: Sequence[ReadRecord],
+    *,
+    sources: Sequence[ScoredSource] = (),
+) -> dict[str, str]:
+    """One work key per retained source URL — the keying the count counts over.
+
+    Published as its own function because the quality record needs this
+    mapping twice — as its ``work_keys`` map and as the set its
+    ``unique_works`` count has cardinality of — and two resolutions of "which
+    work is this" is how one record came to name a work in its map while its
+    count held another it never named. With one keying, ``unique_works`` is
+    exactly this map's distinct values.
+
+    ``sources`` are the assessed rows the caller holds. Where one covers a
+    URL, its persisted work key is the work: it was resolved with the anchors
+    the Source Evaluator validated, so it names joins a second resolution from
+    the reads alone cannot see. A URL no assessment covers keeps the key its
+    own read supports, and a URL with neither is its own unresolved entry
+    rather than a neighbour it was never shown to match.
+    """
+    persisted = resolve_source_work_keys(sources)
+    by_url = resolve_read_work_keys(reads)
+    keys: dict[str, str] = {}
+    for url in source_urls:
+        canonical = normalize_source_url(url)
+        key = persisted.get(canonical)
+        if key is None:
+            key = by_url.get(canonical, f"unresolved:{canonical}")
+        keys[canonical] = key
     return keys
 
 
@@ -1298,25 +1328,17 @@ def retained_work_count(
     the registry counts as its own unresolved entry rather than being folded
     into a neighbour it was never shown to match.
 
-    ``sources`` are the assessed rows the caller is publishing beside this
-    count. Where one covers a URL, its persisted work key is the work: it was
-    resolved with the anchors the Source Evaluator validated, so it names joins
-    a second resolution from the reads alone cannot see — a DOI carried only by
-    the anchors, a mirror re-typeset so its bytes differ — and that second
-    resolution is what made one record report a work in ``work_keys`` and two
-    in its count. The read-derived key remains the fallback for a URL no
-    assessment covers.
+    The count is the cardinality of :func:`resolve_retained_work_keys`, which
+    is the same mapping a quality record publishes as its ``work_keys`` map —
+    so the two cannot disagree, and every URL the count holds has a key the
+    map names. ``sources`` are the assessed rows the caller is publishing:
+    where one covers a URL, its persisted work key is the work, because it was
+    resolved with the anchors the Source Evaluator validated and names joins a
+    second resolution from the reads alone cannot see.
     """
-    persisted = resolve_source_work_keys(sources)
-    by_url = resolve_read_work_keys(reads)
-    distinct: set[str] = set()
-    for url in source_urls:
-        canonical = normalize_source_url(url)
-        key = persisted.get(canonical)
-        if key is None:
-            key = by_url.get(canonical, f"unresolved:{canonical}")
-        distinct.add(key)
-    return len(distinct)
+    return len(
+        set(resolve_retained_work_keys(source_urls, reads, sources=sources).values())
+    )
 
 
 def source_origin_id(source: ScoredSource) -> str | None:
