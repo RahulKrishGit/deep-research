@@ -49,6 +49,7 @@ from deep_research.agents.steps import (
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
+    ChatMessage,
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
     ProviderTimeoutError,
@@ -1783,7 +1784,7 @@ def _packet_locator_for(figure: str, packet: str) -> tuple[str, str]:
 
 
 def _eia_forecast_draft(
-    messages: Sequence[object],
+    messages: list[ChatMessage],
     *,
     target_ids: Sequence[str] = (FORECAST_TARGET_ID,),
 ) -> SubTopicFindingsDraft:
@@ -1813,19 +1814,25 @@ def _eia_forecast_draft(
     )
 
 
-def _forecast_reply(messages, schema) -> SubTopicFindingsDraft:
-    assert schema is SubTopicFindingsDraft
+def _forecast_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    del schema
     return _eia_forecast_draft(messages)
 
 
-def _forecast_reply_with_an_invented_target_id(messages, schema):
-    assert schema is SubTopicFindingsDraft
+def _forecast_reply_with_an_invented_target_id(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    del schema
     return _eia_forecast_draft(
         messages, target_ids=[FORECAST_TARGET_ID, "topic-09-target-01"]
     )
 
 
-def _forecast_reply_naming_the_coverage_id(messages, schema):
+def _forecast_reply_naming_the_coverage_id(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
     """The reply of a model that copied the read's own ``targets=`` line.
 
     That line names the sub-topic that fetched the read (``topic-01``), not a
@@ -1833,7 +1840,7 @@ def _forecast_reply_naming_the_coverage_id(messages, schema):
     and evidence unit — the likeliest way an extraction names the wrong
     vocabulary. The id is dropped; the finding it was attached to is not.
     """
-    assert schema is SubTopicFindingsDraft
+    del schema
     return _eia_forecast_draft(messages, target_ids=["topic-01"])
 
 
