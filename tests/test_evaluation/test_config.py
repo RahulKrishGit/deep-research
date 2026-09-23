@@ -818,8 +818,17 @@ CRITIC_PROMPT_FINGERPRINT = "aedce1ccca9e"
 # currency anchor. Module source only — no prompt string was edited and the
 # shared ``agents.prompts`` library was not touched, which the other five pins
 # and the judge prove.
+# The planning-gate policy pass moved the planner again, ``fc6518cbfe60`` ->
+# ``44d9a4e8842d``: ``finalize`` now ends a planning pass only when neither the
+# draft nor its one repair is structurally valid, records every defect that
+# outlived its repair as ``planner_plan_defects_unresolved`` with the plan it
+# came from, and falls back to the reviewed plan when the review's repair
+# cannot be produced. ``_request_plan`` returns a ``_PlanAttempt`` carrying the
+# two problem lists and the label, which is a module-source change like the
+# one above — no prompt string moved, and the other five pins and the judge
+# are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "fc6518cbfe60",
+    "planner": "44d9a4e8842d",
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "340b8267dbe9",
@@ -1312,7 +1321,7 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
     (``00e2229ad4fa`` -> ``340b8267dbe9``), which is attributed in
     ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``.
     """
-    assert agent_prompt_fingerprint("planner") == "fc6518cbfe60"
+    assert agent_prompt_fingerprint("planner") == "44d9a4e8842d"
     assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
     assert agent_prompt_fingerprint("fact_checker") == "340b8267dbe9"
     # The other three target pins are untouched by this step, and the judge

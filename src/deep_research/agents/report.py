@@ -2718,9 +2718,32 @@ def render_quality_record(
             if composition is not None
             else []
         ),
+        "errors": [_quality_error_row(error) for error in state.errors],
         "review": _review_record(review),
     }
     return record
+
+
+def _quality_error_row(error: ResearchError) -> dict[str, JsonValue]:
+    """One error the pass recorded, published no further than the ledger.
+
+    A record the run continued past — a planning defect, a degraded phase, a
+    tool failure — is part of what a replay has to be able to verify, so it
+    belongs in this artifact beside the claims the gates judged. What is
+    published is exactly what the evidence ledger publishes for the same
+    record: the type, the source, the severity, and the producer's own reading.
+    ``details`` go through ``_published_details``, so the two artifacts cannot
+    disagree about which details may be published at all; the sentence is
+    clamped like every other text cell here, and page bodies, prompts and
+    provider payloads never enter.
+    """
+    return {
+        "error_type": _clamped(error.error_type, limit=_ERROR_MESSAGE_CHARS),
+        "source": _clamped(error.source, limit=_ERROR_MESSAGE_CHARS),
+        "severity": "recoverable" if error.recoverable else "fatal",
+        "message": _clamped(error_reading(error), limit=_ERROR_MESSAGE_CHARS),
+        "details": _published_details(error),
+    }
 
 
 def _quality_source_row(

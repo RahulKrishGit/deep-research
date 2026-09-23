@@ -2568,6 +2568,60 @@ def _artifact_texts(composition: ReportComposition) -> dict[str, str]:
     }
 
 
+def test_the_quality_record_registers_every_error_the_pass_recorded() -> None:
+    """A replay must be able to find the failures the run continued past.
+
+    The evidence ledger publishes the same records as rows, and the quality
+    record publishes them by type, source and severity — the fields a caller
+    can address without parsing a message. ``details`` follow the ledger's one
+    publication decision (``_published_details``), so the two artifacts cannot
+    disagree about which details may be published at all: an unvetted type's
+    details stay out of both.
+    """
+    composition = _composition(
+        errors=[
+            ResearchError(
+                error_type="planner_plan_defects_unresolved",
+                source="agent.planner",
+                message="The plan stands with its recorded defects.",
+                recoverable=True,
+                details={
+                    "stage": "confirming_review",
+                    "plan": "review_repair",
+                    "problems": ["review_repair: an unvetted model sentence"],
+                },
+            ),
+            ResearchError(
+                error_type="graph_planning_failed",
+                source="graph.planning",
+                message="Planning failed.",
+                recoverable=False,
+                details={},
+            ),
+        ]
+    )
+    state = _record_state(composition, errors=list(composition.errors))
+
+    record = render_quality_record(state, composition, None)
+
+    assert record["errors"] == [
+        {
+            "error_type": "planner_plan_defects_unresolved",
+            "source": "agent.planner",
+            "severity": "recoverable",
+            "message": "The plan stands with its recorded defects.",
+            "details": "—",
+        },
+        {
+            "error_type": "graph_planning_failed",
+            "source": "graph.planning",
+            "severity": "fatal",
+            "message": "Planning failed.",
+            "details": "—",
+        },
+    ]
+
+
 def test_the_quality_record_replays_every_statement_from_its_own_ids() -> None:
     """Every cited statement resolves inside the record, with no prose parsing.
 

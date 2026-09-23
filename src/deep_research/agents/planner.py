@@ -73,6 +73,41 @@ _COVERAGE_ID_WIDTH = 2
 # third call.
 MAX_PLAN_REVIEW_CALLS = 2
 
+# Which plan a problem came from. Every problem the planner reports is labelled
+# with one of these, because the merged, unlabelled list is what made the live
+# run 3 diagnosis read the draft's defects as the repaired plan's.
+_PLAN_DRAFT_LABEL = "draft"
+_PLAN_REPAIR_LABEL = "repair"
+_PLAN_REVIEW_REPAIR_LABEL = "review_repair"
+
+# The typed record for a planning pass that continued with unresolved defects.
+# Non-halting on purpose: a stale-anchor lint or a review verdict is a
+# judgement about meaning, and the run's own report-level gates judge the
+# consequences of carrying it. The stage names the flow step the outcome
+# belongs to, and ``_PLAN_DEFECT_MESSAGES`` is the sentence each one publishes.
+# Private, like the ledger's ``_SUB_TOPIC_SKIP_ERROR_TYPE``: the *string* is
+# the published contract and the constant is only how this module spells it, so
+# a consumer reads the record rather than importing a name.
+_PLAN_DEFECTS_ERROR_TYPE = "planner_plan_defects_unresolved"
+
+_PLAN_DEFECT_MESSAGES: dict[str, str] = {
+    "plan_checks": (
+        "The plan stands with the local defects its one repair did not remove"
+    ),
+    "plan_repair": (
+        "The repair of the plan's local defects was not usable, so the earlier "
+        "plan stands"
+    ),
+    "review_repair": (
+        "The repair of the plan review's findings was not usable, so the plan "
+        "the review judged stands"
+    ),
+    "confirming_review": (
+        "The confirming plan review still reported defects, so the repaired "
+        "plan stands"
+    ),
+}
+
 # Mirrors the Researcher's injected clock: a callable returning a
 # timezone-aware datetime. The planner stamps its as-of date from this and
 # never from model knowledge or memory, so a test can pin "today" without
@@ -2052,6 +2087,54 @@ def structured_output_problems(error: StructuredOutputError) -> tuple[str, ...]:
     )
 
 
+@dataclass(frozen=True)
+class _PlanAttempt:
+    """One plan request's result, with the plan its problems came from.
+
+    ``plan`` is the label every problem this attempt carries is published
+    under. The two problem lists are split because they are not equally fatal:
+    ``structural`` problems are ``validate_plan_draft``'s and decide whether
+    anything can be researched at all, while ``advisory`` problems come from
+    the contract-level checks — a stale anchor, an invented tolerance — and are
+    a judgement about meaning, which is the review's to make.
+    """
+
+    plan: str
+    sub_topics: list[SubTopic]
+    structural: list[str]
+    advisory: list[str]
+
+    @property
+    def usable(self) -> bool:
+        """True when this attempt is a plan a researcher could be handed."""
+        return not self.structural
+
+    @property
+    def labelled(self) -> list[str]:
+        """Every problem this attempt carries, labelled with its own plan."""
+        return [
+            f"{self.plan}: {problem}"
+            for problem in (*self.structural, *self.advisory)
+        ]
+
+    @property
+    def labelled_advisory(self) -> list[str]:
+        """The advisory problems, labelled with the plan they were found on."""
+        return [f"{self.plan}: {problem}" for problem in self.advisory]
+
+
+def _exception_name(error: BaseException) -> str:
+    """The class name of a failure, and never its message.
+
+    ``str(exception)`` can carry request text, URLs, and paths, and these
+    details are copied into the run's state and published; the class is the
+    whole diagnosis, which is why every other recorded failure in this project
+    records ``exception_type`` instead of a rendered exception.
+    """
+    cause = error.__cause__ if error.__cause__ is not None else error
+    return type(cause).__name__
+
+
 class PlannerAgent(BaseAgent[ResearchPlan]):
     """Convert ``original_question`` into 3-7 distinct, prioritized sub-topics.
 
@@ -2316,8 +2399,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         run: ReActRun,
         *,
         contract: AnswerContract,
+        plan: str,
         repair: str | None = None,
-    ) -> tuple[list[SubTopic], list[str]]:
+    ) -> _PlanAttempt:
         try:
             self.fingerprint_call(
                 ResearchPlanDraft.__name__,
@@ -2335,19 +2419,38 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             ) from error
         except ProviderError as error:
             raise planning_provider_error("plan_draft") from error
-        return self._stamp(draft, contract)
+        return self._stamp(draft, contract, plan=plan)
 
     def _stamp(
         self,
         draft: ResearchPlanDraft,
         contract: AnswerContract,
-    ) -> tuple[list[SubTopic], list[str]]:
-        """Validate a draft, then attach the contract's binding obligations."""
-        sub_topics, problems = validate_plan_draft(draft)
-        if problems:
-            return sub_topics, problems
+        *,
+        plan: str,
+    ) -> _PlanAttempt:
+        """Validate a draft, then attach the contract's binding obligations.
+
+        The two problem lists are kept apart on purpose. A draft that fails
+        ``validate_plan_draft`` is not stamped at all — there is nothing to
+        stamp — and its problems are structural; a draft that passes may still
+        carry the contract-level advisory ones, which no longer decide a run's
+        fate but are recorded against the plan that carries them.
+        """
+        sub_topics, structural = validate_plan_draft(draft)
+        if structural:
+            return _PlanAttempt(
+                plan=plan,
+                sub_topics=sub_topics,
+                structural=structural,
+                advisory=[],
+            )
         stamped = apply_answer_contract(sub_topics, contract)
-        return stamped, target_problems(stamped, contract)
+        return _PlanAttempt(
+            plan=plan,
+            sub_topics=stamped,
+            structural=[],
+            advisory=target_problems(stamped, contract),
+        )
 
     async def _review_plan(
         self,
@@ -2392,6 +2495,57 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         except ProviderError as error:
             raise planning_provider_error("plan_review") from error
 
+    def _record_defects(
+        self,
+        run: ReActRun,
+        *,
+        stage: str,
+        plan: str,
+        problems: Sequence[str],
+    ) -> None:
+        """Record one unresolved planning outcome without ending the run.
+
+        The record is an ordinary recoverable error, so it reaches the CLI's
+        warning block, the ledger's run-error table, and the quality record's
+        error registry by the path every recorded error takes. ``plan`` names
+        the plan the problems belong to and every problem carries that label:
+        the merged, unlabelled list is what made the live run 3 diagnosis wrong.
+
+        Nothing here is an acceptance gate. The report-level gates judge what
+        the *research* produced; a planning defect that survived its bounded
+        repair is a fact about how the plan was made, and it is recorded so a
+        reader can see it rather than being allowed to decide the verdict.
+        """
+        if not problems:
+            return
+        run.errors.append(
+            agent_error(
+                agent_name=self.name,
+                error_type=_PLAN_DEFECTS_ERROR_TYPE,
+                message=f"{_PLAN_DEFECT_MESSAGES[stage]} (plan {plan}).",
+                recoverable=True,
+                details={
+                    "stage": stage,
+                    "plan": plan,
+                    "problems": list(problems),
+                },
+            )
+        )
+
+    def _plan_from(
+        self,
+        attempt: _PlanAttempt,
+        *,
+        contract: AnswerContract,
+        repaired: bool,
+    ) -> ResearchPlan:
+        """The plan these sub-topics carry, and how it was arrived at."""
+        return ResearchPlan(
+            sub_topics=attempt.sub_topics,
+            repair_attempted=repaired,
+            answer_contract=contract,
+        )
+
     async def finalize(
         self,
         task: AgentTask,
@@ -2399,68 +2553,147 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     ) -> ResearchPlan | None:
         """Request a plan, repair and review it at most once each, or fail.
 
-        The bounds are explicit because every unstated retry is a place a bad
-        plan can quietly become an accepted one: one structural repair, one
-        semantic review, at most one repair of what the review named, and one
-        confirming review. A plan that is still unsound after that is
-        reported with the reviewer's own defect list rather than accepted.
+        The bounds are unchanged — one repair of the local checks, one semantic
+        review, at most one repair of what the review named, and one confirming
+        review — but a surviving defect no longer ends the run. Planning raises
+        only when there is no structurally valid plan to hand the researcher:
+        a draft and its repair that both fail ``validate_plan_draft``. Anything
+        else continues with the structurally valid candidate, and the defects
+        that outlived their one repair are recorded as
+        ``planner_plan_defects_unresolved``.
+
+        That is the deliberate reading of the planner's own design: its lints
+        disclaim authority over meaning ("the plan review call is what judges
+        meaning"), the review's verdict cannot be relied on to be right — the
+        planner's own instruction and example produce findings the review then
+        rejects — and a repair is a fresh sample that can add defects rather
+        than remove them. Three of four live CLI runs ended at
+        ``graph_planning_failed`` before any research and none published a
+        report; two of those three died on one false lint, and the third on a
+        truncated repair. A repair that cannot be produced at all — a provider
+        failure, a truncation, a schema failure — falls back to the plan the
+        review actually judged, and an unavailable or unsound confirming review
+        keeps the repaired plan rather than discarding it.
         """
         if not run.succeeded:
             raise planning_provider_error("react_loop")
 
         contract = self.answer_contract_for(task.instruction)
-        sub_topics, problems = await self._request_plan(
-            task, run, contract=contract
+        attempt = await self._request_plan(
+            task, run, contract=contract, plan=_PLAN_DRAFT_LABEL
         )
         repaired = False
-        if problems:
-            sub_topics, problems = await self._request_plan(
+        if attempt.structural or attempt.advisory:
+            reattempt = await self._request_plan(
                 task,
                 run,
                 contract=contract,
-                repair=format_plan_problems(problems),
+                repair=format_plan_problems(attempt.labelled),
+                plan=_PLAN_REPAIR_LABEL,
             )
             repaired = True
-            if problems:
+            if reattempt.structural and attempt.structural:
                 raise PlanningError(
-                    "The planner could not produce a valid research plan after "
-                    "one repair attempt.",
-                    problems=problems,
+                    "The planner could not produce a structurally valid "
+                    "research plan after one repair attempt.",
+                    problems=[*attempt.labelled, *reattempt.labelled],
                 )
+            if reattempt.usable:
+                attempt = reattempt
+            else:
+                # The repair is not a plan anyone can research. The earlier
+                # attempt is structurally valid — the branch above returned
+                # otherwise — so it stands and the repair's defects are
+                # recorded against the repair.
+                self._record_defects(
+                    run,
+                    stage="plan_repair",
+                    plan=reattempt.plan,
+                    problems=reattempt.labelled,
+                )
+        self._record_defects(
+            run,
+            stage="plan_checks",
+            plan=attempt.plan,
+            problems=attempt.labelled_advisory,
+        )
 
-        review = await self._review_plan(contract, sub_topics)
+        review = await self._review_plan(contract, attempt.sub_topics)
         if review.sound:
-            return ResearchPlan(
-                sub_topics=sub_topics,
-                repair_attempted=repaired,
-                answer_contract=contract,
-            )
+            return self._plan_from(attempt, contract=contract, repaired=repaired)
 
         requested = format_review_problems(review)
-        sub_topics, problems = await self._request_plan(
-            task, run, contract=contract, repair=requested
-        )
-        repaired = True
-        if problems:
-            raise PlanningError(
-                "The planner could not produce a valid research plan after "
-                "one repair of the plan review's findings.",
-                problems=[*requested_problems(review), *problems],
+        try:
+            reattempt = await self._request_plan(
+                task,
+                run,
+                contract=contract,
+                repair=requested,
+                plan=_PLAN_REVIEW_REPAIR_LABEL,
             )
-        confirming = await self._review_plan(
-            contract, sub_topics, already_requested=requested
-        )
-        if not confirming.sound:
-            raise PlanningError(
-                "The planner could not produce a sound research plan: the "
-                "plan review still reports semantic defects after one repair.",
-                problems=requested_problems(confirming),
+        except PlanningError as error:
+            # A repair that cannot be produced is not a reason to end the run:
+            # the plan the review judged is structurally valid and researched
+            # nothing yet, which is strictly better than no report at all.
+            self._record_defects(
+                run,
+                stage="review_repair",
+                plan=_PLAN_REVIEW_REPAIR_LABEL,
+                problems=[
+                    f"{_PLAN_REVIEW_REPAIR_LABEL}: the plan review repair "
+                    f"raised {_exception_name(error)}",
+                    *[
+                        f"{_PLAN_REVIEW_REPAIR_LABEL}: {problem}"
+                        for problem in error.problems
+                    ],
+                ],
             )
-        return ResearchPlan(
-            sub_topics=sub_topics,
-            repair_attempted=repaired,
-            answer_contract=contract,
+            return self._plan_from(attempt, contract=contract, repaired=True)
+        if not reattempt.usable:
+            self._record_defects(
+                run,
+                stage="review_repair",
+                plan=reattempt.plan,
+                problems=reattempt.labelled,
+            )
+            return self._plan_from(attempt, contract=contract, repaired=True)
+        attempt = reattempt
+        self._record_defects(
+            run,
+            stage="plan_checks",
+            plan=attempt.plan,
+            problems=attempt.labelled_advisory,
         )
+        confirming: PlanReviewDraft | None = None
+        try:
+            confirming = await self._review_plan(
+                contract, attempt.sub_topics, already_requested=requested
+            )
+        except PlanningError as error:
+            self._record_defects(
+                run,
+                stage="confirming_review",
+                plan=attempt.plan,
+                problems=[
+                    f"{attempt.plan}: the confirming plan review raised "
+                    f"{_exception_name(error)}",
+                    *[
+                        f"{attempt.plan}: {problem}"
+                        for problem in error.problems
+                    ],
+                ],
+            )
+        if confirming is not None and not confirming.sound:
+            self._record_defects(
+                run,
+                stage="confirming_review",
+                plan=attempt.plan,
+                problems=[
+                    f"{attempt.plan}: {problem}"
+                    for problem in requested_problems(confirming)
+                ],
+            )
+        return self._plan_from(attempt, contract=contract, repaired=True)
 
     def state_update(
         self,

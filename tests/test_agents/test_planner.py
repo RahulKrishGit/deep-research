@@ -43,8 +43,14 @@ from deep_research.agents.planner import (
     validate_plan_draft,
 )
 from deep_research.agents.prompts import AgentTask
+from deep_research.agents.report import (
+    render_evidence_ledger,
+    render_quality_record,
+)
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
+from deep_research.cli import render_warnings
 from deep_research.graph.nodes import refinement_targets_for, route_refinement
+from deep_research.graph.state import HALTING_ERROR_TYPES, is_halted
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -54,6 +60,7 @@ from deep_research.providers import (
     StructuredOutputError,
     StructuredValidationDiagnostic,
 )
+from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.config import AgentRuntimeConfig, load_config
 from deep_research.utils.types import (
     ORIGINAL_QUESTION_OMISSION_REFERENCE,
@@ -64,6 +71,8 @@ from deep_research.utils.types import (
     Finding,
     MemorySnapshot,
     RefinementTarget,
+    ReportComposition,
+    ResearchError,
     ResearchState,
     SubTopic,
     merge_research_state,
@@ -1094,6 +1103,13 @@ async def test_a_redundant_plan_is_repaired_once_and_then_accepted(
 async def test_a_plan_that_stays_invalid_fails_the_session(
     tracker: Tracker,
 ) -> None:
+    """A second structurally invalid plan is still fatal, and labelled.
+
+    Nothing in either attempt could be handed to the researcher, so the run
+    fails as it did before the gate policy changed. The two attempts' problems
+    stay distinguishable: the merged, unlabelled list is what made the live run
+    3 diagnosis read draft defects as the repaired plan's.
+    """
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
         outputs=[ResearchPlanDraft(sub_topics=[]), _plan("Only one")],
@@ -1105,7 +1121,8 @@ async def test_a_plan_that_stays_invalid_fails_the_session(
             await agent.run(_state())
 
     assert failure.value.problems == (
-        "the plan has 1 valid sub-topics; produce between 3 and 7",
+        "draft: the plan has 0 valid sub-topics; produce between 3 and 7",
+        "repair: the plan has 1 valid sub-topics; produce between 3 and 7",
     )
 
 
@@ -2753,18 +2770,35 @@ def test_a_compound_target_is_found_by_the_review_not_by_a_regex() -> None:
     assert contract.question in body
 
 
+def _plan_defects(errors: list[ResearchError]) -> list[ResearchError]:
+    """The non-halting plan-defect records in one state update.
+
+    Read from the update rather than from the run object on purpose: the state
+    update is what carries the records on to the ledger, the CLI and the
+    quality record, so a record that never reached it would be invisible to an
+    operator even though the planner had recorded it.
+    """
+    return [
+        error
+        for error in errors
+        if error.error_type == "planner_plan_defects_unresolved"
+    ]
+
+
 @pytest.mark.asyncio
-async def test_the_bounded_plan_review_repairs_once_and_can_fail_the_plan(
+async def test_the_bounded_plan_review_records_an_unsound_confirming_verdict(
     tracker: Tracker,
 ) -> None:
-    """The review/repair cycle is bounded, and a stuck plan fails the session.
+    """The review/repair cycle stays bounded, and a stuck verdict is recorded.
 
     The bound is four plan-side calls: plan, review, repaired plan, confirming
     review. It is deliberately *two* reviews rather than one — a repair that is
-    never re-reviewed is a plan accepted on hope — so the bound is asserted
-    here rather than left to drift, and a plan that stays unsound raises with
-    the reviewer's own defect list instead of being accepted.
+    never re-reviewed is a plan accepted on hope — but the second verdict no
+    longer ends the run: the repaired plan is structurally researchable, so it
+    stands, and the reviewer's own defect list is recorded against the plan it
+    judged.
     """
+    question = "What limits grid-scale battery storage deployment?"
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
         outputs=[
@@ -2783,43 +2817,50 @@ async def test_the_bounded_plan_review_repairs_once_and_can_fail_the_plan(
     )
     agent = _planner(tracker, completer)
 
-    with pytest.raises(PlanningError) as caught:
-        async with tracker.session_span("session-1", "q"):
-            await agent.run(
-                _state("What limits grid-scale battery storage deployment?")
-            )
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(question))
 
+    assert outcome.result is not None
     assert [call[0] for call in completer.calls] == [
         "ResearchPlanDraft",
         "PlanReviewDraft",
         "ResearchPlanDraft",
         "PlanReviewDraft",
     ]
+    assert len(completer.calls) <= 4
     review_calls = [
         call for call in completer.calls if call[0] == "PlanReviewDraft"
     ]
     assert MAX_PLAN_REVIEW_CALLS == 2
     assert len(review_calls) <= MAX_PLAN_REVIEW_CALLS
-    assert any(
-        "target-01-01 combines two measures" in problem
-        for problem in caught.value.problems
-    )
+    records = _plan_defects(outcome.state_update["errors"])
+    assert len(records) == 1
+    assert records[0].recoverable is True
+    assert records[0].details == {
+        "stage": "confirming_review",
+        "plan": "review_repair",
+        "problems": [
+            "review_repair: plan review found a compound obligation: "
+            "target-01-01 combines two measures"
+        ],
+    }
     # The review request is tool-free and carries the frozen question.
     review_request = completer.calls[1][2][1].content
-    assert "What limits grid-scale battery storage deployment?" in review_request
+    assert question in review_request
     for tool_name in ("web_search", "query_memory", "web_scraper"):
         assert tool_name not in review_request
 
 
 @pytest.mark.asyncio
-async def test_a_biased_premise_is_named_by_the_review_and_fails_the_plan(
+async def test_a_biased_premise_is_named_by_the_review_and_is_recorded(
     tracker: Tracker,
 ) -> None:
-    """A query or criterion that assumes the answer is repaired, then refused.
+    """A premise that assumes the answer is repaired, then recorded.
 
-    "The plan is biased" is a meaning defect, so the review is what names it;
-    the repair prompt must carry the reviewer's finding rather than a generic
-    complaint, and a plan that keeps the premise must not be accepted.
+    "The plan is biased" is a meaning defect, so the review is what names it,
+    and the repair prompt must carry the reviewer's finding rather than a
+    generic complaint. A premise no repair removed is recorded against the plan
+    that carries it instead of ending the run.
     """
     premise = "the query assumes storage already caused the outage"
     completer = ScriptedCompleter(
@@ -2837,35 +2878,43 @@ async def test_a_biased_premise_is_named_by_the_review_and_fails_the_plan(
     )
     agent = _planner(tracker, completer)
 
-    with pytest.raises(PlanningError) as caught:
-        async with tracker.session_span("session-1", "q"):
-            await agent.run(
-                _state("What limits grid-scale battery storage deployment?")
-            )
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What limits grid-scale battery storage deployment?")
+        )
 
+    assert outcome.result is not None
     repair_request = completer.calls[2][2][1].content
     assert premise in repair_request
-    assert any(
-        f"plan review found an unsupported premise: {premise}" in problem
-        for problem in caught.value.problems
-    )
     assert [call[0] for call in completer.calls] == [
         "ResearchPlanDraft",
         "PlanReviewDraft",
         "ResearchPlanDraft",
         "PlanReviewDraft",
     ]
+    assert len(completer.calls) <= 4
+    records = _plan_defects(outcome.state_update["errors"])
+    assert [record.details["plan"] for record in records] == ["review_repair"]
+    assert records[0].details == {
+        "stage": "confirming_review",
+        "plan": "review_repair",
+        "problems": [
+            f"review_repair: plan review found an unsupported premise: {premise}"
+        ],
+    }
 
 
 @pytest.mark.asyncio
-async def test_a_scope_widening_target_is_named_by_the_review_and_fails(
+async def test_a_scope_widening_target_is_named_by_the_review_and_is_recorded(
     tracker: Tracker,
 ) -> None:
-    """A target that widens the frozen scope cannot be accepted.
+    """A target that widens the frozen scope is named, then recorded.
 
     The review can only judge the scope if the request carries the frozen
     contract, so the request is inspected as well as the outcome: the reviewer
-    must see the contract's geography and as-of date beside the plan.
+    must see the contract's geography and as-of date beside the plan. The
+    finding then labels the plan it was found on, which is what the merged,
+    unlabelled list of run 3 could not say.
     """
     widening = "What is the global effect of the United States rule?"
     completer = ScriptedCompleter(
@@ -2890,20 +2939,161 @@ async def test_a_scope_widening_target_is_named_by_the_review_and_fails(
     )
     agent = _planner(tracker, completer)
 
-    with pytest.raises(PlanningError) as caught:
-        async with tracker.session_span("session-1", "q"):
-            await agent.run(
-                _state("What are the storage rules in the United States?")
-            )
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What are the storage rules in the United States?")
+        )
 
+    assert outcome.result is not None
     review_request = completer.calls[1][2][1].content
     assert "- Scope: United States" in review_request
     assert "- As of: 2026-09-16" in review_request
     assert "widen" in review_request
-    assert any(
-        "widens the frozen scope" in problem
-        for problem in caught.value.problems
+    assert len(completer.calls) <= 4
+    records = _plan_defects(outcome.state_update["errors"])
+    assert records[0].details == {
+        "stage": "confirming_review",
+        "plan": "review_repair",
+        "problems": [
+            "review_repair: plan review found an unsupported premise: "
+            f"target-01-01 widens the frozen scope: {widening}"
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_review_repair_falls_back_to_the_reviewed_plan(
+    tracker: Tracker,
+) -> None:
+    """A repair request that cannot be completed keeps the plan it repairs.
+
+    Live run 2 died exactly here: the third structured call hit the output cap,
+    ``ProviderOutputLimitError`` is not repairable by design, and the run ended
+    with no plan and nothing published. The plan the review judged is still
+    structurally researchable, so it is the plan the run continues with, and
+    the failed repair is recorded against it.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(
+                sound=False,
+                missing_dimensions=["siting and permitting"],
+                repair_instruction="Add a sub-topic for siting and permitting.",
+            ),
+            _output_limit_error(),
+        ],
     )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What limits grid-scale battery storage deployment?")
+        )
+
+    assert outcome.result is not None
+    assert [sub_topic.title for sub_topic in outcome.result.sub_topics] == [
+        "Cryptography",
+        "Hardware timelines",
+        "Mitigations",
+    ]
+    assert outcome.result.repair_attempted is True
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+        "ResearchPlanDraft",
+    ]
+    records = _plan_defects(outcome.state_update["errors"])
+    assert records[0].details == {
+        "stage": "review_repair",
+        "plan": "review_repair",
+        "problems": [
+            "review_repair: the plan review repair raised "
+            "ProviderOutputLimitError",
+            "review_repair: the planner provider failed while requesting the "
+            "final plan draft",
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_plan_defect_reaches_the_warning_ledger_and_quality(
+    tracker: Tracker,
+) -> None:
+    """One non-halting record, on the three surfaces an operator reads.
+
+    The planner's record is an ordinary ``ResearchState.errors`` entry, so it
+    reaches the CLI's warning block, the evidence ledger's run-error table, and
+    the quality record's error registry by the same path every recoverable
+    error takes. It is deliberately not a halt: the enumerated types that stop
+    a run are unchanged, so the report-level gates judge the consequences.
+    """
+    premise = "the query assumes storage already caused the outage"
+    question = "What limits grid-scale battery storage deployment?"
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(
+                sound=False,
+                unsupported_premises=[premise],
+                repair_instruction="Ask which causes are established.",
+            ),
+            _sorting_plan(),
+            _review(sound=False, unsupported_premises=[premise]),
+        ],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(question))
+
+    state = merge_research_state(_state(question), outcome.state_update)
+    record = _plan_defects(list(state.errors))[0]
+    composition = ReportComposition(
+        question=question,
+        session_id="session-1",
+        errors=list(state.errors),
+    )
+    published = ResearchOutcome(
+        session_id="session-1",
+        question=question,
+        status="completed",
+        state=state,
+        trace_url=None,
+        report_path=None,
+        token_usage=TokenUsage(),
+        tool_calls=(),
+    )
+
+    assert render_warnings(published) == [
+        "Warnings: 1 error (0 recovered, 1 non-fatal, 0 fatal)",
+        "  agent.planner: 1 error",
+        "    planner_plan_defects_unresolved (non-fatal)",
+    ]
+    # The plan label has to survive onto these surfaces, whose details are
+    # withheld: the message is the only part of the record they publish.
+    assert record.message.endswith("(plan review_repair).")
+    assert render_warnings(published, verbose=True)[-1] == (
+        "    warning: [planner_plan_defects_unresolved] " + record.message
+    )
+    run_errors = render_evidence_ledger(composition).split(
+        "## Run errors", 1
+    )[1]
+    assert "planner_plan_defects_unresolved" in run_errors
+    assert record.message in run_errors
+    assert render_quality_record(state, composition, None)["errors"] == [
+        {
+            "error_type": "planner_plan_defects_unresolved",
+            "source": "agent.planner",
+            "severity": "recoverable",
+            "message": record.message,
+            "details": "—",
+        }
+    ]
+    assert not is_halted(state)
+    assert "planner_plan_defects_unresolved" not in HALTING_ERROR_TYPES
 
 
 @pytest.mark.asyncio
