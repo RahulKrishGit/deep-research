@@ -36,6 +36,7 @@ from deep_research.e2e_evaluation.runner import (
     LIVE_TIER_NOT_RUN,
     build_judge_metadata,
     build_parser,
+    graph_historical_suite_lines,
     network_line,
     real_agent_suite_lines,
     run_case,
@@ -626,18 +627,96 @@ def test_controlled_acceptance_boundaries_are_seven_score_aware(
     )
 
 
-def test_the_graph_historical_suite_has_three_cases_and_no_report_body_on_summary(
+def test_the_graph_historical_suite_verdict_reads_each_rows_declaration(
     tmp_path,
 ) -> None:
+    """A row that declares a partial result passes without being accepted.
+
+    The suite's verdict used to be ``all(case.accepted)``, which demanded that
+    every row be an accepted row — so a case whose declared result *is* a
+    partial one could not be declared at all. The verdict now reads each row's
+    own declaration: the five rows still pass, one of them by producing the
+    partial result it declares rather than by being accepted, and the run's own
+    output says which. Both facts stay visible, because "this suite passed" and
+    "every row was accepted" are different claims.
+    """
     result = run_suite(tier="controlled", repetitions=3, output_directory=tmp_path)
 
     assert result.accepted
+    assert result.rows_accepted is False
     assert [case.case_id for case in result.cases] == list(CONTROLLED_CASE_IDS)
     assert all(len(case.repetitions) == 3 for case in result.cases)
     assert result.metadata["network"] == "zero"
     assert tmp_path.joinpath("suite.json").is_file()
     assert result.artifact_path == str(tmp_path / "suite.json")
     assert result.langsmith_metadata["quality_gate_version"] == 1
+
+    by_id = {case.case_id: case for case in result.cases}
+    open_obligation = by_id["claimed-coverage-open-obligation"]
+    assert open_obligation.expected_result.accepted is False
+    assert open_obligation.accepted is False
+    assert open_obligation.met_expectation is True
+    assert by_id["declared-obligations-answered"].accepted is True
+    assert by_id["declared-obligations-answered"].met_expectation is True
+    # The three legacy rows are untouched: accepted, and met by being accepted.
+    for case_id in CONTROLLED_CASE_IDS[:3]:
+        assert by_id[case_id].accepted is True, case_id
+        assert by_id[case_id].expected_result.accepted is True, case_id
+        assert by_id[case_id].met_expectation is True, case_id
+
+    lines = graph_historical_suite_lines(result)
+    assert any(
+        line.startswith(f"{open_obligation.case_id}: declared partial")
+        for line in lines
+    ), lines
+    assert lines[-3] == (
+        f"Suite: accepted (3 repetitions per case; "
+        f"{len(CONTROLLED_CASE_IDS) - 1}/{len(CONTROLLED_CASE_IDS)} "
+        "rows accepted)"
+    )
+
+
+def test_a_row_that_does_not_produce_its_declared_result_fails_the_suite(
+    tmp_path, monkeypatch
+) -> None:
+    """The verdict is a comparison, not a formality.
+
+    A suite whose aggregation only ever agrees with the rows would report
+    ``accepted`` for a run that produced something other than what its case
+    declares. The three legacy rows declare an accepted result, so a repetition
+    that *records* a leg its case does not declare must fail the row and the
+    suite — which is the same comparison, run the other way, that lets the
+    declared-partial row pass.
+    """
+    real_evaluation = campaign_runner.deterministic_evaluation
+    undeclared_leg = "coverage_below_0.80"
+
+    def add_an_undeclared_leg(case, state, **kwargs):
+        metrics = real_evaluation(case, state, **kwargs)
+        if case.case_id != CONTROLLED_CASE_IDS[0]:
+            return metrics
+        return metrics.model_copy(
+            update={
+                "integrity_failures": [
+                    *metrics.integrity_failures,
+                    undeclared_leg,
+                ]
+            }
+        )
+
+    monkeypatch.setattr(
+        campaign_runner, "deterministic_evaluation", add_an_undeclared_leg
+    )
+
+    result = run_suite(tier="controlled", repetitions=3, output_directory=tmp_path)
+
+    row = result.cases[0]
+    assert undeclared_leg in row.hard_failures
+    assert row.expected_result.required_failures == []
+    assert row.met_expectation is False
+    assert row.accepted is False
+    assert result.accepted is False
+    assert result.rows_accepted is False
 
 
 def test_controlled_repetitions_are_bounded_to_exactly_three(tmp_path) -> None:
@@ -816,7 +895,8 @@ def test_the_graph_historical_mode_says_it_runs_scripted_doubles(
 
     assert code == 0
     assert printed[:3] == [
-        "Mode: graph-historical (3 legacy ScriptedGraphAgent cases)",
+        f"Mode: graph-historical "
+        f"({len(GRAPH_ONLY_HISTORICAL_MANIFEST)} scripted-double cases)",
         "Agents: SCRIPTED DOUBLES, not production classes — historical "
         "regression only.",
         "        This mode is not release evidence for the real agents.",
@@ -979,7 +1059,8 @@ def test_the_case_command_accepts_the_id_form_list_prints(
 
         assert code == 0, case_id
         assert printed[:3] == [
-            "Mode: graph-historical (3 legacy ScriptedGraphAgent cases)",
+            f"Mode: graph-historical "
+            f"({len(GRAPH_ONLY_HISTORICAL_MANIFEST)} scripted-double cases)",
             "Agents: SCRIPTED DOUBLES, not production classes — historical "
             "regression only.",
             "        This mode is not release evidence for the real agents.",
