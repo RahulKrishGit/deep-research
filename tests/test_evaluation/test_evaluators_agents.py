@@ -1398,6 +1398,63 @@ def test_abstaining_on_every_claim_scores_verdict_correctness_zero(
     )
 
 
+def test_a_claim_the_case_requires_must_be_in_the_output(
+    upstream_pair_case, upstream_pair_output
+) -> None:
+    """Abstention by omission is abstention, and a reworded claim is not it.
+
+    The verdict map was read one way only: a claim named by the case was
+    compared *if* the output carried it, and nothing failed when it did not.
+    Dropping the required control claim — or returning no claims at all —
+    left ``verdict_correctness``, ``no_false_independent_pair``,
+    ``independence_enforced`` and ``sources_known`` all true on an empty
+    list, so a run that answered nothing scored 1.0 on a case whose own text
+    says such a run collects nothing. Rewording the claim is the same
+    abstention wearing the claim's shape.
+    """
+    reference = upstream_pair_case.expectations.reference
+    control = reference["required_verified_claims"][0]
+    claims = list(upstream_pair_output.result["verified_claims"])
+    control_index = next(
+        index for index, claim in enumerate(claims) if claim["text"] == control
+    )
+    omitted = [
+        claim for index, claim in enumerate(claims) if index != control_index
+    ]
+    reworded = [
+        (
+            {**claim, "text": f"{control} (as reported by the commission)"}
+            if index == control_index
+            else claim
+        )
+        for index, claim in enumerate(claims)
+    ]
+
+    assert (
+        metric_score(
+            upstream_pair_output, upstream_pair_case, "verdict_correctness"
+        )
+        == 1.0
+    )
+    for label, defective in (
+        ("omitted", upstream_pair_output.with_claims(omitted)),
+        ("empty", upstream_pair_output.with_claims([])),
+        ("reworded", upstream_pair_output.with_claims(reworded)),
+    ):
+        assert (
+            metric_score(defective, upstream_pair_case, "verdict_correctness")
+            == 0.0
+        ), label
+        assert (
+            deterministic_quality(
+                defective,
+                upstream_pair_case,
+                metric_functions=METRIC_FUNCTIONS,
+            )
+            < 1.0
+        ), label
+
+
 # --- Task 12: canonical citation provenance ---------------------------------
 #
 # The synthesizer half of Task 7's risk: the report's references are composed

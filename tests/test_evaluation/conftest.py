@@ -822,6 +822,26 @@ class FactCheckerOutput(TargetOutput):
             update={"result": {**result, "verified_claims": claims}}
         )
 
+    def with_claims(
+        self, claims: Sequence[Mapping[str, object]]
+    ) -> "FactCheckerOutput":
+        """Replace the whole claim list, as a run that checked another set.
+
+        The helpers above patch ``claims[0]``; a case whose declaration names
+        a claim the output must *carry* needs a fixture that can withhold one
+        — or all of them — without asserting through a mutation that never
+        touched the list.
+        """
+        result = dict(self.result or {})
+        return self.model_copy(
+            update={
+                "result": {
+                    **result,
+                    "verified_claims": [dict(claim) for claim in claims],
+                }
+            }
+        )
+
     def with_claim_fields(
         self, index: int, **fields: object
     ) -> "FactCheckerOutput":
