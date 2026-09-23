@@ -1314,14 +1314,39 @@ def test_a_reprint_with_an_unknown_relation_and_its_own_publisher_is_a_new_work(
     issuer, while ``publisher_id`` is assigned from the read identity
     regardless — so a reprint whose page names nobody arrives as a
     non-derivative relation carrying a distinct publisher. Three publishers
-    for one report is verbatim this case's stated risk, and only a relation
-    inside the case's declared ``derivative_relations`` may inherit the
-    original's publisher by relation alone.
+    for one report is verbatim this case's stated risk.
     """
     mirror = work_role_case.expectations.reference["same_work_urls"][1]
     output = work_role_output.with_source_identity(
         mirror,
         transport_relation="unknown",
+        publisher_id="repository.example.org",
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 0.0
+
+
+def test_a_mirror_row_stamping_its_own_publisher_is_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """The relation a copy records never licenses a publisher of its own.
+
+    A row whose relation is ``mirror`` was skipped before its publisher was
+    ever compared, so a repository record that stamped the *serving host* as
+    the publisher of a page it merely copies passed this metric — which is
+    the rubric's failure verbatim ("The serving host is recorded as the
+    publisher"). No production consumer gives a copy the original's
+    publisher by relation alone: a copy carrying a different evidenced
+    issuer keeps its own publisher on record, and one work must not read as
+    two however the relation is spelled.
+    """
+    reference = work_role_case.expectations.reference
+    mirror = reference["same_work_urls"][1]
+    assert "mirror" in reference["derivative_relations"]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="mirror",
+        source_role="original_report",
         publisher_id="repository.example.org",
     )
 
