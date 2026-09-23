@@ -1300,6 +1300,53 @@ def test_as_of_ignores_graph_event_timestamps(
     assert "2026-12-31" not in report.markdown
 
 
+def test_the_date_basis_line_names_the_asked_for_date_once(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """The answer's date is stated once, whether or not the period already has it.
+
+    ``date_basis`` carries two things a reader needs: which period the question
+    is about, and which date the answer claims to be written as of. The
+    planner's period requirement often names that date itself, and printing the
+    frozen date again on the same line would state one fact twice, which reads
+    as two. The date must still be there when the requirement does not name it.
+    """
+    agent = _synthesizer(
+        tracker, ScriptedCompleter(), synthesizer_tools(tracker, output_root=tmp_path)
+    )
+    contract = _dated_contract()
+    state = _state(
+        original_question=contract.question,
+        answer_contract=contract,
+        read_records={"read-1": _evidence_read()},
+    )
+    report, _ = agent.compose(agent.build_task(state), draft=None)
+    date_basis = next(
+        line
+        for line in report.markdown.splitlines()
+        if line.startswith("**Date basis:**")
+    )
+
+    assert date_basis.count(contract.as_of_date) == 1
+
+    silent_period = contract.model_copy(
+        update={"evidence_period_requirement": "the 2024 reporting period"}
+    )
+    silent_state = _state(
+        original_question=silent_period.question,
+        answer_contract=silent_period,
+        read_records={"read-1": _evidence_read()},
+    )
+    silent_report, _ = agent.compose(agent.build_task(silent_state), draft=None)
+    silent_basis = next(
+        line
+        for line in silent_report.markdown.splitlines()
+        if line.startswith("**Date basis:**")
+    )
+
+    assert silent_basis.count(silent_period.as_of_date) == 1
+
+
 # --- Task 7: the answer, not the claim inventory -------------------------------
 
 EVIDENCE_ID = "e1"
