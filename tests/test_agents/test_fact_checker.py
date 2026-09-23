@@ -6010,9 +6010,11 @@ async def test_a_second_fact_checker_does_not_remint_used_audit_ids(
     )
     second_completer = ScriptedCompleter(
         decisions=_check_decisions(),
+        # No score draft: the first pass's assessment of the document this
+        # pass re-reads is now saved on the state with that read, so the
+        # service reuses it for unchanged content instead of buying it twice.
         outputs=[
             _queue_draft((QUEUE_URL_B, QUEUE_TEXTS[1])),
-            independent_source_score,
             _proposal((1, 2)),
         ],
     )
