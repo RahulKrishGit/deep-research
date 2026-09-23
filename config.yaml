@@ -127,20 +127,23 @@ agents:
   # (AGENTS_CLAIM_BATCH_SIZE / AGENTS_CLAIM_BATCHES_PER_PASS override these.)
   claim_batch_size: 5
   claim_batches_per_pass: 6
-  # Operation-specific output budget for the planner's final
-  # ResearchPlanDraft request only; ReAct decisions and judge calls keep
-  # llm.max_tokens (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).
+  # Operation-specific output budget for the planner's plan-side structured
+  # requests: the plan draft and its repairs, the plan review, and plan
+  # extensions. ReAct decisions and judge calls keep llm.max_tokens
+  # (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).
   #
   # This is the one budget that deliberately exceeds the global cap. The
   # planner reasons at `max` effort, DeepSeek bills a reasoning token as a
   # completion token, so a plan request shares this budget with its own
-  # thinking. A live run truncated exactly here -- finish_reason=length, 32768
-  # completion tokens, ProviderOutputLimitError -- and that error is
-  # nonretryable by design, so the run stopped before research began. 65536 is
-  # the largest value the provider accepted when probed directly. This buys
-  # headroom, it does not remove the class: a request that reasons past this
-  # cap still stops the run, and the durable fix is a bounded degraded retry,
-  # not a third larger number.
+  # thinking. A live run truncated a plan-side request exactly at the old cap
+  # -- finish_reason=length, 32768 completion tokens, ProviderOutputLimitError
+  # -- and that error is nonretryable by design, so the run stopped before
+  # research began. The provider accepts 65536: later live runs completed plan
+  # requests at this cap with thinking enabled. No larger value was tested, so
+  # this is not a known provider maximum, and no later run has yet needed the
+  # extra headroom. This buys headroom, it does not remove the class: a
+  # request that reasons past this cap still stops the run, and the durable
+  # fix is a bounded degraded retry, not a third larger number.
   planner_final_max_tokens: 65536
   # Operation-specific output budget for the Critic's report-review request
   # only (AGENTS_CRITIC_REVIEW_MAX_TOKENS overrides this). That call renders

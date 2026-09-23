@@ -198,8 +198,9 @@ class AgentRuntimeConfig(BaseModel):
     and finish, it just may never call one.
 
     ``planner_final_max_tokens`` is the operation-specific output budget for
-    the planner's final ``ResearchPlanDraft`` request only; ReAct decisions
-    and judge calls keep the global ``llm.max_tokens`` cap. It is the one
+    the planner's plan-side structured requests -- the plan draft and its
+    repairs, the plan review, and plan extensions; ReAct decisions and judge
+    calls keep the global ``llm.max_tokens`` cap. It is the one
     budget that deliberately exceeds that cap: the planner reasons at ``max``
     effort, a reasoning token is a completion token, and a live run truncated
     a plan request at the global cap, which -- the error being nonretryable by
