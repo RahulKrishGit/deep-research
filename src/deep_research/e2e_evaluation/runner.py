@@ -66,6 +66,7 @@ from deep_research.graph.orchestrator import (
     compile_research_graph,
     run_research_graph,
 )
+from deep_research.graph.state import graph_quality_status
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.runtime.outcome import build_outcome
 from deep_research.utils.types import QUALITY_STATUS_ACCEPTED
@@ -593,7 +594,10 @@ def _replay_case_result(
     Determinism is asserted over the whole outcome — the exit code, the
     terminal quality, the answered targets and the report — not over the exit
     code alone, which two runs can agree on while publishing different
-    reports.
+    reports. It is also *required*, not merely reported: the three repetitions
+    exist to show order and identity are deterministic and that the runs are
+    isolated, so a row whose repetitions disagree is not a row that passed,
+    however clean each repetition's own result was.
     """
     outcomes = {
         (
@@ -604,14 +608,16 @@ def _replay_case_result(
         )
         for item in repetitions
     }
+    deterministic = len(outcomes) == 1
     return ReplayCaseResult(
         case_id=entry.case_id,
         version=entry.version,
         expected_product_result=entry.expected_product_result,
         decisive_assertion=entry.decisive_assertion,
         repetitions=list(repetitions),
-        deterministic=len(outcomes) == 1,
-        passed=all(not item.expectation_failures for item in repetitions),
+        deterministic=deterministic,
+        passed=deterministic
+        and all(not item.expectation_failures for item in repetitions),
     )
 
 
@@ -692,7 +698,8 @@ def run_replay_suite(
         accepted=all(case.passed for case in results) and attempts == 0,
         # The stricter product-level fact, kept under its own name: a row can
         # produce the partial result it declares — which is what ``passed``
-        # means here — while the product did not accept its report.
+        # means here, together with a deterministic outcome — while the
+        # product did not accept its report.
         rows_accepted=all(
             item.terminal_quality == QUALITY_STATUS_ACCEPTED
             for case in results
@@ -794,15 +801,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 tier=options.tier,
                 repetitions=options.repetitions,
             )
-            print(
-                f"Case {result.case_id}: "
-                f"declared "
-                f"{'accepted' if result.expected_result.accepted else 'partial'}, "
-                f"{'met' if result.met_expectation else 'NOT met'}; "
-                f"product {'accepted' if result.accepted else 'not accepted'}; "
-                f"coverage {result.mean_coverage:.2f}; "
-                f"judge {result.mean_judge_score:.2f}"
-            )
+            print(f"Case {result.case_id}: {_case_verdict(result)}")
             print(f"Artifact: {result.artifact_path}")
             print("Network: zero (scripted dependencies only)")
             # The exit code is the case's verdict, not the product's: a case
@@ -886,24 +885,59 @@ def real_agent_suite_lines(suite: ReplaySuiteResult) -> list[str]:
     return lines
 
 
-def _declared_line(case: CaseCampaignResult) -> str:
-    """One row's line: what it declared, whether it produced it, and what it did.
+def _product_graph_quality_status(case: CaseCampaignResult) -> str:
+    """The product quality status the row's repetitions recorded.
 
-    The declared result and the product result are separate facts and the line
-    states both, because a row can pass this suite by producing a partial
-    result: "accepted" alone would read as if every row's report had cleared
-    the gates, which is exactly the reading a declared-partial row exists to
-    make impossible.
+    Read from each repetition's own terminal quality decision — the same
+    ``graph_quality_status`` the finalizer stamps on the artifacts — never from
+    the campaign's floors. The two are different facts: a scripted-double row
+    records ``partial`` on every repetition because no reviewer scored its
+    report, while the campaign may still accept the row on its own gates. A
+    line that printed the campaign's verdict as the product's would claim an
+    acceptance the product never made. Repetitions that recorded different
+    statuses are reported as ``mixed`` rather than collapsed to the best one.
+    """
+    statuses = {graph_quality_status(item.state) for item in case.repetitions}
+    if len(statuses) == 1:
+        return next(iter(statuses))
+    return "mixed"
+
+
+def _case_verdict(case: CaseCampaignResult) -> str:
+    """One row's line tail: the declaration, the campaign, and the product.
+
+    Three separate facts. ``declared`` is the result the case says its run
+    should produce; ``campaign`` is the harness's own floor verdict — the
+    coverage, judge and integrity gates; ``product graph_quality_status`` is
+    what the run actually recorded as the product's terminal quality status.
+    They are not interchangeable: a row the campaign accepted can hold a
+    product status of ``partial``, and printing the campaign's verdict as the
+    product's was exactly that error.
     """
     declared = case.expected_result
     return (
-        f"{case.case_id}: "
         f"declared {'accepted' if declared.accepted else 'partial'}, "
         f"{'met' if case.met_expectation else 'NOT met'}; "
-        f"product {'accepted' if case.accepted else 'not accepted'}; "
+        f"campaign {'accepted' if case.accepted else 'not accepted'}; "
+        f"product graph_quality_status {_product_graph_quality_status(case)}; "
         f"coverage {case.mean_coverage:.2f}; "
         f"judge {case.mean_judge_score:.2f}"
     )
+
+
+def _declared_line(case: CaseCampaignResult) -> str:
+    """One row's line: what it declared, whether it produced it, and what it did.
+
+    The declared result, the campaign's verdict and the product's own recorded
+    status are separate facts and the line states all three, because a row can
+    pass this suite by producing a partial result: "accepted" alone would read
+    as if every row's report had cleared the gates, which is exactly the
+    reading a declared-partial row exists to make impossible. The product
+    status is read from the run's own ``graph_quality_status``, so a row whose
+    report the product recorded as partial can never be printed as a product
+    acceptance however the campaign's floors judge it.
+    """
+    return f"{case.case_id}: {_case_verdict(case)}"
 
 
 def graph_historical_suite_lines(result: CampaignResult) -> list[str]:

@@ -486,7 +486,13 @@ class ReplayCaseResult(ContractModel):
     deterministic: bool
     """Whether every repetition produced one identical outcome."""
     passed: bool
-    """Whether every repetition met its case's declared result."""
+    """Whether every repetition met its case's declared result, deterministically.
+
+    Determinism is required, not merely reported: the repetitions exist to
+    show order and identity are deterministic and that the runs are isolated,
+    so a row whose repetitions disagree did not pass however clean each
+    repetition's own result was.
+    """
     artifact_path: str | None = None
 
 
@@ -511,7 +517,10 @@ class ReplaySuiteResult(ContractModel):
 
     A real-agent row can declare a partial result — ``same-work-mirror`` does —
     and a suite that read that as a failure could not hold the negative half of
-    its own matrix. The stricter, product-level fact is ``rows_accepted``.
+    its own matrix. Determinism is part of the verdict too: a row that passed
+    is a row whose repetitions agreed, so a suite holding a row whose runs
+    disagreed is not accepted. The stricter, product-level fact is
+    ``rows_accepted``.
     """
     rows_accepted: bool = True
     """Every repetition's own product result was an accepted one."""

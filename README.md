@@ -987,8 +987,11 @@ case declares whether its run should be accepted or partial, which failure
 legs its run must record, and which legs its own fixture makes correct, so a
 case whose subject is a refusal passes by producing that refusal instead of
 being read as a failure. Each row's line states the declaration, whether it
-was met, and the product result separately, and the suite line carries both
-the verdict and how many rows were themselves accepted. `case <id>` runs one
+was met, the campaign's own floor verdict, and the product's own terminal
+status read from the run's recorded `graph_quality_status` — so a row the
+campaign accepted while the product recorded `partial` never reads as a
+product acceptance. The suite line carries the verdict and how many rows
+were themselves accepted by the campaign. `case <id>` runs one
 of those rows alone under the same floors, accepts both the id `list` prints
 under this label (`broad-constraints-graph`) and the legacy id the row was
 built from, prints the same two disclosure lines as `suite` before its
