@@ -37,6 +37,7 @@ from deep_research.agents.report import (
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import (
     PACKET_SUPPORT_CHARS,
+    _bounded_passage,
     dropped_modality,
     hardened_modality,
     hedge_marker,
@@ -1769,13 +1770,144 @@ def test_a_hardened_modality_is_read_from_the_evidence_not_the_claim() -> None:
     )
 
     assert hardened_modality(
-        "EIA forecast 18.2 GW of additions in 2025, which would set a record.",
+        "EIA's February 24, 2025 forecast of 18.2 GW of additions for 2025, "
+        "which would set a record.",
         evidence.casefold(),
     ) == "would"
     assert hardened_modality(
         "Capacity growth could set a record with 18.2 GW of additions.",
         evidence.casefold(),
     ) == ""
+
+
+def test_a_noun_naming_a_document_does_not_excuse_a_hardened_statement() -> None:
+    """The audited summary bullet, which a noun in the hedge list let through.
+
+    "EIA's February 24, 2025 forecast of 18.2 GW … which EIA said would set a
+    record" carries the noun "forecast" as a citation label. Reading it as a
+    hedge short-circuited the check and published the hardened claim, while
+    its twin in the findings section — same claims, same corpus, no noun — was
+    refused.
+    """
+    evidence = (
+        "EIA said capacity growth from battery storage could set a record as "
+        "it expects 18.2 GW of utility-scale battery storage to be added."
+    )
+    statement = (
+        "The 2025 projection carried by this evidence is EIA's February 24, "
+        "2025 forecast of 18.2 GW of utility-scale battery storage additions "
+        "for the year, which EIA said would set a record for battery storage "
+        "additions."
+    )
+
+    assert hedge_marker(statement) == ""
+    assert hardened_modality(statement, evidence.casefold()) == "would"
+
+
+def test_a_reporting_verb_is_a_hedge_and_a_correct_restatement_is_kept() -> None:
+    """`EIA projects/forecasts that … will be added` states the evidence.
+
+    The verb forms were dropped with the nouns, so a correctly hedged
+    restatement was refused for the "will" it inherited from its source.
+    """
+    evidence = (
+        "EIA said capacity growth from battery storage could set a record as "
+        "it expects 18.2 GW of utility-scale battery storage to be added."
+    ).casefold()
+
+    assert hardened_modality(
+        "EIA projects that 18.2 GW of utility-scale battery storage capacity "
+        "will be added in 2025.",
+        evidence,
+    ) == ""
+    assert hardened_modality(
+        "EIA forecasts 18.2 GW of utility-scale battery storage capacity will "
+        "be added in 2025.",
+        evidence,
+    ) == ""
+    assert hedge_marker(
+        "EIA's battery storage forecast identifies its underlying data vintage."
+    ) == ""
+
+
+def test_a_pass_phrase_in_one_clause_does_not_excuse_another() -> None:
+    """The exemption is per clause, not per note.
+
+    A whole-note substring bypass published the audited scope assertion as
+    soon as any of seven ordinary phrases appeared anywhere in it.
+    """
+    audited = (
+        "Reported totals cover utility-scale capacity and hybrid co-located "
+        "plants while excluding behind-the-meter storage"
+    )
+
+    assert scope_fact(f"{audited}, so this report cannot convert the figures "
+                      "into a whole-market total.") == "behind-the-meter"
+    assert scope_fact(
+        "EIA's reported totals exclude behind-the-meter storage; this pass "
+        "confirmed the scope convention."
+    ) != ""
+    assert scope_fact(
+        "Per the plan, EIA's reported totals exclude behind-the-meter storage."
+    ) != ""
+    assert scope_fact(
+        "State-level breakdowns are not included in this report."
+    ) == ""
+
+
+def test_a_cut_with_no_sentence_break_lands_on_a_word_boundary() -> None:
+    """A passage with no sentence terminator before the budget is cut cleanly.
+
+    The fallback sliced at the exact limit, so the writer received a fragment
+    in the middle of a token.
+    """
+    passage = "field name " + "x" * 40_000
+
+    bounded = _bounded_passage(passage, limit=100)
+
+    kept = bounded.split(" [… cut mid-sentence here; ", 1)[0]
+    assert passage.startswith(kept)
+    assert not kept.endswith("x") or passage[len(kept)] == " "
+    assert "cut mid-sentence here" in bounded
+    assert "x" * 200 not in bounded
+
+
+def test_no_claim_loses_all_of_its_support_to_an_earlier_claims_length() -> None:
+    """One oversized first passage must not starve every later claim."""
+    huge = "field name " * 20_000
+    small = "Generators added 10.4 GW of new battery storage capacity in 2024."
+    first = _claim(text="A very long read was taken.", target_ids=["t1"]).model_copy(
+        update={"cluster_id": CLUSTER_ID}
+    )
+    second = _claim(text="Additions reached 10.4 GW.", target_ids=["t2"]).model_copy(
+        update={"cluster_id": "cluster-2"}
+    )
+
+    packet = build_canonical_packet(
+        claims=[first, second],
+        clusters={
+            CLUSTER_ID: _cluster(
+                claim_ids=[first.claim_id], evidence_ids=["e-big"]
+            ),
+            "cluster-2": _cluster(
+                cluster_id="cluster-2",
+                claim_ids=[second.claim_id],
+                evidence_ids=["e-small"],
+            ),
+        },
+        evidence={
+            "e-big": _unit(evidence_id="e-big", excerpt=huge),
+            "e-small": _unit(evidence_id="e-small", excerpt=small),
+        },
+        targets=[_target("t1"), _target("t2")],
+        sources=[_source()],
+        limit=10,
+    )
+    support = {entry.label: entry.support for entry in packet.entries}
+
+    assert any(small in line for line in support["C002"])
+    assert any(huge.startswith(line.split('"', 2)[1].split(" […", 1)[0]) or
+               " […" in line for line in support["C001"])
 
 
 def test_a_statement_that_hardens_its_evidences_modality_is_refused() -> None:
@@ -1804,8 +1936,8 @@ def test_a_statement_that_hardens_its_evidences_modality_is_refused() -> None:
     refused, rejected = build_report_composition(
         task,
         _summary_draft(
-            "EIA forecast 18.2 GW of additions in 2025, which would set a "
-            "record."
+            "EIA's February 24, 2025 forecast of 18.2 GW of additions for "
+            "2025, which would set a record."
         ),
         max_sections=4,
         limitations=[],
@@ -1897,8 +2029,8 @@ def test_a_restatement_of_the_evidence_is_not_refused_for_its_word_order() -> No
     )
 
 
-def test_a_passage_the_packet_cannot_carry_is_named_not_dropped() -> None:
-    """Whole passages until the budget is spent, then an omission notice.
+def test_a_second_passage_over_the_budget_is_cut_and_says_so() -> None:
+    """Whole passages until the budget is spent, then a marked sentence cut.
 
     The packet is what the writer cites from, so a passage it cannot carry is
     stated rather than silently dropped — and the budget is a model-input
@@ -1925,9 +2057,10 @@ def test_a_passage_the_packet_cannot_carry_is_named_not_dropped() -> None:
     support = packet.entries[0].support
 
     assert f'"{small}"' in support[0]
-    assert "further selected passage(s) were not shown for length: e2" in (
-        support[1]
-    )
+    # The second passage cannot fit what is left of this claim's share, so it
+    # is carried up to a sentence end and the withheld count is stated.
+    assert support[1].startswith('e2 p. 4 "The review reports a measured result.')
+    assert "further character(s) were not shown]" in support[1]
     assert long_read not in support[1]
 
 

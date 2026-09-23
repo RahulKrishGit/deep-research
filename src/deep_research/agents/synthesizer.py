@@ -338,9 +338,19 @@ STATEMENT_DISPOSITIONS = (
 # Electric Generator Inventory"), not an assertion.
 _HEDGE_PATTERN = re.compile(
     r"\b(?:could|might|possibly|potentially|perhaps|likely|unlikely|expects?|"
-    r"expected|anticipates?|anticipated|projected|projection|planned|intends?|"
+    r"expected|anticipates?|anticipated|projected|planned|intends?|"
     r"intended|suggests?|suggested|implies|implied|appears?|seems?|reportedly|"
     r"allegedly|estimates?|estimated|approximately|roughly)\b",
+    re.IGNORECASE,
+)
+# The reporting verbs whose *verb* use hedges a statement and whose noun use
+# names a document. "EIA forecasts 18.2 GW will be added" hedges; "EIA's
+# February 24, 2025 forecast of 18.2 GW" is a citation label, and reading it as
+# a hedge let the audited "would set a record" through the short-circuit. The
+# lookahead is the discriminator: a reporting verb introduces a clause or a
+# figure, a label is followed by a noun.
+_HEDGE_REPORTING_PATTERN = re.compile(
+    r"\b(?:forecasts?|projects?|predicts?)\b(?=\s+(?:that\b|\d))",
     re.IGNORECASE,
 )
 # ``may`` is the one hedge that collides with a month name, so it is matched
@@ -443,6 +453,11 @@ PACKET_SUPPORT_CHARS = 16000
 # on a sentence boundary — a partial sentence is exactly the fragment a
 # writer must not restate.
 _PACKET_OMISSION = " [… the passage continues; {count} further character(s) were not shown]"
+# When the budget lands inside a sentence with no terminator before it, the cut
+# is from the end of a *word* and the marker says it is not a sentence end.
+_PACKET_OMISSION_UNSENTENCED = (
+    " [… cut mid-sentence here; {count} further character(s) were not shown]"
+)
 
 # Characters kept verbatim in a report filename. Narrow on purpose:
 # WriteDocumentTool rejects absolute paths and traversal segments, and a
@@ -1143,6 +1158,37 @@ def build_canonical_packet(
     ranked = _packet_rank(canonical, targets=target_index)
     entries: list[PacketEntry] = []
     remaining = support_budget
+    # Reserve a first-passage share for every claim the packet will carry
+    # before any claim takes a second passage. Spending the budget in claim
+    # order let one oversized first passage starve every later claim of its
+    # only support, which the omission notice named without saying whose.
+    slots = max(1, min(limit, len(ranked)))
+    share = max(1, support_budget // slots)
+    selected_by_claim = {
+        claim.claim_id: _selected_ids(
+            claim, clusters.get(claim.cluster_id or "")
+        )
+        for claim in ranked[:slots]
+    }
+    support_by_claim: dict[str, list[str]] = {}
+    for claim in ranked[:slots]:
+        lines = _evidence_lines(
+            selected_by_claim[claim.claim_id][:1],
+            evidence,
+            budget=min(share, remaining),
+        )
+        remaining -= _support_cost(lines)
+        support_by_claim[claim.claim_id] = lines
+    for claim in ranked[:slots]:
+        rest = selected_by_claim[claim.claim_id][1:]
+        if not rest or remaining <= 0:
+            continue
+        lines = _evidence_lines(rest, evidence, budget=min(share, remaining))
+        remaining -= _support_cost(lines)
+        support_by_claim[claim.claim_id] = [
+            *support_by_claim[claim.claim_id],
+            *lines,
+        ]
     for position, claim in enumerate(ranked, start=1):
         if len(entries) >= limit:
             break
@@ -1211,8 +1257,7 @@ def build_canonical_packet(
                 obligations.append(
                     f"{target_id} still owes: {', '.join(missing)}"
                 )
-        support = _evidence_lines(selected, evidence, budget=remaining)
-        remaining -= _support_cost(support)
+        support = support_by_claim.get(claim.claim_id, [])
         counter = _evidence_lines(
             [
                 evidence_id
@@ -1558,7 +1603,11 @@ def unattested_words(text: str, corpus: str) -> list[str]:
 
 def hedge_marker(text: str) -> str:
     """The first modality marker a text carries, or ``""`` for none."""
-    match = _HEDGE_PATTERN.search(text) or _HEDGE_MAY_PATTERN.search(text)
+    match = (
+        _HEDGE_PATTERN.search(text)
+        or _HEDGE_REPORTING_PATTERN.search(text)
+        or _HEDGE_MAY_PATTERN.search(text)
+    )
     return match.group(0).casefold() if match else ""
 
 
@@ -1639,12 +1688,18 @@ def scope_fact(text: str) -> str:
     what a source counted.
     """
     lowered = " ".join(text.casefold().split())
-    if any(phrase in lowered for phrase in _PASS_PHRASES):
-        return ""
-    if not any(verb in lowered for verb in _SCOPE_VERBS):
-        return ""
-    for subject in _SCOPE_SUBJECTS:
-        if subject in lowered:
+    for clause in re.split(r"[,;.]\s+|\band\b", lowered):
+        subject = next(
+            (name for name in _SCOPE_SUBJECTS if name in clause), ""
+        )
+        if not subject:
+            continue
+        # The exemption is per *clause*: a note that describes this pass in one
+        # clause and asserts a source's boundary in another is the assertion,
+        # and exempting the whole note on one substring published it.
+        if any(phrase in clause for phrase in _PASS_PHRASES):
+            continue
+        if any(verb in clause for verb in _SCOPE_VERBS):
             return subject
     return ""
 
@@ -1717,8 +1772,14 @@ def _bounded_passage(text: str, *, limit: int) -> str:
     boundary = max(
         head.rfind(". "), head.rfind(".\n"), head.rfind("! "), head.rfind("? ")
     )
-    kept = head[: boundary + 1] if boundary > 0 else head
-    return kept + _PACKET_OMISSION.format(count=len(text) - len(kept))
+    if boundary > 0:
+        kept = head[: boundary + 1]
+        return kept + _PACKET_OMISSION.format(count=len(text) - len(kept))
+    space = head.rfind(" ")
+    if space <= 0:
+        return _PACKET_OMISSION_UNSENTENCED.format(count=len(text))
+    kept = head[:space]
+    return kept + _PACKET_OMISSION_UNSENTENCED.format(count=len(text) - len(kept))
 
 
 def _evidence_lines(
