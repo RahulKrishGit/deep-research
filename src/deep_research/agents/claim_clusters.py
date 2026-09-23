@@ -2022,12 +2022,13 @@ def _geography_for(
         return _canonical_place(named)
     if _alias_names_the_clause(fact, issuer=issuer):
         return "United States"
-    # A leading locative qualifies the reported fact; a locative in a source
-    # title or attribution does not. Require the opening place to end at a comma.
+    # A comma-bounded locative before the issuer qualifies its reported fact;
+    # a place-like word in a source title does not. A date may precede it.
     prefix = clause[:fact_start].strip()
-    leading = _GEOGRAPHY.match(prefix[:1].lower() + prefix[1:])
-    if leading and prefix[leading.end():].lstrip().startswith(","):
-        return _canonical_place(leading.group("geography"))
+    normalized_prefix = prefix[:1].lower() + prefix[1:]
+    for leading in _GEOGRAPHY.finditer(normalized_prefix):
+        if prefix[leading.end():].lstrip().startswith(","):
+            return _canonical_place(leading.group("geography"))
     if claim_geography and _NATION_ANAPHOR.search(fact):
         return claim_geography
     return ""

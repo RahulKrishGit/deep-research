@@ -1994,8 +1994,16 @@ _ENERGY_UNIT = re.compile(
 )
 _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 _GOVERNMENT_ISSUER = re.compile(
-    r"\b(?:EIA|NREL|DOE|EPA|NOAA|USGS|USDA|BLS|"
-    r"Energy Information Administration|Department of Energy)\b", re.I
+    r"\b(?:EIA|NREL|DOE|EPA|NOAA|USGS|USDA|BLS|FERC|"
+    r"Energy Information Administration|Department of Energy|"
+    r"Federal Energy Regulatory Commission|"
+    r"(?:federal|government|national)\s+(?:agency|department|bureau)|"
+    r"(?:energy|environmental|regulatory)\s+(?:administration|commission))\b",
+    re.I,
+)
+_INDEPENDENT_ISSUER = re.compile(
+    r"\b(?:Wood Mackenzie|BloombergNEF|Rystad Energy|S&P Global|"
+    r"American Clean Power|ACP|Canary Media)\b", re.I
 )
 _ADDITION = re.compile(
     r"\b(?:add(?:ed|itions?)?|new|install(?:ed|ations?)?|"
@@ -2005,6 +2013,18 @@ _ADDITION = re.compile(
 _INCLUSION_RULE = re.compile(
     r"\b(?:includ\w*|exclud\w*|count\w*|omit\w*|"
     r"limit\w*|inside|outside)\b", re.I
+)
+_UNKNOWN_TREATMENT = re.compile(
+    r"\b(?:whether|if|inclusion|exclusion)\b[^,.!?;]{0,100}"
+    r"\b(?:is|remains|was|were)\s+(?:unknown|unclear|unspecified|"
+    r"undetermined|unreported|not (?:reported|stated|known))\b|"
+    r"\b(?:unknown|unclear|unspecified|undetermined)\s+(?:whether|if)\b",
+    re.I,
+)
+_CAUSAL_LINK = re.compile(
+    r"\b(?:because|due to|through|via|caus(?:ed|ing)|driven by|"
+    r"enabled by|attributable to|led to|result(?:ed|ing) (?:in|from))\b",
+    re.I,
 )
 
 
@@ -2033,7 +2053,9 @@ def qualifier_matches_requirement(
             or "independent publisher" in detail
             or ("distinct" in detail and "government" in detail)
         )
-        if independent and government:
+        if independent and (government or not _INDEPENDENT_ISSUER.search(
+            proposition.attribution
+        )):
             return False
         if (
             not independent
@@ -2059,10 +2081,13 @@ def qualifier_matches_requirement(
             return False
         if "add" in detail and _ADDITION.search(proposition.text) is None:
             return False
-        if (
-            ("inclusion" in detail or "exclusion" in detail or "counting" in detail)
-            and _INCLUSION_RULE.search(proposition.text) is None
-        ):
+        if "inclusion" in detail or "exclusion" in detail or "counting" in detail:
+            if (
+                _INCLUSION_RULE.search(proposition.text) is None
+                or _UNKNOWN_TREATMENT.search(proposition.text) is not None
+            ):
+                return False
+        if "mechanism" in detail and _CAUSAL_LINK.search(proposition.text) is None:
             return False
     return True
 
@@ -2104,7 +2129,13 @@ def answered_required_dimensions(
     # a qualitative rule. Resolve it at use time: claim_clusters depends on
     # these types, so a module-level import would create a cycle.
     from deep_research.agents.claim_clusters import checkable_dimensions  # noqa: PLC0415
+    # These are contract-wide publication rules, not facts an atom can state.
+    # The attribution gate skips them too; the run checks currency and answer
+    # form separately from whether this statement carries its target's facts.
     for dimension in dimensions:
+        if dimension.casefold().startswith(("answer form:", "evidence period:")):
+            answered.append(dimension)
+            continue
         tokens = {
             token.strip(".,:;()").casefold()
             for token in dimension.replace("-", " ").replace("_", " ").split()

@@ -49,7 +49,6 @@ from deep_research.agents.fact_checker import (
     SupportAssessment,
 )
 from deep_research.agents.planner import (
-    Clock,
     EvidenceTargetDraft,
     PlanExtensionDraft,
     PlanReviewDraft,
@@ -2334,11 +2333,12 @@ def _invariant_mechanism_obligation_stays_unanswered(
 ) -> str | None:
     """A cited pair of pages about an outcome is not an answer about its cause.
 
-    The obligation asks for a causal mechanism, and every page the run read
-    states what happened rather than why. So the check has two halves and needs
-    both: the topic really was researched - a checked claim names the
-    obligation - and the obligation is still outstanding, because evidence
-    that answers "what" cannot be dressed into an answer to "why".
+    The obligation asks for a causal mechanism; the pages in this scenario
+    state what happened rather than why. So the check has two halves and needs
+    both: findings for the obligation came from pages actually read, and the
+    obligation remains outstanding. A strict atom gate correctly refuses to
+    attach an outcome-only claim to the mechanism target, so requiring that
+    claim to carry the target ID would reject the very behavior under test.
     """
     from deep_research.utils.types import counted_evidence_targets
 
@@ -2347,22 +2347,29 @@ def _invariant_mechanism_obligation_stays_unanswered(
         for topic in run.state.sub_topics
         for target in counted_evidence_targets(topic.evidence_targets)
         if any(
-            "causal mechanism" in dimension.casefold()
+            dimension.casefold().startswith("measure:")
+            and "mechanism" in dimension.casefold()
             for dimension in target.required_dimensions
         )
     ]
     if not mechanism:
         return "no obligation in this scenario asked for a mechanism"
+    reads = {
+        url
+        for read in run.state.read_records.values()
+        for url in (read.requested_url, read.resolved_url)
+    }
     answered = set(run.answered_target_ids())
     for target in mechanism:
         researched = any(
-            target.target_id in claim.target_ids
-            for claim in run.state.verified_claims
+            target.target_id in finding.target_ids
+            and finding.source_url in reads
+            for finding in run.state.raw_findings
         )
         if not researched:
             return (
-                f"nothing was ever checked for {target.target_id}, so the case "
-                "proves nothing about the answer it withheld"
+                f"no read-backed finding was gathered for {target.target_id}, "
+                "so the case proves nothing about the answer it withheld"
             )
         if target.target_id in answered:
             return (

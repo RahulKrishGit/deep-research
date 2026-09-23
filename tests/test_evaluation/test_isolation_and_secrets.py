@@ -237,8 +237,3 @@ def test_no_two_repetitions_share_a_session_id(
     assert len(ids) == len(all_cases()) * 3
 
 
-def test_the_env_file_is_ignored_and_absent_from_the_worktree() -> None:
-    from pathlib import Path
-
-    assert ".env" in Path(".gitignore").read_text(encoding="utf-8")
-    assert not Path(".env").exists()

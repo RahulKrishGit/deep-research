@@ -1191,9 +1191,36 @@ def test_graph_iteration_cannot_advance_past_maximum() -> None:
             True,
         ),
         (
+            "According to EIA, behind-the-meter storage is excluded from the "
+            "reported utility-scale capacity total in the United States for "
+            "2024, but the amount excluded is unknown.",
+            "excludes",
+            True,
+        ),
+        (
+            "EIA: behind-the-meter storage exclusion from the US grid total "
+            "is definite, but excluded amount is unknown in 2024.",
+            "excludes",
+            True,
+        ),
+        (
             "According to EIA, behind-the-meter storage expanded in the "
             "United States in 2024.",
             "increases_by",
+            False,
+        ),
+        (
+            "According to EIA, it is unknown if behind-the-meter storage is "
+            "included in the reported utility-scale total in the United States "
+            "for 2024.",
+            "includes",
+            False,
+        ),
+        (
+            "According to EIA, behind-the-meter storage is counted in a "
+            "separate experiment, but its inclusion in the reported grid-scale "
+            "total in the United States in 2024 is unknown.",
+            "counts",
             False,
         ),
     ],

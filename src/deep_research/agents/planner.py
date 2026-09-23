@@ -20,11 +20,9 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.claim_clusters import (
+    LEGACY_COVERAGE_DIMENSION,
     METADATA_DIMENSIONS,
-    atom_answers_dimensions,
-    atom_answers_target,
     checkable_dimensions,
-    extract_text_atoms,
     metadata_dimension_asked_for,
 )
 from deep_research.agents.errors import (
@@ -1778,101 +1776,29 @@ _DEMAND_MARKERS = (
 )
 _CONJUNCTION = re.compile(r"(?i)\s+and\s+|,\s*and\s+")
 
-# The claim prose the plan-time answerability check is run against. Every
-# dimension such a claim can state is stated in it, in the exact spelling the
-# atom contract reads: a named issuer ahead of the clause, a number with a
-# unit, a named geography, a year, a stated population, and a projected or
-# negated phrasing when the obligation asks for one. It is never a claim about
-# the world and never reaches a reader or a prompt: it answers the one
-# question a plan can ask of a target before any research runs — is there a
-# clause this contract could credit?
-_TEMPLATE_ISSUER = "Example Issuer"
-_TEMPLATE_GEOGRAPHY = "the United States"
-_TEMPLATE_VALUE = "10"
-_TEMPLATE_UNIT = "MW"
-
-
-def _template_answer(target: EvidenceTarget, contract: AnswerContract) -> str:
-    """The most favourable claim prose one target's own dimensions allow.
-
-    One clause that states every dimension the atom contract can read: a named
-    issuer ahead of it, a number with its unit, a named geography, a year, a
-    stated population or share when the obligation asks for one, and a
-    projected or negated phrasing where the target asks for that.
-    """
-    required = {
-        dimension
-        for requirement in target.required_dimensions
-        for dimension in checkable_dimensions(requirement)
-    }
-    scope = (
-        contract.geographic_scope
-        if contract.geographic_scope
-        not in ("unspecified", "global", "")
-        else _TEMPLATE_GEOGRAPHY
-    )
-    year = (
-        contract.as_of_date[:4]
-        if contract.as_of_date[:4].isdigit()
-        else "2024"
-    )
-    if "denominator" in required:
-        subject = "the reported share of the surveyed plants"
-        value = f"{_TEMPLATE_VALUE} percent"
-    elif "population" in required:
-        subject = "the reported count of the surveyed plants"
-        value = _TEMPLATE_VALUE
-    else:
-        subject = "the reported amount added"
-        value = f"{_TEMPLATE_VALUE} {_TEMPLATE_UNIT}"
-    verb = (
-        "is projected to reach"
-        if {"forecast_status", "forecast_horizon"} & required
-        else "was"
-    )
-    negation = "not " if "negated" in required else ""
-    return (
-        f"According to {_TEMPLATE_ISSUER}, {subject} {verb} {negation}"
-        f"{value} in {scope} in {year}."
-    )
 
 
 def _plan_answerability(
-    target: EvidenceTarget,
-    *,
-    contract: AnswerContract,
+    target: EvidenceTarget, *, contract: AnswerContract
 ) -> list[str] | None:
-    """The target's requirements no clause could satisfy, or ``None``.
+    """Name dimensions that no recorded proposition field could ever fill.
 
-    The one question a plan can ask about a target before any research runs:
-    run the most favourable claim its own dimensions allow through
-    ``atom_answers_target`` — the same gate ``claim_attribution`` credits
-    targets with — and see whether it passes. ``None`` means some clause could
-    be bound to this target; a list names the requirements that stopped it.
-    A target that fails here fails for every claim that will ever be written
-    (the run's plan had five, audit #3), and naming it at plan time is what
-    lets the repair remove the obligation instead of discovering the gap after
-    the research is paid for.
+    A plan has no evidence yet. Checking a fabricated claim against exact
+    years, units, or publisher classes would confuse its arbitrary example
+    values with structural answerability. Contract-wide answer form and
+    currency obligations are presentation rules, not claim prose.
     """
-    atoms = extract_text_atoms(
-        _template_answer(target, contract),
-        claim_id="plan-answerability-check",
-    )
-    if any(
-        atom_answers_target(atom, target, question=contract.question)
-        for atom in atoms
-    ):
-        return None
-    return [
+    non_prose = {
+        answer_form_requirement(contract.answer_kind),
+        latest_available_obligation(contract),
+        LEGACY_COVERAGE_DIMENSION,
+    }
+    unanswerable = [
         requirement
         for requirement in target.required_dimensions
-        if not any(
-            atom_answers_dimensions(
-                atom, [requirement], question=contract.question
-            )
-            for atom in atoms
-        )
+        if requirement not in non_prose and not checkable_dimensions(requirement)
     ]
+    return unanswerable or None
 
 
 def _demands_corroboration(sub_topic: SubTopic) -> bool:
