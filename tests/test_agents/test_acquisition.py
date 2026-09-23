@@ -2141,3 +2141,42 @@ async def test_a_contents_only_fixture_cannot_supply_a_measurement(
 
     assert findings == []
     assert rejected == ["finding 1: excerpt was not admitted at locator"]
+
+def test_a_hard_cut_never_splits_a_decomposed_character() -> None:
+    """A cut lands on a character boundary even where there is no whitespace.
+
+    A passage must be verbatim text of the body *after* NFC normalization: a
+    cut between the pieces of a decomposed character produces a passage the
+    body no longer contains, ``build_read_record`` refuses it, and the whole
+    page — which the base admitted — is dropped.
+    """
+    import unicodedata
+
+    # Three-code-point syllables first, then two: the bound falls inside one
+    # of the two-code-point characters.
+    body = unicodedata.normalize(
+        "NFD", "\uac01" * 199 + "\uac00" * 500
+    )
+    assert len(body) > WEB_PASSAGE_CHARS
+    result = ToolResult(
+        tool_name="web_scraper",
+        success=True,
+        data={
+            "url": "https://hangul.test/page",
+            "requested_url": "https://hangul.test/page",
+            "resolved_url": "https://hangul.test/page",
+            "title": "Decomposed page",
+            "text": body,
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+
+    assert read is not None
+    assert "".join(read.passages.values()) == body
+    for passage in read.passages.values():
+        assert unicodedata.normalize("NFC", passage) in unicodedata.normalize(
+            "NFC", body
+        )

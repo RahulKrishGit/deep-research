@@ -1493,13 +1493,15 @@ class RefusedReadPolicy:
     locally: the loop is told why, the budget is not charged for a call that
     would not have run, and the claim is judged on the evidence it has.
 
-    Only *failed* reads are remembered. A successful read is cached by the run
-    and costs nothing to re-request; a URL that failed once can still be served
-    by a different reader path (a PDF behind an HTML refusal), so the denial is
-    per URL and the loop may still try the document reader tool.
+    Only *failed* reads are remembered, and they are remembered per reader:
+    ``web_scraper`` fails a PDF with ``unsupported_content_type`` and the
+    designed next step is ``document_reader`` on that same URL, so a refusal
+    keyed by URL alone denied the fallback that the failure asks for. A
+    successful read is never remembered either — it is cached and costs
+    nothing to re-request.
     """
 
-    refusals: dict[str, str] = field(default_factory=dict)
+    refusals: dict[tuple[str, str], str] = field(default_factory=dict)
 
     def __call__(
         self, decision: ReActDecision, tool_input: Mapping[str, object] | None = None
@@ -1514,7 +1516,9 @@ class RefusedReadPolicy:
         if decision.action != "use_tool" or decision.tool_name not in _READ_TOOLS:
             return ToolPolicyDecision()
         url = _read_url(tool_input or {})
-        known = self.refusals.get(normalize_source_url(url))
+        known = self.refusals.get(
+            ((decision.tool_name or ""), normalize_source_url(url))
+        )
         if not url or known is None:
             return ToolPolicyDecision()
         return ToolPolicyDecision(
@@ -1539,7 +1543,9 @@ class RefusedReadPolicy:
         reason = "the read failed"
         if result is not None and result.error is not None:
             reason = result.error.type or reason
-        self.refusals.setdefault(normalize_source_url(url), reason)
+        self.refusals.setdefault(
+            (step.tool_name or "", normalize_source_url(url)), reason
+        )
 
 
 def _issuer_publishers(packet: AdjudicationPacket) -> set[str]:

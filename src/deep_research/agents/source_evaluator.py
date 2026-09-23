@@ -73,6 +73,7 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     ScoredSource,
+    SubTopic,
 )
 
 SOURCE_EVALUATOR_NAME = "source_evaluator"
@@ -771,6 +772,37 @@ class SourceEvaluationTask(AgentTask):
     dossiers: dict[str, ReadDossier] = Field(default_factory=dict)
 
 
+def dossier_query(labels: Sequence[str], sub_topics: Sequence[SubTopic]) -> str:
+    """The plan text one source was cited for, as a passage-selection query.
+
+    The Source Evaluator's own path scored from a read's first characters in
+    document order, so a figure that sits past that window was invisible to the
+    pass that judges relevance and identity. The plan is the query that path
+    has: the sub-topic's title, the searches it was made with, its success
+    criteria, and the question of each evidence target. A label the plan does
+    not name is kept as itself, so a record written before the plan was
+    labelled still orders its passages.
+    """
+    by_label: dict[str, str] = {}
+    for topic in sub_topics:
+        text = " ".join(
+            part
+            for part in (
+                topic.title,
+                *topic.search_queries,
+                *topic.success_criteria,
+                *(target.question for target in topic.evidence_targets),
+            )
+            if isinstance(part, str) and part.strip()
+        )
+        if not text:
+            continue
+        by_label[topic.coverage_id.casefold()] = text
+        by_label.setdefault(topic.title.casefold(), text)
+    parts = [by_label.get(label.casefold(), label) for label in labels]
+    return " ".join(dict.fromkeys(part for part in parts if part))
+
+
 def scoring_messages(
     task: SourceEvaluationTask,
     *,
@@ -1025,6 +1057,12 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 list(state.read_records.values()),
                 cited_sub_topics={
                     group.url: group.sub_topics for group in groups
+                },
+                queries={
+                    group.url: dossier_query(
+                        group.sub_topics, state.sub_topics
+                    )
+                    for group in groups
                 },
                 excerpt_chars=self._excerpt_chars,
             )

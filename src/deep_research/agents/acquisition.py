@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -127,6 +128,20 @@ def _chunk_text(chunks: Sequence[Mapping[str, object]]) -> str:
     )
 
 
+def _split_survives_normalization(text: str, cut: int) -> bool:
+    """True when ``text`` may be divided at ``cut`` without losing a character.
+
+    A passage is verified as verbatim text of the read body *after* NFC
+    normalization, so a cut between a base character and its combining marks
+    produces two passages the body does not contain: the read contract refuses
+    them and the whole page is dropped. The check is exact, and the caller only
+    ever backs a cut off by the length of one character.
+    """
+    return unicodedata.normalize("NFC", text[:cut]) + unicodedata.normalize(
+        "NFC", text[cut:]
+    ) == unicodedata.normalize("NFC", text)
+
+
 def split_web_read_body(
     text: str, *, limit: int = WEB_PASSAGE_CHARS
 ) -> list[str]:
@@ -163,6 +178,11 @@ def split_web_read_body(
             cut = whitespace + 1 if whitespace >= position else window
         if cut <= position:
             cut = window
+        # Never between a base character and its combining marks.
+        while cut > position + 1 and not _split_survives_normalization(
+            text, cut
+        ):
+            cut -= 1
         cuts.append(cut)
         position = cut
     cuts.append(length)

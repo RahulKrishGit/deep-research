@@ -8296,3 +8296,50 @@ async def test_the_claims_own_retrieved_passage_is_ranked_with_the_pool() -> Non
     assert fillers, "the fixture must actually enlarge the pool"
     assert order.index(own) < order.index(fillers[0])
     assert own not in final.unrendered_ids
+
+def test_a_reader_specific_failure_does_not_refuse_the_other_reader() -> None:
+    """The PDF fallback is not blocked by the refusal that calls for it.
+
+    ``web_scraper`` fails a PDF with ``unsupported_content_type``, and the
+    designed next step is ``document_reader`` on that same URL. Keying
+    refusals by URL alone recorded that reader-specific failure for both
+    readers, so the fallback was denied — for this claim and for every later
+    claim in the pass — and the PDF the run needed was never read.
+    """
+    from deep_research.agents.fact_checker import RefusedReadPolicy
+    from deep_research.agents.steps import ReActStep
+    from deep_research.tools.base import ToolError
+
+    pdf_url = "https://eia.gov/survey/form/eia_860/instructions.pdf"
+    policy = RefusedReadPolicy()
+    failed = ReActStep(
+        iteration=1,
+        thought="Read the PDF as HTML.",
+        action="use_tool",
+        tool_name="web_scraper",
+        tool_input={"url": pdf_url},
+        tool_result=ToolResult(
+            tool_name="web_scraper",
+            success=False,
+            data=None,
+            error=ToolError(
+                type="unsupported_content_type",
+                message="the response is a PDF, not HTML",
+            ),
+            latency_ms=0,
+        ),
+    )
+
+    policy.after_action(failed, {"url": pdf_url})
+
+    fallback = policy.before_action(
+        use_tool("Read it as a document.", "document_reader", json.dumps({"source": pdf_url})),
+        {"source": pdf_url},
+    )
+    assert fallback.allowed is True
+    retry = policy.before_action(
+        use_tool("Read it as HTML again.", "web_scraper", json.dumps({"url": pdf_url})),
+        {"url": pdf_url},
+    )
+    assert retry.allowed is False
+    assert "already refused" in retry.reason
