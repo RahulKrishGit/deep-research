@@ -828,9 +828,11 @@ report, and they are outside that artifact set: a failed memory write is
 reported as its own count and leaves the three paths advertised.
 
 Both Markdown documents print an **As of** line read from the newest timestamp
-the *recorded evidence* carries — never a clock read — so the same session
-always renders the same date and a session with no dated evidence says so
-instead of printing when it happened to be printed. Sources are attributed
+the *recorded evidence* carries — the reads' retrieval times and the findings'
+extraction times, never a graph event and never a clock read — so the same
+session always renders the same date and a session with no dated evidence says
+so instead of printing when it happened to be printed. The reader report prints
+the run clock's own date separately, as **Generated on**. Sources are attributed
 where the report cites them; the ledger keeps the assessments of the sources
 the reader report does not cite, so "what was assessed" and "what was cited"
 stay separately answerable.
