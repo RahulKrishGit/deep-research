@@ -2153,13 +2153,14 @@ def _settled_badge(
     # one whose dependence nobody stated, is not a relay — the identity flags
     # name why no badge stands instead of asserting a relationship the row
     # never recorded.
-    if any(
+    if all(
         rows.get(evidence_id) is not None
-        and rows[evidence_id].dependence == "derivative"
+        and rows[evidence_id].dependence == "unknown"
         for evidence_id in supports
     ):
-        return None, ["relay_source"]
-    return None, []
+        # Nobody said what this passage is, so the reason may not either.
+        return None, []
+    return None, ["relay_source"]
 
 
 def _no_support_reason(partial: set[str], unshown: set[str]) -> str:
