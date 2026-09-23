@@ -3074,6 +3074,18 @@ def test_a_single_token_publisher_still_names_its_claim(
         "Studies found that 10.4 GW was added in 2024.",
         "Analysis found that 10.4 GW was added in 2024.",
         "Utilities reported that 10.4 GW was added in 2024.",
+        # The shape of a noun phrase: a capitalised modifier in front of a
+        # lowercase common-noun head names nobody, however the head is spelled.
+        "Federal officials reported that 10.4 GW was added in 2024.",
+        "State regulators said that 4 GW was added in 2024.",
+        "Team members reported that 10.4 GW was added in 2024.",
+        "Senior officials reported that 10.4 GW was added in 2024.",
+        # The indefinite pronouns are the same closed class as "nobody".
+        "None reported that 10.4 GW was added in 2024.",
+        "Nothing reported that 10.4 GW was added in 2024.",
+        "Everyone reported that 10.4 GW was added in 2024.",
+        "Someone reported that 10.4 GW was added in 2024.",
+        "Someone at EIA reported that 10.4 GW was added in 2024.",
     ],
 )
 def test_a_common_noun_that_opens_a_clause_names_no_issuer(text: str) -> None:

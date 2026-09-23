@@ -980,6 +980,21 @@ _NAME_STOPWORDS = frozenset(
         "either",
         "neither",
         "any",
+        # The indefinite pronouns, the same closed class as the determiners
+        # above: "None reported that …", "Everyone reported that …" and
+        # "Someone reported that …" state that an unnamed someone did
+        # (re-review ND1).
+        "none",
+        "nothing",
+        "everyone",
+        "everybody",
+        "someone",
+        "somebody",
+        "something",
+        "anyone",
+        "anybody",
+        "anything",
+        "everything",
     }
 )
 
@@ -1199,7 +1214,8 @@ _SINGLE_TOKEN_NON_ISSUERS = frozenset(
 # only where the pronoun stands immediately in front of the name, with nothing
 # between them but one preposition (re-review ND2).
 _NO_ISSUER_LEAD = re.compile(
-    r"(?i)\b(?:nobody|no one|none)\b"
+    r"(?i)\b(?:nobody|no one|none|nothing|everyone|everybody|someone|somebody|"
+    r"anyone|anybody|everything|something|anything)\b"
     r"(?:\s+(?:at|of|in|from|for|with|on|by|among|within|inside))?\s*$"
 )
 
@@ -1691,12 +1707,38 @@ def _single_token_names_an_issuer(name: str) -> bool:
     return name.casefold() not in _SINGLE_TOKEN_NON_ISSUERS
 
 
+def _names_its_own_subject(
+    captured: str,
+    *,
+    name: str,
+    clause: str,
+    name_end: int,
+    verb_start: int,
+) -> bool:
+    """Whether one captured token is the clause's own subject, not its modifier.
+
+    "Reuters reported that …" puts its verb straight behind the name, and so
+    does "Fluence reported 10.4 GW". "Federal officials reported that …",
+    "State regulators said …" and "Team members found …" put a lowercase
+    common-noun head between the two: that capitalised word modifies the head,
+    the subject is the whole noun phrase, and nobody in it is a publisher
+    (re-review ND1). A possessive capture is a name by construction —
+    "OpenEI's page … states that …" — and a brand spelling is one too.
+    """
+    if _has_internal_capital(name):
+        return True
+    if _possessive_owner(captured) is not None:
+        return True
+    return clause[name_end:verb_start].strip() == ""
+
+
 def _accepted_issuer(
     candidate: str,
     *,
     clause: str,
     start: int,
-    verb_end: int,
+    name_end: int,
+    verb_start: int,
     claim_places: frozenset[str] = frozenset(),
 ) -> str:
     """The issuer one captured name names, or "" when the grammar refuses it."""
@@ -1710,13 +1752,17 @@ def _accepted_issuer(
     if name.split()[0].casefold() in _NAME_MODIFIER_TOKENS:
         return ""
     opens_the_clause = clause[:start].strip(" \t\"'([") == ""
-    if (
-        opens_the_clause
-        and " " not in name
-        and not _is_acronym(name)
-        and not _single_token_names_an_issuer(name)
-    ):
-        return ""
+    if opens_the_clause and " " not in name and not _is_acronym(name):
+        if not _names_its_own_subject(
+            candidate,
+            name=name,
+            clause=clause,
+            name_end=name_end,
+            verb_start=verb_start,
+        ):
+            return ""
+        if not _single_token_names_an_issuer(name):
+            return ""
     return name
 
 
@@ -1751,7 +1797,8 @@ def _issuer_in_subject_phrase(
                 token,
                 clause=clause,
                 start=named.start(),
-                verb_end=verb.end("verb"),
+                name_end=named.end(),
+                verb_start=verb.start("verb"),
                 claim_places=claim_places,
             )
             if name and (_is_acronym(name) or _has_internal_capital(name)):
@@ -1801,7 +1848,8 @@ def _subject_verb_attribution(
             match.group("attribution"),
             clause=clause,
             start=match.start("attribution"),
-            verb_end=match.end("verb"),
+            name_end=match.end("attribution"),
+            verb_start=match.start("verb"),
             claim_places=claim_places,
         )
         if name:
