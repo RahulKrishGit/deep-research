@@ -66,6 +66,7 @@ from deep_research.providers.validation import (
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    answering_statement_for,
     EVIDENCE_BADGE_LABELS,
     QUESTION_TARGET_ID,
     AnswerContract,
@@ -595,18 +596,26 @@ class CriticTarget(ContractModel):
     required: bool = True
     critical: bool = False
     support_policy: str = "independent_pair"
+    answered: bool = False
+    """Whether one reader statement satisfies this obligation.
+
+    Read straight from ``target_is_answered`` — the gate that decides coverage
+    — so the Critic is never told an obligation is met that the run will later
+    refuse, and never the reverse.
+    """
     answered_dimension_ids: list[str] = Field(default_factory=list)
     answered_by_statement_ids: list[str] = Field(default_factory=list)
+    """Which dimensions the answering statement filled, and which one it is.
+
+    Diagnostic detail, rendered beside the target: the ids name the record the
+    judgement rests on. They are read off the single answering statement, so a
+    statement that does not answer contributes none of them.
+    """
 
     @property
     def open(self) -> bool:
-        """True when the report has not answered every required dimension."""
-        if not self.answered_by_statement_ids:
-            return True
-        uncovered = set(self.required_dimensions) - set(
-            self.answered_dimension_ids
-        )
-        return bool(uncovered)
+        """True when no reader statement satisfies every required dimension."""
+        return not self.answered
 
 
 class CriticPacket(ContractModel):
@@ -864,16 +873,14 @@ def build_critic_packet(
     targets: list[CriticTarget] = []
     for topic in sub_topics:
         for target in topic.evidence_targets:
-            answering = [
-                statement
-                for statement in statements
-                if target.target_id in statement.target_ids
-            ]
-            answered: list[str] = []
-            for statement in answering:
-                for dimension in statement.answered_dimensions:
-                    if dimension not in answered:
-                        answered.append(dimension)
+            # One statement answers an obligation, and the same rule decides it
+            # here as everywhere else: pooling every mentioning statement's
+            # dimensions let a ``context`` statement, or one failing the
+            # support policy, close a target the deterministic gate refuses —
+            # the Critic was told an obligation was met that the run would go
+            # on to report as open. The ids stay as diagnostic detail, read off
+            # the statement that actually answers.
+            answering = answering_statement_for(state, target)
             targets.append(
                 CriticTarget(
                     target_id=target.target_id,
@@ -884,10 +891,13 @@ def build_critic_packet(
                     required=target.required,
                     critical=target.critical,
                     support_policy=target.support_policy,
-                    answered_dimension_ids=answered,
-                    answered_by_statement_ids=[
-                        statement.statement_id for statement in answering
-                    ],
+                    answered=answering is not None,
+                    answered_dimension_ids=(
+                        [] if answering is None else list(answering.answered_dimensions)
+                    ),
+                    answered_by_statement_ids=(
+                        [] if answering is None else [answering.statement_id]
+                    ),
                 )
             )
 

@@ -2867,8 +2867,10 @@ def statement_satisfies_support_policy(
     return False
 
 
-def target_is_answered(state: ResearchState, target: EvidenceTarget) -> bool:
-    """True when one reader statement satisfies this target's obligation.
+def answering_statement_for(
+    state: ResearchState, target: EvidenceTarget
+) -> ReportStatement | None:
+    """The one reader statement that satisfies this target, or ``None``.
 
     Deliberately strict, and deliberately not "some evidence exists": the
     statement has to name the target, assert something (``context`` and
@@ -2876,10 +2878,14 @@ def target_is_answered(state: ResearchState, target: EvidenceTarget) -> bool:
     declared, and rest on evidence that carries the target's support policy.
     A state with no composition answers nothing — a pass that composed no
     report has shown no reader statement for any obligation.
+
+    This is the single definition of whether an obligation is answered; every
+    reader names it, so the Critic's view of what is still open cannot drift
+    from the gate that decides coverage.
     """
     composition = state.composition
     if composition is None:
-        return False
+        return None
     required = {
         _canonical_dimension(dimension)
         for dimension in target.required_dimensions
@@ -2960,8 +2966,18 @@ def target_is_answered(state: ResearchState, target: EvidenceTarget) -> bool:
                 scoped = set(by_cluster.keys())
             if not all(cluster_id in qualifying for cluster_id in scoped):
                 continue
-        return True
-    return False
+        return statement
+    return None
+
+
+def target_is_answered(state: ResearchState, target: EvidenceTarget) -> bool:
+    """True when one reader statement satisfies this target's obligation.
+
+    The yes/no reading of ``answering_statement_for``: the statement it names
+    is the answer, and there is no second rule for "answered" anywhere in the
+    tree.
+    """
+    return answering_statement_for(state, target) is not None
 
 
 def unanswered_required_targets(

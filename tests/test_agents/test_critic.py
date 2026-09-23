@@ -79,6 +79,7 @@ from deep_research.utils.types import (
     ReportStatement,
     ResearchError,
     ResearchState,
+    target_is_answered,
     ScoredSource,
     SubTopic,
 )
@@ -1828,6 +1829,40 @@ def _packet_evidence(
     )
 
 
+def test_a_critic_target_is_open_exactly_when_it_is_not_answered() -> None:
+    """``open`` is the negation of the gate's verdict, not a second rule."""
+
+
+def test_the_critic_target_view_is_the_coverage_gate_view() -> None:
+    """The packet's ``answered`` is the gate's answer, target for target.
+
+    The pooled view this replaced could close a target the deterministic gate
+    calls open — a ``context`` statement, or one failing the support policy,
+    covering the last required dimension — so the Critic was told an obligation
+    was met that the run would go on to report as open.
+    """
+    state = _packet_state()
+    packet = build_critic_packet(state, state.composition)
+
+    assert packet.statements, "the packet must carry the statements it judges"
+    assert packet.targets
+    planned = [
+        target
+        for topic in state.sub_topics
+        for target in topic.evidence_targets
+    ]
+    answered = [target_is_answered(state, target) for target in planned]
+
+    assert [reported.answered for reported in packet.targets] == answered
+    assert [reported.open for reported in packet.targets] == [
+        not value for value in answered
+    ]
+    # And the property itself, on the model the packet just handed out.
+    sample = packet.targets[0]
+    assert sample.model_copy(update={"answered": True}).open is False
+    assert sample.model_copy(update={"answered": False}).open is True
+
+
 def _packet_topic(
     *, required_dimensions: Sequence[str] | None = None
 ) -> SubTopic:
@@ -2215,8 +2250,17 @@ def test_the_packet_carries_the_full_reader_content_and_every_statement() -> Non
     )
     assert packet.omitted_evidence_ids == []
     assert [target.target_id for target in packet.targets] == [_PACKET_TARGET_ID]
-    assert packet.targets[0].answered_dimension_ids == ["attribution"]
-    assert packet.open_targets == []
+    # The gate refuses this fixture's statement (it is the pooled view's
+    # idea of answered, not the gate's), so the ids are now empty and the
+    # target is open - the disagreement item 1 closes.
+    assert packet.targets[0].answered is False
+    assert packet.targets[0].open is True
+    assert packet.targets[0].answered_dimension_ids == []
+    # The pooled view closed this target (its statement carries the required
+    # dimension in an answering mode); the gate refuses it because the fixture's
+    # claim is not the independent pair its support policy requires. The packet
+    # now carries the gate's reading, so the target is listed as open.
+    assert packet.open_targets == [packet.targets[0]]
     # The fingerprint covers the exact text and ids one review was opened on.
     assert re.fullmatch(r"[0-9a-f]{12}", packet.fingerprint)
     assert build_critic_packet(state).fingerprint == packet.fingerprint
@@ -2228,7 +2272,12 @@ def test_a_target_with_an_unanswered_dimension_stays_open() -> None:
     packet = build_critic_packet(state)
 
     assert packet.targets[0].required_dimensions == ["attribution", "geography"]
-    assert packet.targets[0].answered_dimension_ids == ["attribution"]
+    # The gate refuses this fixture's statement (it is the pooled view's
+    # idea of answered, not the gate's), so the ids are now empty and the
+    # target is open - the disagreement item 1 closes.
+    assert packet.targets[0].answered is False
+    assert packet.targets[0].open is True
+    assert packet.targets[0].answered_dimension_ids == []
     assert [target.target_id for target in packet.open_targets] == [
         _PACKET_TARGET_ID
     ]
