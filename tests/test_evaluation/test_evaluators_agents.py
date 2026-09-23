@@ -866,6 +866,66 @@ def test_a_plan_with_no_evidence_targets_scores_targets_declared_zero(
     assert metric_score(output, scoped_targets_case, "targets_declared") == 0.0
 
 
+def test_a_plan_declaring_nothing_fails_the_scoping_metrics_closed(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """No obligation means nothing is checkable and nothing is un-vague.
+
+    Both metrics iterate the plan's targets and returned true when there were
+    none — one because ``all()`` over an empty sequence is true, the other
+    because its ``any()`` was false — so a plan that declared no obligation
+    collected their weight. A metric that checks obligations cannot pass a
+    plan that has none.
+    """
+    output = scoped_target_output.without_evidence_targets()
+
+    assert (
+        metric_score(output, scoped_targets_case, "dimensions_are_checkable")
+        == 0.0
+    )
+    assert (
+        metric_score(output, scoped_targets_case, "no_vague_dimensions") == 0.0
+    )
+    assert (
+        deterministic_quality(
+            output,
+            scoped_targets_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        < 1.0
+    )
+
+
+def test_one_uncreditable_dimension_makes_the_obligation_uncheckable(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """Every required dimension must be creditable, not merely one of them.
+
+    Production ``target_is_answered`` requires ``required.issubset(answered)``
+    and ``answered_dimensions`` can only hold dimensions this same helper
+    credits, so an obligation carrying one uncreditable dimension beside a
+    creditable one can never be answered by any statement. Reading the
+    helper's list as a truthy/falsey whole called that plan checkable and
+    handed it the metric's weight.
+    """
+    output = scoped_target_output.with_target_dimensions(
+        ["period: the most recent year", "safety record"]
+    )
+
+    assert (
+        metric_score(output, scoped_targets_case, "dimensions_are_checkable")
+        == 0.0
+    )
+    assert (
+        deterministic_quality(
+            output,
+            scoped_targets_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        < 1.0
+    )
+
+
 def test_a_vague_dimension_scores_checkability_and_vagueness_zero(
     scoped_targets_case, scoped_target_output
 ) -> None:
