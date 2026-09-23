@@ -3183,14 +3183,14 @@ def _attribution_targets() -> dict[str, list[EvidenceTarget]]:
 
 
 def _seeded_attribution(
-    finding: Finding,
+    findings: Sequence[Finding],
     draft: ClaimDraft,
     *,
     question: str = "How much capacity was withheld in Texas?",
 ):
     return claim_attribution(
         draft,
-        findings=[finding],
+        findings=list(findings),
         coverage_ids={"alpha": "topic-01", "beta": "topic-02"},
         targets=_attribution_targets(),
         question=question,
@@ -3212,10 +3212,70 @@ def test_a_findings_target_ids_seed_the_claims_candidate_targets() -> None:
         source_urls=["https://example.org/a"],
     )
 
-    attribution = _seeded_attribution(finding, draft)
+    attribution = _seeded_attribution([finding], draft)
 
     assert attribution.target_ids == ["topic-02-target-01"]
     assert attribution.target_policies == {"topic-02-target-01": "independent_pair"}
+
+
+def test_a_claim_is_seeded_from_every_finding_of_one_cited_url() -> None:
+    """One page carries several findings, and a claim may be answered by any.
+
+    EIA 64705 states the 2024 addition and the 2025 forecast, and the
+    extraction binds them to different topics' targets. Attribution still
+    consumes one finding per URL — that is what stops URL overlap from marking
+    a second topic covered — but the candidate set the prose is checked against
+    has to see every finding the cited URL produced, or the forecast claim is
+    judged only against the 2024 finding's targets and the binding this slice
+    keeps is inert in the very case it exists for.
+    """
+    actual = _check_finding(
+        content="10.3 GW of battery capacity was added in Texas in 2024.",
+        target_ids=["target-1"],
+    )
+    forecast = _check_finding(
+        content="1,200 MW was withheld in Texas in 2024.",
+        target_ids=["topic-02-target-01"],
+    )
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=[actual.source_url],
+    )
+
+    attribution = _seeded_attribution([actual, forecast], draft)
+
+    assert attribution.target_ids == ["topic-02-target-01"]
+    # Provenance is unchanged: one finding per cited URL is consumed.
+    assert attribution.consumed_finding_fingerprints == [
+        finding_fingerprint(actual)
+    ]
+
+
+def test_a_re_extraction_cannot_erase_a_recorded_binding() -> None:
+    """A later unbound restatement must not delete an earlier binding.
+
+    ``raw_findings`` is append-only, the fact checker dedupes it before
+    attributing, and a second extraction of the same passage may come back
+    unbound at a higher confidence. The fold keeps the stronger record; it
+    must not keep the weaker record's silence about what the evidence
+    answers.
+    """
+    bound = _check_finding(
+        content="1,200 MW was withheld in Texas in 2024.",
+        target_ids=["topic-02-target-01"],
+    )
+    restated = bound.model_copy(update={"target_ids": [], "confidence": 0.95})
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=[bound.source_url],
+    )
+
+    ordered = ordered_findings_for_extraction(_check_state([bound, restated]))
+
+    assert [item.target_ids for item in ordered] == [["topic-02-target-01"]]
+    assert _seeded_attribution(ordered, draft).target_ids == [
+        "topic-02-target-01"
+    ]
 
 
 def test_a_seeded_target_still_has_to_be_answered_by_the_prose() -> None:
@@ -3229,7 +3289,7 @@ def test_a_seeded_target_still_has_to_be_answered_by_the_prose() -> None:
         source_urls=["https://example.org/a"],
     )
 
-    assert _seeded_attribution(finding, draft).target_ids == []
+    assert _seeded_attribution([finding], draft).target_ids == []
 
 
 def test_an_unplanned_target_id_seeds_nothing_beyond_the_topic() -> None:
@@ -3243,7 +3303,7 @@ def test_an_unplanned_target_id_seeds_nothing_beyond_the_topic() -> None:
         source_urls=["https://example.org/a"],
     )
 
-    assert _seeded_attribution(finding, draft).target_ids == []
+    assert _seeded_attribution([finding], draft).target_ids == []
 
 
 def test_a_finding_without_target_ids_keeps_its_topics_targets() -> None:
@@ -3257,7 +3317,9 @@ def test_a_finding_without_target_ids_keeps_its_topics_targets() -> None:
         source_urls=["https://example.org/a"],
     )
 
-    assert _seeded_attribution(finding, draft).target_ids == ["topic-02-target-01"]
+    assert _seeded_attribution([finding], draft).target_ids == [
+        "topic-02-target-01"
+    ]
 
 
 # --------------------------------------------------------------------------

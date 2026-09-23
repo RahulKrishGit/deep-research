@@ -506,10 +506,13 @@ def claim_attribution(
     The candidates a claim's prose is checked against start with the planned
     targets its findings named — the researcher's extraction keeps that
     binding, and it is what lets a read fetched for one topic answer another
-    topic's target. The finding's own sub-topic stays a candidate source too,
-    so a finding extracted before the binding existed (one carrying no target
-    ids) is judged exactly as it was, and a named target the plan does not
-    contain contributes nothing: only the plan can issue an obligation.
+    topic's target. Every finding of a cited URL contributes, not only the one
+    attribution consumes: a page can state several findings bound to different
+    targets, and the claim's prose may be answered by any of them. The
+    findings' own sub-topics stay a candidate source too, so a finding
+    extracted before the binding existed (one carrying no target ids) is
+    judged exactly as it was, and a named target the plan does not contain
+    contributes nothing: only the plan can issue an obligation.
     """
     fingerprints, consumed_coverage = consumed_provenance(
         draft, findings=findings, coverage_ids=coverage_ids
@@ -522,14 +525,18 @@ def claim_attribution(
         for group in targets.values()
         for target in group
     }
-    for finding in _attributed_findings(draft, findings=findings).values():
-        for target in _candidate_targets(finding, targets=targets, planned=planned):
-            if any(
-                atom_answers_target(atom, target, question=question)
-                for atom in atoms
-            ):
-                _append_unique(obligations, target.target_id)
-                policies.setdefault(target.target_id, target.support_policy)
+    candidates = _candidate_targets(
+        _cited_findings(draft, findings=findings),
+        targets=targets,
+        planned=planned,
+    )
+    for target in candidates:
+        if any(
+            atom_answers_target(atom, target, question=question)
+            for atom in atoms
+        ):
+            _append_unique(obligations, target.target_id)
+            policies.setdefault(target.target_id, target.support_policy)
     return ClaimAttribution(
         consumed_finding_fingerprints=fingerprints,
         consumed_coverage_ids=consumed_coverage,
@@ -540,33 +547,57 @@ def claim_attribution(
     )
 
 
+def _cited_findings(
+    draft: ClaimDraft, *, findings: Sequence[Finding]
+) -> list[Finding]:
+    """Every finding whose URL the claim cites, in the order given.
+
+    Deliberately not one per URL. ``_attributed_findings`` keeps one finding
+    per cited URL for *provenance*, which is what stops URL overlap from
+    marking a second topic covered, but a page can state several findings: EIA
+    64705 carries both the 2024 addition and the 19.6 GW forecast, and a claim
+    about the forecast is answered by the second of them. Seeding candidates
+    from the first alone left the forecast target out of the very set the
+    claim's prose is checked against, which is the audited case this slice
+    exists for.
+    """
+    cited = {normalize_source_url(url) for url in draft.source_urls}
+    return [
+        finding
+        for finding in findings
+        if normalize_source_url(finding.source_url) in cited
+    ]
+
+
 def _candidate_targets(
-    finding: Finding,
+    cited_findings: Sequence[Finding],
     *,
     targets: Mapping[str, Sequence[EvidenceTarget]],
     planned: Mapping[str, EvidenceTarget],
 ) -> list[EvidenceTarget]:
-    """The plan targets one finding makes a claim eligible for, in order.
+    """The plan targets one claim's cited findings make it eligible for.
 
-    The finding's own named targets lead, because they are the specific
-    obligation its content answers; the targets of the sub-topic that fetched
-    it follow, which is the whole candidate set before findings carried a
-    binding. Ids resolve through the plan, so a target id no plan issued is
-    simply absent rather than invented.
+    The findings' named targets lead, because they are the specific
+    obligations their content answers; the targets of the sub-topics that
+    fetched their reads follow, which is the whole candidate set before
+    findings carried a binding. Ids resolve through the plan, so a target id
+    no plan issued is simply absent rather than invented.
     """
     candidates: list[EvidenceTarget] = []
     seen: set[str] = set()
-    for target_id in finding.target_ids:
-        target = planned.get(target_id)
-        if target is None or target.target_id in seen:
-            continue
-        seen.add(target.target_id)
-        candidates.append(target)
-    for target in targets.get(_collapsed(finding.related_sub_topic), ()):
-        if target.target_id in seen:
-            continue
-        seen.add(target.target_id)
-        candidates.append(target)
+    for finding in cited_findings:
+        for target_id in finding.target_ids:
+            target = planned.get(target_id)
+            if target is None or target.target_id in seen:
+                continue
+            seen.add(target.target_id)
+            candidates.append(target)
+    for finding in cited_findings:
+        for target in targets.get(_collapsed(finding.related_sub_topic), ()):
+            if target.target_id in seen:
+                continue
+            seen.add(target.target_id)
+            candidates.append(target)
     return candidates
 
 
