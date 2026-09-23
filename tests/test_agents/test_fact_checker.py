@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import get_args
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -7050,6 +7052,82 @@ def test_the_adjudication_request_asks_for_the_packet_contract() -> None:
         assert expected in body, expected
     assert "supports the WHOLE" in body
     assert "refutes the claim is contradicts" in body
+
+
+@pytest.mark.asyncio
+async def test_a_refused_url_is_requested_once_in_a_fact_checker_pass(
+    tracker: Tracker,
+) -> None:
+    """A refusal belongs to the pass, not to the claim that met it.
+
+    Audit finding #10 (C15): ``utilitydive/…/750338`` was refused by the
+    publisher and re-requested by four different claims, the EIA form page
+    three times — 9 of the run's 10 scraper failures, every one of them a
+    repeat of a refusal an earlier claim had already recorded. A URL this pass
+    could not read is not requested again for another claim in the same pass,
+    and the loop is told why.
+    """
+    refused_url = "https://refused.test/blocked"
+    attempted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200, text="User-agent: *\nAllow: /", request=request
+            )
+        attempted.append(str(request.url))
+        return httpx.Response(403, text="publisher refused", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool(
+                "Read the publisher's page.",
+                "web_scraper",
+                json.dumps({"url": refused_url}),
+            ),
+            finish("Nothing usable was retrieved.", "no evidence"),
+            use_tool(
+                "Read the same page for the second claim.",
+                "web_scraper",
+                json.dumps({"url": refused_url}),
+            ),
+            finish("Nothing usable was retrieved.", "no evidence"),
+        ],
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL]),
+                    ClaimDraft(
+                        text="Wind capacity reached 11 GW in 2025.",
+                        source_urls=[B_URL],
+                    ),
+                ]
+            ),
+            _select_every_shown_id,
+            _select_every_shown_id,
+            ClaimEquivalenceDraft(pairs=[]),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(tracker, http=client),
+    )
+
+    outcome = await _task6_run(agent, _ab_state(score_b=False), tracker)
+
+    assert attempted == [refused_url]
+    refusals = [
+        error
+        for error in outcome.errors
+        if error.error_type == "agent_tool_policy_rejected"
+    ]
+    assert [error.details.get("tool") for error in refusals] == ["web_scraper"]
+    # Both claims were still adjudicated: a refusal costs the claim its
+    # retrieval, never its verdict.
+    assert outcome.result is not None
+    assert len(outcome.result.claims) == 2
 
 
 @pytest.mark.asyncio

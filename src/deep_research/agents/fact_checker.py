@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
 
@@ -25,6 +26,7 @@ from pydantic import Field, field_validator
 
 from deep_research.agents.acquisition import (
     AcquisitionState,
+    ToolPolicyDecision,
     admit_read_result,
     build_acquisition_context,
     build_boundary_audit,
@@ -162,6 +164,10 @@ DEFAULT_PASSAGES_PER_READ = 4
 # registry cannot write a 300-row manifest per claim, and the overflow is
 # summarized rather than dropped.
 MAX_PACKET_OMISSIONS = 16
+
+# The tools that read a body. A refusal is remembered per URL for the whole
+# pass, whichever reader met it.
+_READ_TOOLS = frozenset({"web_scraper", "document_reader"})
 
 
 class ClaimDraft(ContractModel):
@@ -1464,6 +1470,76 @@ def partially_shown_candidates(packet: AdjudicationPacket) -> set[str]:
     return {unit.evidence_id for unit in packet.units}.intersection(
         packet.partially_shown_ids
     )
+
+
+def _read_url(tool_input: Mapping[str, object]) -> str:
+    """The URL a read tool call names, however the reader spells it."""
+    for key in ("url", "source", "requested_url", "requested_source"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+@dataclass
+class RefusedReadPolicy:
+    """The reads one pass already lost, so no later claim pays for them twice.
+
+    Audit finding #10 (C15): ``utilitydive/…/750338`` was refused by its
+    publisher and requested again by four different claims, the EIA form page
+    three times — 9 of the run's 10 scraper failures, every one a repeat of a
+    refusal an earlier claim had already recorded. A refusal is a fact about
+    the pass, not about the claim that met it, so the second request is refused
+    locally: the loop is told why, the budget is not charged for a call that
+    would not have run, and the claim is judged on the evidence it has.
+
+    Only *failed* reads are remembered. A successful read is cached by the run
+    and costs nothing to re-request; a URL that failed once can still be served
+    by a different reader path (a PDF behind an HTML refusal), so the denial is
+    per URL and the loop may still try the document reader tool.
+    """
+
+    refusals: dict[str, str] = field(default_factory=dict)
+
+    def __call__(
+        self, decision: ReActDecision, tool_input: Mapping[str, object] | None = None
+    ) -> ToolPolicyDecision:
+        return self.before_action(decision, tool_input or {})
+
+    def before_action(
+        self,
+        decision: ReActDecision,
+        tool_input: Mapping[str, object],
+    ) -> ToolPolicyDecision:
+        if decision.action != "use_tool" or decision.tool_name not in _READ_TOOLS:
+            return ToolPolicyDecision()
+        url = _read_url(tool_input or {})
+        known = self.refusals.get(normalize_source_url(url))
+        if not url or known is None:
+            return ToolPolicyDecision()
+        return ToolPolicyDecision(
+            allowed=False,
+            reason=(
+                f"{url} was already refused this pass ({known}); it is not "
+                "requested again for another claim."
+            ),
+        )
+
+    def after_action(
+        self, step: ReActStep, tool_input: Mapping[str, object]
+    ) -> None:
+        if step.tool_name not in _READ_TOOLS:
+            return
+        result = step.tool_result
+        if result is not None and result.success:
+            return
+        url = _read_url(tool_input or {})
+        if not url:
+            return
+        reason = "the read failed"
+        if result is not None and result.error is not None:
+            reason = result.error.type or reason
+        self.refusals.setdefault(normalize_source_url(url), reason)
 
 
 def _issuer_publishers(packet: AdjudicationPacket) -> set[str]:
@@ -3063,6 +3139,9 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._audit_sequence = 0
         self._adjudicated_packets: set[str] = set()
         self._repair_events: list[ResearchEvent] = []
+        # The pass's refusals. ``run`` replaces this at the start of every
+        # pass; the default keeps a directly-invoked ``_check_claim`` total.
+        self._refused_reads = RefusedReadPolicy()
 
     @property
     def claim_batch_size(self) -> int:
@@ -4064,6 +4143,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             on_step=self._record_step,
             is_sufficient=self.is_sufficient,
             summary_limit=self.config.observation_summary_chars,
+            tool_policy=self._refused_reads,
             propagate_provider_errors=False,
         )
         return react.model_copy(
@@ -4125,6 +4205,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         self._adjudicated_packets = set()
         self._repair_events = []
         self._adjudication_failure = {}
+        # One pass's refusals: a URL that could not be read for one claim is
+        # not requested again for another in this pass. Replaced here, at the
+        # start of every pass, so a recovered publisher is retried next pass.
+        self._refused_reads = RefusedReadPolicy()
         # Provenance belongs to the extraction pass about to run; anything
         # left from an earlier run must not leak into it, except the
         # attribution of a claim this run is about to resume. The queue is
