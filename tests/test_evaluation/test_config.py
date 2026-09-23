@@ -255,7 +255,7 @@ from deep_research.utils.config import (
 # edited; the module source is what the fingerprint hashes, so a routing fix
 # that lives in ``critic.py`` moves a value whose name implies a prompt change
 # — the same false positive the researcher's first re-pin records below.
-CRITIC_PROMPT_FINGERPRINT = "aa57f0d23b20"
+CRITIC_PROMPT_FINGERPRINT = "ca830cca71d6"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -872,13 +872,16 @@ CRITIC_PROMPT_FINGERPRINT = "aa57f0d23b20"
 # for, 27,301 of 32,768 tokens live — now gets that same one retry. Module
 # source only for both, and no prompt string or shared prompt library was
 # touched: the other four pins and the judge are unchanged.
+# Report-quality integration changed the shared prompts and five agent modules:
+# evidence visibility, answerable planning, research mining, and honest reports.
+# All six source fingerprints moved; the Judge template did not.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "062766ba4600",
-    "researcher": "ec5244f2ba7f",
-    "source_evaluator": "ad9e2afac12c",
-    "fact_checker": "340b8267dbe9",
-    "synthesizer": "1dcbd8f7e3be",
-    "critic": "aa57f0d23b20",
+    "planner": "2b41c6c1061e",
+    "researcher": "f3b71c3a22ac",
+    "source_evaluator": "7a1a4f49d6e7",
+    "fact_checker": "76bc5eb6a572",
+    "synthesizer": "997e7581f1b3",
+    "critic": "ca830cca71d6",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
@@ -1304,7 +1307,7 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
         "report-probe-0-evidence.md"
     )
     assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
-    assert agent_prompt_fingerprint("synthesizer") == "1dcbd8f7e3be"
+    assert agent_prompt_fingerprint("synthesizer") == "997e7581f1b3"
     assert agent_prompt_fingerprint("synthesizer") != pre_task_11
 
 
@@ -1339,8 +1342,8 @@ def test_the_acquisition_sequence_repin_is_attributed_to_the_shared_counter() ->
     pre_bug_3 = "25fba5d22654"
     counter = ManifestSequence()
 
-    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "ec5244f2ba7f"
-    assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
+    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "f3b71c3a22ac"
+    assert agent_prompt_fingerprint("researcher") == "f3b71c3a22ac"
     assert agent_prompt_fingerprint("researcher") not in {pre_round_6, pre_bug_3}
     assert (counter.take(), counter.take()) == (0, 1)
 
@@ -1366,9 +1369,9 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
     (``00e2229ad4fa`` -> ``340b8267dbe9``), which is attributed in
     ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``.
     """
-    assert agent_prompt_fingerprint("planner") == "062766ba4600"
-    assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
-    assert agent_prompt_fingerprint("fact_checker") == "340b8267dbe9"
+    assert agent_prompt_fingerprint("planner") == "2b41c6c1061e"
+    assert agent_prompt_fingerprint("researcher") == "f3b71c3a22ac"
+    assert agent_prompt_fingerprint("fact_checker") == "76bc5eb6a572"
     # The other three target pins are untouched by this step, and the judge
     # fingerprint with them: no prompt text moved anywhere. The critic's value
     # is the one the later target-view pass recorded, which is attributed and
@@ -1378,9 +1381,9 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
         name: agent_prompt_fingerprint(name)
         for name in ("source_evaluator", "synthesizer", "critic")
     } == {
-        "source_evaluator": "ad9e2afac12c",
-        "synthesizer": "1dcbd8f7e3be",
-        "critic": "aa57f0d23b20",
+        "source_evaluator": "7a1a4f49d6e7",
+        "synthesizer": "997e7581f1b3",
+        "critic": "ca830cca71d6",
     }
     assert agent_prompt_fingerprint("planner") not in {
         "7d0282b16bc5",
@@ -1419,8 +1422,8 @@ def test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text() -> 
         "synthesizer": "26372cb8f056",
     }
     moved = {
-        "fact_checker": "340b8267dbe9",
-        "synthesizer": "1dcbd8f7e3be",
+        "fact_checker": "76bc5eb6a572",
+        "synthesizer": "997e7581f1b3",
     }
 
     assert {
@@ -1470,9 +1473,9 @@ def test_the_read_identity_repin_is_module_source_drift_not_prompt_text() -> (
     """
     pre_read_identity = "00e2229ad4fa"
 
-    assert agent_prompt_fingerprint("fact_checker") == "340b8267dbe9"
+    assert agent_prompt_fingerprint("fact_checker") == "76bc5eb6a572"
     assert (
-        PINNED_TARGET_PROMPT_FINGERPRINTS["fact_checker"] == "340b8267dbe9"
+        PINNED_TARGET_PROMPT_FINGERPRINTS["fact_checker"] == "76bc5eb6a572"
     )
     assert agent_prompt_fingerprint("fact_checker") != pre_read_identity
     assert {
@@ -1519,7 +1522,7 @@ def test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text() -
     pre_target_view = "2c80a78040b9"
 
     assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
-    assert agent_prompt_fingerprint("critic") == "aa57f0d23b20"
+    assert agent_prompt_fingerprint("critic") == "ca830cca71d6"
     assert agent_prompt_fingerprint("critic") != pre_target_view
     assert {
         name: agent_prompt_fingerprint(name)
