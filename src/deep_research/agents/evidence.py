@@ -1733,6 +1733,7 @@ def build_read_dossiers(
     *,
     cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
     queries: Mapping[str, Sequence[str]] | None = None,
+    obligation_queries: Mapping[str, Sequence[str]] | None = None,
     excerpt_chars: int = DEFAULT_DOSSIER_EXCERPT_CHARS,
     max_excerpts: int = DEFAULT_DOSSIER_EXCERPTS,
 ) -> list[ReadDossier]:
@@ -1759,6 +1760,10 @@ def build_read_dossiers(
         normalize_source_url(url): _query_list(queries_for_url)
         for url, queries_for_url in (queries or {}).items()
     }
+    reserved = {
+        normalize_source_url(url): _query_list(queries_for_url)
+        for url, queries_for_url in (obligation_queries or {}).items()
+    }
     chosen: dict[str, ReadRecord] = {}
     for read in reads:
         url = normalize_source_url(read.resolved_url)
@@ -1775,6 +1780,7 @@ def build_read_dossiers(
                 excerpt_chars=excerpt_chars,
                 max_excerpts=max_excerpts,
                 queries=wanted.get(url, ()),
+                obligation_queries=reserved.get(url, ()),
             ),
             assessment_revision=read_assessment_revision(read),
             cited_sub_topics=cited.get(url, []),
@@ -1827,6 +1833,7 @@ def _dossier_excerpts(
     excerpt_chars: int,
     max_excerpts: int,
     queries: Sequence[str] = (),
+    obligation_queries: Sequence[str] = (),
 ) -> list[str]:
     """The read's own passages, in the order that answers the questions asked.
 
@@ -1844,27 +1851,44 @@ def _dossier_excerpts(
     shows its own opening.
     """
     ordered: list[str] = []
-    if queries:
-        # The query that states a figure comes first: a source cited for
-        # several findings contributes several navigation-sentence queries, and
-        # rank-major interleaving let them fill every excerpt before the
-        # obligation's own query was reached.
-        queries = sorted(
-            queries, key=lambda query: (0 if _FIGURES.search(query) else 1)
-        )
-        # Imported here, not at module scope: ``deep_research.tools`` builds
-        # its package from modules that import this one, and this module is the
-        # read contract they are built on.
-        from deep_research.tools.passage_selection import (
-            select_relevant_passages,
-        )
+    # Imported here, not at module scope: ``deep_research.tools`` builds its
+    # package from modules that import this one, and this module is the read
+    # contract they are built on.
+    from deep_research.tools.passage_selection import select_relevant_passages
 
+    # Each obligation reserves an excerpt first, from its own *complete*
+    # ranking: the passage that answers an obligation can sit below navigation
+    # prose lexically, and a group's findings must not take every slot before
+    # the obligation is consulted at all. The passage that states a figure is
+    # taken ahead of the obligation's first choice, because a figure is what an
+    # obligation for a value is looking for.
+    for query in obligation_queries:
+        if len(ordered) >= max_excerpts:
+            break
+        ranking = select_relevant_passages(
+            read.passages, query, len(read.passages)
+        )
+        pick = next(
+            (
+                locator
+                for locator in ranking
+                if _FIGURES.search(read.passages[locator])
+            ),
+            None,
+        )
+        if pick is None and ranking:
+            pick = ranking[0]
+        if pick is not None and pick not in ordered:
+            ordered.append(pick)
+    if queries:
         ranked = [
             select_relevant_passages(read.passages, query, max_excerpts)
             for query in queries
         ]
         for rank in range(max_excerpts):
             for picks in ranked:
+                if len(ordered) >= max_excerpts:
+                    break
                 if rank < len(picks) and picks[rank] not in ordered:
                     ordered.append(picks[rank])
     ordered.extend(

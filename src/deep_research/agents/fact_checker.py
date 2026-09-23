@@ -3455,7 +3455,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 self.provider,
                 admitted_reads,
                 self._run_sources,
-                queries={
+                # A claim is the obligation its reads were admitted for.
+                obligation_queries={
                     read.resolved_url: [task.claim.text]
                     for read in admitted_reads
                 },

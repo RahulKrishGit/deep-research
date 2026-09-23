@@ -600,6 +600,7 @@ async def assess_new_sources(
     *,
     cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
     queries: Mapping[str, str] | None = None,
+    obligation_queries: Mapping[str, Sequence[str]] | None = None,
     reputations: Mapping[str, float] | None = None,
     instruction: str = "Score each source on its fitness for the research.",
     batch_size: int = DEFAULT_BATCH_SIZE,
@@ -638,6 +639,7 @@ async def assess_new_sources(
         reads,
         cited_sub_topics=cited_sub_topics,
         queries=queries,
+        obligation_queries=obligation_queries,
         excerpt_chars=excerpt_chars,
     )
     if not dossiers:
@@ -1075,13 +1077,20 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 cited_sub_topics={
                     group.url: group.sub_topics for group in groups
                 },
+                # What this run extracted from the source, and the plan text
+                # of every obligation it was cited for. The obligations are
+                # passed separately because each of them reserves an excerpt.
                 queries={
                     group.url: [
-                        # What this run actually extracted from the source, then
-                        # the plan text of every obligation it was cited for.
-                        *(finding.content[:DOSSIER_QUERY_CHARS] for finding in group.findings),
-                        *dossier_queries(group.sub_topics, state.sub_topics),
+                        finding.content[:DOSSIER_QUERY_CHARS]
+                        for finding in group.findings
                     ]
+                    for group in groups
+                },
+                obligation_queries={
+                    group.url: dossier_queries(
+                        group.sub_topics, state.sub_topics
+                    )
                     for group in groups
                 },
                 excerpt_chars=self._excerpt_chars,

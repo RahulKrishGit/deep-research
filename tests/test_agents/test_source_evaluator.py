@@ -3033,3 +3033,71 @@ def test_a_scoring_dossier_shows_each_obligations_figures_behind_navigation() ->
     assert "5.9 GW" in shown
     assert "7.0 GW" in shown
     assert "1 Megawatt" not in shown  # the control: nothing invented
+
+
+def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
+    """Update-round shape: date-only findings, and the figure deep in a ranking.
+
+    The real 64586 group holds four findings that each name a date and no
+    figure, while the figure sits at rank 3 of its obligation's ranking. Rank-
+    major interleaving gave every slot to the findings' rank-0 passages, and
+    even the obligation's *first* choice was not the figure. Each obligation
+    therefore reserves an excerpt, taken from its own ranking and preferring
+    the passage that states a figure, and the findings fill what is left.
+    """
+    from deep_research.agents.source_evaluator import DEFAULT_EXCERPT_CHARS
+    from deep_research.agents.evidence import build_read_dossiers
+
+    url = "https://www.eia.gov/todayinenergy/detail.php?id=64586"
+    navigation = "Skip to main content. ".ljust(700, "n")
+    annual = (
+        "In 2024, generators added a record 30 GW of utility-scale solar, and "
+        "battery storage followed the same trend through the year."
+    )
+    outlook = "About the data and the outlook. ".ljust(560, "o")
+    figure = (
+        "Battery storage. In 2025, capacity growth from battery storage could "
+        "set a record as we expect 18.2 GW of utility-scale battery storage to "
+        "be added to the grid, up from the 10.3 GW added in 2024."
+    )
+    other = "Glossary and archive. ".ljust(540, "g")
+    body = "\n\n".join((navigation, annual, outlook, figure, other))
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title="EIA capacity additions",
+        retrieved_at="2026-08-20T00:00:00+00:00",
+        text=body,
+        passages={
+            "chunk-0": navigation,
+            "chunk-1": annual,
+            "chunk-2": outlook,
+            "chunk-3": figure,
+            "chunk-4": other,
+        },
+        extraction_complete=True,
+    )
+    obligation = (
+        "2024 U.S. grid-scale battery capacity additions reported actuals EIA "
+        "electric generator inventory utility-scale battery storage capacity"
+    )
+    date_only_findings = [
+        "The EIA article is dated February 24, 2025 and covers capacity.",
+        "The February 24, 2025 article discusses the 2024 additions.",
+        "The article was published on February 24, 2025 by the agency.",
+        "The piece, dated February 24, 2025, describes the market.",
+    ]
+
+    (dossier,) = build_read_dossiers(
+        [read],
+        queries={read.resolved_url: date_only_findings},
+        obligation_queries={read.resolved_url: [obligation]},
+        excerpt_chars=DEFAULT_EXCERPT_CHARS,
+    )
+
+    shown = "\n".join(dossier.excerpts)
+    assert len(dossier.excerpts) <= 4
+    assert "18.2 GW" in shown
+    assert "10.3 GW" in shown
