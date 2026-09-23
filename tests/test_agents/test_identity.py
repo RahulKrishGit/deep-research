@@ -95,6 +95,10 @@ def finding(
     related_sub_topic: str = "Adoption",
     confidence: float = 0.8,
     source_title: str = "Example source",
+    target_ids: list[str] | None = None,
+    vintage: str | None = None,
+    statement_date: str | None = None,
+    data_period: str | None = None,
 ) -> Finding:
     return Finding(
         content=content,
@@ -103,6 +107,10 @@ def finding(
         extracted_at=EXTRACTED_AT,
         confidence=confidence,
         related_sub_topic=related_sub_topic,
+        target_ids=list(target_ids or ()),
+        vintage=vintage,
+        statement_date=statement_date,
+        data_period=data_period,
     )
 
 
@@ -384,6 +392,58 @@ def test_deduplicate_findings_keeps_the_earlier_record_on_a_tie() -> None:
     kept = deduplicate_findings([first, second])
 
     assert [item.source_title for item in kept] == ["First"]
+
+
+def test_deduplicate_findings_keeps_every_binding_of_a_folded_pair() -> None:
+    """A restatement cannot erase the binding an earlier one recorded.
+
+    ``raw_findings`` is append-only across research rounds, and a later
+    extraction of the same passage may name no planned target at all — the id
+    it copied was not one of the plan's, which is kept rather than dropped.
+    Folding on confidence alone would then delete the round-1 binding, and
+    with it the only record of which obligation that evidence answers.
+    """
+    bound = finding(
+        "Adoption rose.",
+        target_ids=["topic-01-target-01"],
+        vintage="January 2025 inventory",
+        statement_date="2025-03-12",
+        data_period="2024",
+    )
+    unbound = finding("Adoption rose.", confidence=0.9)
+
+    (kept,) = deduplicate_findings([bound, unbound])
+
+    assert kept.confidence == 0.9
+    assert kept.target_ids == ["topic-01-target-01"]
+    assert kept.vintage == "January 2025 inventory"
+    assert kept.statement_date == "2025-03-12"
+    assert kept.data_period == "2024"
+    # The identity is unchanged by the fold.
+    assert finding_fingerprint(kept) == finding_fingerprint(bound)
+
+
+def test_deduplicate_findings_unions_both_records_bindings() -> None:
+    """Two rounds can bind the same passage to two targets; both are kept."""
+    winner = finding(
+        "Adoption rose.",
+        confidence=0.9,
+        target_ids=["topic-02-target-01"],
+        vintage="March 2025 inventory",
+    )
+    loser = finding(
+        "Adoption rose.",
+        target_ids=["topic-01-target-01", "topic-02-target-01"],
+        vintage="January 2025 inventory",
+        statement_date="2025-03-12",
+    )
+
+    (kept,) = deduplicate_findings([winner, loser])
+
+    assert kept.target_ids == ["topic-02-target-01", "topic-01-target-01"]
+    # The kept record's own dates win; the duplicate only fills what is absent.
+    assert kept.vintage == "March 2025 inventory"
+    assert kept.statement_date == "2025-03-12"
 
 
 def test_deduplicate_findings_separates_other_urls_topics_and_content() -> None:

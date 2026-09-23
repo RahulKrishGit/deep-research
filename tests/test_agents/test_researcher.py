@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 import httpx
@@ -47,6 +49,7 @@ from deep_research.agents.steps import (
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
+    ChatMessage,
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
     ProviderTimeoutError,
@@ -77,12 +80,16 @@ from tests.research_fakes import (
     QEC_PASSAGE,
     FakeMemory,
     FakeSearchClient,
+    page_client,
     qec_read_record,
     research_tools,
     search_response,
 )
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
+# The plan's own target ids: ``planner.target_id_for`` namespaces a target by
+# the sub-topic it belongs to, so an id says which topic it came from.
+PLANNED_TARGET_ID = "topic-01-target-01"
 
 
 def _sub_topic(
@@ -266,11 +273,13 @@ QEC_READ = qec_read_record()
 _FINDING_EXAMPLE_OUTPUT = (
     "Example JSON output:\n"
     '{"findings":[{"confidence":0.8,"content":"The example report measured a '
-    '12 percent reduction.","excerpt":"The measured reduction was 12 '
-    'percent.","locator":"page-4-chunk-0","read_id":'
+    '12 percent reduction in 2024, from its January 2025 preliminary '
+    'inventory.","data_period":"2024","excerpt":"The measured reduction was '
+    '12 percent.","locator":"page-4-chunk-0","read_id":'
     '"read-111111111111111111111111","source_title":"Example report",'
-    '"source_url":"https://evidence.example.test/report","target_ids":'
-    '["target-01"]}]}'
+    '"source_url":"https://evidence.example.test/report","statement_date":'
+    '"2025-03-12","target_ids":["topic-01-target-01"],"vintage":'
+    '"January 2025 preliminary inventory"}]}'
 )
 
 
@@ -1293,7 +1302,7 @@ def _registry_draft(**overrides: object) -> SubTopicFindingsDraft:
         "read_id": QEC_READ.read_id,
         "locator": "chunk-0",
         "excerpt": QEC_PASSAGE,
-        "target_ids": ["topic-01"],
+        "target_ids": [PLANNED_TARGET_ID],
     }
     values.update(overrides)
     return SubTopicFindingsDraft(findings=[FindingDraft(**values)])
@@ -1301,6 +1310,9 @@ def _registry_draft(**overrides: object) -> SubTopicFindingsDraft:
 
 def _build_admitted(
     draft: SubTopicFindingsDraft,
+    *,
+    valid_target_ids: Sequence[str] = (PLANNED_TARGET_ID,),
+    dropped_target_ids: list[str] | None = None,
 ) -> tuple[list[Finding], list[str]]:
     return build_findings(
         draft,
@@ -1308,7 +1320,8 @@ def _build_admitted(
         extracted_at=EXTRACTED_AT,
         known_urls=("https://example.test/qec",),
         known_reads={QEC_READ.read_id: QEC_READ},
-        target_id="topic-01",
+        valid_target_ids=valid_target_ids,
+        dropped_target_ids=dropped_target_ids,
     )
 
 
@@ -1356,13 +1369,6 @@ def test_an_excerpt_the_locator_does_not_contain_is_dropped() -> None:
     assert rejected == ["finding 1: excerpt was not admitted at locator"]
 
 
-def test_a_finding_missing_its_target_id_is_dropped() -> None:
-    findings, rejected = _build_admitted(_registry_draft(target_ids=[]))
-
-    assert findings == []
-    assert rejected == ["finding 1: target id was not admitted"]
-
-
 def test_a_registry_shaped_finding_is_still_admitted() -> None:
     """The enforcement is a contract, not a wall: the right shape passes."""
     findings, rejected = _build_admitted(_registry_draft())
@@ -1372,6 +1378,470 @@ def test_a_registry_shaped_finding_is_still_admitted() -> None:
         "Logical error rates fell below break-even."
     ]
     assert findings[0].source_title == QEC_READ.title
+
+
+def test_a_finding_bound_to_another_topics_target_is_admitted() -> None:
+    """A read fetched for one sub-topic may answer another topic's target.
+
+    The run that was audited read the EIA page carrying the 2025 forecast
+    under the 2024-additions sub-topic, and nothing ever mined it for the
+    forecast topic: extraction could only name the coverage topic that fetched
+    the read, so that binding was discarded and no claim was ever bound to a
+    target. The finding keeps the planned target it names, and the sub-topic
+    that fetched the read stays stamped as ``related_sub_topic``.
+    """
+    forecast_target_id = "topic-02-target-01"
+    findings, rejected = _build_admitted(
+        _registry_draft(target_ids=[forecast_target_id]),
+        valid_target_ids=(PLANNED_TARGET_ID, forecast_target_id),
+    )
+
+    assert rejected == []
+    assert findings[0].target_ids == [forecast_target_id]
+    assert findings[0].related_sub_topic == "Alpha"
+
+
+def test_an_unplanned_target_id_is_dropped_and_recorded() -> None:
+    """An invented id is dropped, named, and never cached into state."""
+    dropped: list[str] = []
+    findings, rejected = _build_admitted(
+        _registry_draft(target_ids=["topic-09-target-01", PLANNED_TARGET_ID]),
+        dropped_target_ids=dropped,
+    )
+
+    assert rejected == []
+    assert findings[0].target_ids == [PLANNED_TARGET_ID]
+    assert dropped == [
+        'finding 1: dropped target id "topic-09-target-01" '
+        "(it is not a planned target)"
+    ]
+
+
+def test_a_finding_naming_no_planned_target_is_kept_unbound() -> None:
+    """An id the plan never issued is dropped; the evidence is not.
+
+    The vocabulary the extraction can confuse a plan target with is the one
+    the packet prints on every read and evidence unit — the coverage id of the
+    sub-topic that fetched it (``topic-01`` against ``topic-01-target-01``).
+    Rejecting the finding over that would lose the evidence entirely, so the
+    id goes and the finding stays, unbound, attributed later through the
+    sub-topic that fetched its read.
+    """
+    dropped: list[str] = []
+    findings, rejected = _build_admitted(
+        _registry_draft(target_ids=["topic-01"]),
+        dropped_target_ids=dropped,
+    )
+
+    assert rejected == []
+    assert findings[0].target_ids == []
+    assert dropped == [
+        'finding 1: dropped target id "topic-01" '
+        "(it is not a planned target)"
+    ]
+
+
+def test_a_finding_naming_no_target_at_all_is_kept_unbound() -> None:
+    """A plan-bound extraction that names nothing is unbindable, not invalid."""
+    findings, rejected = _build_admitted(_registry_draft(target_ids=[]))
+
+    assert rejected == []
+    assert findings[0].target_ids == []
+
+
+def test_a_dated_figure_keeps_its_vintage_and_date() -> None:
+    """A figure's period, the date it was stated, and its data vintage differ.
+
+    Extraction records all three so a later stage can tell the latest statement
+    from an older one: the audited run published an 18.2 GW forecast from the
+    December 2024 inventory as "the latest" while its own citations carried
+    19.6 GW from the January 2025 one.
+    """
+    findings, rejected = _build_admitted(
+        _registry_draft(
+            data_period="2024",
+            statement_date="2025-03-12",
+            vintage="January 2025 Preliminary Monthly Electric Generator Inventory",
+        )
+    )
+
+    assert rejected == []
+    assert findings[0].data_period == "2024"
+    assert findings[0].statement_date == "2025-03-12"
+    assert findings[0].vintage == (
+        "January 2025 Preliminary Monthly Electric Generator Inventory"
+    )
+
+
+def test_an_undated_figure_records_no_dates_at_all() -> None:
+    """Absence is absence: a blank is not a date a comparer may rank."""
+    findings, _ = _build_admitted(
+        _registry_draft(
+            data_period="  ", statement_date="", vintage=None
+        )
+    )
+
+    assert findings[0].data_period is None
+    assert findings[0].statement_date is None
+    assert findings[0].vintage is None
+
+
+def test_extraction_names_every_planned_target_a_read_may_serve() -> None:
+    """The extraction request carries the whole plan, not one sub-topic.
+
+    A read is mined for every planned target: the request lists each target's
+    id beside its question, so a passage about the 2025 forecast can be bound
+    to the forecast target even when the sub-topic that fetched it was about
+    2024.
+    """
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.",
+        sub_topic=_sub_topic("Alpha"),
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    body = extraction_messages(
+        task,
+        run,
+        evidence_chars=200,
+        acquisition_context="- read_id=read-1 targets=topic-01",
+        planned_targets=_forecast_plan_targets(),
+    )[1].content
+
+    assert f"- {PLANNED_TARGET_ID} [topic-01]: {_FIXTURE_TARGET_QUESTION}" in body
+    assert f"- {FORECAST_TARGET_ID} [topic-02]: {FORECAST_TARGET_QUESTION}" in body
+    # A legacy request that was told no plan keeps no target list to copy from.
+    legacy_body = extraction_messages(task, run, evidence_chars=200)[1].content
+    assert FORECAST_TARGET_ID not in legacy_body
+
+
+@pytest.mark.asyncio
+async def test_an_unplanned_target_id_is_recorded_on_the_run(
+    tracker: Tracker,
+) -> None:
+    """The drop is visible in the run's own error record, not only in a log."""
+    state = _forecast_plan_state()
+    completer = ScriptedCompleter(
+        decisions=_forecast_reading_decisions(),
+        outputs=[_forecast_reply_with_an_invented_target_id],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
+        ),
+        http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    (finding,) = outcome.result.findings
+    assert finding.target_ids == [FORECAST_TARGET_ID]
+    recorded = [
+        error for error in outcome.errors
+        if error.error_type == "researcher_unplanned_target"
+    ]
+    assert [error.details["dropped_target_ids"] for error in recorded] == [
+        ['finding 1: dropped target id "topic-09-target-01" '
+         "(it is not a planned target)"]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_reads_own_target_line_never_costs_the_run_its_evidence(
+    tracker: Tracker,
+) -> None:
+    """Naming the coverage id is a binding mistake, not a finding to delete.
+
+    ``targets=topic-01`` is the id the packet prints on every read and
+    evidence unit, so it is the likeliest wrong id an extraction can copy.
+    Dropping the finding over it would turn one vocabulary slip into a run
+    with no evidence at all, so the id is dropped and recorded, the finding is
+    kept unbound, and attribution falls back to the sub-topic that fetched the
+    read — exactly the reading that predates this binding.
+    """
+    state = _forecast_plan_state()
+    completer = ScriptedCompleter(
+        decisions=_forecast_reading_decisions(),
+        outputs=[_forecast_reply_naming_the_coverage_id],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
+        ),
+        http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    (finding,) = outcome.result.findings
+    assert finding.target_ids == []
+    assert finding.related_sub_topic == TOPIC_01_TITLE
+    recorded = [
+        error for error in outcome.errors
+        if error.error_type == "researcher_unplanned_target"
+    ]
+    assert [error.details["dropped_target_ids"] for error in recorded] == [
+        ['finding 1: dropped target id "topic-01" '
+         "(it is not a planned target)"]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_read_fetched_for_one_topic_yields_another_topics_finding(
+    tracker: Tracker,
+) -> None:
+    """The audited run's own miss, replayed end to end on its stored read.
+
+    EIA 64705 was read for the 2024-additions sub-topic and its 19.6 GW
+    sentence was never mined for the forecast topic. Here the read is fetched
+    for topic-01 and extraction binds a finding to topic-02's forecast target,
+    carrying the vintage that lets a reader tell it from the older 18.2 GW
+    forecast. The reply is derived from the request, so it also proves the
+    packet showed the sentence and the target.
+    """
+    state = _forecast_plan_state()
+    completer = ScriptedCompleter(
+        decisions=_forecast_reading_decisions(),
+        outputs=[_forecast_reply],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
+        ),
+        http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    (finding,) = outcome.result.findings
+    # Fetched for topic-01, mined for topic-02's target.
+    assert finding.related_sub_topic == TOPIC_01_TITLE
+    assert finding.target_ids == [FORECAST_TARGET_ID]
+    assert finding.vintage == "January 2025 preliminary inventory"
+    assert finding.statement_date == "2025-03-12"
+    assert finding.data_period == "2025"
+    # And the request the model answered carried both.
+    request_body = completer.calls[0][2][1].content
+    assert EIA_64705_FORECAST_SENTENCE in request_body
+    assert f"- {FORECAST_TARGET_ID} [topic-02]: {FORECAST_TARGET_QUESTION}" in (
+        request_body
+    )
+
+
+# ---------------------------------------------------------------------------
+# The run's own read of the page the audited run missed
+# ---------------------------------------------------------------------------
+#
+# EIA, "U.S. battery capacity increased 66% in 2024" (Today in Energy id 64705,
+# March 12 2025), as the run stored it: the navigation header first, then the
+# sentences, and the 2025 forecast last. The forecast sentence is the one the
+# audited run never extracted; its 18.2 GW predecessor came from another page
+# and an older inventory. The text is the stored read verbatim, so the fixture
+# cannot drift away from the evidence it stands in for.
+
+EIA_64705_URL = "https://eia.gov/todayinenergy/detail.php?id=64705"
+EIA_64705_TITLE = (
+    "U.S. battery capacity increased 66% in 2024 - U.S. Energy Information "
+    "Administration (EIA)"
+)
+EIA_64705_FORECAST_SENTENCE = (
+    "In 2025, capacity growth from battery storage could set a record as "
+    "operators report plans to add 19.6 GW of utility-scale battery storage "
+    "to the grid, according to our January 2025 preliminary electric "
+    "generator inventory data."
+)
+EIA_64705_FORECAST_EXCERPT = (
+    "operators report plans to add 19.6 GW of utility-scale battery storage "
+    "to the grid, according to our January 2025 preliminary electric "
+    "generator inventory data."
+)
+EIA_64705_BODY = (
+    "Skip to sub-navigation U.S. Energy Information Administration - EIA - "
+    "Independent Statistics and Analysis Menu Statistics Analysis Tools "
+    "Education News Search Today in Energy Skip to page content Recent "
+    "articles Browse by tag liquid fuels natural gas electricity oil/petroleum "
+    "production/supply crude oil consumption/demand generation prices map "
+    "states exports/imports international coal renewables weather "
+    "forecasts/projections gasoline capacity steo (short-term energy outlook) "
+    "Prices Archive About Glossary FAQS In-brief analysis March 12, 2025 U.S. "
+    "battery capacity increased 66% in 2024 Data source: U.S. Energy "
+    "Information Administration, Preliminary Monthly Electric Generator "
+    "Inventory , January 2025 In the United States, cumulative utility-scale "
+    "battery storage capacity exceeded 26 gigawatts (GW) in 2024, according "
+    "to our January 2025 Preliminary Monthly Electric Generator Inventory . "
+    "Generators added 10.4 GW of new battery storage capacity in 2024, the "
+    "second-largest generating capacity addition after solar. Even though "
+    "battery storage capacity is growing fast, in 2024 it was only 2% of the "
+    "1,230 GW of utility-scale electricity generating capacity in the United "
+    "States. In 2025, capacity growth from battery storage could set a record "
+    "as operators report plans to add 19.6 GW of utility-scale battery "
+    "storage to the grid, according to our January 2025 preliminary electric "
+    "generator inventory data."
+)
+
+TOPIC_01_TITLE = "2024 U.S. grid-scale battery capacity additions (reported actuals)"
+TOPIC_02_TITLE = "Latest 2025 forecasts for U.S. grid-scale battery capacity additions"
+FORECAST_TARGET_ID = "topic-02-target-01"
+_FIXTURE_TARGET_QUESTION = "How much battery capacity was added in 2024?"
+FORECAST_TARGET_QUESTION = (
+    "What does the most recent federal statistical-agency forecast project for "
+    "U.S. utility-scale battery storage capacity additions in 2025, in MW?"
+)
+
+
+def _plan_target(target_id: str, question: str) -> EvidenceTarget:
+    """One planned obligation, named the way ``planner.target_id_for`` names it."""
+    return EvidenceTarget(
+        target_id=target_id,
+        coverage_id=target_id.rsplit("-target-", 1)[0],
+        question=question,
+        required_dimensions=["measure: battery storage capacity additions"],
+        required=True,
+        critical=True,
+        support_policy="independent_pair",
+    )
+
+
+def _plan_topics() -> list[SubTopic]:
+    """The run's plan, trimmed to the two sub-topics in play here."""
+    return [
+        _sub_topic(TOPIC_01_TITLE, 1, coverage_id="topic-01").model_copy(
+            update={
+                "evidence_targets": [
+                    _plan_target(PLANNED_TARGET_ID, _FIXTURE_TARGET_QUESTION)
+                ]
+            }
+        ),
+        _sub_topic(TOPIC_02_TITLE, 2, coverage_id="topic-02").model_copy(
+            update={
+                "evidence_targets": [
+                    _plan_target(FORECAST_TARGET_ID, FORECAST_TARGET_QUESTION)
+                ]
+            }
+        ),
+    ]
+
+
+def _forecast_plan_targets() -> list[EvidenceTarget]:
+    return [target for topic in _plan_topics() for target in topic.evidence_targets]
+
+
+def _forecast_plan_state() -> ResearchState:
+    return _state(sub_topics=_plan_topics())
+
+
+def _forecast_reading_decisions() -> list[object]:
+    """Topic-01 reads the EIA page; topic-02 is left with nothing to extract."""
+    return [
+        use_tool(
+            "Find the 2024 addition.",
+            "web_search",
+            '{"query": "eia battery storage capacity 2024"}',
+        ),
+        use_tool(
+            "Read the EIA page.",
+            "web_scraper",
+            f'{{"url": "{EIA_64705_URL}"}}',
+        ),
+        finish("The page carries the answer.", "10.4 GW in 2024."),
+        finish("No source for the forecast topic.", "Not established."),
+    ]
+
+
+def _packet_locator_for(figure: str, packet: str) -> tuple[str, str]:
+    """The ``(read_id, locator)`` of the passage carrying ``figure``.
+
+    A scripted reply cannot know a read id before the request is built, so it
+    reads one out of the packet the way the model must — and fails loudly when
+    the packet never showed the passage, which is the whole failure this
+    fixture exists to catch. Rows are split on their ``- `` prefix rather than
+    on newlines: a stored passage keeps the source's own line breaks, so one
+    row can span several lines.
+    """
+    for row in re.split(r"(?m)^- ", packet):
+        if not row.startswith("passage ") or figure not in row:
+            continue
+        read_id = re.search(r"read_id=(\S+)", row)
+        locator = re.search(r"locator=(\S+)", row)
+        assert read_id is not None and locator is not None, row
+        return read_id.group(1), locator.group(1)
+    raise AssertionError(f"the extraction packet showed no passage with {figure}")
+
+
+def _eia_forecast_draft(
+    messages: list[ChatMessage],
+    *,
+    target_ids: Sequence[str] = (FORECAST_TARGET_ID,),
+) -> SubTopicFindingsDraft:
+    """The draft a model that read the packet would return for EIA 64705."""
+    read_id, locator = _packet_locator_for("19.6 GW", messages[1].content)
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "EIA's March 12, 2025 In-brief analysis reports that "
+                    "operators plan to add 19.6 GW of utility-scale battery "
+                    "storage to the grid in 2025, according to EIA's January "
+                    "2025 preliminary electric generator inventory data."
+                ),
+                source_url=EIA_64705_URL,
+                source_title=EIA_64705_TITLE,
+                confidence=0.95,
+                read_id=read_id,
+                locator=locator,
+                excerpt=EIA_64705_FORECAST_EXCERPT,
+                target_ids=list(target_ids),
+                data_period="2025",
+                statement_date="2025-03-12",
+                vintage="January 2025 preliminary inventory",
+            )
+        ]
+    )
+
+
+def _forecast_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    del schema
+    return _eia_forecast_draft(messages)
+
+
+def _forecast_reply_with_an_invented_target_id(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    del schema
+    return _eia_forecast_draft(
+        messages, target_ids=[FORECAST_TARGET_ID, "topic-09-target-01"]
+    )
+
+
+def _forecast_reply_naming_the_coverage_id(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The reply of a model that copied the read's own ``targets=`` line.
+
+    That line names the sub-topic that fetched the read (``topic-01``), not a
+    planned target, and it is the one id the packet prints next to every read
+    and evidence unit — the likeliest way an extraction names the wrong
+    vocabulary. The id is dropped; the finding it was attached to is not.
+    """
+    del schema
+    return _eia_forecast_draft(messages, target_ids=["topic-01"])
 
 
 def test_extraction_messages_require_the_registry_shape() -> None:

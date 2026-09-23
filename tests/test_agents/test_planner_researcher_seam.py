@@ -278,7 +278,7 @@ async def test_a_full_planner_output_composes_into_the_researcher(
             for decision in _search_and_scrape_decisions(title)
         ],
         outputs=[
-            _findings_draft(title, target_id=f"topic-{position:02d}")
+            _findings_draft(title, target_id=f"topic-{position:02d}-target-01")
             for position, title in enumerate(researched_titles, start=1)
         ],
     )

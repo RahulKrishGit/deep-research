@@ -606,6 +606,7 @@ class ReplayCompleter(AgentCompleter):
         target_id = target_match.group(1)
         topic = self._topic_for_target(target_id)
         self._require(text, topic.title, where="extraction packet")
+        planned = self._planned_target_ids(text, target_id)
         findings: list[FindingDraft] = []
         for source in topic.sources:
             read_match = re.search(
@@ -636,7 +637,6 @@ class ReplayCompleter(AgentCompleter):
                     f"the read of {source.url} does not entail the claim it "
                     "is scripted to support"
                 )
-            targets = evidence.group(3).split(",")
             findings.append(
                 FindingDraft(
                     content=source.claim,
@@ -646,10 +646,34 @@ class ReplayCompleter(AgentCompleter):
                     read_id=read_id,
                     locator=locator,
                     excerpt=excerpt,
-                    target_ids=[value for value in targets if value != "-"],
+                    target_ids=list(planned),
                 )
             )
         return SubTopicFindingsDraft(findings=findings)
+
+    def _planned_target_ids(self, text: str, coverage_id: str) -> list[str]:
+        """One topic's target ids, read out of the request's target list.
+
+        A finding names the planned targets it serves, and the plan's ids are
+        the only ones the extraction may name — the coverage id the read was
+        fetched for (``topic-01``) is a different vocabulary and is dropped.
+        This harness can honestly do only what it does here: it knows which
+        sub-topic fetched the read, not which sentence answers which
+        obligation, so it names that topic's targets and leaves the binding to
+        the Fact Checker's own dimension check.
+        """
+        catalogue = re.findall(
+            rf"^- ({re.escape(coverage_id)}-target-\d+) "
+            rf"\[{re.escape(coverage_id)}\]: ",
+            text,
+            re.M,
+        )
+        if not catalogue:
+            raise ReplayContractError(
+                f"the extraction request listed no planned targets for "
+                f"{coverage_id}"
+            )
+        return catalogue
 
     def _reply_SourceScoresDraft(self, text: str) -> SourceScoresDraft:
         rows = []

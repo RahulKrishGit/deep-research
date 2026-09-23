@@ -58,6 +58,7 @@ from deep_research.utils.types import (
     AcquisitionState,
     ContractModel,
     CritiqueGap,
+    EvidenceTarget,
     Finding,
     ReadRecord,
     ResearchError,
@@ -156,6 +157,14 @@ class FindingDraft(ContractModel):
     locator: str | None = None
     excerpt: str | None = None
     target_ids: list[str] = Field(default_factory=list)
+    # The figures' dates, kept apart for the same reason ``SourceTemporal``
+    # keeps a source's: the period a figure applies to, the date the source
+    # states it, and the vintage of the data behind it are three different
+    # facts, and a comparison of "the latest" needs all three. Optional, so a
+    # finding about something undated stays admissible.
+    data_period: str | None = None
+    statement_date: str | None = None
+    vintage: str | None = None
 
 
 class SubTopicFindingsDraft(ContractModel):
@@ -600,20 +609,56 @@ def retrieved_finding_urls(run: ReActRun) -> tuple[str, ...]:
 # the acquisition path every finding must carry the registry fields it copied
 # from the packet, so the example demonstrates that shape instead of the
 # URL/title shape that no longer admits anything: the prompt must never show
-# a bypass of the membership checks.
+# a bypass of the membership checks. Its target id is shaped like the plan's
+# own (``topic-01-target-01``) rather than a bare ``target-01``, because the
+# one thing the model must copy from the Planned targets list is the id, and
+# an example whose id could never come from that list teaches the wrong shape.
 _FINDING_REPLY_EXAMPLES = (
     (
         "Example input: passage read-111111111111111111111111 locator page-4-"
         "chunk-0 of the example report at "
-        "https://evidence.example.test/report (target-01).",
+        "https://evidence.example.test/report (fetched for topic-01); the "
+        "Planned targets list names topic-01-target-01 (how much capacity was "
+        "added?).",
         '{"findings":[{"content":"The example report measured a 12 percent '
-        'reduction.","source_url":"https://evidence.example.test/report",'
+        'reduction in 2024, from its January 2025 preliminary inventory.",'
+        '"source_url":"https://evidence.example.test/report",'
         '"source_title":"Example report","confidence":0.8,'
         '"read_id":"read-111111111111111111111111","locator":"page-4-chunk-0",'
         '"excerpt":"The measured reduction was 12 percent.",'
-        '"target_ids":["target-01"]}]}',
+        '"target_ids":["topic-01-target-01"],"data_period":"2024",'
+        '"statement_date":"2025-03-12",'
+        '"vintage":"January 2025 preliminary inventory"}]}',
     ),
 )
+
+# What every finding must say about the figures it reports, on either path.
+# Appended to both response contracts because the failure it prevents is not
+# acquisition-specific: a statement of a quantity with no date beside it
+# cannot be ranked against a later or earlier statement of the same quantity.
+_FINDING_DATES_CONTRACT = (
+    " For every figure you report, fill in data_period with the period the "
+    "figure applies to, statement_date with the date the source states or "
+    "carries for it, and vintage with the dated edition of the data it rests "
+    "on — each written as the source writes it (dates as YYYY, YYYY-MM, or "
+    "YYYY-MM-DD) and each null when the source does not state it. The vintage "
+    "is what tells the latest statement of a quantity from an older one."
+)
+
+
+def render_planned_targets(targets: Sequence[EvidenceTarget]) -> str:
+    """One line per planned target a finding may be bound to, in plan order.
+
+    The id is what the reply has to copy, so it leads the line; the question
+    is what decides the binding, so it follows in full. Nothing else is
+    rendered: the support policy and the criticality are the Fact Checker's
+    business, and an extractor that tried to satisfy them would be guessing at
+    a verdict it does not own.
+    """
+    return "\n".join(
+        f"- {target.target_id} [{target.coverage_id}]: {target.question}"
+        for target in targets
+    )
 
 
 def extraction_messages(
@@ -622,20 +667,37 @@ def extraction_messages(
     *,
     evidence_chars: int,
     acquisition_context: str | None = None,
+    planned_targets: Sequence[EvidenceTarget] = (),
 ) -> list[ChatMessage]:
-    """Build the messages that extract findings from one finished loop."""
+    """Build the messages that extract findings from one finished loop.
+
+    ``planned_targets`` is the run's whole counted target inventory, not the
+    active sub-topic's share of it. The read being mined was fetched for one
+    topic, but its text may answer a target of another — the audible miss this
+    parameter exists to stop — and the model can only bind a finding to a
+    target it was shown. An empty sequence (a legacy plan, or a caller with no
+    plan in hand) leaves the request without a list to bind against, which is
+    what it was before this parameter existed.
+    """
     criteria = "\n".join(
         f"- {criterion}" for criterion in task.sub_topic.success_criteria
     )
     registry_contract = (
         "Return one finding per distinct, source-backed claim. Every finding "
         "MUST copy the read_id, locator, and excerpt of the passage it came "
-        "from, and the target id it serves, exactly as the acquisition "
-        "context above prints them; a finding without them, or with an "
-        "excerpt the locator does not contain, is dropped. Copy source_url "
-        "and source_title from the same read record, never from memory, a "
-        "search snippet, or another finding's text; never invent a content "
-        "hash. Return an empty list when the evidence supports nothing."
+        "from exactly as the acquisition context above prints them, and MUST "
+        "name in target_ids every planned target from the Planned targets "
+        "list whose question its content answers — copy those ids from that "
+        "list, never the targets= line of a read, which names only the "
+        "sub-topic that fetched it, and mine each passage for every planned "
+        "target rather than only the one that fetched it. A target id that is "
+        "not in that list is dropped from the finding, and a finding with no "
+        "planned target left is kept but can then be attributed only through "
+        "the sub-topic that fetched its read. A finding whose excerpt the "
+        "locator does not contain is dropped. Copy source_url and source_title "
+        "from the same read record, never from memory, a search snippet, or "
+        "another finding's text; never invent a content hash. Return an empty "
+        "list when the evidence supports nothing."
         if acquisition_context is not None
         else "Return one finding per distinct, source-backed claim. Use the "
         "exact source_url and source_title from the evidence above. Return "
@@ -643,23 +705,35 @@ def extraction_messages(
     )
     sections = [
         f"# Sub-topic\n{task.sub_topic.title}",
-            f"# Success criteria\n{criteria}",
+        f"# Success criteria\n{criteria}",
+    ]
+    if planned_targets:
+        sections.append(
+            "# Planned targets\n"
+            "Every planned target of this run, in plan order. A finding whose "
+            "content answers one of these questions names it in target_ids, "
+            "whichever sub-topic the read was fetched for:\n"
+            + render_planned_targets(planned_targets)
+        )
+    sections.extend(
+        [
             (
                 "# Retrieved evidence\n"
                 + (
-                acquisition_context
-                if acquisition_context is not None
-                else render_evidence(
-                    run, limit=evidence_chars, discovery_payloads=False
+                    acquisition_context
+                    if acquisition_context is not None
+                    else render_evidence(
+                        run, limit=evidence_chars, discovery_payloads=False
+                    )
                 )
-            )
-        ),
-        f"# Response contract\n{registry_contract}",
-        (
-            "# Reply format\n"
-            f"{render_structured_reply_format(_FINDING_REPLY_EXAMPLES)}"
-        ),
-    ]
+            ),
+            f"# Response contract\n{registry_contract}{_FINDING_DATES_CONTRACT}",
+            (
+                "# Reply format\n"
+                f"{render_structured_reply_format(_FINDING_REPLY_EXAMPLES)}"
+            ),
+        ]
+    )
     return [
         ChatMessage(role="developer", content=EXTRACTION_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
@@ -673,8 +747,9 @@ def build_findings(
     extracted_at: str,
     known_urls: Sequence[str],
     known_reads: Mapping[str, ReadRecord] | None = None,
-    target_id: str | None = None,
+    valid_target_ids: Sequence[str] | None = None,
     admitted_evidence_keys: list[tuple[str, str]] | None = None,
+    dropped_target_ids: list[str] | None = None,
 ) -> tuple[list[Finding], list[str]]:
     """Stamp drafts into ``Finding`` values, naming the ones that were dropped.
 
@@ -693,6 +768,21 @@ def build_findings(
     also appended to ``admitted_evidence_keys`` as its ``(read_id, locator)``
     when the caller passes a list, which is how the caller can tell a passage
     that produced a finding from a different passage of the same read.
+
+    ``valid_target_ids`` is the plan's counted target inventory — every id the
+    extraction was shown. A finding keeps the ids that are in it, whatever
+    sub-topic it came from; an id outside it is dropped from the finding and
+    named in ``dropped_target_ids``, but the finding itself is kept. That
+    asymmetry is deliberate. The id vocabulary the extraction can confuse a
+    plan target with is the one the packet prints on every read and evidence
+    unit — the *coverage* id of the sub-topic that fetched it (``topic-01``
+    against ``topic-01-target-01``) — so a model that copies the wrong one
+    would lose every finding, and a run with no findings answers nothing.
+    ``claim_attribution`` reads a finding with no planned target exactly as it
+    read every finding before this binding existed: through the sub-topic that
+    fetched its read, with the claim's own prose still deciding the binding.
+    ``None`` means no plan was in hand (a legacy caller), and then no binding
+    is checked or invented.
     """
     findings: list[Finding] = []
     rejected: list[str] = []
@@ -731,9 +821,16 @@ def build_findings(
                     f"finding {index}: excerpt was not admitted at locator"
                 )
                 continue
-            if target_id is not None and target_id not in item.target_ids:
-                rejected.append(f"finding {index}: target id was not admitted")
-                continue
+            if valid_target_ids is not None:
+                kept, drops = _admitted_target_ids(
+                    item.target_ids, valid_target_ids, index=index
+                )
+                if dropped_target_ids is not None:
+                    dropped_target_ids.extend(drops)
+            else:
+                kept = list(item.target_ids)
+        else:
+            kept = list(item.target_ids)
         if normalize_source_url(source_url) not in allowed:
             rejected.append(f"finding {index}: source url was not retrieved")
             continue
@@ -746,6 +843,10 @@ def build_findings(
                     extracted_at=extracted_at,
                     confidence=item.confidence,
                     related_sub_topic=sub_topic.title,
+                    target_ids=kept,
+                    data_period=item.data_period,
+                    statement_date=item.statement_date,
+                    vintage=item.vintage,
                 )
             )
         except ValidationError as error:
@@ -758,6 +859,33 @@ def build_findings(
         ):
             admitted_evidence_keys.append((item.read_id, item.locator))
     return findings, rejected
+
+
+def _admitted_target_ids(
+    named: Sequence[str],
+    valid_target_ids: Sequence[str],
+    *,
+    index: int,
+) -> tuple[list[str], list[str]]:
+    """The planned ids ``named`` keeps, and the record of the ones it invented.
+
+    The drop is named per id rather than per finding, because the interesting
+    event is a specific id the plan never issued — that is what tells a later
+    reader whether the extraction misread the plan or the plan was stale.
+    """
+    valid = set(valid_target_ids)
+    kept: list[str] = []
+    dropped: list[str] = []
+    for target_id in named:
+        if target_id in valid:
+            if target_id not in kept:
+                kept.append(target_id)
+            continue
+        dropped.append(
+            f'finding {index}: dropped target id "{target_id}" '
+            "(it is not a planned target)"
+        )
+    return kept, dropped
 
 
 class BoundedFindings(NamedTuple):
@@ -1240,6 +1368,29 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             return ""
         return policy.context(limit=self._evidence_packet_chars)
 
+    def _planned_targets(self) -> list[EvidenceTarget]:
+        """Every counted target of the run's plan, in plan order.
+
+        Read from the run's own state rather than from the active
+        ``AcquisitionPolicy``: a policy knows the one coverage id it was built
+        for, and the point of the extraction list is precisely that a read
+        fetched for one topic may answer another topic's target. The order is
+        the plan's, so the list is stable across a run's sub-topics and a
+        replayed request differs only where its evidence does.
+
+        A run with no plan in hand — a direct ``extract_findings`` call, or a
+        snapshot predating the target inventory — yields none, and extraction
+        then binds nothing, because there is no inventory to bind against.
+        """
+        state = self._run_source_state
+        if state is None:
+            return []
+        return [
+            target
+            for sub_topic in state.sub_topics
+            for target in counted_evidence_targets(sub_topic.evidence_targets)
+        ]
+
     def _policy_for_task(self, task: SubTopicTask) -> AcquisitionPolicy:
         target_id = task.sub_topic.coverage_id
         existing = (
@@ -1360,6 +1511,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # gate acquisition can never pass.
             policy.extract_passage_batch()
 
+        planned_targets = self._planned_targets() if policy is not None else []
         try:
             draft = await self.provider.complete_structured(
                 extraction_messages(
@@ -1371,6 +1523,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         if policy is not None
                         else None
                     ),
+                    planned_targets=planned_targets,
                 ),
                 SubTopicFindingsDraft,
                 agent_name=self.name,
@@ -1379,6 +1532,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             return [], [extraction_provider_error(run, error)], True
 
         admitted_keys: list[tuple[str, str]] = []
+        unplanned_target_ids: list[str] = []
         findings, rejected = build_findings(
             draft,
             sub_topic=task.sub_topic,
@@ -1393,23 +1547,64 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 if policy is not None
                 else None
             ),
-            target_id=(policy.target_id if policy is not None else None),
+            valid_target_ids=(
+                [target.target_id for target in planned_targets]
+                if planned_targets
+                else None
+            ),
             admitted_evidence_keys=admitted_keys,
+            dropped_target_ids=unplanned_target_ids,
         )
         if policy is not None:
             # Unit-level, so a passage is "used" only when that exact passage
             # produced an admitted finding.
             policy.record_extraction_dispositions(admitted_keys)
-            self._last_target_obligation_completed = (
-                policy.target_id is not None and bool(admitted_keys)
+            # The obligation this pass completed is the ACTIVE topic's, and a
+            # finding bound to another topic's target does not complete it.
+            # Mining a read for every planned target would otherwise let one
+            # topic's binding stand in for another's. Only findings that
+            # carry a binding are asked: an unbound finding (a legacy one, or
+            # an extraction that named an id outside the plan) is attributed
+            # through this very topic later, which is what the old reading —
+            # "some passage of this topic was used" — already said.
+            own_target_ids = {
+                target.target_id
+                for target in counted_evidence_targets(
+                    task.sub_topic.evidence_targets
+                )
+            }
+            bound = [finding for finding in findings if finding.target_ids]
+            completed = policy.target_id is not None and bool(admitted_keys)
+            if completed and own_target_ids and bound:
+                completed = any(
+                    own_target_ids.intersection(finding.target_ids)
+                    for finding in bound
+                )
+            self._last_target_obligation_completed = completed
+        errors = []
+        if unplanned_target_ids:
+            # Recorded even though the finding was kept: an id the plan never
+            # issued is invisible in state otherwise, and every later stage
+            # would read the surviving binding as the whole story.
+            errors.append(
+                agent_error(
+                    agent_name=self.name,
+                    error_type="researcher_unplanned_target",
+                    message=(
+                        "Some extracted findings named targets outside the "
+                        "plan; those ids were dropped."
+                    ),
+                    details={
+                        "sub_topic": summarize_text(task.sub_topic.title),
+                        "dropped_target_ids": unplanned_target_ids,
+                    },
+                )
             )
-        if not rejected:
-            if policy is not None:
-                policy.complete_extraction()
-            return findings, [], False
         if policy is not None:
             policy.complete_extraction()
-        return findings, [
+        if not rejected:
+            return findings, errors, False
+        errors.append(
             agent_error(
                 agent_name=self.name,
                 error_type="researcher_invalid_finding",
@@ -1421,7 +1616,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     "rejected": rejected,
                 },
             )
-        ], False
+        )
+        return findings, errors, False
 
     async def finalize(
         self,

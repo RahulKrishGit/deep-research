@@ -114,14 +114,47 @@ def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
     so the result does not depend on how a caller ordered equal-confidence
     restatements. Deliberately exact-match only — no embeddings and no fuzzy
     thresholds, because a near-miss merge would silently drop evidence.
+
+    The fold keeps the record, and not its silences. ``raw_findings`` is
+    append-only across research rounds, and a later extraction of the same
+    passage may come back unbound — an id outside the plan is dropped rather
+    than fatal — so a confidence-only fold would let a restatement delete the
+    only record of which planned target that evidence answers. Target ids are
+    unioned in the kept record's order, its own dates win, and a date it lacks
+    is filled from the duplicate.
     """
     kept: dict[str, Finding] = {}
     for finding in findings:
         fingerprint = finding_fingerprint(finding)
         existing = kept.get(fingerprint)
-        if existing is None or finding.confidence > existing.confidence:
+        if existing is None:
             kept[fingerprint] = finding
+            continue
+        if finding.confidence > existing.confidence:
+            winner, loser = finding, existing
+        else:
+            winner, loser = existing, finding
+        kept[fingerprint] = _merge_duplicate_findings(winner, loser)
     return list(kept.values())
+
+
+def _merge_duplicate_findings(winner: Finding, loser: Finding) -> Finding:
+    """The record to keep, carrying both records' bindings and dates.
+
+    Only the fields a fold could otherwise erase are merged. Content, URL,
+    topic and confidence are the identity and the ranking, and the kept
+    record's own values stand.
+    """
+    target_ids = list(dict.fromkeys([*winner.target_ids, *loser.target_ids]))
+    dates = {
+        name: getattr(winner, name) or getattr(loser, name)
+        for name in ("vintage", "statement_date", "data_period")
+    }
+    if target_ids == winner.target_ids and all(
+        getattr(winner, name) == value for name, value in dates.items()
+    ):
+        return winner
+    return winner.model_copy(update={"target_ids": target_ids, **dates})
 
 
 def merge_source_snapshot(
