@@ -615,6 +615,17 @@ async def test_the_source_verification_read_is_assessed_saved_and_counted(
         assessed[normalize_source_url(RETRIEVED_URL)].evaluation_status
         == "scored"
     )
+    # What downstream reads is the identity the pair test itself used: the
+    # snapshot is resolved once over the whole read registry, so the saved row
+    # carries the publisher and work its read establishes — the issuer this
+    # document attributes itself to — rather than an unknown identity, and the
+    # earlier source keeps the host-level identity its own read establishes.
+    assert (
+        assessed[normalize_source_url(RETRIEVED_URL)].publisher_id
+        == "third party"
+    )
+    assert assessed[normalize_source_url(RETRIEVED_URL)].work_id
+    assert assessed[normalize_source_url(UPSTREAM_URL)].publisher_id == "lab-a.test"
 
     report = state.report or ""
     composition = state.composition
