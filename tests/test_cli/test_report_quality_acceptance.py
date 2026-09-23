@@ -105,6 +105,7 @@ from deep_research.utils.types import (
     Critique,
     EvidencePassage,
     Finding,
+    ReadRecord,
     ResearchError,
     ResearchState,
     ScoredSource,
@@ -565,7 +566,7 @@ def _composition(
     sources: Sequence[ScoredSource],
     claims: Sequence[Claim],
     findings: Sequence[Finding],
-    events: Sequence[Any],
+    reads: Sequence[ReadRecord],
 ) -> ReportComposition:
     """Build the reader composition the way a synthesis pass does.
 
@@ -611,7 +612,7 @@ def _composition(
         session_id=state.session_id,
         iteration=state.iteration,
         max_iterations=state.max_iterations,
-        as_of=report_as_of(findings=findings, events=events),
+        as_of=report_as_of(findings=findings, reads=reads),
         scope=report_scope(sub_topics),
         sub_topics=list(sub_topics),
         claims=list(claims),
@@ -740,7 +741,7 @@ def _fixture() -> _Fixture:
         sources=sources,
         claims=claims,
         findings=raw_findings,
-        events=events,
+        reads=list(state.read_records.values()),
     )
     state = state.model_copy(
         update={
@@ -1709,7 +1710,7 @@ def test_the_renderers_collapse_repeated_records_onto_one_row_each() -> None:
         sources=raw_sources,
         claims=raw_claims,
         findings=list(first.findings),
-        events=[],
+        reads=[],
     )
     assert len(composition.sources) == len(
         {source.url for source in raw_sources}

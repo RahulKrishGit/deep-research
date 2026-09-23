@@ -15,8 +15,9 @@ questions:
 
 Nothing here performs I/O, reads a clock, or calls a provider, so both
 artifacts are deterministic functions of the composition handed to them.
-``As of`` is therefore the newest timestamp the *recorded evidence* carries,
-never a clock read.
+``As of`` is therefore the newest timestamp the *recorded evidence* carries —
+a read's retrieval time or a finding's extraction time — never a graph event
+and never a clock read.
 
 Canonicalization is repeated here on purpose. ``state.evaluated_sources`` and
 ``state.verified_claims`` are canonical snapshots by contract, but a caller
@@ -54,6 +55,7 @@ from deep_research.utils.types import (
     Claim,
     EvidenceUnit,
     Finding,
+    ReadRecord,
     ReportAnswerRow,
     ReportComposition,
     ReportConstraint,
@@ -62,7 +64,6 @@ from deep_research.utils.types import (
     ReportSection,
     ReportStatement,
     ResearchError,
-    ResearchEvent,
     ResearchState,
     ScoredSource,
     SubstantiveCoverage,
@@ -727,18 +728,20 @@ def _statement_urls(
 def report_as_of(
     *,
     findings: Sequence[Finding],
-    events: Sequence[ResearchEvent],
+    reads: Sequence[ReadRecord],
 ) -> str:
     """The newest timestamp the recorded evidence carries, or an empty string.
 
     A report's ``As of`` line must never be a clock read: it says how current
-    the *evidence* is, not when the document was printed. Both inputs are
-    already stamped by the pass that recorded them, so this is a pure
-    function of state.
+    the *evidence* is, not when the document was printed. The two evidence
+    sources are exactly the timestamps the recording pass stamped — each
+    finding's ``extracted_at`` and each read's ``retrieved_at``. A graph event
+    timestamp is not evidence: it says when a node ran, not how current the
+    material was, so no event timestamp is a candidate here.
     """
     candidates: list[tuple[datetime, str]] = []
     stamps = [finding.extracted_at for finding in findings]
-    stamps.extend(event.timestamp for event in events)
+    stamps.extend(read.retrieved_at for read in reads)
     for stamp in stamps:
         try:
             parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))

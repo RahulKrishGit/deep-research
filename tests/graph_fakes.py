@@ -193,7 +193,10 @@ def fake_reader_composition(
         session_id=state.session_id,
         iteration=state.iteration,
         max_iterations=state.max_iterations,
-        as_of=report_as_of(findings=state.raw_findings, events=state.events),
+        as_of=report_as_of(
+            findings=state.raw_findings,
+            reads=list(state.read_records.values()),
+        ),
         scope=report_scope(state.sub_topics),
         quality_status=quality_status,
         sub_topics=list(state.sub_topics),

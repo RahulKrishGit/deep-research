@@ -709,10 +709,11 @@ class ConflictAssessment(ContractModel):
     resolved away: a missing row means the conflict was never assessed, which is
     *unresolved*, never an implicit dismissal. ``resolution`` is the local
     classification — ``resolved`` only when the disagreement is accounted for by
-    a scope, method, or period difference this contract can see,
-    ``not_comparable`` when the two passages are about different things
-    entirely, and ``unresolved`` otherwise. A material unresolved contradiction
-    precludes settled ``verified`` wording.
+    a scope, method, or period difference this contract can see, and
+    ``unresolved`` otherwise. ``not_comparable`` is legacy and read-only: no
+    code path produces it today, but a stored row carrying it still loads and
+    stays non-blocking, exactly as it did before. A material unresolved
+    contradiction precludes settled ``verified`` wording.
     """
 
     claim_cluster_id: str = ""
@@ -2288,12 +2289,13 @@ class ReportComposition(ContractModel):
     a module-level import would be a cycle, and a validator only ever runs
     once every module is loaded.
 
-    ``answer_kind``, ``generated_on``, ``date_basis`` and
-    ``requested_word_limit`` are the frozen contract's values, copied here so
-    a renderer never has to re-derive them. ``claim_clusters`` and
-    ``evidence_units`` are the registries that turn a statement's evidence ids
-    into citations. All of them are optional so a fixture or a snapshot
-    written before this contract still composes, in the shape it always had.
+    ``answer_kind``, ``date_basis`` and ``requested_word_limit`` are the
+    frozen contract's values, copied here so a renderer never has to
+    re-derive them; ``generated_on`` is the run clock's own date, which is
+    not the contract's answer date. ``claim_clusters`` and ``evidence_units``
+    are the registries that turn a statement's evidence ids into citations.
+    All of them are optional so a fixture or a snapshot written before this
+    contract still composes, in the shape it always had.
     """
 
     question: str = Field(min_length=1)
@@ -2301,7 +2303,12 @@ class ReportComposition(ContractModel):
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=0, ge=0)
     as_of: str = ""
-    """The newest timestamp the recorded evidence carries; see report_as_of."""
+    """The newest recorded evidence timestamp; see ``report_as_of``.
+
+    A read's ``retrieved_at`` or a finding's ``extracted_at`` — never a graph
+    event timestamp and never a clock read. The run clock's own date is
+    ``generated_on``.
+    """
     scope: str = ""
     """The scope this report assumes; see report_scope."""
     quality_status: str = QUALITY_STATUS_NOT_GATED
@@ -2332,9 +2339,19 @@ class ReportComposition(ContractModel):
     returned_to_fact_checker: list[str] = Field(default_factory=list)
     """New factual assertions this pass detected; Task 9 owns the routing."""
     generated_on: str = ""
-    """The frozen run date, which is not the date of the evidence."""
+    """The run clock's date as ISO ``YYYY-MM-DD``.
+
+    Not the date of the evidence and not the contract's answer date: a
+    question that names a date is answered as of that date, but the document
+    was still printed on the run's own day.
+    """
     date_basis: str = ""
-    """Which date the question is actually about; see AnswerContract."""
+    """Which date the question is actually about, and that asked-for date.
+
+    Carries the contract's ``evidence_period_requirement`` and its frozen
+    ``as_of_date``, so a reader sees the date the answer is written as of
+    without it being confused with the run's own ``generated_on``.
+    """
     requested_word_limit: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
@@ -2914,11 +2931,10 @@ def answering_statement_for(
 
         if not by_cluster:
             # No cluster resolves at all: a genuinely claimless statement.
-            # Defer to the direct support-policy check — the same check a
-            # single scoped cluster would get — so a claimless ``derivation``
-            # inference still passes (F3's escape) without vacuously passing
-            # a stricter policy (``independent_pair``, ``primary_attribution``)
-            # that a claimless statement never actually meets.
+            # It satisfies no support policy — the same direct check a single
+            # scoped cluster would get is run here, and it refuses a claimless
+            # statement for every policy, ``derivation`` included, so such a
+            # statement can never answer the target.
             if not statement_satisfies_support_policy(
                 statement, [], support_policy=target.support_policy
             ):

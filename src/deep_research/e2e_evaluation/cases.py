@@ -815,7 +815,10 @@ def _composition(
         session_id=state.session_id,
         iteration=snapshot.iteration,
         max_iterations=state.max_iterations,
-        as_of=report_as_of(findings=snapshot.findings, events=state.events),
+        as_of=report_as_of(
+            findings=snapshot.findings,
+            reads=list(state.read_records.values()),
+        ),
         scope=report_scope(case.sub_topics),
         quality_status=QUALITY_STATUS_ACCEPTED,
         sub_topics=list(case.sub_topics),

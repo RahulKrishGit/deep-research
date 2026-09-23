@@ -36,6 +36,7 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.events import agent_event
+from deep_research.agents.planner import Clock, utc_now
 from deep_research.agents.prompts import (
     REPORT_INSTRUCTION,
     SYNTHESIZER_SYSTEM_PROMPT,
@@ -442,6 +443,15 @@ class SynthesisTask(AgentTask):
     iteration: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=0, ge=0)
     as_of: str = ""
+    generated_on: str = ""
+    """The run clock's date as ISO ``YYYY-MM-DD`` — not the evidence's date.
+
+    The reader prints this on its **Generated on** line, next to the **As of**
+    line that names the newest recorded *evidence* timestamp. The two are
+    different facts: a question that names a date is answered *as of* that
+    date, but the document was still printed on the run's own day. Stamped by
+    ``build_task`` from the injected clock, so a test can pin it.
+    """
     scope: str = ""
     sub_topics: list[SubTopic] = []
     claims: list[Claim] = []
@@ -2061,9 +2071,12 @@ def build_report_composition(
         evidence_units=dict(task.evidence_units),
         statement_dispositions=list(dict.fromkeys(context.dispositions)),
         returned_to_fact_checker=list(dict.fromkeys(context.returned)),
-        generated_on=contract.as_of_date if contract is not None else "",
+        generated_on=task.generated_on,
         date_basis=(
-            contract.evidence_period_requirement if contract is not None else ""
+            f"{contract.evidence_period_requirement}; "
+            f"as of {contract.as_of_date}"
+            if contract is not None
+            else ""
         ),
         requested_word_limit=(
             contract.requested_word_limit if contract is not None else None
@@ -2412,6 +2425,7 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
         max_sections: int = DEFAULT_MAX_SECTIONS,
         finding_digest: int = SYNTHESIS_FINDING_DIGEST,
         claim_digest: int = SYNTHESIS_CLAIM_DIGEST,
+        clock: Clock = utc_now,
     ) -> None:
         super().__init__(
             provider=provider,
@@ -2421,6 +2435,13 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
             config=config,
             model_profile=model_profile,
         )
+        probe = clock()
+        if probe.tzinfo is None or probe.utcoffset() is None:
+            raise AgentConfigurationError(
+                "SynthesizerAgent clock must return a timezone-aware "
+                "datetime; got a naive datetime instead"
+            )
+        self._clock = clock
         if max_sections < 1:
             raise ValueError("max_sections must be at least 1")
         if finding_digest < 1:
@@ -2454,8 +2475,10 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
             iteration=state.iteration,
             max_iterations=state.max_iterations,
             as_of=report_as_of(
-                findings=state.raw_findings, events=state.events
+                findings=state.raw_findings,
+                reads=list(state.read_records.values()),
             ),
+            generated_on=self._clock().date().isoformat(),
             scope=report_scope(state.sub_topics),
             sub_topics=list(state.sub_topics),
             claims=list(state.verified_claims),
