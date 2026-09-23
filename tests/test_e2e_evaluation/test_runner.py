@@ -31,6 +31,7 @@ from deep_research.e2e_evaluation.replay_matrix import (
     GRAPH_ONLY_HISTORICAL_MANIFEST,
     REPLAY_CASE_IDS,
     REPLAY_CASE_MANIFEST,
+    ReplayCaseEntry,
 )
 from deep_research.e2e_evaluation.runner import (
     LIVE_TIER_NOT_RUN,
@@ -1108,3 +1109,107 @@ def test_cli_accepts_a_live_case_id_without_executing_it() -> None:
 
     assert options.case_id == LIVE_CASE_IDS[0]
     assert options.tier == "live"
+
+
+def test_a_partial_product_status_is_never_printed_as_a_product_acceptance(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """The row line prints the product's own status, not the campaign's.
+
+    Every scripted-double repetition records ``graph_quality_status`` partial:
+    no reviewer scored its report, so the product itself accepted nothing. The
+    row can still clear the campaign's own floor gates, and a line that printed
+    those floors as "product accepted" claimed an acceptance the product never
+    made. The line now labels the campaign's verdict as the campaign's and
+    prints the product's recorded status beside it, so the two facts can never
+    be read as one.
+    """
+    monkeypatch.setattr(campaign_runner, "DEFAULT_OUTPUT_DIRECTORY", tmp_path)
+    case_id = CONTROLLED_CASE_IDS[0]
+    result = run_suite(tier="controlled", repetitions=3, output_directory=tmp_path)
+
+    assert result.rows_accepted is False
+    row_lines = [
+        line
+        for line in graph_historical_suite_lines(result)
+        if line.startswith(f"{case_id}: ")
+    ]
+    assert row_lines
+    for line in row_lines:
+        assert "product accepted" not in line, line
+        assert "product graph_quality_status partial" in line, line
+        assert "campaign accepted" in line, line
+
+    code = campaign_runner.main(
+        ["case", case_id, "--tier", "controlled", "--repetitions", "3"]
+    )
+    printed = capsys.readouterr().out.splitlines()
+    case_line = next(
+        line for line in printed if line.startswith(f"Case {case_id}: ")
+    )
+
+    assert code == 0
+    assert "product accepted" not in case_line, case_line
+    assert "product graph_quality_status partial" in case_line, case_line
+    assert "campaign accepted" in case_line, case_line
+
+
+def test_a_row_whose_repetitions_disagree_is_not_passed(
+    monkeypatch, tmp_path
+) -> None:
+    """Determinism is required of a row, not merely reported beside it.
+
+    Task 12's three repetitions exist for deterministic order and identity and
+    for state-isolation, so a row whose repetitions each meet the declared
+    result but disagree on the published report is not a row that passed — and
+    a suite holding it is not accepted. Nothing here monkeypatches the suite:
+    ``run_replay_suite`` runs its own aggregation, with only the
+    per-repetition runner stubbed so the repetitions can be made to disagree.
+    """
+    entry = ReplayCaseEntry(
+        case_id="non-deterministic-row",
+        version=1,
+        title="stub",
+        expected_product_result="accepted / 0",
+        decisive_assertion="stub",
+        build=None,
+        graph_only_historical=True,
+    )
+
+    def repetition(number: int) -> ReplayRepetitionResult:
+        return ReplayRepetitionResult(
+            case_id=entry.case_id,
+            repetition=number,
+            session_id=f"{entry.case_id}-r{number}",
+            terminal_quality="accepted",
+            exit_code=0,
+            expectation_failures=[],
+            answered_target_ids=["topic-01-target-01"],
+            report_fingerprint=f"{number:064d}",
+        )
+
+    row = campaign_runner._replay_case_result(
+        entry, [repetition(number) for number in range(1, 4)]
+    )
+
+    assert row.deterministic is False
+    assert row.passed is False
+
+    def _differing_repetition(entry, repetition_number, *, storage):
+        return repetition(repetition_number)
+
+    monkeypatch.setattr(
+        campaign_runner, "_replay_repetition", _differing_repetition
+    )
+    suite = run_replay_suite(
+        tier="controlled", repetitions=3, output_directory=tmp_path
+    )
+
+    assert all(case.deterministic is False for case in suite.cases)
+    assert all(case.passed is False for case in suite.cases)
+    assert all(
+        item.expectation_failures == []
+        for case in suite.cases
+        for item in case.repetitions
+    )
+    assert suite.accepted is False
