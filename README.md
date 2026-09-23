@@ -958,9 +958,12 @@ external boundaries scripted. The socket layer is denied for every repetition
 and the attempts it records are carried into the result, so a suite that
 reached the network is not accepted however clean every row looked. A row
 passes when all three of its repetitions met its declared expected product
-result, and is reported `deterministic` or `NON-deterministic` by whether all
-three produced one identical outcome — exit code, terminal quality, answered
-targets, and published report. This harness computes no judge score at all.
+result *and* produced one identical outcome — exit code, terminal quality,
+answered targets, and published report. The repetitions exist to check that
+order, identity resolution and state isolation are deterministic, so a row
+whose repetitions disagree fails as `NON-deterministic` rather than passing with
+a note beside it, and a suite holding such a row is not accepted. This harness
+computes no judge score at all.
 
 ```
 Mode: real-agent (18 cases from replay manifest v1, case semantics v1)
