@@ -1087,6 +1087,53 @@ def _finalized_state(
 
 
 @pytest.mark.asyncio
+async def test_the_published_ledger_carries_the_records_made_after_synthesis(
+) -> None:
+    """The ledger's run errors are the run's, not the composition's snapshot.
+
+    A composition is built by the Synthesizer, so its own error list stops
+    there — and every record made after it (the Critic's, and the terminal
+    review's "nothing judged this report") was invisible in the published
+    ledger. The live run's own ledger does not say its report went unscored,
+    which is exactly the fact a replay needs. The finalizer publishes from one
+    frozen composition, so the composition it publishes carries the run's final
+    records.
+    """
+    publisher = FakePublisher()
+    state = _finalized_state(quality=fake_quality())
+    composition = fake_reader_composition(state)
+    later = ResearchError(
+        error_type="critic_review_unavailable",
+        source="agent.critic",
+        message=(
+            "The report was never judged: both review calls were truncated by "
+            "the output limit."
+        ),
+        recoverable=True,
+    )
+
+    result = await finalize_report_node(publisher)(
+        dump_state(
+            state.model_copy(
+                update={"composition": composition, "errors": [later]}
+            )
+        )
+    )
+    final = load_state(result)
+
+    ledger = publisher.document_named("-evidence.md")[1]
+    errors = ledger.split("## Run errors", 1)[1].split("\n## ", 1)[0]
+    assert "critic_review_unavailable" in errors
+    assert "agent.critic" in errors
+    assert "never judged" in errors
+    # The published composition and the state agree about the run's records.
+    assert final.composition is not None
+    assert [error.error_type for error in final.composition.errors] == [
+        "critic_review_unavailable"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_the_finalizer_publishes_every_artifact_exactly_once() -> None:
     publisher = FakePublisher()
 

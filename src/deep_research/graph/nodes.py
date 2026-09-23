@@ -395,6 +395,19 @@ def _terminal_artifacts(
     other two render from, and hashes those two exact strings. One composition
     in, three artifacts out: no renderer re-derives the fit, and no hash
     describes a document other than the one written beside it.
+
+    The composition's ``errors`` are refreshed from the state as it is
+    published. A composition is built by the Synthesizer, so its own error list
+    stops there — and the ledger's run-errors table renders that list, which
+    left every record made *after* synthesis invisible in the published ledger:
+    the Critic's, and the terminal review's "no judgement of this report
+    exists". The live run's own ledger does not say its report went unscored.
+    Refreshing here is the smallest place to say it, because publication is the
+    one point that knows the run is over; ``errors`` is also not part of
+    ``composition_semantic_fingerprint``, so this cannot invalidate the stored
+    semantic review, and the row format and ``_published_details`` withholding
+    are untouched. With no composition there is no ledger to re-render, and the
+    state's own text is published as it stands.
     """
     composition = state.composition
     if composition is None:
@@ -411,7 +424,9 @@ def _terminal_artifacts(
             quality_status=status,
         )
         return reader, evidence, quality, None
-    finalized = composition.model_copy(update={"quality_status": status})
+    finalized = composition.model_copy(
+        update={"quality_status": status, "errors": list(state.errors)}
+    )
     reader = render_reader_report(finalized).strip()
     evidence = render_evidence_ledger(finalized).strip()
     quality = render_quality_json(
