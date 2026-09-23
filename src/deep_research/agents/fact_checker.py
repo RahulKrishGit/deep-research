@@ -2147,7 +2147,19 @@ def _settled_badge(
     """
     if _issuer_passage_stands(packet, units, supports, eligibility, rows):
         return "source_supported", []
-    return None, ["relay_source"]
+    # The reason says what is actually known. A passage the adjudicator called
+    # *derivative* repeats another work's figure: that is a relay. A passage
+    # judged its own account but from a publisher the claim does not cite, or
+    # one whose dependence nobody stated, is not a relay — the identity flags
+    # name why no badge stands instead of asserting a relationship the row
+    # never recorded.
+    if any(
+        rows.get(evidence_id) is not None
+        and rows[evidence_id].dependence == "derivative"
+        for evidence_id in supports
+    ):
+        return None, ["relay_source"]
+    return None, []
 
 
 def _no_support_reason(partial: set[str], unshown: set[str]) -> str:

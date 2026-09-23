@@ -8451,3 +8451,31 @@ def test_a_document_page_longer_than_the_request_can_still_support() -> None:
         None,
     )
     assert claim.evidence_status == "source_supported"
+
+def test_an_unknown_dependence_is_not_called_a_relay() -> None:
+    """The reason names what the adjudicator said, and nothing more.
+
+    ``relay_source`` says the passage repeats the claim's issuer. A row whose
+    dependence nobody stated — the model's default — is not that: no badge
+    stands, and the identity reasons say so instead of inventing a relay.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[_row("ev-left", "supports", dependence="unknown")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="The passage does not show where its figure came from.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.evidence_status is None
+    assert "relay_source" not in claim.audit_flags
+    assert claim.insufficient_reason
