@@ -2944,6 +2944,9 @@ def test_the_two_spellings_of_one_place_state_one_geography() -> None:
         # A capitalised common noun is not an issuer (review F1).
         "Analysts reported that generators added 10.4 GW of storage in 2024.",
         "Nobody reported that generators added 10.4 GW of storage in 2024.",
+        # The pronoun scopes the phrase even when a name follows it, so the
+        # name inside it is not the clause's issuer.
+        "Nobody at EIA reported that 10.4 GW was added in 2024.",
         "Industry analysts reported that generators added 10.4 GW in 2024.",
         "Last year developers reported 10.4 GW of additions in 2024.",
         "Grid operators in California said that 4 GW was added in 2024.",
@@ -3023,6 +3026,81 @@ def test_a_named_issuer_still_attributes_after_the_grammar_tightening(
     assert atom.attribution == expected
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A publisher's name is one token and not an acronym (re-review N2).
+        ("Reuters reported that generators added 10,400 MW in 2024.", "Reuters"),
+        # The run's own claim 11: the page is the publisher's, and "states that"
+        # is a reported clause.
+        (
+            "OpenEI's page for the Form EIA-860 Instructions states that EIA "
+            "requires certain developers of electric generating plants to "
+            "submit Form EIA-860.",
+            "OpenEI",
+        ),
+        # A brand spelling with an internal capital is a name however it is
+        # cased, whatever follows its verb.
+        ("OpenEI reported 10.4 GW of additions in 2024.", "OpenEI"),
+        # The run's real spelling of the same form.
+        ("Texas reported that 4 GW was added in 2024.", "Texas"),
+    ],
+)
+def test_a_single_token_publisher_still_names_its_claim(
+    text: str, expected: str
+) -> None:
+    """A one-token name is an issuer when nothing reads it as a common noun."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
+
+
+def test_a_single_token_with_no_name_evidence_stays_unattributed() -> None:
+    """The refusal the single-title-case rule keeps: a stated object is no proof.
+
+    "Fluence reported 10.4 GW" is one unknown title-case token with an object
+    rather than a reported clause, and "Grid operators … said" is a plural
+    common noun; neither earns the form (re-review N2, review F1).
+    """
+    assert extract_text_atoms("Fluence reported 10.4 GW in 2024.")[0].attribution == ""
+    assert (
+        extract_text_atoms(
+            "Utilities reported that 10.4 GW was added in 2024."
+        )[0].attribution
+        == ""
+    )
+
+
+def test_a_document_date_is_not_the_issuer_the_document_belongs_to() -> None:
+    """The run's claim 3, verbatim: the inventory's date is not who stated it.
+
+    The name run reached the verb through the source phrase and captured
+    "December 2024 Preliminary Monthly Electric" — a date, not an issuer — so
+    the run's third claim was attributed to a date phrase while the publisher
+    the page belongs to is EIA. The clause's *geography* is deliberately not
+    asserted here: the prepositional locative reads the document's own title
+    ("Today in Energy") as a place, which is a separate, pre-existing capture
+    that no binding depends on because the dimension check is presence-only.
+    """
+    (atom,) = extract_text_atoms(
+        "An EIA Today in Energy article based on the December 2024 Preliminary "
+        "Monthly Electric Generator Inventory stated that U.S. power providers "
+        "added 10.3 GW of new battery storage capacity in 2024."
+    )
+
+    assert atom.attribution == "EIA"
+
+
+def test_a_date_phrase_alone_names_no_issuer() -> None:
+    """The control: the same inventory with no publisher named names nobody."""
+    (atom,) = extract_text_atoms(
+        "The December 2024 Preliminary Monthly Electric Generator Inventory "
+        "stated that 10.3 GW was added in 2024."
+    )
+
+    assert atom.attribution == ""
+
+
 def test_a_place_is_never_the_issuer_of_its_own_clause() -> None:
     """A locative names where the fact is, not who reported it."""
     (atom,) = extract_atoms(
@@ -3065,6 +3143,80 @@ def test_an_alias_that_does_not_modify_the_measurand_is_not_the_geography(
     atom = extract_text_atoms(text)[0]
 
     assert atom.geography == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The same three adjunct clauses with the run's own issuer in front of
+        # them: the issuer is the clause's source, never its subject, so the
+        # subject of the *reported* clause is what decides (re-review F2).
+        (
+            "EIA reported that Mexico added 300 MW of battery storage in 2024 "
+            "using U.S. suppliers."
+        ),
+        (
+            "EIA reported that Canada, unlike its U.S. neighbour, added only "
+            "500 MW of battery storage in 2024."
+        ),
+        (
+            "EIA reported that Germany's battery storage additions trailed "
+            "U.S. levels in 2024, reaching 2,000 MW."
+        ),
+    ],
+)
+def test_a_reported_clause_is_judged_by_its_own_subject(text: str) -> None:
+    """The issuer in front of the verb is not the clause's subject.
+
+    "EIA reported that Mexico added 300 MW … using U.S. suppliers" is a clause
+    about Mexico: reading the alias made it the United States and met the
+    ``geography: United States`` obligation with a foreign country's figure.
+    """
+    (atom,) = extract_text_atoms(text)
+
+    assert atom.attribution == "EIA"
+    assert atom.geography == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The reviewer's probe_regress strings (re-review N1). Each is a fact
+        # about the United States with its issuer trailing, so the alias is the
+        # clause's own subject and the unit that follows it names nobody.
+        "U.S. utilities added 10.4 GW of battery storage in 2024, EIA reported.",
+        (
+            "The United States added 10.4 GW of battery storage in 2024, "
+            "EIA reported."
+        ),
+        (
+            "U.S. developers added 10.4 GW of battery storage in 2024, "
+            "EIA reported."
+        ),
+        "U.S. capacity additions reached 10.4 GW in 2024, EIA reported.",
+        (
+            "In 2024 cumulative U.S. utility-scale battery storage capacity "
+            "reached 26 GW."
+        ),
+        (
+            "U.S. power providers added 10.3 GW of new battery storage "
+            "capacity in 2024, EIA said."
+        ),
+    ],
+)
+def test_an_alias_the_clause_states_as_its_subject_is_the_geography(
+    text: str,
+) -> None:
+    """A unit or a trailing issuer is not a competing subject.
+
+    Reading the first capitalised token after the alias refused the clause's
+    own place whenever that token was the unit ("10.4 GW") or the issuer, so
+    clauses that were about the United States stated no geography at all and
+    stopped binding the target that requires one.
+    """
+    (atom,) = extract_text_atoms(text)
+
+    assert atom.geography == "United States"
 
 
 # --------------------------------------------------------------------------

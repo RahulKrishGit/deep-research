@@ -880,6 +880,14 @@ _SUBJECT_VERB_ATTRIBUTION = re.compile(
     r"\s+(?i:(?P<verb>" + _REPORTING_VERB_ALTERNATION + r"))\b"
 )
 
+# Every reporting verb on its own, for the subject phrase whose verb stands too
+# far off for the run above to reach: "An EIA Today in Energy article based on
+# the December 2024 Preliminary Monthly Electric Generator Inventory stated
+# that …" puts fourteen words between the publisher and "stated".
+_REPORTING_VERB_IN_CLAUSE = re.compile(
+    r"(?i:\b(?P<verb>" + _REPORTING_VERB_ALTERNATION + r")\b)"
+)
+
 # What a reporting verb has to introduce to be a reporting verb here: a
 # reported clause ("… reported that capacity grew"), the end of the clause
 # ("…, EIA reported."), or a stated object ("EIA said the addition set a
@@ -1026,6 +1034,12 @@ _UNITED_STATES_NOUN_PATTERN = re.compile(
     + r")(?!\w)"
 )
 
+# The same forms folded, for asking whether a token is a unit rather than a
+# name: "U.S. utilities added 10.4 GW of storage in 2024, EIA reported" names
+# nobody else, and reading "GW" as a competing subject refused the clause's own
+# place and left it with no geography at all (re-review N1).
+_UNIT_TOKEN_FORMS = frozenset(form.casefold() for form in _UNIT_FORMS)
+
 # The determiners that can precede a name without being part of it. Deliberately
 # narrower than ``_NAME_STOPWORDS``: "New York Times reported …" keeps its "New".
 _LEADING_ARTICLES = frozenset(
@@ -1058,6 +1072,98 @@ _NAME_MODIFIER_TOKENS = frozenset(
         "such",
     }
 )
+
+# The nouns a sentence about people in general opens with. One title-case token
+# that opens a clause is a common noun by default — "Analysts reported …",
+# "Grid operators … said" — and only a reported clause in front of it earns the
+# reading of a publisher's name: "Reuters reported that …" names Reuters, while
+# none of these ever does (review F1, re-review N2).
+_SINGLE_TOKEN_NON_ISSUERS = frozenset(
+    {
+        "analysts",
+        "authors",
+        "buyers",
+        "commentators",
+        "critics",
+        "customers",
+        "data",
+        "developers",
+        "engineers",
+        "experts",
+        "figures",
+        "firms",
+        "grid",
+        "groups",
+        "industry",
+        "investors",
+        "lawmakers",
+        "market",
+        "markets",
+        "nobody",
+        "observers",
+        "officials",
+        "operators",
+        "owners",
+        "plants",
+        "providers",
+        "regulators",
+        "reporters",
+        "researchers",
+        "sales",
+        "sources",
+        "staff",
+        "suppliers",
+        "teams",
+        "utilities",
+        "vendors",
+        "workers",
+    }
+)
+
+# A clause whose subject is nobody reports nothing: "Nobody at EIA reported that
+# …" states that no one at EIA said it, so no name inside that phrase is the
+# clause's issuer however the phrase continues (review F1).
+_NO_ISSUER_SUBJECT = re.compile(r"(?i)\b(?:nobody|no one|none)\b")
+
+# The months and the years that end a name. A document phrase states its date
+# and then its publisher — "the December 2024 Preliminary Monthly Electric
+# Generator Inventory" — and a run that continued through the date attributed
+# the run's own third claim to "December 2024 Preliminary Monthly Electric"
+# instead of to the EIA page it belongs to (re-review N2).
+_MONTH_TOKENS = frozenset(
+    {
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+        "jan",
+        "feb",
+        "mar",
+        "apr",
+        "jun",
+        "jul",
+        "aug",
+        "sep",
+        "sept",
+        "oct",
+        "nov",
+        "dec",
+    }
+)
+
+
+def _names_a_date(token: str) -> bool:
+    """Whether one token is a date rather than a name: a month, or a year."""
+    folded = token.strip(".,;:").casefold()
+    return folded in _MONTH_TOKENS or (folded.isdigit() and len(folded) == 4)
 
 # A clause that points at its country without naming it. Only a claim that
 # names a place can resolve one: "the nation's fleet" in a claim about no
@@ -1400,7 +1506,10 @@ def _clean_issuer(
     analysis reported" and "EIA reported" fold to one issuer rather than two.
     A bare determiner or pronoun names nobody at all, and neither does a place:
     a locative says where a fact is, not who reported it, so "in California
-    said" and "the U.S. … reported" name no issuer.
+    said" and "the U.S. … reported" name no issuer. A date names nobody either:
+    "the December 2024 Preliminary Monthly Electric Generator Inventory stated
+    …" is a document, and the run's third claim was attributed to that date
+    phrase until the name stopped at it.
     """
     cleaned = " ".join(candidate.split()).strip(" ,.;:")
     tokens = cleaned.split()
@@ -1423,6 +1532,8 @@ def _clean_issuer(
             cleaned = " ".join([*tokens[:index], owner]).strip()
             break
     if not cleaned or cleaned.casefold() in _NAME_STOPWORDS:
+        return ""
+    if _names_a_date(cleaned.split()[0]):
         return ""
     if _is_united_states(cleaned):
         return ""
@@ -1455,6 +1566,106 @@ def _introduces_a_reported_clause(clause: str, *, verb_end: int) -> bool:
     return _REPORTED_OBJECT.match(rest) is not None
 
 
+def _has_internal_capital(name: str) -> bool:
+    """True for a brand spelling: a capital anywhere after the first letter.
+
+    "OpenEI", "YouTube", "GitHub" are names however they are cased, while
+    "Analysts" and "Utilities" are common nouns that happen to open a sentence.
+    """
+    return any(character.isupper() for character in name[1:])
+
+
+def _single_token_names_an_issuer(name: str, *, clause: str, verb_end: int) -> bool:
+    """Whether one title-case token that opens a clause names an issuer.
+
+    Two narrow ways to earn it, and a common noun earns neither. A token with
+    an internal capital is a brand spelling and not a common noun at all
+    ("OpenEI reported 10.4 GW …"). A token in plain title case is an issuer
+    only when its verb states a reported clause — "Reuters reported that …",
+    "Texas reported that …" — and the token is not one of the plural nouns a
+    sentence about people in general opens with ("Analysts reported that …",
+    "Grid operators … said", review F1). A single unknown title-case token with
+    a stated object and no reported clause — "Fluence reported 10.4 GW" — is
+    the reading this refusal keeps unattributed (re-review N2).
+    """
+    if _has_internal_capital(name):
+        return True
+    if name.casefold() in _SINGLE_TOKEN_NON_ISSUERS:
+        return False
+    return _REPORTED_THAT.match(clause[verb_end:]) is not None
+
+
+def _accepted_issuer(
+    candidate: str,
+    *,
+    clause: str,
+    start: int,
+    verb_end: int,
+    claim_places: frozenset[str] = frozenset(),
+) -> str:
+    """The issuer one captured name names, or "" when the grammar refuses it."""
+    if _NO_ISSUER_SUBJECT.search(clause[:start]):
+        # "Nobody at EIA reported that …" reports nothing, however the phrase
+        # continues past the pronoun that scopes it (review F1).
+        return ""
+    name = _clean_issuer(candidate, claim_places=claim_places)
+    if not name:
+        return ""
+    if name.split()[0].casefold() in _NAME_MODIFIER_TOKENS:
+        return ""
+    opens_the_clause = clause[:start].strip(" \t\"'([") == ""
+    if (
+        opens_the_clause
+        and " " not in name
+        and not _is_acronym(name)
+        and not _single_token_names_an_issuer(
+            name, clause=clause, verb_end=verb_end
+        )
+    ):
+        return ""
+    return name
+
+
+def _issuer_in_subject_phrase(
+    clause: str,
+    *,
+    claim_places: frozenset[str] = frozenset(),
+) -> str:
+    """The issuer a subject phrase names when its verb stands too far off.
+
+    "An EIA Today in Energy article based on the December 2024 Preliminary
+    Monthly Electric Generator Inventory stated that …" puts fourteen words
+    between the publisher and its verb, past the bound that keeps the name run
+    from bridging clauses, and the date phrase inside it is no issuer. The name
+    the subject phrase itself opens with is the publisher the document belongs
+    to, and only a name that is unmistakably a name is read this way — an
+    acronym ("EIA") or a brand spelling ("OpenEI"). "The December 2024
+    Preliminary Monthly Electric Generator Inventory stated that …" therefore
+    names nobody, which is the reading this fallback has to keep.
+    """
+    for verb in _REPORTING_VERB_IN_CLAUSE.finditer(clause):
+        if verb.group("verb").casefold() in _NOUN_AMBIGUOUS_VERBS:
+            # "EIA denied reports that …" reads as a denial, not as EIA's report,
+            # and the fallback cannot ask for the empty filler the main scan
+            # asks for — it exists precisely because the filler is long.
+            continue
+        if _REPORTED_THAT.match(clause[verb.end("verb") :]) is None:
+            continue
+        for named in _NAME_TOKEN.finditer(clause[: verb.start("verb")]):
+            token = named.group(0)
+            name = _accepted_issuer(
+                token,
+                clause=clause,
+                start=named.start(),
+                verb_end=verb.end("verb"),
+                claim_places=claim_places,
+            )
+            if name and (_is_acronym(name) or _has_internal_capital(name)):
+                return name
+        return ""
+    return ""
+
+
 def _subject_verb_attribution(
     clause: str,
     *,
@@ -1464,19 +1675,23 @@ def _subject_verb_attribution(
 
     The scan is left to right, so the outermost named subject of the clause
     wins: in "Wood Mackenzie's analysis of the EIA forecast said …" the issuer
-    is Wood Mackenzie, not the document it examined. Three refusals keep a
+    is Wood Mackenzie, not the document it examined. Four refusals keep a
     common noun out of the attribution:
 
     * a single title-case token that opens the clause is a common noun —
       "Analysts reported", "Grid operators … said" — while an acronym ("EIA
-      reported") and a multi-token name ("Wood Mackenzie reported") are
-      issuers wherever they stand;
+      reported"), a brand spelling ("OpenEI reported") and a multi-token name
+      ("Wood Mackenzie reported") are issuers wherever they stand;
     * a name that is a place names no issuer, however it is written;
     * the noun-ambiguous forms take no filler, so "EIA denied reports that …"
-      stays a denial rather than becoming EIA's report.
+      stays a denial rather than becoming EIA's report;
+    * a date names nobody, so a document phrase names its publisher and not the
+      month it was published in.
 
     A verb whose clause carries no report at all — "the EIA forecast that was
-    published in February" — is refused by :func:`_introduces_a_reported_clause`.
+    published in February" — is refused by :func:`_introduces_a_reported_clause`,
+    and a publisher whose verb stands beyond the name run's bound is still read
+    from the subject phrase it opens (:func:`_issuer_in_subject_phrase`).
     """
     for match in _SUBJECT_VERB_ATTRIBUTION.finditer(clause):
         verb = match.group("verb").casefold()
@@ -1488,20 +1703,16 @@ def _subject_verb_attribution(
             clause, verb_end=match.end("verb")
         ):
             continue
-        name = _clean_issuer(
-            match.group("attribution"), claim_places=claim_places
+        name = _accepted_issuer(
+            match.group("attribution"),
+            clause=clause,
+            start=match.start("attribution"),
+            verb_end=match.end("verb"),
+            claim_places=claim_places,
         )
-        if not name:
-            continue
-        if name.split()[0].casefold() in _NAME_MODIFIER_TOKENS:
-            continue
-        opens_the_clause = (
-            clause[: match.start("attribution")].strip(" \t\"'([") == ""
-        )
-        if opens_the_clause and " " not in name and not _is_acronym(name):
-            continue
-        return name
-    return ""
+        if name:
+            return name
+    return _issuer_in_subject_phrase(clause, claim_places=claim_places)
 
 
 def _attribution_for(
@@ -1571,18 +1782,69 @@ def _canonical_place(name: str) -> str:
     return cleaned
 
 
+def _reported_clause_start(clause: str) -> int:
+    """Where the fact a reporting verb reports begins, or 0 when none does.
+
+    "EIA reported that Mexico added 300 MW …" states a fact about Mexico: the
+    name in front of the verb is where the clause got the fact, not what the
+    clause is about, so the subject a competing name has to match starts after
+    the "that" (re-review F2).
+    """
+    for match in _SUBJECT_VERB_ATTRIBUTION.finditer(clause):
+        reports = _REPORTED_THAT.match(clause[match.end("verb") :])
+        if reports is not None:
+            return match.end("verb") + reports.end()
+    return 0
+
+
+def _clause_owner(clause: str, *, issuer: str) -> str:
+    """The name that owns the fact a clause states, or "" when nobody does.
+
+    The alias itself names no owner — it is the place being judged — so the
+    clause is read with its alias spellings removed. A unit ("10.4 GW"), a
+    date, a determiner or a modifier is no name either, and the issuer is the
+    clause's source rather than its subject: "EIA reported that Mexico added
+    300 MW" is about Mexico, while "U.S. utilities added 10.4 GW …, EIA
+    reported" is about the United States and names nobody else (re-review F2
+    residual and N1).
+    """
+    text = _UNITED_STATES.sub(" ", clause)
+    issuer_tokens = {token.casefold() for token in issuer.split()}
+    for named in _NAME_TOKEN.finditer(text, _reported_clause_start(text)):
+        token = named.group(0)
+        owner = _canonical(_possessive_owner(token) or token).strip(" .,;:")
+        if owner in issuer_tokens:
+            continue
+        if (
+            owner in _NAME_STOPWORDS
+            or owner in _NAME_MODIFIER_TOKENS
+            or owner in _LEADING_ARTICLES
+            or owner in _NAME_SCOPE_TOKENS
+            or owner in _UNIT_TOKEN_FORMS
+            or _names_a_date(owner)
+        ):
+            continue
+        return owner
+    return ""
+
+
 def _alias_names_the_clause(clause: str, *, issuer: str) -> bool:
     """Whether an adjectival ``U.S.`` is the clause's own place.
 
     Two ways to be, and one refusal the reviewer measured. The alias *is* the
-    clause's place when it modifies the measurand or market the clause is
-    about — "U.S. capacity additions", "the U.S. grid", "U.S. utility-scale
-    storage" — or when the clause's own subject is nobody else: "U.S. power
-    providers added 10.3 GW". It is an adjunct, and not the clause's place,
-    when another name opens the clause: "Mexico added 300 MW … using U.S.
-    suppliers", "Canada, unlike its U.S. neighbour, …", "Germany's …
-    additions trailed U.S. levels". Those clauses are about Mexico, Canada and
-    Germany, and reading the alias made each of them the United States.
+    clause's place when it modifies the measurand or market the clause is about
+    — "U.S. capacity additions", "the U.S. grid", "U.S. utility-scale storage"
+    — or when the clause's fact names nobody else as its owner: "U.S. power
+    providers added 10.3 GW", "U.S. utilities added 10.4 GW …, EIA reported",
+    "In 2024 cumulative U.S. utility-scale battery storage capacity reached
+    26 GW". It is an adjunct, and not the clause's place, when another name
+    owns the fact: "Mexico added 300 MW … using U.S. suppliers", "Canada,
+    unlike its U.S. neighbour, …", "Germany's … additions trailed U.S. levels",
+    and each of those with the run's own issuer in front of it — "EIA reported
+    that Mexico added …" is a clause about Mexico, because an issuer in front
+    of a verb says where the clause got the fact, not what it is about. Those
+    clauses are about Mexico, Canada and Germany, and reading the alias made
+    each of them the United States.
     """
     match = _UNITED_STATES.search(clause)
     if match is None:
@@ -1590,14 +1852,7 @@ def _alias_names_the_clause(clause: str, *, issuer: str) -> bool:
     following = clause[match.end() :].split()[:_UNITED_STATES_WINDOW]
     if _UNITED_STATES_NOUN_PATTERN.search(" ".join(following).casefold()):
         return True
-    issuer_head = (issuer.split() or [""])[0].casefold()
-    for named in _NAME_TOKEN.finditer(clause):
-        token = named.group(0)
-        if token.casefold() in _NAME_STOPWORDS or _is_united_states(token):
-            continue
-        owner = _possessive_owner(token) or token
-        return owner.casefold() == issuer_head
-    return True
+    return _clause_owner(clause, issuer=issuer) == ""
 
 
 def _geography_for(
