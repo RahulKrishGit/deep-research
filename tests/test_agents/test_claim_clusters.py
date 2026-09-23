@@ -3191,6 +3191,97 @@ def test_a_place_is_never_the_issuer_of_its_own_clause() -> None:
 
 
 # --------------------------------------------------------------------------
+# Attribution: a definition names the body whose convention it states
+# --------------------------------------------------------------------------
+
+
+def test_a_definitional_verb_attributes_the_body_that_states_the_convention(
+) -> None:
+    """The run's own claim 14: "EIA counts …" names EIA as its own subject.
+
+    A definition states the convention a body counts by, and the body is the
+    clause's grammatical subject in front of its verb — no reporting verb is
+    involved, so the claim recorded no issuer and no methodology target could
+    bind it (live cycle 08b9b469).
+    """
+    (atom,) = extract_text_atoms(
+        "EIA counts battery storage projects larger than 1 MW in the electric "
+        "power sector when reporting U.S. utility-scale battery storage "
+        "capacity."
+    )
+
+    assert atom.attribution == "EIA"
+
+
+def test_a_sentence_initial_participle_is_never_the_issuer() -> None:
+    """The run's own claim 12: "Counting …, EIA projected …" is EIA's forecast.
+
+    The phrase states how EIA counted, and the noun "projects" inside it was
+    read as a reporting verb, so the clause was attributed to the method's own
+    head. The issuer is the subject of the main clause after the comma.
+    """
+    (atom,) = extract_text_atoms(
+        "Counting projects larger than 1 MW in the electric power sector, EIA "
+        "projected that U.S. domestic storage capacity would rise from about "
+        "28 GW at the end of Q1 2025 to 64.9 GW at the end of 2026."
+    )
+
+    assert atom.attribution == "EIA"
+
+
+def test_a_place_that_counts_is_not_the_question_of_a_convention() -> None:
+    """A definition belongs to a body, and a place is not one.
+
+    "Texas counts the most battery additions" ranks Texas; it states no
+    convention Texas applies, and a state that leads a count is not the issuer
+    of the count.
+    """
+    (atom,) = extract_text_atoms("Texas counts the most battery additions in 2024.")
+
+    assert atom.attribution == ""
+
+
+def test_a_pronoun_subject_of_a_definitional_verb_attributes_nothing() -> None:
+    """The determiner and pronoun guard holds for a definitional verb too."""
+    (atom,) = extract_text_atoms("It counts projects larger than 1 MW.")
+
+    assert atom.attribution == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The main clause names a common noun, so the only name-like tokens in
+        # the clause are the phrase's own words — and the unit "MW" is one
+        # (``_is_acronym``), which the subject-phrase fallback credited.
+        (
+            "Counting projects larger than 1 MW in the electric power sector, "
+            "the agency projected that capacity would rise in 2025."
+        ),
+        (
+            "Excluding projects under 1 MW, the agency reported that capacity "
+            "rose in 2025."
+        ),
+    ],
+)
+def test_no_word_inside_a_participial_phrase_names_an_issuer(text: str) -> None:
+    """The phrase states a method: neither its head nor a unit inside it is a name."""
+    (atom,) = extract_text_atoms(text)
+
+    assert atom.attribution == ""
+
+
+def test_the_reporting_verb_form_still_attributes_the_same_issuer() -> None:
+    """The control: reading a definitional verb may not change a reported clause."""
+    (atom,) = extract_text_atoms(
+        "EIA reported that generators added 10.4 GW of new battery storage "
+        "capacity in the United States in 2024."
+    )
+
+    assert atom.attribution == "EIA"
+
+
+# --------------------------------------------------------------------------
 # Geography: an alias has to modify the measurand, not merely appear
 # --------------------------------------------------------------------------
 

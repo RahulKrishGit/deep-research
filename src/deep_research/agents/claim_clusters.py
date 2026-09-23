@@ -916,6 +916,63 @@ _REPORTING_VERB_IN_CLAUSE = re.compile(
     r"(?i:\b(?P<verb>" + _REPORTING_VERB_ALTERNATION + r")\b)"
 )
 
+# A definition states the convention a body counts by, and that body is the
+# clause's own grammatical subject — no reporting verb stands between them. The
+# run's fourteenth claim stated its issuer exactly this way, "EIA counts battery
+# storage projects larger than 1 MW in the electric power sector when reporting
+# U.S. utility-scale battery storage capacity", and was recorded unattributed,
+# so no methodology target could bind the convention the figures rest on (live
+# cycle 08b9b469). The vocabulary is explicit and bounded like the reporting
+# table above: these are the verbs whose subject states what a count includes,
+# excludes, or treats alike — never a verb that ranks or quantifies one.
+_DEFINITIONAL_VERBS = (
+    "counts",
+    "count",
+    "defines",
+    "define",
+    "classifies",
+    "classify",
+    "includes",
+    "include",
+    "excludes",
+    "exclude",
+    "treats",
+    "treat",
+    "considers",
+    "consider",
+    "categorises",
+    "categorizes",
+    "categorise",
+    "categorize",
+    "tracks",
+    "track",
+    "measures",
+    "measure",
+)
+_DEFINITIONAL_VERB_ALTERNATION = "|".join(_DEFINITIONAL_VERBS)
+
+# The same name run and the same bounded filler the reporting form uses, so a
+# clause's definition is read exactly as its report is.
+_SUBJECT_DEFINITIONAL_ATTRIBUTION = re.compile(
+    r"(?P<attribution>" + _NAME_RUN + r")"
+    r"(?:\s+(?!that\b)[\w.&'/-]+){0,6}?"
+    r"\s+(?i:(?P<verb>" + _DEFINITIONAL_VERB_ALTERNATION + r"))\b"
+)
+
+# What a definitional verb has to state: the convention itself. A clause that
+# ends at the verb states none, and a copula or auxiliary directly after it
+# reads the verb as a noun rather than as a definition — "the EIA counts were
+# revised in February" reports nothing — exactly as the reported-clause test
+# refuses "the EIA forecast that was published in February".
+_NO_DEFINITION_AFTER_VERB = re.compile(
+    r"(?i:\s*(?:was|were|is|are|been|being|has|have|had|can|could|will|would|"
+    r"should|may|might|must)\b)"
+)
+
+# The head of a sentence-initial participial phrase. A quote or a bracket may
+# open the clause, and the head is one ``-ing`` word however it is followed.
+_PARTICIPIAL_HEAD = re.compile(r"(?i:^[\s\"'(\[]*[A-Z][\w'-]*ing\b)")
+
 # What a reporting verb has to introduce to be a reporting verb here: a
 # reported clause ("… reported that capacity grew"), the end of the clause
 # ("…, EIA reported."), or a stated object ("EIA said the addition set a
@@ -1844,7 +1901,13 @@ def _issuer_in_subject_phrase(
     acronym ("EIA") or a brand spelling ("OpenEI"). "The December 2024
     Preliminary Monthly Electric Generator Inventory stated that …" therefore
     names nobody, which is the reading this fallback has to keep.
+
+    A sentence-initial participial phrase is skipped whole: it states a method,
+    so neither its head nor the unit "MW" inside it is a name, and reading
+    inside it credited "MW" as the publisher of "Counting projects larger than
+    1 MW …, the agency projected that …".
     """
+    phrase_end = _participial_phrase_end(clause)
     for verb in _REPORTING_VERB_IN_CLAUSE.finditer(clause):
         if verb.group("verb").casefold() in _NOUN_AMBIGUOUS_VERBS:
             # "EIA denied reports that …" reads as a denial, not as EIA's report,
@@ -1854,6 +1917,8 @@ def _issuer_in_subject_phrase(
         if _REPORTED_THAT.match(clause[verb.end("verb") :]) is None:
             continue
         for named in _NAME_TOKEN.finditer(clause[: verb.start("verb")]):
+            if named.start() < phrase_end:
+                continue
             token = named.group(0)
             name = _accepted_issuer(
                 token,
@@ -1869,6 +1934,100 @@ def _issuer_in_subject_phrase(
     return ""
 
 
+def _participial_phrase_end(clause: str) -> int:
+    """Where a sentence-initial participial phrase ends, or 0 when none opens.
+
+    "Counting projects larger than 1 MW in the electric power sector, EIA
+    projected that …" states how EIA counted, and the noun "projects" inside
+    the phrase is spelled exactly as the reporting verb, so the phrase's own
+    head was read as the issuer and the run's twelfth claim was attributed to
+    "Counting". A clause that opens with an ``-ing`` form and continues past a
+    comma states a method before it states its fact, and nothing inside that
+    phrase — its head, its nouns, or the unit "MW" it names — is an issuer: the
+    issuer is the subject of the main clause the comma introduces.
+    """
+    head = _PARTICIPIAL_HEAD.match(clause)
+    if head is None:
+        return 0
+    comma = clause.find(",", head.end())
+    return comma + 1 if comma >= 0 else 0
+
+
+def _opens_a_participial_phrase(clause: str, *, start: int) -> bool:
+    """Whether a captured name stands inside a sentence-initial participial phrase."""
+    end = _participial_phrase_end(clause)
+    return 0 < end and start < end
+
+
+def _introduces_a_definition(clause: str, *, verb_end: int) -> bool:
+    """Whether what follows a definitional verb is the convention it states.
+
+    "EIA counts battery storage projects larger than 1 MW …" states the rule
+    EIA applies, and "EIA tracks large-scale battery storage resources …" the
+    segment it keeps its own count of. A clause that ends at the verb states
+    none, and a copula or auxiliary directly after it reads the verb as a noun
+    ("the EIA counts were revised in February"), so neither is a definition.
+    """
+    rest = clause[verb_end:]
+    if not rest.strip():
+        return False
+    return _NO_DEFINITION_AFTER_VERB.match(rest) is None
+
+
+def _names_a_body(name: str, *, captured: str) -> bool:
+    """Whether a name is unmistakably a body's, rather than a place or a noun.
+
+    A definition belongs to the body that applies it, and the text has to show
+    the subject is that body's name: an acronym ("EIA counts …"), a brand
+    spelling ("OpenEI counts …"), a possessive ("EIA's methodology counts …"),
+    or a multi-token name ("Wood Mackenzie counts …"). A lone title-case word
+    is a place or a common noun — "Texas counts the most battery additions in
+    2024" ranks the state and names no issuer — so it is refused here, on the
+    same recall-for-refusal trade ``_SINGLE_TOKEN_NON_ISSUERS`` makes.
+    """
+    return (
+        _is_acronym(name)
+        or _has_internal_capital(name)
+        or " " in name
+        or _possessive_owner(captured) is not None
+    )
+
+
+def _subject_definitional_attribution(
+    clause: str,
+    *,
+    claim_places: frozenset[str] = frozenset(),
+) -> str:
+    """The issuer a clause names as the subject of its own definitional verb.
+
+    Every refusal the reporting form applies applies here: a determiner or
+    pronoun names nobody, an earlier denial disqualifies the phrase it scopes,
+    a date names nobody, and a place names nobody. Two more are its own — a
+    definition has to state the convention it applies
+    (:func:`_introduces_a_definition`), and its subject has to be unmistakably
+    a body's name (:func:`_names_a_body`) — and a sentence-initial participial
+    phrase is a method rather than an issuer for both forms
+    (:func:`_opens_a_participial_phrase`).
+    """
+    for match in _SUBJECT_DEFINITIONAL_ATTRIBUTION.finditer(clause):
+        captured = match.group("attribution")
+        if _opens_a_participial_phrase(clause, start=match.start()):
+            continue
+        if not _introduces_a_definition(clause, verb_end=match.end("verb")):
+            continue
+        name = _accepted_issuer(
+            captured,
+            clause=clause,
+            start=match.start("attribution"),
+            name_end=match.end("attribution"),
+            verb_start=match.start("verb"),
+            claim_places=claim_places,
+        )
+        if name and _names_a_body(name, captured=captured):
+            return name
+    return ""
+
+
 def _subject_verb_attribution(
     clause: str,
     *,
@@ -1878,7 +2037,7 @@ def _subject_verb_attribution(
 
     The scan is left to right, so the outermost named subject of the clause
     wins: in "Wood Mackenzie's analysis of the EIA forecast said …" the issuer
-    is Wood Mackenzie, not the document it examined. Four refusals keep a
+    is Wood Mackenzie, not the document it examined. Five refusals keep a
     common noun out of the attribution:
 
     * a single title-case token that opens the clause is a common noun —
@@ -1889,14 +2048,25 @@ def _subject_verb_attribution(
     * the noun-ambiguous forms take no filler, so "EIA denied reports that …"
       stays a denial rather than becoming EIA's report;
     * a date names nobody, so a document phrase names its publisher and not the
-      month it was published in.
+      month it was published in;
+    * a sentence-initial participial phrase is a method, so "Counting projects
+      larger than 1 MW …, EIA projected …" belongs to the main clause's
+      subject and not to "Counting" (:func:`_opens_a_participial_phrase`).
 
     A verb whose clause carries no report at all — "the EIA forecast that was
     published in February" — is refused by :func:`_introduces_a_reported_clause`,
     and a publisher whose verb stands beyond the name run's bound is still read
     from the subject phrase it opens (:func:`_issuer_in_subject_phrase`).
+
+    A clause that states a convention instead of a report names its issuer the
+    same way — "EIA counts battery storage projects larger than 1 MW …" — and
+    is read by :func:`_subject_definitional_attribution` when no reporting verb
+    in the clause has credited anyone.
     """
     for match in _SUBJECT_VERB_ATTRIBUTION.finditer(clause):
+        captured = match.group("attribution")
+        if _opens_a_participial_phrase(clause, start=match.start()):
+            continue
         verb = match.group("verb").casefold()
         if verb in _NOUN_AMBIGUOUS_VERBS and clause[
             match.end("attribution") : match.start("verb")
@@ -1907,7 +2077,7 @@ def _subject_verb_attribution(
         ):
             continue
         name = _accepted_issuer(
-            match.group("attribution"),
+            captured,
             clause=clause,
             start=match.start("attribution"),
             name_end=match.end("attribution"),
@@ -1916,6 +2086,9 @@ def _subject_verb_attribution(
         )
         if name:
             return name
+    named = _subject_definitional_attribution(clause, claim_places=claim_places)
+    if named:
+        return named
     return _issuer_in_subject_phrase(clause, claim_places=claim_places)
 
 
