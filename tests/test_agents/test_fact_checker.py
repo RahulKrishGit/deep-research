@@ -58,6 +58,7 @@ from deep_research.agents.fact_checker import (
     _finding_is_new,
     _packet_has_pair,
     _packet_independent_publishers,
+    partially_shown_candidates,
     plan_packet_rendering,
     adjudication_messages,
     adjudication_repaired_event,
@@ -3640,7 +3641,9 @@ def test_a_clipped_candidate_is_never_judged_as_no_complete_support() -> None:
     request may carry is recorded as partially shown instead — its
     incompleteness is an open question, and the claim says the passage was cut.
     """
-    long_support = SUPPORT_TEXT + " " + ("Detail. " * 400)
+    # Longer than the whole request: the only way a passage is ever cut.
+    long_support = SUPPORT_TEXT + " " + ("Detail. " * 600)
+    assert len(long_support) > FACT_CHECK_EVIDENCE_CHARS
     packet = with_render_boundaries(
         _verdict_packet(
             _eligibility(),
@@ -3674,7 +3677,12 @@ def test_a_clipped_candidate_is_never_judged_as_no_complete_support() -> None:
     assert claim.evidence_status is None
     assert "partially_shown" in claim.audit_flags
     assert "no_complete_support" not in claim.audit_flags
-    assert claim.insufficient_reason == "partially_shown"
+    # A deferral, never an absence: the cut passage is the claim's reason, and
+    # the candidates behind it are the packet's.
+    assert claim.insufficient_reason in (
+        "partially_shown",
+        "packet_incomplete",
+    )
     assert admitted_target_ids(
         claim, {TASK6_TARGET: "primary_attribution"}
     ) == []
@@ -4612,15 +4620,29 @@ def test_a_support_that_is_not_a_complete_in_scope_support_never_verifies(
 
 
 def test_a_faithful_primary_attribution_stays_source_supported() -> None:
-    """One primary source is attribution, not independent corroboration."""
-    packet = _pair_packet(_eligibility(), _independent_second())
+    """The badge follows the adjudicator's own judgement of the passage.
 
-    claim = _adjudication(packet, dependence="derivative")
+    A passage that *repeats another work's figure* is that work's telling: the
+    badge is "primary-source attribution", so it is published for a complete
+    support the model recorded as the source's own statement of the figure,
+    and withheld — as a relay — when the same passage was judged derivative.
+    One source is still attribution, never independent corroboration.
+    """
+    lone = _verdict_packet(_eligibility(), texts=(SUPPORT_TEXT,))
+    both = _pair_packet(_eligibility(), _independent_second())
 
-    assert claim.verdict == "insufficient_evidence"
-    assert claim.evidence_status == "source_supported"
-    assert "independent" not in claim.insufficient_reason
-    assert claim.insufficient_reason
+    own = _adjudication(lone, dependence="primary")
+
+    assert own.verdict == "insufficient_evidence"
+    assert own.evidence_status == "source_supported"
+    assert "independent" not in own.insufficient_reason
+    assert own.insufficient_reason
+
+    relayed = _adjudication(both, dependence="derivative")
+
+    assert relayed.verdict == "insufficient_evidence"
+    assert relayed.evidence_status is None
+    assert relayed.insufficient_reason == "relay_source"
 
 
 def _contradiction_draft(
@@ -6908,16 +6930,31 @@ def test_the_request_shows_every_candidate_and_omits_only_what_it_cannot() -> No
         )
     )
 
-    # Every candidate is shown, each within a bounded excerpt.
-    for evidence_id in ("ev-left", "ev-right", "ev-third"):
-        assert f"id: {evidence_id}" in body
+    # The request is bounded, the candidates it carried are carried whole or
+    # marked, and everything it could not carry is named.
     assert len(body) < FACT_CHECK_EVIDENCE_CHARS * 3
+    assert "id: ev-left" in body
+    bounded = with_render_boundaries(
+        packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+    )
+    assert bounded.partially_shown_ids == ["ev-right"]
+    assert set(bounded.unrendered_ids) == {"ev-third"}
+    assert {item.item_id for item in bounded.omitted} == {"ev-third"}
+    assert {item.reason for item in bounded.omitted} == {"deferred_capacity"}
+    shown_here = [
+        unit.evidence_id
+        for unit, _ in plan_packet_rendering(
+            bounded, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+        ).rendered
+    ]
+    assert _packet_has_pair(bounded, shown=shown_here) is False
 
-    # Under a budget nothing can fit in, what is left out is recorded, never
-    # silently dropped.
+    # Under a budget nothing can fit in, the first candidate is still carried
+    # — in part — and what is left out is recorded, never silently dropped.
     tiny = with_render_boundaries(packet, evidence_chars=200)
     assert tiny.omitted_count == len(tiny.omitted) > 0
-    assert {item.item_id for item in tiny.omitted} == {
+    assert set(tiny.unrendered_ids) | set(tiny.partially_shown_ids) == {
+        "ev-left",
         "ev-right",
         "ev-third",
     }
@@ -6989,7 +7026,7 @@ async def test_a_candidate_the_request_cannot_carry_is_recorded_in_the_audit(
     )
     agent = _checker(tracker, completer)
     # Enough for the two pair candidates, not for the long third passage.
-    agent._evidence_chars = 600
+    agent._evidence_chars = 400
 
     async with tracker.session_span(state.session_id, state.original_question):
         outcome = await agent.run(state)
@@ -7690,7 +7727,8 @@ def test_a_candidate_the_request_cannot_carry_whole_is_deferred_or_marked() -> N
     verdict may not read it as a complete passage. The candidates behind it
     that no longer fit are omitted and deferred by name.
     """
-    page_sized = SUPPORT_TEXT + " " + ("Detail. " * 400)
+    page_sized = SUPPORT_TEXT + " " + ("Detail. " * 700)
+    assert len(page_sized) > FACT_CHECK_EVIDENCE_CHARS
     packet = _verdict_packet(
         _eligibility(),
         _independent_second(),
@@ -7715,8 +7753,13 @@ def test_a_candidate_the_request_cannot_carry_whole_is_deferred_or_marked() -> N
             bounded, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
         )
     )
-    for unit in packet.units:
-        assert f"id: {unit.evidence_id}" in body
+    assert "id: ev-left" in body
+    # What the request could not carry is named, not silently absent.
+    assert set(bounded.unrendered_ids) == {"ev-right", "ev-third"}
+    assert {item.item_id for item in bounded.omitted} == {
+        "ev-right",
+        "ev-third",
+    }
 
 
 def test_packet_incomplete_is_about_this_claims_own_candidates() -> None:
@@ -7834,7 +7877,7 @@ def test_the_request_carries_the_passages_that_bear_on_the_claim() -> None:
     passages that bear least are the ones recorded as deferred.
     """
     state = _ab_state()
-    noise_text = "Detail. " * 120
+    noise_text = "Detail. " * 400
     noise_read = _ab_read(
         "read-noise", "https://lab-noise.test/notes", "Lab notes", noise_text
     )
@@ -7863,7 +7906,7 @@ def test_the_request_carries_the_passages_that_bear_on_the_claim() -> None:
     )
     agent = _packet_agent(state)
     # Enough for the two passages that state the figure, not for the noise.
-    agent._evidence_chars = 600
+    agent._evidence_chars = 500
     draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
 
     packet, _ = FactCheckerAgent._packet_for(
@@ -7871,10 +7914,10 @@ def test_the_request_carries_the_passages_that_bear_on_the_claim() -> None:
     )
 
     assert packet is not None
-    final = with_render_boundaries(packet, evidence_chars=600)
+    final = with_render_boundaries(packet, evidence_chars=500)
     body = "\n".join(
         message.content
-        for message in adjudication_messages(final, evidence_chars=600)
+        for message in adjudication_messages(final, evidence_chars=500)
     )
     assert A_TEXT in body
     assert B_TEXT in body
@@ -7944,4 +7987,312 @@ def test_an_id_the_request_never_carried_is_never_admitted() -> None:
     assert "evidence_not_admitted" in claim.audit_flags
     assert unshown not in claim.evidence_selection
 
+# ---------------------------------------------------------------------------
+# Review round 2: document pages, ranked own-loop passages, and honest reasons
+# ---------------------------------------------------------------------------
 
+# The first 1,100 characters of the EIA-860 instructions page the audited run
+# read (evidence unit ev-f04ae21f86b8e798db94c51b, page-1-chunk-0, 2,863
+# characters, "1 Megawatt" at 820). A document_reader passage is a whole PDF
+# page: longer than a web paragraph, still far shorter than one request.
+_FORM_860_PAGE = (
+    "FORM EIA-860\nApproval: OMB No. 1905-0129\nINSTRUCTIONS\nApproval "
+    "Expires: 07/31/2029\nANNUAL ELECTRIC\nBurden: 16.0 Hours\nGENERATOR "
+    "REPORT\nPURPOSE Form EIA-860 collects data on the status of existing "
+    "electric generating plants and associated equipment (including "
+    "generators, boilers, cooling systems and air emission control systems) "
+    "in the United States and Puerto Rico, and those scheduled for initial "
+    "commercial operation within 5 or 10 years, as applicable. The data from "
+    "this form appear in EIA publications and public databases. The data "
+    "collected on this form are used to monitor the current status and trends "
+    "of the electric power industry and to evaluate the future of the "
+    "industry.\nREQUIRED Existing plants are required to respond to the "
+    "EIA-860 if: RESPONDENTS \u2022 The plant's total generator nameplate "
+    "capacity is 1 Megawatt (MW) or greater and \u2022 The plant's "
+    "generator(s), or the facility in which the generator(s) resides, are "
+    "connected to the local or regional electric power grid and have the "
+    "ability to draw power from or deliver power to the grid. If the existing "
+    "plant is jointly-owned, only the operator of the plant is required to "
+    "respond, and the operator must submit a complete survey form for the "
+    "entire plant."
+)
+
+
+def test_a_document_page_that_fits_the_request_is_shown_whole() -> None:
+    """A PDF page can be complete support; only a passage longer than the
+    whole request is cut.
+
+    ``plan_packet_rendering`` clipped every candidate at
+    ``MAX_PASSAGE_EXCERPT_CHARS`` while the validator refuses complete support
+    for anything clipped, so a document_reader passage — a whole PDF page —
+    could never back ``source_supported`` or ``verified_pair``, however
+    comfortably it fitted the request. The stored unit
+    ev-f04ae21f86b8e798db94c51b (instructions.pdf page 1, 2,863 characters,
+    "1 Megawatt" at 820) is that case: alone in a packet, marked complete and
+    primary, it gave ``source_supported`` at 628c230 and gave
+    ``partially_shown`` at HEAD.
+    """
+    page = _FORM_860_PAGE
+    assert len(page) > 1000
+    packet = _verdict_packet(_eligibility(), texts=(page,))
+
+    plan = plan_packet_rendering(
+        packet, evidence_chars=FACT_CHECK_EVIDENCE_CHARS
+    )
+    (unit, shown), = plan.rendered
+
+    assert shown == " ".join(page.split())
+    assert plan.partially_shown == []
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.7,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="The form's own instructions state the threshold.",
+        ),
+        packet,
+        None,
+    )
+
+    assert "1 Megawatt" in shown
+    assert claim.evidence_status == "source_supported"
+    assert "partially_shown" not in claim.audit_flags
+
+
+def test_a_deferred_candidate_is_not_read_as_an_absent_one() -> None:
+    """``no_complete_support`` is never recorded over text nobody saw.
+
+    The reason for a claim with deferred candidates is ``packet_incomplete``,
+    but the ``else`` branch still appended ``no_complete_support`` to the
+    claim's audit flags — an assertion of absence about passages the request
+    never carried, which the trace published as ``claim_flags``.
+    """
+    page_sized = SUPPORT_TEXT + " " + ("Detail. " * 400)
+    # A request that carries the big candidate only in part and cannot reach
+    # the last one at all.
+    packet = with_render_boundaries(
+        _verdict_packet(
+            _eligibility(),
+            _independent_second(),
+            _third_origin(),
+            texts=(page_sized, AUDIT_TEXT, REFUTATION_TEXT),
+        ),
+        evidence_chars=1200,
+    )
+    assert unshown_candidates(packet)
+    assert partially_shown_candidates(packet)
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.4,
+            assessments=[],
+            support_ids=[],
+            contradiction_ids=[],
+            rationale="Nothing in the packet supports it.",
+        ),
+        packet,
+        None,
+    )
+
+    assert "packet_incomplete" in claim.audit_flags
+    assert "no_complete_support" not in claim.audit_flags
+    assert claim.insufficient_reason == "packet_incomplete"
+
+
+def test_a_blocked_claim_does_not_blame_a_relay() -> None:
+    """A claim with no support at all is not told its support was a relay.
+
+    A passage with a stance the contract cannot classify blocks settlement,
+    and the blocked branch called ``_settled_badge`` even with an empty
+    supports list — which returned the relay flag, so ``relay_source`` became
+    the published reason for a claim that selected no support at all.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.4,
+            assessments=[_row("ev-third", "partially_supports")],
+            support_ids=[],
+            contradiction_ids=[],
+            rationale="A stance this contract cannot place.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.verdict == "insufficient_evidence"
+    assert "relay_source" not in claim.audit_flags
+    assert claim.insufficient_reason != "relay_source"
+
+
+def test_a_relay_the_claim_cites_is_still_not_primary_attribution() -> None:
+    """The badge needs the issuer's own account, not any page the claim cites.
+
+    A finding extracted from a trade-press page makes the claim cite that
+    page, so matching the cited host alone handed the relay
+    "primary-source attribution" — while the adjudicator itself had judged the
+    passage ``derivative``. The accepted row's dependence has to agree.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    )
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[
+                _row("ev-left", "supports", dependence="derivative")
+            ],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="A trade-press page repeating the agency's figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.evidence_status is None
+    assert claim.insufficient_reason == "relay_source"
+    # And the control: the same page judged a primary account keeps the badge.
+    primary = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="The agency's own account states the figure.",
+        ),
+        packet,
+        None,
+    )
+    assert primary.evidence_status == "source_supported"
+
+
+FILLER_URL = "https://lab-filler.test/notes"
+OWNS_LOOP_URL = "https://lab-c.test/audit"
+
+
+def _filler_state() -> ResearchState:
+    """Six cited-read passages that fill a small request, and nothing else."""
+    texts = [
+        f"Notes {index}: the operator recorded detail {index} for the period."
+        + " Detail." * 70
+        for index in range(6)
+    ]
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=FILLER_URL,
+        resolved_url=FILLER_URL,
+        title="Lab filler notes",
+        retrieved_at=CHECK_EXTRACTED_AT,
+        text="\n\n".join(texts),
+        passages={f"chunk-{index}": text for index, text in enumerate(texts)},
+        extraction_complete=True,
+        target_ids=[TASK6_TARGET],
+    )
+    units = {
+        unit.evidence_id: unit
+        for locator, text in read.passages.items()
+        for unit in [
+            build_evidence_unit(
+                read=read,
+                locator=locator,
+                excerpt=text,
+                origin="researcher",
+                target_ids=[TASK6_TARGET],
+            )
+        ]
+    }
+    return _ab_state().model_copy(
+        update={
+            "read_records": {**{read.read_id: read}, **_ab_state().read_records},
+            "evidence_units": {**_ab_state().evidence_units, **units},
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_claims_own_retrieved_passage_is_ranked_with_the_pool() -> None:
+    """Retrieval the model paid for is not deferred behind the pool it enlarged.
+
+    ``_augment_packet`` appended the loop's admitted passages after the
+    already-ranked pool and never ranked again, so a claim whose supporting
+    passage came from its own retrieval saw none of it: the fetch and the
+    source evaluation were bought, then recorded ``deferred_capacity``.
+    """
+    state = _filler_state()
+    agent = _reread_agent(state)
+    # Room for the pair candidate and one more passage, not for the pool.
+    agent._evidence_chars = 1700
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL, FILLER_URL])
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+    assert packet is not None
+    task = ClaimTask(
+        instruction="Verify.",
+        claim=draft,
+        target_ids=[TASK6_TARGET],
+        packet=packet,
+    )
+
+    enlarged = await FactCheckerAgent._augment_packet(
+        agent,
+        packet,
+        ReActRun(
+            agent_name="fact_checker",
+            stop_reason="finished",
+            steps=[
+                _tool_step(
+                    1,
+                    "web_scraper",
+                    {
+                        "text": (
+                            "Lab C audit: wind capacity reached 10 GW in 2025, "
+                            "revised upward for the second time."
+                        ),
+                        "requested_url": OWNS_LOOP_URL,
+                        "resolved_url": OWNS_LOOP_URL,
+                        "title": "Lab C audit",
+                    },
+                )
+            ],
+            tool_calls=1,
+        ),
+        task,
+    )
+
+    assert enlarged is not None
+    final = with_render_boundaries(enlarged, evidence_chars=1700)
+    body = "\n".join(
+        message.content
+        for message in adjudication_messages(final, evidence_chars=1700)
+    )
+    # The passage this claim's own retrieval read is shown, and the pool
+    # passage it does not need is the one recorded as deferred.
+    assert "revised upward for the second time" in body
+    order = [unit.evidence_id for unit in enlarged.units]
+    own = next(
+        unit.evidence_id
+        for unit in enlarged.units
+        if "revised upward for the second time" in unit.excerpt
+    )
+    fillers = [
+        unit.evidence_id
+        for unit in enlarged.units
+        if unit.source_url == FILLER_URL
+    ]
+    assert fillers, "the fixture must actually enlarge the pool"
+    assert order.index(own) < order.index(fillers[0])
+    assert own not in final.unrendered_ids

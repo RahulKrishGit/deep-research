@@ -1563,6 +1563,7 @@ def _issuer_passage_stands(
     units: Mapping[str, EvidenceUnit],
     supports: Sequence[str],
     eligibility: Mapping[str, EvidenceEligibility],
+    rows: Mapping[str, SupportAssessment],
 ) -> bool:
     """True when one complete support is the claim's issuer's own passage.
 
@@ -1577,6 +1578,9 @@ def _issuer_passage_stands(
     for evidence_id in supports:
         unit = units.get(evidence_id)
         if unit is None:
+            continue
+        row = rows.get(evidence_id)
+        if row is None or row.dependence != "primary":
             continue
         if eligibility[evidence_id].publisher_id in issuers:
             return True
@@ -1613,7 +1617,6 @@ def plan_packet_rendering(
     packet: AdjudicationPacket,
     *,
     evidence_chars: int,
-    unit_chars: int = MAX_PASSAGE_EXCERPT_CHARS,
 ) -> PacketRendering:
     """Split a packet's candidates into what one request carries, and how.
 
@@ -1621,14 +1624,16 @@ def plan_packet_rendering(
     member of a pair behind a passage that could not corroborate anything.
     What follows is carried whole whenever it fits: a request that prints a
     prefix of a passage asks the model to judge text it cannot see, and a
-    figure past the cut reads as an absent one. A candidate only longer than
-    the request may carry for one candidate is still offered, in part, and
+    figure past the cut reads as an absent one. Only a passage longer than
+    the whole request is ever cut, so a document page — which is what a
+    ``document_reader`` passage is — is carried whole and may stand as a
+    complete support. A longer passage is offered in part, and
     recorded in ``partially_shown``; the candidates behind a full request are
     returned rather than dropped, so the caller records them as explicit
     omissions. An unassessed passage is never read as an absent one.
     """
-    if evidence_chars < 1 or unit_chars < 1:
-        raise ValueError("evidence_chars and unit_chars must be at least 1")
+    if evidence_chars < 1:
+        raise ValueError("evidence_chars must be at least 1")
     order = sorted(
         range(len(packet.units)),
         key=lambda index: (
@@ -1642,13 +1647,17 @@ def plan_packet_rendering(
     used = 0
     for index in order:
         unit = packet.units[index]
-        text = _bounded_passage_text(unit.excerpt, limit=unit_chars)
-        block = _candidate_block(packet, unit, text)
-        if used + len(block) > evidence_chars and rendered:
+        # What this candidate may print: everything the request has left
+        # once its own block's fixed text is paid for. The first candidate
+        # is carried however little room is left, so a request is never
+        # empty.
+        room = evidence_chars - used - len(_candidate_block(packet, unit, ""))
+        if room < 1 and rendered:
             unrendered.append(index)
             continue
+        text = _bounded_passage_text(unit.excerpt, limit=max(room, 1))
         rendered.append((unit, text))
-        used += len(block)
+        used += len(_candidate_block(packet, unit, text))
         if _passage_was_clipped(unit.excerpt, text):
             partially_shown.append(unit.evidence_id)
     return PacketRendering(
@@ -1682,7 +1691,6 @@ def with_render_boundaries(
     packet: AdjudicationPacket,
     *,
     evidence_chars: int,
-    unit_chars: int = MAX_PASSAGE_EXCERPT_CHARS,
 ) -> AdjudicationPacket:
     """The same packet, recording every candidate this request cannot show whole.
 
@@ -1696,7 +1704,7 @@ def with_render_boundaries(
     than one candidate may carry is ever partially shown.
     """
     plan = plan_packet_rendering(
-        packet, evidence_chars=evidence_chars, unit_chars=unit_chars
+        packet, evidence_chars=evidence_chars
     )
     if not plan.unrendered and not plan.partially_shown:
         return packet
@@ -1729,7 +1737,6 @@ def adjudication_messages(
     packet: AdjudicationPacket,
     *,
     evidence_chars: int,
-    unit_chars: int = MAX_PASSAGE_EXCERPT_CHARS,
 ) -> list[ChatMessage]:
     """The messages that judge one claim from its own evidence packet.
 
@@ -1744,7 +1751,7 @@ def adjudication_messages(
     and no invitation to quote.
     """
     plan = plan_packet_rendering(
-        packet, evidence_chars=evidence_chars, unit_chars=unit_chars
+        packet, evidence_chars=evidence_chars
     )
     rendered = [
         _candidate_block(packet, unit, text) for unit, text in plan.rendered
@@ -2020,23 +2027,25 @@ def validate_adjudication(
         # said was incompatible: the claim cannot settle over it, and nothing
         # is published as a contradiction for it.
         verdict = "insufficient_evidence"
-        status, badge_flags = _settled_badge(
-            packet, shown, supports, eligibility
-        )
-        flags.extend(badge_flags)
+        status: str | None = None
         if supports:
+            # The badge is about a supporting passage, so it is only asked
+            # for when one exists: a claim with no support at all is not
+            # told its support was a relay.
+            status, badge_flags = _settled_badge(
+                packet, shown, supports, eligibility, accepted
+            )
+            flags.extend(badge_flags)
             flags.extend(_insufficient_flags(eligibility, supports))
         else:
-            flags.append(
-                "partially_shown" if partial else "no_complete_support"
-            )
+            flags.append(_no_support_reason(partial, unshown))
     elif verified_pair is not None:
         verdict = "verified"
         status = "verified_pair"
     elif supports:
         verdict = "insufficient_evidence"
         status, badge_flags = _settled_badge(
-            packet, shown, supports, eligibility
+            packet, shown, supports, eligibility, accepted
         )
         flags.extend(badge_flags)
         flags.extend(_insufficient_flags(eligibility, supports))
@@ -2047,21 +2056,14 @@ def validate_adjudication(
         # account of the fact" line, and no complete passage carries the claim.
         verdict = "insufficient_evidence"
         status = None
-        flags.append(
-            "partially_shown"
-            if any(item in partial for item in selected_support_candidates)
-            else "no_complete_support"
-        )
+        flags.append(_no_support_reason(partial, unshown))
     else:
         verdict = "insufficient_evidence"
         status = None
         if not shown:
             flags.append("no_candidate")
         else:
-            # Nothing complete supports the claim — but a candidate the request
-            # could only print in part may hold the supporting text past the
-            # cut, so the honest reason is the cut, not an absence.
-            flags.append("partially_shown" if partial else "no_complete_support")
+            flags.append(_no_support_reason(partial, unshown))
     if normalize_verdict(draft.verdict) == "verified" and verdict != "verified":
         # The model proposed the strict badge and the local test refused it.
         # Kept as a flag, never as an override: the proposal is not evidence.
@@ -2127,6 +2129,7 @@ def _settled_badge(
     units: Mapping[str, EvidenceUnit],
     supports: Sequence[str],
     eligibility: Mapping[str, EvidenceEligibility],
+    rows: Mapping[str, SupportAssessment],
 ) -> tuple[str | None, list[str]]:
     """The badge complete supports earn, and the flag when they earn none.
 
@@ -2136,9 +2139,26 @@ def _settled_badge(
     still supports the claim and is still recorded as its evidence; it is not
     the issuer's account of it, and the badge says what the evidence is.
     """
-    if _issuer_passage_stands(packet, units, supports, eligibility):
+    if _issuer_passage_stands(packet, units, supports, eligibility, rows):
         return "source_supported", []
     return None, ["relay_source"]
+
+
+def _no_support_reason(partial: set[str], unshown: set[str]) -> str:
+    """Why no complete support stands behind a claim, without overclaiming.
+
+    ``no_complete_support`` says nothing supported the claim. That is a
+    statement about the evidence, so it is written only where the request
+    showed everything the packet held. Where a candidate was deferred or
+    carried in part, the supporting text may lie in what nobody saw, and the
+    honest reason is that cut — ``packet_incomplete`` or ``partially_shown`` —
+    never an absence.
+    """
+    if partial:
+        return "partially_shown"
+    if unshown:
+        return "packet_incomplete"
+    return "no_complete_support"
 
 
 def _insufficient_flags(
@@ -2261,7 +2281,11 @@ def _packet_has_pair(
 
     ``shown`` restricts the test to the candidates one request actually carries
     (``plan_packet_rendering``). A pair that the request cannot print is not a
-    pair the model can certify, so retrieval is not skipped on its strength.
+    pair the model can certify, so retrieval is not skipped on its strength —
+    and a candidate the request could only print in part is not one either: a
+    passage nobody saw whole can never stand as a complete support, so a pair
+    that needs it would leave the claim unsettled with no retrieval to repair
+    it.
     """
     # ``complete_support`` is the model's judgement about what a passage means,
     # so before the adjudication it is not yet known. The local half of the
@@ -2269,13 +2293,14 @@ def _packet_has_pair(
     # corroborate at all, and known, pairwise-different publisher, work, and
     # origin. Passing it means a pair is *possible* and no retrieval is needed;
     # it never means the badge, which only ``validate_adjudication`` writes.
+    carried = None if shown is None else set(shown) - set(packet.partially_shown_ids)
     possible = [
         packet.eligibility[unit.evidence_id].model_copy(
             update={"complete_support": True}
         )
         for unit in packet.units
         if unit.evidence_id in packet.eligibility
-        and (shown is None or unit.evidence_id in set(shown))
+        and (carried is None or unit.evidence_id in carried)
     ]
     for index, left in enumerate(possible):
         for right in possible[index + 1 :]:
@@ -3401,7 +3426,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             )
         merged_dispositions = [*packet.omitted, *claim_dispositions]
         eligibility = dict(packet.eligibility)
-        enlarged = list(units.values())
+        # Ranked again, over the enlarged pool: a passage this claim's own
+        # retrieval read is evidence the claim paid for, and appending it
+        # behind the ranked pool deferred it unseen.
+        enlarged = claim_relevant_order(list(units.values()), task.claim.text)
         eligibility.update(self._claim_eligibility(enlarged))
         obligations = packet.claim_target_ids or list(task.target_ids)
         # Recomputed, never carried: when the bounded retrieval does the natural
