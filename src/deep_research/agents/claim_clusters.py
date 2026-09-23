@@ -780,13 +780,25 @@ _CAUSAL_CONNECTIVE = re.compile(
 # the whitespace after it is where the split falls. What precedes that
 # whitespace decides whether it really is an end; see :func:`_sentences`.
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+# An honorific never ends a sentence, whatever follows it: "Dr. Smith reported"
+# is one sentence.
+_HONORIFIC_END = re.compile(r"(?:Mr|Mrs|Ms|Dr|Prof)\.?$")
+
+# Every other abbreviation is ambiguous, and which reading is right is decided
+# by what comes next: a dotted initialism ("U.S.", "U.K.", "E.U.") or a common
+# abbreviation ("Inc.", "No.", "e.g.", "p.m.") ends a sentence only when a new
+# one starts after it. Suppressing the split unconditionally — the first cut of
+# this rule — fused "Capacity grew in the U.S. It fell in Canada." into one
+# clause with two measurements, so the clause read no value at all and the 2024
+# target lost its figure.
 _ABBREVIATED_END = re.compile(
     r"(?:"
     r"(?:[A-Za-z]\.){2,}"
-    r"|Mr|Mrs|Ms|Dr|Prof|Inc|Ltd|Co|Corp|St|No|Fig|vs|etc|approx"
-    r"|e\.g|i\.e|a\.m|p\.m"
+    r"|Inc|Ltd|Co|Corp|St|No|Fig|vs|etc|approx"
     r")\.?$"
 )
+_NEW_SENTENCE = re.compile(r"^[A-Z]")
 _NEGATION = re.compile(
     r"\b(?:not|no|never|without|nor|neither|isn't|aren't|wasn't|weren't|"
     r"doesn't|don't|didn't|cannot|can't|fails? to|failed to)\b",
@@ -843,16 +855,28 @@ _REPORTING_VERB_ALTERNATION = "|".join(_REPORTING_VERBS)
 
 # The name run in front of a reporting verb. Bounded at five tokens, the same
 # bound the prepositional form uses, so a sentence-initial determiner or
-# pronoun cannot sweep a whole clause into the attribution.
-_NAME_RUN = r"[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4}"
+# pronoun cannot sweep a whole clause into the attribution. A token after the
+# first may carry digits and commas, which is what lets an issuer's own
+# document phrase reach its verb: "EIA's August 20, 2025 update stated …".
+_NAME_RUN = r"[A-Z][\w&.'-]*(?:\s+[A-Z0-9][\w&.,'-]*){0,4}"
+
+# The forms whose *noun* reading is common enough that nothing may stand
+# between the name and them. "EIA denied reports that …" is a denial with no
+# issuer in it; reading the noun "reports" as a verb attributed the denial to
+# EIA and met a primary_attribution obligation with it.
+_NOUN_AMBIGUOUS_VERBS = frozenset(
+    {"reports", "estimates", "forecasts", "notes", "finds"}
+)
 
 # Between the name and its verb may stand the document the issuer published —
 # "EIA's August 20, 2025 In-brief analysis reported that …", "EIA forecast in
 # its February 24, 2025 analysis that …". The run is bounded and may not cross
-# a "that", so it can never bridge two clauses to reach an unrelated verb.
+# a comma or a "that", so it can never bridge two clauses to reach an
+# unrelated verb: "… in the United States in 2024, the agency reported" used to
+# credit the United States.
 _SUBJECT_VERB_ATTRIBUTION = re.compile(
     r"(?P<attribution>" + _NAME_RUN + r")"
-    r"(?:\s+(?!that\b)[\w,.&'/-]+){0,6}?"
+    r"(?:\s+(?!that\b)[\w.&'/-]+){0,6}?"
     r"\s+(?i:(?P<verb>" + _REPORTING_VERB_ALTERNATION + r"))\b"
 )
 
@@ -966,11 +990,73 @@ _GEOGRAPHY = re.compile(
 _UNITED_STATES_ALIASES = frozenset(
     {"american", "u.s", "u.s.a", "united states", "us", "usa"}
 )
+# The same spellings with their periods dropped, which is how a captured name
+# that lost its sentence-final period is compared ("U.S").
+_UNITED_STATES_FOLDED = frozenset(
+    alias.replace(".", "") for alias in _UNITED_STATES_ALIASES
+)
 _UNITED_STATES = re.compile(
-    r"(?<![A-Za-z0-9])"
+    r"(?<![A-Za-z0-9-])"
     r"(?<!Latin\s)(?<!South\s)(?<!North\s)(?<!Central\s)"
     r"(?P<geography>U\.S\.A\.?|U\.S\.|USA|US|United\s+States|American)"
     r"(?![\w$-])"
+)
+
+# One capitalised word, for finding the name a clause opens with.
+_NAME_TOKEN = re.compile(r"\b[A-Z][\w&.'-]*")
+
+# The nouns the alias has to reach to be the clause's own place. "U.S. capacity
+# additions" is about the United States; "U.S. suppliers" and "U.S. levels" are
+# adjuncts inside a clause about Mexico or Germany, and reading them as the
+# clause's geography credited a foreign country's figure to the United States
+# obligation (review F2). One noun within three tokens of the alias.
+_UNITED_STATES_NOUNS = (
+    "addition",
+    "capacity",
+    "fleet",
+    "grid",
+    "market",
+    "storage",
+    "utility-scale",
+)
+_UNITED_STATES_WINDOW = 3
+_UNITED_STATES_NOUN_PATTERN = re.compile(
+    r"(?<!\w)(?:"
+    + "|".join(re.escape(noun) + r"s?" for noun in _UNITED_STATES_NOUNS)
+    + r")(?!\w)"
+)
+
+# The determiners that can precede a name without being part of it. Deliberately
+# narrower than ``_NAME_STOPWORDS``: "New York Times reported …" keeps its "New".
+_LEADING_ARTICLES = frozenset(
+    {"a", "an", "the", "this", "these", "those", "its", "their"}
+)
+
+# The scoping words that can open a clause in front of a name: "In 2024 Texas
+# reported …", "Earlier this year EIA stated …". A name keeps its first token
+# unless that token scopes the sentence rather than naming the issuer.
+_NAME_SCOPE_TOKENS = frozenset(
+    {"in", "on", "at", "by", "for", "during", "since", "after", "before", "as"}
+)
+
+# The adjectives that can open a common-noun phrase but never an issuer's name:
+# "Earlier Reports said …", "Previous Reports found …". An acronym, a
+# multi-token proper name, or a name that does not open the clause is what is
+# left, and each is an issuer the plan may rely on.
+_NAME_MODIFIER_TOKENS = frozenset(
+    {
+        "earlier",
+        "former",
+        "last",
+        "later",
+        "latter",
+        "next",
+        "other",
+        "previous",
+        "recent",
+        "same",
+        "such",
+    }
 )
 
 # A clause that points at its country without naming it. Only a claim that
@@ -1193,19 +1279,27 @@ OVER_CAP_SUBJECT_DIGEST_CHARS = 32
 
 
 def _sentences(text: str) -> list[str]:
-    """Split prose at its sentence ends, and never inside an abbreviation.
+    """Split prose at its sentence ends, and inside an abbreviation only when one ends.
 
-    A period after a dotted initialism ("U.S.", "U.K.", "E.U.") or a common
-    abbreviation ("Inc.", "No.", "e.g.") is not a sentence end. Splitting there
-    cut a claim in half and the half that carried the place, the figure, or the
-    issuer was the half left behind: the run's "cumulative U.S. utility-scale
-    battery storage capacity" became "cumulative U" beside "S. utility-scale …",
-    so no geography could be read from it at all.
+    A period after a dotted initialism ("U.S.", "U.K.", "e.g.") or a common
+    abbreviation ("Inc.", "St.", "No.") is a sentence end only when a new
+    sentence follows it. Splitting there unconditionally cut a claim in half
+    and the half that carried the place, the figure, or the issuer was the half
+    left behind — the run's "cumulative U.S. utility-scale battery storage
+    capacity" became "cumulative U" beside "S. utility-scale …" — while never
+    splitting there fused two real sentences into one clause, which reads no
+    value at all from either of them ("Capacity grew in the U.S. It fell in
+    Canada."). What follows the period decides.
     """
     sentences: list[str] = []
     start = 0
     for match in _SENTENCE_END.finditer(text):
-        if _ABBREVIATED_END.search(text[: match.start()]):
+        preceding = text[: match.start()]
+        if _HONORIFIC_END.search(preceding):
+            continue
+        if _ABBREVIATED_END.search(preceding) and not _NEW_SENTENCE.match(
+            text[match.end() :]
+        ):
             continue
         sentences.append(text[start : match.start()])
         start = match.end()
@@ -1272,16 +1366,56 @@ def _possessive_owner(token: str) -> str | None:
     return None
 
 
-def _clean_issuer(candidate: str) -> str:
+def _is_acronym(name: str) -> bool:
+    """True when a name is written as an acronym: every letter is upper case.
+
+    "EIA reported …" is an issuer; "Analysts reported …" is a common noun at
+    the head of a sentence, and the two differ in nothing but case.
+    """
+    letters = [character for character in name if character.isalpha()]
+    return bool(letters) and all(character.isupper() for character in letters)
+
+
+def _is_united_states(name: str) -> bool:
+    """True when a name is one of the United States' own spellings.
+
+    Compared on the folded spelling with its periods dropped, so the trailing
+    period a sentence-final capture loses ("…, a U.S. company said." yields
+    "U.S") still reads as the country rather than as an issuer.
+    """
+    folded = _canonical(name).replace(".", "").strip(" ,;:")
+    return folded in _UNITED_STATES_FOLDED
+
+
+def _clean_issuer(
+    candidate: str,
+    *,
+    claim_places: frozenset[str] = frozenset(),
+) -> str:
     """The issuer one captured name phrase names, or "" when it names none.
 
     A possessive ends the name: "EIA's August 20, 2025 In-brief analysis
     reported …" names EIA, and the document behind the possessive is what
     reported, not a second issuer — so the phrase is cut at it, and "EIA's
     analysis reported" and "EIA reported" fold to one issuer rather than two.
-    A bare determiner or pronoun names nobody at all.
+    A bare determiner or pronoun names nobody at all, and neither does a place:
+    a locative says where a fact is, not who reported it, so "in California
+    said" and "the U.S. … reported" name no issuer.
     """
     cleaned = " ".join(candidate.split()).strip(" ,.;:")
+    tokens = cleaned.split()
+    # A leading article or scoping phrase is not part of the name: "An EIA
+    # article stated …", "In 2024 Texas reported …" and "The Federal Energy
+    # Regulatory Commission found …" each name one issuer, and the article or
+    # year left in place made the name disagree with itself between spellings
+    # ("An EIA" versus "EIA", "In 2024 Texas" versus "Texas").
+    while len(tokens) > 1 and (
+        tokens[0].casefold() in _LEADING_ARTICLES
+        or tokens[0].casefold() in _NAME_SCOPE_TOKENS
+        or re.fullmatch(r"[\d,.]+", tokens[0]) is not None
+    ):
+        tokens.pop(0)
+    cleaned = " ".join(tokens)
     tokens = cleaned.split()
     for index, token in enumerate(tokens):
         owner = _possessive_owner(token)
@@ -1289,6 +1423,14 @@ def _clean_issuer(candidate: str) -> str:
             cleaned = " ".join([*tokens[:index], owner]).strip()
             break
     if not cleaned or cleaned.casefold() in _NAME_STOPWORDS:
+        return ""
+    if _is_united_states(cleaned):
+        return ""
+    if (
+        " " not in cleaned
+        and claim_places
+        and cleaned.casefold() in claim_places
+    ):
         return ""
     return cleaned
 
@@ -1313,27 +1455,61 @@ def _introduces_a_reported_clause(clause: str, *, verb_end: int) -> bool:
     return _REPORTED_OBJECT.match(rest) is not None
 
 
-def _subject_verb_attribution(clause: str) -> str:
+def _subject_verb_attribution(
+    clause: str,
+    *,
+    claim_places: frozenset[str] = frozenset(),
+) -> str:
     """The issuer named in front of its own reporting verb, if the clause has one.
 
     The scan is left to right, so the outermost named subject of the clause
     wins: in "Wood Mackenzie's analysis of the EIA forecast said …" the issuer
-    is Wood Mackenzie, not the document it examined. A verb whose clause
-    carries no report at all — "the EIA forecast that was published in
-    February" — is refused by :func:`_introduces_a_reported_clause`.
+    is Wood Mackenzie, not the document it examined. Three refusals keep a
+    common noun out of the attribution:
+
+    * a single title-case token that opens the clause is a common noun —
+      "Analysts reported", "Grid operators … said" — while an acronym ("EIA
+      reported") and a multi-token name ("Wood Mackenzie reported") are
+      issuers wherever they stand;
+    * a name that is a place names no issuer, however it is written;
+    * the noun-ambiguous forms take no filler, so "EIA denied reports that …"
+      stays a denial rather than becoming EIA's report.
+
+    A verb whose clause carries no report at all — "the EIA forecast that was
+    published in February" — is refused by :func:`_introduces_a_reported_clause`.
     """
     for match in _SUBJECT_VERB_ATTRIBUTION.finditer(clause):
+        verb = match.group("verb").casefold()
+        if verb in _NOUN_AMBIGUOUS_VERBS and clause[
+            match.end("attribution") : match.start("verb")
+        ].strip():
+            continue
         if not _introduces_a_reported_clause(
             clause, verb_end=match.end("verb")
         ):
             continue
-        name = _clean_issuer(match.group("attribution"))
-        if name:
-            return name
+        name = _clean_issuer(
+            match.group("attribution"), claim_places=claim_places
+        )
+        if not name:
+            continue
+        if name.split()[0].casefold() in _NAME_MODIFIER_TOKENS:
+            continue
+        opens_the_clause = (
+            clause[: match.start("attribution")].strip(" \t\"'([") == ""
+        )
+        if opens_the_clause and " " not in name and not _is_acronym(name):
+            continue
+        return name
     return ""
 
 
-def _attribution_for(clause: str, *, claim_issuer: str) -> str:
+def _attribution_for(
+    clause: str,
+    *,
+    claim_issuer: str,
+    claim_places: frozenset[str] = frozenset(),
+) -> str:
     """The issuer one clause attributes its fact to, or "".
 
     Three spellings, in precedence order: the prepositional form this contract
@@ -1344,10 +1520,12 @@ def _attribution_for(clause: str, *, claim_issuer: str) -> str:
     unattributed, because an attribution this contract cannot name is one it
     must not invent.
     """
-    named = _clean_issuer(_first_group(_ATTRIBUTION, clause))
+    named = _clean_issuer(
+        _first_group(_ATTRIBUTION, clause), claim_places=claim_places
+    )
     if named:
         return named
-    named = _subject_verb_attribution(clause)
+    named = _subject_verb_attribution(clause, claim_places=claim_places)
     if named:
         return named
     if claim_issuer and _REFERENCES_ITS_OWN_DOCUMENT.search(clause):
@@ -1355,12 +1533,16 @@ def _attribution_for(clause: str, *, claim_issuer: str) -> str:
     return ""
 
 
-def _claim_issuer(text: str) -> str:
+def _claim_issuer(text: str, *, claim_places: frozenset[str] = frozenset()) -> str:
     """The first issuer a claim names anywhere, for its own-document clauses."""
     for clause in _split_clauses(text):
-        named = _clean_issuer(_first_group(_ATTRIBUTION, clause))
+        named = _clean_issuer(
+            _first_group(_ATTRIBUTION, clause), claim_places=claim_places
+        )
         if not named:
-            named = _subject_verb_attribution(clause)
+            named = _subject_verb_attribution(
+                clause, claim_places=claim_places
+            )
         if named:
             return named
     return ""
@@ -1389,13 +1571,48 @@ def _canonical_place(name: str) -> str:
     return cleaned
 
 
-def _geography_for(clause: str, *, claim_geography: str) -> str:
+def _alias_names_the_clause(clause: str, *, issuer: str) -> bool:
+    """Whether an adjectival ``U.S.`` is the clause's own place.
+
+    Two ways to be, and one refusal the reviewer measured. The alias *is* the
+    clause's place when it modifies the measurand or market the clause is
+    about — "U.S. capacity additions", "the U.S. grid", "U.S. utility-scale
+    storage" — or when the clause's own subject is nobody else: "U.S. power
+    providers added 10.3 GW". It is an adjunct, and not the clause's place,
+    when another name opens the clause: "Mexico added 300 MW … using U.S.
+    suppliers", "Canada, unlike its U.S. neighbour, …", "Germany's …
+    additions trailed U.S. levels". Those clauses are about Mexico, Canada and
+    Germany, and reading the alias made each of them the United States.
+    """
+    match = _UNITED_STATES.search(clause)
+    if match is None:
+        return False
+    following = clause[match.end() :].split()[:_UNITED_STATES_WINDOW]
+    if _UNITED_STATES_NOUN_PATTERN.search(" ".join(following).casefold()):
+        return True
+    issuer_head = (issuer.split() or [""])[0].casefold()
+    for named in _NAME_TOKEN.finditer(clause):
+        token = named.group(0)
+        if token.casefold() in _NAME_STOPWORDS or _is_united_states(token):
+            continue
+        owner = _possessive_owner(token) or token
+        return owner.casefold() == issuer_head
+    return True
+
+
+def _geography_for(
+    clause: str,
+    *,
+    claim_geography: str,
+    issuer: str = "",
+) -> str:
     """The place one clause states, or "".
 
     Three spellings, in precedence order. The prepositional locative wins
     whenever the clause states one — "U.S. firms added capacity in Canada" is
     about Canada — then the adjectival or possessive mention of the United
-    States ("U.S. capacity additions"), then the claim's own place when the
+    States, but only where it names the clause's own place (see
+    :func:`_alias_names_the_clause`), then the claim's own place when the
     clause points at it without naming it ("the nation's fleet" in a claim
     that names one country). A clause with none of them states no geography,
     and this contract does not invent one.
@@ -1403,12 +1620,25 @@ def _geography_for(clause: str, *, claim_geography: str) -> str:
     named = _first_group(_GEOGRAPHY, clause)
     if named:
         return _canonical_place(named)
-    alias = _first_group(_UNITED_STATES, clause)
-    if alias:
-        return _canonical_place(alias)
+    if _alias_names_the_clause(clause, issuer=issuer):
+        return "United States"
     if claim_geography and _NATION_ANAPHOR.search(clause):
         return claim_geography
     return ""
+
+
+def _claim_places(text: str) -> frozenset[str]:
+    """The places a claim's own locatives name, casefolded.
+
+    Used to keep a place from being read as an issuer: "Grid operators in
+    California said …" names California as a place in the same clause, so
+    California is not who reported it.
+    """
+    places: set[str] = set()
+    for clause in _split_clauses(text):
+        for match in _GEOGRAPHY.finditer(clause):
+            places.add(match.group("geography").casefold())
+    return frozenset(places)
 
 
 def _claim_geography(text: str) -> str:
@@ -1926,7 +2156,8 @@ def extract_text_atoms(
     """
     shared_evidence = list(evidence_ids)
     shared_targets = list(target_ids)
-    issuer = _claim_issuer(text)
+    claim_places = _claim_places(text)
+    issuer = _claim_issuer(text, claim_places=claim_places)
     claim_geography = _claim_geography(text)
     atoms: list[AtomicProposition] = []
     for index, clause in enumerate(_split_clauses(text), start=1):
@@ -1992,7 +2223,9 @@ def extract_text_atoms(
                 unit=unit,
                 observation_period=period,
                 geography=_geography_for(
-                    clause, claim_geography=claim_geography
+                    clause,
+                    claim_geography=claim_geography,
+                    issuer=issuer,
                 ),
                 quantity_noun=(
                     " ".join(
@@ -2003,7 +2236,11 @@ def extract_text_atoms(
                 ),
                 population="" if (share or measured) else phrase,
                 denominator=phrase if share else "",
-                attribution=_attribution_for(clause, claim_issuer=issuer),
+                attribution=_attribution_for(
+                    clause,
+                    claim_issuer=issuer,
+                    claim_places=claim_places,
+                ),
                 forecast_status=forecast.casefold(),
                 negated=_NEGATION.search(clause) is not None,
                 parent_claim_id=claim_id,

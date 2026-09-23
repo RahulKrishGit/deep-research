@@ -961,6 +961,54 @@ def test_a_policy_downgraded_under_its_own_question_scores_zero(
     )
 
 
+def test_a_single_issuer_obligation_keeps_the_policy_its_question_earns(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """A descriptive quantity earns no policy, so the plan's own decides.
+
+    ``support_policy_for`` falls back to ``independent_pair`` for any question
+    whose form earns nothing, so reading *it* scored every plan that follows
+    the planner's own instruction — which stamps ``primary_attribution`` on a
+    figure one issuer publishes — as a downgrade. The metric now reads the
+    earned policy, which this question does not earn at all.
+    """
+    topics = scoped_target_output.result["sub_topics"]
+    single_issuer = topics[0]["evidence_targets"][0]["target_id"]
+    measured = topics[1]["evidence_targets"][0]["target_id"]
+    output = scoped_target_output.with_target_policy(
+        str(single_issuer),
+        "primary_attribution",
+        question=(
+            "How much grid-scale battery storage capacity was added in the "
+            "United States in 2024?"
+        ),
+    ).with_target_policy(str(measured), "independent_pair")
+
+    assert (
+        metric_score(
+            output, scoped_targets_case, "support_policy_not_downgraded"
+        )
+        == 1.0
+    )
+
+
+def test_a_comparative_obligation_lowered_to_one_issuer_still_scores_zero(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """The control: what the question earns is still the floor."""
+    target = _scoped_topic(scoped_target_output)["evidence_targets"][0]
+    output = scoped_target_output.with_target_policy(
+        str(target["target_id"]), "primary_attribution"
+    )
+
+    assert (
+        metric_score(
+            output, scoped_targets_case, "support_policy_not_downgraded"
+        )
+        == 0.0
+    )
+
+
 def test_a_plan_that_lost_its_comparison_scores_zero(
     scoped_targets_case, scoped_target_output
 ) -> None:

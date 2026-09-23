@@ -35,6 +35,7 @@ from deep_research.agents.planner import (
     answer_kind_for,
     apply_answer_contract,
     derive_answer_contract,
+    earned_support_policy,
     extend_plan,
     format_plan_problems,
     frozen_contract_for,
@@ -46,6 +47,7 @@ from deep_research.agents.planner import (
     plan_review_messages,
     stale_year_anchors,
     support_policy_for,
+    support_policy_for_target,
     target_problems,
     targets_requiring_replanning,
     validate_plan_draft,
@@ -4835,6 +4837,82 @@ def test_the_plan_example_the_model_is_shown_passes_every_plan_check() -> None:
 
     assert problems == []
     assert target_problems(sub_topics, _contract(question)) == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # Comparisons the explicit detector does not claim, and causal
+        # questions: before this the model's proposal replaced the
+        # independent_pair they used to fall back to (review F5).
+        "Did Texas or California add more battery storage in 2024?",
+        "Which state added the most battery capacity in 2024?",
+        "How much larger was the 2024 addition than the 2023 addition?",
+        "Is lithium-ion safer than flow batteries for grid storage?",
+        "Why did battery additions grow in 2024?",
+        "What caused the growth in battery storage additions in 2024?",
+        "Does battery storage reduce wholesale electricity prices?",
+    ],
+)
+def test_a_comparative_or_causal_question_keeps_independent_pair(
+    question: str,
+) -> None:
+    """The plan may not lower what the question's own form earns."""
+    assert (
+        support_policy_for_target(
+            question=question, proposed="primary_attribution"
+        )
+        == "independent_pair"
+    )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # The audit question's own obligations: a descriptive quantity whose
+        # one issuer the plan names, where the proposal is the whole point.
+        (
+            "How much grid-scale battery storage capacity was added in the "
+            "United States in 2024?"
+        ),
+        "What do the latest forecasts project for 2025 additions, in MW?",
+        "What was the reported battery storage capacity in Texas in 2024?",
+    ],
+)
+def test_a_descriptive_quantity_still_takes_the_plans_own_policy(
+    question: str,
+) -> None:
+    """The control: where the form earns nothing, the proposal decides."""
+    assert (
+        support_policy_for_target(
+            question=question, proposed="primary_attribution"
+        )
+        == "primary_attribution"
+    )
+
+
+def test_the_earned_policy_is_published_for_the_consumer_that_judges_it() -> None:
+    """``None`` is not ``independent_pair``: the metric that asks whether a
+    policy was *lowered* has to see the difference, and so does the floor."""
+    assert (
+        earned_support_policy(
+            question="Was more capacity added in Texas than in California?"
+        )
+        == "independent_pair"
+    )
+    assert (
+        earned_support_policy(
+            question="How much battery storage capacity was added in 2024?"
+        )
+        is None
+    )
+    assert (
+        earned_support_policy(
+            question="What does the interconnection rule require?"
+        )
+        == "primary_attribution"
+    )
+
 
 
 

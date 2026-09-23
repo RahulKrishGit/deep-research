@@ -27,6 +27,7 @@ from deep_research.agents.claim_clusters import (
     OVER_CAP_SUBJECT_PREFIX,
     AtomicPairDraft,
     ClaimEquivalenceDraft,
+    _sentences,
     atom_answers_dimensions,
     atom_answers_target,
     atomic_compatible,
@@ -2930,6 +2931,183 @@ def test_the_two_spellings_of_one_place_state_one_geography() -> None:
             atom, ["geography: United States"], question=_AUDIT_QUESTION
         )
 
+
+
+# --------------------------------------------------------------------------
+# Attribution: whose report the clause is, and whose it is not
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A capitalised common noun is not an issuer (review F1).
+        "Analysts reported that generators added 10.4 GW of storage in 2024.",
+        "Nobody reported that generators added 10.4 GW of storage in 2024.",
+        "Industry analysts reported that generators added 10.4 GW in 2024.",
+        "Last year developers reported 10.4 GW of additions in 2024.",
+        "Grid operators in California said that 4 GW was added in 2024.",
+        "Critics said that EIA overstated the 10.4 GW added in 2024.",
+        "Earlier Reports said 10.4 GW was added in 2024.",
+        # A trailing reporting verb may not cross a comma to the nearest name.
+        (
+            "Generators added 10,400 MW of battery storage capacity in the "
+            "United States in 2024, the agency reported."
+        ),
+        "Fluence installed 2 GW in Germany in 2024, a U.S. company said.",
+        # "reports" is a noun here: the clause reports a denial, not a report.
+        (
+            "EIA denied reports that generators added 10,400 MW of battery "
+            "storage capacity in the United States in 2024."
+        ),
+    ],
+)
+def test_a_reporting_verb_names_no_issuer_when_none_is_named(
+    text: str,
+) -> None:
+    """The name an attribution may be read from is not "any capital word".
+
+    Every string here met a ``primary_attribution`` obligation at head, because
+    the grammar credited a common noun, crossed a comma to reach the previous
+    clause's place, or read the noun "reports" as a verb.
+    """
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The run's own forms, which the tightening may not lose.
+        (
+            "EIA reported that generators in the United States added 10.4 GW "
+            "of new utility-scale battery storage capacity in 2024.",
+            "EIA",
+        ),
+        (
+            "EIA's August 20, 2025 In-brief analysis reported that battery "
+            "storage accounted for the second-largest share of U.S. capacity "
+            "additions in the first half of 2025.",
+            "EIA",
+        ),
+        (
+            "EIA forecast in its February 24, 2025 In-brief analysis that "
+            "18.2 GW of utility-scale battery storage capacity would be added "
+            "in 2025.",
+            "EIA",
+        ),
+        # Acronyms, multi-token names, and a name that does not start the clause.
+        ("FERC found that the queue grew in 2024.", "FERC"),
+        ("Bloomberg NEF found that 10.4 GW was added in 2024.", "Bloomberg NEF"),
+        (
+            "Wood Mackenzie reported that 10.4 GW was added in 2024.",
+            "Wood Mackenzie",
+        ),
+        ("However, EIA stated that 18.2 GW is expected in 2025.", "EIA"),
+        # The trailing form credits the name it names, not the clause's subject.
+        ("Developers expected 18.2 GW in 2025, EIA said.", "EIA"),
+        (
+            "Generators added 10.4 GW of battery storage capacity in 2024, "
+            "EIA reported.",
+            "EIA",
+        ),
+    ],
+)
+def test_a_named_issuer_still_attributes_after_the_grammar_tightening(
+    text: str, expected: str
+) -> None:
+    """The positive half: acronyms, multi-token names, and trailing forms."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
+
+
+def test_a_place_is_never_the_issuer_of_its_own_clause() -> None:
+    """A locative names where the fact is, not who reported it."""
+    (atom,) = extract_atoms(
+        _claim("Generators added 4 GW of storage in California in 2024.")
+    )
+
+    assert atom.geography == "California"
+    assert atom.attribution == ""
+
+
+# --------------------------------------------------------------------------
+# Geography: an alias has to modify the measurand, not merely appear
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Another country's figure, with the alias in an adjunct (review F2).
+        "Mexico added 300 MW of battery storage in 2024 using U.S. suppliers.",
+        (
+            "Canada, unlike its U.S. neighbour, added only 500 MW of battery "
+            "storage in 2024."
+        ),
+        (
+            "Germany's battery storage additions trailed U.S. levels in 2024, "
+            "reaching 2,000 MW."
+        ),
+        "Pan-American capacity reached 26 GW in 2024.",
+    ],
+)
+def test_an_alias_that_does_not_modify_the_measurand_is_not_the_geography(
+    text: str,
+) -> None:
+    """An adjectival ``U.S.`` in an adjunct does not move the clause to the US.
+
+    Each of these credited a foreign country's figure to the United States
+    obligation that requires ``geography: United States``.
+    """
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.geography == ""
+
+
+# --------------------------------------------------------------------------
+# Sentences: an abbreviation ends one only when the sentence really ends
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Capacity grew in the U.S. It fell in Canada.", 2),
+        ("Built by Acme Co. The plant opened in 2025.", 2),
+        ("The permit came from Main St. The county approved it.", 2),
+        ("The reading was taken at 5 p.m. Demand fell after that.", 2),
+        ("Storage rose, etc. Solar fell over the same period.", 2),
+        # Mid-sentence, the same abbreviations are not sentence ends.
+        ("Capacity in the U.S. utility-scale fleet grew in 2024.", 1),
+        ("Acme Co. reported 10.4 GW of additions in 2024.", 1),
+        ("Demand fell at 5 p.m. local time, the operator said.", 1),
+        ("The figure is approximate, e.g. about 10.4 GW in 2024.", 1),
+    ],
+)
+def test_an_abbreviation_ends_a_sentence_only_before_a_new_one(
+    text: str, expected: int
+) -> None:
+    """The splitter may not fuse two sentences into one clause (review F3)."""
+    assert len(_sentences(text)) == expected
+
+
+def test_the_run_spelling_keeps_its_value_and_place_across_the_period() -> None:
+    """The measured regression: "…in the U.S. Solar added 30,000 MW.".
+
+    Fusing the two sentences made one clause with two measurements, so
+    ``_value_and_unit`` read no value at all and the 2024 target lost its
+    figure.
+    """
+    atoms = extract_text_atoms(
+        "According to EIA, 10,400 MW of battery storage was added in 2024 in "
+        "the U.S. Solar added 30,000 MW."
+    )
+
+    assert [atom.value for atom in atoms] == ["10,400", "30,000"]
+    assert atoms[0].geography == "United States"
 
 
 @pytest.mark.parametrize(

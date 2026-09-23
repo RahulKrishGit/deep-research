@@ -978,6 +978,74 @@ def _comparison_evidence_for(question: str) -> _ComparisonEvidence:
     return "absent"
 
 
+# A question that asks what caused something, or what effect something had, is
+# answered by an argument rather than by one issuer's figure. The vocabulary is
+# wider than ``_EXPLANATION_MARKERS``, which also decides the *answer form*: a
+# causal question's policy has to be protected even where its form is still
+# factual ("Does battery storage reduce wholesale electricity prices?").
+_CAUSAL_MARKERS = (
+    "why",
+    "how does",
+    "how do",
+    "how did",
+    "explain",
+    "mechanism",
+    "reason for",
+    "reason that",
+    "cause",
+    "causes",
+    "caused",
+    "effect",
+    "effects",
+    "impact",
+    "impacts",
+    "affect",
+    "affects",
+    "reduce",
+    "reduces",
+    "reduced",
+    "drive",
+    "drives",
+    "drove",
+    "led to",
+    "leads to",
+    "lead to",
+    "result of",
+    "results in",
+    "resulting in",
+    "determine",
+    "determines",
+    "influence",
+    "influences",
+    "because",
+    "due to",
+)
+
+
+# A question that ranks or weighs things is a comparison even where the
+# syntactic detector cannot prove the relation: "Which state added the most
+# battery capacity?" is a ranking, and "Is lithium-ion safer than flow
+# batteries?" is a weighing. Both are answered by comparing two accounts, so
+# the plan may not lower them to one issuer's figure (review F5).
+_RANKING_MARKERS = (
+    "best",
+    "better",
+    "biggest",
+    "fewer",
+    "greatest",
+    "highest",
+    "largest",
+    "least",
+    "lowest",
+    "most",
+    "safer",
+    "safest",
+    "smallest",
+    "worse",
+    "worst",
+)
+
+
 def _earned_support_policy(
     normalized: str,
     *,
@@ -985,22 +1053,39 @@ def _earned_support_policy(
 ) -> _SupportPolicy | None:
     """The policy a question's own form earns, or ``None`` when it earns none.
 
-    Every branch here is a *reason*: a comparison needs two independent
-    accounts by construction, a computed quantity needs its premises
-    supported, and an official rule or definition is settled by the body that
-    issues it. ``None`` is not a reason — it is where the local rule has
-    nothing to say, and where a target whose evidence has one issuer can be
-    planned as ``primary_attribution`` instead of demanding a pair that cannot
-    exist (audit #3).
+    Every branch here is a *reason*: a comparison — explicit or only
+    ambiguous — needs two independent accounts by construction, a computed
+    quantity needs its premises supported, a causal question is answered by an
+    argument rather than by one issuer's figure, and an official rule or
+    definition is settled by the body that issues it. ``None`` is not a reason:
+    it is where the local rule has nothing to say, and where a target whose
+    evidence has one issuer can be planned as ``primary_attribution`` instead of
+    demanding a pair that cannot exist (audit #3).
+
+    The ambiguous comparison and the causal branches keep the *floor* the
+    fallback used to provide. They change nothing about ``support_policy_for``
+    — which still answers ``independent_pair`` for both — but the plan's own
+    proposal is what decides now, so a question whose form earns a policy has
+    to earn it here or the model can lower it (review F5).
     """
     if comparison_evidence == "explicit":
         return "independent_pair"
     if _mentions(normalized, _DERIVATION_MARKERS):
         return "derivation"
+    # A threshold question about a rule stays the issuing body's to answer: the
+    # inequality in "tariffs greater than ten percent" is a limit the rule
+    # states, not a comparison between two accounts, so this comes before the
+    # weaker comparison evidence below.
     if _mentions(normalized, _CONSTRAINTS_MARKERS) or _mentions(
         normalized, _PRIMARY_ATTRIBUTION_MARKERS
     ):
         return "primary_attribution"
+    if comparison_evidence == "ambiguous" or _mentions(
+        normalized, _COMPARATIVE_CUES
+    ) or _mentions(normalized, _RANKING_MARKERS):
+        return "independent_pair"
+    if _mentions(normalized, _CAUSAL_MARKERS):
+        return "independent_pair"
     return None
 
 
@@ -1387,6 +1472,22 @@ def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
     return stamped
 
 
+def earned_support_policy(question: str) -> str | None:
+    """The support policy this question's own form earns, or ``None``.
+
+    Published because two consumers have to ask the same question, and
+    ``support_policy_for`` answers a different one: it falls back to
+    ``independent_pair`` wherever the form earns nothing, so a caller judging
+    whether a policy was *lowered* — the evaluation metric that scores a plan's
+    policies, and :func:`support_policy_for_target` itself — cannot tell "the
+    question earns a pair" from "the local rule had nothing to say".
+    """
+    return _earned_support_policy(
+        _normalized_question(question),
+        comparison_evidence=_comparison_evidence_for(question),
+    )
+
+
 def support_policy_for_target(*, question: str, proposed: str = "") -> str:
     """The binding support policy for one target: the proposal, under the floor.
 
@@ -1403,13 +1504,9 @@ def support_policy_for_target(*, question: str, proposed: str = "") -> str:
     the capacity one agency's inventory publishes has no second measurer, so
     demanding a verified pair makes the target unanswerable, while the run's
     plan put 10 of its 11 obligations on ``independent_pair`` (audit #3, P0).
-    An unusable proposal falls back to the local rule, which is
-    ``independent_pair``.
+    An unusable proposal falls back to ``independent_pair``.
     """
-    earned = _earned_support_policy(
-        _normalized_question(question),
-        comparison_evidence=_comparison_evidence_for(question),
-    )
+    earned = earned_support_policy(question)
     if earned is not None:
         return earned
     if proposed in get_args(_SupportPolicy):
