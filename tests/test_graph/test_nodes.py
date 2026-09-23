@@ -771,6 +771,85 @@ async def test_a_review_defect_the_hop_routes_opens_the_pass_it_was_routed_for()
     assert not repair_is_terminal(recorded)
 
 
+@pytest.mark.asyncio
+async def test_a_routed_job_on_a_topic_never_acquired_keeps_the_pass_alive() -> None:
+    """A routed repair is owed work even before any acquisition state exists.
+
+    ``pending_repair_work`` iterates ``acquisition_state_by_target``, so a
+    selectable key the run never opened an acquisition for contributed nothing
+    to the count: the stop decision could call the run finished — every lead it
+    *had* tried being spent — while the job this very hop had just routed for
+    that topic was still open. The acquisition key is the record of an attempt;
+    its absence says the work has not started, which is the opposite of done.
+    """
+    state = _two_topic_state(
+        report_review=fake_report_review(
+            defects=[
+                CritiqueGap(
+                    gap_id="review-01",
+                    coverage_id="topic-01",
+                    target_ids=["target-01"],
+                    kind="missing_support",
+                    severity="major",
+                    repair_action="acquire",
+                    problem="The cost figure rests on a single publisher.",
+                )
+            ]
+        ),
+        acquisition_state_by_target={"topic-02": _spent_topic_02()},
+    )
+
+    recorded = load_state(await refine_node(dump_state(state)))
+
+    assert recorded.progress_history[-1].pending_work_ids == [
+        "topic-01:unattempted"
+    ]
+    assert recorded.repair_stop_reason is None
+    assert not repair_is_terminal(recorded)
+
+
+@pytest.mark.asyncio
+async def test_a_routed_job_whose_leads_are_spent_still_reaches_its_dead_end() -> (
+    None
+):
+    """The dead-end reason stays reachable: every attempt made, nothing queued.
+
+    Counting an unattempted target as owed work must not make
+    ``evidence_unavailable`` unreachable. Once every selectable target has an
+    acquisition state of its own, and none of them holds a queue or a call, the
+    run has genuinely run out of leads and says so.
+    """
+    state = _two_topic_state(
+        report_review=fake_report_review(
+            defects=[
+                CritiqueGap(
+                    gap_id="review-01",
+                    coverage_id="topic-01",
+                    target_ids=["target-01"],
+                    kind="missing_support",
+                    severity="major",
+                    repair_action="acquire",
+                    problem="The cost figure rests on a single publisher.",
+                )
+            ]
+        ),
+        acquisition_state_by_target={
+            "topic-01": AcquisitionState(
+                target_id="topic-01",
+                remaining_calls=0,
+                empty_searches=2,
+                denied_urls=["https://lab.example/denied"],
+            ),
+            "topic-02": _spent_topic_02(),
+        },
+    )
+
+    recorded = load_state(await refine_node(dump_state(state)))
+
+    assert recorded.progress_history[-1].pending_work_ids == []
+    assert recorded.repair_stop_reason == "evidence_unavailable"
+
+
 def test_a_review_defect_becomes_a_typed_refinement_job() -> None:
     state = _reviewable_state(
         report_review=fake_rejected_report_review(repair_action="acquire"),
