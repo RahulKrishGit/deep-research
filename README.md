@@ -962,8 +962,11 @@ result *and* produced one identical outcome — exit code, terminal quality,
 answered targets, and published report. The repetitions exist to check that
 order, identity resolution and state isolation are deterministic, so a row
 whose repetitions disagree fails as `NON-deterministic` rather than passing with
-a note beside it, and a suite holding such a row is not accepted. This harness
-computes no judge score at all.
+a note beside it, and a suite holding such a row is not accepted. A repetition's
+dates come from the harness's own declared instant rather than from the wall
+clock, so a row's `Generated on` line is the same date on every run and a suite
+that straddles midnight UTC cannot fail a row on the clock instead of on the
+agents. This harness computes no judge score at all.
 
 ```
 Mode: real-agent (18 cases from replay manifest v1, case semantics v1)

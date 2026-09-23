@@ -500,19 +500,27 @@ def canonical_report_fingerprint(report: str) -> str:
     """The published report's hash, over the part of it the reader was shown.
 
     Two things about a published report are facts about the *session* that
-    made it rather than about the report: the ``As of`` clock read, and the
-    ordinal each source was given, which is the order that session's reads
-    were recorded in. Read identity is session-scoped by the product's own
-    contract, so two repetitions of one fixture cite the same sources
-    numbered in whichever order their own reads landed — measured here, that
-    renumbering happens in fifteen of the eighteen rows. Hashing the rendered
-    text as it stands would report a deterministic harness as non-deterministic
-    on five sixths of the matrix.
+    made it rather than about the report: the ``As of`` line, which is the
+    newest timestamp the recorded *evidence* carries rather than anything the
+    report itself says, and the ordinal each source was given, which is the
+    order that session's reads were recorded in. Read identity is
+    session-scoped by the product's own contract, so two repetitions of one
+    fixture cite the same sources numbered in whichever order their own reads
+    landed — measured here, that renumbering happens in fifteen of the
+    eighteen rows. Hashing the rendered text as it stands would report a
+    deterministic harness as non-deterministic on five sixths of the matrix.
 
-    So the hash is taken over the canonical form: the clock read dropped, and
-    every reference renumbered by its own label. What remains comparable is
-    which sources the reader was shown against which sentences, so a citation
-    set that gained, lost or moved a source still differs here.
+    So the hash is taken over the canonical form: the evidence recency
+    dropped, and every reference renumbered by its own label. What remains
+    comparable is which sources the reader was shown against which sentences,
+    so a citation set that gained, lost or moved a source still differs here.
+
+    The ``Generated on`` line is deliberately *not* dropped, unlike the ``As
+    of`` line beside it: which day a run says it printed its report is part of
+    what that run published, so two runs that disagree on it did not publish
+    the same thing. A replay row is reproducible because the harness stamps
+    every repetition from one pinned clock (``replay.replay_clock``), not
+    because the date is left out of the hash.
     """
     body: list[str] = []
     references: list[tuple[str, str]] = []
@@ -564,6 +572,11 @@ def _replay_repetition(
     The guard is not decoration: it is what turns "network-zero" from a claim
     about the fixture into a recorded fact about the run, and the attempts it
     records are carried into the result rather than asserted and dropped.
+
+    The run's dates come from the harness's pinned clock, so the fingerprint
+    below is a fact about the row rather than about the day it ran: three
+    repetitions that straddle midnight UTC publish the same report, and the
+    determinism requirement is met on the agents' behaviour alone.
     """
     session_id = f"replay-{entry.case_id}-r{repetition}"
     with network_denied() as attempts:

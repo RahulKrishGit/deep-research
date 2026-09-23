@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+import deep_research.agents.planner as planner_agents
+import deep_research.agents.researcher as researcher_agents
 import deep_research.e2e_evaluation.runner as campaign_runner
 from deep_research.e2e_evaluation.cases import (
     CONTROLLED_CASE_IDS,
@@ -27,11 +30,18 @@ from deep_research.e2e_evaluation.models import (
     ReplayRepetitionResult,
     ReplaySuiteResult,
 )
+from deep_research.e2e_evaluation.replay import (
+    REPLAY_CLOCK_INSTANT,
+    network_denied,
+    run_replay_scenario,
+)
 from deep_research.e2e_evaluation.replay_matrix import (
     GRAPH_ONLY_HISTORICAL_MANIFEST,
     REPLAY_CASE_IDS,
     REPLAY_CASE_MANIFEST,
     ReplayCaseEntry,
+    manifest_entry,
+    scenario_by_id,
 )
 from deep_research.e2e_evaluation.runner import (
     LIVE_TIER_NOT_RUN,
@@ -1213,3 +1223,95 @@ def test_a_row_whose_repetitions_disagree_is_not_passed(
         for item in case.repetitions
     )
     assert suite.accepted is False
+
+
+# --- the clock a row is stamped from -----------------------------------------
+
+
+class _MachineClockAcrossMidnight(datetime):
+    """The machine's clock, moved on by whole days.
+
+    The agents a run does not pin read the wall clock through the name their
+    own module resolves: the planner dates the answer contract from ``utc_now``
+    and the reader stamps its ``Generated on`` line from the same call.
+    Replacing that name in those modules is how a test reproduces the two
+    repetitions the whole-branch review found — the one that ran before
+    00:00 UTC and the one that ran after it — without a suite that waits for
+    midnight.
+    """
+
+    days_on = 0
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime.now(tz) + timedelta(days=cls.days_on)
+
+
+def _machine_clock_moved_on(monkeypatch, *, days: int) -> None:
+    """Move every wall clock the run's own agents would fall back to."""
+    monkeypatch.setattr(
+        planner_agents, "datetime", _MachineClockAcrossMidnight
+    )
+    monkeypatch.setattr(
+        researcher_agents, "datetime", _MachineClockAcrossMidnight
+    )
+    _MachineClockAcrossMidnight.days_on = days
+
+
+def test_a_row_that_straddles_midnight_is_still_one_result(
+    monkeypatch, tmp_path
+) -> None:
+    """The wall clock crossing midnight is not a row's result.
+
+    A row passes only if its repetitions published the same thing, and a
+    published report says which day it was printed on. Three repetitions that
+    straddle 00:00 UTC therefore used to publish three differently dated
+    reports and be reported as a non-deterministic row — a verdict about the
+    clock the machine happened to be at, not about the agents. The harness
+    stamps every repetition from its own clock, so the date is a constant of
+    the row; this test moves the machine's date instead of waiting for a suite
+    that straddles midnight.
+    """
+    entry = manifest_entry(REPLAY_CASE_IDS[0])
+    repetitions = []
+    for repetition in range(1, 4):
+        # Repetition 1 runs before midnight UTC, repetitions 2 and 3 after it.
+        _machine_clock_moved_on(monkeypatch, days=repetition - 1)
+        repetitions.append(
+            campaign_runner._replay_repetition(
+                entry,
+                repetition,
+                storage=tmp_path / f"repetition-{repetition}",
+            )
+        )
+
+    row = campaign_runner._replay_case_result(entry, repetitions)
+
+    assert len({item.report_fingerprint for item in repetitions}) == 1
+    assert row.deterministic is True
+    assert row.passed is True
+
+
+def test_a_replay_report_is_dated_by_the_harness_clock(
+    monkeypatch, tmp_path
+) -> None:
+    """A replay report states the day the harness printed it.
+
+    Both date lines are the harness's: ``Generated on`` is the clock's date,
+    and ``As of`` is the newest evidence timestamp, which the same frozen clock
+    stamped when the run recorded its reads and findings. So the whole report —
+    not merely the part the fingerprint is taken over — is a function of the
+    fixture and the harness's declared instant, which is what lets a row
+    require determinism of it.
+    """
+    _machine_clock_moved_on(monkeypatch, days=1)
+
+    with network_denied() as attempts:
+        run = run_replay_scenario(
+            scenario_by_id(REPLAY_CASE_IDS[0]), root=tmp_path, repetition=1
+        )
+
+    lines = run.report.splitlines()
+    assert attempts == []
+    assert f"**Generated on:** {REPLAY_CLOCK_INSTANT.date().isoformat()}" in lines
+    assert f"**As of:** {REPLAY_CLOCK_INSTANT.isoformat()}" in lines

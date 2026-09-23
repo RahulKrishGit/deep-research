@@ -28,6 +28,7 @@ import re
 from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
@@ -48,6 +49,7 @@ from deep_research.agents.fact_checker import (
     SupportAssessment,
 )
 from deep_research.agents.planner import (
+    Clock,
     EvidenceTargetDraft,
     PlanExtensionDraft,
     PlanReviewDraft,
@@ -96,6 +98,28 @@ from deep_research.utils.types import ReadRecord, ResearchState
 # for a different one to prove a case cannot pass by enlarging logs, but the
 # default a release case runs at is the production value.
 OBSERVATION_SUMMARY_CHARS = 200
+
+# The instant every replay run stamps its dates from. A replay reproduces one
+# declared run rather than printing a document today, so the harness pins the
+# clock the run's own agents read instead of letting the wall clock reach them:
+# the reader's ``Generated on`` line then states the day the harness printed
+# the report, the plan's as-of date and the evidence timestamps follow the same
+# instant, and three repetitions of a row are the same document however many
+# times, and whenever, the row is run. Without it a suite that straddled
+# 00:00 UTC published three differently dated reports and failed the row on a
+# fact about the clock rather than about the agents.
+#
+# Midday of the day the real-agent rows were certified (see
+# ``docs/validation/2026-09-16-real-agent-controlled-validation.md``), so the
+# frozen date is one the fixtures' own era already assumes: the rows were
+# authored and accepted against a clock in this year, and the questions that
+# name a period are classified against it.
+REPLAY_CLOCK_INSTANT = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
+
+
+def replay_clock() -> datetime:
+    """The harness's frozen clock: the same instant however often it is read."""
+    return REPLAY_CLOCK_INSTANT
 
 
 class ReplayContractError(RuntimeError):
@@ -1402,6 +1426,10 @@ async def build_replay_runtime(
     captured as it hands them to the compiler: the release proof has to assert
     the runtime really holds the production classes, not a double wearing
     their names.
+
+    The run's clock is the harness's (``replay_clock``), not the machine's: a
+    replay reproduces one declared run, so its plan, its evidence timestamps
+    and its report carry the harness's instant on every repetition of it.
     """
     resolved = settings or replay_settings(
         scenario,
@@ -1464,6 +1492,10 @@ async def build_replay_runtime(
             search_client=search,
             http_client=http,
             read_cache=dict(stored_reads),
+            # Every date the run stamps comes from the harness rather than from
+            # the machine, so a repetition's report is dated by the replay and
+            # not by whichever day it happened to run on. See ``replay_clock``.
+            clock=replay_clock,
         )
     finally:
         assembly.compile_research_graph = original_compile
@@ -2496,6 +2528,10 @@ def run_replay_scenario(
     the runtime is built by ``runtime.assembly.build_runtime`` with scripted
     external clients — so the six agents, the graph, the reviewer, the
     renderer and the publisher are production code end to end.
+
+    The one production value this does not keep is the wall clock: the run is
+    stamped from ``replay_clock``, because a replay reproduces one declared run
+    and its report has to say the same thing on every repetition of it.
     """
     import asyncio
     from io import StringIO
@@ -2566,6 +2602,7 @@ def run_replay_scenario(
 
 __all__ = [
     "OBSERVATION_SUMMARY_CHARS",
+    "REPLAY_CLOCK_INSTANT",
     "CaseExpectation",
     "ReplayCompleter",
     "ReplayContractError",
@@ -2582,6 +2619,7 @@ __all__ = [
     "offline_credentials",
     "production_config_path",
     "replay_settings",
+    "replay_clock",
     "run_replay_scenario",
 ]
 

@@ -16,7 +16,7 @@ from deep_research.agents.base import AgentCompleter
 from deep_research.agents.critic import CriticAgent
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.fact_checker import FactCheckerAgent
-from deep_research.agents.planner import PlannerAgent
+from deep_research.agents.planner import Clock, PlannerAgent
 from deep_research.agents.report_review import REPORT_JUDGE_ROLE, ReportReviewer
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.agents.source_evaluator import (
@@ -130,10 +130,12 @@ def _scratchpad(
 
 
 # Keyed by the six canonical agent names. Every entry receives the identical
-# shared kwargs, apart from ``read_cache`` — only the Source Evaluator consumes
-# ``reputation``, and only the Researcher consumes source-cache state. Bodies
-# name the agent classes rather than capturing them, so a test that patches
-# a class on this module still sees its own class constructed.
+# shared kwargs, apart from two that only some constructors accept:
+# ``read_cache``, which only the Researcher consumes, and ``clock``, which goes
+# to the three agents named in ``_CLOCK_AWARE_AGENTS`` below. Only the Source
+# Evaluator consumes ``reputation``. Bodies name the agent classes rather than
+# capturing them, so a test that patches a class on this module still sees its
+# own class constructed.
 #
 # The Researcher is the one agent with a cap on how much of the plan one pass
 # attempts, and it reads that bound off the very ``AgentRuntimeConfig`` every
@@ -160,6 +162,15 @@ _AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
     "critic": lambda reputation, **shared: CriticAgent(**shared),
 }
 
+# The three agents whose constructors read the run's clock: the planner dates
+# the answer contract from it, the researcher stamps every read and finding
+# from it, and the synthesizer stamps the reader's ``Generated on`` line from
+# it. A caller that injects one clock therefore gets one run with one clock in
+# it, and a run whose dates must not move with the machine's can be pinned. The
+# other three hold no clock at all — handing them one would be a keyword no
+# constructor accepts. An agent that grows a ``clock`` parameter belongs here.
+_CLOCK_AWARE_AGENTS = frozenset({"planner", "researcher", "synthesizer"})
+
 
 def build_agent(
     name: str,
@@ -171,6 +182,7 @@ def build_agent(
     session_id: str,
     reputation: ReputationSource | None,
     read_cache: MutableMapping[str, ReadRecord] | None = None,
+    clock: Clock | None = None,
 ) -> Any:
     """Construct exactly one production-configured agent.
 
@@ -183,6 +195,12 @@ def build_agent(
     before downloading it, so only the Researcher is handed the registry; the
     other five never fetch a body and a cache they cannot consult would be a
     parameter with no meaning.
+
+    ``clock`` is the run's clock, read by the three agents that stamp a date or
+    a time (``_CLOCK_AWARE_AGENTS``). ``None`` leaves each of them on its own
+    wall-clock default, which is what the production entrypoint wants; a caller
+    that pins it — the replay harness is the one that does — gets a run whose
+    dates are that caller's rather than the machine's.
 
     ``AgentConfigurationError`` is raised, not converted: the graph path
     wants a ``ResearchConfigurationError`` and converts in ``build_agents``,
@@ -209,6 +227,8 @@ def build_agent(
     }
     if read_cache is not None and name == "researcher":
         shared["cache"] = read_cache
+    if clock is not None and name in _CLOCK_AWARE_AGENTS:
+        shared["clock"] = clock
     return constructor(reputation=reputation, **shared)
 
 
@@ -221,6 +241,7 @@ def build_agents(
     session_id: str,
     reputation: ReputationSource | None,
     read_cache: MutableMapping[str, ReadRecord] | None = None,
+    clock: Clock | None = None,
 ) -> ResearchAgents:
     """Construct the six agents one graph runs.
 
@@ -229,6 +250,9 @@ def build_agents(
     deferred to the first tool call. That is converted into a
     ``ResearchConfigurationError`` so the CLI can print it without a
     traceback.
+
+    ``clock`` is passed to every agent that reads one, so the six are built
+    against a single clock rather than each choosing its own.
     """
     try:
         return ResearchAgents(
@@ -242,6 +266,7 @@ def build_agents(
                     session_id=session_id,
                     reputation=reputation,
                     read_cache=read_cache,
+                    clock=clock,
                 )
                 for name in AGENT_NAMES
             }
@@ -301,6 +326,7 @@ async def build_runtime(
     search_client: Any | None = None,
     http_client: Any | None = None,
     read_cache: MutableMapping[str, ReadRecord] | None = None,
+    clock: Clock | None = None,
 ) -> ResearchRuntime:
     """Build everything one research session needs, or fail cleanly.
 
@@ -315,6 +341,11 @@ async def build_runtime(
     earlier session already read, keyed by URL. It is state rather than a
     collaborator — the Researcher validates each entry locally before reusing
     it, and a run that supplies none simply starts with an empty cache.
+
+    ``clock`` is the session's clock, handed to the agents that stamp a date or
+    a time. ``None`` runs on the wall clock, which is what the CLI wants; a
+    caller that pins it gets a run whose dates are its own, which is how the
+    replay harness keeps a row's repetitions identical.
     """
     try:
         validate_agent_model_configs(
@@ -402,6 +433,7 @@ async def build_runtime(
         session_id=session_id,
         reputation=long_term,
         read_cache=read_cache,
+        clock=clock,
     )
     reviewer = build_report_reviewer(
         settings, tracker=tracker, provider=provider
