@@ -582,6 +582,7 @@ from deep_research.agents.steps import (
     summarize_text,
 )
 from deep_research.agents.synthesizer import (
+    PACKET_SUPPORT_CHARS,
     DEFAULT_MAX_MEMORY_FINDINGS,
     DEFAULT_MAX_SECTIONS,
     DEFAULT_MEMORY_CONFIDENCE,
@@ -614,6 +615,7 @@ from deep_research.agents.synthesizer import (
     date_basis_for,
     dropped_modality,
     evidence_report_filename,
+    hardened_modality,
     hedge_marker,
     high_confidence_claims,
     invalid_draft_error,
@@ -1260,6 +1262,7 @@ __all__ = [
     "asks_for_the_latest",
     "disclosed_limitations",
     "dropped_modality",
+    "hardened_modality",
     "hedge_marker",
     "most_consequential_limitation",
     "point_vintage",
@@ -1267,4 +1270,5 @@ __all__ = [
     "scope_fact",
     "terminal_report_state",
     "unattached_qualifiers",
+    "PACKET_SUPPORT_CHARS",
 ]

@@ -24,6 +24,7 @@ from deep_research.agents.evidence import build_read_record, resolve_read_works
 from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
+    _vintage_key,
     DEFAULT_ANSWER_HEADING,
     DEFAULT_READER_WORD_LIMIT,
     EVIDENCE_SECTIONS,
@@ -2028,6 +2029,98 @@ def test_a_question_that_does_not_ask_for_the_latest_keeps_its_order() -> None:
     assert "(vintage" not in summary
 
 
+def test_a_2024_actual_is_not_labelled_an_older_vintage_of_a_2025_forecast() -> (
+    None
+):
+    """Different quantities are not two vintages of one measurement.
+
+    Any question containing "latest" compared every dated summary point with
+    the newest vintage in the whole summary, so a 2024 actual was moved below a
+    2025 forecast and told it was the older vintage of it.
+    """
+    actual_url = "https://eia.gov/january-inventory"
+    forecast_url = "https://woodmac.example/2025-outlook"
+    actual = _claim(text="EIA reported 10.4 GW added in 2024.", urls=[actual_url])
+    forecast = _claim(
+        text="Wood Mackenzie forecast 18.9 GW installed in 2025.",
+        urls=[forecast_url],
+    )
+    composition = _composition(
+        question="What do the latest forecasts project for 2025?",
+        claims=[actual, forecast],
+        sources=[
+            _vintage(actual_url, data_period="2024-12"),
+            _vintage(forecast_url, data_period="2025-06"),
+        ],
+        summary=[
+            _point(
+                text="EIA reported 10.4 GW added in 2024.",
+                claim_ids=[actual.claim_id],
+                source_urls=[actual_url],
+            ),
+            _point(
+                text="Wood Mackenzie forecast 18.9 GW installed in 2025.",
+                claim_ids=[forecast.claim_id],
+                source_urls=[forecast_url],
+            ),
+        ],
+        sections=[],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert summary.index("10.4 GW") < summary.index("18.9 GW")
+    assert "(vintage" not in summary
+
+
+def test_two_restatements_of_one_measure_are_compared_by_their_vintages() -> None:
+    """The same unit over the same year is one measurement, told twice.
+
+    This is the 10.4-versus-10.3 case: two EIA inventory vintages of the 2024
+    addition, which the reader can only reconcile if both vintages are named.
+    """
+    newer_url = "https://eia.gov/january-inventory"
+    older_url = "https://eia.gov/december-inventory"
+    newer = _claim(text="EIA reported 10.4 GW added in 2024.", urls=[newer_url])
+    older = _claim(text="EIA reported 10.3 GW added in 2024.", urls=[older_url])
+    composition = _composition(
+        question="How much was added in 2024, and what is the latest?",
+        claims=[newer, older],
+        sources=[
+            _vintage(newer_url, data_period="2025-01"),
+            _vintage(older_url, data_period="2024-12"),
+        ],
+        summary=[
+            _point(
+                text="EIA reported 10.3 GW added in 2024.",
+                claim_ids=[older.claim_id],
+                source_urls=[older_url],
+            ),
+            _point(
+                text="EIA reported 10.4 GW added in 2024.",
+                claim_ids=[newer.claim_id],
+                source_urls=[newer_url],
+            ),
+        ],
+        sections=[],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert summary.index("10.4 GW") < summary.index("10.3 GW")
+    assert "(vintage: 2025-01)" in summary
+    assert "(older vintage: 2024-12)" in summary
+
+
+def test_a_date_range_is_keyed_by_the_year_it_ends_in() -> None:
+    """A cumulative figure through 2025 is not a 2011 vintage."""
+    assert _vintage_key("2011-2025") == (2025, 0, 0)
+    assert _vintage_key("2025") == (2025, 0, 0)
+    assert _vintage_key("no date recorded") is None
+
+
 def test_the_summary_leads_with_the_answer_before_the_details() -> None:
     composition = _evidence_composition(
         constraints=[],
@@ -3053,7 +3146,9 @@ def test_the_quality_record_carries_the_session_critic_and_review_statuses() -> 
     assert record["statuses"] == {
         "session": "failed",
         "critic": "failed",
-        "critic_score": 1,
+        # The floor score is not a judgement: the reader report and the CLI
+        # both refuse to print it, so the record must not publish one either.
+        "critic_score": None,
         "review": "",
     }
 

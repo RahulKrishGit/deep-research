@@ -323,8 +323,10 @@ _LATEST_MARKERS = (
 )
 
 # A recorded date value as it may be written: ``YYYY``, ``YYYY-MM``, or
-# ``YYYY-MM-DD``, anywhere inside the value's own words.
-_VINTAGE_PATTERN = re.compile(r"(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?")
+# ``YYYY-MM-DD``, anywhere inside the value's own words. The month is bounded
+# to a real month, so a *range* ("2011-2025") reads as two years rather than as
+# 2011 with a month of 20.
+_VINTAGE_PATTERN = re.compile(r"(\d{4})(?:-(0[1-9]|1[0-2])(?:-(\d{2}))?)?")
 
 # Render bounds. Every one of them clamps a single cell or bullet, so a long
 # model-written sentence cannot push a table off the page or turn the reader
@@ -1395,11 +1397,16 @@ def asks_for_the_latest(question: str) -> bool:
 
 
 def _vintage_key(value: str) -> tuple[int, int, int] | None:
-    """A recorded date value as a sortable key, or ``None`` when undated."""
-    match = _VINTAGE_PATTERN.search(value)
-    if match is None:
+    """A recorded date value as a sortable key, or ``None`` when undated.
+
+    A range is keyed by its **end** year: "2011-2025" describes data through
+    2025, and keying it by 2011 made a current cumulative figure read as the
+    oldest vintage on the page.
+    """
+    matches = list(_VINTAGE_PATTERN.finditer(value))
+    if not matches:
         return None
-    year, month, day = match.groups()
+    year, month, day = matches[-1].groups()
     return (int(year), int(month or 0), int(day or 0))
 
 
@@ -1431,17 +1438,66 @@ def point_vintage(
     return newest
 
 
+_MEASURE_UNIT = re.compile(
+    r"\d[\d,.'\u2019]*\s*([A-Za-z][A-Za-z/-]*)",
+)
+_MEASURE_UNITS = frozenset(
+    {
+        "gw", "gws", "mw", "mws", "kw", "kws", "tw", "tws",
+        "gwh", "mwh", "kwh", "twh", "gigawatt", "gigawatts", "megawatt",
+        "megawatts", "kilowatt", "kilowatts", "terawatt", "terawatts",
+        "percent", "pct", "%",
+    }
+)
+_YEAR = re.compile(r"\b((?:19|20)\d{2})\b")
+
+
+def _measure_signature(point: ReportPoint) -> tuple[frozenset[str], frozenset[str]]:
+    """The quantities a point states, as (units, years).
+
+    The fallback grouping when a point records no target: two statements
+    measure the same thing when they carry the same units over the same years.
+    A 2024 addition in GW and a 2025 forecast in GW are two different
+    measurements, and comparing their dates called the actual superseded.
+    """
+    units = {
+        match.group(1).casefold()
+        for match in _MEASURE_UNIT.finditer(point.text)
+        if match.group(1).casefold() in _MEASURE_UNITS
+    }
+    return (frozenset(units), frozenset(_YEAR.findall(point.text)))
+
+
+def _vintage_group(
+    point: ReportPoint,
+    composition: ReportComposition,
+) -> tuple[object, ...]:
+    """What makes two dated statements versions of one measurement.
+
+    The recorded target when the point names one — that is the system's own
+    statement that these statements answer one obligation — and otherwise the
+    units and years the point itself states. Two points that share neither are
+    never compared, so no figure is called an older vintage of a different
+    quantity.
+    """
+    statement = point.statement
+    if statement is not None and statement.target_ids:
+        return ("target", tuple(sorted(statement.target_ids)))
+    return ("measure", *_measure_signature(point))
+
+
 def _ordered_summary(
     composition: ReportComposition,
 ) -> list[ReportPoint]:
     """The summary in the order the reader meets it.
 
     A question that asks for the latest gets the newest recorded vintage
-    first: the audited report led with an 18.2 GW forecast two of its own
-    citations already superseded with 19.6 GW, so the reader met the older
-    vintage as the answer. Dated statements lead, newest first, and undated
-    ones keep their written order after them. Every other question keeps the
-    writer's order exactly.
+    first *within one measurement*: the audited report led with an 18.2 GW
+    forecast two of its own citations already superseded with 19.6 GW, so the
+    reader met the older vintage as the answer. Points that measure different
+    things keep their written order — reordering across quantities is how a
+    2024 actual came to sit below a 2025 forecast and to be labelled its older
+    vintage. Every other question keeps the writer's order exactly.
     """
     points = list(composition.summary)
     if len(points) < 2 or not asks_for_the_latest(composition.question):
@@ -1449,15 +1505,22 @@ def _ordered_summary(
     vintages = [point_vintage(point, composition) for point in points]
     if sum(vintage is not None for vintage in vintages) < 2:
         return points
-    ordered = sorted(
-        zip(vintages, range(len(points)), points),
-        key=lambda item: (
-            1 if item[0] is None else 0,
-            tuple(-part for part in item[0][0]) if item[0] is not None else (),
-            item[1],
-        ),
-    )
-    return [point for _, _, point in ordered]
+    ordered = list(points)
+    groups: dict[tuple[object, ...], list[int]] = {}
+    for position, point in enumerate(points):
+        if vintages[position] is None:
+            continue
+        groups.setdefault(_vintage_group(point, composition), []).append(position)
+    for positions in groups.values():
+        if len(positions) < 2:
+            continue
+        ranked = sorted(
+            positions,
+            key=lambda position: tuple(-part for part in vintages[position][0]),
+        )
+        for slot, position in zip(sorted(positions), ranked):
+            ordered[slot] = points[position]
+    return ordered
 
 
 def _summary_entries(
@@ -1466,27 +1529,32 @@ def _summary_entries(
     """Every summary point in reader order, each with the vintage note it carries.
 
     Empty for a question that did not ask for recency. Otherwise every dated
-    statement is told its own vintage — which is what lets a reader see why
-    two figures for one year differ — and a statement behind an older vintage
-    than the newest recorded one is told that it is older.
+    statement whose own measurement appears at more than one vintage is told
+    its vintage — which is what lets a reader see why two figures for one year
+    differ — and the older ones are told that they are older.
     """
     ordered = _ordered_summary(composition)
     if not asks_for_the_latest(composition.question):
         return [(point, "") for point in ordered]
     vintages = [point_vintage(point, composition) for point in ordered]
-    dated = [vintage for vintage in vintages if vintage is not None]
-    if len(dated) < 2:
-        return [(point, "") for point in ordered]
-    newest = max(vintage[0] for vintage in dated)
-    entries: list[tuple[ReportPoint, str]] = []
-    for point, vintage in zip(ordered, vintages):
-        if vintage is None:
-            entries.append((point, ""))
+    groups: dict[tuple[object, ...], list[int]] = {}
+    for position, point in enumerate(ordered):
+        if vintages[position] is None:
             continue
-        key, value = vintage
-        label = "older vintage" if key < newest else "vintage"
-        entries.append((point, f" ({label}: {value})"))
-    return entries
+        groups.setdefault(_vintage_group(point, composition), []).append(position)
+    notes: dict[int, str] = {}
+    for positions in groups.values():
+        if len(positions) < 2:
+            continue
+        newest = max(vintages[position][0] for position in positions)
+        for position in positions:
+            key, value = vintages[position]
+            label = "older vintage" if key < newest else "vintage"
+            notes[position] = f" ({label}: {value})"
+    return [
+        (point, notes.get(position, ""))
+        for position, point in enumerate(ordered)
+    ]
 
 
 def _reader_summary(
@@ -2757,7 +2825,11 @@ def terminal_report_state(
     return ReportTerminalState(
         status=run_status,
         critic_status=critique.review_status if critique is not None else "",
-        critic_score=critique.score if critique is not None else None,
+        critic_score=(
+            critique.score
+            if critique is not None and critique.review_status != "failed"
+            else None
+        ),
         review_status=review.status if review is not None else "",
         required_targets=_counted(coverage["required_targets"]),
         answered_targets=_counted(coverage["answered_targets"]),
@@ -2792,7 +2864,14 @@ def _status_record(
     return {
         "session": session_status,
         "critic": critique.review_status if critique is not None else "",
-        "critic_score": critique.score if critique is not None else None,
+        # A floor score beside a failed review is not a judgement. The CLI and
+        # the reader report both refuse to print it; a record that kept it made
+        # the three artifacts disagree about whether a critic score exists.
+        "critic_score": (
+            critique.score
+            if critique is not None and critique.review_status != "failed"
+            else None
+        ),
         "review": review.status if review is not None else "",
     }
 

@@ -1201,7 +1201,8 @@ async def test_the_finalizer_stamps_the_runs_terminal_checks_onto_the_report(
     assert record["statuses"] == {
         "session": "failed",
         "critic": "failed",
-        "critic_score": 1,
+        # Never the floor score beside a failed review.
+        "critic_score": None,
         "review": "provider_failed",
     }
     assert final.composition is not None

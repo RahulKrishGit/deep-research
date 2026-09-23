@@ -330,46 +330,68 @@ STATEMENT_DISPOSITIONS = (
 # report turned "capacity growth from battery storage could set a record" into
 # "would set a record" and published the source's own uncertainty as a fact.
 #
-# Deliberately narrow: every entry is a word that marks uncertainty on its
-# own, so a statement drawn from a hedged claim is refused only when it is
-# genuinely unhedged. "preliminary" is absent on purpose — it qualifies a
-# document's title ("Preliminary Monthly Electric Generator Inventory"), not
-# an assertion, and reading it as a hedge would refuse an accurate sentence.
+# Verb and adverb forms only. The noun uses of the same words hedge nothing —
+# "the EIA battery storage forecast identifies its data vintage" is a title,
+# not an uncertainty — and reading them as hedges refused correct statements
+# whose point also cited a forecast for its citation. "preliminary" is absent
+# for the same reason: it qualifies a document's title ("Preliminary Monthly
+# Electric Generator Inventory"), not an assertion.
 _HEDGE_PATTERN = re.compile(
-    r"\b(?:could|might|possibly|potentially|perhaps|may|expects|expected|"
-    r"projected|forecast|forecasts|anticipates|plans|planned|intends|"
-    r"suggests|suggested|implies|implied|appears|seems|likely|unlikely|"
-    r"reportedly|allegedly|estimated|approximately|roughly)\b",
+    r"\b(?:could|might|possibly|potentially|perhaps|likely|unlikely|expects?|"
+    r"expected|anticipates?|anticipated|projected|projection|planned|intends?|"
+    r"intended|suggests?|suggested|implies|implied|appears?|seems?|reportedly|"
+    r"allegedly|estimates?|estimated|approximately|roughly)\b",
     re.IGNORECASE,
 )
-# ``may`` is the one marker that collides with a month name, so it is matched
-# separately and refused when a date follows it.
+# ``may`` is the one hedge that collides with a month name, so it is matched
+# on its own and refused when a date follows it.
 _HEDGE_MAY_PATTERN = re.compile(r"\bmay\b(?!\s+\d)", re.IGNORECASE)
 
-# The words that name a scope convention rather than a measurement, and the
-# capacity qualifiers a figure may or may not carry. Both are checks about
-# what a statement *asserts*: a scope fact is a finding, so it needs a checked
-# claim behind it, and a qualifier is part of the quantity, so the evidence has
-# to attach it to the same figure.
-_SCOPE_MARKERS = (
+# The modal verbs a statement asserts with when it states as settled what its
+# evidence hedged. Compared against the cited evidence, because a claim can
+# have hardened its source already: the audited claim said "would" where the
+# page said "could", so the claim alone cannot witness the loss.
+_STRONG_MODALS = ("would", "will")
+
+# What a *source's* totals include or exclude. A note is refused only when it
+# names one of these subjects *and* an inclusion or exclusion verb: the
+# question's own plan carries a behind-the-meter topic, so every honest note
+# about that gap contains the word, and "state-level breakdowns are not
+# included in this report" is this pass describing itself, not a claim about
+# what EIA counted.
+_SCOPE_SUBJECTS = (
     "behind-the-meter",
     "behind the meter",
     "front-of-meter",
     "front of meter",
-    "outside the reported",
-    "outside these totals",
     "reported totals",
-    "utility-scale only",
-    "utility scale only",
-    "does not include",
-    "do not include",
-    "not included",
-    "excludes",
-    "excluding",
-    "excluded",
-    "scoped to",
-    "covers only",
 )
+_SCOPE_VERBS = (
+    "exclud",
+    "includ",
+    "outside",
+    "omit",
+    "leave out",
+    "leaves out",
+)
+# What marks a note as this pass describing *itself* rather than a source's
+# boundary. A note about what was or was not researched is the framing a
+# source-free note exists to carry, whatever words it borrows from the totals.
+_PASS_PHRASES = (
+    "this pass",
+    "this report",
+    "the plan",
+    "not acquired",
+    "checked evidence",
+    "no read",
+    "not retrieved",
+)
+
+# The capacity qualifiers a figure may or may not carry, and the units that
+# make a token a capacity figure. A bare year is not one: "in 2024, developers
+# installed 10.4 GW" and "developers installed 10.4 GW … in 2024" state the
+# same fact, and a check that attached the qualifier to the year refused the
+# second.
 _QUALIFIER_WORDS = (
     "nameplate",
     "operational",
@@ -379,6 +401,48 @@ _QUALIFIER_WORDS = (
     "proposed",
     "existing",
 )
+_CAPACITY_UNITS = (
+    "gw",
+    "gws",
+    "mw",
+    "mws",
+    "kw",
+    "kws",
+    "tw",
+    "tws",
+    "gwh",
+    "mwh",
+    "kwh",
+    "twh",
+    "gigawatt",
+    "gigawatts",
+    "megawatt",
+    "megawatts",
+    "kilowatt",
+    "kilowatts",
+    "terawatt",
+    "terawatts",
+    "gigawatt-hour",
+    "gigawatt-hours",
+    "megawatt-hour",
+    "megawatt-hours",
+)
+_CAPACITY_FIGURE = re.compile(
+    r"(\d[\d,.'\u2019]*)\s*(" + "|".join(_CAPACITY_UNITS) + r")\b",
+    re.IGNORECASE,
+)
+# The selected evidence the writer's packet may carry, whole. A *model-input*
+# bound, deliberately its own constant and never a display bound: passages are
+# carried until the budget is spent, a passage too large to fit at all is cut
+# between sentences, and every passage that did not fit is named — so the
+# writer always knows what it was not shown and never restates a fragment. The
+# rendered artifacts keep their own cell bounds. Without this, one claim whose
+# read is a whole page adds roughly 22k input tokens by itself.
+PACKET_SUPPORT_CHARS = 16000
+# What a passage that cannot fit the budget at all is cut with. The cut lands
+# on a sentence boundary — a partial sentence is exactly the fragment a
+# writer must not restate.
+_PACKET_OMISSION = " [… the passage continues; {count} further character(s) were not shown]"
 
 # Characters kept verbatim in a report filename. Narrow on purpose:
 # WriteDocumentTool rejects absolute paths and traversal segments, and a
@@ -1060,13 +1124,16 @@ def build_canonical_packet(
     limit: int,
     batch_size: int | None = None,
     failures: Sequence[str] = (),
+    support_budget: int = PACKET_SUPPORT_CHARS,
 ) -> CanonicalPacket:
     """Assemble the compact packet the writer receives.
 
     ``limit`` bounds how many claims the writer may cite. Everything past it
     is listed in ``omitted_ids`` and grouped into continuation batches, so the
     prompt states what it is missing instead of presenting a truncated packet
-    as the whole record.
+    as the whole record. ``support_budget`` bounds the selected evidence the
+    whole packet carries, across every claim: the first passages are carried
+    whole until it is spent, and the rest are named.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -1075,6 +1142,7 @@ def build_canonical_packet(
     canonical = canonical_claims(claims)
     ranked = _packet_rank(canonical, targets=target_index)
     entries: list[PacketEntry] = []
+    remaining = support_budget
     for position, claim in enumerate(ranked, start=1):
         if len(entries) >= limit:
             break
@@ -1143,6 +1211,20 @@ def build_canonical_packet(
                 obligations.append(
                     f"{target_id} still owes: {', '.join(missing)}"
                 )
+        support = _evidence_lines(selected, evidence, budget=remaining)
+        remaining -= _support_cost(support)
+        counter = _evidence_lines(
+            [
+                evidence_id
+                for evidence_id in selected
+                if evidence.get(evidence_id) is not None
+                and evidence[evidence_id].origin == "fact_checker"
+                and claim.contradictions
+            ],
+            evidence,
+            budget=max(0, remaining),
+        )
+        remaining -= _support_cost(counter)
         entries.append(
             PacketEntry(
                 label=claim_label(position),
@@ -1160,17 +1242,8 @@ def build_canonical_packet(
                 evidence_status=claim.evidence_status,
                 evidence_label=EVIDENCE_BADGE_LABELS.get(badge, badge),
                 citation_urls=urls,
-                support=_evidence_lines(selected, evidence),
-                counter=_evidence_lines(
-                    [
-                        evidence_id
-                        for evidence_id in selected
-                        if evidence.get(evidence_id) is not None
-                        and evidence[evidence_id].origin == "fact_checker"
-                        and claim.contradictions
-                    ],
-                    evidence,
-                ),
+                support=support,
+                counter=counter,
                 source_assessment=_packet_source_assessment(urls, source_index),
                 dates=_packet_dates(urls, source_index),
                 target_ids=target_ids,
@@ -1489,54 +1562,118 @@ def hedge_marker(text: str) -> str:
     return match.group(0).casefold() if match else ""
 
 
+def _figure_numbers(text: str) -> list[str]:
+    """Every numeric token a text carries, years included."""
+    return [
+        number
+        for number in (
+            _figure_number(match.group(0))
+            for match in _FIGURE_PATTERN.finditer(text)
+        )
+        if number
+    ]
+
+
 def dropped_modality(text: str, claims: Sequence[Claim]) -> str:
     """The modality a statement dropped, or ``""`` when it dropped none.
 
-    Read from the claims the statement rests on: an assertion drawn from a
-    hedged claim has to carry that hedge, because the hedge is what the
-    evidence supports. A claim that states no modality is a claim a statement
-    may state plainly, which is why this returns empty rather than requiring a
-    hedge of every statement.
+    Read from the claims the statement rests on, and only for the claim the
+    statement is *about*: a point cites every claim it rests on, so a 2024
+    addition statement also cites the 2025 forecast claim whose wording it
+    never restates. A claim's hedge binds a statement when the two share a
+    figure — the statement restates that claim's quantity — or when neither
+    the claim nor any claim beside it carries a figure, which is a statement
+    of one claim's own proposition.
+
+    A claim that states no modality is a claim a statement may state plainly,
+    which is why this returns empty rather than requiring a hedge of every
+    statement.
     """
     if hedge_marker(text):
         return ""
+    figures = set(_figure_numbers(text))
+    quantified = any(_figure_numbers(claim.text) for claim in claims)
     for claim in claims:
         marker = hedge_marker(claim.text)
-        if marker:
-            return marker
+        if not marker:
+            continue
+        claim_figures = set(_figure_numbers(claim.text))
+        if claim_figures and not claim_figures.intersection(figures):
+            continue
+        if not claim_figures and quantified:
+            continue
+        return marker
+    return ""
+
+
+def hardened_modality(text: str, corpus: str) -> str:
+    """The uncertainty the cited evidence states and a statement hardens away.
+
+    Read from the *evidence*, not from the claim: a claim can have hardened
+    its source already — the audited claim said "would set a record" where the
+    page said "could set a record" — so the claim's own wording cannot witness
+    what was lost. The statement is refused only when it asserts with a strong
+    modal what the evidence hedged; a statement that carries the evidence's own
+    uncertainty, or hedges in any other way, states no more than it was shown.
+    """
+    if hedge_marker(text):
+        return ""
+    if not hedge_marker(corpus):
+        return ""
+    for modal in _STRONG_MODALS:
+        if re.search(rf"\b{modal}\b", text, re.IGNORECASE):
+            return modal
     return ""
 
 
 def scope_fact(text: str) -> str:
     """The scope convention a text asserts, or ``""`` for none.
 
-    A scope fact — which plants a total includes, which it leaves out, which
-    issuer's boundary it follows — is a finding, and a finding needs checked
-    evidence behind it. This is what tells a source-free note that it has
-    stopped describing this pass and started asserting the world.
+    A scope fact — which plants a source's total includes, which it leaves out,
+    which issuer's boundary it follows — is a finding, and a finding needs
+    checked evidence behind it. What this refuses is narrow on purpose: the
+    note must name one of the totals' own subjects *and* an inclusion or
+    exclusion verb. A note that describes this pass ("the checked evidence does
+    not include a full-year outturn", "not included in this report") is the
+    framing a source-free note exists to carry, and it is not a claim about
+    what a source counted.
     """
-    lowered = text.casefold()
-    for marker in _SCOPE_MARKERS:
-        if marker in lowered:
-            return marker
+    lowered = " ".join(text.casefold().split())
+    if any(phrase in lowered for phrase in _PASS_PHRASES):
+        return ""
+    if not any(verb in lowered for verb in _SCOPE_VERBS):
+        return ""
+    for subject in _SCOPE_SUBJECTS:
+        if subject in lowered:
+            return subject
     return ""
+
+
+def _capacity_figures(sentence: str) -> list[tuple[int, str]]:
+    """(position, number) for every figure in a sentence that carries a unit.
+
+    A bare year is not a capacity figure. "In 2024, developers installed
+    10.4 GW" and "developers installed 10.4 GW … in 2024" state one fact, and
+    a rule that could attach a qualifier to the year refused the second.
+    """
+    return [
+        (match.start(), _figure_number(match.group(1)))
+        for match in _CAPACITY_FIGURE.finditer(sentence)
+    ]
 
 
 def _qualifier_attachments(text: str) -> set[tuple[str, str]]:
     """The (figure, qualifier) pairs a text asserts, by nearest-figure attachment.
 
-    A capacity qualifier describes the nearest figure to its left in its own
-    sentence, and the nearest figure to its right when none precedes it. That
+    A capacity qualifier describes the nearest capacity figure to its left in
+    its own sentence, and the nearest to its right when none precedes it. That
     is the dominant form both ways round — "operational ... of 43.6 GW" and
     "52 GW of nameplate capacity" — and it is what keeps one sentence naming
     two figures from attaching one figure's qualifier to the other.
     """
     pairs: set[tuple[str, str]] = set()
     for sentence in re.split(r"(?<=[.!?])\s+", text.casefold()):
-        figures = [
-            (match.start(), _figure_number(match.group(0)))
-            for match in _FIGURE_PATTERN.finditer(sentence)
-        ]
+        figures = _capacity_figures(sentence)
         if not figures:
             continue
         for word in _QUALIFIER_WORDS:
@@ -1567,9 +1704,78 @@ def unattached_qualifiers(text: str, corpus: str) -> list[str]:
     ]
 
 
+def _bounded_passage(text: str, *, limit: int) -> str:
+    """One passage carrying at most ``limit`` characters, cut between sentences.
+
+    The cut lands on a sentence boundary and says how much was withheld. A
+    partial sentence is the fragment a writer must not restate, which is why
+    this never cuts one.
+    """
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    boundary = max(
+        head.rfind(". "), head.rfind(".\n"), head.rfind("! "), head.rfind("? ")
+    )
+    kept = head[: boundary + 1] if boundary > 0 else head
+    return kept + _PACKET_OMISSION.format(count=len(text) - len(kept))
+
+
+def _evidence_lines(
+    evidence_ids: Sequence[str],
+    evidence: Mapping[str, EvidenceUnit],
+    *,
+    budget: int = PACKET_SUPPORT_CHARS,
+) -> list[str]:
+    """``id locator "excerpt"`` for each selected passage, in selected order.
+
+    The excerpt is published whole. It is the passage a claim rests on, and
+    the writer may only restate what it can see: clamping it to the ledger's
+    200-character display bound hid figures sitting below a page's navigation
+    — the same shape that made the audited run's fact checker miss nine of its
+    fourteen verdicts. ``budget`` bounds the whole group as a *model input*
+    and never cuts a passage mid-sentence: whole passages are carried until it
+    is spent, a passage too large to fit at all is cut between sentences, and
+    the passages that did not fit are named rather than silently dropped.
+    """
+    if budget <= 0:
+        if not evidence_ids:
+            return []
+        return [
+            f"({len(evidence_ids)} further selected passage(s) were not shown "
+            f"for length: {', '.join(evidence_ids)})"
+        ]
+    lines: list[str] = []
+    used = 0
+    omitted: list[str] = []
+    for evidence_id in evidence_ids:
+        unit = evidence.get(evidence_id)
+        if unit is None:
+            continue
+        excerpt = unit.excerpt
+        if len(excerpt) > budget - used:
+            if lines:
+                omitted.append(evidence_id)
+                continue
+            excerpt = _bounded_passage(excerpt, limit=budget)
+        used += len(excerpt)
+        lines.append(f'{evidence_id} {unit.locator} "{excerpt}"')
+    if omitted:
+        lines.append(
+            f"({len(omitted)} further selected passage(s) were not shown for "
+            f"length: {', '.join(omitted)})"
+        )
+    return lines
+
+
 def _is_recommendation(text: str) -> bool:
     lowered = f" {text.casefold()} "
     return any(marker in lowered for marker in _PRESCRIPTIVE_MARKERS)
+
+
+def _support_cost(lines: Sequence[str]) -> int:
+    """The characters one group of evidence lines spends from the budget."""
+    return sum(len(line) for line in lines)
 
 
 def _unrecorded_evidence_claim(text: str, failures: Sequence[str]) -> str:
@@ -1724,9 +1930,17 @@ def _build_point(
         )
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
-    qualifiers = unattached_qualifiers(
-        text, _cited_evidence(claims, context) or context.corpus
-    )
+    cited = _cited_evidence(claims, context) or context.corpus
+    hardened = hardened_modality(text, cited)
+    if hardened:
+        context.note(
+            "unsupported_modality",
+            where,
+            "the statement hardens the modality its evidence carries",
+        )
+        context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
+        return None
+    qualifiers = unattached_qualifiers(text, cited)
     if qualifiers:
         context.note(
             "unsupported_qualifier",
