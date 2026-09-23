@@ -729,7 +729,7 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.max_sub_topics == 7
     assert settings.agents.prompt_context_entries == 8
     assert settings.agents.observation_summary_chars == 200
-    assert settings.agents.planner_final_max_tokens == 32768
+    assert settings.agents.planner_final_max_tokens == 65536
     assert settings.agents.critic_review_max_tokens == 32768
 
 
@@ -821,28 +821,40 @@ def test_the_shipped_config_file_carries_the_critic_review_budget() -> None:
 
 
 def test_the_shipped_config_file_carries_the_uniform_token_budget() -> None:
-    """The shipped YAML raises the global cap and every operation with it."""
+    """The shipped YAML raises the global cap and every budget that follows it.
+
+    The planner-final budget is the one documented exception and carries its
+    own test below; every other operation still resolves to the global cap.
+    """
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
     assert raw["llm"]["max_tokens"] == 32768
-    assert raw["agents"]["planner_final_max_tokens"] == 32768
     assert raw["agents"]["judge_max_tokens"] == 32768
     assert raw["agents"]["react_decision_max_tokens"] == 32768
 
 
-def test_the_planner_final_budget_defaults_to_the_global_cap(
+def test_the_planner_final_budget_exceeds_the_global_cap(
     config_path: Path,
 ) -> None:
-    """The operation-specific planner-final budget defaults to the global cap."""
+    """The planner's final budget is the one budget above the global cap.
+
+    A live run truncated a plan request exactly at the global cap
+    (``finish_reason=length``, 32768 completion tokens) and the resulting
+    ``ProviderOutputLimitError`` is nonretryable by design, so the run stopped
+    before research began. The planner reasons at ``max`` effort and a
+    reasoning token is a completion token, so this operation needs headroom
+    the others do not.
+    """
     settings = load_config(str(config_path))
 
-    assert settings.agents.planner_final_max_tokens == 32768
+    assert settings.agents.planner_final_max_tokens == 65536
+    assert settings.agents.planner_final_max_tokens > settings.llm.max_tokens
 
 
 def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["agents"]["planner_final_max_tokens"] == 32768
+    assert raw["agents"]["planner_final_max_tokens"] == 65536
 
 
 @pytest.mark.parametrize(

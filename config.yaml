@@ -127,7 +127,18 @@ agents:
   # Operation-specific output budget for the planner's final
   # ResearchPlanDraft request only; ReAct decisions and judge calls keep
   # llm.max_tokens (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).
-  planner_final_max_tokens: 32768
+  #
+  # This is the one budget that deliberately exceeds the global cap. The
+  # planner reasons at `max` effort, DeepSeek bills a reasoning token as a
+  # completion token, so a plan request shares this budget with its own
+  # thinking. A live run truncated exactly here -- finish_reason=length, 32768
+  # completion tokens, ProviderOutputLimitError -- and that error is
+  # nonretryable by design, so the run stopped before research began. 65536 is
+  # the largest value the provider accepted when probed directly. This buys
+  # headroom, it does not remove the class: a request that reasons past this
+  # cap still stops the run, and the durable fix is a bounded degraded retry,
+  # not a third larger number.
+  planner_final_max_tokens: 65536
   # Operation-specific output budget for the Critic's report-review request
   # only (AGENTS_CRITIC_REVIEW_MAX_TOKENS overrides this). That call renders
   # the report, the claims, the source scores, and the spot-check evidence,

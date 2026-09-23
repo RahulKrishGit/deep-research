@@ -881,10 +881,14 @@ async def test_react_decision_requests_carry_the_react_decision_budget(
         "PlanReviewDraft",
     ]
     decision_budget = AgentRuntimeConfig().react_decision_max_tokens
+    plan_budget = AgentRuntimeConfig().planner_final_max_tokens
     assert completer.react_budgets == [decision_budget, decision_budget]
     # Both plan-side structured calls carry the planner's own budget: the
-    # review is a tool-free call about the plan, not a ReAct decision.
-    assert completer.budgets == [32768, 32768]
+    # review is a tool-free call about the plan, not a ReAct decision. The
+    # numbers stay unpinned here -- the shipping values have their own tests
+    # in tests/test_config.py -- so this test keeps asserting the separation
+    # rather than repeating one value twice.
+    assert completer.budgets == [plan_budget, plan_budget]
 
 
 @pytest.mark.asyncio

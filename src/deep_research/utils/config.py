@@ -199,7 +199,13 @@ class AgentRuntimeConfig(BaseModel):
 
     ``planner_final_max_tokens`` is the operation-specific output budget for
     the planner's final ``ResearchPlanDraft`` request only; ReAct decisions
-    and judge calls keep the global ``llm.max_tokens`` cap.
+    and judge calls keep the global ``llm.max_tokens`` cap. It is the one
+    budget that deliberately exceeds that cap: the planner reasons at ``max``
+    effort, a reasoning token is a completion token, and a live run truncated
+    a plan request at the global cap, which -- the error being nonretryable by
+    design -- stopped the run before research began. The larger cap buys
+    headroom, not immunity; a request that reasons past it still stops the
+    run.
 
     ``critic_review_max_tokens`` is the same kind of budget for the Critic's
     ``critique_report_review`` request. Since Task 8 that call renders the
@@ -274,7 +280,7 @@ class AgentRuntimeConfig(BaseModel):
     # than one importing the agent layer from the contract layer.
     claim_batch_size: int = Field(default=5, ge=1)
     claim_batches_per_pass: int = Field(default=6, ge=1)
-    planner_final_max_tokens: int = Field(default=32768, ge=1)
+    planner_final_max_tokens: int = Field(default=65536, ge=1)
     critic_review_max_tokens: int = Field(default=32768, ge=1)
     report_review_max_tokens: int = Field(default=32768, ge=1)
     """Operation-specific output budget for the report judge's one request.
