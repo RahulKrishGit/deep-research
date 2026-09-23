@@ -3613,10 +3613,13 @@ def test_a_target_binds_only_its_own_measure_period_and_place(
 ) -> None:
     target = _battery_binding_target()
     atoms = extract_text_atoms(text)
-    assert any(
-        atom_answers_target(atom, target, question=target.question)
-        for atom in atoms
-    ) is expected
+    assert (
+        any(
+            atom_answers_target(atom, target, question=target.question)
+            for atom in atoms
+        )
+        is expected
+    )
 
 
 def test_a_government_figure_does_not_answer_an_independent_publisher_target() -> None:
@@ -3659,8 +3662,7 @@ def test_a_government_figure_does_not_answer_an_independent_publisher_target() -
         for atom in federal
     )
     assert not any(
-        atom_answers_target(atom, target, question=target.question)
-        for atom in federal
+        atom_answers_target(atom, target, question=target.question) for atom in federal
     )
     regulatory = extract_text_atoms(
         "FERC reported that generators in the United States added 10.4 GW "
@@ -3695,9 +3697,12 @@ def test_outcome_alone_cannot_answer_a_mechanism_obligation(
     claim: str, expected: bool
 ) -> None:
     dimension = "measure: the mechanism behind the change"
-    assert any(
-        atom_answers_dimensions(
-            atom, [dimension], question="Why did Acme widget adoption increase?"
+    assert (
+        any(
+            atom_answers_dimensions(
+                atom, [dimension], question="Why did Acme widget adoption increase?"
+            )
+            for atom in extract_text_atoms(claim)
         )
-        for atom in extract_text_atoms(claim)
-    ) is expected
+        is expected
+    )
