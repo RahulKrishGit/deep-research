@@ -17,6 +17,7 @@ true".
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, NamedTuple
@@ -1253,6 +1254,11 @@ def memory_recall_count(run: ReActRun | None) -> int:
     )
 
 
+# A figure a claim or a question states, as it is written: ``10.3 GW``, ``26%``,
+# ``1 Megawatt``.
+_NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+
+
 def claim_relevant_order(
     pool: Sequence[EvidenceUnit], query: str
 ) -> list[EvidenceUnit]:
@@ -1274,6 +1280,18 @@ def claim_relevant_order(
         len(pool),
     )
     by_id = {unit.evidence_id: unit for unit in pool}
+    # A passage that states one of the claim's own numbers is *about* it, and a
+    # lexical score over prose can rank four passages that merely share its
+    # wording above the one carrying the figure. The numeric overlap decides
+    # first, and the lexical ranking orders everything within it, so a claim's
+    # own figure leads and no rule has to name a URL or a number.
+    wanted = set(_NUMBER.findall(query))
+    if wanted:
+        ranked.sort(
+            key=lambda evidence_id: -len(
+                wanted.intersection(_NUMBER.findall(by_id[evidence_id].excerpt))
+            )
+        )
     ordered = [by_id[evidence_id] for evidence_id in ranked]
     seen = set(ranked)
     ordered.extend(unit for unit in pool if unit.evidence_id not in seen)

@@ -2912,3 +2912,124 @@ def test_a_scoring_dossier_shows_the_passages_that_serve_the_plan() -> None:
     (dossier,) = task.dossiers.values()
     assert dossier.excerpts, dossier.excerpts
     assert any("5.9 GW" in excerpt for excerpt in dossier.excerpts)
+
+
+def test_a_scoring_dossier_shows_each_obligations_figures_behind_navigation() -> None:
+    """Navigation first, figures later, and every obligation still visible.
+
+    The scoring path judges relevance and identity from four excerpts. A page
+    whose opening is site navigation, whose middle states one obligation's
+    figure and whose end states another's, must show both: the excerpts come
+    from what the run extracted from the source and from the plan text of each
+    obligation it was cited for, not from the page's first characters.
+    """
+    from deep_research.agents.source_evaluator import (
+        DEFAULT_EXCERPT_CHARS,
+        SourceEvaluatorAgent,
+    )
+    from deep_research.utils.types import (
+        QUALITY_CONTRACT_VERSION,
+        EvidenceTarget,
+        Finding,
+        ResearchState,
+        SubTopic,
+    )
+
+    url = "https://www.eia.gov/todayinenergy/detail.php?id=64586"
+    navigation = "Skip to main content. ".ljust(700, "n")
+    forecast = (
+        "Battery storage. In 2025, capacity growth from battery storage could "
+        "set a record as we expect 18.2 GW of utility-scale battery storage to "
+        "be added to the grid, up from the 10.3 GW added in 2024."
+    )
+    other = "About the data. ".ljust(400, "o")
+    half_year = (
+        "Battery storage accounted for 26% (5.9 GW) of capacity additions in "
+        "the first half of 2025, with 7.0 GW expected in Texas."
+    )
+    body = "\n\n".join((navigation, forecast, other, half_year))
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title="EIA capacity additions",
+        retrieved_at="2026-08-20T00:00:00+00:00",
+        text=body,
+        passages={
+            "chunk-0": navigation,
+            "chunk-1": forecast,
+            "chunk-2": other,
+            "chunk-3": half_year,
+        },
+        extraction_complete=True,
+    )
+
+    def topic(coverage_id: str, title: str, question: str) -> SubTopic:
+        return SubTopic(
+            coverage_id=coverage_id,
+            title=title,
+            rationale="The question asks for it.",
+            search_queries=["utility-scale battery storage capacity additions"],
+            success_criteria=["The stated figure in GW"],
+            priority=1,
+            evidence_targets=[
+                EvidenceTarget(
+                    target_id=f"{coverage_id}-target-01",
+                    coverage_id=coverage_id,
+                    question=question,
+                    required_dimensions=["value"],
+                    required=True,
+                    critical=False,
+                    support_policy="primary_attribution",
+                )
+            ],
+        )
+
+    topics = [
+        topic("topic-01", "2024 actuals", "How much was added in 2024?"),
+        topic("topic-02", "2025 forecasts", "How much is expected in 2025?"),
+    ]
+    state = ResearchState(
+        session_id="session-1",
+        original_question="How much battery capacity was added and forecast?",
+        sub_topics=topics,
+        raw_findings=[
+            Finding(
+                content=(
+                    "The EIA forecast that 18.2 GW of utility-scale battery "
+                    "storage would be added in 2025."
+                ),
+                source_url=url,
+                source_title="EIA capacity additions",
+                extracted_at="2026-08-20T00:00:00+00:00",
+                confidence=0.8,
+                related_sub_topic=topics[1].title,
+            ),
+            Finding(
+                content=(
+                    "Battery storage accounted for 26% (5.9 GW) of capacity "
+                    "additions in the first half of 2025."
+                ),
+                source_url=url,
+                source_title="EIA capacity additions",
+                extracted_at="2026-08-20T00:00:00+00:00",
+                confidence=0.8,
+                related_sub_topic=topics[1].title,
+            ),
+        ],
+        read_records={read.read_id: read},
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+    )
+    agent = object.__new__(SourceEvaluatorAgent)
+    agent._excerpt_chars = DEFAULT_EXCERPT_CHARS
+
+    task = agent.build_task(state)
+
+    (dossier,) = task.dossiers.values()
+    shown = "\n".join(dossier.excerpts)
+    assert len(dossier.excerpts) <= 4
+    assert "18.2 GW" in shown
+    assert "5.9 GW" in shown
+    assert "7.0 GW" in shown
+    assert "1 Megawatt" not in shown  # the control: nothing invented

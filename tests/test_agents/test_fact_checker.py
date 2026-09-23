@@ -33,6 +33,7 @@ from deep_research.agents.evidence import (
     merge_boundary_audits,
 )
 from deep_research.agents.fact_checker import (
+    claim_relevant_order,
     DEFAULT_CLAIM_BATCH_SIZE,
     DEFAULT_CLAIM_BATCHES_PER_PASS,
     DEFAULT_FINDING_DIGEST,
@@ -8479,3 +8480,51 @@ def test_an_unknown_dependence_is_not_called_a_relay() -> None:
     assert claim.evidence_status is None
     assert "relay_source" not in claim.audit_flags
     assert claim.insufficient_reason
+
+
+def test_a_passage_that_states_the_claims_own_figure_is_offered_first() -> None:
+    """A number in the claim outranks prose that merely shares its words.
+
+    Claim 3 of the audited run states "10.3 GW"; four pool passages shared its
+    prose and were pair-eligible, so the passage that actually states 10.3 GW
+    was deferred and the claim's own figure never reached the adjudicator. A
+    passage carrying the claim's numbers now leads the ranking, and the pair
+    rule (which may not hide a pair) only promotes the first pair behind it.
+    """
+    figure = "We expect 10.3 GW of new battery storage capacity in 2024."
+    claim_text = (
+        "An EIA article based on the December 2024 inventory stated that U.S. "
+        "power providers added 10.3 GW of new battery storage capacity in 2024."
+    )
+    filler = "An EIA article based on the December 2024 inventory stated that "
+    units = [
+        EvidenceUnit(
+            evidence_id=f"ev-filler-{index}",
+            read_id=f"read-filler-{index}",
+            source_url=f"https://filler-{index}.test/report",
+            source_title=f"filler {index}",
+            locator="chunk-0",
+            excerpt=filler
+            + ("the U.S. power providers reported battery storage capacity "
+               "additions across the year. " * 4),
+            target_ids=[TASK6_TARGET],
+            origin="researcher",
+        )
+        for index in range(4)
+    ]
+    units.append(
+        EvidenceUnit(
+            evidence_id="ev-figure",
+            read_id="read-figure",
+            source_url="https://eia.test/inventory",
+            source_title="EIA inventory",
+            locator="chunk-3",
+            excerpt=figure,
+            target_ids=[TASK6_TARGET],
+            origin="researcher",
+        )
+    )
+
+    ordered = claim_relevant_order(units, claim_text)
+
+    assert ordered[0].evidence_id == "ev-figure"
