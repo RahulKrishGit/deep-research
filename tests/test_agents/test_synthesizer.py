@@ -8,6 +8,7 @@ tool, no file, and no memory entry.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -93,7 +94,9 @@ from deep_research.utils.types import (
     EvidenceTarget,
     EvidenceUnit,
     Finding,
+    ReadRecord,
     ResearchError,
+    ResearchEvent,
     ResearchState,
     ScoredSource,
     SourceTemporal,
@@ -1188,6 +1191,113 @@ def test_build_task_carries_the_evidence_limitations_and_revision_notes(
     assert task.limitations == ["low_confidence_sources"]
     assert task.errors == []
     assert "No cost data." in task.guidance
+
+
+# --- run clock versus evidence date -------------------------------------------
+
+
+def _dated_contract() -> AnswerContract:
+    return AnswerContract(
+        question="How much storage was installed as of 2024-12-31?",
+        scope_statement="What the recorded evidence establishes as of 2024-12-31.",
+        geographic_scope="unspecified",
+        as_of_date="2024-12-31",
+        evidence_period_requirement="installed storage as of 2024-12-31",
+        assumptions=["the question names no geography"],
+        answer_kind="factual",
+    )
+
+
+def _evidence_read(
+    retrieved_at: str = "2026-09-20T08:00:00+00:00",
+) -> ReadRecord:
+    return ReadRecord(
+        read_id="read-1",
+        requested_url=SOURCE_URL,
+        resolved_url=SOURCE_URL,
+        title="QEC 2025",
+        reader="web_scraper",
+        retrieved_at=retrieved_at,
+        content_sha256="a" * 64,
+        extraction_complete=True,
+        passages={"p. 1": "Break-even was reached."},
+        origin_session_id="session-1",
+    )
+
+
+def test_the_reader_prints_the_run_date_not_the_asked_for_date(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """A dated question must not relabel the clock's date as the answer's.
+
+    The question names 2024-12-31, so the frozen contract's ``as_of_date`` is
+    2024-12-31 — the date the answer is *about*, not the date the document was
+    printed. The run clock is pinned at 2026-09-23 and the evidence is stamped
+    in 2026, so the reader must print the clock's own date on **Generated
+    on**, the newest *evidence* timestamp on **As of**, and the asked-for date
+    only on **Date basis**.
+    """
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(),
+        synthesizer_tools(tracker, output_root=tmp_path),
+        clock=lambda: datetime(2026, 9, 23, 1, 30, tzinfo=timezone.utc),
+    )
+    state = _state(
+        original_question="How much storage was installed as of 2024-12-31?",
+        answer_contract=_dated_contract(),
+        read_records={"read-1": _evidence_read()},
+    )
+
+    report, _ = agent.compose(agent.build_task(state), draft=None)
+    lines = report.markdown.splitlines()
+    generated_on = next(
+        line for line in lines if line.startswith("**Generated on:**")
+    )
+    as_of = next(line for line in lines if line.startswith("**As of:**"))
+    date_basis = next(
+        line for line in lines if line.startswith("**Date basis:**")
+    )
+
+    assert generated_on == "**Generated on:** 2026-09-23"
+    assert as_of == "**As of:** 2026-09-20T08:00:00+00:00"
+    assert "2024-12-31" in date_basis
+    assert "2024-12-31" not in generated_on
+
+
+def test_as_of_ignores_graph_event_timestamps(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """A graph event is when a node ran, not how current the evidence is.
+
+    The state's newest event timestamp (2026-12-31) is later than every read
+    and finding, and it must not become the report's ``As of``: the newest
+    recorded evidence timestamp is.
+    """
+    agent = _synthesizer(
+        tracker,
+        ScriptedCompleter(),
+        synthesizer_tools(tracker, output_root=tmp_path),
+        clock=lambda: datetime(2026, 9, 23, 1, 30, tzinfo=timezone.utc),
+    )
+    state = _state(
+        read_records={"read-1": _evidence_read()},
+        events=[
+            ResearchEvent(
+                event_type="graph.node.started",
+                source="graph",
+                message="synthesizer started.",
+                timestamp="2026-12-31T00:00:00+00:00",
+            )
+        ],
+    )
+
+    task = agent.build_task(state)
+    report, _ = agent.compose(task, draft=None)
+
+    assert task.as_of == "2026-09-20T08:00:00+00:00"
+    assert "**As of:** 2026-09-20T08:00:00+00:00" in report.markdown
+    assert "2026-12-31" not in report.markdown
 
 
 # --- Task 7: the answer, not the claim inventory -------------------------------

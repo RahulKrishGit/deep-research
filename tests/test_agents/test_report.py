@@ -84,7 +84,6 @@ from deep_research.utils.types import (
     ReportAnswerRow,
     ReportStatement,
     ResearchError,
-    ResearchEvent,
     ResearchState,
     ScoredSource,
     SourceTemporal,
@@ -1205,23 +1204,27 @@ def test_the_latest_recorded_timestamp_is_the_as_of_value() -> None:
         related_sub_topic="Alpha",
     )
     later = earlier.model_copy(update={"extracted_at": EXTRACTED_AT})
+    read = ReadRecord(
+        read_id="read-1",
+        requested_url=SOURCE_URL,
+        resolved_url=SOURCE_URL,
+        title="QEC 2025",
+        reader="web_scraper",
+        retrieved_at="2026-09-01T00:00:00+00:00",
+        content_sha256="a" * 64,
+        extraction_complete=True,
+        passages={"p. 1": "Break-even was reached."},
+        origin_session_id="session-1",
+    )
 
-    assert report_as_of(findings=[earlier, later], events=[]) == EXTRACTED_AT
+    assert report_as_of(findings=[earlier, later], reads=[]) == EXTRACTED_AT
+    # A read newer than every finding is the newest evidence and wins; the
+    # value comes from a read's retrieval time, never from a graph event.
     assert (
-        report_as_of(
-            findings=[earlier],
-            events=[
-                ResearchEvent(
-                    event_type="researcher.sub_topic.completed",
-                    source="agent.researcher",
-                    message="Done.",
-                    timestamp="2026-09-01T00:00:00+00:00",
-                )
-            ],
-        )
+        report_as_of(findings=[earlier], reads=[read])
         == "2026-09-01T00:00:00+00:00"
     )
-    assert report_as_of(findings=[], events=[]) == ""
+    assert report_as_of(findings=[], reads=[]) == ""
 
 
 def test_scope_is_stated_from_the_plan_alone() -> None:
