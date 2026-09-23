@@ -954,6 +954,52 @@ def test_cli_exposes_only_list_case_and_suite(capsys) -> None:
     assert set(actions[0].choices) == {"list", "case", "suite"}
 
 
+def test_the_case_command_accepts_the_id_form_list_prints(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """``case`` and ``list`` name one inventory, and the run says which harness.
+
+    ``list`` prints the graph-historical rows as ``<id>-graph`` — the suffix is
+    what keeps one inventory's evidence from being read as the other's — while
+    ``case`` accepted only the legacy ids, so the form a reader was shown was
+    rejected by argparse. Both forms run the same scripted doubles, and the
+    legacy ids are three of the rows ``list`` prints under "Mode: real-agent",
+    which is why the output has to disclose the harness before it states a
+    result: a per-case line reading "accepted" is otherwise a claim about the
+    production agents that a scripted run did not make.
+    """
+    monkeypatch.setattr(campaign_runner, "DEFAULT_OUTPUT_DIRECTORY", tmp_path)
+    legacy = CONTROLLED_CASE_IDS[0]
+
+    for case_id in (f"{legacy}-graph", legacy):
+        code = campaign_runner.main(
+            ["case", case_id, "--tier", "controlled", "--repetitions", "3"]
+        )
+        printed = capsys.readouterr().out.splitlines()
+
+        assert code == 0, case_id
+        assert printed[:3] == [
+            "Mode: graph-historical (3 legacy ScriptedGraphAgent cases)",
+            "Agents: SCRIPTED DOUBLES, not production classes — historical "
+            "regression only.",
+            "        This mode is not release evidence for the real agents.",
+        ], case_id
+        assert printed[3].startswith(f"Case {legacy}: "), case_id
+        assert printed[-2].startswith("Artifact: "), case_id
+        assert printed[-1] == "Network: zero (scripted dependencies only)", case_id
+        assert tmp_path.joinpath(legacy, "case.json").is_file(), case_id
+
+
+def test_the_case_command_rejects_an_unknown_id(capsys) -> None:
+    """The accepted list is the two inventories' ids and nothing else."""
+    with pytest.raises(SystemExit) as error:
+        campaign_runner.main(
+            ["case", "not-a-controlled-case", "--repetitions", "3"]
+        )
+
+    assert error.value.code == 2
+
+
 def test_cli_accepts_a_live_case_id_without_executing_it() -> None:
     options = build_parser().parse_args(
         ["case", LIVE_CASE_IDS[0], "--tier", "live"]
