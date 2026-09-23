@@ -2232,9 +2232,9 @@ def review_unavailable(error: Exception, *, max_tokens: int) -> ResearchError:
         agent_name=CRITIC_NAME,
         error_type="critic_review_unavailable",
         message=(
-            "The report was never judged: both review calls were truncated by "
-            "the output limit, so this run publishes its report unscored "
-            "rather than ending."
+            "The report was never judged: the review call was truncated by the "
+            "output limit on both attempts, so this run publishes its report "
+            "unscored rather than ending."
         ),
         recoverable=True,
         details=agent_provider_failure_details(
@@ -2671,69 +2671,89 @@ class CriticAgent(BaseAgent[Critique]):
                 False,
             )
 
-        try:
-            draft = await self._complete_review(
-                critique_repair_messages(task, error, run)
-            )
-            critique, reason = build_critique(
-                draft,
-                iteration=task.iteration,
-                max_iterations=task.max_iterations,
-                packet=packet,
-            )
-        except CritiqueContractViolation as violation:
-            # The repair arrived and still broke the contract: one repair is
-            # the whole allowance, so this is an explicit failed review.
-            return self._exhausted_review(
-                task,
-                [*diagnostics, *reply_diagnostics(violation)],
-                fingerprint=reviewed_fingerprint,
-                extra=[],
-            )
-        except ValidationError as failure:
-            wrapped = schema_error_from_validation(failure)
-            return self._exhausted_review(
-                task,
-                [*diagnostics, *reply_diagnostics(wrapped)],
-                fingerprint=reviewed_fingerprint,
-                extra=[],
-            )
-        except ProviderError as failure:
-            # The repair itself can fail two ways: the second reply was
-            # malformed too, or the provider went away mid-repair. Both mean no
-            # review exists, and both are recorded: the bounded schema record
-            # (with every attempt's diagnostics) always, and the provider
-            # failure when that is what happened, so the ledger does not blame
-            # the schema for an outage.
-            repair_diagnostics = (
-                [*diagnostics, *reply_diagnostics(failure)]
-                if isinstance(failure, StructuredOutputError)
-                else list(diagnostics)
-            )
-            extra = (
-                []
-                if isinstance(failure, StructuredOutputError)
-                else [critique_provider_error(failure)]
-            )
-            return self._exhausted_review(
-                task,
-                repair_diagnostics,
-                fingerprint=reviewed_fingerprint,
-                extra=extra,
-            )
-
-        return (
-            critique,
-            reason,
-            [
-                critique_repaired(
-                    diagnostics,
-                    attempts=CRITIC_REVIEW_ATTEMPTS,
-                    fingerprint=reviewed_fingerprint,
+        repair_messages = critique_repair_messages(task, error, run)
+        truncations: list[ProviderOutputLimitError] = []
+        for position, effort in enumerate(REVIEW_ATTEMPT_EFFORTS):
+            last_attempt = position + 1 == len(REVIEW_ATTEMPT_EFFORTS)
+            try:
+                draft = await self._complete_review(
+                    repair_messages, reasoning_effort=effort
                 )
-            ],
-            False,
-        )
+                critique, reason = build_critique(
+                    draft,
+                    iteration=task.iteration,
+                    max_iterations=task.max_iterations,
+                    packet=packet,
+                )
+            except CritiqueContractViolation as violation:
+                # The repair arrived and still broke the contract: one repair is
+                # the whole allowance, so this is an explicit failed review.
+                return self._exhausted_review(
+                    task,
+                    [*diagnostics, *reply_diagnostics(violation)],
+                    fingerprint=reviewed_fingerprint,
+                    extra=self._retry_records(truncations, "answered"),
+                )
+            except ValidationError as failure:
+                wrapped = schema_error_from_validation(failure)
+                return self._exhausted_review(
+                    task,
+                    [*diagnostics, *reply_diagnostics(wrapped)],
+                    fingerprint=reviewed_fingerprint,
+                    extra=self._retry_records(truncations, "answered"),
+                )
+            except ProviderOutputLimitError as failure:
+                # The same rule as the review call, one request deeper: the
+                # repair carries the packet *and* the findings, so it is if
+                # anything likelier to truncate. One retry under the same cap,
+                # and a second truncation leaves the run without a critique
+                # rather than with a failed one.
+                truncations.append(failure)
+                if last_attempt:
+                    return self._unavailable_review(task, truncations)
+                continue
+            except ProviderError as failure:
+                # The repair itself can fail two ways: the second reply was
+                # malformed too, or the provider went away mid-repair. Both mean
+                # no review exists, and both are recorded: the bounded schema
+                # record (with every attempt's diagnostics) always, and the
+                # provider failure when that is what happened, so the ledger
+                # does not blame the schema for an outage. An outage keeps this
+                # path on either attempt: a provider that is down is not a
+                # request that needs re-asking.
+                repair_diagnostics = (
+                    [*diagnostics, *reply_diagnostics(failure)]
+                    if isinstance(failure, StructuredOutputError)
+                    else list(diagnostics)
+                )
+                extra = (
+                    self._retry_records(truncations, "answered")
+                    if isinstance(failure, StructuredOutputError)
+                    else [
+                        *self._retry_records(truncations, "answered"),
+                        critique_provider_error(failure),
+                    ]
+                )
+                return self._exhausted_review(
+                    task,
+                    repair_diagnostics,
+                    fingerprint=reviewed_fingerprint,
+                    extra=extra,
+                )
+            return (
+                critique,
+                reason,
+                [
+                    *self._retry_records(truncations, "answered"),
+                    critique_repaired(
+                        diagnostics,
+                        attempts=CRITIC_REVIEW_ATTEMPTS,
+                        fingerprint=reviewed_fingerprint,
+                    ),
+                ],
+                False,
+            )
+        raise AssertionError("a repair attempt must produce a review or a route")
 
     def _exhausted_review(
         self,

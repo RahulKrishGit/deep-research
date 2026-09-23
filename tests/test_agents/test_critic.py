@@ -1800,6 +1800,114 @@ async def test_a_repaired_truncation_retry_keeps_the_repair_allowance(
 
 
 @pytest.mark.asyncio
+async def test_a_truncated_repair_is_re_asked_once_at_a_high_effort(
+    tracker: Tracker,
+) -> None:
+    """The output-limit rule one call deeper: the repair gets the same retry.
+
+    The repair request is the longest review request the run makes — it carries
+    the packet *and* the findings — so a truncation there is at least as likely
+    as the one that ended the live run. It is re-asked once under the same
+    output budget at the higher-answer effort, and the review then stands.
+    """
+    completer = ScriptedCompleter(
+        outputs=[_schema_error("missing"), _output_limit_error(), _draft(score=6)]
+    )
+    agent = _critic(tracker, completer)
+    cap = agent.config.critic_review_max_tokens
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == ["CritiqueDraft"] * 3
+    assert completer.budgets == [cap, cap, cap]
+    assert completer.efforts == [None, None, "high"]
+    critique = outcome.result
+    assert critique is not None
+    assert critique.review_status == "reviewed"
+    assert critique.score == 6
+    assert [error.error_type for error in outcome.errors] == [
+        "critic_review_output_limit_retry",
+        "critic_review_repaired",
+    ]
+    assert outcome.errors[0].recoverable is True
+
+
+@pytest.mark.asyncio
+async def test_a_twice_truncated_repair_leaves_the_report_unjudged(
+    tracker: Tracker,
+) -> None:
+    """A repair that truncates twice degrades exactly as the review does.
+
+    No critique exists after it, so the run publishes its report unscored
+    rather than ending: the same absence, the same records, and the same
+    refusal to accept an unreviewed report.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            _schema_error("missing"),
+            _output_limit_error(),
+            _output_limit_error(),
+        ]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == ["CritiqueDraft"] * 3
+    assert completer.efforts == [None, None, "high"]
+    assert outcome.result is None
+    assert outcome.state_update["critique"] is None
+    assert outcome.react.stop_reason == "provider_error"
+    assert [error.error_type for error in outcome.errors] == [
+        "critic_review_output_limit_retry",
+        "critic_review_unavailable",
+    ]
+    assert all(error.recoverable for error in outcome.errors)
+    assert outcome.errors[0].details["outcome"] == "truncated"
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_review_repair_is_re_asked_before_it_degrades(
+    tracker: Tracker,
+) -> None:
+    """A truncated review whose retry is malformed still gets its repair.
+
+    The two allowances are independent: the output-limit retry is one more
+    attempt at the reply, and a reply the contract refuses is what the repair
+    exists for. Four calls, in that order, and the review still stands.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            _output_limit_error(),
+            {"not": "a draft"},
+            _output_limit_error(),
+            _draft(score=7),
+        ]
+    )
+    agent = _critic(tracker, completer)
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(_packet_state())
+
+    assert [call[0] for call in completer.calls] == ["CritiqueDraft"] * 4
+    assert completer.efforts == [None, "high", None, "high"]
+    critique = outcome.result
+    assert critique is not None
+    assert critique.score == 7
+    assert [error.error_type for error in outcome.errors] == [
+        "critic_review_output_limit_retry",
+        "critic_review_output_limit_retry",
+        "critic_review_repaired",
+    ]
+    assert [error.details["outcome"] for error in outcome.errors[:2]] == [
+        "answered",
+        "answered",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_search_snippet_can_never_appear_as_verification_evidence(
     tracker: Tracker,
 ) -> None:

@@ -255,7 +255,7 @@ from deep_research.utils.config import (
 # edited; the module source is what the fingerprint hashes, so a routing fix
 # that lives in ``critic.py`` moves a value whose name implies a prompt change
 # — the same false positive the researcher's first re-pin records below.
-CRITIC_PROMPT_FINGERPRINT = "99e1ca09d28e"
+CRITIC_PROMPT_FINGERPRINT = "8207599d7f6c"
 
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
@@ -856,14 +856,19 @@ CRITIC_PROMPT_FINGERPRINT = "99e1ca09d28e"
 # once at ``high`` under the same cap, and a second truncation leaves the run
 # without a critique instead of ending it. Module source only — no prompt
 # string was edited and the shared ``agents.prompts`` library was not touched,
-# which the other five pins and the judge prove.
+# which the other five pins and the judge prove. The same pass then moved it a
+# second time, ``99e1ca09d28e`` -> ``8207599d7f6c``, when the Critic's one
+# repair got the same one-retry rule: the repair request is the longest review
+# request the run makes, and a truncation there now degrades instead of ending
+# the run. Module source only, again — no prompt string edited, the other five
+# pins and the judge unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "062766ba4600",
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "340b8267dbe9",
     "synthesizer": "a41d1f86be3b",
-    "critic": "99e1ca09d28e",
+    "critic": "8207599d7f6c",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
@@ -1365,7 +1370,7 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
     } == {
         "source_evaluator": "ad9e2afac12c",
         "synthesizer": "a41d1f86be3b",
-        "critic": "99e1ca09d28e",
+        "critic": "8207599d7f6c",
     }
     assert agent_prompt_fingerprint("planner") not in {
         "7d0282b16bc5",
@@ -1504,7 +1509,7 @@ def test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text() -
     pre_target_view = "2c80a78040b9"
 
     assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
-    assert agent_prompt_fingerprint("critic") == "99e1ca09d28e"
+    assert agent_prompt_fingerprint("critic") == "8207599d7f6c"
     assert agent_prompt_fingerprint("critic") != pre_target_view
     assert {
         name: agent_prompt_fingerprint(name)
