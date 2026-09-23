@@ -2119,7 +2119,9 @@ def _dimensions_are_checkable_passes(
         set(target.required_dimensions)
         <= set(
             answered_required_dimensions(
-                target.required_dimensions, (_TARGET_DIMENSION_PROBE,)
+                target.required_dimensions,
+                (_TARGET_DIMENSION_PROBE,),
+                match_qualifiers=False,
             )
         )
         for target in targets

@@ -53,6 +53,7 @@ from deep_research.utils.types import (
     EvidenceUnit,
     ResearchState,
     SubjectState,
+    qualifier_matches_requirement,
 )
 
 __all__ = [
@@ -2014,12 +2015,20 @@ def _geography_for(
     that names one country). A clause with none of them states no geography,
     and this contract does not invent one.
     """
-    named = _first_group(_GEOGRAPHY, clause)
+    fact_start = _reported_clause_start(clause)
+    fact = clause[fact_start:]
+    named = _first_group(_GEOGRAPHY, fact)
     if named:
         return _canonical_place(named)
-    if _alias_names_the_clause(clause, issuer=issuer):
+    if _alias_names_the_clause(fact, issuer=issuer):
         return "United States"
-    if claim_geography and _NATION_ANAPHOR.search(clause):
+    # A leading locative qualifies the reported fact; a locative in a source
+    # title or attribution does not. Require the opening place to end at a comma.
+    prefix = clause[:fact_start].strip()
+    leading = _GEOGRAPHY.match(prefix[:1].lower() + prefix[1:])
+    if leading and prefix[leading.end():].lstrip().startswith(","):
+        return _canonical_place(leading.group("geography"))
+    if claim_geography and _NATION_ANAPHOR.search(fact):
         return claim_geography
     return ""
 
@@ -3087,7 +3096,7 @@ def atom_answers_dimensions(
                 question=question,
                 dimension=dimension,
                 stated_dimensions=stated,
-            ):
+            ) or not qualifier_matches_requirement(atom, required):
                 return False
     return True
 

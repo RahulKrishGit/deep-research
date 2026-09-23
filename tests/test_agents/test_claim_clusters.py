@@ -3524,3 +3524,136 @@ def test_the_runs_four_unbindable_rule_targets_bind_an_ideal_claim() -> None:
             atom_answers_target(atom, target, question=_AUDIT_QUESTION)
             for atom in atoms
         ), target.target_id
+
+
+def _battery_binding_target(
+    *,
+    year: int = 2024,
+    unit: str = "MW",
+    publisher: str = "national generator-inventory dataset",
+) -> EvidenceTarget:
+    return EvidenceTarget(
+        target_id="battery-additions",
+        coverage_id="battery",
+        question=(
+            f"How much U.S. grid-scale battery storage capacity was added in "
+            f"{year}, in {unit}?"
+        ),
+        required_dimensions=[
+            f"measure: grid-scale battery storage capacity added, in {unit}",
+            f"period: calendar year {year}",
+            "geography: United States",
+            f"source: {publisher}",
+        ],
+        required=True,
+        critical=True,
+        support_policy="primary_attribution",
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "EIA reported that generators in the United States added 10.4 GW "
+            "of grid-scale battery storage capacity in 2024.",
+            True,
+        ),
+        (
+            "An EIA Today in Energy article based on the December 2024 "
+            "Preliminary Monthly Electric Generator Inventory stated that "
+            "U.S. power providers added 10.3 GW of new battery storage "
+            "capacity in 2024.",
+            True,
+        ),
+        (
+            "In the United States, EIA reported that generators added 10.4 GW "
+            "of grid-scale battery storage capacity in 2024.",
+            True,
+        ),
+        (
+            "EIA reported that developers commissioned 10.4 GW of grid-scale "
+            "battery storage capacity in the United States in 2024.",
+            True,
+        ),
+        (
+            "EIA forecast that 18.2 GW of grid-scale battery storage capacity "
+            "would be added in the United States in 2025.",
+            False,
+        ),
+        (
+            "EIA reported that generators in the United States added 10.4 GWh "
+            "of grid-scale battery storage energy capacity in 2024.",
+            False,
+        ),
+        (
+            "EIA reported that developers in Texas added 7 GW of grid-scale "
+            "battery storage capacity in 2024.",
+            False,
+        ),
+        (
+            "EIA reported that 64 GW of all generating capacity was added in "
+            "the United States in 2024.",
+            False,
+        ),
+        (
+            "EIA reported that cumulative grid-scale battery storage capacity "
+            "reached 26 GW in the United States in 2024.",
+            False,
+        ),
+    ],
+)
+def test_a_target_binds_only_its_own_measure_period_and_place(
+    text: str, expected: bool
+) -> None:
+    target = _battery_binding_target()
+    atoms = extract_text_atoms(text)
+    assert any(
+        atom_answers_target(atom, target, question=target.question)
+        for atom in atoms
+    ) is expected
+
+
+def test_a_government_figure_does_not_answer_an_independent_publisher_target() -> None:
+    target = _battery_binding_target(
+        publisher="non-governmental market-research publication distinct from the government series"
+    )
+    government = extract_text_atoms(
+        "EIA reported that generators in the United States added 10.4 GW "
+        "of grid-scale battery storage capacity in 2024."
+    )
+    independent = extract_text_atoms(
+        "Wood Mackenzie reported that generators in the United States added "
+        "10.4 GW of grid-scale battery storage capacity in 2024."
+    )
+    assert not any(
+        atom_answers_target(atom, target, question=target.question)
+        for atom in government
+    )
+    industry_target = _battery_binding_target(
+        publisher=(
+            "an industry or market-research forecast publication distinct "
+            "from the government outlook"
+        )
+    )
+    assert not any(
+        atom_answers_target(atom, industry_target, question=industry_target.question)
+        for atom in government
+    )
+    assert any(
+        atom_answers_target(atom, target, question=target.question)
+        for atom in independent
+    )
+    federal_target = _battery_binding_target(publisher="federal agency")
+    federal = extract_text_atoms(
+        "EPA reported that generators in the United States added 10.4 GW "
+        "of grid-scale battery storage capacity in 2024."
+    )
+    assert any(
+        atom_answers_target(atom, federal_target, question=federal_target.question)
+        for atom in federal
+    )
+    assert not any(
+        atom_answers_target(atom, target, question=target.question)
+        for atom in federal
+    )

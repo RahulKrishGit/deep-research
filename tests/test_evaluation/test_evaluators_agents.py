@@ -926,6 +926,22 @@ def test_one_uncreditable_dimension_makes_the_obligation_uncheckable(
     )
 
 
+def test_an_explicit_year_and_unit_are_structurally_checkable(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """A plan is valid even when a generic probe uses a different year and unit."""
+    output = scoped_target_output.with_target_dimensions(
+        [
+            "measure: grid-scale battery storage capacity added, in MW",
+            "period: calendar year 2024",
+        ]
+    )
+
+    assert metric_score(
+        output, scoped_targets_case, "dimensions_are_checkable"
+    ) == 1.0
+
+
 def test_a_vague_dimension_scores_checkability_and_vagueness_zero(
     scoped_targets_case, scoped_target_output
 ) -> None:

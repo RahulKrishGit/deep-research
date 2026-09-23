@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from datetime import datetime, timezone
 from math import isfinite
+import re
 from typing import Annotated, Literal, TypeAlias, TypedDict
 from urllib.parse import urlsplit, urlunsplit
 
@@ -1987,6 +1988,84 @@ _DIMENSION_SIGNALS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     ),
 )
 
+_POWER_UNIT = re.compile(r"\b(?:[kmg]w|(?:kilo|mega|giga)watts?)\b", re.I)
+_ENERGY_UNIT = re.compile(
+    r"\b(?:[kmg]wh|(?:kilo|mega|giga)watt[\s-]?hours?)\b", re.I
+)
+_YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+_GOVERNMENT_ISSUER = re.compile(
+    r"\b(?:EIA|NREL|DOE|EPA|NOAA|USGS|USDA|BLS|"
+    r"Energy Information Administration|Department of Energy)\b", re.I
+)
+_ADDITION = re.compile(
+    r"\b(?:add(?:ed|itions?)?|new|install(?:ed|ations?)?|"
+    r"commission(?:ed|ing)?|deploy(?:ed|ment)?|"
+    r"bring|brought|come|came|enter(?:ed)?)\b", re.I
+)
+_INCLUSION_RULE = re.compile(
+    r"\b(?:includ\w*|exclud\w*|count\w*|omit\w*|"
+    r"limit\w*|inside|outside)\b", re.I
+)
+
+
+def qualifier_matches_requirement(
+    proposition: AtomicProposition, requirement: str
+) -> bool:
+    """Check explicit qualifier values, not just the presence of a field."""
+    kind, separator, detail = requirement.casefold().partition(":")
+    if not separator:
+        return True
+    detail = detail.strip()
+    if "period" in kind or "year" in kind:
+        years = set(_YEAR.findall(detail))
+        if years and not years.intersection(_YEAR.findall(proposition.observation_period)):
+            return False
+    if "geography" in kind or "country" in kind:
+        if re.search(r"\bunited states\b|\bu\.?s\.?\b", detail, re.I):
+            if proposition.geography.casefold() not in {
+                "united states", "u.s.", "us", "usa"
+            }:
+                return False
+    if "source" in kind or "publisher" in kind or "issuer" in kind:
+        government = _GOVERNMENT_ISSUER.search(proposition.attribution) is not None
+        independent = (
+            "non-government" in detail
+            or "independent publisher" in detail
+            or ("distinct" in detail and "government" in detail)
+        )
+        if independent and government:
+            return False
+        if (
+            not independent
+            and ("federal" in detail or "government" in detail or "agency" in detail)
+            and not government
+        ):
+            return False
+    if "measure" in kind or "capacity" in kind or "quantity" in kind:
+        wanted = (
+            "energy" if _ENERGY_UNIT.search(detail) else
+            "power" if _POWER_UNIT.search(detail) else ""
+        )
+        if wanted:
+            actual = (
+                "energy" if _ENERGY_UNIT.search(proposition.unit) else
+                "power" if _POWER_UNIT.search(proposition.unit) else ""
+            )
+            if actual != wanted:
+                return False
+        if "battery" in detail and "battery" not in proposition.text.casefold():
+            return False
+        if "storage" in detail and "storage" not in proposition.text.casefold():
+            return False
+        if "add" in detail and _ADDITION.search(proposition.text) is None:
+            return False
+        if (
+            ("inclusion" in detail or "exclusion" in detail or "counting" in detail)
+            and _INCLUSION_RULE.search(proposition.text) is None
+        ):
+            return False
+    return True
+
 
 def answered_atom_dimensions(
     propositions: Sequence[AtomicProposition],
@@ -2010,6 +2089,8 @@ def answered_atom_dimensions(
 def answered_required_dimensions(
     dimensions: Sequence[str],
     propositions: Sequence[AtomicProposition],
+    *,
+    match_qualifiers: bool = True,
 ) -> list[str]:
     """The required dimensions this recorded evidence actually carries.
 
@@ -2019,6 +2100,10 @@ def answered_required_dimensions(
     """
     evidenced = answered_atom_dimensions(propositions)
     answered: list[str] = []
+    # The planner's measure vocabulary distinguishes a numeric quantity from
+    # a qualitative rule. Resolve it at use time: claim_clusters depends on
+    # these types, so a module-level import would create a cycle.
+    from deep_research.agents.claim_clusters import checkable_dimensions  # noqa: PLC0415
     for dimension in dimensions:
         tokens = {
             token.strip(".,:;()").casefold()
@@ -2026,9 +2111,30 @@ def answered_required_dimensions(
         }
         if not tokens:
             continue
+        if dimension.casefold().startswith("measure:"):
+            required = checkable_dimensions(dimension)
+            field = "subject" if required == ("assertion",) else (
+                "value" if required == ("value",) else ""
+            )
+            if field and any(
+                getattr(atom, field)
+                and (
+                    not match_qualifiers
+                    or qualifier_matches_requirement(atom, dimension)
+                )
+                for atom in propositions
+            ):
+                answered.append(dimension)
+            continue
         for signals, fields in _DIMENSION_SIGNALS:
             if tokens & set(signals) and any(
                 name in evidenced for name in fields
+            ) and (
+                not match_qualifiers
+                or any(
+                    qualifier_matches_requirement(atom, dimension)
+                    for atom in propositions
+                )
             ):
                 if dimension not in answered:
                     answered.append(dimension)

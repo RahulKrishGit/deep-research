@@ -1179,3 +1179,71 @@ def test_graph_iteration_cannot_advance_past_maximum() -> None:
 
     with pytest.raises(ValueError, match="max_iterations"):
         advance_research_iteration(state)
+
+
+@pytest.mark.parametrize(
+    ("text", "predicate", "expected"),
+    [
+        (
+            "According to EIA, behind-the-meter storage is excluded from the "
+            "reported utility-scale capacity total in the United States for 2024.",
+            "excludes",
+            True,
+        ),
+        (
+            "According to EIA, behind-the-meter storage expanded in the "
+            "United States in 2024.",
+            "increases_by",
+            False,
+        ),
+    ],
+)
+def test_an_attributed_qualitative_rule_answers_its_required_target(
+    text: str, predicate: str, expected: bool
+) -> None:
+    """Only a checked inclusion rule, not growth, answers that obligation."""
+    requirement = (
+        "measure: inclusion or exclusion of behind-the-meter storage "
+        "in the reported total"
+    )
+    target = EvidenceTarget(
+        target_id="target-01",
+        coverage_id="topic-01",
+        question="Does the U.S. grid-scale total include behind-the-meter storage?",
+        required_dimensions=[
+            requirement,
+            "period: calendar year 2024",
+            "geography: United States",
+            "source: the publisher's methodology",
+        ],
+        required=True,
+        critical=True,
+        support_policy="primary_attribution",
+    )
+    checked = attributed_claim(text).model_copy(
+        update={"cluster_id": "cluster-01", "target_ids": [target.target_id]}
+    )
+    recorded = cluster(
+        "cluster-01",
+        text=text,
+        subject="behind-the-meter storage",
+        predicate=predicate,
+        observation_period="2024",
+        geography="United States",
+        attribution="EIA",
+    )
+    row = derive_statement(
+        statement_id="S1",
+        text=text,
+        claims=[checked],
+        clusters={"cluster-01": recorded},
+        evidence={},
+        dimensions_by_target={target.target_id: target.required_dimensions},
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question=target.question,
+        composition=composition(statements=[row], claims=[checked]),
+    )
+
+    assert target_is_answered(state, target) is expected
