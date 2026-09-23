@@ -1534,6 +1534,13 @@ def _calibration_candidate(
             contradictions=[],
             verification_evidence=passages,
             evidence_status=spec.badge,
+            # The cluster this claim joined, stamped the way the clustering
+            # step stamps it. The coverage gate resolves a statement's support
+            # through the claim's own cluster link (and the registry's member
+            # ids beside it), so a candidate whose claims named no cluster is
+            # a shape no run produces — and every obligation in it reads as
+            # unanswered however complete the report is.
+            cluster_id=CALIBRATION_CLUSTER_IDS[key],
         )
         claims_out.append(built)
         clusters[CALIBRATION_CLUSTER_IDS[key]] = _cluster_for(spec, built.claim_id)
