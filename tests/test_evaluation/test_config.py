@@ -801,11 +801,21 @@ CRITIC_PROMPT_FINGERPRINT = "aedce1ccca9e"
 # moved, which
 # ``test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text``
 # asserts rather than this comment.
+# The read-identity pass moved the fact checker alone, ``00e2229ad4fa`` ->
+# ``340b8267dbe9``: a body the run already holds is now admitted under the
+# description it was recorded with, so a re-read of one page under another
+# spelling of its URL (``www.`` is normalized away in the registry) cannot
+# restate one read identity and have the node's whole state update refused.
+# Module source only — ``acquisition.py`` holds the rule and is not one of the
+# six pinned modules, and the shared ``agents.prompts`` library was not edited,
+# which the other five pins and the judge prove.
+# ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``
+# asserts rather than this comment.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "d2d7dec17bcd",
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
-    "fact_checker": "00e2229ad4fa",
+    "fact_checker": "340b8267dbe9",
     "synthesizer": "a41d1f86be3b",
     "critic": "aedce1ccca9e",
 }
@@ -1291,10 +1301,13 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
     edits: the values below are live pins, so they follow the live fingerprint,
     and the move is attributed, with the same evidence, in
     ``test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text``.
+    ``fact_checker`` was re-pointed once more by the read-identity pass
+    (``00e2229ad4fa`` -> ``340b8267dbe9``), which is attributed in
+    ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``.
     """
     assert agent_prompt_fingerprint("planner") == "d2d7dec17bcd"
     assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
-    assert agent_prompt_fingerprint("fact_checker") == "00e2229ad4fa"
+    assert agent_prompt_fingerprint("fact_checker") == "340b8267dbe9"
     # The other three target pins are untouched by this step, and the judge
     # fingerprint with them: no prompt text moved anywhere. The critic's value
     # is the one the later target-view pass recorded, which is attributed and
@@ -1334,13 +1347,18 @@ def test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text() -> 
     prompt text moved is the pins that did not: all six hash the shared
     ``agents.prompts`` library, and the four agents whose source this pass left
     alone are unchanged, as is the judge.
+
+    The Fact Checker's literal below was re-pointed once more by the
+    read-identity pass (``00e2229ad4fa`` -> ``340b8267dbe9``): it is a live pin,
+    so it follows the live fingerprint, and that move is attributed in
+    ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``.
     """
     pre_merge_conditions = {
         "fact_checker": "53c371093ae9",
         "synthesizer": "26372cb8f056",
     }
     moved = {
-        "fact_checker": "00e2229ad4fa",
+        "fact_checker": "340b8267dbe9",
         "synthesizer": "a41d1f86be3b",
     }
 
@@ -1361,6 +1379,49 @@ def test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text() -> 
         name: value
         for name, value in PINNED_TARGET_PROMPT_FINGERPRINTS.items()
         if name not in moved
+    }
+    assert PINNED_JUDGE_PROMPT_FINGERPRINT == judge_prompt_fingerprint(
+        rubric_version=1
+    )
+
+
+def test_the_read_identity_repin_is_module_source_drift_not_prompt_text() -> (
+    None
+):
+    """Record why the read-identity pass moved the Fact Checker's fingerprint.
+
+    The edit is structure, in two files and neither of them a prompt module:
+    ``admit_read_result`` now takes the run's recorded reads and admits a body
+    the run already holds under the description it was recorded with, and the
+    Fact Checker's retrieval loop passes its registry. Without it a re-read of
+    one page under another spelling of its URL — ``normalize_source_url``
+    strips ``www.``, so the registry hands the loop a URL its own record does
+    not carry — mints the same read identity with a different
+    ``requested_url``, ``merge_read_records`` refuses one identity carrying two
+    bodies, and the node's whole state update is rejected: the live run died at
+    ``graph.fact_checker`` that way with nothing published.
+
+    ``agent_prompt_fingerprint`` hashes each agent module's own source, so this
+    moves the Fact Checker's value although no instruction changed. The rule
+    lives in ``acquisition.py``, which is not one of the six pinned modules,
+    which is why the other five pins did not move; all six hash the shared
+    ``agents.prompts`` library, and neither it nor the judge moved.
+    """
+    pre_read_identity = "00e2229ad4fa"
+
+    assert agent_prompt_fingerprint("fact_checker") == "340b8267dbe9"
+    assert (
+        PINNED_TARGET_PROMPT_FINGERPRINTS["fact_checker"] == "340b8267dbe9"
+    )
+    assert agent_prompt_fingerprint("fact_checker") != pre_read_identity
+    assert {
+        name: agent_prompt_fingerprint(name)
+        for name in AGENT_NAMES
+        if name != "fact_checker"
+    } == {
+        name: value
+        for name, value in PINNED_TARGET_PROMPT_FINGERPRINTS.items()
+        if name != "fact_checker"
     }
     assert PINNED_JUDGE_PROMPT_FINGERPRINT == judge_prompt_fingerprint(
         rubric_version=1

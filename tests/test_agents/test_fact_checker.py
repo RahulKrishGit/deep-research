@@ -5643,6 +5643,151 @@ async def test_a_handoff_loss_is_dropped_once_the_retrieval_repairs_it(
     assert any(unit.source_url == B_URL for unit in augmented.units)
 
 
+def _reread_agent(state: ResearchState) -> FactCheckerAgent:
+    """A Fact Checker mid-pass over reads the run already holds."""
+    agent = object.__new__(FactCheckerAgent)
+    agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
+    agent._run_reads = dict(state.read_records)
+    agent._run_sources = list(state.evaluated_sources)
+    agent._sub_topics = list(state.sub_topics)
+    agent._session_id = "session-1"
+    agent._passages_per_read = 4
+    agent._new_reads = {}
+    agent._new_evidence = {}
+    agent._new_dispositions = []
+    # The re-read source goes through Task 4's service like any other.
+    agent._provider = ScriptedCompleter(
+        outputs=[
+            SourceScoresDraft(
+                sources=[
+                    SourceScoreDraft(
+                        url=A_URL,
+                        authority_score=0.9,
+                        recency_score=0.9,
+                        relevance_score=0.9,
+                        rationale="Independent and dated.",
+                    )
+                ]
+            )
+        ]
+    )
+    return agent
+
+
+async def _reread_pass(
+    state: ResearchState,
+    agent: FactCheckerAgent,
+    payload: dict[str, str],
+) -> None:
+    """One retrieval step over a body the run already holds."""
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+    packet, _ = FactCheckerAgent._packet_for(
+        agent, state, draft, target_ids=[TASK6_TARGET]
+    )
+    task = ClaimTask(
+        instruction="Verify.",
+        claim=draft,
+        target_ids=[TASK6_TARGET],
+        packet=packet,
+    )
+    await FactCheckerAgent._augment_packet(
+        agent,
+        packet,
+        ReActRun(
+            agent_name="fact_checker",
+            stop_reason="finished",
+            steps=[_tool_step(1, "web_scraper", payload)],
+            tool_calls=1,
+        ),
+        task,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_reread_of_a_recorded_body_keeps_the_recorded_description() -> None:
+    """One read id is described once: a second spelling is not a second body.
+
+    The Fact Checker repairs a handoff loss by reading a document the run
+    already holds, and the URL its loop was handed can be another spelling of
+    that page: the live run fetched
+    ``https://www.eia.gov/todayinenergy/detail.php?id=67925`` for a read the
+    Researcher had recorded as
+    ``https://eia.gov/todayinenergy/detail.php?id=67925``. Both spellings are
+    one body — same reader, same resolved URL, same content — so both mint one
+    ``read_id``, and the two ``requested_url`` values reached
+    ``merge_read_records`` as a rewrite of that identity. The node's whole
+    state update was rejected, so the run published no report at all.
+    """
+    state = _ab_state()
+    agent = _reread_agent(state)
+    reread_url = "https://www.lab-a.test/wind"
+
+    await _reread_pass(
+        state,
+        agent,
+        {
+            "text": A_TEXT,
+            "requested_url": reread_url,
+            "resolved_url": reread_url,
+            "title": "Lab A report",
+        },
+    )
+
+    recorded = next(
+        read for read in state.read_records.values() if read.requested_url == A_URL
+    )
+    assert set(agent._new_reads) == {recorded.read_id}
+    merged = merge_research_state(
+        state,
+        {
+            "read_records": dict(agent._new_reads),
+            "evidence_units": dict(agent._new_evidence),
+        },
+    )
+    # The run's first description of that body stands; the re-read adds none.
+    assert merged.read_records[recorded.read_id].requested_url == A_URL
+    assert len(merged.evidence_units) == len(state.evidence_units)
+
+
+@pytest.mark.asyncio
+async def test_a_reread_may_not_relabel_a_recorded_passage() -> None:
+    """The run's first label for a read id stands for every later admission.
+
+    The other half of the same identity rule, and the failure the Researcher's
+    own policies already hit: a reader that found no title falls back to the
+    URL, so one body read twice carries two labels while minting one evidence
+    identity. ``merge_evidence_units`` refuses two ``source_title`` values for
+    one identity, and the Fact Checker is the admission boundary that had no
+    memory of the recorded label.
+    """
+    state = _ab_state()
+    agent = _reread_agent(state)
+
+    await _reread_pass(
+        state,
+        agent,
+        {
+            "text": A_TEXT,
+            "requested_url": A_URL,
+            "resolved_url": A_URL,
+            "title": "",
+        },
+    )
+
+    merged = merge_research_state(
+        state,
+        {
+            "read_records": dict(agent._new_reads),
+            "evidence_units": dict(agent._new_evidence),
+        },
+    )
+    assert {unit.source_title for unit in merged.evidence_units.values()} == {
+        "Lab A report",
+        "Lab B audit",
+    }
+    assert len(merged.evidence_units) == len(state.evidence_units)
+
+
 def test_a_legacy_contradicted_claim_is_contested() -> None:
     """The legacy badge follows the verdict the passages produced."""
     contradiction = _verdict_draft(

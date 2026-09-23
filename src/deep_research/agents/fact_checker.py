@@ -3114,6 +3114,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 query=task.claim.text,
                 origin="fact_checker",
                 selected_limit=self._passages_per_read,
+                # The run's registry stands for a body it already holds: this
+                # loop's own URLs are the ones the state hands it, so a second
+                # spelling (`www.`), a layout difference, or a reader's
+                # URL-fallback label would otherwise restate one read identity
+                # and have the whole state update refused.
+                recorded_reads=self._run_reads,
             )
             if admission is None:
                 continue

@@ -1133,6 +1133,75 @@ def test_one_read_keeps_one_title_across_two_admissions() -> None:
     }
 
 
+def test_a_reread_of_a_recorded_body_keeps_the_recorded_description() -> None:
+    """One read id is described once: a second spelling is not a rewrite.
+
+    A sub-topic can reach one page by another spelling of its URL — ``www.``
+    is normalized away in the registry, so a body recorded as
+    ``https://agency.example/queue-report`` may be fetched again as
+    ``https://www.agency.example/queue-report``. Both admissions mint one
+    ``read_id``, and ``merge_read_records`` refuses one identity carrying two
+    descriptions, so the recorded one stands and the re-read adds only its own
+    selection.
+    """
+    shared_reads: dict[str, ReadRecord] = {}
+    shared_evidence: dict[str, EvidenceUnit] = {}
+    url = "https://agency.example/queue-report"
+    other_spelling = "https://www.agency.example/queue-report"
+
+    def _admit(spelling: str) -> None:
+        policy = AcquisitionPolicy(
+            state=AcquisitionState(
+                target_id="topic-01",
+                candidate_urls=[spelling],
+                remaining_calls=2,
+            ),
+            session_id="session-1",
+            target_id="topic-01",
+            query="queue delay",
+            reads=shared_reads,
+            evidence=shared_evidence,
+        )
+        policy.after_action(
+            _document_step(
+                ToolResult(
+                    tool_name="web_scraper",
+                    success=True,
+                    data={
+                        "url": spelling,
+                        "requested_url": spelling,
+                        "resolved_url": spelling,
+                        "title": "Queue report",
+                        "text": "Queue delay reached 34 months.",
+                        "extraction_complete": True,
+                    },
+                    latency_ms=0,
+                ),
+                spelling,
+            )
+        )
+
+    _admit(url)
+    state = ResearchState(
+        session_id="session-1",
+        original_question="question",
+        read_records=dict(shared_reads),
+        evidence_units=dict(shared_evidence),
+    )
+    _admit(other_spelling)
+
+    merged = merge_research_state(
+        state,
+        {
+            "read_records": dict(shared_reads),
+            "evidence_units": dict(shared_evidence),
+        },
+    )
+    assert len(merged.read_records) == 1
+    assert {read.requested_url for read in merged.read_records.values()} == {url}
+    assert len(merged.evidence_units) == 1
+
+
 def test_a_selected_passage_is_not_marked_used_by_a_sibling_passage() -> None:
     """Disposition is unit-level: a finding covers its own passage only.
 

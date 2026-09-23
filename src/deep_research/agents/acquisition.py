@@ -267,6 +267,40 @@ class ReadAdmission:
     boundary_audits: dict[str, Any]
 
 
+def _adopt_recorded_read(
+    read: ReadRecord,
+    recorded: Mapping[str, ReadRecord],
+) -> ReadRecord:
+    """Return the run's recorded description of ``read``'s identity, if any.
+
+    A read is identified by its reader, its resolved URL, and its body, so a
+    second read of the same document — another sub-topic's retry, the Fact
+    Checker repairing a handoff loss — mints the same ``read_id``. Three
+    fields sit outside that identity and can still be described two ways: the
+    URL the caller asked for is whatever spelling it held (``www.`` is
+    normalized away, so ``https://www.example.com/page`` and
+    ``https://example.com/page`` are one page with two spellings), the
+    extractor can lay one body out in different chunks, and a reader that
+    found no title falls back to the URL. The shared merge compares all three
+    for one read id and refuses two answers — one identity carrying two bodies
+    is the halt ``EvidenceIdentityConflict`` exists to raise — so the
+    description the run recorded first stands, exactly as the first stored
+    title does for the Researcher's own admissions, and a later admission
+    contributes its selection, its target association, and what it observed
+    rather than a second description of the read.
+    """
+    known = recorded.get(read.read_id)
+    if known is None:
+        return read
+    return read.model_copy(
+        update={
+            "requested_url": known.requested_url,
+            "passages": known.passages,
+            "title": known.title,
+        }
+    )
+
+
 def admit_read_result(
     result: ToolResult,
     *,
@@ -278,8 +312,17 @@ def admit_read_result(
     retrieved_at: str | None = None,
     sequence: int = 0,
     configuration_fingerprint: str = "acquisition-v1",
+    recorded_reads: Mapping[str, ReadRecord] | None = None,
 ) -> ReadAdmission | None:
-    """Admit a read and select exact target-bearing passages from its body."""
+    """Admit a read and select exact target-bearing passages from its body.
+
+    ``recorded_reads`` is the run's read registry. A body the run already
+    holds is admitted under the description it was recorded with — the run's
+    first description of a read id stands — so the selection, the evidence
+    identities, and the deferred locators all describe the run's own copy of
+    that body instead of a restatement of it. A caller that holds no registry
+    passes nothing, which is the first admission of a read.
+    """
     if selected_limit < 1:
         raise ValueError("selected_limit must be at least 1")
     read = build_read_record_from_tool_result(
@@ -290,6 +333,8 @@ def admit_read_result(
     )
     if read is None:
         return None
+    if recorded_reads:
+        read = _adopt_recorded_read(read, recorded_reads)
     target_ids = () if target_id is None else (target_id,)
     selected_locators = select_relevant_passages(
         read.passages, query, selected_limit
@@ -1376,6 +1421,7 @@ class AcquisitionPolicy:
             retrieved_at=self.retrieved_at(),
             sequence=self._next_sequence(),
             configuration_fingerprint=self.configuration_fingerprint,
+            recorded_reads=self.reads,
         )
         if admission is not None:
             read = self._resolve_read_title(admission.read, requested)
