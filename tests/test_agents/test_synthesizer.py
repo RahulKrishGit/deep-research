@@ -3331,6 +3331,141 @@ def test_a_reused_statement_is_recorded_once() -> None:
     assert statement_map.count(f"| {quoted.statement_id} |") == 1
 
 
+def _derived_dimension(
+    text: str, *, period: str, subject: str = "generators"
+) -> str:
+    """The Dimension a factual pass derives for one finding and one period."""
+    claim = _claim(text=text)
+    task = _factual_task(
+        claim=claim,
+        evidence_units={
+            EVIDENCE_ID: _unit(
+                excerpt=f"{text} The agency's release states the same figures."
+            )
+        },
+        claim_clusters={
+            CLUSTER_ID: _fact_cluster(
+                claim,
+                text=text,
+                subject=subject,
+                quantity_noun="",
+                observation_period=period,
+            )
+        },
+    )
+    composition, _ = build_report_composition(
+        task, _factual_draft(summary=text), max_sections=4, limitations=[]
+    )
+    return composition.answer_rows[0].cells[1].text
+
+
+@pytest.mark.parametrize(
+    ("text", "period", "expected"),
+    [
+        # The finding and its year in one clause; the baseline year is in the
+        # clause after the comma, so it cannot take the label.
+        (
+            "Generators added 10.4 GW of new battery storage capacity in the "
+            "United States in 2024, up from 5 GW in 2022.",
+            "2024",
+            "2024",
+        ),
+        # The figure is in the second clause: the first states the baseline
+        # 2024, which is not the year of the projection.
+        (
+            "Up from 10.4 GW in 2024, EIA projected 19.6 GW for 2025.",
+            "2024",
+            "not stated",
+        ),
+        (
+            "Up from 10.4 GW in 2024, EIA projected 19.6 GW for 2025.",
+            "2025",
+            "2025",
+        ),
+        # A period fronted before the figure governs the whole sentence, so it
+        # still labels the row; the traced EIA 19.6 GW row is this shape.
+        (
+            "For 2025 the EIA projected that battery storage capacity growth "
+            "could set a record, with operators reporting plans to add 19.6 GW "
+            "of utility-scale battery storage.",
+            "2025",
+            "2025",
+        ),
+        # The traced row-4 sentence, whose own year is the one it does not name
+        # and which says so itself.
+        (
+            "Clean Edge projected a record-breaking 18.2 GW (18,200 MW) of "
+            "U.S. utility-scale battery storage installations for the year of "
+            "writing, up from 10.3 GW in 2024; the checked evidence does not "
+            "name that year, so this figure cannot be assigned to 2025 from "
+            "the evidence at hand.",
+            "2024",
+            "not stated",
+        ),
+    ],
+)
+def test_a_period_comes_from_the_clause_that_states_the_figure(
+    text: str, period: str, expected: str
+) -> None:
+    """A recorded period labels the row only from the finding's own clause.
+
+    Reading the whole sentence for the year was too conservative — a
+    comparison-shaped finding ("… in 2024, up from 5 GW in 2022") stated its
+    own year and lost it — and reading it anywhere in the sentence was too
+    loose in the other direction: a baseline clause's year ("up from 10.4 GW
+    in 2024") is not the year of the figure the finding is about. The clause
+    that carries the finding's own figure decides both ways, and a period it
+    does not state is "not stated" rather than a year taken from elsewhere.
+    """
+    assert _derived_dimension(text, period=period) == expected
+
+
+def test_a_filled_statement_is_never_given_a_kept_id() -> None:
+    """The fill path must not number a repaired point over a kept record.
+
+    A fixture or a snapshot can arrive with one statement missing, and the
+    fill numbered the replacement from one while ignoring the ids the producer
+    had already validated: the repaired point was given the id of a kept
+    statement, and the composition's one-record-per-id list then hid it from
+    the ledger's statement map and from both review packets.
+    """
+    composition = ReportComposition.model_validate(
+        {
+            "question": "How much battery storage capacity was added in 2024?",
+            "session_id": "session-1",
+            "summary": [
+                {
+                    "text": "Generators added 10.4 GW in 2024.",
+                    "claim_ids": [],
+                    "source_urls": [],
+                    "statement": {
+                        "statement_id": "S001",
+                        "text": "Generators added 10.4 GW in 2024.",
+                        "mode": "context",
+                    },
+                },
+                {
+                    "text": "Operators reported plans to add 19.6 GW in 2025.",
+                    "claim_ids": [],
+                    "source_urls": [],
+                },
+            ],
+        }
+    )
+
+    assert [point.statement_id for point in composition.summary] == [
+        "S001",
+        "S002",
+    ]
+    assert [statement.statement_id for statement in composition.statements] == [
+        "S001",
+        "S002",
+    ]
+    filled = composition.summary[1].statement
+    assert filled is not None
+    assert filled.text == "Operators reported plans to add 19.6 GW in 2025."
+
+
 def test_a_new_factual_assertion_is_returned_to_the_fact_checker() -> None:
     draft = ReportDraft(
         executive_summary=[],

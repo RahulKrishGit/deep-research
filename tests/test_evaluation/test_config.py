@@ -897,7 +897,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "researcher": "9a5725dfbd0c",
     "source_evaluator": "7a1a4f49d6e7",
     "fact_checker": "4d5e0b507004",
-    "synthesizer": "51ffa46f3cff",
+    "synthesizer": "1d89e3e964cf",
     "critic": "ca830cca71d6",
 }
 
@@ -1324,7 +1324,7 @@ def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None
         "report-probe-0-evidence.md"
     )
     assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
-    assert agent_prompt_fingerprint("synthesizer") == "51ffa46f3cff"
+    assert agent_prompt_fingerprint("synthesizer") == "1d89e3e964cf"
     assert agent_prompt_fingerprint("synthesizer") != pre_task_11
 
 
@@ -1399,7 +1399,7 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
         for name in ("source_evaluator", "synthesizer", "critic")
     } == {
         "source_evaluator": "7a1a4f49d6e7",
-        "synthesizer": "51ffa46f3cff",
+        "synthesizer": "1d89e3e964cf",
         "critic": "ca830cca71d6",
     }
     assert agent_prompt_fingerprint("planner") not in {
@@ -1440,7 +1440,7 @@ def test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text() -> 
     }
     moved = {
         "fact_checker": "4d5e0b507004",
-        "synthesizer": "51ffa46f3cff",
+        "synthesizer": "1d89e3e964cf",
     }
 
     assert {

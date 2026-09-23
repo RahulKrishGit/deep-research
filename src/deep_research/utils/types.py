@@ -2494,11 +2494,20 @@ def _fill_statement_map(composition: ReportComposition) -> None:
     a record the Synthesizer validated would silently discard the mode,
     derivation, and dispositions it recorded.
     """
+    # The ids already kept. The counters used to start at one and ignore them,
+    # so a filled statement was handed the id of a kept record — and the
+    # composition's one-record-per-id statement list then hid the filled record
+    # from the ledger's statement map and from both review packets.
+    used = {statement.statement_id for statement in composition.statements}
     counters = {"S": 0, "C": 0, "F": 0, "A": 0, "U": 0}
 
     def next_id(prefix: str) -> str:
-        counters[prefix] += 1
-        return f"{prefix}{counters[prefix]:03d}"
+        while True:
+            counters[prefix] += 1
+            candidate = f"{prefix}{counters[prefix]:03d}"
+            if candidate not in used:
+                used.add(candidate)
+                return candidate
 
     def fill_point(point: ReportPoint, prefix: str) -> ReportPoint:
         if point.statement is not None:

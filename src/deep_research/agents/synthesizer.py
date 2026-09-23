@@ -2848,6 +2848,25 @@ _UNNAMED_PERIOD = re.compile(
     r"(?:year|calendar year|period|date)\b(?!\s*,?\s*(?:19|20)\d{2})",
     re.IGNORECASE,
 )
+# A clause that states the baseline a figure is measured against rather than
+# the figure itself. "up from 10.4 GW in 2024" answers what the finding rose
+# from, so the year in it is not the year of the finding's own figure.
+_COMPARISON_CLAUSE = re.compile(
+    r"^\s*(?:up|down|rising|falling|increasing|decreasing)?\s*"
+    r"(?:from|compared\s+(?:with|to)|versus|vs\.?)\b",
+    re.IGNORECASE,
+)
+# What separates one *period* clause from the next: a sentence terminator, and
+# a comma that is not inside a figure. Deliberately coarser than
+# ``_CLAUSE_SPLIT``, which is written for the modality and scope checks: that
+# one cuts a figure from its own unit ("10,400 MW") and from its own period
+# ("10.4 GW (10,400 MW) of … in 2024"), which is the pair this test has to keep
+# together, and it would split the traced summary's "one EIA figure for 2024:
+# generators added 10.4 GW … in 2024" away from its own year.
+_PERIOD_CLAUSE_SPLIT = re.compile(r"(?<=[.;!?])\s+|,(?!\d)\s*")
+# A sentence boundary, so a year in an earlier sentence cannot date this one's
+# figure.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.;!?])\s+")
 
 
 def _selected_claims(
@@ -2922,17 +2941,57 @@ def _recorded_label_atom(
     return ""
 
 
-def _states_the_period(text: str, period: str) -> bool:
-    """True when ``text`` states ``period`` as the one year it is about.
+def _period_span(text: str) -> str:
+    """The span of ``text`` whose years may date the finding's own figure.
 
-    Both conditions are read from the finding's own words. The year the atom
-    records has to be the only year the text states — a text stating two does
-    not say which one it means — and the text has to leave no other period
-    unnamed: "for the year of writing" is a period the sentence is *about* and
-    does not state, so a year the sentence uses for something else (the count
-    the figure rose from) is not this fact's date.
+    From the start of the sentence that carries the finding's figure through
+    the end of the clause that carries it, with every comparison clause left
+    out. Two shapes decide the boundaries. A year *after* that clause dates
+    something else in the sentence ("projected 19.6 GW for 2025, after adding
+    10.4 GW in 2024"), and a year inside a comparison clause states what the
+    figure rose from ("up from 10.4 GW in 2024") — neither is this fact's
+    period. A period fronted before the figure ("For 2025 the EIA projected …
+    19.6 GW") is inside the span, which is what lets it label the row.
+
+    The split is the period-clause one (``_PERIOD_CLAUSE_SPLIT``) rather than
+    the grammatical one the modality checks use: the year that dates a figure
+    is separated from it by no more than a comma outside the figure itself,
+    and ``_CLAUSE_SPLIT`` would cut the traced "one EIA figure for 2024:
+    generators added 10.4 GW … in 2024" away from its own year.
     """
-    if set(_YEAR.findall(text)) != {period.strip()}:
+    for sentence in _SENTENCE_SPLIT.split(text):
+        span: list[str] = []
+        for clause in _PERIOD_CLAUSE_SPLIT.split(sentence):
+            if _COMPARISON_CLAUSE.match(clause):
+                continue
+            span.append(clause)
+            if any(
+                token != _figure_number(token)
+                for token in _significant_figures(clause)
+            ):
+                return " ".join(span)
+    return ""
+
+
+def _states_the_period(text: str, period: str) -> bool:
+    """True when ``text`` states ``period`` as the year of its own figure.
+
+    Two conditions, both read from the finding's own words. Every year the atom
+    records has to be stated in the span that dates the finding's figure
+    (``_period_span``), so a comparison's baseline year is not mistaken for the
+    figure's date — reading the whole sentence was too loose in that direction
+    and reading for "the only year stated" was too strict in the other, because
+    a finding that compares two periods states two years and its own is one of
+    them. And the text has to leave no other period unnamed: "for the year of
+    writing" is a period the sentence is *about* and does not state. A span
+    that states no year at all leaves the column to the next atom, and then to
+    "not stated".
+    """
+    years = set(_YEAR.findall(period))
+    if not years:
+        return False
+    span = _period_span(text)
+    if not span or not years <= set(_YEAR.findall(span)):
         return False
     return _UNNAMED_PERIOD.search(text) is None
 
