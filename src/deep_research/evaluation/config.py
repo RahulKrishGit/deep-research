@@ -151,19 +151,10 @@ ProductionParitySource = Literal["invocation", "configuration"]
 
 @dataclass(frozen=True, slots=True)
 class TargetProfile:
-    """One evaluation target's resolved model, reasoning effort and mode."""
+    """One evaluation target's resolved model and reasoning effort."""
 
     model: str
     reasoning_effort: ReasoningEffort
-    thinking_mode: ThinkingMode
-    """The thinking mode this profile describes.
-
-    Read from the declaration the profile came from: production's own
-    per-agent override when the profile is production's, and the harness's one
-    hard-wired mode when the profile is the evaluation's own — the evaluation
-    block has no thinking knob, so a profile it supplies describes the mode
-    this harness runs.
-    """
     source: TargetProfileSource
 
     @property
@@ -208,7 +199,6 @@ def resolve_target_profile(
         return TargetProfile(
             model=declared.model,
             reasoning_effort=_validated_effort(override),
-            thinking_mode=declared.thinking_mode,
             source="invocation",
         )
     declared = base.model_overrides.get(agent_name)
@@ -217,7 +207,6 @@ def resolve_target_profile(
         return TargetProfile(
             model=resolved.model,
             reasoning_effort=resolved.reasoning_effort,
-            thinking_mode=resolved.thinking_mode,
             source="production",
         )
     return TargetProfile(
@@ -225,7 +214,6 @@ def resolve_target_profile(
         reasoning_effort=resolve_target_effort(
             evaluation, agent_name, override=None
         ),
-        thinking_mode=RUNTIME_THINKING_MODE,
         source="evaluation",
     )
 
@@ -460,14 +448,16 @@ def build_runtime_config(
     # An evaluation-only profile is non-release evidence exactly when it
     # disagrees with what production would run for this agent. Agreement means
     # the experiment is still measuring the shipped configuration even though
-    # the value came from the evaluation block. The thinking mode is compared
-    # first because it alone can turn a profile that *came from* production
-    # into an experiment: the harness executes one hard-wired mode, so a
-    # production declaration naming another one is not a configuration this
-    # run reproduces, and labelling that run as production parity would report
-    # an experiment about the shipped configuration as evidence for it.
+    # the value came from the evaluation block.
+    #
+    # The thinking mode is compared against production's own declaration on
+    # every path, and first: the harness executes one hard-wired mode, so a
+    # production that names another one — on ``llm`` itself, which is where the
+    # field lives, or in a per-agent override — is not a configuration this run
+    # reproduces, and labelling it production parity would report an experiment
+    # about the shipped configuration as evidence for it.
     production = settings.llm.resolve_for(agent_name)
-    experiment_only = profile.thinking_mode != RUNTIME_THINKING_MODE or (
+    experiment_only = production.thinking_mode != RUNTIME_THINKING_MODE or (
         profile.source != "production"
         and (
             profile.model != production.model
