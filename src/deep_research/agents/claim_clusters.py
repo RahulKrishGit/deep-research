@@ -800,6 +800,33 @@ _ABBREVIATED_END = re.compile(
     r")\.?$"
 )
 _NEW_SENTENCE = re.compile(r"^[A-Z]")
+# A sentence is never only a determiner and a dotted initialism. "The U.S.
+# Energy Information Administration reported …" is one sentence whose subject
+# opens with "U.S.", and cutting it there left a junk atom "The U.S" that
+# became the packet's cluster identity and merged claims about three different
+# facts into one (live cycle 08b9b469).
+_INITIALISM_ONLY = re.compile(
+    r"^\s*(?:(?:the|a|an)\s+)?(?:[A-Za-z]\.){2,}$", re.IGNORECASE
+)
+
+# The scale of each SI-prefixed power and energy unit, as (base, exponent).
+# Read only to recognize a document restating one quantity in parentheses
+# ("10.4 GW (10,400 MW)"); the atom keeps the first spelling as written, so no
+# converted value ever reaches a comparison (see :func:`_canonical_unit`).
+_SI_UNIT_SCALE = {
+    "kw": ("w", 3),
+    "mw": ("w", 6),
+    "gw": ("w", 9),
+    "tw": ("w", 12),
+    "kwh": ("wh", 3),
+    "mwh": ("wh", 6),
+    "gwh": ("wh", 9),
+    "twh": ("wh", 12),
+}
+# A restatement may round its converted figure, never change it.
+_RESTATEMENT_TOLERANCE = Decimal("0.005")
+_OPENS_PARENTHESIS = re.compile(r"\s*\(\s*")
+_CLOSES_PARENTHESIS = re.compile(r"\s*\)")
 _NEGATION = re.compile(
     r"\b(?:not|no|never|without|nor|neither|isn't|aren't|wasn't|weren't|"
     r"doesn't|don't|didn't|cannot|can't|fails? to|failed to)\b",
@@ -1520,6 +1547,8 @@ def _sentences(text: str) -> list[str]:
     start = 0
     for match in _SENTENCE_END.finditer(text):
         preceding = text[: match.start()]
+        if _INITIALISM_ONLY.match(text[start : match.start()]):
+            continue
         if _HONORIFIC_END.search(preceding):
             continue
         if _ABBREVIATED_END.search(preceding) and not _NEW_SENTENCE.match(
@@ -1554,24 +1583,56 @@ def _split_clauses(text: str) -> list[str]:
     return cleaned
 
 
+def _restates(
+    clause: str, previous: re.Match[str], current: re.Match[str]
+) -> bool:
+    """True when ``current`` is ``previous`` restated in parentheses.
+
+    Only the form "X u1 (Y u2)" with both units on one SI base (watts or
+    watt-hours) and the same quantity after scaling counts. Two quantities in
+    different bases ("10 GW (40 GWh)"), different values ("10.4 GW (26,000
+    MW)"), or any other arrangement ("18.2 GW, up from 10.3 GW") stay two.
+    """
+    if not _OPENS_PARENTHESIS.fullmatch(clause[previous.end() : current.start()]):
+        return False
+    if not _CLOSES_PARENTHESIS.match(clause[current.end() :]):
+        return False
+    first = _SI_UNIT_SCALE.get(_canonical_unit(previous.group("unit")))
+    second = _SI_UNIT_SCALE.get(_canonical_unit(current.group("unit")))
+    if first is None or second is None or first[0] != second[0]:
+        return False
+    try:
+        left = Decimal(previous.group("value").replace(",", "")).scaleb(first[1])
+        right = Decimal(current.group("value").replace(",", "")).scaleb(second[1])
+    except InvalidOperation:
+        return False
+    if left == 0:
+        return right == 0
+    return abs(left - right) <= abs(left) * _RESTATEMENT_TOLERANCE
+
+
 def _value_and_unit(clause: str, *, period: str) -> tuple[str, str]:
     """The one number and unit this clause states, if it states exactly one.
 
     The observation period's own year is not a value: "the 2024 queue" states
     a period, not a measurement. A clause stating two measurements is left
     with none rather than with a guess, because the compatibility check treats
-    an unstated dimension as unstated and refuses accordingly.
+    an unstated dimension as unstated and refuses accordingly. A parenthetical
+    restatement of the same quantity is one measurement, not two: the live
+    claims "added 10.4 GW (10,400 MW)" and "add 19.6 GW (19,600 MW)" read no
+    value at all, so neither could answer the target it was written for.
     """
     period_digits = set(re.findall(r"\d+", period))
-    found: list[tuple[str, str]] = []
+    found: list[re.Match[str]] = []
     for match in _VALUE_UNIT_PATTERN.finditer(clause):
-        number = match.group("value")
-        if number in period_digits:
+        if match.group("value") in period_digits:
             continue
-        found.append((number, match.group("unit")))
+        if found and _restates(clause, found[-1], match):
+            continue
+        found.append(match)
     if len(found) != 1:
         return ("", "")
-    value, unit = found[0]
+    value, unit = found[0].group("value"), found[0].group("unit")
     return (" ".join(value.split()), " ".join(unit.split()))
 
 

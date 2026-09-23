@@ -3316,6 +3316,15 @@ def test_an_alias_the_clause_states_as_its_subject_is_the_geography(
         ("Acme Co. reported 10.4 GW of additions in 2024.", 1),
         ("Demand fell at 5 p.m. local time, the operator said.", 1),
         ("The figure is approximate, e.g. about 10.4 GW in 2024.", 1),
+        # A sentence cannot be only a determiner and an initialism: the live
+        # claim "The U.S. Energy Information Administration reported …" was cut
+        # into a junk atom "The U.S" that merged claims about different facts.
+        (
+            "The U.S. Energy Information Administration reported that "
+            "generators added 10.4 GW in 2024.",
+            1,
+        ),
+        ("U.K. regulators approved the plan in 2024.", 1),
     ],
 )
 def test_an_abbreviation_ends_a_sentence_only_before_a_new_one(
@@ -3323,6 +3332,40 @@ def test_an_abbreviation_ends_a_sentence_only_before_a_new_one(
 ) -> None:
     """The splitter may not fuse two sentences into one clause (review F3)."""
     assert len(_sentences(text)) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "value", "unit"),
+    [
+        # The same quantity restated in parentheses in another prefix of the
+        # same base unit is one measurement, and the first spelling stands.
+        (
+            "EIA reported that generators added 10.4 GW (10,400 MW) of new "
+            "battery storage capacity in the United States in 2024.",
+            "10.4",
+            "GW",
+        ),
+        (
+            "EIA reported that operators plan to add 19.6 GW (19,600 MW) of "
+            "battery storage in the United States in 2025.",
+            "19.6",
+            "GW",
+        ),
+        # Two different measurements are still two, and state no value.
+        ("The plant stores 10 GW (40 GWh) of capacity in 2024.", "", ""),
+        ("Additions reached 18.2 GW in 2025, up from 10.3 GW in 2024.", "", ""),
+        ("The fleet held 10.4 GW (26,000 MW) of battery storage in 2024.", "", ""),
+    ],
+)
+def test_a_parenthetical_restatement_is_one_measurement(
+    text: str, value: str, unit: str
+) -> None:
+    """Live defect: "10.4 GW (10,400 MW)" read as two figures, so none."""
+    atoms = [atom for atom in extract_text_atoms(text) if atom.value or atom.unit]
+    if not value:
+        assert atoms == []
+        return
+    assert [(atom.value, atom.unit) for atom in atoms] == [(value, unit)]
 
 
 def test_the_run_spelling_keeps_its_value_and_place_across_the_period() -> None:
@@ -3605,6 +3648,12 @@ def _battery_binding_target(
             "EIA reported that cumulative grid-scale battery storage capacity "
             "reached 26 GW in the United States in 2024.",
             False,
+        ),
+        (
+            "The U.S. Energy Information Administration reported that "
+            "generators added 10.4 GW (10,400 MW) of new battery storage "
+            "capacity in the United States in 2024.",
+            True,
         ),
     ],
 )
