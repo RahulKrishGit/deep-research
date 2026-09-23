@@ -967,26 +967,35 @@ Agents: production classes through the real graph
 
 ### Graph-historical harness
 
-`suite --mode graph-historical` runs the three legacy cases, whose search,
+`suite --mode graph-historical` runs the scripted-double rows, whose search,
 read, memory, and publication dependencies are scripted doubles alongside six
-deterministic agent doubles. Its output says plainly that its result is not
-evidence about the production agents:
+deterministic agent doubles: the three cases recorded before the real-agent
+matrix existed, and the two that declare a counted obligation for every topic.
+Its output says plainly that its result is not evidence about the production
+agents:
 
 ```
-Mode: graph-historical (3 legacy ScriptedGraphAgent cases)
+Mode: graph-historical (5 scripted-double cases)
 Agents: SCRIPTED DOUBLES, not production classes — historical regression only.
         This mode is not release evidence for the real agents.
 ```
 
 This is the harness with judge-score acceptance floors: 0.70 for every
 repetition and 0.80 for the three-run mean, with coverage and evidence gates
-applied separately. `case <id>` runs one of its three cases alone under the
-same floors, accepts both the id `list` prints under this label
-(`broad-constraints-graph`) and the legacy id the row was built from, and
-prints the same two disclosure lines as `suite` before its result.
+applied separately. Each row is judged against *its own declared result*: a
+case declares whether its run should be accepted or partial, which failure
+legs its run must record, and which legs its own fixture makes correct, so a
+case whose subject is a refusal passes by producing that refusal instead of
+being read as a failure. Each row's line states the declaration, whether it
+was met, and the product result separately, and the suite line carries both
+the verdict and how many rows were themselves accepted. `case <id>` runs one
+of those rows alone under the same floors, accepts both the id `list` prints
+under this label (`broad-constraints-graph`) and the legacy id the row was
+built from, prints the same two disclosure lines as `suite` before its
+result, and exits 0 when the row produced the result it declares.
 
-The live tier is *declared only*: the three live cases exist as typed
-definitions with `tier="live"` and `authorization_required=True`, and
+The live tier is *declared only*: a live case exists as a typed definition for
+every controlled one, with `tier="live"` and `authorization_required=True`, and
 `run_case`/`run_suite` raise for `tier="live"` unconditionally — no live runner
 exists in this package. Live provider, search, judge, and LangSmith calls
 belong to a separately authorized canary.
@@ -1008,8 +1017,8 @@ python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
 # Run the graph-historical campaign instead (scripted doubles, judge-scored).
 python -m deep_research.e2e_evaluation suite --tier controlled --mode graph-historical --repetitions 3
 
-# Run one legacy case three times. `-graph` is the id `list` prints for it;
-# the legacy id it was built from names the same run.
+# Run one scripted-double case three times. `-graph` is the id `list` prints
+# for it; the legacy id it was built from names the same run.
 python -m deep_research.e2e_evaluation case broad-constraints-graph --tier controlled --repetitions 3
 ```
 
@@ -1020,13 +1029,14 @@ directory and one harness's evidence must never overwrite the other's. The
 real-agent artifact carries the campaign identity, the manifest and
 case-semantics versions, the graph revision, every row's repetitions (exit
 code, terminal quality, expectation failures, answered targets, recorded
-network attempts, and the published report's fingerprint), and the suite's
-`accepted` verdict; each repetition's own published documents sit under
-`output/evaluations/e2e/replay/<case-id>/repetition-<n>/`. The graph-historical
-artifact carries the graph revision, all six target prompt fingerprints,
-report/quality/case schema versions, model settings, request counts, typed
-deterministic metrics, the exact bounded `WholeReportJudgeInput`, and the
-result; the bounded judge input contains only the question, scoped plan,
+network attempts, and the published report's fingerprint), the suite's
+`accepted` verdict, and `rows_accepted`; each repetition's own published
+documents sit under `output/evaluations/e2e/replay/<case-id>/repetition-<n>/`.
+The graph-historical artifact carries the graph revision, all six target prompt
+fingerprints, report/quality/case schema versions, model settings, request
+counts, typed deterministic metrics, each row's declared result and whether
+the run produced it, the exact bounded `WholeReportJudgeInput`, and the result;
+the bounded judge input contains only the question, scoped plan,
 reader report, deterministic metrics, and a bounded evidence-ledger summary,
 and never contains secrets, raw provider output, tool payloads, or hidden
 reasoning. That harness's research output remains two distinct Markdown

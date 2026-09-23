@@ -68,6 +68,7 @@ from deep_research.graph.orchestrator import (
 )
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.runtime.outcome import build_outcome
+from deep_research.utils.types import QUALITY_STATUS_ACCEPTED
 
 LIVE_TIER_NOT_RUN = (
     "live tier is declared only and has no runner; running it requires a "
@@ -289,6 +290,46 @@ def _scripted_repetition(
     )
 
 
+def _recorded_legs(repetition: CampaignRepetition) -> set[str]:
+    """The legs one repetition recorded, in the campaign's own vocabulary.
+
+    The evaluator's integrity failures and the product's hard failures are one
+    list here because they are one fact to a reader: the named ways this run
+    fell short, each of which a case either requires, tolerates, or fails on.
+    """
+    return {
+        *repetition.deterministic.integrity_failures,
+        *repetition.deterministic.hard_failures,
+    }
+
+
+def _meets_declared_result(
+    case: ControlledCase,
+    repetitions: Sequence[CampaignRepetition],
+    *,
+    accepted: bool,
+) -> bool:
+    """Whether this run produced the result its case declares.
+
+    Per repetition, not on average: a row whose mean hides one repetition that
+    recorded something its case does not declare has not produced the declared
+    result, and the whole point of declaring one is that a correct run and a
+    wrong one can be told apart without a reader deciding which.
+    """
+    declared = case.expected_result
+    if accepted is not declared.accepted:
+        return False
+    required = set(declared.required_failures)
+    tolerated = required | set(declared.allowed_failures)
+    for repetition in repetitions:
+        legs = _recorded_legs(repetition)
+        if not required.issubset(legs):
+            return False
+        if legs - tolerated:
+            return False
+    return True
+
+
 def _case_result(
     case: ControlledCase, repetitions: Sequence[CampaignRepetition]
 ) -> CaseCampaignResult:
@@ -323,6 +364,10 @@ def _case_result(
         mean_coverage=sum(coverages) / len(coverages),
         mean_judge_score=sum(judges) / len(judges),
         accepted=accepted,
+        expected_result=case.expected_result,
+        met_expectation=_meets_declared_result(
+            case, repetitions, accepted=accepted
+        ),
         hard_failures=hard_failures,
     )
 
@@ -394,7 +439,8 @@ def run_suite(
         )
         for case in controlled_cases()
     ]
-    accepted = all(case.accepted for case in results)
+    accepted = all(case.met_expectation for case in results)
+    rows_accepted = all(case.accepted for case in results)
     request_counts: dict[str, int] = {}
     for case_result in results:
         for repetition in case_result.repetitions:
@@ -427,6 +473,7 @@ def run_suite(
         repetitions=repetitions,
         cases=results,
         accepted=accepted,
+        rows_accepted=rows_accepted,
         metadata=suite_metadata,
     )
     root.mkdir(parents=True, exist_ok=True)
@@ -643,6 +690,14 @@ def run_replay_suite(
         # A suite whose runs reached the network is not a suite that passed,
         # however clean every row's own result was.
         accepted=all(case.passed for case in results) and attempts == 0,
+        # The stricter product-level fact, kept under its own name: a row can
+        # produce the partial result it declares — which is what ``passed``
+        # means here — while the product did not accept its report.
+        rows_accepted=all(
+            item.terminal_quality == QUALITY_STATUS_ACCEPTED
+            for case in results
+            for item in case.repetitions
+        ),
         metadata=metadata,
     )
     root.mkdir(parents=True, exist_ok=True)
@@ -741,13 +796,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(
                 f"Case {result.case_id}: "
-                f"{'accepted' if result.accepted else 'failed'}; "
+                f"declared "
+                f"{'accepted' if result.expected_result.accepted else 'partial'}, "
+                f"{'met' if result.met_expectation else 'NOT met'}; "
+                f"product {'accepted' if result.accepted else 'not accepted'}; "
                 f"coverage {result.mean_coverage:.2f}; "
                 f"judge {result.mean_judge_score:.2f}"
             )
             print(f"Artifact: {result.artifact_path}")
             print("Network: zero (scripted dependencies only)")
-            return 0 if result.accepted else 1
+            # The exit code is the case's verdict, not the product's: a case
+            # that declares a partial result has produced what it declares
+            # when the run is partial, and exiting non-zero for that would
+            # make one declared row a command that can never succeed.
+            return 0 if result.met_expectation else 1
         if options.mode == GRAPH_HISTORICAL_MODE:
             historical = run_suite(
                 tier=options.tier,
@@ -779,10 +841,14 @@ def real_agent_mode_label(
 
 
 def graph_historical_mode_label(cases: int) -> str:
-    return (
-        f"Mode: {GRAPH_HISTORICAL_MODE} "
-        f"({cases} legacy ScriptedGraphAgent cases)"
-    )
+    """The mode, and how many scripted-double cases it runs.
+
+    "scripted-double" rather than "legacy": the inventory began as the three
+    cases whose product result was recorded when the only agents were the
+    doubles, and it now also holds the cases that declare counted obligations
+    — which are scripted for the same reason and are not historical.
+    """
+    return f"Mode: {GRAPH_HISTORICAL_MODE} ({cases} scripted-double cases)"
 
 
 def real_agent_suite_lines(suite: ReplaySuiteResult) -> list[str]:
@@ -820,6 +886,26 @@ def real_agent_suite_lines(suite: ReplaySuiteResult) -> list[str]:
     return lines
 
 
+def _declared_line(case: CaseCampaignResult) -> str:
+    """One row's line: what it declared, whether it produced it, and what it did.
+
+    The declared result and the product result are separate facts and the line
+    states both, because a row can pass this suite by producing a partial
+    result: "accepted" alone would read as if every row's report had cleared
+    the gates, which is exactly the reading a declared-partial row exists to
+    make impossible.
+    """
+    declared = case.expected_result
+    return (
+        f"{case.case_id}: "
+        f"declared {'accepted' if declared.accepted else 'partial'}, "
+        f"{'met' if case.met_expectation else 'NOT met'}; "
+        f"product {'accepted' if case.accepted else 'not accepted'}; "
+        f"coverage {case.mean_coverage:.2f}; "
+        f"judge {case.mean_judge_score:.2f}"
+    )
+
+
 def graph_historical_suite_lines(result: CampaignResult) -> list[str]:
     """The historical suite's own output, one line each.
 
@@ -831,17 +917,12 @@ def graph_historical_suite_lines(result: CampaignResult) -> list[str]:
         graph_historical_mode_label(len(result.cases)),
         *AGENTS_SCRIPTED,
     ]
-    lines += [
-        (
-            f"{case.case_id}: {'accepted' if case.accepted else 'failed'}; "
-            f"coverage {case.mean_coverage:.2f}; "
-            f"judge {case.mean_judge_score:.2f}"
-        )
-        for case in result.cases
-    ]
+    lines += [_declared_line(case) for case in result.cases]
+    accepted_rows = sum(1 for case in result.cases if case.accepted)
     lines.append(
         f"Suite: {'accepted' if result.accepted else 'failed'} "
-        f"({result.repetitions} repetitions per case)"
+        f"({result.repetitions} repetitions per case; "
+        f"{accepted_rows}/{len(result.cases)} rows accepted)"
     )
     lines.append(f"Artifact: {result.artifact_path}")
     lines.append("Network: zero (scripted dependencies only)")

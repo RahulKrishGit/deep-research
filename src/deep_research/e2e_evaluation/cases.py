@@ -14,12 +14,17 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import JsonValue
 
 from deep_research.agents.base import AgentRun
-from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
+from deep_research.agents.identity import (
+    claim_cluster_id,
+    claim_fingerprint,
+    finding_fingerprint,
+)
+from deep_research.agents.planner import coverage_id_for, target_id_for
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
@@ -40,15 +45,20 @@ from deep_research.e2e_evaluation.models import (
     CASE_REGISTRY_VERSION,
     CASE_SCHEMA_VERSION,
     ControlledCase,
+    ExpectedResult,
     SnapshotPass,
 )
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
+    AtomicProposition,
     Claim,
+    ClaimCluster,
     Critique,
     CritiqueGap,
     EvidencePassage,
+    EvidenceTarget,
+    EvidenceUnit,
     Finding,
     ResearchEvent,
     ResearchState,
@@ -63,6 +73,8 @@ CONTROLLED_CASE_IDS = (
     "broad-constraints",
     "comparative-conflict",
     "refinement-evidence-recovery",
+    "claimed-coverage-open-obligation",
+    "declared-obligations-answered",
 )
 LIVE_CASE_IDS = tuple(f"{case_id}-live" for case_id in CONTROLLED_CASE_IDS)
 
@@ -450,6 +462,14 @@ class ScriptedGraphAgent:
                 findings=list(state.raw_findings),
                 sources=list(state.evaluated_sources),
                 claims=list(state.verified_claims),
+                # The registries the pass emitted travel with it. The
+                # production Fact Checker writes both into the state beside
+                # the claims; this double rebuilds the pass from the state's
+                # snapshots, so it has to say so explicitly — a statement can
+                # name no cluster without them, and a plan whose obligations
+                # nothing can name is a plan no fixture could show answered.
+                claim_clusters=dict(snapshot.claim_clusters),
+                evidence_units=dict(snapshot.evidence_units),
             )
             composition = _composition(case=self.case, snapshot=observed, state=state)
             update.update(
@@ -666,7 +686,13 @@ def scripted_research_agents(
     return ResearchAgents(**agents, publisher=publisher)
 
 
-def _topic(coverage_id: str, title: str, priority: int) -> SubTopic:
+def _topic(
+    coverage_id: str,
+    title: str,
+    priority: int,
+    *,
+    evidence_targets: Sequence[EvidenceTarget] = (),
+) -> SubTopic:
     return SubTopic(
         coverage_id=coverage_id,
         title=title,
@@ -674,6 +700,7 @@ def _topic(coverage_id: str, title: str, priority: int) -> SubTopic:
         search_queries=[f"{title} primary evidence"],
         success_criteria=[f"A read primary source answers {title}."],
         priority=priority,
+        evidence_targets=list(evidence_targets),
     )
 
 
@@ -708,6 +735,8 @@ def _claim(
     topic: SubTopic,
     verdict: str = "verified",
     contradiction: str | None = None,
+    target_ids: Sequence[str] = (),
+    cluster_id: str = "",
 ) -> Claim:
     passage = EvidencePassage(
         source_url=verification_url,
@@ -730,6 +759,12 @@ def _claim(
         contradictions=[contradiction] if contradiction else [],
         verification_evidence=[passage],
         consumed_coverage_ids=[topic.coverage_id],
+        # The obligations this claim reached for, and the cluster its prose
+        # joined. Both are optional because the three legacy cases declare
+        # neither: their topics carry no evidence target, so a claim of theirs
+        # has nothing to name.
+        target_ids=list(target_ids),
+        cluster_id=cluster_id,
         # A scripted end-to-end fixture's premise is a claim that already
         # carries the badge under test, so the fixture declares it: ``Claim``
         # refuses a verified verdict with no ``verified_pair`` behind it.
@@ -789,6 +824,13 @@ def _composition(
         findings=list(snapshot.findings),
         summary=[ReportPoint.model_validate(item) for item in summary],
         uncertainty_notes=uncertainty,
+        # The registries the pass emitted, forwarded the way the production
+        # Synthesizer forwards them from the state (``task.claim_clusters`` /
+        # ``task.evidence_units``). They are what turns a rendered point into a
+        # statement that can name a cluster and the dimensions its evidence
+        # carries, which is the whole of "this obligation was answered".
+        claim_clusters=dict(snapshot.claim_clusters),
+        evidence_units=dict(snapshot.evidence_units),
     )
 
 
@@ -917,6 +959,7 @@ def _case(
     passes: list[SnapshotPass],
     expected_contradictions: int = 0,
     expected_refinement_topics: list[str] | None = None,
+    expected_result: ExpectedResult | None = None,
 ) -> ControlledCase:
     return ControlledCase(
         case_id=case_id,
@@ -927,7 +970,164 @@ def _case(
         passes=passes,
         expected_contradictions=expected_contradictions,
         expected_refinement_topics=expected_refinement_topics or [],
+        # A case that declares no result declares an accepted one: that is
+        # what the three legacy cases' rows say, and it is the result their
+        # runs produce.
+        expected_result=expected_result or ExpectedResult(),
         metadata={"fixture": "network-zero", "provider": "scripted"},
+    )
+
+
+# --- the cases that declare obligations --------------------------------------
+#
+# The three cases above are a regression baseline whose plans declare no
+# counted obligation, so the campaign reads their coverage from the claims
+# that consumed each topic — the reading the product stopped gating on. These
+# two declare one obligation per topic, which is the shape the product gates
+# on, and they are a pair: one leaves a declared obligation open while its
+# topic's evidence is still claimed, and one answers every obligation it
+# declares.
+
+
+@dataclass(frozen=True)
+class _DeclaredObligation:
+    """One topic of a declared-obligation case: plan, claim, cluster, unit."""
+
+    topic: SubTopic
+    finding: Finding
+    sources: tuple[ScoredSource, ...]
+    claim: Claim
+    cluster: ClaimCluster
+    unit: EvidenceUnit
+
+
+def _declared_obligation(
+    *,
+    position: int,
+    title: str,
+    subject: str,
+    reading: str,
+    unit_of_measure: str,
+    policy: Literal["independent_pair", "primary_attribution", "derivation"],
+    corroborated: bool,
+) -> _DeclaredObligation:
+    """One topic whose plan declares an obligation, and the evidence it read.
+
+    ``corroborated`` is the whole difference between the two cases built from
+    this: True is a claim the run recorded as an independently corroborated
+    pair, which is what an ``independent_pair`` obligation requires; False is
+    the same reading from one publisher, which the product badges
+    ``source_supported`` — "primary-source attribution; independent
+    corroboration not established" — and which cannot discharge that
+    obligation however exactly it states the value the plan asked for.
+
+    The dimension is written the way the Planner writes one ("<kind>: <detail>"
+    with a measurable kind), so the statement derivation can credit it to the
+    cluster's own proposition — the dimension is carried by the evidence, and
+    the support policy is what the evidence then fails.
+    """
+    coverage_id = coverage_id_for(position)
+    target = EvidenceTarget(
+        target_id=target_id_for(coverage_id, 1),
+        coverage_id=coverage_id,
+        question=f"What was the {subject} in 2024?",
+        required_dimensions=[f"value: the {subject}"],
+        # ``required`` and ``critical`` are the Planner's own values: every
+        # declared obligation is required, and none of these is critical, so
+        # the only gate a run of this fixture can fail is the coverage floor.
+        required=True,
+        critical=False,
+        support_policy=policy,
+    )
+    topic = _topic(
+        coverage_id, title, position, evidence_targets=[target]
+    )
+    origin = f"https://controlled.example/obligations/{coverage_id}/source"
+    verifier = f"https://controlled.example/obligations/{coverage_id}/verifier"
+    sources = (
+        _source(origin, f"{title.title()} primary source"),
+        _source(verifier, f"{title.title()} verification"),
+    )
+    claim_text = f"The {subject} was {reading} in 2024."
+    proposition = AtomicProposition(
+        text=claim_text,
+        subject=subject,
+        predicate="states_value",
+        value=reading,
+        unit=unit_of_measure,
+        observation_period="2024",
+    )
+    # Minted the way the product mints it, so the registry key the fixture
+    # writes is the identity the cluster's own proposition derives.
+    cluster_id = claim_cluster_id(proposition)
+    verdict = "verified" if corroborated else "insufficient_evidence"
+    claim = _claim(
+        claim_text,
+        origin_url=origin,
+        verification_url=verifier,
+        topic=topic,
+        verdict=verdict,
+        target_ids=[target.target_id],
+        cluster_id=cluster_id,
+    )
+    evidence_unit = EvidenceUnit(
+        evidence_id=f"evidence-{coverage_id}",
+        read_id=f"read-{coverage_id}",
+        source_url=origin,
+        source_title=f"{title.title()} primary source",
+        locator="section-1",
+        excerpt=claim_text,
+        target_ids=[target.target_id],
+        origin="researcher",
+    )
+    cluster = ClaimCluster(
+        cluster_id=cluster_id,
+        proposition=proposition,
+        evidence_ids=[evidence_unit.evidence_id],
+        member_claim_ids=[claim.claim_id],
+        target_ids=[target.target_id],
+        source_urls=[origin],
+        verdicts=[verdict],  # type: ignore[list-item]
+        verdict_evidence_status={verdict: claim.evidence_status or ""},
+        consumed_coverage_ids=[coverage_id],
+    )
+    return _DeclaredObligation(
+        topic=topic,
+        finding=_finding(topic, origin, claim_text),
+        sources=sources,
+        claim=claim,
+        cluster=cluster,
+        unit=evidence_unit,
+    )
+
+
+def _declared_obligation_case(
+    *,
+    case_id: str,
+    title: str,
+    question: str,
+    obligations: Sequence[_DeclaredObligation],
+    expected_result: ExpectedResult,
+) -> ControlledCase:
+    """One case whose plan declares an obligation for every topic."""
+    return _case(
+        case_id=case_id,
+        title=title,
+        question=question,
+        topics=[row.topic for row in obligations],
+        passes=[
+            SnapshotPass(
+                iteration=0,
+                findings=[row.finding for row in obligations],
+                sources=[source for row in obligations for source in row.sources],
+                claims=[row.claim for row in obligations],
+                claim_clusters={
+                    row.cluster.cluster_id: row.cluster for row in obligations
+                },
+                evidence_units={row.unit.evidence_id: row.unit for row in obligations},
+            )
+        ],
+        expected_result=expected_result,
     )
 
 
@@ -1109,6 +1309,118 @@ def _build_cases() -> tuple[ControlledCase, ...]:
             passes=[refinement_pass_1, refinement_pass_2],
             expected_refinement_topics=["topic-04", "topic-05"],
         ),
+        _declared_obligation_case(
+            case_id=CONTROLLED_CASE_IDS[3],
+            title="A claimed topic whose obligation the evidence cannot answer",
+            question=(
+                "Which Acme widget measures does the evidence corroborate "
+                "for 2024?"
+            ),
+            obligations=(
+                _declared_obligation(
+                    position=1,
+                    title="adoption rate",
+                    subject="Acme widget adoption rate",
+                    reading="40 percent",
+                    unit_of_measure="percent",
+                    policy="independent_pair",
+                    corroborated=True,
+                ),
+                _declared_obligation(
+                    position=2,
+                    title="funding round",
+                    subject="Acme widget funding round",
+                    reading="12 million dollars",
+                    unit_of_measure="dollars",
+                    policy="independent_pair",
+                    corroborated=True,
+                ),
+                _declared_obligation(
+                    position=3,
+                    title="export volume",
+                    subject="Acme widget export volume",
+                    reading="3.4 million units",
+                    unit_of_measure="units",
+                    policy="independent_pair",
+                    corroborated=True,
+                ),
+                _declared_obligation(
+                    position=4,
+                    title="production capacity",
+                    subject="Acme widget production capacity",
+                    reading="8 million units",
+                    unit_of_measure="units",
+                    policy="independent_pair",
+                    # The obligation the run cannot answer: the reading is
+                    # stated exactly as the plan asked for it, the claim
+                    # records the topic as consumed, and the evidence behind
+                    # it is one publisher's account, which is not the
+                    # independent pair the plan required.
+                    corroborated=False,
+                ),
+            ),
+            expected_result=ExpectedResult(
+                accepted=False,
+                required_failures=["coverage_below_0.80"],
+                # The scripted doubles write no acquisition trail and no
+                # disposition — the two records that account for an open
+                # obligation — so the omission is undisclosed here for the
+                # same reason it is in every scripted case. The case's
+                # subject is the coverage reading, and the leg it must record
+                # is the one above; this is the leg its own fixture makes
+                # correct, and nothing else is tolerated.
+                allowed_failures=["unaccounted_required_targets"],
+            ),
+        ),
+        _declared_obligation_case(
+            case_id=CONTROLLED_CASE_IDS[4],
+            title="Every declared obligation answered",
+            question=(
+                "Which Acme widget measures does the corroborated evidence "
+                "answer for 2024?"
+            ),
+            obligations=tuple(
+                _declared_obligation(
+                    position=position,
+                    title=title,
+                    subject=subject,
+                    reading=reading,
+                    unit_of_measure=unit_of_measure,
+                    policy="independent_pair",
+                    corroborated=True,
+                )
+                for position, (title, subject, reading, unit_of_measure) in enumerate(
+                    (
+                        (
+                            "adoption rate",
+                            "Acme widget adoption rate",
+                            "40 percent",
+                            "percent",
+                        ),
+                        (
+                            "funding round",
+                            "Acme widget funding round",
+                            "12 million dollars",
+                            "dollars",
+                        ),
+                        (
+                            "export volume",
+                            "Acme widget export volume",
+                            "3.4 million units",
+                            "units",
+                        ),
+                        (
+                            "production capacity",
+                            "Acme widget production capacity",
+                            "8 million units",
+                            "units",
+                        ),
+                    ),
+                    start=1,
+                )
+            ),
+            expected_result=ExpectedResult(),
+        ),
     )
 
 
@@ -1133,7 +1445,7 @@ LIVE_CASES = tuple(
 
 
 def controlled_cases() -> tuple[ControlledCase, ...]:
-    """Return fresh typed definitions for the three controlled cases."""
+    """Return fresh typed definitions for every controlled case."""
     return tuple(case.model_copy(deep=True) for case in CONTROLLED_CASES)
 
 

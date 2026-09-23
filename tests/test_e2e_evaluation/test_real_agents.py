@@ -204,12 +204,14 @@ def test_the_controlled_inventory_is_the_matrix_plus_the_graph_only_rows() -> No
     """One declared inventory per harness, and no row claimed by both.
 
     A controlled run names one of two harnesses, and each has its own declared
-    inventory: the eighteen real-agent rows, and the historical rows whose
-    product result was recorded when the only agents were scripted doubles.
-    The three historical case ids are the *same strings* as the first three
-    matrix rows, so the ids are checked for collision rather than assumed
-    distinct — a doubled id would let one harness's evidence answer for the
-    other's.
+    inventory: the eighteen real-agent rows, and the scripted-double rows —
+    the three whose product result was recorded when the only agents were the
+    doubles, and the cases that declare counted obligations. The rows whose
+    case ids are the *same strings* as matrix rows are the first three, so
+    those ids are checked for collision rather than assumed distinct — a
+    doubled id would let one harness's evidence answer for the other's. Which
+    rows those are, and how many rows the inventory holds, is read from the
+    manifest rather than restated here.
     """
     real_agent_ids = tuple(entry.case_id for entry in REPLAY_CASE_MANIFEST)
     historical_ids = tuple(
@@ -217,16 +219,22 @@ def test_the_controlled_inventory_is_the_matrix_plus_the_graph_only_rows() -> No
     )
     combined = controlled_suite_inventory()
 
-    assert len(historical_ids) == 3
     assert combined == (*REPLAY_CASE_MANIFEST, *GRAPH_ONLY_HISTORICAL_MANIFEST)
     assert len({entry.case_id for entry in combined}) == len(combined)
     assert set(historical_ids).isdisjoint(real_agent_ids)
+    # Every row of this half is a scripted-double row, and the ones whose base
+    # id is also a matrix id are exactly the first three matrix rows.
     for entry in GRAPH_ONLY_HISTORICAL_MANIFEST:
         assert entry.graph_only_historical is True, entry.case_id
         assert entry.build is None, entry.case_id
         assert entry.version >= 1, entry.case_id
         assert entry.expected_product_result, entry.case_id
         assert entry.decisive_assertion, entry.case_id
+    assert {
+        entry.case_id
+        for entry in GRAPH_ONLY_HISTORICAL_MANIFEST
+        if entry.case_id.removesuffix("-graph") in real_agent_ids
+    } == {f"{case_id}-graph" for case_id in real_agent_ids[:3]}
 
 
 def test_every_checker_is_asserted_by_a_case() -> None:

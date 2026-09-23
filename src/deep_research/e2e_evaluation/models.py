@@ -14,7 +14,9 @@ from pydantic import Field, JsonValue, model_validator
 
 from deep_research.utils.types import (
     Claim,
+    ClaimCluster,
     ContractModel,
+    EvidenceUnit,
     Finding,
     ReportComposition,
     ResearchState,
@@ -39,7 +41,16 @@ AGENT_NAMES: tuple[str, ...] = (
 
 
 class SnapshotPass(ContractModel):
-    """One scripted graph pass and the evidence it emits."""
+    """One scripted graph pass and the evidence it emits.
+
+    ``claim_clusters`` and ``evidence_units`` are the registries the
+    production agents persist beside these snapshots — the Researcher writes
+    the units of the reads it admitted, the Fact Checker the clusters its
+    claims joined — and the Synthesizer copies both into the composition it
+    composes. A scripted pass emits them for the same reason it emits claims:
+    without them a reader statement can name no cluster, so it can answer no
+    obligation, and a fixture that declares one could never show it answered.
+    """
 
     iteration: int = Field(ge=0)
     findings: list[Finding] = Field(default_factory=list)
@@ -48,6 +59,8 @@ class SnapshotPass(ContractModel):
     critic_targets: list[str] = Field(default_factory=list)
     new_evidence_topics: list[str] = Field(default_factory=list)
     force_refinement: bool = False
+    claim_clusters: dict[str, ClaimCluster] = Field(default_factory=dict)
+    evidence_units: dict[str, EvidenceUnit] = Field(default_factory=dict)
 
 
 class EvidenceLedgerSummary(ContractModel):
@@ -283,6 +296,29 @@ class CampaignMetadata(ContractModel):
     request_counts: dict[str, int] = Field(default_factory=dict)
 
 
+class ExpectedResult(ContractModel):
+    """The product result one controlled case declares it should produce.
+
+    A declared result and a passing run are two different facts, and the two
+    this contract keeps apart are "the campaign accepted this report" and
+    "this case produced the result it declares". A case whose subject is a
+    refusal — a plan that declared an obligation nothing answered — declares a
+    partial result, and a suite that demanded every row be accepted could not
+    hold such a case at all: it would have to read a correct run as a failure.
+
+    ``required_failures`` are the legs the run must record, which is the case's
+    own assertion: a case exists to show a named way the run fell short, so a
+    run that stopped recording it fails here rather than passing quietly.
+    ``allowed_failures`` are the legs this case's own fixture makes correct;
+    nothing outside the two lists is tolerated, so a declared-partial row can
+    never become a blanket exemption from the gates.
+    """
+
+    accepted: bool = True
+    required_failures: list[str] = Field(default_factory=list)
+    allowed_failures: list[str] = Field(default_factory=list)
+
+
 class ControlledCase(ContractModel):
     """One graph-shaped scripted case, with no external dependencies."""
 
@@ -298,6 +334,7 @@ class ControlledCase(ContractModel):
     authorization_required: bool = False
     expected_contradictions: int = Field(default=0, ge=0)
     expected_refinement_topics: list[str] = Field(default_factory=list)
+    expected_result: ExpectedResult = Field(default_factory=ExpectedResult)
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
     def first_pass(self) -> SnapshotPass:
@@ -354,6 +391,26 @@ class CaseCampaignResult(ContractModel):
     mean_coverage: float = Field(ge=0.0, le=1.0)
     mean_judge_score: float = Field(ge=0.0, le=1.0)
     accepted: bool
+    """Every repetition of this case cleared the campaign's own gates.
+
+    The product-level fact: this is what the gates said about the reports, and
+    it is not the case's verdict. A case that declares a partial result has
+    ``accepted`` False and ``met_expectation`` True.
+    """
+    expected_result: ExpectedResult = Field(default_factory=ExpectedResult)
+    """The result this case declared, echoed into the artifact.
+
+    Recorded rather than left in the registry: a result file whose verdict
+    cannot be read beside the declaration it was judged against invites the
+    reader to supply their own.
+    """
+    met_expectation: bool
+    """Every repetition produced the result this case declares.
+
+    Per repetition, not on average: a suite pass whose mean hides one
+    repetition that produced something else is the reading this field exists
+    to refuse.
+    """
     hard_failures: list[str] = Field(default_factory=list)
     artifact_path: str | None = None
 
@@ -366,6 +423,15 @@ class CampaignResult(ContractModel):
     repetitions: int = Field(ge=1)
     cases: list[CaseCampaignResult] = Field(min_length=1)
     accepted: bool
+    """The suite's verdict: every row produced the result it declares.
+
+    Not "every row was accepted": a suite holding a case whose subject is a
+    refusal is a passing suite when that row produces the refusal. The
+    stricter product-level fact is kept beside it as ``rows_accepted`` so the
+    two never have to be read as one.
+    """
+    rows_accepted: bool = True
+    """Every row was itself accepted by the campaign's gates."""
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
     artifact_path: str | None = None
     langsmith_metadata: dict[str, JsonValue] = Field(default_factory=dict)
@@ -441,6 +507,14 @@ class ReplaySuiteResult(ContractModel):
     repetitions: int = Field(ge=1)
     cases: list[ReplayCaseResult] = Field(min_length=1)
     accepted: bool
+    """The suite's verdict: every row produced the result it declares.
+
+    A real-agent row can declare a partial result — ``same-work-mirror`` does —
+    and a suite that read that as a failure could not hold the negative half of
+    its own matrix. The stricter, product-level fact is ``rows_accepted``.
+    """
+    rows_accepted: bool = True
+    """Every repetition's own product result was an accepted one."""
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
     artifact_path: str | None = None
 

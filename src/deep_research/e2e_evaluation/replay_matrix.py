@@ -1992,11 +1992,13 @@ def scenario_by_id(case_id: str) -> ReplayScenario:
     return entry.build()
 
 
-# The historical half of the controlled inventory. These rows are the three
-# cases the whole-report campaign ran before the real-agent matrix existed:
-# scripted dependencies, a scripted six-agent double, and a recorded product
-# result. They are declared *beside* the manifest rather than inside it
-# because they have no scenario to replay, and because their case ids are the
+# The scripted-double half of the controlled inventory: the rows the
+# graph-historical harness runs. Three of them are the cases the whole-report
+# campaign ran before the real-agent matrix existed — scripted dependencies, a
+# scripted six-agent double, and a recorded product result — and two declare
+# counted obligations, which is the shape the product's coverage gate reads.
+# They are declared *beside* the manifest rather than inside it because they
+# have no scenario to replay, and because the first three cases' ids are the
 # same strings as the first three matrix rows — inside ``REPLAY_CASE_MANIFEST``
 # they would collide with real-agent rows, and the manifest's own contract is
 # that it is exactly the plan's eighteen. The ``-graph`` suffix names the
@@ -2036,11 +2038,38 @@ GRAPH_ONLY_HISTORICAL_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         build=None,
         graph_only_historical=True,
     ),
+    ReplayCaseEntry(
+        case_id="claimed-coverage-open-obligation-graph",
+        version=REPLAY_CASE_VERSION,
+        title="A claimed topic whose obligation the evidence cannot answer",
+        expected_product_result="partial / coverage_below_0.80",
+        decisive_assertion=(
+            "A checked claim consumes the topic while the plan's independent "
+            "pair stands open: the campaign reports the substantive ratio "
+            "(0.75, not the claimed 1.00) and records coverage_below_0.80"
+        ),
+        build=None,
+        graph_only_historical=True,
+    ),
+    ReplayCaseEntry(
+        case_id="declared-obligations-answered-graph",
+        version=REPLAY_CASE_VERSION,
+        title="Every declared obligation answered",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "The control: four topics whose declared obligations are all "
+            "answered by independently corroborated statements reach the "
+            "passing coverage verdict, so the stricter reading is not "
+            "'always fails'"
+        ),
+        build=None,
+        graph_only_historical=True,
+    ),
 )
 
 
 def controlled_suite_inventory() -> tuple[ReplayCaseEntry, ...]:
-    """The declared controlled inventory: the eighteen rows, then the three."""
+    """The declared controlled inventory: the eighteen rows, then the five."""
     return (*REPLAY_CASE_MANIFEST, *GRAPH_ONLY_HISTORICAL_MANIFEST)
 
 
