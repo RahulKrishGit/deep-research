@@ -118,14 +118,17 @@ def graph_historical_case_ids() -> tuple[str, ...]:
 
 
 def legacy_case_id(case_id: str) -> str:
-    """The legacy controlled case one accepted ``case`` id names.
+    """The legacy controlled case one runnable ``case`` id names.
 
-    The ``case`` command runs the scripted doubles, so every id it accepts is
-    a graph-historical row: either the ``<id>-graph`` form the manifest — and
-    therefore ``list`` — uses, or the legacy id that row was built from. Both
-    name one run, and ``list`` shows the legacy ids under the real-agent
-    label, which is why the command must not let either form pass for a
-    real-agent result without saying which harness produced it.
+    The ids this command runs are the graph-historical inventory's rows: the
+    ``<id>-graph`` form the manifest — and therefore ``list`` — uses, or the
+    legacy id that row was built from. Both name one run, and ``list`` shows
+    the legacy ids under the real-agent label, which is why neither form may
+    pass for a real-agent result without the command saying which harness
+    produced it.
+
+    The declared live ids are not runnable here (no live runner exists) and
+    are refused before this is reached; any other id names no case at all.
 
     A manifest lookup rather than a suffix strip, so an id that names nothing
     is passed through unchanged and fails in ``case_by_id`` instead of
@@ -715,12 +718,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"  {case_id}")
             return 0
         if options.command == "case":
-            # Every id this command accepts runs the scripted doubles — the
-            # three legacy controlled cases are the graph-historical
-            # inventory, and the manifest's ``-graph`` ids name the same runs
-            # — so the harness is disclosed before the result, exactly as the
-            # suite's own output does. A per-case line reading "accepted" is a
-            # claim about which agents produced it.
+            if options.case_id in LIVE_CASE_IDS:
+                # The live tier is declared only, so nothing here runs and
+                # nothing here may describe a harness: a disclosure is a claim
+                # about which agents produced a result. Refused by name rather
+                # than reported as an unknown controlled case.
+                print(f"error: {LIVE_TIER_NOT_RUN}")
+                return 2
+            # Every id that reaches here runs the scripted doubles — the three
+            # legacy controlled cases are the graph-historical inventory, and
+            # the manifest's ``-graph`` ids name the same runs — so the
+            # harness is disclosed before the result, exactly as the suite's
+            # own output does. A per-case line reading "accepted" is a claim
+            # about which agents produced it.
             print(graph_historical_mode_label(len(GRAPH_ONLY_HISTORICAL_MANIFEST)))
             for line in AGENTS_SCRIPTED:
                 print(line)
