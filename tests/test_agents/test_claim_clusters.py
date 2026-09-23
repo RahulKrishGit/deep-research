@@ -27,7 +27,10 @@ from deep_research.agents.claim_clusters import (
     OVER_CAP_SUBJECT_PREFIX,
     AtomicPairDraft,
     ClaimEquivalenceDraft,
+    atom_answers_dimensions,
+    atom_answers_target,
     atomic_compatible,
+    checkable_dimensions,
     claim_cluster_id,
     cluster_for_atom,
     consolidate_claims,
@@ -55,6 +58,7 @@ from deep_research.utils.types import (
     Claim,
     ClaimCluster,
     EvidencePassage,
+    EvidenceTarget,
     EvidenceUnit,
     ResearchState,
     SubTopic,
@@ -2680,3 +2684,309 @@ def test_a_publisher_question_does_not_unlock_a_publication_date() -> None:
         dimension="publication_date",
         stated_dimensions={"publication_date"},
     )
+
+
+# --------------------------------------------------------------------------
+# Attribution: a named issuer that reports is an attribution
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The live run's own claim prose (audit #2). Every one of these named
+        # its issuer and was still recorded unattributed, so no plan target
+        # that requires a source could be bound to it.
+        (
+            "EIA reported that generators in the United States added 10.4 GW "
+            "of new utility-scale battery storage capacity in 2024.",
+            "EIA",
+        ),
+        (
+            "EIA stated that cumulative U.S. utility-scale battery storage "
+            "capacity exceeded 26 GW in 2024.",
+            "EIA",
+        ),
+        (
+            "EIA forecast in its February 24, 2025 In-brief analysis that "
+            "18.2 GW of utility-scale battery storage capacity would be added "
+            "in 2025.",
+            "EIA",
+        ),
+        (
+            "EIA's August 20, 2025 In-brief analysis reported that battery "
+            "storage accounted for 5.9 GW of additions in the first half of "
+            "2025.",
+            "EIA",
+        ),
+        (
+            "EIA expects that developers will add 7.0 GW of battery storage "
+            "capacity in Texas in 2025.",
+            "EIA",
+        ),
+        ("EIA projected that 18.2 GW would be added in 2025.", "EIA"),
+        ("EIA estimated that 10.3 GW was added in 2024.", "EIA"),
+        ("EIA said the 2024 addition set a record.", "EIA"),
+        ("FERC found that the queue grew in 2024.", "FERC"),
+        (
+            "Generators added 10.4 GW of battery storage capacity in 2024, "
+            "EIA reported.",
+            "EIA",
+        ),
+    ],
+)
+def test_a_named_issuer_that_reports_is_the_attribution(
+    text: str, expected: str
+) -> None:
+    """The auditor's C11 contrast: "EIA reported that …" answers "according to EIA"."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A bare pronoun or determiner names nobody: the claim states a fact
+        # with no issuer, and this contract must not invent one.
+        "It reported that generators added 10.4 GW of new capacity in 2024.",
+        "They stated that the queue grew in 2024.",
+        "The agency reported that generators added 10.4 GW in 2024.",
+        "This analysis found that the queue grew in 2024.",
+        "In 2024, generators added 10.4 GW of new capacity.",
+    ],
+)
+def test_a_reporting_verb_with_no_named_issuer_attributes_nothing(
+    text: str,
+) -> None:
+    (atom,) = extract_text_atoms(text)
+
+    assert atom.attribution == ""
+
+
+def test_a_clause_inherits_the_issuer_its_claim_names() -> None:
+    """``according to its <document>`` refers to the claim's own named issuer."""
+    claim = _claim(
+        "EIA stated that utility-scale battery capacity grew in 2024. "
+        "The 2024 addition reached 10.4 GW, according to its January 2025 "
+        "Preliminary Monthly Electric Generator Inventory."
+    )
+
+    first, second = extract_atoms(claim)
+
+    assert first.attribution == "EIA"
+    assert second.attribution == "EIA"
+
+
+def test_an_unnamed_issuers_own_document_attributes_nothing() -> None:
+    """The control: "its" with no named issuer in the claim is not attribution."""
+    claim = _claim(
+        "The 2024 addition reached 10.4 GW, according to its January 2025 "
+        "Preliminary Monthly Electric Generator Inventory."
+    )
+
+    (atom,) = extract_atoms(claim)
+
+    assert atom.attribution == ""
+
+
+def test_the_subject_verb_form_does_not_override_a_named_source() -> None:
+    """A claim that opens with its source keeps that source."""
+    claim = _claim(
+        "According to Energy Global, EIA reported that generators added "
+        "10.4 GW of new battery storage capacity in 2024."
+    )
+
+    (atom,) = extract_atoms(claim)
+
+    assert atom.attribution == "Energy Global"
+
+
+# --------------------------------------------------------------------------
+# A qualitative measure names a fact, not a number
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "dimension",
+    [
+        "measure: stated grid-connection requirement of the classification",
+        "measure: rating basis (AC or DC) of the reported capacity figures",
+        "measure: inclusion rule and counting treatment for hybrid plants",
+        "measure: inclusion or exclusion of behind-the-meter storage in the "
+        "reported total",
+    ],
+)
+def test_a_qualitative_measure_never_demands_a_numeric_value(
+    dimension: str,
+) -> None:
+    """Four of the run's eleven targets were unanswerable for this reason.
+
+    Each asks what a rule, basis, or treatment *is*. Mapping ``measure:`` to
+    the numeric ``value`` dimension made every one of them unmet by prose that
+    answers them exactly, because such a clause states no number.
+    """
+    assert "value" not in checkable_dimensions(dimension)
+
+
+@pytest.mark.parametrize(
+    "dimension",
+    [
+        "measure: grid-scale battery power capacity added, in MW",
+        "measure: projected battery storage capacity additions, in MW",
+        "measure: minimum nameplate capacity threshold, in MW",
+        "measure: annual ridership",
+        "value",
+        "capacity",
+    ],
+)
+def test_a_quantitative_measure_still_demands_a_numeric_value(
+    dimension: str,
+) -> None:
+    """The control: a measure that names a quantity still needs the number."""
+    assert checkable_dimensions(dimension) == ("value",)
+
+
+_AUDIT_QUESTION = (
+    "How much grid-scale battery storage capacity was added in the United "
+    "States in 2024, and what do the latest forecasts project for 2025?"
+)
+
+
+def test_a_qualitative_obligation_is_answered_by_prose_that_states_it() -> None:
+    (atom,) = extract_text_atoms(
+        "According to EIA, behind-the-meter storage is excluded from the "
+        "reported utility-scale capacity total in the United States in 2024."
+    )
+
+    assert atom_answers_dimensions(
+        atom,
+        [
+            "measure: inclusion or exclusion of behind-the-meter storage in "
+            "the reported total"
+        ],
+        question=_AUDIT_QUESTION,
+    )
+
+
+def test_a_qualitative_obligation_is_not_answered_by_a_number_alone() -> None:
+    """The control: a bare quantity names no subject and settles no rule."""
+    (atom,) = extract_text_atoms("10 GW was added in 2024.")
+
+    assert not atom_answers_dimensions(
+        atom,
+        [
+            "measure: inclusion or exclusion of behind-the-meter storage in "
+            "the reported total"
+        ],
+        question=_AUDIT_QUESTION,
+    )
+
+
+def test_the_runs_four_unbindable_rule_targets_bind_an_ideal_claim() -> None:
+    """C10's first half: the run's own targets, against claims that answer them.
+
+    The targets are the run's, verbatim (audit C5); the claims are the plainest
+    sentence that states each one. Before this change all four failed on
+    ``value`` and no claim could ever have been bound to them.
+    """
+    targets = [
+        (
+            EvidenceTarget(
+                target_id="topic-03-target-02",
+                coverage_id="topic-03",
+                question=(
+                    "What grid-connection requirement does the classification "
+                    "state?"
+                ),
+                required_dimensions=[
+                    "measure: stated grid-connection requirement of the "
+                    "classification",
+                    "period: the classification in force for 2024 and 2025 "
+                    "reporting",
+                    "geography: United States",
+                    "source: the publisher's definition or methodology page "
+                    "for the classification",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            ),
+            "According to EIA, the utility-scale classification in the United "
+            "States in 2024 requires a grid connection at the plant.",
+        ),
+        (
+            EvidenceTarget(
+                target_id="topic-04-target-01",
+                coverage_id="topic-04",
+                question="On which rating basis are the capacity figures stated?",
+                required_dimensions=[
+                    "measure: rating basis (AC or DC) of the reported capacity "
+                    "figures",
+                    "period: the 2024 addition and the 2025 forecast as "
+                    "published",
+                    "geography: United States",
+                    "source: the publisher's methodology or convention "
+                    "documentation for its capacity figures",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            ),
+            "According to EIA, the reported capacity figures in the United "
+            "States for 2024 are stated on an AC rating basis.",
+        ),
+        (
+            EvidenceTarget(
+                target_id="topic-04-target-02",
+                coverage_id="topic-04",
+                question="How are hybrid co-located plants counted?",
+                required_dimensions=[
+                    "measure: inclusion rule and counting treatment for "
+                    "hybrid/co-located battery plants",
+                    "period: the 2024 addition and the 2025 forecast as "
+                    "published",
+                    "geography: United States",
+                    "source: the publisher's methodology note describing "
+                    "plant-level counting",
+                ],
+                required=True,
+                critical=False,
+                support_policy="primary_attribution",
+            ),
+            "According to EIA, hybrid co-located battery plants in the United "
+            "States are counted at the plant level in the 2024 reported "
+            "capacity.",
+        ),
+        (
+            EvidenceTarget(
+                target_id="topic-04-target-03",
+                coverage_id="topic-04",
+                question=(
+                    "Is behind-the-meter storage inside the reported total?"
+                ),
+                required_dimensions=[
+                    "measure: inclusion or exclusion of behind-the-meter "
+                    "storage in the reported total",
+                    "period: the 2024 addition and the 2025 forecast as "
+                    "published",
+                    "geography: United States",
+                    "source: the publisher's definitions page or methodology "
+                    "note",
+                ],
+                required=True,
+                critical=False,
+                support_policy="primary_attribution",
+            ),
+            "According to EIA, behind-the-meter storage is excluded from the "
+            "reported utility-scale capacity total in the United States for "
+            "2024.",
+        ),
+    ]
+
+    for target, text in targets:
+        atoms = extract_text_atoms(text, claim_id="ideal")
+        assert any(
+            atom_answers_target(atom, target, question=_AUDIT_QUESTION)
+            for atom in atoms
+        ), target.target_id

@@ -223,6 +223,7 @@ _DIMENSION_NAMES = frozenset(
         "value",
         "unit",
         "negated",
+        "assertion",
         "publication_date",
         "data_period",
         "forecast_horizon",
@@ -792,6 +793,139 @@ _ATTRIBUTION = re.compile(
     r"(?i:\b(?:according to|published by|reported by|per)\s+)"
     r"(?P<attribution>[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4})"
 )
+
+# A named issuer in front of its own reporting verb attributes the clause just
+# as "according to X" does, and the run's live claims used this form for every
+# figure they carried: "EIA reported that generators … added 10.4 GW" was
+# recorded unattributed while "According to EIA, generators … added 10.4 GW"
+# attributed to EIA, so the fact checker bound no claim to any target (audit
+# #2, replay C11). The vocabulary is explicit and bounded, like every other
+# marker table here: these are the verbs that report a fact their subject
+# states, and a name in front of one of them is that fact's issuer.
+_REPORTING_VERBS = (
+    "reported",
+    "reports",
+    "stated",
+    "states",
+    "said",
+    "says",
+    "estimated",
+    "estimates",
+    "forecast",
+    "forecasts",
+    "expects",
+    "expect",
+    "expected",
+    "projected",
+    "projects",
+    "found",
+    "finds",
+    "indicated",
+    "indicates",
+    "noted",
+    "notes",
+    "announced",
+    "announces",
+)
+_REPORTING_VERB_ALTERNATION = "|".join(_REPORTING_VERBS)
+
+# The name run in front of a reporting verb. Bounded at five tokens, the same
+# bound the prepositional form uses, so a sentence-initial determiner or
+# pronoun cannot sweep a whole clause into the attribution.
+_NAME_RUN = r"[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4}"
+
+# Between the name and its verb may stand the document the issuer published —
+# "EIA's August 20, 2025 In-brief analysis reported that …", "EIA forecast in
+# its February 24, 2025 analysis that …". The run is bounded and may not cross
+# a "that", so it can never bridge two clauses to reach an unrelated verb.
+_SUBJECT_VERB_ATTRIBUTION = re.compile(
+    r"(?P<attribution>" + _NAME_RUN + r")"
+    r"(?:\s+(?!that\b)[\w,.&'/-]+){0,6}?"
+    r"\s+(?i:(?P<verb>" + _REPORTING_VERB_ALTERNATION + r"))\b"
+)
+
+# What a reporting verb has to introduce to be a reporting verb here: a
+# reported clause ("… reported that capacity grew"), the end of the clause
+# ("…, EIA reported."), or a stated object ("EIA said the addition set a
+# record"). The "that" is refused when a copula follows it, because "the EIA
+# forecast that was published in February" reports nothing.
+_REPORTED_THAT = re.compile(
+    r"(?i:\s+that\s+)"
+    r"(?!(?:was|were|is|are|been|being|has|have|had|can|could|will|would|"
+    r"should|may|might|must)\b)"
+)
+_REPORTED_CLAUSE_WINDOW = 120
+
+# What a reporting verb may state as its object: "EIA said the 2024 addition
+# set a record", "EIA expects 18.2 GW of storage to be added in 2025". A
+# determiner, a possessive, a pronoun, or a number opens a stated object; a
+# copula or auxiliary does not, which is what keeps a noun use of the verb
+# ("the EIA forecast was published in February") out of the vocabulary.
+_REPORTED_OBJECT = re.compile(
+    r"(?i:\s*(?:the|a|an|this|these|those|its|their|his|her|our|my|it|they|"
+    r"he|she|we|you|no|another|some|many|most|all)\b|\s*\d)"
+)
+
+# The name positions that name nobody: a determiner or pronoun in front of a
+# reporting verb states that *someone* reported something, never who. The list
+# is explicit and holds whole captured names only, so "The Federal Energy
+# Regulatory Commission reported …" keeps its name.
+_NAME_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "they",
+        "he",
+        "she",
+        "we",
+        "you",
+        "i",
+        "there",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "of",
+        "to",
+        "from",
+        "with",
+        "as",
+        "but",
+        "and",
+        "or",
+        "if",
+        "when",
+        "while",
+        "after",
+        "before",
+        "since",
+        "during",
+        "according",
+        "new",
+        "both",
+        "some",
+        "many",
+        "most",
+        "all",
+        "no",
+        "not",
+        "other",
+        "another",
+    }
+)
+
+# "according to its <document>": the document is the claim's own issuer's, so
+# the clause is attributed to the issuer the *claim* names — and to nobody when
+# the claim names nobody.
+_REFERENCES_ITS_OWN_DOCUMENT = re.compile(r"(?i:\baccording to\s+its\b|\bin its\b)")
+
 _GEOGRAPHY = re.compile(
     r"\b(?:in|across|within|for)\s+(?P<geography>"
     r"(?:the\s+)?[A-Z][\w.'-]*(?:\s+[A-Z][\w.'-]*){0,4})"
@@ -1056,6 +1190,109 @@ def _first_group(pattern: re.Pattern[str], clause: str) -> str:
     if match is None:
         return ""
     return " ".join(match.group(1).split())
+
+
+def _possessive_owner(token: str) -> str | None:
+    """The owner named by a possessive token, or ``None`` for any other token."""
+    folded = token.casefold()
+    for suffix in ("'s", "\u2019s"):
+        if folded.endswith(suffix):
+            return token[: -len(suffix)]
+    return None
+
+
+def _clean_issuer(candidate: str) -> str:
+    """The issuer one captured name phrase names, or "" when it names none.
+
+    A possessive ends the name: "EIA's August 20, 2025 In-brief analysis
+    reported …" names EIA, and the document behind the possessive is what
+    reported, not a second issuer — so the phrase is cut at it, and "EIA's
+    analysis reported" and "EIA reported" fold to one issuer rather than two.
+    A bare determiner or pronoun names nobody at all.
+    """
+    cleaned = " ".join(candidate.split()).strip(" ,.;:")
+    tokens = cleaned.split()
+    for index, token in enumerate(tokens):
+        owner = _possessive_owner(token)
+        if owner is not None:
+            cleaned = " ".join([*tokens[:index], owner]).strip()
+            break
+    if not cleaned or cleaned.casefold() in _NAME_STOPWORDS:
+        return ""
+    return cleaned
+
+
+def _introduces_a_reported_clause(clause: str, *, verb_end: int) -> bool:
+    """Whether what follows a reporting verb is the fact it reports.
+
+    Four shapes, and only four: a reported clause ("… reported that capacity
+    grew"), the end of the clause ("…, EIA reported."), a stated object ("EIA
+    said the 2024 addition set a record", "EIA expects 18.2 GW …"), and a
+    trailing punctuation mark. A copula or auxiliary directly after the verb
+    is refused, because "the EIA forecast that was published in February"
+    reports nothing.
+    """
+    rest = clause[verb_end:]
+    if not rest.strip():
+        return True
+    if rest.lstrip()[:1] in (",", ".", ";", ":"):
+        return True
+    if _REPORTED_THAT.search(rest[: _REPORTED_CLAUSE_WINDOW]) is not None:
+        return True
+    return _REPORTED_OBJECT.match(rest) is not None
+
+
+def _subject_verb_attribution(clause: str) -> str:
+    """The issuer named in front of its own reporting verb, if the clause has one.
+
+    The scan is left to right, so the outermost named subject of the clause
+    wins: in "Wood Mackenzie's analysis of the EIA forecast said …" the issuer
+    is Wood Mackenzie, not the document it examined. A verb whose clause
+    carries no report at all — "the EIA forecast that was published in
+    February" — is refused by :func:`_introduces_a_reported_clause`.
+    """
+    for match in _SUBJECT_VERB_ATTRIBUTION.finditer(clause):
+        if not _introduces_a_reported_clause(
+            clause, verb_end=match.end("verb")
+        ):
+            continue
+        name = _clean_issuer(match.group("attribution"))
+        if name:
+            return name
+    return ""
+
+
+def _attribution_for(clause: str, *, claim_issuer: str) -> str:
+    """The issuer one clause attributes its fact to, or "".
+
+    Three spellings, in precedence order: the prepositional form this contract
+    has always read, the named issuer in front of its reporting verb, and the
+    claim's own issuer when the clause sends the reader to that issuer's
+    document ("according to its January 2025 inventory"). A clause with none of
+    them — a bare "it reported", a sentence with no named source — stays
+    unattributed, because an attribution this contract cannot name is one it
+    must not invent.
+    """
+    named = _clean_issuer(_first_group(_ATTRIBUTION, clause))
+    if named:
+        return named
+    named = _subject_verb_attribution(clause)
+    if named:
+        return named
+    if claim_issuer and _REFERENCES_ITS_OWN_DOCUMENT.search(clause):
+        return claim_issuer
+    return ""
+
+
+def _claim_issuer(text: str) -> str:
+    """The first issuer a claim names anywhere, for its own-document clauses."""
+    for clause in _split_clauses(text):
+        named = _clean_issuer(_first_group(_ATTRIBUTION, clause))
+        if not named:
+            named = _subject_verb_attribution(clause)
+        if named:
+            return named
+    return ""
 
 
 def _predicate_match(
@@ -1562,6 +1799,7 @@ def extract_text_atoms(
     """
     shared_evidence = list(evidence_ids)
     shared_targets = list(target_ids)
+    issuer = _claim_issuer(text)
     atoms: list[AtomicProposition] = []
     for index, clause in enumerate(_split_clauses(text), start=1):
         period_match = _PERIOD_PATTERN.search(clause)
@@ -1635,7 +1873,7 @@ def extract_text_atoms(
                 ),
                 population="" if (share or measured) else phrase,
                 denominator=phrase if share else "",
-                attribution=_first_group(_ATTRIBUTION, clause),
+                attribution=_attribution_for(clause, claim_issuer=issuer),
                 forecast_status=forecast.casefold(),
                 negated=_NEGATION.search(clause) is not None,
                 parent_claim_id=claim_id,
@@ -1877,6 +2115,129 @@ _DIMENSION_KINDS: tuple[tuple[tuple[str, ...], str], ...] = (
 _NON_PROSE_DIMENSION_PREFIXES = ("evidence period:", "answer form:")
 
 
+# The obligation a plan states with a quantity kind is checked against the
+# numeric ``value`` dimension — unless the requirement's own detail asks for a
+# fact. "measure: grid-scale battery power capacity added, in MW" asks how
+# much, and only a number answers it; "measure: rating basis (AC or DC)",
+# "measure: inclusion rule and counting treatment" and "measure: stated
+# grid-connection requirement" ask what a convention IS, and a clause that
+# states it without a number answers it exactly. Reading every ``measure:`` as
+# numeric made four of the live plan's eleven targets unanswerable by any claim
+# (audit #3, replay C10).
+#
+# Two explicit vocabularies decide it, in this order:
+#
+# * a *convention* noun means the requirement asks what a rule, basis, or
+#   treatment is, whatever else the detail says ("… of the reported capacity
+#   figures" is about the basis, not the capacity);
+# * otherwise the requirement asks for a quantity when its detail names a unit,
+#   writes a number, or names a countable noun.
+#
+# A requirement written as a bare dimension name ("value", "capacity") is the
+# plan's own vocabulary for the quantity itself and is never re-read as
+# qualitative.
+_QUANTITY_DIMENSION = "value"
+# The dimension a qualitative measure obligation is checked against: the clause
+# must state what it is about. It is deliberately weak — judging whether prose
+# answers "what is the rating basis" is the adjudicator's work, not this
+# contract's — and it still refuses a clause that names no subject at all.
+_QUALITATIVE_DIMENSION = "assertion"
+_CONVENTION_NOUNS = (
+    "basis",
+    "rule",
+    "rules",
+    "requirement",
+    "requirements",
+    "treatment",
+    "definition",
+    "definitions",
+    "inclusion",
+    "exclusion",
+    "convention",
+    "conventions",
+    "methodology",
+    "method",
+    "policy",
+    "classification",
+    "scope",
+    "criterion",
+    "criteria",
+    "mechanism",
+    "condition",
+    "treatment of",
+)
+_COUNTABLE_NOUNS = (
+    "number",
+    "count",
+    "amount",
+    "quantity",
+    "total",
+    "sum",
+    "average",
+    "mean",
+    "median",
+    "share",
+    "percentage",
+    "percent",
+    "rate",
+    "ratio",
+    "index",
+    "score",
+    "price",
+    "cost",
+    "spending",
+    "revenue",
+    "budget",
+    "funding",
+    "investment",
+    "production",
+    "output",
+    "generation",
+    "consumption",
+    "emissions",
+    "mileage",
+    "distance",
+    "duration",
+    "weight",
+    "volume",
+    "capacity",
+    "level",
+    "value",
+    "threshold",
+    "population",
+    "headcount",
+    "ridership",
+)
+_CONVENTION_NOUN_PATTERN = re.compile(
+    r"(?<!\w)(?:" + "|".join(_CONVENTION_NOUNS) + r")(?!\w)"
+)
+_COUNTABLE_NOUN_PATTERN = re.compile(
+    r"(?<!\w)(?:" + "|".join(_COUNTABLE_NOUNS) + r")(?!\w)"
+)
+# The unit forms, minus the bare sign, which needs its own test because "40%"
+# leaves no letter boundary in front of it.
+_UNIT_WORD_PATTERN = re.compile(
+    r"(?<![a-z0-9])(?:"
+    + "|".join(
+        re.escape(form) for form in _UNIT_FORMS if form != "%"
+    )
+    + r")(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _demands_a_quantity(detail: str) -> bool:
+    """Whether a measure requirement's own detail asks for a number."""
+    folded = _canonical(detail)
+    if _CONVENTION_NOUN_PATTERN.search(folded):
+        return False
+    if "%" in folded or _NUMBER_TOKEN.search(folded):
+        return True
+    if _UNIT_WORD_PATTERN.search(folded):
+        return True
+    return _COUNTABLE_NOUN_PATTERN.search(folded) is not None
+
+
 def checkable_dimensions(required_dimension: str) -> tuple[str, ...]:
     """The atom dimensions one planned requirement can be checked against.
 
@@ -1885,6 +2246,10 @@ def checkable_dimensions(required_dimension: str) -> tuple[str, ...]:
     shown to state a dimension it cannot state. That is the conservative
     direction Section 2.3 asks for — a target stays unattributed rather than
     being credited to prose that never met it.
+
+    A quantity requirement whose detail asks a *qualitative* question maps to
+    the assertion dimension instead of the numeric value, so a clause that
+    states the fact answers it; see :data:`_CONVENTION_NOUNS`.
     """
     folded = _canonical(required_dimension)
     if not folded or folded.startswith(_NON_PROSE_DIMENSION_PREFIXES):
@@ -1895,13 +2260,37 @@ def checkable_dimensions(required_dimension: str) -> tuple[str, ...]:
             found.append(name)
     if found:
         return tuple(found)
-    head = folded.split(":", 1)[0]
+    head, _, detail = folded.partition(":")
     for keywords, dimension in _DIMENSION_KINDS:
         if any(keyword in head for keyword in keywords):
+            if (
+                dimension == _QUANTITY_DIMENSION
+                and detail.strip()
+                and not _demands_a_quantity(detail)
+            ):
+                return (_QUALITATIVE_DIMENSION,)
             return (dimension,)
     if folded in _DIMENSION_NAMES:
         return (folded,)
     return ()
+
+
+def _dimension_states(atom: AtomicProposition) -> frozenset[str]:
+    """The dimensions an atom states, for the *coverage* check.
+
+    :func:`stated_dimensions` is the merge-facing view and deliberately leaves
+    ``subject`` and ``predicate`` out: two clauses that state neither are not
+    thereby one assertion, and no merge may rest on that. Coverage asks a
+    different question — does this clause assert anything about a named subject
+    at all — so the qualitative assertion dimension is added here, where it can
+    only ever credit an atom for a qualitative obligation. Widening the
+    merge-facing view instead would make almost every compatible pair
+    "identical", which is the refusal that view exists to keep.
+    """
+    stated = set(stated_dimensions(atom))
+    if _canonical(atom.subject):
+        stated.add(_QUALITATIVE_DIMENSION)
+    return frozenset(stated)
 
 
 def atom_answers_dimensions(
@@ -1919,7 +2308,7 @@ def atom_answers_dimensions(
     counts only when the question itself asks for that metadata, so a
     publication date can never stand in for a deployment mechanism.
     """
-    stated = stated_dimensions(atom)
+    stated = _dimension_states(atom)
     for required in required_dimensions:
         folded = _canonical(required)
         if folded == _canonical(LEGACY_COVERAGE_DIMENSION):
