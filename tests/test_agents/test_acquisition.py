@@ -14,12 +14,18 @@ from deep_research.agents.acquisition import (
     READ_ADMISSION_OPERATION,
     AcquisitionPolicy,
     ManifestSequence,
+    WEB_PASSAGE_CHARS,
+    admit_read_result,
     build_acquisition_context,
     build_read_record_from_tool_result,
     cache_reuse_problem,
     next_acquisition_action,
 )
-from deep_research.agents.evidence import build_read_record, merge_evidence_units
+from deep_research.agents.evidence import (
+    build_read_record,
+    merge_evidence_units,
+    normalized_content_sha256,
+)
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.researcher import (
     FindingDraft,
@@ -205,6 +211,169 @@ def test_short_access_shell_is_not_admitted_as_usable_evidence() -> None:
         build_read_record_from_tool_result(result, session_id="session-1")
         is None
     )
+
+
+# The navigation block, the solar paragraph, and the battery-storage paragraph
+# of the EIA Today in Energy page the audited run read (detail.php?id=64586),
+# in the page's own order: site navigation and a headline first, the figure
+# that answers the question last. Stored as one passage — which is what the run
+# did — the figure sits past every character a packet could show, and the claim
+# that states it was recorded as unsupported.
+_EIA_NAVIGATION = (
+    "Solar, battery storage to lead new U.S. generating capacity additions in "
+    "2025 - U.S. Energy Information Administration (EIA) Skip to "
+    "sub-navigation U.S. Energy Information Administration - EIA - Independent "
+    "Statistics and Analysis Menu Statistics Analysis Tools Education News "
+    "Search Today in Energy Skip to page content Recent articles Browse by tag "
+    "liquid fuels natural gas electricity oil/petroleum production/supply "
+    "crude oil consumption/demand generation prices map states exports/imports "
+    "international coal renewables weather forecasts/projections gasoline "
+    "capacity steo (short-term energy outlook) Prices Archive About Glossary "
+    "FAQS In-brief analysis February 24, 2025"
+)
+_EIA_SOLAR_PARAGRAPH = (
+    "Solar. In 2024, generators added a record 30 GW of utility-scale solar "
+    "to the U.S. grid, accounting for 61% of capacity additions last year. We "
+    "expect this trend will continue in 2025, with 32.5 GW of new "
+    "utility-scale solar capacity to be added. Texas (11.6 GW) and California "
+    "(2.9 GW) will account for almost half of the new utility-scale solar "
+    "capacity addition in 2025."
+)
+_EIA_BATTERY_PARAGRAPH = (
+    "Battery storage. In 2025, capacity growth from battery storage could set "
+    "a record as we expect 18.2 GW of utility-scale battery storage to be "
+    "added to the grid. U.S. battery storage already achieved record growth "
+    "in 2024 when power providers added 10.3 GW of new battery storage "
+    "capacity."
+)
+_EIA_PAGE_URL = "https://www.eia.gov/todayinenergy/detail.php?id=64586"
+_EIA_PAGE_TITLE = (
+    "Solar, battery storage to lead new U.S. generating capacity additions "
+    "in 2025"
+)
+
+
+def _eia_page_body() -> str:
+    return "\n\n".join(
+        (_EIA_NAVIGATION, _EIA_SOLAR_PARAGRAPH, _EIA_BATTERY_PARAGRAPH)
+    )
+
+
+def _eia_web_result() -> ToolResult:
+    return ToolResult(
+        tool_name="web_scraper",
+        success=True,
+        data={
+            "url": _EIA_PAGE_URL,
+            "requested_url": _EIA_PAGE_URL,
+            "resolved_url": _EIA_PAGE_URL,
+            "title": _EIA_PAGE_TITLE,
+            "text": _eia_page_body(),
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+
+def test_a_web_read_is_split_into_bounded_paragraph_passages() -> None:
+    """A page is several passages, so a packet can address the figure's sentence.
+
+    The audited run stored every web page as one passage, so the first
+    characters of the page — its site navigation — were all an adjudicator
+    could be shown, and claims whose figures sat 2,000 characters in were
+    recorded as unsupported.
+    """
+    result = _eia_web_result()
+
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+
+    assert read is not None
+    body = str(result.data["text"])
+    assert list(read.passages) == [
+        f"chunk-{index}" for index in range(len(read.passages))
+    ]
+    assert len(read.passages) > 1
+    # Lossless: the passages are the body, cut at paragraph boundaries, and a
+    # complete read's identity is its body hash, so the split cannot renumber
+    # the read or change what it is.
+    assert "".join(read.passages.values()) == body
+    assert read.content_sha256 == normalized_content_sha256(body)
+    assert all(
+        passage.strip() and len(passage) <= WEB_PASSAGE_CHARS
+        for passage in read.passages.values()
+    )
+
+    carrying = [
+        locator
+        for locator, passage in read.passages.items()
+        if "18.2 GW" in passage
+    ]
+    assert len(carrying) == 1
+    assert carrying[0] != "chunk-0"
+    assert select_relevant_passages(
+        read.passages, "18.2 GW battery storage forecast for 2025", 1
+    ) == carrying
+
+
+def test_splitting_a_page_does_not_change_its_read_identity() -> None:
+    """One body read twice in a session is one read, however it is laid out.
+
+    The passage split is a layout of the body, not part of its identity: the
+    same bytes read as one passage and as paragraph passages must resolve to
+    one ``read_id``, or a later stage's citation to the page would name a
+    different read than the one the registry holds.
+    """
+    result = _eia_web_result()
+    body = str(result.data["text"])
+
+    split = build_read_record_from_tool_result(result, session_id="session-1")
+    unsplit = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=_EIA_PAGE_URL,
+        resolved_url=_EIA_PAGE_URL,
+        title=_EIA_PAGE_TITLE,
+        retrieved_at="2026-09-23T00:00:00+00:00",
+        text=body,
+        passages={"chunk-0": body},
+        extraction_complete=True,
+    )
+
+    assert split is not None
+    assert split.read_id == unsplit.read_id
+    assert split.content_sha256 == unsplit.content_sha256
+
+
+def test_a_split_page_defers_the_passages_past_the_selection_bound() -> None:
+    """Selection still hands over a bounded batch; the rest is recorded.
+
+    Splitting a page must not turn the passage bound into a silent drop:
+    everything the selection did not take stays visible as a disposition, so
+    a passage nobody selected is never read as a passage that does not exist.
+    """
+    result = _eia_web_result()
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+    assert read is not None
+    assert len(read.passages) > 2
+
+    admission = admit_read_result(
+        result,
+        session_id="session-1",
+        query="18.2 GW battery storage forecast for 2025",
+        selected_limit=1,
+    )
+
+    assert admission is not None
+    (selected,) = admission.evidence.values()
+    assert "18.2 GW" in selected.excerpt
+    assert [item.reason for item in admission.dispositions] == [
+        "deferred_capacity"
+    ] * (len(read.passages) - 1)
+    assert {item.item_id for item in admission.dispositions} == {
+        f"{read.read_id}/{locator}"
+        for locator in read.passages
+        if locator != selected.locator
+    }
 
 
 def test_shared_successful_read_cache_reselects_for_a_second_target() -> None:

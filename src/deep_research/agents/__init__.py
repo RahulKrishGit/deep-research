@@ -12,6 +12,7 @@ from deep_research.agents.acquisition import (
     build_read_record_from_tool_result,
     cache_reuse_problem,
     next_acquisition_action,
+    split_web_read_body,
 )
 from deep_research.agents.base import (
     OUTPUT_LIMIT_ATTEMPT_EFFORTS,
@@ -1107,6 +1108,7 @@ __all__ = [
     "source_fitness",
     "source_origin_id",
     "publisher_identity",
+    "split_web_read_body",
     "sub_topic_completed_event",
     "sub_topic_skipped_error",
     "sub_topic_started_event",

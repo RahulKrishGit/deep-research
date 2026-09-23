@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -48,6 +49,17 @@ OriginName = Literal["researcher", "fact_checker"]
 # fit inside the configured budget. Kept short so it fits wherever a packet is
 # allowed to exist at all, and never a sliced record.
 _CONTEXT_OVERFLOW = "continuation_ids=packet_overflow"
+
+# How much text one passage of a web page may carry. A page is not one passage:
+# it is read as paragraph-bounded passages, so selection and packets can
+# address the sentence that carries a figure instead of the site navigation
+# that happens to precede it.
+WEB_PASSAGE_CHARS = 600
+
+# The end of a paragraph, separator included. ``\r\n\r\n`` and a line of spaces
+# between two blocks are both a break; the cut always falls *after* it, so a
+# passage keeps the whitespace that belongs to it and the split stays lossless.
+_PARAGRAPH_BREAK = re.compile(r"\n[ \t\r]*\n")
 
 # How much text a page may carry and still be read as an automated-access
 # shell. A browser check, a consent wall, or a denial page is always a few
@@ -115,6 +127,61 @@ def _chunk_text(chunks: Sequence[Mapping[str, object]]) -> str:
     )
 
 
+def split_web_read_body(
+    text: str, *, limit: int = WEB_PASSAGE_CHARS
+) -> list[str]:
+    """Split a web page body into contiguous, non-blank, bounded passages.
+
+    Every passage is verbatim text of the body and the passages concatenate
+    back to it exactly, so the content hash of a read — and therefore its
+    identity — is what one unsplit read of the same bytes would have. Cuts
+    fall after a paragraph break where one fits inside the bound, otherwise
+    after the last whitespace, so a passage ends mid-word only where the
+    document has no whitespace to cut on.
+
+    A body shorter than the bound is one passage, which is what a short page
+    was before; the split only ever changes how a long page is addressed.
+    """
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    cuts = [0]
+    position = 0
+    length = len(text)
+    while length - position > limit:
+        window = position + limit
+        breaks = [
+            match.end()
+            for match in _PARAGRAPH_BREAK.finditer(text, position, window)
+        ]
+        cut = breaks[-1] if breaks and breaks[-1] > position else 0
+        if not cut:
+            whitespace = max(
+                text.rfind(" ", position, window),
+                text.rfind("\n", position, window),
+                text.rfind("\t", position, window),
+            )
+            cut = whitespace + 1 if whitespace >= position else window
+        if cut <= position:
+            cut = window
+        cuts.append(cut)
+        position = cut
+    cuts.append(length)
+    passages = [text[start:end] for start, end in zip(cuts, cuts[1:])]
+    # A passage that holds nothing but whitespace is not a passage the contract
+    # admits, and it is not text the body does not have: it joins its
+    # neighbour, so the split stays lossless and every locator is readable.
+    merged: list[str] = []
+    for passage in passages:
+        if merged and not passage.strip():
+            merged[-1] += passage
+        else:
+            merged.append(passage)
+    if len(merged) > 1 and not merged[0].strip():
+        merged[1] = merged[0] + merged[1]
+        merged = merged[1:]
+    return merged
+
+
 def _payload_read_parts(
     result: ToolResult,
 ) -> tuple[str, str, str, str, str, dict[str, str], bool, str | None] | None:
@@ -134,7 +201,8 @@ def _payload_read_parts(
         if not (text and requested and resolved):
             return None
         chunks: list[Mapping[str, object]] = [
-            {"text": text, "chunk_index": 0}
+            {"text": passage, "chunk_index": index}
+            for index, passage in enumerate(split_web_read_body(text))
         ]
         reader = "web_scraper"
         title = _text(data.get("title")) or resolved
@@ -1840,4 +1908,5 @@ __all__ = [
     "build_read_record_from_tool_result",
     "next_acquisition_action",
     "select_relevant_passages",
+    "split_web_read_body",
 ]
