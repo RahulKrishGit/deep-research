@@ -14,11 +14,19 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, TypeAlias
+from typing import Literal, TypeAlias, get_args
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.claim_clusters import (
+    METADATA_DIMENSIONS,
+    atom_answers_dimensions,
+    atom_answers_target,
+    checkable_dimensions,
+    extract_text_atoms,
+    metadata_dimension_asked_for,
+)
 from deep_research.agents.errors import (
     AgentConfigurationError,
     PlanningError,
@@ -471,9 +479,22 @@ PLAN_INSTRUCTION = (
     "success criterion describing what evidence would settle it, and a "
     "priority where 1 is the most important.\n"
     "List the sub-topics in priority order, most important first.\n"
-    "When the question concerns a technology or intervention, ensure the "
-    "plan explicitly covers both benefits and risks (or harms) in the "
-    "subtopic titles or search queries.\n"
+    # The instruction used to require a benefits-and-risks sub-topic for any
+    # technology question, which is exactly the scope widening the plan review
+    # names as a defect ("Name any target that widens the scope"), so the
+    # planner's own instruction and its own review contradicted each other.
+    # Coverage is now conditional on the question, and the demand for content
+    # the question never made is named where it comes from: the run's plan
+    # asked for MWh beside a capacity question, for the agency's short-term
+    # outlook series by name, and for a second independent publisher beside
+    # figures only one agency issues (audit #3, C5).
+    "Cover benefits and risks (or harms) when the question asks about them "
+    "— 'is it good', 'what are the drawbacks' — and demand nothing the "
+    "question does not ask for: not a different unit of measure than the "
+    "one it names, not a named publication series, and not a second "
+    "publisher where one issuer settles the fact. A sub-topic the question "
+    "did not call for widens its scope, which the plan review names as a "
+    "defect.\n"
     # A lexical ban used to forbid any capitalized word or four-digit year
     # the question did not contain. Search cannot reach a named regulation,
     # standard, jurisdiction, agency, or current-year primary source without
@@ -489,26 +510,34 @@ PLAN_INSTRUCTION = (
     "bundling them.\n"
     "Each success criterion must name the evidence type, geography, and "
     "measurement or decision needed to consider the sub-topic answered.\n"
-    # Verification needs a source independent of the one that produced a claim:
-    # ``fact_checker.independent_domains`` refuses to corroborate a claim with a
-    # page on the claim's own publisher's domain, and a claim with no independent
-    # source is recorded as ``insufficient_evidence``. Measured twice: the
-    # pipeline now reads plenty — 64 document reads and 11 scored sources in one
-    # run — and still produced ZERO claims with a second independent publisher,
-    # because a sub-topic is finished as soon as a single source answers it. The
-    # earlier wording asked for corroboration *beside* the criteria, which was
-    # advice the Researcher could satisfy and then stop anyway. The demand now
-    # belongs to the criterion it stops on.
-    "Every success criterion must require independent corroboration as part of "
-    "what settles the sub-topic: state that at least two sources from different "
-    "publishers must state each load-bearing number or finding, and say how a "
-    "reader would recognise the second one. A fact only one source states is "
-    "recorded as unverified no matter how authoritative that source is, so a "
-    "sub-topic is not answered while a single publisher states it.\n"
+    # Verification needs a source independent of the one that produced a
+    # claim: ``fact_checker.independent_domains`` refuses to corroborate a
+    # claim with a page on the claim's own publisher's domain, and a claim
+    # with no independent source is recorded as ``insufficient_evidence``.
+    # The demand used to be unconditional, which made every obligation need a
+    # pair — including the figures one agency publishes, where no second
+    # measurement exists. The run spent 139 tool calls and 26 of its 44
+    # minutes on 11 of 14 claims looking for a pair that could not exist, and
+    # ended with 0 of 11 targets answered (audit #3, #10). The demand now
+    # belongs to the policy the evidence earns, and the policy is a field the
+    # plan states per target.
+    "Name every target's support_policy, and let the evidence settle it. Use "
+    "independent_pair when a second, independent measurement of the fact can "
+    "exist — a comparison, or a quantity more than one body measures — and "
+    "then require that pair in the success criterion: state that at least "
+    "two sources from different publishers must state the number or finding, "
+    "and say how a reader would recognise the second one. Use "
+    "primary_attribution when a single authoritative issuer settles the fact "
+    "— its own count, rule, definition, or methodology — and then do not "
+    "demand a second publisher for it: a fact only one source states is "
+    "recorded as unverified no matter how authoritative that source is, no "
+    "independent pair of one agency's figure exists, and a criterion that "
+    "demands one leaves the obligation unanswered.\n"
     "Aim the queries at primary sources — regulations, standards, filings, "
     "and datasets that state the facts directly — and say which class of "
-    "source each query should reach. Include, for each sub-topic, a query "
-    "aimed at an independent second source for its key facts.\n"
+    "source each query should reach. For a target planned under "
+    "independent_pair, include a query aimed at its independent second "
+    "source.\n"
     # The as-of date and the geographic scope used to be prose the model was
     # asked to write into its own queries, with no field of its own. It wrote
     # whatever year it believed was current — 2024, in a September 2026
@@ -527,7 +556,10 @@ PLAN_INSTRUCTION = (
     "Mark a target critical when the question cannot be answered without it, "
     "and give every target the dimensions a reader needs to judge it: the "
     "measure, the period, the geography, and the kind of source that settles "
-    "it.\n"
+    "it. Do not add a metadata dimension — a publication date, a retrieval "
+    "date, a data period, an effective date, a generation date — unless the "
+    "question itself asks for that date: metadata is context, not evidence, "
+    "and a target resting on it cannot be answered.\n"
     "Make every success criterion measurable, so a reader can tell from the "
     "evidence it names whether the sub-topic was answered.\n"
     "Two sub-topics must never share a title."
@@ -536,6 +568,17 @@ PLAN_INSTRUCTION = (
 # One example, because there is no valid "empty plan" case to show: the plan
 # requirements already state the 3-7 sub-topic bound, and an empty list would
 # be a different failure mode rather than the opposite end of a scale.
+#
+# The example is a plan the planner's own checks accept, which is the only
+# property an example can teach: an earlier one modelled a "benefits and
+# risks" sub-topic for a comparison question (scope widening) and a target
+# asking two things at once ("Which documented risks does each option carry,
+# and by which issuer?") — both of which the plan review, whose rules the
+# instruction now states, names as defects. Every target here asks one
+# question, and each states the support policy its evidence earns: a
+# ridership figure is the operator's own count (``primary_attribution``),
+# while a capital cost is estimated independently by more than one body
+# (``independent_pair``, whose criterion is the one that asks for the pair).
 _PLAN_REPLY_EXAMPLES = (
     (
         "Example input: compare bus and rail options for a city.",
@@ -550,34 +593,40 @@ _PLAN_REPLY_EXAMPLES = (
         '{"question":"What ridership did the bus option carry in the most '
         'recent reported year?","required_dimensions":["measure: annual '
         'ridership","period: most recent reported year","geography: the '
-        'city"],"critical":true},'
-        '{"question":"What ridership did the rail option carry in the same '
-        'reported year?","required_dimensions":["measure: annual ridership",'
-        '"period: the same reported year as the bus figure","geography: the '
-        'city"],"critical":true}]},'
+        'city","source: the operator\'s published ridership report"],'
+        '"critical":true,"support_policy":"primary_attribution"},'
+        '{"question":"What ridership did the rail option carry in the most '
+        'recent reported year?","required_dimensions":["measure: annual '
+        'ridership","period: most recent reported year","geography: the '
+        'city","source: the operator\'s published ridership report"],'
+        '"critical":true,"support_policy":"primary_attribution"}]},'
         '{"title":"cost and delivery",'
         '"rationale":"Compare the resources and time required to deliver each '
         'option.",'
         '"search_queries":["city bus rail capital operating cost delivery '
         'time"],"success_criteria":['
-        '"Comparable cost and delivery estimates are available."],"priority":2,'
+        '"Comparable cost estimates are available from two independent '
+        'sources."],"priority":2,'
         '"evidence_targets":['
         '{"question":"What capital cost per route kilometre does each option '
         'report?","required_dimensions":["measure: capital cost per route '
-        'kilometre","period: the most recent published estimate"],'
-        '"critical":false}]},'
-        '{"title":"benefits and risks",'
-        '"rationale":"Identify the main outcomes and failure modes for each '
-        'option.",'
-        '"search_queries":["city bus rail benefits risks evidence"],'
+        'kilometre","period: the most recent published estimate",'
+        '"geography: the city","source: the cost analysis each body '
+        'publishes"],'
+        '"critical":false,"support_policy":"independent_pair"}]},'
+        '{"title":"service reliability",'
+        '"rationale":"Establish how reliably each option delivers its '
+        'timetable.",'
+        '"search_queries":["city bus rail on-time performance reliability"],'
         '"success_criteria":['
-        '"Measured benefits and documented risks are available for both '
-        'options."],"priority":3,'
+        '"A measured on-time performance figure is available for each '
+        'option."],"priority":3,'
         '"evidence_targets":['
-        '{"question":"Which documented risks does each option carry, and by '
-        'which issuer?","required_dimensions":["measure: documented risk",'
-        '"source: the issuing authority","geography: the city"],'
-        '"critical":false}]}'
+        '{"question":"What on-time performance did each option report?",'
+        '"required_dimensions":["measure: on-time performance, in percent",'
+        '"period: the most recent reported year","geography: the city",'
+        '"source: the operator\'s performance report"],'
+        '"critical":false,"support_policy":"primary_attribution"}]}'
         "]}",
     ),
 )
@@ -596,6 +645,20 @@ class EvidenceTargetDraft(ContractModel):
     question: str
     required_dimensions: list[str]
     critical: bool
+    support_policy: str = ""
+    """The policy the plan proposes for this obligation, or "" to accept the
+    planner's own rule.
+
+    Deliberately a defaulted ``str`` rather than a ``Literal`` or a required
+    field, for the reason ``SubTopicDraft`` declares no constraints at all:
+    this model becomes a strict JSON schema, and a plan whose reply omits a
+    policy is still a plan. Whether independent measurement of a fact exists
+    is a fact about the evidence, not about the question's wording — a figure
+    one agency publishes has no second measurer, while a comparison needs two
+    independent accounts by construction — so the model names it per target,
+    and ``support_policy_for_target`` validates the name and keeps every
+    policy the question's own form earns.
+    """
 
 
 class SubTopicDraft(ContractModel):
@@ -915,12 +978,21 @@ def _comparison_evidence_for(question: str) -> _ComparisonEvidence:
     return "absent"
 
 
-def _support_policy_from(
+def _earned_support_policy(
     normalized: str,
     *,
     comparison_evidence: _ComparisonEvidence,
-) -> _SupportPolicy:
-    """Classify evidence policy without a clock-dependent answer kind."""
+) -> _SupportPolicy | None:
+    """The policy a question's own form earns, or ``None`` when it earns none.
+
+    Every branch here is a *reason*: a comparison needs two independent
+    accounts by construction, a computed quantity needs its premises
+    supported, and an official rule or definition is settled by the body that
+    issues it. ``None`` is not a reason — it is where the local rule has
+    nothing to say, and where a target whose evidence has one issuer can be
+    planned as ``primary_attribution`` instead of demanding a pair that cannot
+    exist (audit #3).
+    """
     if comparison_evidence == "explicit":
         return "independent_pair"
     if _mentions(normalized, _DERIVATION_MARKERS):
@@ -929,7 +1001,21 @@ def _support_policy_from(
         normalized, _PRIMARY_ATTRIBUTION_MARKERS
     ):
         return "primary_attribution"
-    return "independent_pair"
+    return None
+
+
+def _support_policy_from(
+    normalized: str,
+    *,
+    comparison_evidence: _ComparisonEvidence,
+) -> _SupportPolicy:
+    """Classify evidence policy without a clock-dependent answer kind."""
+    return (
+        _earned_support_policy(
+            normalized, comparison_evidence=comparison_evidence
+        )
+        or "independent_pair"
+    )
 
 
 def _question_classification(
@@ -1301,14 +1387,44 @@ def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
     return stamped
 
 
+def support_policy_for_target(*, question: str, proposed: str = "") -> str:
+    """The binding support policy for one target: the proposal, under the floor.
+
+    Section 2.1 requires the policy to be assigned before any verdict exists,
+    and the planner assigns it here, so no later stage may downgrade an
+    obligation to pass a coverage gate.
+
+    Two halves, and the order matters. A question whose own *form* earns a
+    policy keeps it — a comparison is never downgraded to citing one authority
+    because a plan proposed to, an official rule stays the issuing body's to
+    state, and a computed quantity stays a derivation. Where the local rule
+    has no reason to give, the plan's own proposal decides, because whether
+    independent measurement of a fact exists is knowledge about the evidence:
+    the capacity one agency's inventory publishes has no second measurer, so
+    demanding a verified pair makes the target unanswerable, while the run's
+    plan put 10 of its 11 obligations on ``independent_pair`` (audit #3, P0).
+    An unusable proposal falls back to the local rule, which is
+    ``independent_pair``.
+    """
+    earned = _earned_support_policy(
+        _normalized_question(question),
+        comparison_evidence=_comparison_evidence_for(question),
+    )
+    if earned is not None:
+        return earned
+    if proposed in get_args(_SupportPolicy):
+        return proposed
+    return "independent_pair"
+
+
 def _draft_targets(
     item: SubTopicDraft, coverage_id: str
 ) -> list[EvidenceTarget]:
     """Convert one draft's obligations into provisional ``EvidenceTarget``s.
 
     Provisional in exactly two ways: the ids are positional within the draft
-    (``_assign_coverage_ids`` re-stamps them once the plan is ordered), and
-    the support policy is the planner's own rule applied to the question (the
+    (``_assign_coverage_ids`` re-stamps them once the plan is ordered), and the
+    support policy is the planner's own rule applied to the question (the
     binding policy is stamped by ``apply_answer_contract``). Everything else —
     the question, the model's dimensions, ``critical`` — is carried through,
     so a draft that omits a question, lists no dimensions, or proposes more
@@ -1323,7 +1439,9 @@ def _draft_targets(
             required_dimensions=list(target.required_dimensions),
             required=True,
             critical=target.critical,
-            support_policy=support_policy_for(question=target.question),
+            support_policy=support_policy_for_target(
+                question=target.question, proposed=target.support_policy
+            ),
         )
         for position, target in enumerate(item.evidence_targets, start=1)
     ]
@@ -1478,13 +1596,231 @@ class _PlanProblem:
     ``structural`` marks the problems that decide whether anything can be
     researched at all: a sub-topic with no evidence target, and a target
     written as an assertion rather than a question. Those are the ones a run
-    still stops on. Everything else is advisory — a stale anchor and an
-    invented tolerance are judgements about meaning, which the review owns, and
-    a run that dies on one has thrown away a researchable plan.
+    still stops on. Everything else is advisory — a stale anchor, an invented
+    tolerance, an obligation no claim could be bound to, and a demand the
+    question never made are judgements about meaning, which the review owns,
+    and a run that dies on one has thrown away a researchable plan.
     """
 
     text: str
     kind: Literal["structural", "advisory"]
+
+
+# What a sub-topic or criterion may demand the question never asked for. The
+# planner's own instruction used to *require* a benefits-and-risks sub-topic
+# for any technology question, which is the widening the plan review names as
+# a defect: a plan stays inside the question it was given. The vocabulary is
+# explicit and small, like the currency and tolerance tables, because a
+# judgement about meaning is the review's and this check only names the one
+# class the planner itself used to mandate.
+_WIDENING_MARKERS = (
+    "benefit",
+    "risk",
+    "harm",
+    "drawback",
+    "downside",
+    "trade-off",
+    "tradeoff",
+    "pros and cons",
+    "advantages and disadvantages",
+)
+
+# A question that asks for a value judgement is asking about benefits and
+# harms in its own words — "Is AI good for healthcare?" — so a plan that
+# covers them is answering the question rather than widening it.
+_JUDGEMENT_MARKERS = (
+    "good for",
+    "good at",
+    "better than",
+    "worse than",
+    "best",
+    "worst",
+    "safe",
+    "safer",
+    "safest",
+    "worth it",
+    "worthwhile",
+    "should we",
+    "should i",
+)
+
+# A success criterion that demands a *second publisher*. Where a single
+# authoritative issuer publishes the fact, no second measurement of it exists,
+# so the demand is one the evidence can never meet — the run's plan asked for
+# independent corroboration of figures only EIA issues, and 11 of 14 claims
+# spent their whole tool budget looking for a pair that does not exist
+# (audit #3 and #10).
+_CORROBORATION_MARKERS = (
+    "independent",
+    "corroborated",
+    "corroborating",
+    "corroboration",
+    "second source",
+    "two sources",
+    "another source",
+    "different publishers",
+    "second publisher",
+    "two publishers",
+)
+
+# The interrogative words that make one demand of a question. A target that
+# conjoins two of them asks two things at once, which is the compound
+# obligation the plan review refuses ("a target that requires two measures,
+# two rule dates, or two jurisdictions to be settled is compound even when it
+# reads as one sentence").
+_DEMAND_MARKERS = (
+    "how",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "when",
+    "where",
+    "why",
+)
+_CONJUNCTION = re.compile(r"(?i)\s+and\s+|,\s*and\s+")
+
+# The claim prose the plan-time answerability check is run against. Every
+# dimension such a claim can state is stated in it, in the exact spelling the
+# atom contract reads: a named issuer ahead of the clause, a number with a
+# unit, a named geography, a year, a stated population, and a projected or
+# negated phrasing when the obligation asks for one. It is never a claim about
+# the world and never reaches a reader or a prompt: it answers the one
+# question a plan can ask of a target before any research runs — is there a
+# clause this contract could credit?
+_TEMPLATE_ISSUER = "Example Issuer"
+_TEMPLATE_GEOGRAPHY = "the United States"
+_TEMPLATE_VALUE = "10"
+_TEMPLATE_UNIT = "MW"
+
+
+def _template_answer(target: EvidenceTarget, contract: AnswerContract) -> str:
+    """The most favourable claim prose one target's own dimensions allow.
+
+    One clause that states every dimension the atom contract can read: a named
+    issuer ahead of it, a number with its unit, a named geography, a year, a
+    stated population or share when the obligation asks for one, and a
+    projected or negated phrasing where the target asks for that.
+    """
+    required = {
+        dimension
+        for requirement in target.required_dimensions
+        for dimension in checkable_dimensions(requirement)
+    }
+    scope = (
+        contract.geographic_scope
+        if contract.geographic_scope
+        not in ("unspecified", "global", "")
+        else _TEMPLATE_GEOGRAPHY
+    )
+    year = (
+        contract.as_of_date[:4]
+        if contract.as_of_date[:4].isdigit()
+        else "2024"
+    )
+    if "denominator" in required:
+        subject = "the reported share of the surveyed plants"
+        value = f"{_TEMPLATE_VALUE} percent"
+    elif "population" in required:
+        subject = "the reported count of the surveyed plants"
+        value = _TEMPLATE_VALUE
+    else:
+        subject = "the reported amount added"
+        value = f"{_TEMPLATE_VALUE} {_TEMPLATE_UNIT}"
+    verb = (
+        "is projected to reach"
+        if {"forecast_status", "forecast_horizon"} & required
+        else "was"
+    )
+    negation = "not " if "negated" in required else ""
+    return (
+        f"According to {_TEMPLATE_ISSUER}, {subject} {verb} {negation}"
+        f"{value} in {scope} in {year}."
+    )
+
+
+def _plan_answerability(
+    target: EvidenceTarget,
+    *,
+    contract: AnswerContract,
+) -> list[str] | None:
+    """The target's requirements no clause could satisfy, or ``None``.
+
+    The one question a plan can ask about a target before any research runs:
+    run the most favourable claim its own dimensions allow through
+    ``atom_answers_target`` — the same gate ``claim_attribution`` credits
+    targets with — and see whether it passes. ``None`` means some clause could
+    be bound to this target; a list names the requirements that stopped it.
+    A target that fails here fails for every claim that will ever be written
+    (the run's plan had five, audit #3), and naming it at plan time is what
+    lets the repair remove the obligation instead of discovering the gap after
+    the research is paid for.
+    """
+    atoms = extract_text_atoms(
+        _template_answer(target, contract),
+        claim_id="plan-answerability-check",
+    )
+    if any(
+        atom_answers_target(atom, target, question=contract.question)
+        for atom in atoms
+    ):
+        return None
+    return [
+        requirement
+        for requirement in target.required_dimensions
+        if not any(
+            atom_answers_dimensions(
+                atom, [requirement], question=contract.question
+            )
+            for atom in atoms
+        )
+    ]
+
+
+def _demands_corroboration(sub_topic: SubTopic) -> bool:
+    """Whether one sub-topic's criteria demand a second publisher."""
+    normalized = _normalized_question(
+        " ".join(sub_topic.success_criteria)
+    )
+    return _mentions(normalized, _CORROBORATION_MARKERS)
+
+
+def _conjoined_demands(question: str) -> list[str]:
+    """The separate demands one target's question makes, when it makes two."""
+    parts = [part for part in _CONJUNCTION.split(question.rstrip("?")) if part]
+    demands = [
+        part
+        for part in parts
+        if _mentions(_normalized_question(part), _DEMAND_MARKERS)
+    ]
+    return demands if len(demands) > 1 else []
+
+
+def _demanded_widening(sub_topic: SubTopic) -> list[str]:
+    """The benefits-and-risks content one sub-topic demands, if it demands any."""
+    demanded = " ".join(
+        [
+            sub_topic.title,
+            *sub_topic.search_queries,
+            *sub_topic.success_criteria,
+            *(
+                text
+                for target in sub_topic.evidence_targets
+                for text in (
+                    target.question,
+                    *target.required_dimensions,
+                )
+            ),
+        ]
+    )
+    normalized = _normalized_question(demanded)
+    return [
+        marker
+        for marker in _WIDENING_MARKERS
+        if _mentions(normalized, (marker,))
+    ]
+
 
 
 def _plan_problems(
@@ -1549,6 +1885,63 @@ def _plan_problems(
                         "advisory",
                     )
                 )
+            compound = _conjoined_demands(target.question)
+            if compound:
+                problems.append(
+                    _PlanProblem(
+                        f"{target.target_id} asks "
+                        f"{len(compound)} questions at once "
+                        f"({'; '.join(part.strip() for part in compound)}); "
+                        "split it into one obligation per target, because a "
+                        "target that needs two measures settled is compound "
+                        "however it reads",
+                        "advisory",
+                    )
+                )
+            unanswerable = _plan_answerability(target, contract=contract)
+            if unanswerable is not None:
+                problems.append(
+                    _PlanProblem(
+                        f"{target.target_id} cannot be bound to any claim: "
+                        f"{'; '.join(unanswerable)} names no dimension a "
+                        "clause can be credited for. Restate the obligation "
+                        "in terms a claim can state",
+                        "advisory",
+                    )
+                )
+        widening = _demanded_widening(sub_topic)
+        if widening and not (
+            _mentions(
+                _normalized_question(contract.question), _WIDENING_MARKERS
+            )
+            or _mentions(
+                _normalized_question(contract.question), _JUDGEMENT_MARKERS
+            )
+        ):
+            problems.append(
+                _PlanProblem(
+                    f"{sub_topic.coverage_id} demands "
+                    f"{', '.join(widening)} the question never asks about; a "
+                    "plan stays inside the question it was given, and the "
+                    "review names a sub-topic the question did not call for "
+                    "as scope widening",
+                    "advisory",
+                )
+            )
+        if _demands_corroboration(sub_topic) and any(
+            target.support_policy == "primary_attribution"
+            for target in sub_topic.evidence_targets
+        ):
+            problems.append(
+                _PlanProblem(
+                    f"{sub_topic.coverage_id} requires independent "
+                    "corroboration in a success criterion while it plans a "
+                    "target under primary_attribution; a fact one body "
+                    "publishes has no second measurement, so the criterion "
+                    "asks for evidence that cannot exist",
+                    "advisory",
+                )
+            )
         for criterion in sub_topic.success_criteria:
             stale = stale_year_anchors(
                 criterion,
@@ -1635,11 +2028,20 @@ def apply_answer_contract(
                 coverage_id=sub_topic.coverage_id,
                 question=target.question,
                 required_dimensions=unique_phrases(
-                    [*target.required_dimensions, form, period, geography]
+                    [
+                        *_asked_dimensions(
+                            target.required_dimensions, contract=contract
+                        ),
+                        form,
+                        period,
+                        geography,
+                    ]
                 ),
                 required=True,
                 critical=target.critical,
-                support_policy=support_policy_for(question=target.question),
+                support_policy=support_policy_for_target(
+                    question=target.question, proposed=target.support_policy
+                ),
             )
             for position, target in enumerate(
                 sub_topic.evidence_targets, start=1
@@ -1649,6 +2051,39 @@ def apply_answer_contract(
             sub_topic.model_copy(update={"evidence_targets": targets})
         )
     return stamped
+
+
+def _asked_dimensions(
+    required_dimensions: Sequence[str],
+    *,
+    contract: AnswerContract,
+) -> list[str]:
+    """The obligations to keep, with the metadata the question never asked for gone.
+
+    Section 2.3's metadata rule is that a publication date, data period,
+    forecast horizon, effective date, retrieval date or generation date is
+    context unless the question asks for it — and ``dimension_is_answered``
+    enforces exactly that at binding time. A plan that stamps one anyway owes
+    an obligation no claim can discharge: the run's plan asked when the
+    forecast was published, and no claim could ever be bound to that target
+    (audit #3, replay C10). The requirement is dropped here rather than
+    enforced later, because a target that names a dimension the question never
+    asked for is the same defect as demanding MWh or a second publisher.
+
+    A requirement naming any non-metadata dimension is kept whole: dropping
+    half of a compound requirement would leave an obligation nobody wrote.
+    """
+    kept: list[str] = []
+    for requirement in required_dimensions:
+        dimensions = checkable_dimensions(requirement)
+        if dimensions and all(
+            dimension in METADATA_DIMENSIONS
+            and not metadata_dimension_asked_for(contract.question, dimension)
+            for dimension in dimensions
+        ):
+            continue
+        kept.append(requirement)
+    return kept
 
 
 def targets_requiring_replanning(
