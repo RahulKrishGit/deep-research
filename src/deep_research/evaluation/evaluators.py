@@ -2611,22 +2611,44 @@ def _independent_work_recognized_passes(
 def _verdict_correctness_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
+    """Every claim the case named is present, with the verdict it recorded.
+
+    The reference map is a promise in both directions. It was read one way
+    only — a claim was compared *if* the output carried it — so dropping an
+    expected claim, or returning no claims at all, left this metric and the
+    independence metrics true on an empty list, and a run that answered
+    nothing collected the case's weight by staying silent. That is the
+    abstention ``required_verified_claims`` exists to refuse, and it is the
+    same defect whether the claim is withheld or reworded: a run that
+    paraphrased the claim has not verified the claim the case named.
+
+    Repeated text is judged as strictly: every recorded verdict for one
+    normalized text must be the expected one, because two conflicting
+    records of one claim are not a verdict either.
+    """
     expected = case.expectations.reference.get("expected_verdicts")
-    if not isinstance(expected, Mapping):
+    required = _reference_strings(case, "required_verified_claims")
+    if not isinstance(expected, Mapping) and not required:
         return True
     claims = _artifact(output, "verified_claims")
     if not isinstance(claims, list):
         return False
+    recorded: dict[str, set[object]] = {}
     for entry in claims:
         text = _field(entry, "text")
-        if not isinstance(text, str):
-            continue
-        wanted = expected.get(" ".join(text.split()))
-        if wanted is None:
-            continue
-        if _field(entry, "verdict") != wanted:
-            return False
-    return True
+        if isinstance(text, str):
+            recorded.setdefault(" ".join(text.split()), set()).add(
+                _field(entry, "verdict")
+            )
+    if isinstance(expected, Mapping):
+        for text, wanted in expected.items():
+            if not isinstance(text, str):
+                continue
+            if recorded.get(" ".join(text.split())) != {wanted}:
+                return False
+    return all(
+        recorded.get(" ".join(text.split())) == {"verified"} for text in required
+    )
 
 
 def _confidence_calibrated_passes(
