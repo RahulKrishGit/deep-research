@@ -1353,6 +1353,53 @@ def test_a_mirror_row_stamping_its_own_publisher_is_a_new_work(
     assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 0.0
 
 
+def test_a_copy_recorded_as_an_original_publication_is_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """The rubric's second failure half: a copy presented as an original.
+
+    ``transport_vs_publication`` names two failures — "The serving host is
+    recorded as the publisher, or a copy is recorded as an original
+    publication" — and the metric compared publishers only, so a declared
+    same-work row that kept the survey's identity and publisher but labelled
+    itself ``original_report`` scored full marks. A publisher is not the only
+    way a page claims to be a work of its own: the role is that claim, and a
+    copy asserting one is the second original this metric exists to refuse.
+    """
+    mirror = work_role_case.expectations.reference["same_work_urls"][1]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="mirror",
+        source_role="original_report",
+        publisher_id=None,
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 0.0
+
+
+def test_a_copy_claiming_nothing_and_naming_no_publisher_is_not_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """An unlabelled copy is not itself the defect; the claim is.
+
+    A row that records no publisher asserted no new identity, and one whose
+    role is ``derivative`` asserts no originality either — unknown identity
+    can establish neither sameness nor independence, which is why refusing
+    that shape is ``independent_work_recognized``'s job. What this metric
+    refuses is the claim, whether it is made with a publisher or with a role,
+    so a row making neither still passes.
+    """
+    mirror = work_role_case.expectations.reference["same_work_urls"][1]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="mirror",
+        source_role="derivative",
+        publisher_id=None,
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
+
+
 def test_an_unknown_relation_carrying_the_original_publisher_is_not_a_new_work(
     work_role_case, work_role_output
 ) -> None:
