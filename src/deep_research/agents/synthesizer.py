@@ -61,6 +61,7 @@ from deep_research.agents.report import (
     ReportConstraint,
     ReportPoint,
     ReportSection,
+    _YEAR,
     _display_clamp,
     canonical_claims,
     fit_report_composition,
@@ -2838,6 +2839,15 @@ _ANSWER_LABEL_ATOMS: dict[str, tuple[str, ...]] = {
 # the population "U" — and a column that printed it would be publishing an
 # artifact of extraction as the dimension of a fact.
 _MIN_LABEL_CHARS = 2
+# A period a sentence is *about* and does not state: "for the year of writing"
+# names no year, so no year the same sentence mentions can be taken as its
+# period. A determiner plus one of the period nouns, unless a year follows it
+# ("the year 2024" states its own year and is left alone).
+_UNNAMED_PERIOD = re.compile(
+    r"\b(?:the|that|this|same|following|previous|current)\s+"
+    r"(?:year|calendar year|period|date)\b(?!\s*,?\s*(?:19|20)\d{2})",
+    re.IGNORECASE,
+)
 
 
 def _selected_claims(
@@ -2886,6 +2896,14 @@ def _recorded_label_atom(
     the qualifiers the extractor recorded for the claim the reader statement
     was validated against, so a label taken from them states what the cited
     evidence itself carries.
+
+    A recorded *period* is the case the traced 18.2 GW row got wrong: its
+    cluster recorded "2024" from a sentence whose own year is the one it does
+    not name ("for the year of writing") and whose only stated year is the
+    count it rose *from*. So the period atom is accepted only when the finding
+    states that year as the one it is about (``_states_the_period``); otherwise
+    the column falls through to the next atom, and to "not stated" if none is
+    left.
     """
     for cluster_id in point.claim_cluster_ids:
         cluster = context.clusters.get(cluster_id)
@@ -2894,9 +2912,29 @@ def _recorded_label_atom(
         proposition = cluster.proposition
         for atom in atoms:
             value = " ".join(getattr(proposition, atom, "").split())
-            if len(value) >= _MIN_LABEL_CHARS:
-                return value
+            if len(value) < _MIN_LABEL_CHARS:
+                continue
+            if atom == "observation_period" and not _states_the_period(
+                point.text, value
+            ):
+                continue
+            return value
     return ""
+
+
+def _states_the_period(text: str, period: str) -> bool:
+    """True when ``text`` states ``period`` as the one year it is about.
+
+    Both conditions are read from the finding's own words. The year the atom
+    records has to be the only year the text states — a text stating two does
+    not say which one it means — and the text has to leave no other period
+    unnamed: "for the year of writing" is a period the sentence is *about* and
+    does not state, so a year the sentence uses for something else (the count
+    the figure rose from) is not this fact's date.
+    """
+    if set(_YEAR.findall(text)) != {period.strip()}:
+        return False
+    return _UNNAMED_PERIOD.search(text) is None
 
 
 def _derived_label(

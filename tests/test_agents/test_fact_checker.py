@@ -3821,7 +3821,7 @@ def test_a_clipped_candidate_is_never_judged_as_no_complete_support() -> None:
     incompleteness is an open question, and the claim says the passage was cut.
     """
     # Longer than the whole request: the only way a passage is ever cut.
-    long_support = SUPPORT_TEXT + " " + ("Detail. " * 600)
+    long_support = _sized(SUPPORT_TEXT, 1.2)
     assert len(long_support) > FACT_CHECK_EVIDENCE_CHARS
     packet = with_render_boundaries(
         _verdict_packet(
@@ -3972,7 +3972,10 @@ B_TEXT = "Lab B audited the figure: wind capacity reached 10 GW in 2025."
 TASK6_TARGET = "target-1"
 
 RIVAL_URL = "https://lab-c.test/rival"
-RIVAL_TEXT = "Lab C measured 8 GW for the same year."
+# A rival of the *same* measurement: it names what the claim's own figure
+# counts, because a figure about something else never was a contradiction of
+# this claim — "8 GW for the same year" would admit any power figure at all.
+RIVAL_TEXT = "Lab C measured 8 GW of wind capacity for the same year."
 ELSEWHERE_URL = "https://lab-d.test/other"
 ELSEWHERE_TEXT = "Lab D reported solar capacity."
 
@@ -6855,6 +6858,19 @@ REFUTATION_TEXT = "A separate review states capacity was 4 GW in 2025."
 OFF_SCOPE_TEXT = "Capacity was 4 GW in 2023."
 
 
+def _sized(text: str, share: float) -> str:
+    """A passage sized as a share of the whole request.
+
+    What makes a candidate unshowable whole is the request's own bound, so the
+    fixtures that need one scale with it: a fixed repeat count silently stops
+    being "longer than the request" the moment the budget moves. A share above
+    ``1`` is longer than the whole request; below it is a passage the request
+    can hold beside others.
+    """
+    repeats = max(1, int(FACT_CHECK_EVIDENCE_CHARS * share) // len("Detail. "))
+    return text + " " + ("Detail. " * repeats)
+
+
 def _row(
     evidence_id: str,
     stance: str,
@@ -7093,8 +7109,8 @@ def test_the_request_shows_every_candidate_and_omits_only_what_it_cannot() -> No
     recorded as omitted — while the packet still counted them as input, and a
     contradiction or a second pair member could sit unread behind the cut.
     """
-    long_support = SUPPORT_TEXT + " " + ("Detail. " * 400)
-    long_audit = AUDIT_TEXT + " " + ("Detail. " * 300)
+    long_support = _sized(SUPPORT_TEXT, 0.7)
+    long_audit = _sized(AUDIT_TEXT, 0.5)
     packet = _verdict_packet(
         _eligibility(),
         _independent_second(),
@@ -7855,7 +7871,10 @@ def test_a_crowded_packet_shows_every_passage_it_can_carry_whole() -> None:
     passages it can show whole and records the rest as deferred, so no
     candidate is judged on a fragment and none is silently dropped.
     """
-    text = SUPPORT_TEXT + " " + ("Detail. " * 45)
+    # Six passages that between them all but fill the request: crowded, and
+    # still carried whole, because each one's own size is what the budget is
+    # spent on — not a uniform share of it.
+    text = _sized(SUPPORT_TEXT, 0.14)
     units = [
         _pair_unit(name, f"https://{name}.test/{name}", text)
         for name in ("left", "right", "third", "fourth", "fifth", "sixth")
@@ -7908,7 +7927,7 @@ def test_a_candidate_the_request_cannot_carry_whole_is_deferred_or_marked() -> N
     verdict may not read it as a complete passage. The candidates behind it
     that no longer fit are omitted and deferred by name.
     """
-    page_sized = SUPPORT_TEXT + " " + ("Detail. " * 700)
+    page_sized = _sized(SUPPORT_TEXT, 1.2)
     assert len(page_sized) > FACT_CHECK_EVIDENCE_CHARS
     packet = _verdict_packet(
         _eligibility(),
@@ -8863,12 +8882,7 @@ def _scope_state(
                     "read-page",
                     "https://www.eia.gov/analysis/inventory",
                     "Inventory page",
-                    CITED_10_4_TEXT
-                    + " "
-                    + (
-                        "Battery storage capacity additions are listed "
-                        "below. " * 120
-                    ),
+                    _sized(CITED_10_4_TEXT, 1.2),
                     topic_id,
                 )
             ]
@@ -9225,14 +9239,25 @@ def test_a_linked_measurement_of_the_same_quantity_stays_admissible() -> None:
 
     Rival figures are how a claim is refuted or re-based: the audited run's
     market monitor measured 12,314 MW where the agency published 10.4 GW, and
-    the passage stating it has to stay adjudicable. A measurement of another
-    period is another fact and never a refutation of this one, and prose stating
-    no measurement is not evidence of one.
+    the passage stating it has to stay adjudicable. "The same quantity" is what
+    the claim states beside its own figure — battery storage — so a figure
+    about another fuel is not a rival, a measurement of another period is
+    another fact, and prose stating no measurement is not evidence of one.
     """
     state = _scope_state(noise=0, page=False)
     for label, text in (
-        ("rival", "A rival monitor measured 12.1 GW across the year."),
-        ("older", "The same monitor reported 9.8 GW in 2019."),
+        (
+            "rival",
+            "A rival monitor measured 12.1 GW of battery storage capacity "
+            "across the year.",
+        ),
+        (
+            "clean-edge",
+            "10.3 GW of utility-scale battery storage installed in 2024.",
+        ),
+        ("solar", "30 GW of solar in 2024."),
+        ("solar-capacity", "30 GW of solar capacity in 2024."),
+        ("older", "The same monitor reported 9.8 GW of battery storage in 2019."),
         ("prose", "The battery storage capacity additions were compiled."),
     ):
         state = _linked_unit(state, label, text)
@@ -9244,8 +9269,14 @@ def test_a_linked_measurement_of_the_same_quantity_stays_admissible() -> None:
     )
     admitted = {unit.evidence_id for unit in pool}
 
-    # The same quantity (power) in a compatible period, whatever its value.
+    # The same quantity (battery storage) in a compatible period, whatever its
+    # value: the audited run's own rival class, and Clean Edge's 10.3 GW.
     assert ids["https://rival.test/notes"] in admitted
+    assert ids["https://clean-edge.test/notes"] in admitted
+    # A figure about something else — even one whose prose says "capacity" —
+    # and a different period's measurement.
+    assert ids["https://solar.test/notes"] not in admitted
+    assert ids["https://solar-capacity.test/notes"] not in admitted
     assert ids["https://older.test/notes"] not in admitted
     assert ids["https://prose.test/notes"] not in admitted
 

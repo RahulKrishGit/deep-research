@@ -4058,6 +4058,12 @@ def test_a_live_claim_binds_only_the_targets_it_answers(
         "battery storage capacity added on a nameplate basis, in megawatts",
         "battery storage capacity added in the utility-scale segment, in "
         "megawatts",
+        "battery storage capacity added above the utility-scale threshold, in "
+        "megawatts",
+        "battery storage capacity added below the utility-scale threshold, in "
+        "megawatts",
+        "battery storage capacity added exceeding the utility-scale threshold, "
+        "in megawatts",
     ],
 )
 def test_a_qualifier_word_in_a_measure_never_constrains_the_clause(

@@ -2099,7 +2099,8 @@ _DEFINITIONAL_CUES: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
 _MEASURE_HEAD_END = re.compile(
     r"(?<!\w)(?:of|in|for|to|at|by|on|with|across|within|from|per|among|"
     r"between|during|under|over|into|via|about|against|through|after|"
-    r"before|since|until|than|including)(?!\w)",
+    r"before|since|until|than|above|below|beyond|past|exceeding|"
+    r"including)(?!\w)",
     re.I,
 )
 
@@ -2711,7 +2712,16 @@ class ReportComposition(ContractModel):
 
     @property
     def statements(self) -> list[ReportStatement]:
-        """Every statement this composition renders, in render order."""
+        """Every statement this composition renders, in render order, once each.
+
+        One record per statement id. A derived answer row quotes the statement
+        the point it answers with already carries, so a fact the summary states
+        and the answer table lists is one record rendered in two places: the
+        reader meets it in both, but a *list of statements* that carried it
+        twice would print two rows for one id in the ledger's statement map and
+        ask the semantic reviewer, which judges every statement here, to judge
+        it twice. First occurrence wins, so the order stays the reader's.
+        """
         rows: list[ReportStatement] = []
         for point in [*self.summary, *self.constraints]:
             if point.statement is not None:
@@ -2727,7 +2737,14 @@ class ReportComposition(ContractModel):
                 if point.statement is not None:
                     rows.append(point.statement)
         rows.extend(self.uncertainty_statements)
-        return rows
+        unique: list[ReportStatement] = []
+        seen: set[str] = set()
+        for statement in rows:
+            if statement.statement_id in seen:
+                continue
+            seen.add(statement.statement_id)
+            unique.append(statement)
+        return unique
 
     @property
     def distinct_statement_count(self) -> int:

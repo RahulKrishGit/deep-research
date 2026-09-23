@@ -39,6 +39,7 @@ from deep_research.agents.claim_clusters import (
     ClaimConsolidation,
     _VALUE_UNIT_PATTERN,
     _canonical_unit,
+    _split_clauses,
     atom_answers_target,
     claim_cluster_id,
     claim_meets_support_policy,
@@ -155,7 +156,18 @@ DEFAULT_FINDING_DIGEST = 40
 MAX_REPORTED_PENDING_CLAIMS = 16
 # Named distinctly from researcher.DEFAULT_EVIDENCE_CHARS: both are
 # re-exported from deep_research.agents, so the names must not collide.
-FACT_CHECK_EVIDENCE_CHARS = 4000
+#
+# How much evidence one adjudication request carries, in characters. Raised
+# from 4000 once the claim-specific pool was narrowed to the passages that bear
+# on the claim: the audited run's linked passages are ~900 characters each, so
+# 4000 held five of them and deferred the rest — and a deferred candidate keeps
+# a pair from settling, which made ``verified_pair`` unreachable for exactly the
+# obligations the narrowing was meant to serve. Replaying the rank-4 acceptance
+# state (the finalize_report run's input) at 8000: claims 1, 2 and 11 carry
+# their whole pool — 9, 6 and 6 units, zero deferred — and settle verified,
+# where 4000 deferred 4, 1 and 1. The bounded candidate list is what keeps the
+# cost of the larger request from growing with the registry.
+FACT_CHECK_EVIDENCE_CHARS = 8000
 MAX_PASSAGE_EXCERPT_CHARS = 1000
 
 # How long a candidate's locator may be in a rendered block. Locators are
@@ -1185,6 +1197,16 @@ _YEAR = re.compile(r"(?:19|20)\d{2}")
 # claim had no figure to match on.
 _RELEVANCE_FLOOR_TERMS = 2
 
+# How many of the claim's measurand terms a *rival's* own figure phrase shares
+# before it is read as a measurement of the same quantity. One is not enough:
+# on the audited data a single shared "storage" admitted six passages of a
+# market-research vendor's prose to a claim about battery storage additions.
+_MEASURAND_TERMS_REQUIRED = 2
+# How many tokens after a figure name it. "of new battery storage capacity" is
+# four; six leaves room for the restatement in parentheses a claim writes.
+_MEASURAND_SPAN = 6
+_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'.-]*")
+
 
 def claim_evidence_pool(
     state: ResearchState,
@@ -1244,6 +1266,7 @@ def claim_evidence_pool(
     figures = _non_year_numbers(claim_text)
     families = {_unit_family(unit) for _, unit in _measured_pairs(claim_text)}
     claim_years = _years(claim_text)
+    measurand = _measurand_terms(claim_text)
     linked = [
         unit
         for unit in state.evidence_units.values()
@@ -1265,6 +1288,7 @@ def claim_evidence_pool(
                 figures=figures,
                 families=families,
                 years=claim_years,
+                measurand=measurand,
             )
             if figures
             else unit.evidence_id in floor
@@ -1320,28 +1344,113 @@ def _linked_bears_on(
     figures: set[str],
     families: set[str],
     years: set[str],
+    measurand: set[str],
 ) -> bool:
     """True when a linked passage is about this claim's own measurement.
 
     Two ways, and only these. It writes one of the claim's figures as the claim
-    writes it; or it states a value in the same quantity — a different number
-    for the same measure, which is a rival figure or an independent measurement
-    of it, and either way has to stay adjudicable. A passage whose stated
-    period contradicts the claim's measures something else, so the period has
-    to be compatible: unstated, or one of the claim's own years.
+    writes it — unconditional, because the figure itself is the proof that the
+    passage measures this claim's quantity. Or the clause that states *another*
+    value in the claim's own unit family is about the same measurand and a
+    compatible period, which makes it a rival figure or an independent
+    measurement of it — the case an adjudication has to be able to see.
+
+    The measurand is what keeps the second way from admitting every power
+    figure in the sub-topic: "30 GW of solar in 2024" states a value in the
+    claim's unit and shares nothing of what the claim measures, so it is a
+    figure about something else. A single shared word is not enough either: on
+    the audited data one shared "storage" admitted six passages of a
+    market-research vendor's prose, which is why the rival's own figure phrase
+    has to share the measurand the claim states beside its figure.
     """
     if figures.intersection(_non_year_numbers(excerpt)):
         return True
-    if not families:
+    if not families or not measurand:
         return False
-    stated_years = _years(excerpt)
-    for _, unit in _measured_pairs(excerpt):
-        if _unit_family(unit) not in families:
-            continue
+    for clause in _split_clauses(excerpt):
+        stated_years = _years(clause)
         if years and stated_years and not years.intersection(stated_years):
             continue
-        return True
+        for match in _VALUE_UNIT_PATTERN.finditer(clause):
+            unit = _canonical_unit(match.group("unit"))
+            if _unit_family(unit) not in families:
+                continue
+            shared = measurand.intersection(_figure_terms(clause, match))
+            if len(shared) < _MEASURAND_TERMS_REQUIRED:
+                continue
+            return True
     return False
+
+
+def _phrase_after(clause: str, match: re.Match[str]) -> str:
+    """The words a figure is written with, and no more.
+
+    Six tokens is the longest measurand the audited claims state — "of new
+    battery storage capacity" — and a longer run reaches the rest of the
+    sentence, which qualifies the measurement rather than naming it.
+    """
+    return " ".join(_WORD.findall(clause[match.end() :])[:_MEASURAND_SPAN])
+
+
+# The words a clause is written with that state no measurand: connectives,
+# auxiliaries, and reporting verbs the selection stopword list does not carry.
+# A rival sharing one of these shares the sentence, not the quantity.
+_MEASURE_NOISE = frozenset(
+    {
+        "that", "this", "these", "those", "than", "then", "they", "them",
+        "their", "there", "were", "was", "are", "has", "have", "had", "will",
+        "would", "could", "should", "said", "says", "also", "into", "onto",
+        "over", "under", "per", "about", "while", "during", "each", "both",
+    }
+)
+
+
+def _content_terms(text: str) -> set[str]:
+    """The measurand words of a phrase: what is measured, not how much or when.
+
+    Figures, periods, and the words a clause is merely written with are what
+    the caller matched or filtered already, so what is left is the measurand's
+    own vocabulary. The measure's own name stays: "battery storage capacity"
+    and "battery storage" are one measurand, and the two-term requirement below
+    is what keeps a generic "capacity" from admitting a figure by itself.
+    """
+    return {
+        token
+        for token in _tokens(text)
+        if len(token) >= 4
+        and not token.isdigit()
+        and not _YEAR.fullmatch(token)
+        and token not in _MEASURE_NOISE
+    }
+
+
+def _measurand_terms(text: str) -> set[str]:
+    """The claim's own terms for what it measures, beside its figures.
+
+    "generators added 10.4 GW of new battery storage capacity" measures battery
+    storage capacity, and the words right after the figure are where the claim
+    names it. A claim whose figure ends its clause states its measurand earlier
+    in that same clause — "with operators planning to add 19.6 GW" — which is
+    what :func:`_figure_terms` falls back to. A claim that names no measurand
+    at all admits no rival figures, which is the honest reading of one that
+    never says what its number counts.
+    """
+    terms: set[str] = set()
+    for clause in _split_clauses(text):
+        for match in _VALUE_UNIT_PATTERN.finditer(clause):
+            terms.update(_figure_terms(clause, match))
+    return terms
+
+
+def _figure_terms(clause: str, match: re.Match[str]) -> set[str]:
+    """One figure's measurand words, or its clause's when the figure ends it.
+
+    "…planning to add 19.6 GW" states its measurand earlier in the same clause,
+    and both sides of the comparison are read this way — so a claim and the
+    rival it admits cannot disagree about where a measurand is stated.
+    """
+    phrase = _content_terms(_phrase_after(clause, match))
+    return phrase or _content_terms(clause)
 
 
 def _non_year_numbers(text: str) -> set[str]:

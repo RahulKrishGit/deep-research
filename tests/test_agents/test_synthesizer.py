@@ -3013,6 +3013,17 @@ FACT_WITHOUT_FIGURE = (
     "Generators added new battery storage capacity in the United States in "
     "2024."
 )
+# The traced Clean Edge projection: its own year is the one it does not name
+# ("the year of writing"), and the only year it states is the baseline it rose
+# from.
+BASELINE_TEXT = (
+    "Clean Edge projected a record-breaking 18.2 GW (18,200 MW) of U.S. "
+    "utility-scale battery storage installations for the year of writing, up "
+    "from 10.3 GW in 2024."
+)
+BASELINE_EXCERPT = (
+    f"{BASELINE_TEXT} The monitor's own summary states the same projection."
+)
 
 
 def _fact_claim(*, verdict: str = "verified") -> Claim:
@@ -3251,6 +3262,73 @@ def test_a_draft_that_supplies_its_own_rows_keeps_exactly_those() -> None:
         "capacity added",
         FACT_TEXT,
     ]
+
+
+def test_a_year_the_finding_does_not_claim_is_not_its_period() -> None:
+    """The row's period must be the one the finding states for itself.
+
+    The traced 18.2 GW row printed Dimension "2024" from the cluster's
+    observation_period, while its own text says the figure's year is the year
+    of writing and that 2024 is the count it rose *from* — and the same
+    sentence warns that the figure cannot be assigned to a year at all. A
+    reader would take the cell to mean "this is the 2024 figure", so a year the
+    finding points at without naming is not the row's period, and the column
+    falls through to the next atom and then to "not stated".
+    """
+    claim = _claim(text=BASELINE_TEXT)
+    task = _factual_task(
+        claim=claim,
+        evidence_units={EVIDENCE_ID: _unit(excerpt=BASELINE_EXCERPT)},
+        claim_clusters={
+            CLUSTER_ID: _fact_cluster(
+                claim,
+                text=BASELINE_TEXT,
+                subject="Clean Edge",
+                quantity_noun="",
+                observation_period="2024",
+            )
+        },
+    )
+
+    composition, _ = build_report_composition(
+        task,
+        _factual_draft(summary=BASELINE_TEXT),
+        max_sections=4,
+        limitations=[],
+    )
+
+    row = composition.answer_rows[0]
+    assert [cell.text for cell in row.cells] == [
+        "Clean Edge",
+        "not stated",
+        BASELINE_TEXT,
+    ]
+
+
+def test_a_reused_statement_is_recorded_once() -> None:
+    """A row quoting a point's statement is one statement, not two.
+
+    The ledger's statement map is read as "every statement this pass
+    published", and the semantic reviewer is asked to judge each of them: a
+    fact the summary states and a key-fact row quotes is one record rendered
+    twice. The row still renders the same object the summary renders, so the
+    reader and the audit both see the same statement.
+    """
+    composition, _ = build_report_composition(
+        _factual_task(), _factual_draft(), max_sections=4, limitations=[]
+    )
+    quoted = composition.summary[0].statement
+    assert quoted is not None
+    assert composition.answer_rows[0].statement is quoted
+
+    ids = [statement.statement_id for statement in composition.statements]
+    assert len(ids) == len(set(ids))
+    assert ids.count(quoted.statement_id) == 1
+
+    statement_map = render_evidence_ledger(composition).split(
+        "## Statement support map", 1
+    )[1]
+    assert statement_map.count(f"| {quoted.statement_id} |") == 1
 
 
 def test_a_new_factual_assertion_is_returned_to_the_fact_checker() -> None:
