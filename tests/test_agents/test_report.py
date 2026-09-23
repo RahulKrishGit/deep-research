@@ -20,6 +20,7 @@ from typing import get_args
 
 import pytest
 
+from deep_research.agents.evidence import build_read_record, resolve_read_works
 from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
@@ -79,6 +80,7 @@ from deep_research.utils.types import (
     EvidenceTarget,
     EvidenceUnit,
     Finding,
+    ReadRecord,
     ReportAnswerRow,
     ReportStatement,
     ResearchError,
@@ -2542,6 +2544,20 @@ def _record_state(
     )
 
 
+def _read(url: str, text: str, title: str = "Grid Storage Outlook 2024") -> ReadRecord:
+    """One complete read of a page, built through the shared read producer."""
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title=title,
+        retrieved_at=EXTRACTED_AT,
+        text=text,
+        passages={"p-1": text},
+    )
+
+
 def _artifact_texts(composition: ReportComposition) -> dict[str, str]:
     return {
         "reader_markdown": render_reader_report(composition),
@@ -2707,6 +2723,100 @@ def test_the_quality_record_derives_the_coverage_id_lists_the_snapshot_lacks() -
     # The scalars stay the snapshot's own measurement.
     assert coverage["required_targets"] == state.quality.required_targets
     assert coverage["answered_targets"] == state.quality.answered_targets
+
+
+def test_the_works_count_is_the_identity_the_work_map_publishes() -> None:
+    """The count and the map inside one record cannot disagree about a work.
+
+    Section 2.3: an assessed source's ``work_id`` is resolved once per snapshot,
+    with the anchors the Source Evaluator validated, and this record publishes
+    it in ``work_keys``. Counting the works a second way — from the reads
+    alone, with no anchors — resolves *less*: the DOI that joined a copy to its
+    original was validated as an anchor on the source, and a re-typeset mirror
+    never shared the original's bytes. The record then named one work in its map
+    and reported two in its count.
+    """
+    work_id = "doi:10.1234/grid.2025"
+    original = _read(SOURCE_URL, "Grid Storage Outlook 2024: 10 GW in 2024.")
+    mirror = _read(
+        OTHER_URL,
+        "Grid Storage Outlook 2024, re-typeset: 10 GW in 2024.",
+        title="Grid Storage Outlook 2024 (repository copy)",
+    )
+    composition = _evidence_composition(
+        sources=[
+            _source(url=SOURCE_URL, work_id=work_id),
+            _source(
+                url=OTHER_URL,
+                title="Grid Storage Outlook 2024 (repository copy)",
+                work_id=work_id,
+                transport="mirror",
+            ),
+        ]
+    )
+    state = _record_state(
+        composition,
+        read_records={original.read_id: original, mirror.read_id: mirror},
+    )
+
+    # The reads alone cannot see the join, which is why the count may not be
+    # re-derived from them: two rows, two keys.
+    assert len(set(resolve_read_works([original, mirror]).values())) == 2
+
+    record = render_quality_record(state, composition, None)
+
+    assert set(record["work_keys"].values()) == {work_id}
+    assert record["counts"]["unique_works"] == 1
+
+
+def test_a_source_no_assessment_covers_is_its_own_work_entry() -> None:
+    """An unresolved work stays its own entry; it is never folded into a peer.
+
+    The map publishes the identity that was established, so an unscored source
+    has no row in it. The count must not invent one for it either — by joining
+    it to whatever source sits beside it, or by dropping it — because a source
+    the run read is a work it retains whether or not anyone assessed it.
+    """
+    work_id = "doi:10.1234/grid.2025"
+    reads = [
+        _read(SOURCE_URL, "Grid Storage Outlook 2024: 10 GW in 2024."),
+        _read(
+            OTHER_URL,
+            "Grid Storage Outlook 2024, re-typeset: 10 GW in 2024.",
+            title="Grid Storage Outlook 2024 (repository copy)",
+        ),
+        _read(
+            THIRD_URL,
+            "Interconnection Queue 2024: 800 MW.",
+            title="Interconnection Queue 2024",
+        ),
+    ]
+    composition = _evidence_composition(
+        sources=[
+            _source(url=SOURCE_URL, work_id=work_id),
+            _source(
+                url=OTHER_URL,
+                title="Grid Storage Outlook 2024 (repository copy)",
+                work_id=work_id,
+                transport="mirror",
+            ),
+            _source(
+                url=THIRD_URL,
+                title="Interconnection Queue 2024",
+                status="unscored_cap",
+                rationale="The per-run source cap was reached first.",
+            ),
+        ]
+    )
+    state = _record_state(
+        composition, read_records={read.read_id: read for read in reads}
+    )
+
+    record = render_quality_record(state, composition, None)
+
+    assert set(record["work_keys"]) == {SOURCE_URL, OTHER_URL}
+    # One joined work, plus the unassessed source's own unresolved entry.
+    assert record["counts"]["unique_works"] == 2
 
 
 def test_the_quality_record_hashes_the_published_bytes_and_never_itself() -> None:
