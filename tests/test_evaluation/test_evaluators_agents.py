@@ -1739,6 +1739,33 @@ def test_approving_the_false_pair_scores_every_metric_zero(
         assert metric_score(output, typed_gap_case, metric_id) == 0.0, metric_id
 
 
+def test_a_correctly_typed_gap_against_the_wrong_cluster_scores_zero(
+    typed_gap_case, typed_gap_output
+) -> None:
+    """The gap has to name the defect, not merely be phrased like it.
+
+    The case's stated purpose is that "the gap that answers it is therefore
+    typed identity" — the identity defect is the false pair in the emissions
+    cluster. Both typed metrics read only a gap's kind and its route, so a
+    review that raised a correctly typed identity defect against an unrelated
+    claim — and never mentioned the pair the case exists to carry — collected
+    their full weight. The typing and the route are what the case scores, and
+    both are answers *about* an obligation.
+    """
+    case = typed_gap_case
+    misplaced = {
+        **_fixture_gap(typed_gap_output),
+        "claim_cluster_ids": [CALIBRATION_CLUSTER_IDS["cost"]],
+    }
+    output = typed_gap_output.with_typed_gaps([misplaced])
+
+    assert metric_score(output, case, "gap_kind_correct") == 0.0
+    assert metric_score(output, case, "repair_action_routed") == 0.0
+    # The rejection is still calibrated — only its target is wrong, and the
+    # case scores the score separately for exactly that reason.
+    assert metric_score(output, case, "conservative_score") == 1.0
+
+
 def test_answering_the_false_pair_at_the_floor_is_not_calibrated(
     typed_gap_case, typed_gap_output
 ) -> None:
