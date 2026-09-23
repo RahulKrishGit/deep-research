@@ -126,11 +126,16 @@ SYNTHESIS_OPEN_QUESTIONS_CHARS = 2000
 DEFAULT_MEMORY_CONFIDENCE = 0.7
 DEFAULT_MAX_MEMORY_FINDINGS = 10
 
+# Render bounds: each clamps one rendered cell, bullet, or audit record, so a
+# long model-written sentence cannot push a rendered table or a ledger row off
+# the page. They are bounds for *display* and never for a model's input: a
+# fragment shown to a writer is a fragment the writer may restate, so the
+# packet that reaches a model carries text whole and bounds how much of it
+# fits by count instead. `summarize_text` marks every cut it makes.
 _POINT_CHARS = 600
 _SECTION_TITLE_CHARS = 120
 _GUIDANCE_CHARS = 200
 _CLAIM_TEXT_CHARS = 240
-_EVIDENCE_CHARS = 200
 _CELL_CHARS = 120
 
 # What a factual assertion introduces that a paraphrase does not. A statement
@@ -313,9 +318,185 @@ STATEMENT_DISPOSITIONS = (
     "unsupported_recommendation",
     "unsupported_limitation",
     "unsupported_extrapolation",
+    "unsupported_modality",
+    "unsupported_qualifier",
+    "unsupported_scope_fact",
     "duplicate_statement",
     "unlinked_statement",
     "returned_to_fact_checker",
+)
+
+# The modality markers a claim may carry and a statement may not drop. A
+# statement may reword its evidence; it may not out-assert it. The audited
+# report turned "capacity growth from battery storage could set a record" into
+# "would set a record" and published the source's own uncertainty as a fact.
+#
+# Verb and adverb forms only. The noun uses of the same words hedge nothing —
+# "the EIA battery storage forecast identifies its data vintage" is a title,
+# not an uncertainty — and reading them as hedges refused correct statements
+# whose point also cited a forecast for its citation. "preliminary" is absent
+# for the same reason: it qualifies a document's title ("Preliminary Monthly
+# Electric Generator Inventory"), not an assertion.
+_HEDGE_PATTERN = re.compile(
+    r"\b(?:could|might|possibly|potentially|perhaps|likely|unlikely|expects?|"
+    r"expected|anticipates?|anticipated|projected|planned|intends?|"
+    r"intended|suggests?|suggested|implies|implied|appears?|seems?|reportedly|"
+    r"allegedly|estimates?|estimated|approximately|roughly)\b",
+    re.IGNORECASE,
+)
+# The reporting verbs whose *verb* use hedges a statement and whose noun use
+# names a document. "EIA forecasts 18.2 GW will be added" hedges; "EIA's
+# February 24, 2025 forecast of 18.2 GW" is a citation label, and reading it as
+# a hedge let the audited "would set a record" through the short-circuit. The
+# lookahead is the discriminator: a reporting verb introduces a clause or a
+# figure, a label is followed by a noun.
+_HEDGE_REPORTING_PATTERN = re.compile(
+    r"\b(?:forecasts?|projects?|predicts?)\b(?=\s+(?:that\b|\d))",
+    re.IGNORECASE,
+)
+# ``may`` is the one hedge that collides with a month name, so it is matched
+# on its own and refused when a date follows it.
+_HEDGE_MAY_PATTERN = re.compile(r"\bmay\b(?!\s+\d)", re.IGNORECASE)
+
+# The modal verbs a statement asserts with when it states as settled what its
+# evidence hedged. Compared against the cited evidence, because a claim can
+# have hardened its source already: the audited claim said "would" where the
+# page said "could", so the claim alone cannot witness the loss.
+_STRONG_MODALS = ("would", "will")
+
+# What separates one assertion from the next inside a sentence. The modality
+# and scope checks both decide per *clause*: a statement that hardens one
+# clause is not excused by a hedge in another, and a note that asserts a
+# source's boundary is not excused by a later clause about this pass. Without
+# the conjunctions and dashes a single comma carried the whole decision.
+# A terminator only separates when a space or the end follows it: "18.2" is a
+# figure, not a sentence, and splitting on that full stop cut a reporting verb
+# away from the clause it governs.
+_CLAUSE_SPLIT = re.compile(
+    r"[,;]|[:!?](?=\s|$)|\.(?=\s|$|[A-Z])"
+    r'|[\u2014\u2013()\[\]\u201c\u201d"|/]'
+    r"|(?<=\s)-(?=\s)"
+    r"|\b(?:and|but|while|which|so|thus|therefore|though|although)\b"
+)
+
+
+def _clause_around(text: str, position: int) -> str:
+    """The clause of ``text`` containing the character at ``position``."""
+    start = 0
+    for match in _CLAUSE_SPLIT.finditer(text):
+        if match.start() > position:
+            return text[start : match.start()]
+        start = match.end()
+    return text[start:]
+
+
+# What a *source's* totals include or exclude. A note is refused only when it
+# names one of these subjects *and* an inclusion or exclusion verb: the
+# question's own plan carries a behind-the-meter topic, so every honest note
+# about that gap contains the word, and "state-level breakdowns are not
+# included in this report" is this pass describing itself, not a claim about
+# what EIA counted.
+_REPORTED_TOTALS = "reported totals"
+_SCOPE_SUBJECTS = (
+    _REPORTED_TOTALS,
+    "behind-the-meter",
+    "behind the meter",
+    "front-of-meter",
+    "front of meter",
+)
+_SCOPE_VERBS = (
+    "exclud",
+    "includ",
+    "outside",
+    "omit",
+    "leave out",
+    "leaves out",
+)
+# What marks a note as this pass describing *itself* rather than a source's
+# boundary. A note about what was or was not researched is the framing a
+# source-free note exists to carry, whatever words it borrows from the totals.
+# The phrases that exempt an *introducing* clause. Narrower than
+# ``_PASS_PHRASES``: only a clause about what this pass, this report or the
+# plan did is the pass describing itself. "The checked evidence is thin" is a
+# judgement about the evidence, and exempting the clause after it published
+# "behind-the-meter storage is excluded from EIA's totals" — a source's
+# boundary, which is the assertion this check exists to refuse.
+_SCOPE_SELF_PHRASES = (
+    "this pass",
+    "this report",
+    "the plan",
+)
+_PASS_PHRASES = (
+    "this pass",
+    "this report",
+    "the plan",
+    "not acquired",
+    "checked evidence",
+    "no read",
+    "not retrieved",
+)
+
+# The capacity qualifiers a figure may or may not carry, and the units that
+# make a token a capacity figure. A bare year is not one: "in 2024, developers
+# installed 10.4 GW" and "developers installed 10.4 GW … in 2024" state the
+# same fact, and a check that attached the qualifier to the year refused the
+# second.
+_QUALIFIER_WORDS = (
+    "nameplate",
+    "operational",
+    "installed",
+    "cumulative",
+    "planned",
+    "proposed",
+    "existing",
+)
+_CAPACITY_UNITS = (
+    "gw",
+    "gws",
+    "mw",
+    "mws",
+    "kw",
+    "kws",
+    "tw",
+    "tws",
+    "gwh",
+    "mwh",
+    "kwh",
+    "twh",
+    "gigawatt",
+    "gigawatts",
+    "megawatt",
+    "megawatts",
+    "kilowatt",
+    "kilowatts",
+    "terawatt",
+    "terawatts",
+    "gigawatt-hour",
+    "gigawatt-hours",
+    "megawatt-hour",
+    "megawatt-hours",
+)
+_CAPACITY_FIGURE = re.compile(
+    r"(\d[\d,.'\u2019]*)\s*(" + "|".join(_CAPACITY_UNITS) + r")\b",
+    re.IGNORECASE,
+)
+# The selected evidence the writer's packet may carry. A *model-input* bound,
+# deliberately its own constant and never a display bound: every claim with a
+# selected passage keeps a share for its first one, the rest of the budget is
+# spent on the passages behind it, and what does not fit is either cut between
+# sentences with its withheld count stated or named — so the writer always
+# knows what it was not shown and never restates a fragment. The rendered
+# artifacts keep their own cell bounds. Without this, one claim whose read is a
+# whole page adds roughly 22k input tokens by itself.
+PACKET_SUPPORT_CHARS = 16000
+# What a passage that cannot fit the budget at all is cut with. The cut lands
+# on a sentence boundary — a partial sentence is exactly the fragment a
+# writer must not restate.
+_PACKET_OMISSION = " [… the passage continues; {count} further character(s) were not shown]"
+# When the budget lands inside a sentence with no terminator before it, the cut
+# is from the end of a *word* and the marker says it is not a sentence end.
+_PACKET_OMISSION_UNSENTENCED = (
+    " [… cut mid-sentence here; {count} further character(s) were not shown]"
 )
 
 # Characters kept verbatim in a report filename. Narrow on purpose:
@@ -698,8 +879,9 @@ def bounded_claim_packet(
         )
     maximum = min(limit, len(ranked))
     # Select the largest ranked prefix whose *actual prompt representation*
-    # fits.  This includes labels, verdict syntax, rendered text truncation,
-    # URLs, coverage, separators, and the omission notice.
+    # fits.  This includes labels, verdict syntax, the claims' own text, URLs,
+    # coverage, separators, and the omission notice — so a smaller packet is
+    # one that carries fewer claims, never one that carries a claim in part.
     for size in range(maximum, -1, -1):
         packet = ranked[:size]
         omitted = len(ranked) - size
@@ -919,16 +1101,21 @@ def _evidence_lines(
     evidence_ids: Sequence[str],
     evidence: Mapping[str, EvidenceUnit],
 ) -> list[str]:
-    """``id locator "excerpt"`` for each selected passage, in selected order."""
+    """``id locator "excerpt"`` for each selected passage, in selected order.
+
+    The excerpt is published whole. It is the passage a claim rests on, and
+    the writer may only restate what it can see: clamping it to the ledger's
+    200-character display bound hid figures sitting below a page's navigation
+    — the same shape that made the audited run's fact checker miss nine of its
+    fourteen verdicts. What bounds this packet is how many claims it carries,
+    and what it left out is stated rather than hidden.
+    """
     lines: list[str] = []
     for evidence_id in evidence_ids:
         unit = evidence.get(evidence_id)
         if unit is None:
             continue
-        lines.append(
-            f"{evidence_id} {unit.locator} "
-            f'"{summarize_text(unit.excerpt, limit=_EVIDENCE_CHARS)}"'
-        )
+        lines.append(f'{evidence_id} {unit.locator} "{unit.excerpt}"')
     return lines
 
 
@@ -992,13 +1179,18 @@ def build_canonical_packet(
     limit: int,
     batch_size: int | None = None,
     failures: Sequence[str] = (),
+    support_budget: int = PACKET_SUPPORT_CHARS,
 ) -> CanonicalPacket:
     """Assemble the compact packet the writer receives.
 
     ``limit`` bounds how many claims the writer may cite. Everything past it
     is listed in ``omitted_ids`` and grouped into continuation batches, so the
     prompt states what it is missing instead of presenting a truncated packet
-    as the whole record.
+    as the whole record. ``support_budget`` bounds the selected evidence the
+    whole packet carries, across every claim: each claim with a selected
+    passage reserves a first-passage share, the depth pass spends the rest,
+    and a passage over what is left is cut between sentences with its
+    withheld count stated — or named, when nothing is shown for that claim.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -1007,6 +1199,47 @@ def build_canonical_packet(
     canonical = canonical_claims(claims)
     ranked = _packet_rank(canonical, targets=target_index)
     entries: list[PacketEntry] = []
+    remaining = support_budget
+    # Reserve a first-passage share for every claim the packet will carry
+    # before any claim takes a second passage. Spending the budget in claim
+    # order let one oversized first passage starve every later claim of its
+    # only support, which the omission notice named without saying whose.
+    carried = ranked[: max(1, min(limit, len(ranked)))]
+    selected_by_claim = {
+        claim.claim_id: _selected_ids(
+            claim, clusters.get(claim.cluster_id or "")
+        )
+        for claim in carried
+    }
+    # Only the claims that actually have a selected passage hold a share: a
+    # claim with nothing to show reserved one anyway, and the budget it never
+    # spent was unavailable to the claims that needed it — 10,603 characters
+    # of a 16,000-character budget left unused while a 7,610-character
+    # passage was cut. The depth pass then spends whatever is left, so a
+    # passage that fits the free budget is carried whole.
+    showing = [claim for claim in carried if selected_by_claim[claim.claim_id]]
+    share = max(1, support_budget // max(1, len(showing)))
+    support_by_claim: dict[str, list[str]] = {}
+    for claim in carried:
+        if not selected_by_claim[claim.claim_id]:
+            continue
+        lines = _evidence_lines(
+            selected_by_claim[claim.claim_id][:1],
+            evidence,
+            budget=min(share, remaining),
+        )
+        remaining -= _support_cost(lines)
+        support_by_claim[claim.claim_id] = lines
+    for claim in carried:
+        rest = selected_by_claim[claim.claim_id][1:]
+        if not rest or remaining <= 0:
+            continue
+        lines = _evidence_lines(rest, evidence, budget=remaining)
+        remaining -= _support_cost(lines)
+        support_by_claim[claim.claim_id] = [
+            *support_by_claim[claim.claim_id],
+            *lines,
+        ]
     for position, claim in enumerate(ranked, start=1):
         if len(entries) >= limit:
             break
@@ -1075,28 +1308,38 @@ def build_canonical_packet(
                 obligations.append(
                     f"{target_id} still owes: {', '.join(missing)}"
                 )
+        support = support_by_claim.get(claim.claim_id, [])
+        counter = _evidence_lines(
+            [
+                evidence_id
+                for evidence_id in selected
+                if evidence.get(evidence_id) is not None
+                and evidence[evidence_id].origin == "fact_checker"
+                and claim.contradictions
+            ],
+            evidence,
+            budget=max(0, remaining),
+        )
+        remaining -= _support_cost(counter)
         entries.append(
             PacketEntry(
                 label=claim_label(position),
                 claim_id=claim.claim_id,
                 cluster_id=claim.cluster_id,
-                text=summarize_text(claim.text, limit=_CLAIM_TEXT_CHARS),
+                # The claim as it was checked. A bound for a rendered table
+                # cell is not a bound for a model's input: a 289-character
+                # claim reached the writer as a cut sentence, and the report
+                # then published "the claim is recorded only in part" — an
+                # uncertainty invented by a display constant. The claim
+                # block's own character budget decides how many claims fit.
+                text=claim.text,
                 verdict=claim.verdict,
                 confidence=claim.confidence,
                 evidence_status=claim.evidence_status,
                 evidence_label=EVIDENCE_BADGE_LABELS.get(badge, badge),
                 citation_urls=urls,
-                support=_evidence_lines(selected, evidence),
-                counter=_evidence_lines(
-                    [
-                        evidence_id
-                        for evidence_id in selected
-                        if evidence.get(evidence_id) is not None
-                        and evidence[evidence_id].origin == "fact_checker"
-                        and claim.contradictions
-                    ],
-                    evidence,
-                ),
+                support=support,
+                counter=counter,
                 source_assessment=_packet_source_assessment(urls, source_index),
                 dates=_packet_dates(urls, source_index),
                 target_ids=target_ids,
@@ -1409,9 +1652,316 @@ def unattested_words(text: str, corpus: str) -> list[str]:
     return [token for token in _content_tokens(text) if token not in tokens]
 
 
+def hedge_marker(text: str) -> str:
+    """The first modality marker a text carries, or ``""`` for none."""
+    match = (
+        _HEDGE_PATTERN.search(text)
+        or _HEDGE_REPORTING_PATTERN.search(text)
+        or _HEDGE_MAY_PATTERN.search(text)
+    )
+    return match.group(0).casefold() if match else ""
+
+
+def _figure_numbers(text: str) -> list[str]:
+    """Every numeric token a text carries, years included."""
+    return [
+        number
+        for number in (
+            _figure_number(match.group(0))
+            for match in _FIGURE_PATTERN.finditer(text)
+        )
+        if number
+    ]
+
+
+def dropped_modality(text: str, claims: Sequence[Claim]) -> str:
+    """The modality a statement dropped, or ``""`` when it dropped none.
+
+    Read from the claims the statement rests on, and only for the claim the
+    statement is *about*: a point cites every claim it rests on, so a 2024
+    addition statement also cites the 2025 forecast claim whose wording it
+    never restates. A claim's hedge binds a statement when the two share a
+    figure — the statement restates that claim's quantity — or when neither
+    the claim nor any claim beside it carries a figure, which is a statement
+    of one claim's own proposition.
+
+    A claim that states no modality is a claim a statement may state plainly,
+    which is why this returns empty rather than requiring a hedge of every
+    statement.
+    """
+    if hedge_marker(text):
+        return ""
+    figures = set(_figure_numbers(text))
+    quantified = any(_figure_numbers(claim.text) for claim in claims)
+    for claim in claims:
+        marker = hedge_marker(claim.text)
+        if not marker:
+            continue
+        claim_figures = set(_figure_numbers(claim.text))
+        if claim_figures and not claim_figures.intersection(figures):
+            continue
+        if not claim_figures and quantified:
+            continue
+        return marker
+    return ""
+
+
+def hardened_modality(text: str, corpus: str) -> str:
+    """The uncertainty the cited evidence states and a statement hardens away.
+
+    Read from the *evidence*, not from the claim: a claim can have hardened
+    its source already — the audited claim said "would set a record" where the
+    page said "could set a record" — so the claim's own wording cannot witness
+    what was lost. The statement is refused only when it asserts with a strong
+    modal what the evidence hedged; a statement that carries the evidence's own
+    uncertainty, or hedges in any other way, states no more than it was shown.
+    """
+    if not hedge_marker(corpus):
+        return ""
+    for modal in _STRONG_MODALS:
+        for match in re.finditer(rf"\b{modal}\b", text, re.IGNORECASE):
+            # The exemption is the modal's own clause. A statement that
+            # reports a figure ("EIA forecast 18.2 GW …") and then asserts an
+            # outcome in the next clause ("which would set a record") hedged
+            # nothing about that outcome, and exempting the whole statement on
+            # the reporting verb published the audited hardening.
+            if hedge_marker(_clause_around(text, match.start())):
+                continue
+            return modal
+    return ""
+
+
+# The third-party nouns a note can hand a total to without naming anyone.
+_THIRD_PARTY_NOUNS = (
+    "the agency",
+    "the authority",
+    "the issuer",
+    "the publisher",
+    "the source",
+)
+
+
+def attributes_a_source(text: str) -> bool:
+    """True when a note hands a total to someone other than this pass.
+
+    Conservative on purpose: the question is not *which* words appear but
+    whether the note can be read as this pass describing itself, and a single
+    name anywhere in it says it cannot. A possessive total, a "totals of"
+    phrase, a third-party noun, an acronym, or any capitalised word that is
+    not a sentence opener is attribution — so "EIA totals exclude …",
+    "EIA's totals" and "the totals of the agency" are all sources' boundaries
+    whatever clause they sit in, while "the totals this report considered" is
+    this pass's own coverage and stays self-description.
+    """
+    folded = text.casefold()
+    if any(noun in folded for noun in _THIRD_PARTY_NOUNS):
+        return True
+    if re.search(r"(?:'s|\u2019s)\s+totals?\b|\btotals?\s+of\b", folded):
+        return True
+    if _ACRONYM_PATTERN.search(text):
+        return True
+    return any(
+        not _SENTENCE_INITIAL.search(text[: match.start()])
+        for match in _PROPER_NOUN_PATTERN.finditer(text)
+    )
+
+
+def scope_fact(text: str) -> str:
+    """The scope convention a text asserts, or ``""`` for none.
+
+    A scope fact — which plants a source's total includes, which it leaves out,
+    which issuer's boundary it follows — is a finding, and a finding needs
+    checked evidence behind it. What this refuses is narrow on purpose: the
+    note must name one of the totals' own subjects *and* an inclusion or
+    exclusion verb. A note that describes this pass ("the checked evidence does
+    not include a full-year outturn", "not included in this report") is the
+    framing a source-free note exists to carry, and it is not a claim about
+    what a source counted.
+    """
+    lowered = " ".join(text.casefold().split())
+    clauses = _CLAUSE_SPLIT.split(lowered)
+    for index, clause in enumerate(clauses):
+        subject = next(
+            (name for name in _SCOPE_SUBJECTS if name in clause), ""
+        )
+        if not subject:
+            continue
+        if not any(verb in clause for verb in _SCOPE_VERBS):
+            continue
+        # A clause that only describes this pass introduces the one that
+        # follows: "In this pass, behind-the-meter storage is excluded from
+        # the totals" is the pass describing itself. Only the *preceding*
+        # clause exempts — exempting on a following one would let the audited
+        # note through by appending ", so this report cannot convert …".
+        # "Reported totals" is never this pass's own coverage: a note naming
+        # them is a claim about what a source counted, so it is never exempt.
+        if (
+            index
+            and subject != _REPORTED_TOTALS
+            and any(
+                phrase in clauses[index - 1]
+                for phrase in _SCOPE_SELF_PHRASES
+            )
+            and not any(
+                name in clauses[index - 1] for name in _SCOPE_SUBJECTS
+            )
+            # A pass phrase licenses self-description, never a claim about a
+            # source: "In this pass, behind-the-meter storage is excluded from
+            # EIA's totals" is a boundary however it opens, while "…from the
+            # totals this report considered" is this pass's own coverage.
+            and not attributes_a_source(text)
+        ):
+            continue
+        # The exemption is per clause *and* positional: a note that opens by
+        # describing this pass ("in this pass, behind-the-meter storage …") is
+        # the pass describing itself, while a note that asserts the boundary
+        # first and mentions this report afterwards is the assertion. A
+        # substring test anywhere in the note published the audited sentence
+        # with six words appended.
+        if any(
+            phrase in clause[: clause.index(subject)]
+            for phrase in _PASS_PHRASES
+        ):
+            continue
+        return subject
+    return ""
+
+
+def _capacity_figures(sentence: str) -> list[tuple[int, str]]:
+    """(position, number) for every figure in a sentence that carries a unit.
+
+    A bare year is not a capacity figure. "In 2024, developers installed
+    10.4 GW" and "developers installed 10.4 GW … in 2024" state one fact, and
+    a rule that could attach a qualifier to the year refused the second.
+    """
+    return [
+        (match.start(), _figure_number(match.group(1)))
+        for match in _CAPACITY_FIGURE.finditer(sentence)
+    ]
+
+
+def _qualifier_attachments(text: str) -> set[tuple[str, str]]:
+    """The (figure, qualifier) pairs a text asserts, by nearest-figure attachment.
+
+    A capacity qualifier describes the nearest capacity figure to its left in
+    its own sentence, and the nearest to its right when none precedes it. That
+    is the dominant form both ways round — "operational ... of 43.6 GW" and
+    "52 GW of nameplate capacity" — and it is what keeps one sentence naming
+    two figures from attaching one figure's qualifier to the other.
+    """
+    pairs: set[tuple[str, str]] = set()
+    for sentence in re.split(r"(?<=[.!?])\s+", text.casefold()):
+        figures = _capacity_figures(sentence)
+        if not figures:
+            continue
+        for word in _QUALIFIER_WORDS:
+            for match in re.finditer(rf"\b{word}\b", sentence):
+                left = [item for item in figures if item[0] < match.start()]
+                figure = (
+                    max(left, key=lambda item: item[0])[1]
+                    if left
+                    else min(figures, key=lambda item: item[0])[1]
+                )
+                pairs.add((figure, word))
+    return pairs
+
+
+def unattached_qualifiers(text: str, corpus: str) -> list[str]:
+    """Qualifiers a statement attaches to a figure its evidence does not.
+
+    The audited report called 43.6 GW "nameplate" while its source gave 43.6 GW
+    as *operational* capacity and nearly 52 GW of nameplate capacity. Both
+    words are in the corpus, so a word-level test passes that sentence; the
+    pairing is the claim, and the pairing is what is checked here.
+    """
+    attested = _qualifier_attachments(corpus)
+    return [
+        f"{qualifier} {figure}"
+        for figure, qualifier in sorted(_qualifier_attachments(text))
+        if (figure, qualifier) not in attested
+    ]
+
+
+def _bounded_passage(text: str, *, limit: int) -> str:
+    """One passage carrying at most ``limit`` characters, cut at a boundary.
+
+    The cut lands on a sentence boundary when there is one inside the budget
+    and on the last word boundary otherwise, and either way it says how much
+    was withheld and whether the cut is a sentence end. A partial word is a
+    token the writer cannot read; a partial sentence is a fragment it must not
+    restate, which the marker states.
+    """
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    boundary = max(
+        head.rfind(". "), head.rfind(".\n"), head.rfind("! "), head.rfind("? ")
+    )
+    if boundary > 0:
+        kept = head[: boundary + 1]
+        return kept + _PACKET_OMISSION.format(count=len(text) - len(kept))
+    space = head.rfind(" ")
+    if space <= 0:
+        return _PACKET_OMISSION_UNSENTENCED.format(count=len(text))
+    kept = head[:space]
+    return kept + _PACKET_OMISSION_UNSENTENCED.format(count=len(text) - len(kept))
+
+
+def _evidence_lines(
+    evidence_ids: Sequence[str],
+    evidence: Mapping[str, EvidenceUnit],
+    *,
+    budget: int = PACKET_SUPPORT_CHARS,
+) -> list[str]:
+    """``id locator "excerpt"`` for each selected passage, in selected order.
+
+    The excerpt is published whole wherever it fits. It is the passage a claim
+    rests on, and the writer may only restate what it can see: clamping it to
+    the ledger's 200-character display bound hid figures sitting below a page's
+    navigation — the same shape that made the audited run's fact checker miss
+    nine of its fourteen verdicts. ``budget`` is a *model-input* bound: whole
+    passages are carried until it is spent, a passage that cannot fit is cut
+    between sentences and its withheld count stated, and the passages that were
+    not shown at all are named rather than silently dropped.
+    """
+    if budget <= 0:
+        if not evidence_ids:
+            return []
+        return [
+            f"({len(evidence_ids)} further selected passage(s) were not shown "
+            f"for length: {', '.join(evidence_ids)})"
+        ]
+    lines: list[str] = []
+    used = 0
+    omitted: list[str] = []
+    for evidence_id in evidence_ids:
+        unit = evidence.get(evidence_id)
+        if unit is None:
+            continue
+        excerpt = unit.excerpt
+        if len(excerpt) > budget - used:
+            if lines:
+                omitted.append(evidence_id)
+                continue
+            excerpt = _bounded_passage(excerpt, limit=budget)
+        used += len(excerpt)
+        lines.append(f'{evidence_id} {unit.locator} "{excerpt}"')
+    if omitted:
+        lines.append(
+            f"({len(omitted)} further selected passage(s) were not shown for "
+            f"length: {', '.join(omitted)})"
+        )
+    return lines
+
+
 def _is_recommendation(text: str) -> bool:
     lowered = f" {text.casefold()} "
     return any(marker in lowered for marker in _PRESCRIPTIVE_MARKERS)
+
+
+def _support_cost(lines: Sequence[str]) -> int:
+    """The characters one group of evidence lines spends from the budget."""
+    return sum(len(line) for line in lines)
 
 
 def _unrecorded_evidence_claim(text: str, failures: Sequence[str]) -> str:
@@ -1554,6 +2104,34 @@ def _build_point(
             "unsupported_recommendation",
             where,
             "a recommendation outside the answer",
+        )
+        context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
+        return None
+    lowered = dropped_modality(text, claims)
+    if lowered:
+        context.note(
+            "unsupported_modality",
+            where,
+            "the statement drops the modality its evidence carries",
+        )
+        context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
+        return None
+    cited = _cited_evidence(claims, context) or context.corpus
+    hardened = hardened_modality(text, cited)
+    if hardened:
+        context.note(
+            "unsupported_modality",
+            where,
+            "the statement hardens the modality its evidence carries",
+        )
+        context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
+        return None
+    qualifiers = unattached_qualifiers(text, cited)
+    if qualifiers:
+        context.note(
+            "unsupported_qualifier",
+            where,
+            "an unsupported figure qualification",
         )
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
@@ -1828,6 +2406,14 @@ def _build_uncertainty_statements(
                 "unsupported_limitation",
                 where,
                 f"no recorded disposition for a {unrecorded} read",
+            )
+            continue
+        asserted_scope = scope_fact(text)
+        if asserted_scope:
+            context.note(
+                "unsupported_scope_fact",
+                where,
+                "a scope fact with no checked claim behind it",
             )
             continue
         repaired = _strip_unsupported_figures(text, context.note_corpus)

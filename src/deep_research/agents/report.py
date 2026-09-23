@@ -32,7 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 
 from pydantic import JsonValue
@@ -63,6 +63,7 @@ from deep_research.utils.types import (
     ReportReview,
     ReportSection,
     ReportStatement,
+    ReportTerminalState,
     ResearchError,
     ResearchState,
     ScoredSource,
@@ -71,11 +72,15 @@ from deep_research.utils.types import (
 )
 
 __all__ = [
+    "ATTRIBUTED_ANSWER_HEADING",
     "ANSWER_SECTION_HEADINGS",
+    "COUNTERFACTUAL_ANSWER_HEADING",
     "DEFAULT_READER_WORD_LIMIT",
+    "ESTABLISHED_ANSWER_HEADING",
     "EVIDENCE_SECTIONS",
     "EVIDENCE_STATUS_LABELS",
     "EVIDENCE_TITLE_PREFIX",
+    "LIMITATION_CONSEQUENCE",
     "LIMITATION_REASONS",
     "LIMITATION_TOPICS",
     "MAX_BACKMATTER_RATIO",
@@ -96,6 +101,7 @@ __all__ = [
     "StatementMappingError",
     "UnknownEvidenceError",
     "artifact_content_hashes",
+    "asks_for_the_latest",
     "backmatter_ratio",
     "build_citation_index",
     "canonical_claims",
@@ -103,10 +109,13 @@ __all__ = [
     "citation_markers",
     "collapse_mirror_urls",
     "composition_statements",
+    "disclosed_limitations",
     "distinct_retention_counts",
     "evidence_status_bucket",
     "evidence_status_counts",
     "fit_report_composition",
+    "most_consequential_limitation",
+    "point_vintage",
     "reader_citations",
     "reader_sections",
     "reader_word_count",
@@ -118,10 +127,12 @@ __all__ = [
     "render_quality_record",
     "render_reader_report",
     "render_statement_map",
+    "render_terminal_status",
     "report_as_of",
     "report_scope",
     "statement_citation_urls",
     "statement_source_urls",
+    "terminal_report_state",
     "validate_report_statements",
 ]
 
@@ -265,6 +276,57 @@ LIMITATION_TOPICS: dict[str, str] = {
     "contradicted_claims": "an independent source contradicted a claim",
     "report_generation_failed": "the report-writing call failed",
 }
+
+LIMITATION_CONSEQUENCE: tuple[str, ...] = (
+    "report_generation_failed",
+    "errors_recorded",
+    "max_iterations_reached",
+    "contradicted_claims",
+    "no_verified_claims",
+    "no_sources_evaluated",
+    "low_confidence_sources",
+)
+"""The recorded limitation reasons, in the order of what they cost a reader.
+
+``limitation_reasons`` records them in producer order, which is an
+implementation detail; this is the order a reader should meet them in. A
+report nobody wrote is the most consequential thing a pass can disclose, an
+independent source contradicting a claim outranks nothing being corroborated,
+and a low-confidence source matters less than any of them. A reason this table
+does not know keeps its recorded position after these and is never dropped.
+"""
+
+ESTABLISHED_ANSWER_HEADING = "**What the evidence establishes**"
+ATTRIBUTED_ANSWER_HEADING = "**The attributed answer**"
+COUNTERFACTUAL_ANSWER_HEADING = "**What would change the answer**"
+"""The three answer blocks, one per kind of statement a summary can carry.
+
+An *attributed* statement is an answer whose provenance is a named source, so
+it is headed as one: filing it under "what would change the answer" told the
+audited run's reader that its whole answer — both figures and both forecasts,
+every point of them attributed — was a counterfactual. Only a *contested*
+statement is that, because an unresolved disagreement is exactly what a reader
+would need settled before the answer holds.
+"""
+
+_FAILED_RUN_STATUS = "failed"
+
+# What a question asks for when it asks for recency. The summary's order is
+# otherwise the writer's, and this is the only reading that overrides it.
+_LATEST_MARKERS = (
+    "latest",
+    "most recent",
+    "newest",
+    "up to date",
+    "up-to-date",
+    "current",
+)
+
+# A recorded date value as it may be written: ``YYYY``, ``YYYY-MM``, or
+# ``YYYY-MM-DD``, anywhere inside the value's own words. The month is bounded
+# to a real month, so a *range* ("2011-2025") reads as two years rather than as
+# 2011 with a month of 20.
+_VINTAGE_PATTERN = re.compile(r"(\d{4})(?:-(0[1-9]|1[0-2])(?:-(\d{2}))?)?")
 
 # Render bounds. Every one of them clamps a single cell or bullet, so a long
 # model-written sentence cannot push a table off the page or turn the reader
@@ -805,7 +867,10 @@ def _reader_points(
     composition: ReportComposition,
 ) -> list[ReportPoint]:
     """Every point the reader report prints, in the order it prints them."""
-    points: list[ReportPoint] = [*composition.summary, *composition.constraints]
+    points: list[ReportPoint] = [
+        *_ordered_summary(composition),
+        *composition.constraints,
+    ]
     for section in composition.sections:
         points.extend(section.points)
     return points
@@ -819,11 +884,13 @@ def _reader_url_groups(
     One group per rendered statement: the summary, the constraint or
     answer-kind rows, the findings, and the statement-backed uncertainty. The
     reference list is built from exactly these, so no URL reaches the reader
-    that no statement resolved.
+    that no statement resolved — and the summary is walked in the order the
+    reader meets it, so a re-ordered answer cannot put a marker on a bullet
+    that is numbered after one below it.
     """
     groups: list[list[str]] = [
         _statement_urls_for_point(point, composition)
-        for point in [*composition.summary, *composition.constraints]
+        for point in [*_ordered_summary(composition), *composition.constraints]
     ]
     for row in composition.answer_rows:
         groups.append(_answer_row_urls(row, composition))
@@ -1230,6 +1297,63 @@ def _render_reader(
     return "\n\n".join(blocks) + "\n"
 
 
+def _critic_reading(terminal: ReportTerminalState) -> str:
+    """The Critic's outcome, in the words its own ``review_status`` supports.
+
+    A failed review is printed as a review that never happened, never as its
+    floor score: the floor exists so an outage cannot read as a low score, and
+    printing the number beside "failed" puts the judgement back.
+    """
+    if terminal.critic_status == "reviewed":
+        return (
+            f"scored {terminal.critic_score}/10"
+            if terminal.critic_score is not None
+            else "reviewed, with no score recorded"
+        )
+    if terminal.critic_status == "failed":
+        return "never judged (the review did not validate)"
+    return "no critique was recorded"
+
+
+def _review_reading(terminal: ReportTerminalState) -> str:
+    """The terminal semantic review's outcome, or that there was none."""
+    if terminal.review_status == "scored":
+        return "scored"
+    if terminal.review_status:
+        return f"unscored ({terminal.review_status})"
+    return "unscored (no semantic review was recorded)"
+
+
+def render_terminal_status(terminal: ReportTerminalState) -> list[str]:
+    """What the run's own terminal checks decided, in the run's own terms.
+
+    Read from the record the finalizer stamped and never inferred from the
+    composition: a pass nobody finalized states nothing here, because an
+    unstated check is not a passed one. Every value is enumerated or counted —
+    a router's status name, a reviewer's own status, the gate names that
+    rejected the report — so no provider text can reach the reader through it.
+    """
+    if not terminal.status:
+        return []
+    lines = [
+        f"**Run status:** {terminal.status}",
+        f"**Critic:** {_critic_reading(terminal)}",
+        f"**Report review:** {_review_reading(terminal)}",
+    ]
+    if terminal.required_targets or terminal.critical_targets:
+        lines.append(
+            f"**Coverage:** {terminal.answered_targets} of "
+            f"{terminal.required_targets} required targets answered; "
+            f"{terminal.answered_critical_targets} of "
+            f"{terminal.critical_targets} critical targets answered"
+        )
+    if terminal.gate_failures:
+        lines.append(
+            f"**Gate failures:** {', '.join(terminal.gate_failures)}"
+        )
+    return lines
+
+
 def _reader_header(composition: ReportComposition) -> str:
     lines = [
         f"**As of:** {composition.as_of.strip() or _NO_DATED_EVIDENCE}",
@@ -1244,6 +1368,7 @@ def _reader_header(composition: ReportComposition) -> str:
             f"**Quality status:** {composition.quality_status.strip() or _NO_SCOPE}",
         )
     )
+    lines.extend(render_terminal_status(composition.terminal))
     return "\n\n".join(lines)
 
 
@@ -1251,15 +1376,185 @@ def _point_line(
     point: ReportPoint,
     composition: ReportComposition,
     index: Sequence[Citation],
+    *,
+    vintage: str = "",
 ) -> str:
-    """One rendered statement: its text and its own resolved markers."""
+    """One rendered statement: its text, its vintage note and its markers."""
     markers = citation_markers(
         _statement_urls_for_point(point, composition), index
     )
     return (
         f"{_clamped(point.text, limit=_POINT_CHARS)}"
+        f"{vintage}"
         f"{_marker_suffix(markers)}"
     )
+
+
+def asks_for_the_latest(question: str) -> bool:
+    """True when the question asks for the most recent figure available."""
+    folded = " ".join(question.casefold().split())
+    return any(marker in folded for marker in _LATEST_MARKERS)
+
+
+def _vintage_key(value: str) -> tuple[int, int, int] | None:
+    """A recorded date value as a sortable key, or ``None`` when undated.
+
+    A range is keyed by its **end** year: "2011-2025" describes data through
+    2025, and keying it by 2011 made a current cumulative figure read as the
+    oldest vintage on the page.
+    """
+    matches = list(_VINTAGE_PATTERN.finditer(value))
+    if not matches:
+        return None
+    year, month, day = matches[-1].groups()
+    return (int(year), int(month or 0), int(day or 0))
+
+
+def point_vintage(
+    point: ReportPoint,
+    composition: ReportComposition,
+) -> tuple[tuple[int, int, int], str] | None:
+    """The newest recorded vintage behind one point, with the value it came from.
+
+    Read from the sources the point cites: the period a source's data cover
+    when it states one, and its publication date otherwise. A point whose
+    sources carry no date has no vintage and is never given one — a date this
+    system did not record is not a date it may print.
+    """
+    urls = {normalize_source_url(url) for url in point.source_urls}
+    newest: tuple[tuple[int, int, int], str] | None = None
+    for source in composition.sources:
+        if normalize_source_url(source.url) not in urls:
+            continue
+        temporal = source.temporal
+        for value in (temporal.data_period, temporal.publication_date):
+            if not value:
+                continue
+            key = _vintage_key(value)
+            if key is None:
+                continue
+            if newest is None or key > newest[0]:
+                newest = (key, value)
+    return newest
+
+
+_MEASURE_UNIT = re.compile(
+    r"\d[\d,.'\u2019]*\s*([A-Za-z][A-Za-z/-]*)",
+)
+_MEASURE_UNITS = frozenset(
+    {
+        "gw", "gws", "mw", "mws", "kw", "kws", "tw", "tws",
+        "gwh", "mwh", "kwh", "twh", "gigawatt", "gigawatts", "megawatt",
+        "megawatts", "kilowatt", "kilowatts", "terawatt", "terawatts",
+        "percent", "pct", "%",
+    }
+)
+_YEAR = re.compile(r"\b((?:19|20)\d{2})\b")
+
+
+def _measure_signature(point: ReportPoint) -> tuple[frozenset[str], frozenset[str]]:
+    """The quantities a point states, as (units, years).
+
+    The fallback grouping when a point records no target: two statements
+    measure the same thing when they carry the same units over the same years.
+    A 2024 addition in GW and a 2025 forecast in GW are two different
+    measurements, and comparing their dates called the actual superseded.
+    """
+    units = {
+        match.group(1).casefold()
+        for match in _MEASURE_UNIT.finditer(point.text)
+        if match.group(1).casefold() in _MEASURE_UNITS
+    }
+    return (frozenset(units), frozenset(_YEAR.findall(point.text)))
+
+
+def _vintage_group(
+    point: ReportPoint,
+    composition: ReportComposition,
+) -> tuple[object, ...]:
+    """What makes two dated statements versions of one measurement.
+
+    The recorded target when the point names one — that is the system's own
+    statement that these statements answer one obligation — and otherwise the
+    units and years the point itself states. Two points that share neither are
+    never compared, so no figure is called an older vintage of a different
+    quantity.
+    """
+    statement = point.statement
+    if statement is not None and statement.target_ids:
+        return ("target", tuple(sorted(statement.target_ids)))
+    return ("measure", *_measure_signature(point))
+
+
+def _ordered_summary(
+    composition: ReportComposition,
+) -> list[ReportPoint]:
+    """The summary in the order the reader meets it.
+
+    A question that asks for the latest gets the newest recorded vintage
+    first *within one measurement*: the audited report led with an 18.2 GW
+    forecast two of its own citations already superseded with 19.6 GW, so the
+    reader met the older vintage as the answer. Points that measure different
+    things keep their written order — reordering across quantities is how a
+    2024 actual came to sit below a 2025 forecast and to be labelled its older
+    vintage. Every other question keeps the writer's order exactly.
+    """
+    points = list(composition.summary)
+    if len(points) < 2 or not asks_for_the_latest(composition.question):
+        return points
+    vintages = [point_vintage(point, composition) for point in points]
+    if sum(vintage is not None for vintage in vintages) < 2:
+        return points
+    ordered = list(points)
+    groups: dict[tuple[object, ...], list[int]] = {}
+    for position, point in enumerate(points):
+        if vintages[position] is None:
+            continue
+        groups.setdefault(_vintage_group(point, composition), []).append(position)
+    for positions in groups.values():
+        if len(positions) < 2:
+            continue
+        ranked = sorted(
+            positions,
+            key=lambda position: tuple(-part for part in vintages[position][0]),
+        )
+        for slot, position in zip(sorted(positions), ranked):
+            ordered[slot] = points[position]
+    return ordered
+
+
+def _summary_entries(
+    composition: ReportComposition,
+) -> list[tuple[ReportPoint, str]]:
+    """Every summary point in reader order, each with the vintage note it carries.
+
+    Empty for a question that did not ask for recency. Otherwise every dated
+    statement whose own measurement appears at more than one vintage is told
+    its vintage — which is what lets a reader see why two figures for one year
+    differ — and the older ones are told that they are older.
+    """
+    ordered = _ordered_summary(composition)
+    if not asks_for_the_latest(composition.question):
+        return [(point, "") for point in ordered]
+    vintages = [point_vintage(point, composition) for point in ordered]
+    groups: dict[tuple[object, ...], list[int]] = {}
+    for position, point in enumerate(ordered):
+        if vintages[position] is None:
+            continue
+        groups.setdefault(_vintage_group(point, composition), []).append(position)
+    notes: dict[int, str] = {}
+    for positions in groups.values():
+        if len(positions) < 2:
+            continue
+        newest = max(vintages[position][0] for position in positions)
+        for position in positions:
+            key, value = vintages[position]
+            label = "older vintage" if key < newest else "vintage"
+            notes[position] = f" ({label}: {value})"
+    return [
+        (point, notes.get(position, ""))
+        for position, point in enumerate(ordered)
+    ]
 
 
 def _reader_summary(
@@ -1269,42 +1564,48 @@ def _reader_summary(
     """The answer first: what is established, what would change it, and the
     limitation that matters most — each part driven by statement modes.
 
-    A contested or attributed statement is *not* what the evidence
-    establishes, so it is grouped separately rather than printed as a settled
-    finding; the summary's limitation line names the topic and leaves the
-    sentence itself to the uncertainty section, which states it once.
+    A contested statement is *not* what the evidence establishes, so it is
+    grouped separately rather than printed as a settled finding; the summary's
+    limitation line names the topic and leaves the sentence itself to the
+    uncertainty section, which states it once.
     """
     if not composition.summary:
         return REPORT_SUMMARY_FALLBACK
+    ordered = _summary_entries(composition)
     blocks: list[str] = []
     established = [
-        point
-        for point in composition.summary
-        if point.mode in {"settled", "inference"}
+        item for item in ordered if item[0].mode in {"settled", "inference"}
     ]
-    provisional = [
-        point
-        for point in composition.summary
-        if point.mode in {"attributed", "contested"}
-    ]
-    context = [point for point in composition.summary if point.mode == "context"]
+    attributed = [item for item in ordered if item[0].mode == "attributed"]
+    contested = [item for item in ordered if item[0].mode == "contested"]
+    context = [item for item in ordered if item[0].mode == "context"]
     if established:
         blocks.append(
-            "**What the evidence establishes**\n\n"
+            f"{ESTABLISHED_ANSWER_HEADING}\n\n"
             + _bullets(
                 [
-                    _point_line(point, composition, index)
-                    for point in established
+                    _point_line(point, composition, index, vintage=vintage)
+                    for point, vintage in established
                 ]
             )
         )
-    if provisional:
+    if attributed:
         blocks.append(
-            "**What would change the answer**\n\n"
+            f"{ATTRIBUTED_ANSWER_HEADING}\n\n"
             + _bullets(
                 [
-                    _point_line(point, composition, index)
-                    for point in provisional
+                    _point_line(point, composition, index, vintage=vintage)
+                    for point, vintage in attributed
+                ]
+            )
+        )
+    if contested:
+        blocks.append(
+            f"{COUNTERFACTUAL_ANSWER_HEADING}\n\n"
+            + _bullets(
+                [
+                    _point_line(point, composition, index, vintage=vintage)
+                    for point, vintage in contested
                 ]
             )
         )
@@ -1312,25 +1613,89 @@ def _reader_summary(
         blocks.append(
             _bullets(
                 [
-                    _point_line(point, composition, index)
-                    for point in context
+                    _point_line(point, composition, index, vintage=vintage)
+                    for point, vintage in context
                 ]
             )
         )
-    blocks.append(_summary_limitation_line(composition))
+    blocks.append(_summary_limitation_line(composition, index))
     return "\n\n".join(blocks)
 
 
-def _summary_limitation_line(composition: ReportComposition) -> str:
+def disclosed_limitations(
+    composition: ReportComposition,
+    cited: Collection[str] | None = None,
+) -> list[str]:
+    """The recorded limitations this report's own content makes true.
+
+    ``limitation_reasons`` describes the pass; this describes the report in
+    hand. The low-confidence reason's own sentence is about "the sources
+    behind these findings", so it is disclosed only when a source the report
+    cites carries that score — the audited report told its reader that sources
+    behind its findings were low confidence when the flagged source supported
+    no finding and appeared in no reference.
+    """
+    if cited is None:
+        cited = {citation.url for citation in reader_citations(composition)}
+    low_confidence = {
+        normalize_source_url(source.url)
+        for source in composition.sources
+        if source.evaluation_status == "scored" and source.low_confidence
+    }
+    return [
+        reason
+        for reason in composition.limitations
+        if reason != "low_confidence_sources"
+        or bool(low_confidence.intersection(cited))
+    ]
+
+
+def most_consequential_limitation(
+    composition: ReportComposition,
+    cited: Collection[str] | None = None,
+) -> str:
+    """The limitation a reader should meet first, or ``""`` when there is none.
+
+    Ranked by consequence rather than by list position. A run the terminal
+    checks failed outranks everything the pass recorded; an unanswered
+    critical target outranks every recorded reason except that, because a plan
+    obligation nobody answered is a hole in the answer itself; and the
+    recorded reasons follow in ``LIMITATION_CONSEQUENCE`` order.
+    """
+    terminal = composition.terminal
+    if terminal.status == _FAILED_RUN_STATUS:
+        return "the run's own checks failed it"
+    unanswered = terminal.critical_targets - terminal.answered_critical_targets
+    if unanswered > 0:
+        noun = "target" if terminal.critical_targets == 1 else "targets"
+        verb = "has" if unanswered == 1 else "have"
+        return (
+            f"{unanswered} of {terminal.critical_targets} critical {noun} "
+            f"{verb} no answer"
+        )
+    recorded = disclosed_limitations(composition, cited)
+    for reason in LIMITATION_CONSEQUENCE:
+        if reason in recorded:
+            return LIMITATION_TOPICS.get(reason, "")
+    for reason in recorded:
+        if reason not in LIMITATION_CONSEQUENCE:
+            return LIMITATION_TOPICS.get(reason, "")
+    return ""
+
+
+def _summary_limitation_line(
+    composition: ReportComposition,
+    index: Sequence[Citation],
+) -> str:
     """Name the most important unresolved limitation without repeating it."""
-    if not composition.limitations:
+    topic = most_consequential_limitation(
+        composition, {citation.url for citation in index}
+    )
+    if not topic:
         return (
             "**The most important unresolved limitation** is that this pass "
             "recorded none."
         )
-    topic = LIMITATION_TOPICS.get(
-        composition.limitations[0], "see the limitations below"
-    )
     return f"**The most important unresolved limitation** is {topic}."
 
 
@@ -1531,6 +1896,7 @@ def _reader_uncertainty(
     index: Sequence[Citation],
 ) -> str:
     blocks: list[str] = []
+    cited = {citation.url for citation in index}
     ungrouped: list[str] = []
     grouped: dict[str, list[str]] = {
         heading: [] for _, heading, _ in UNCERTAINTY_GROUPS
@@ -1574,7 +1940,7 @@ def _reader_uncertainty(
         blocks.append("(no unresolved claim was recorded for this pass)")
     blocks.append(
         "**Limitations recorded for this pass**\n\n"
-        f"{render_limitations(composition.limitations)}"
+        f"{render_limitations(disclosed_limitations(composition, cited))}"
     )
     return "\n\n".join(blocks)
 
@@ -1701,8 +2067,8 @@ def _reader_methodology(
         lines.append(
             "The full evidence ledger — every checked claim, every assessed "
             "source, every verification passage, the statement map, and every "
-            "recorded error — is a separate artifact, published only after the "
-            "terminal quality gates."
+            "recorded error — is a separate artifact, published after the "
+            "run's terminal checks had run."
         )
     return _bullets(lines)
 
@@ -1863,6 +2229,10 @@ def _ledger_header(composition: ReportComposition) -> str:
             f"**Canonical counts:** {len(composition.sources)} source(s), "
             f"{len(composition.claims)} claim(s), "
             f"{len(composition.findings)} finding(s), {passages} passage(s).",
+            # The same terminal record the reader report carries, so the two
+            # documents cannot disagree about how the run ended or whether
+            # anything judged the report.
+            *render_terminal_status(composition.terminal),
         )
     )
 
@@ -2432,6 +2802,99 @@ def _review_record(review: ReportReview | None) -> dict[str, JsonValue]:
     }
 
 
+def terminal_report_state(
+    state: ResearchState,
+    composition: ReportComposition | None,
+    *,
+    run_status: str,
+) -> ReportTerminalState:
+    """The terminal record the finalizer stamps onto the published report.
+
+    Every value is read from a record the run already made and none is
+    re-derived: the status the router ended on, the Critic's own
+    ``review_status``, the semantic review's status, the target counts the
+    acceptance gates measured (through ``_coverage_counts``, the same
+    measurement the quality record publishes), and the gate names that
+    rejected the report. A state with no critique, no review or no quality
+    snapshot stamps the absence rather than a clean bill of health.
+    """
+    coverage = _coverage_counts(state, composition)
+    critique = state.critique
+    review = state.report_review
+    quality = state.quality
+    return ReportTerminalState(
+        status=run_status,
+        critic_status=critique.review_status if critique is not None else "",
+        critic_score=(
+            critique.score
+            if critique is not None and critique.review_status != "failed"
+            else None
+        ),
+        review_status=review.status if review is not None else "",
+        required_targets=_counted(coverage["required_targets"]),
+        answered_targets=_counted(coverage["answered_targets"]),
+        critical_targets=_counted(coverage["critical_targets"]),
+        answered_critical_targets=_counted(coverage["answered_critical_targets"]),
+        gate_failures=list(quality.hard_failures) if quality is not None else [],
+    )
+
+
+def _counted(value: JsonValue) -> int:
+    """One measured count as an integer, and never as something else."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _status_record(
+    state: ResearchState,
+    review: ReportReview | None,
+    *,
+    session_status: str,
+) -> dict[str, JsonValue]:
+    """The three terminal statuses, in one place a consumer can address.
+
+    Each answers a different question and none of them is the quality badge:
+    ``session`` is how the run ended, ``critic`` is whether the report was
+    ever judged and by what, and ``review`` is the semantic review's own
+    status. The audited record carried the badge alone, so an operator read
+    ``partial`` beside a floor critic score and could not tell that the critic
+    never produced a judgement at all. A status nobody recorded stays empty:
+    an absent stamp is not a clean one.
+    """
+    critique = state.critique
+    return {
+        "session": session_status,
+        "critic": critique.review_status if critique is not None else "",
+        # A floor score beside a failed review is not a judgement. The CLI and
+        # the reader report both refuse to print it; a record that kept it made
+        # the three artifacts disagree about whether a critic score exists.
+        "critic_score": (
+            critique.score
+            if critique is not None and critique.review_status != "failed"
+            else None
+        ),
+        "review": review.status if review is not None else "",
+    }
+
+
+def _supporting_spans(
+    claims: Sequence[Claim],
+) -> dict[tuple[str, str], str]:
+    """Every verification passage a claim rests on, by (url, locator).
+
+    The key is the pair the evidence registry is addressed by, so a claim's
+    supporting passage resolves to the unit it was selected from without
+    either side being re-derived. A claim with several passages keeps the last
+    one recorded for a key: they are the same passage of the same source, and
+    a later adjudication supersedes an earlier reading of it.
+    """
+    spans: dict[tuple[str, str], str] = {}
+    for claim in claims:
+        for passage in claim.verification_evidence:
+            key = (normalize_source_url(passage.source_url), passage.locator)
+            spans[key] = passage.excerpt
+    return spans
+
+
 def render_quality_record(
     state: ResearchState,
     composition: ReportComposition | None,
@@ -2439,6 +2902,7 @@ def render_quality_record(
     *,
     artifacts: Mapping[str, str] | None = None,
     quality_status: str | None = None,
+    session_status: str = "",
 ) -> dict[str, JsonValue]:
     """The quality JSON: one pass's evidence, decisions and hashes, by ID.
 
@@ -2504,6 +2968,7 @@ def render_quality_record(
         else []
     )
     statements = composition.statements if composition is not None else []
+    spans = _supporting_spans(claims)
     from deep_research.agents.evidence import (  # noqa: PLC0415
         resolve_retained_work_keys,
     )
@@ -2540,6 +3005,7 @@ def render_quality_record(
             (composition.answer_kind or "") if composition is not None else ""
         ),
         "quality_status": status,
+        "statuses": _status_record(state, review, session_status=session_status),
         "artifacts": artifact_content_hashes(artifacts or {}),
         "configuration": {
             "quality_contract_version": state.quality_contract_version,
@@ -2611,8 +3077,14 @@ def render_quality_record(
                 "locator": unit.locator,
                 "target_ids": list(unit.target_ids),
                 "origin": unit.origin,
-                "excerpt": _clamped(
-                    unit.excerpt, limit=QUALITY_RECORD_EXCERPT_CHARS
+                # The span a claim rests on, when one was recorded: the page
+                # head this used to publish was site navigation, so the row
+                # could not be used to check the claim it describes. A unit no
+                # claim selected has no supporting span, and publishes its own
+                # excerpt under the ledger's bound.
+                "excerpt": spans.get(
+                    (normalize_source_url(unit.source_url), unit.locator),
+                    _clamped(unit.excerpt, limit=QUALITY_RECORD_EXCERPT_CHARS),
                 ),
             }
             for unit in units
@@ -2679,12 +3151,18 @@ def render_quality_record(
                 "claim_id": claim.claim_id,
                 "cluster_id": claim.cluster_id or "",
                 "cluster_aliases": list(claim.cluster_aliases),
-                "text": _clamped(claim.text, limit=QUALITY_RECORD_TEXT_CHARS),
+                # The claim's own text, whole: a display bound is not a
+                # publication bound, and publishing a cut claim made the
+                # record describe a claim the run never checked — the audit's
+                # "recorded only in part" uncertainty is one reader of that
+                # cut text.
+                "text": claim.text,
                 "verdict": claim.verdict,
                 "evidence_status": claim.evidence_status or "",
                 "confidence": claim.confidence,
                 "source_urls": sorted(claim.source_urls),
                 "consumed_coverage_ids": list(claim.consumed_coverage_ids),
+                "target_ids": list(claim.target_ids),
                 "insufficient_reason": claim.insufficient_reason or "",
             }
             for claim in claims
@@ -2791,6 +3269,7 @@ def render_quality_json(
     *,
     artifacts: Mapping[str, str] | None = None,
     quality_status: str | None = None,
+    session_status: str = "",
 ) -> str:
     """The quality record as the bytes that are published.
 
@@ -2805,5 +3284,6 @@ def render_quality_json(
         review,
         artifacts=artifacts,
         quality_status=quality_status,
+        session_status=session_status,
     )
     return json.dumps(record, sort_keys=True, indent=2, ensure_ascii=False) + "\n"

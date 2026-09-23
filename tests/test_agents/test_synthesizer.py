@@ -36,6 +36,13 @@ from deep_research.agents.report import (
 )
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import (
+    PACKET_SUPPORT_CHARS,
+    _bounded_passage,
+    dropped_modality,
+    hardened_modality,
+    hedge_marker,
+    scope_fact,
+    unattached_qualifiers,
     _COMMON_ABBREVIATIONS,
     DEFAULT_MEMORY_CONFIDENCE,
     STATEMENT_DISPOSITIONS,
@@ -1630,6 +1637,632 @@ def test_a_truncation_limitation_with_a_recorded_disposition_is_kept() -> None:
     assert len(composition.uncertainty_statements) == 1
 
 
+def _summary_draft(text: str) -> ReportDraft:
+    """One drafted executive-summary point, and nothing else."""
+    return ReportDraft(
+        executive_summary=[_point_draft(text)],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+
+def test_a_statement_that_drops_its_claims_modality_is_refused() -> None:
+    """The audited report turned "could set a record" into "would set a record".
+
+    A statement may reword its evidence; it may not out-assert it. "could" is
+    the source's own uncertainty, and a report that prints "would" has made a
+    claim the evidence did not.
+    """
+    claim = _claim(
+        text=(
+            "EIA said capacity growth from battery storage could set a record "
+            "as it expects 18.2 GW to be added in 2025."
+        )
+    )
+    draft = _summary_draft(
+        "EIA said battery storage growth would set a record with 18.2 GW "
+        "added in 2025."
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim]), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.summary == []
+    assert rejected == [
+        "executive summary point 1: the statement drops the modality its "
+        "evidence carries"
+    ]
+
+
+def test_a_statement_that_keeps_the_modality_is_published() -> None:
+    """The same point, worded the way the claim words it, reaches the report."""
+    claim = _claim(
+        text=(
+            "EIA said capacity growth from battery storage could set a record "
+            "as it expects 18.2 GW to be added in 2025."
+        )
+    )
+    draft = _summary_draft(
+        "EIA said battery storage growth could set a record with 18.2 GW "
+        "added in 2025."
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim]), draft, max_sections=4, limitations=[]
+    )
+
+    assert rejected == []
+    assert composition.summary[0].text.startswith("EIA said battery storage")
+    assert "could set a record" in composition.summary[0].text
+
+
+def test_a_claims_hedge_does_not_apply_to_a_statement_about_another_quantity() -> (
+    None
+):
+    """The 10.3 GW 2024 statement is the checked claim's own text, and correct.
+
+    A point cites every claim it rests on, so the 2024-addition statement also
+    cites the 18.2 GW forecast claim. Applying that claim's wording refused a
+    sentence the evidence states verbatim.
+    """
+    actual = _claim(
+        text=(
+            "An EIA article stated that U.S. power providers added 10.3 GW of "
+            "new battery storage capacity in 2024."
+        )
+    )
+    forecast = _claim(
+        text="EIA forecast that 18.2 GW would be added in 2025."
+    )
+
+    dropped = dropped_modality(
+        "An EIA article stated that U.S. power providers added 10.3 GW of "
+        "new battery storage capacity in 2024.",
+        [actual, forecast],
+    )
+
+    assert dropped == ""
+
+
+def test_a_figureless_claims_hedge_still_binds_its_own_restatement() -> None:
+    """'implies' stays an inference: the audit's behind-the-meter sentence.
+
+    The claim says the scope "implies" the exclusion; the published statement
+    said the scope "places" it outside, which is the settled fact the source
+    never states.
+    """
+    claim = _claim(
+        text=(
+            "EIA scopes its reported battery storage additions explicitly to "
+            "utility-scale battery storage capacity, which implies "
+            "behind-the-meter storage is outside the reported totals."
+        )
+    )
+
+    dropped = dropped_modality(
+        "EIA's reported battery storage additions are scoped to utility-scale "
+        "battery storage capacity, which places behind-the-meter storage "
+        "outside the reported totals.",
+        [claim],
+    )
+
+    assert dropped == "implies"
+
+
+def test_a_month_name_is_not_a_hedge() -> None:
+    """`May 2025` is a date, and `may` is not what it carries."""
+    assert hedge_marker("Developers added 1.2 GW in May 2025.") == ""
+    assert hedge_marker("Battery additions may set a record in 2025.") == "may"
+
+
+def test_a_hardened_modality_is_read_from_the_evidence_not_the_claim() -> None:
+    """The audited claim had already hardened the source's 'could' to 'would'.
+
+    ``EIA … would set a record`` came from a claim that also said ``would``,
+    so a check that read only the claim could not see it. The evidence says
+    ``could set a record``.
+    """
+    evidence = (
+        "Capacity growth from battery storage could set a record as we expect "
+        "18.2 GW of utility-scale battery storage to be added."
+    )
+
+    assert hardened_modality(
+        "EIA forecast 18.2 GW of additions in 2025, which would set a record.",
+        evidence.casefold(),
+    ) == "would"
+    assert hardened_modality(
+        "Capacity growth could set a record with 18.2 GW of additions.",
+        evidence.casefold(),
+    ) == ""
+
+
+def test_a_noun_naming_a_document_does_not_excuse_a_hardened_statement() -> None:
+    """The audited summary bullet, which a noun in the hedge list let through.
+
+    "EIA's February 24, 2025 forecast of 18.2 GW … which EIA said would set a
+    record" carries the noun "forecast" as a citation label. Reading it as a
+    hedge short-circuited the check and published the hardened claim, while
+    its twin in the findings section — same claims, same corpus, no noun — was
+    refused.
+    """
+    evidence = (
+        "EIA said capacity growth from battery storage could set a record as "
+        "it expects 18.2 GW of utility-scale battery storage to be added."
+    )
+    statement = (
+        "The 2025 projection carried by this evidence is EIA's February 24, "
+        "2025 forecast of 18.2 GW of utility-scale battery storage additions "
+        "for the year, which EIA said would set a record for battery storage "
+        "additions."
+    )
+
+    assert hedge_marker(statement) == ""
+    assert hardened_modality(statement, evidence.casefold()) == "would"
+
+
+def test_a_reporting_verb_is_a_hedge_and_a_correct_restatement_is_kept() -> None:
+    """`EIA projects/forecasts that … will be added` states the evidence.
+
+    The verb forms were dropped with the nouns, so a correctly hedged
+    restatement was refused for the "will" it inherited from its source.
+    """
+    evidence = (
+        "EIA said capacity growth from battery storage could set a record as "
+        "it expects 18.2 GW of utility-scale battery storage to be added."
+    ).casefold()
+
+    assert hardened_modality(
+        "EIA projects that 18.2 GW of utility-scale battery storage capacity "
+        "will be added in 2025.",
+        evidence,
+    ) == ""
+    assert hardened_modality(
+        "EIA forecasts 18.2 GW of utility-scale battery storage capacity will "
+        "be added in 2025.",
+        evidence,
+    ) == ""
+    assert hedge_marker(
+        "EIA's battery storage forecast identifies its underlying data vintage."
+    ) == ""
+
+
+def test_a_pass_phrase_in_one_clause_does_not_excuse_another() -> None:
+    """The exemption is per clause, not per note.
+
+    A whole-note substring bypass published the audited scope assertion as
+    soon as any of seven ordinary phrases appeared anywhere in it.
+    """
+    audited = (
+        "Reported totals cover utility-scale capacity and hybrid co-located "
+        "plants while excluding behind-the-meter storage"
+    )
+
+    assert scope_fact(f"{audited}, so this report cannot convert the figures "
+                      "into a whole-market total.") == "behind-the-meter"
+    assert scope_fact(
+        "EIA's reported totals exclude behind-the-meter storage; this pass "
+        "confirmed the scope convention."
+    ) != ""
+    assert scope_fact(
+        "Per the plan, EIA's reported totals exclude behind-the-meter storage."
+    ) != ""
+    assert scope_fact(
+        "State-level breakdowns are not included in this report."
+    ) == ""
+    # The same bypass without a comma, and with the other separators.
+    assert scope_fact(
+        f"{audited} so this report cannot convert the figures into a "
+        "whole-market total."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        f"{audited} \u2014 this report cannot convert the figures."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        f"{audited} (this report covers utility-scale capacity only)."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        f"{audited}: this report cannot convert the figures."
+    ) == "behind-the-meter"
+    # The ASCII hyphen is a separator too, and a period needs no space after it.
+    assert scope_fact(
+        f"{audited} - this report cannot convert the figures."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        f"{audited}.This report cannot convert the figures."
+    ) == "behind-the-meter"
+    # A clause about the evidence is not this pass describing its own scope.
+    assert scope_fact(
+        "The checked evidence is thin, behind-the-meter storage is excluded "
+        "from EIA's totals."
+    ) == "behind-the-meter"
+    # The clause carries two subjects; the contract is that it is refused.
+    assert (
+        scope_fact(
+            "The checked evidence is thin, behind-the-meter storage is "
+            "excluded from the reported totals."
+        )
+        != ""
+    )
+    # A source's totals are a source's boundary however the note opens — the
+    # guard belongs to the asserting clause, not to the one introducing it.
+    assert scope_fact(
+        "In this pass, behind-the-meter storage is excluded from EIA's totals."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        "In this pass, behind-the-meter storage is excluded from the totals "
+        "of the agency that publishes them."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        "In this pass, EIA totals exclude behind-the-meter storage."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        "In this pass, the source's totals exclude behind-the-meter storage."
+    ) == "behind-the-meter"
+    assert scope_fact(
+        "In this pass, behind-the-meter storage is outside the totals the "
+        "publisher reports."
+    ) == "behind-the-meter"
+
+
+def test_a_cut_with_no_sentence_break_lands_on_a_word_boundary() -> None:
+    """A passage with no sentence terminator before the budget is cut cleanly.
+
+    The fallback sliced at the exact limit, so the writer received a fragment
+    in the middle of a token.
+    """
+    passage = "field name " + "x" * 40_000
+
+    bounded = _bounded_passage(passage, limit=100)
+
+    kept = bounded.split(" [… cut mid-sentence here; ", 1)[0]
+    assert passage.startswith(kept)
+    assert not kept.endswith("x") or passage[len(kept)] == " "
+    assert "cut mid-sentence here" in bounded
+    assert "x" * 200 not in bounded
+
+
+def test_no_claim_loses_all_of_its_support_to_an_earlier_claims_length() -> None:
+    """One oversized first passage must not starve every later claim."""
+    huge = "field name " * 760
+    small = "Generators added 10.4 GW of new battery storage capacity in 2024."
+    first = _claim(text="A long read was taken.", target_ids=["t1"]).model_copy(
+        update={"cluster_id": CLUSTER_ID}
+    )
+    second = _claim(text="Additions reached 10.4 GW.", target_ids=["t2"]).model_copy(
+        update={"cluster_id": "cluster-2"}
+    )
+    third = _claim(text="A third claim with no selected evidence.", target_ids=["t3"])
+
+    packet = build_canonical_packet(
+        claims=[first, second, third],
+        clusters={
+            CLUSTER_ID: _cluster(
+                claim_ids=[first.claim_id], evidence_ids=["e-big"]
+            ),
+            "cluster-2": _cluster(
+                cluster_id="cluster-2",
+                claim_ids=[second.claim_id],
+                evidence_ids=["e-small"],
+            ),
+        },
+        evidence={
+            "e-big": _unit(evidence_id="e-big", excerpt=huge),
+            "e-small": _unit(evidence_id="e-small", excerpt=small),
+        },
+        targets=[_target("t1"), _target("t2"), _target("t3")],
+        sources=[_source()],
+        limit=10,
+    )
+    support = {entry.label: entry.support for entry in packet.entries}
+
+    assert any(small in line for line in support["C002"])
+    # A carried claim with no selected evidence holds no share, so the budget
+    # it would have reserved stays available: the one passage there is, is
+    # carried whole.
+    assert support["C001"] and support["C002"]
+    # C003 selects nothing, so it holds no share and shows nothing.
+    assert not support["C003"]
+    assert any(huge.startswith(line.split('"', 2)[1].split(" […", 1)[0]) or
+               " […" in line for line in support["C001"])
+
+
+def test_a_statement_that_hardens_its_evidences_modality_is_refused() -> None:
+    """The same rule where the writer meets it."""
+    excerpt = (
+        "EIA said capacity growth from battery storage could set a record as "
+        "it expects 18.2 GW of utility-scale battery storage to be added in "
+        "2025."
+    )
+    claim = _claim(
+        text=(
+            "EIA forecast in its February 24, 2025 analysis that 18.2 GW "
+            "would be added in 2025, which would set a record."
+        )
+    )
+    task = _grounded_task(
+        claims=[claim],
+        claim_clusters={
+            CLUSTER_ID: _cluster(
+                claim_ids=[claim.claim_id], evidence_ids=[EVIDENCE_ID]
+            )
+        },
+        evidence_units={EVIDENCE_ID: _unit(excerpt=excerpt)},
+    )
+
+    refused, rejected = build_report_composition(
+        task,
+        _summary_draft(
+            "EIA forecast 18.2 GW of additions in 2025, which would set a "
+            "record."
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+    kept, reasons = build_report_composition(
+        task,
+        _summary_draft(
+            "EIA expected 18.2 GW of additions in 2025, which could set a "
+            "record."
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert refused.summary == []
+    assert rejected == [
+        "executive summary point 1: the statement hardens the modality its "
+        "evidence carries"
+    ]
+    assert reasons == []
+    assert "could set a record" in kept.summary[0].text
+
+
+def test_a_note_that_describes_the_pass_is_not_a_scope_assertion() -> None:
+    """'not included in this report' is this pass describing itself.
+
+    The question's own plan carries a behind-the-meter topic, so every honest
+    note about that gap contains the word; a check that refused on the word
+    alone removed the notes a reader most needs.
+    """
+    notes = [
+        "The checked evidence does not include a full-year 2025 outturn for "
+        "U.S. battery storage additions.",
+        "State-level breakdowns are not included in this report.",
+        "Behind-the-meter storage is discussed in the plan but no note "
+        "about its size is included here.",
+        "In this pass, behind-the-meter storage is excluded from the totals "
+        "this report considered, because no read covered it.",
+        "In this pass, behind-the-meter storage is not included in the "
+        "totals considered, because no read covered it.",
+        "In this pass, behind-the-meter storage is excluded from the totals "
+        "this report considered, because no read covered it.",
+    ]
+
+    composition, rejected = build_report_composition(
+        _grounded_task(),
+        ReportDraft(
+            executive_summary=[],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=list(notes),
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == []
+    assert [statement.text for statement in composition.uncertainty_statements] == (
+        notes
+    )
+
+
+def test_a_scope_word_with_no_inclusion_verb_is_not_a_scope_assertion() -> None:
+    """No marker, no refusal: only what a source's totals include or exclude."""
+    assert scope_fact("Behind-the-meter storage was not acquired in this pass.") == ""
+    assert scope_fact("State-level breakdowns are not included in this report.") == ""
+    assert (
+        scope_fact(
+            "Reported totals exclude behind-the-meter storage, so the figures "
+            "cover utility-scale capacity only."
+        )
+        != ""
+    )
+
+
+def test_a_restatement_of_the_evidence_is_not_refused_for_its_word_order() -> None:
+    """A bare year is not a figure a capacity qualifier can attach to.
+
+    The evidence says "In 2024, developers installed 10.4 GW…"; a statement
+    that moves the year to the end paired the qualifier with 2024 instead and
+    refused a sentence that restates its own evidence exactly.
+    """
+    corpus = (
+        "In 2024, developers installed 10.4 GW of utility-scale battery "
+        "storage capacity in the United States."
+    )
+
+    assert (
+        unattached_qualifiers(
+            "Developers installed 10.4 GW of utility-scale battery storage "
+            "capacity in the United States in 2024.",
+            corpus.casefold(),
+        )
+        == []
+    )
+
+
+def test_a_second_passage_over_the_budget_is_cut_and_says_so() -> None:
+    """Whole passages until the budget is spent, then a marked sentence cut.
+
+    The packet is what the writer cites from, so a passage it cannot carry is
+    stated rather than silently dropped — and the budget is a model-input
+    bound, separate from the display bounds the rendered artifacts use.
+    """
+    small = "Generators added 10.4 GW of new battery storage capacity in 2024."
+    long_read = "The review reports a measured result. " * 700
+    assert len(long_read) > PACKET_SUPPORT_CHARS
+    claim = _claim(target_ids=["t1"]).model_copy(
+        update={"cluster_id": CLUSTER_ID}
+    )
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={CLUSTER_ID: _cluster(evidence_ids=[EVIDENCE_ID, "e2"])},
+        evidence={
+            EVIDENCE_ID: _unit(excerpt=small),
+            "e2": _unit(evidence_id="e2", excerpt=long_read),
+        },
+        targets=[_target()],
+        sources=[_source()],
+        limit=10,
+    )
+    support = packet.entries[0].support
+
+    assert f'"{small}"' in support[0]
+    # The second passage cannot fit what is left of this claim's share, so it
+    # is carried up to a sentence end and the withheld count is stated.
+    assert support[1].startswith('e2 p. 4 "The review reports a measured result.')
+    assert "further character(s) were not shown]" in support[1]
+    assert long_read not in support[1]
+
+
+def test_a_single_passage_over_the_budget_is_cut_between_sentences() -> None:
+    """The one passage a claim rests on is never cut mid-sentence.
+
+    Dropping it would leave the writer with no support to restate, so it is
+    carried up to the budget and the withheld remainder is stated.
+    """
+    long_read = "The review reports a measured result. " * 700
+    claim = _claim(target_ids=["t1"]).model_copy(
+        update={"cluster_id": CLUSTER_ID}
+    )
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={CLUSTER_ID: _cluster(evidence_ids=[EVIDENCE_ID])},
+        evidence={EVIDENCE_ID: _unit(excerpt=long_read)},
+        targets=[_target()],
+        sources=[_source()],
+        limit=10,
+    )
+    support = packet.entries[0].support
+
+    assert len(support) == 1
+    body = support[0].split('"', 2)[1]
+    kept, marker = body.split(" [… the passage continues; ", 1)
+    # The retained text is the passage's own opening, cut at a sentence end,
+    # and the marker says how much was withheld.
+    assert long_read.startswith(kept)
+    assert kept.endswith(".")
+    assert len(kept) <= PACKET_SUPPORT_CHARS
+    assert int(marker.split(" ", 1)[0]) == len(long_read) - len(kept)
+    assert marker.endswith("further character(s) were not shown]")
+
+
+def test_a_passage_within_the_packet_budget_is_carried_whole() -> None:
+    """The packet's bound only ever removes whole passages, never text."""
+    excerpt = "Generators added 10.4 GW of new battery storage capacity in 2024."
+    claim = _claim(target_ids=["t1"]).model_copy(
+        update={"cluster_id": CLUSTER_ID}
+    )
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={CLUSTER_ID: _cluster(evidence_ids=[EVIDENCE_ID])},
+        evidence={EVIDENCE_ID: _unit(excerpt=excerpt)},
+        targets=[_target()],
+        sources=[_source()],
+        limit=10,
+    )
+
+    assert any(excerpt in line for line in packet.entries[0].support)
+
+
+def test_a_source_free_note_asserting_a_scope_fact_is_refused() -> None:
+    """A scope fact is a finding, and a finding needs a claim behind it.
+
+    The audited report stated as fact that the totals exclude behind-the-meter
+    storage — a convention its own source never mentions. A note is this
+    pass's own framing and may be source-free; it may not be a finding.
+    """
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[],
+        sections=[],
+        uncertainty_notes=[
+            "Reported totals exclude behind-the-meter storage, so the figures "
+            "cover utility-scale capacity only."
+        ],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.uncertainty_statements == []
+    assert rejected == [
+        "uncertainty note 1: a scope fact with no checked claim behind it"
+    ]
+
+
+def test_a_qualifier_its_evidence_does_not_attach_to_a_figure_is_refused() -> None:
+    """The audited report called 43.6 GW "nameplate"; its source said "operational".
+
+    The source gives 43.6 GW of *operational* capacity and nearly 52 GW of
+    nameplate capacity. Attaching the other figure's qualifier to this one
+    states a quantity the evidence never did.
+    """
+    excerpt = (
+        "By the end of 2025 the United States had 43.6 gigawatts of "
+        "operational battery storage capacity, reaching nearly 52 GW of "
+        "nameplate battery storage capacity."
+    )
+    claim = _claim(text="Battery storage capacity reached 43.6 GW by the end of 2025.")
+    draft = _summary_draft(
+        "Battery storage reached 43.6 GW of nameplate capacity by the end "
+        "of 2025."
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim], evidence_units={EVIDENCE_ID: _unit(excerpt=excerpt)}),
+        draft,
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary == []
+    assert rejected == [
+        "executive summary point 1: an unsupported figure qualification"
+    ]
+
+
+def test_a_qualifier_its_evidence_does_attach_is_published() -> None:
+    """The same figure under the qualifier its source gives it is fine."""
+    excerpt = (
+        "By the end of 2025 the United States had 43.6 gigawatts of "
+        "operational battery storage capacity, reaching nearly 52 GW of "
+        "nameplate battery storage capacity."
+    )
+    claim = _claim(text="Battery storage capacity reached 43.6 GW by the end of 2025.")
+    draft = _summary_draft(
+        "Battery storage reached 43.6 GW of operational capacity by the end "
+        "of 2025."
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim], evidence_units={EVIDENCE_ID: _unit(excerpt=excerpt)}),
+        draft,
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == []
+    assert composition.summary[0].text.startswith("Battery storage reached")
+
+
 def test_an_uncertainty_sentence_cannot_print_an_unchecked_figure() -> None:
     """The reader must explain the gap without printing the figure."""
     draft = ReportDraft(
@@ -2415,6 +3048,72 @@ def test_the_canonical_packet_lists_omitted_ids_and_continuation_batches() -> No
     assert len(packet.continuation_batches) == 2
     assert "continuation batch 1:" in rendered
     assert "cannot be cited by this draft" in rendered
+
+
+def test_the_writer_is_shown_every_checked_claim_whole() -> None:
+    """The claim the writer receives is the claim that was checked.
+
+    ``render_report_claim_packet`` clamped every claim to 240 characters, and
+    a 289-character claim reached the writer as a cut sentence. The writer
+    then reported that the claim "is recorded only in part" — an uncertainty
+    invented by a display bound. The character budget still decides how many
+    claims fit; it no longer decides how much of one is shown.
+    """
+    text = (
+        "PUDL covers electric power plants with 1 megawatt or greater combined "
+        "nameplate capacity that are connected to the local or regional "
+        "electric power grid, which is the respondent scope this pass recorded "
+        "in full and which answers this topic's second obligation."
+    )
+    assert len(text) > 240
+    claim = _claim(text=text, target_ids=["t1"])
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={},
+        evidence={EVIDENCE_ID: _unit()},
+        targets=[_target()],
+        sources=[_source()],
+        limit=10,
+    )
+    rendered = render_canonical_packet(packet)
+    labelled = render_report_claim_packet([(packet.entries[0].label, claim)])
+
+    assert packet.entries[0].text == text
+    assert text in rendered
+    assert text in labelled
+
+
+def test_the_writer_sees_a_passage_past_the_page_head() -> None:
+    """The passage the writer is shown is not the first 200 characters of it.
+
+    The audited run's adjudicator saw site navigation and missed the figures
+    below it; the writer's packet had the same shape, so a support line could
+    not carry the sentence the claim rested on. A display bound is not a
+    model-input bound.
+    """
+    navigation = "Skip to main content Advertisement Register " * 8
+    figure = "Generators added 10.4 GW of new battery storage capacity in 2024."
+    assert len(navigation) > 200
+    # The claim belongs to the cluster that selected the passage, which is how
+    # the packet resolves its support.
+    claim = _claim(target_ids=["t1"]).model_copy(
+        update={"cluster_id": CLUSTER_ID}
+    )
+    unit = _unit(excerpt=navigation + figure)
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={CLUSTER_ID: _cluster(evidence_ids=[EVIDENCE_ID])},
+        evidence={EVIDENCE_ID: unit},
+        targets=[_target()],
+        sources=[_source()],
+        limit=10,
+    )
+    rendered = render_canonical_packet(packet)
+
+    assert figure in rendered
+    assert any(figure in line for line in packet.entries[0].support)
 
 
 def test_the_packet_selects_the_evidence_ids_and_not_the_stances() -> None:

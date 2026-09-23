@@ -2431,6 +2431,47 @@ def _fill_statement_map(composition: ReportComposition) -> None:
         ]
 
 
+class ReportTerminalState(ContractModel):
+    """What a run's own terminal checks decided, as the reader meets them.
+
+    Written once, by the terminal finalizer, from the records the run's own
+    gates and reviewers wrote: the status the router ended on, the Critic's
+    own ``review_status``, the semantic review's status, and the target
+    coverage the acceptance gates measured. It exists because every one of
+    those facts was already in state and none of them reached the reader: a
+    report whose run failed, whose critic never judged it and whose review was
+    never scored was published saying only ``Quality status: partial``.
+
+    Deliberately *not* part of a composition the Synthesizer builds, and
+    deliberately not in ``composition_semantic_fingerprint``: this describes
+    the run, not the report's content, so stamping it at publication can never
+    invalidate the judgement the terminal review recorded from the same
+    content. Every field is project-generated — an enumerated status, an
+    integer count, or a gate's own hard-failure name — so nothing here can
+    carry provider text into a published artifact.
+    """
+
+    status: str = ""
+    """The route the run ended on: ``completed`` / ``failed`` /
+    ``max_iterations`` / any other ``graph_status`` name, or ``""`` when no
+    terminal record was stamped."""
+    critic_status: str = ""
+    """The Critic's own ``review_status`` — ``reviewed``, ``failed``, or ``""``
+    when no critique was recorded at all."""
+    critic_score: int | None = None
+    """The Critic's score, or ``None``. A floor score beside a failed review is
+    not a judgement, and a renderer must not print it as one."""
+    review_status: str = ""
+    """The semantic review's status — ``scored`` / ``incomplete`` /
+    ``provider_failed``, or ``""`` when none was recorded."""
+    required_targets: int = Field(default=0, ge=0)
+    answered_targets: int = Field(default=0, ge=0)
+    critical_targets: int = Field(default=0, ge=0)
+    answered_critical_targets: int = Field(default=0, ge=0)
+    gate_failures: list[str] = Field(default_factory=list)
+    """The typed names of the acceptance gates that failed this report."""
+
+
 class ReportComposition(ContractModel):
     """Everything one synthesis pass composed, and the evidence it renders.
 
@@ -2511,6 +2552,13 @@ class ReportComposition(ContractModel):
     without it being confused with the run's own ``generated_on``.
     """
     requested_word_limit: int | None = Field(default=None, ge=1)
+    terminal: ReportTerminalState = Field(default_factory=ReportTerminalState)
+    """What the run's terminal checks decided, stamped at publication.
+
+    Empty for a composition nobody finalized — a fixture, or a pass the
+    Synthesizer composed but no finalizer published — and a renderer states
+    nothing about checks it was not told about.
+    """
 
     @model_validator(mode="after")
     def canonicalize_evidence(self) -> ReportComposition:

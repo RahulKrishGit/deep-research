@@ -798,19 +798,22 @@ def test_the_production_cli_parser_reads_the_line_the_formatter_prints() -> None
 
 
 def test_the_production_cli_parser_reads_the_claimed_reading_its_line_carries() -> None:
-    """The Quality line prints the CLAIMED count; the substantive one is Coverage.
+    """The claimed count is on the Coverage claimed row; Coverage is substantive.
 
-    The parser mirrors the line it grades, so a run whose two readings differ
+    The parser mirrors the lines it grades, so a run whose two readings differ
     must still resolve to the claimed ratio here: the substantive number is
-    published on the separate Coverage line, which this parser does not read.
+    published on the Coverage line, which this parser does not read for a
+    ratio.
     """
     from deep_research.e2e_evaluation.evaluators import production_cli_summary
 
     summary = production_cli_summary(
         [
-            "Quality: accepted (1/1 topics claimed, 100%)",
+            "Quality: accepted (critic 8/10)",
             "Coverage: 0/1 topics covered (substantive, 0%); "
-            "0/1 required targets answered",
+            "0/1 required targets answered; 0/0 critical targets answered",
+            "Coverage claimed: 1/1 topics recorded as consumed by a checked "
+            "claim (100%)",
         ]
     )
 

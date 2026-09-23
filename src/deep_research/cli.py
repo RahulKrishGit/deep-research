@@ -843,21 +843,21 @@ def _verdict_lines(outcome: ResearchOutcome) -> list[str]:
     means no critic score, and a run no quality pass judged prints its verdict
     alone rather than a row of invented zeroes.
 
-    The topic fragment is the *claimed* count and says so. The Coverage line
-    below carries the substantive reading of the same denominator, and two
-    lines printing different numbers for one quantity under one name is how a
-    run publishes a topic as covered and as not covered at the same time.
+    A *failed* review means no critic score either, and that is the case this
+    guard exists for. The floor score exists so an outage cannot read as a low
+    score — ``critic.py`` says so where it writes one — and printing
+    "critic 1/10" beside the warning that the review never validated put the
+    judgement back.
+
+    The topic fragment is gone from this line. It was the console's first
+    "topics" number and it is the *claimed* one, so "4/4 topics claimed, 100%"
+    printed above "0/4 topics covered" read as one run contradicting itself.
+    The claimed count has its own labelled row on the coverage block now.
     """
     parts: list[str] = []
     critique = outcome.state.critique
-    if critique is not None:
+    if critique is not None and critique.review_status != "failed":
         parts.append(f"critic {critique.score}/10")
-    quality = outcome.quality
-    if quality is not None:
-        parts.append(
-            f"{quality.covered_topics}/{quality.planned_topics} topics "
-            f"claimed, {quality.coverage_ratio:.0%}"
-        )
     detail = f" ({'; '.join(parts)})" if parts else ""
     return [f"Quality: {outcome.quality_status}{detail}"]
 
@@ -948,12 +948,14 @@ def _quality_reason_line(quality: ReportQualitySnapshot) -> list[str]:
 
 
 def _coverage_line(outcome: ResearchOutcome) -> list[str]:
-    """Substantive topic and target completion, and the critical reading.
+    """Substantive topic and target completion, then the claimed reading.
 
-    Three readings of one run, kept apart (Section 2.3). The topic count is the
-    *substantive* one, not the claimed ratio on the quality line: a topic some
-    claim recorded consuming is not an answered obligation, and only the
-    stricter number belongs in a line about completion.
+    Three readings of one run, kept apart (Section 2.3). The first row is the
+    *substantive* count: a topic some claim recorded consuming is not an
+    answered obligation, and only the stricter number belongs in a line about
+    completion. The claimed count follows on its own row and says what it is,
+    because the two are different measurements of the same denominator and a
+    console that prints them in one place under one name contradicts itself.
     """
     coverage = outcome.coverage
     if coverage is None:
@@ -962,13 +964,21 @@ def _coverage_line(outcome: ResearchOutcome) -> list[str]:
         f"{coverage.answered_critical_targets}/{coverage.critical_targets} "
         "critical targets answered"
     )
-    return [
+    lines = [
         f"Coverage: {coverage.covered_topics}/{coverage.planned_topics} topics "
         f"covered (substantive, "
         f"{coverage.substantive_topic_ratio:.0%}); "
         f"{coverage.answered_targets}/{coverage.required_targets} required "
         f"targets answered; {critical}"
     ]
+    quality = outcome.quality
+    if quality is not None:
+        lines.append(
+            f"Coverage claimed: {quality.covered_topics}/"
+            f"{quality.planned_topics} topics recorded as consumed by a "
+            f"checked claim ({quality.coverage_ratio:.0%})"
+        )
+    return lines
 
 
 def _claim_lines(outcome: ResearchOutcome) -> list[str]:

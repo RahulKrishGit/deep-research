@@ -24,6 +24,7 @@ from deep_research.agents.evidence import build_read_record, resolve_read_works
 from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
+    _vintage_key,
     DEFAULT_ANSWER_HEADING,
     DEFAULT_READER_WORD_LIMIT,
     EVIDENCE_SECTIONS,
@@ -74,6 +75,7 @@ from deep_research.utils.types import (
     QUALITY_CONTRACT_VERSION,
     AtomicProposition,
     Claim,
+    Critique,
     ClaimCluster,
     EvidenceDisposition,
     EvidencePassage,
@@ -83,6 +85,7 @@ from deep_research.utils.types import (
     ReadRecord,
     ReportAnswerRow,
     ReportStatement,
+    ReportTerminalState,
     ResearchError,
     ResearchState,
     ScoredSource,
@@ -161,6 +164,7 @@ def _claim(
     finding_fingerprints: list[str] | None = None,
     insufficient_reason: str | None = None,
     badge: str | None = None,
+    target_ids: list[str] | None = None,
 ) -> Claim:
     """One checked claim. ``badge`` overrides the verdict-derived badge."""
     return Claim(
@@ -193,6 +197,7 @@ def _claim(
         ),
         consumed_finding_fingerprints=finding_fingerprints or [],
         consumed_coverage_ids=coverage_ids or [],
+        target_ids=target_ids or [],
     )
 
 
@@ -494,6 +499,120 @@ def test_an_undated_pass_says_so_instead_of_reading_a_clock() -> None:
     reader = render_reader_report(_composition(as_of=""))
 
     assert "**As of:** no dated evidence was recorded" in reader
+
+
+def _terminal(**overrides: object) -> ReportTerminalState:
+    """The terminal checks one live run recorded, as the finalizer stamps them.
+
+    The values are the audited run's own: a failed status, a critic whose
+    review never validated, a semantic review the provider failed, and no
+    required or critical target answered.
+    """
+    payload: dict[str, object] = {
+        "status": "failed",
+        "critic_status": "failed",
+        "critic_score": 1,
+        "review_status": "provider_failed",
+        "required_targets": 11,
+        "answered_targets": 0,
+        "critical_targets": 9,
+        "answered_critical_targets": 0,
+        "gate_failures": [
+            "unanswered_critical_targets",
+            "unaccounted_required_targets",
+        ],
+    }
+    payload.update(overrides)
+    return ReportTerminalState.model_validate(payload)
+
+
+def test_the_reader_report_states_the_run_and_every_terminal_check() -> None:
+    """A reader of a failed run must be able to see that it failed.
+
+    The published report said ``Quality status: partial`` and nothing else:
+    not that the run ended failed, not that the critic never judged it, not
+    that the semantic review was never scored, not that no target was
+    answered, and not which gates rejected it.
+    """
+    reader = render_reader_report(_composition(terminal=_terminal()))
+
+    assert "**Run status:** failed" in reader
+    assert "**Critic:** never judged" in reader
+    assert "**Report review:** unscored (provider_failed)" in reader
+    assert (
+        "**Coverage:** 0 of 11 required targets answered; "
+        "0 of 9 critical targets answered" in reader
+    )
+    assert (
+        "**Gate failures:** unanswered_critical_targets, "
+        "unaccounted_required_targets" in reader
+    )
+
+
+def test_an_accepted_run_states_the_checks_that_passed() -> None:
+    """The same block, read on a clean run: nothing is invented either way."""
+    reader = render_reader_report(
+        _composition(
+            terminal=_terminal(
+                status="completed",
+                critic_status="reviewed",
+                critic_score=8,
+                review_status="scored",
+                answered_targets=11,
+                answered_critical_targets=9,
+                gate_failures=[],
+            )
+        )
+    )
+
+    assert "**Run status:** completed" in reader
+    assert "**Critic:** scored 8/10" in reader
+    assert "**Report review:** scored" in reader
+    assert (
+        "**Coverage:** 11 of 11 required targets answered; "
+        "9 of 9 critical targets answered" in reader
+    )
+    assert "**Gate failures:**" not in reader
+
+
+def test_an_unstamped_pass_does_not_invent_a_terminal_status() -> None:
+    """No terminal record is not a clean bill of health, and not a failure."""
+    reader = render_reader_report(_composition())
+
+    assert "**Run status:**" not in reader
+    assert "**Critic:**" not in reader
+    assert "**Gate failures:**" not in reader
+
+
+def test_the_methodology_does_not_imply_the_terminal_gates_passed() -> None:
+    """The ledger's placement is a fact; the gates' verdict is the run's.
+
+    The published line read "published only after the terminal quality
+    gates", which a reader takes as "the gates ran and this passed them" —
+    while the run's own gates rejected it twice. The fixture is long enough to
+    render at the most informative backmatter level, because the line is
+    dropped at the compact ones and a vacuous assertion proves nothing.
+    """
+    composition = _composition(
+        terminal=_terminal(),
+        sections=[
+            ReportSection(
+                title=f"Theme {index}",
+                points=[
+                    _point(
+                        text=f"Measured result {index}.{row} was reported."
+                    )
+                    for row in range(4)
+                ],
+            )
+            for index in range(6)
+        ],
+    )
+    reader = render_reader_report(composition)
+
+    assert "**What the evidence establishes**" in reader
+    assert "only after the terminal quality gates" not in reader
+    assert "after the run's terminal checks had run" in reader
 
 
 def test_every_point_carries_its_own_inline_markers() -> None:
@@ -1670,6 +1789,338 @@ def test_a_context_statement_may_be_source_free_and_is_still_mapped() -> None:
     assert "No read was acquired" in render_reader_report(composition)
 
 
+def test_an_attributed_answer_is_headed_as_the_answer() -> None:
+    """Every point of the audited run was attributed, so nothing was an answer.
+
+    ``_reader_summary`` filed ``attributed`` under "What would change the
+    answer", and the audited report's whole answer — both figures and both
+    forecasts — was printed under that heading, with no answer block at all.
+    An attributed statement is an answer whose provenance is a named source;
+    only a contested one is something that would change it.
+    """
+    composition = _evidence_composition(
+        constraints=[],
+        summary=[
+            _stated(
+                "EIA reported 10.4 GW added in 2024.",
+                statement=_statement(
+                    "EIA reported 10.4 GW added in 2024.",
+                    statement_id="S1",
+                    mode="attributed",
+                ),
+            )
+        ],
+        sections=[ReportSection(title="Error correction", points=[_stated()])],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert "**The attributed answer**" in summary
+    assert "What would change the answer" not in summary
+    assert "EIA reported 10.4 GW added in 2024." in summary
+
+
+def test_a_contested_point_is_still_what_would_change_the_answer() -> None:
+    """The other half of the same rule: a disputed fact is not an answer."""
+    composition = _evidence_composition(
+        constraints=[],
+        summary=[
+            _stated(
+                "Cost fell tenfold.",
+                statement=_statement(
+                    "Cost fell tenfold.",
+                    statement_id="S1",
+                    mode="contested",
+                ),
+            )
+        ],
+        sections=[ReportSection(title="Error correction", points=[_stated()])],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert "**What would change the answer**" in summary
+    assert "**The attributed answer**" not in summary
+
+
+def test_the_most_important_limitation_is_ranked_by_consequence() -> None:
+    """``limitations[0]`` is list order, and list order is not consequence.
+
+    ``limitation_reasons`` records the reasons in producer order, so the
+    headline caveat was whichever reason happened to be written first — for
+    the audited run, a low-confidence source behind no finding at all.
+    """
+    composition = _composition(
+        limitations=["low_confidence_sources", "no_verified_claims"]
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert (
+        f"**The most important unresolved limitation** is "
+        f"{LIMITATION_TOPICS['no_verified_claims']}." in summary
+    )
+
+
+def test_a_failed_run_is_the_first_limitation_it_names() -> None:
+    """The run's own verdict outranks every other recorded limitation."""
+    composition = _composition(
+        terminal=_terminal(),
+        limitations=["low_confidence_sources"],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert (
+        f"**The most important unresolved limitation** is "
+        f"{LIMITATION_TOPICS['low_confidence_sources']}." not in summary
+    )
+    assert "the run's own checks failed it" in summary
+
+
+def test_unanswered_critical_targets_are_named_before_a_recorded_reason() -> None:
+    """A plan obligation nobody answered is a consequence, not a footnote."""
+    composition = _composition(
+        terminal=_terminal(status="max_iterations", gate_failures=[]),
+        limitations=["low_confidence_sources"],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert "9 of 9 critical targets have no answer" in summary
+
+
+def test_low_confidence_is_scoped_to_the_sources_the_report_cites() -> None:
+    """A source behind no finding is not a limitation of *this* report.
+
+    ``limitation_reasons`` fires for any evaluated source below the
+    threshold, so the audited report told its reader that "some sources
+    behind these findings" were low confidence when the flagged source
+    supported no finding and no citation.
+    """
+    composition = _composition(
+        sources=[
+            _source(),
+            _source(url=OTHER_URL, title="Uncited relay", low_confidence=True),
+        ],
+        limitations=["low_confidence_sources"],
+    )
+    uncertainty = _section_body(
+        render_reader_report(composition),
+        "## Uncertainty and conflicting evidence",
+    )
+
+    assert LIMITATION_REASONS["low_confidence_sources"] not in uncertainty
+
+
+def test_a_cited_low_confidence_source_is_disclosed() -> None:
+    """The same reason is disclosed the moment a finding rests on it."""
+    composition = _composition(
+        sources=[_source(low_confidence=True)],
+        limitations=["low_confidence_sources"],
+    )
+    uncertainty = _section_body(
+        render_reader_report(composition),
+        "## Uncertainty and conflicting evidence",
+    )
+
+    assert LIMITATION_REASONS["low_confidence_sources"] in uncertainty
+
+
+def _vintage(
+    url: str,
+    *,
+    data_period: str | None = None,
+    published: str | None = None,
+) -> ScoredSource:
+    return _source(
+        url=url,
+        temporal=SourceTemporal(
+            publication_date=published,
+            data_period=data_period,
+            forecast_horizon=None,
+            effective_date=None,
+            status="current",
+        ),
+    )
+
+
+def test_the_latest_dated_statement_leads_and_older_ones_say_they_are_older() -> (
+    None
+):
+    """The audited report led with an 18.2 GW forecast its own citations
+    already superseded, and named no vintage anywhere.
+
+    When the question asks for the latest and the claims carry dated vintages,
+    the newest recorded vintage leads and every older one is named as older —
+    which is also what lets a reader see why two figures for one year differ.
+    """
+    older_url = "https://eia.gov/december-inventory"
+    newer_url = "https://eia.gov/january-inventory"
+    older_claim = _claim(
+        text="EIA forecast 18.2 GW for 2025.", urls=[older_url]
+    )
+    newer_claim = _claim(
+        text="EIA forecast 19.6 GW for 2025.", urls=[newer_url]
+    )
+    composition = _composition(
+        question="What do the latest forecasts project for 2025?",
+        claims=[older_claim, newer_claim],
+        sources=[_vintage(older_url, data_period="2024-12"),
+                 _vintage(newer_url, data_period="2025-01")],
+        summary=[
+            _point(
+                text="EIA forecast 18.2 GW for 2025.",
+                claim_ids=[older_claim.claim_id],
+                source_urls=[older_url],
+            ),
+            _point(
+                text="EIA forecast 19.6 GW for 2025.",
+                claim_ids=[newer_claim.claim_id],
+                source_urls=[newer_url],
+            ),
+        ],
+        sections=[],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert summary.index("19.6 GW") < summary.index("18.2 GW")
+    assert "(vintage: 2025-01)" in summary
+    assert "(older vintage: 2024-12)" in summary
+
+
+def test_a_question_that_does_not_ask_for_the_latest_keeps_its_order() -> None:
+    """Nothing is re-ordered for a question that never asked for recency."""
+    older_url = "https://eia.gov/december-inventory"
+    newer_url = "https://eia.gov/january-inventory"
+    older_claim = _claim(text="EIA reported 10.3 GW.", urls=[older_url])
+    newer_claim = _claim(text="EIA reported 10.4 GW.", urls=[newer_url])
+    composition = _composition(
+        question="How mature is quantum error correction?",
+        claims=[older_claim, newer_claim],
+        sources=[_vintage(older_url, data_period="2024-12"),
+                 _vintage(newer_url, data_period="2025-01")],
+        summary=[
+            _point(
+                text="EIA reported 10.3 GW.",
+                claim_ids=[older_claim.claim_id],
+                source_urls=[older_url],
+            ),
+            _point(
+                text="EIA reported 10.4 GW.",
+                claim_ids=[newer_claim.claim_id],
+                source_urls=[newer_url],
+            ),
+        ],
+        sections=[],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert summary.index("10.3 GW") < summary.index("10.4 GW")
+    assert "(vintage" not in summary
+
+
+def test_a_2024_actual_is_not_labelled_an_older_vintage_of_a_2025_forecast() -> (
+    None
+):
+    """Different quantities are not two vintages of one measurement.
+
+    Any question containing "latest" compared every dated summary point with
+    the newest vintage in the whole summary, so a 2024 actual was moved below a
+    2025 forecast and told it was the older vintage of it.
+    """
+    actual_url = "https://eia.gov/january-inventory"
+    forecast_url = "https://woodmac.example/2025-outlook"
+    actual = _claim(text="EIA reported 10.4 GW added in 2024.", urls=[actual_url])
+    forecast = _claim(
+        text="Wood Mackenzie forecast 18.9 GW installed in 2025.",
+        urls=[forecast_url],
+    )
+    composition = _composition(
+        question="What do the latest forecasts project for 2025?",
+        claims=[actual, forecast],
+        sources=[
+            _vintage(actual_url, data_period="2024-12"),
+            _vintage(forecast_url, data_period="2025-06"),
+        ],
+        summary=[
+            _point(
+                text="EIA reported 10.4 GW added in 2024.",
+                claim_ids=[actual.claim_id],
+                source_urls=[actual_url],
+            ),
+            _point(
+                text="Wood Mackenzie forecast 18.9 GW installed in 2025.",
+                claim_ids=[forecast.claim_id],
+                source_urls=[forecast_url],
+            ),
+        ],
+        sections=[],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert summary.index("10.4 GW") < summary.index("18.9 GW")
+    assert "(vintage" not in summary
+
+
+def test_two_restatements_of_one_measure_are_compared_by_their_vintages() -> None:
+    """The same unit over the same year is one measurement, told twice.
+
+    This is the 10.4-versus-10.3 case: two EIA inventory vintages of the 2024
+    addition, which the reader can only reconcile if both vintages are named.
+    """
+    newer_url = "https://eia.gov/january-inventory"
+    older_url = "https://eia.gov/december-inventory"
+    newer = _claim(text="EIA reported 10.4 GW added in 2024.", urls=[newer_url])
+    older = _claim(text="EIA reported 10.3 GW added in 2024.", urls=[older_url])
+    composition = _composition(
+        question="How much was added in 2024, and what is the latest?",
+        claims=[newer, older],
+        sources=[
+            _vintage(newer_url, data_period="2025-01"),
+            _vintage(older_url, data_period="2024-12"),
+        ],
+        summary=[
+            _point(
+                text="EIA reported 10.3 GW added in 2024.",
+                claim_ids=[older.claim_id],
+                source_urls=[older_url],
+            ),
+            _point(
+                text="EIA reported 10.4 GW added in 2024.",
+                claim_ids=[newer.claim_id],
+                source_urls=[newer_url],
+            ),
+        ],
+        sections=[],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert summary.index("10.4 GW") < summary.index("10.3 GW")
+    assert "(vintage: 2025-01)" in summary
+    assert "(older vintage: 2024-12)" in summary
+
+
+def test_a_date_range_is_keyed_by_the_year_it_ends_in() -> None:
+    """A cumulative figure through 2025 is not a 2011 vintage."""
+    assert _vintage_key("2011-2025") == (2025, 0, 0)
+    assert _vintage_key("2025") == (2025, 0, 0)
+    assert _vintage_key("no date recorded") is None
+
+
 def test_the_summary_leads_with_the_answer_before_the_details() -> None:
     composition = _evidence_composition(
         constraints=[],
@@ -2566,6 +3017,152 @@ def _artifact_texts(composition: ReportComposition) -> dict[str, str]:
         "reader_markdown": render_reader_report(composition),
         "evidence_markdown": render_evidence_ledger(composition),
     }
+
+
+def test_the_quality_record_publishes_each_claims_target_bindings() -> None:
+    """The zero binding behind the audited run's zero coverage was invisible.
+
+    ``claims[]`` published ``consumed_coverage_ids`` and no target ids at all,
+    so a reader of the record could not tell a claim bound to no obligation
+    from one bound to an obligation nobody answered — which is exactly the
+    difference the run's own "0 of 11" turned on.
+    """
+    claim = _claim(target_ids=["topic-01-target-01"])
+    composition = _evidence_composition(claims=[claim])
+    state = _record_state(composition)
+
+    record = render_quality_record(state, composition, None)
+
+    row = next(
+        row for row in record["claims"] if row["claim_id"] == claim.claim_id
+    )
+    assert row["target_ids"] == ["topic-01-target-01"]
+
+
+def test_the_quality_record_publishes_claim_text_uncut() -> None:
+    """A 289-character claim was published cut mid-sentence at 240.
+
+    The cut travelled: it reached the writer's packet, and the audited report
+    told its reader that "the PUDL-derived claim is recorded only in part" —
+    an uncertainty its own evidence does not carry.
+    """
+    text = (
+        "PUDL covers electric power plants with 1 megawatt or greater "
+        "combined nameplate capacity that are connected to the local or "
+        "regional electric power grid, which is the respondent scope this "
+        "pass recorded in full and which answers the question's third "
+        "obligation about the grid-connection rule in the same sentence."
+    )
+    assert len(text) > QUALITY_RECORD_TEXT_CHARS
+    claim = _claim(text=text)
+    composition = _evidence_composition(claims=[claim])
+    state = _record_state(composition)
+
+    record = render_quality_record(state, composition, None)
+
+    row = next(
+        row for row in record["claims"] if row["claim_id"] == claim.claim_id
+    )
+    assert row["text"] == text
+
+
+def test_the_quality_record_publishes_the_supporting_span_not_the_page_head() -> (
+    None
+):
+    """Every published verification passage began with site navigation.
+
+    The record is the replay surface for the ledger, and its excerpts were the
+    first 200 characters of the page — "Skip to main content Advertisement
+    Register…" — so no reader could check what a claim actually rested on.
+    """
+    page_head = "Skip to main content Advertisement Register " * 8
+    span = "Generators added 10.4 GW of new battery storage capacity in 2024."
+    passage = EvidencePassage(
+        source_url=THIRD_URL,
+        source_title="Independent review",
+        locator="p. 1",
+        excerpt=span,
+        stance="supports",
+    )
+    claim = _claim(urls=[THIRD_URL], passages=[passage])
+    composition = _evidence_composition(
+        claims=[claim], evidence_units={"e1": _unit(excerpt=page_head)}
+    )
+    state = _record_state(composition)
+
+    record = render_quality_record(state, composition, None)
+
+    row = next(
+        row for row in record["evidence"] if row["evidence_id"] == "e1"
+    )
+    assert row["excerpt"] == span
+    assert "Skip to main content" not in json.dumps(record)
+
+
+def test_an_evidence_unit_no_claim_rests_on_keeps_its_own_excerpt() -> None:
+    """With no supporting span there is nothing to publish but the read's own."""
+    excerpt = "The page states 26 gigawatts of cumulative capacity."
+    composition = _evidence_composition(
+        claims=[_claim(passages=[])],
+        evidence_units={"e1": _unit(excerpt=excerpt)},
+    )
+    state = _record_state(composition)
+
+    record = render_quality_record(state, composition, None)
+
+    row = next(
+        row for row in record["evidence"] if row["evidence_id"] == "e1"
+    )
+    assert row["excerpt"] == excerpt
+
+
+def test_the_quality_record_carries_the_session_critic_and_review_statuses() -> (
+    None
+):
+    """An operator reading only the record saw ``partial`` and nothing else.
+
+    The fatal critic error's details were withheld by design, so the record
+    could not say the critic never judged the report, that the semantic review
+    was never scored, or what the run's own status was.
+    """
+    composition = _evidence_composition()
+    critique = Critique(
+        score=1,
+        gaps=[],
+        unsupported_claims=[],
+        recommended_queries=[],
+        should_continue=False,
+        rationale="The model provider failed while the report was reviewed.",
+        review_status="failed",
+    )
+    state = _record_state(composition).model_copy(
+        update={"critique": critique}
+    )
+
+    record = render_quality_record(
+        state, composition, None, session_status="failed"
+    )
+
+    assert record["statuses"] == {
+        "session": "failed",
+        "critic": "failed",
+        # The floor score is not a judgement: the reader report and the CLI
+        # both refuse to print it, so the record must not publish one either.
+        "critic_score": None,
+        "review": "",
+    }
+
+
+def test_a_record_without_a_session_status_says_so_rather_than_guessing() -> None:
+    """No stamp is not a clean run: ``session`` stays empty."""
+    composition = _evidence_composition()
+    state = _record_state(composition)
+
+    record = render_quality_record(state, composition, None)
+
+    assert record["statuses"]["session"] == ""
+    assert record["statuses"]["critic"] == ""
+    assert record["statuses"]["review"] == ""
 
 
 def test_the_quality_record_registers_every_error_the_pass_recorded() -> None:

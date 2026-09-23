@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 
+from deep_research.agents.critic import failed_critique
 from deep_research.agents.events import agent_event
 from deep_research.agents.researcher import (
     sub_topic_completed_event,
@@ -774,9 +775,7 @@ def test_the_summary_leads_with_the_quality_block() -> None:
     lines = render_summary(outcome, verbose=False)
     joined = "\n".join(lines)
 
-    assert (
-        "Quality: partial (critic 6/10; 3/7 topics claimed, 43%)" in joined
-    )
+    assert "Quality: partial (critic 6/10)" in joined
     assert (
         "Evidence: 12 cited sources; 10 scored; 14 verified, 1 contradicted"
         in joined
@@ -822,7 +821,11 @@ def test_the_critic_fragment_is_omitted_without_a_model_review() -> None:
 
     joined = "\n".join(render_summary(outcome, verbose=False))
 
-    assert "Quality: partial (2/2 topics claimed, 100%)" in joined
+    assert "Quality: partial" in joined
+    assert (
+        "Coverage claimed: 2/2 topics recorded as consumed by a checked "
+        "claim (100%)" in joined
+    )
     assert "critic 6/10" not in joined
     assert "/10" not in joined
 
@@ -834,7 +837,7 @@ def test_an_accepted_run_says_accepted() -> None:
 
     joined = "\n".join(render_summary(outcome, verbose=False))
 
-    assert "Quality: accepted (critic 6/10; 3/7 topics claimed, 43%)" in joined
+    assert "Quality: accepted (critic 6/10)" in joined
 
 
 def test_the_quality_line_stands_alone_without_a_snapshot() -> None:
@@ -1424,20 +1427,58 @@ def test_the_coverage_line_reports_the_substantive_topic_count() -> None:
 
 
 def test_the_quality_line_names_the_claimed_topic_count() -> None:
-    """Two topic lines, two readings, each one named.
+    """Two topic readings, two rows, each one named.
 
-    The Coverage line carries the substantive count; the Quality line carries
-    the claimed one next to ``coverage_ratio``. Printing the second as "topics
-    covered" beside the first's "(substantive, 0%)" made one run publish a
-    topic as covered and as not covered in adjacent lines.
+    The claimed count used to sit inside the headline ``Quality:`` line —
+    "4/4 topics claimed, 100%" — while the Coverage row below it printed
+    "0/4 topics covered": one run, one console, two answers under one name.
+    The claimed reading has its own labelled row now.
     """
     joined = "\n".join(render_summary(composed_outcome(), verbose=False))
 
-    assert "Quality: partial (2/3 topics claimed, 67%)" in joined
+    quality_line = next(
+        line for line in joined.splitlines() if line.startswith("Quality: ")
+    )
+    assert "topics claimed" not in quality_line
+    assert (
+        "Coverage claimed: 2/3 topics recorded as consumed by a checked "
+        "claim (67%)" in joined
+    )
     assert (
         "Coverage: 2/3 topics covered (substantive, 67%); "
         "2/3 required targets answered; 1/2 critical targets answered" in joined
     )
+
+
+def test_a_failed_critic_review_prints_no_critic_score() -> None:
+    """The floor score is not a judgement, and must never print as one.
+
+    The audited run printed "Quality: partial (critic 1/10; …)" four lines
+    above the warning that said the critic's review never validated. The floor
+    exists so an outage cannot read as a low score; printing the number beside
+    "failed" put the judgement back.
+    """
+    critique, _ = failed_critique(iteration=0, max_iterations=3)
+    joined = "\n".join(
+        render_summary(
+            build_outcome(state=quality_state(critique=critique)),
+            verbose=False,
+        )
+    )
+
+    assert "Quality: partial" in joined
+    quality_line = next(
+        line for line in joined.splitlines() if line.startswith("Quality: ")
+    )
+    assert quality_line == "Quality: partial"
+    assert "/10" not in joined
+
+
+def test_a_reviewed_critique_still_prints_its_score() -> None:
+    """The guard is about the review's status, not about the number."""
+    joined = "\n".join(render_summary(build_outcome(state=quality_state()), verbose=False))
+
+    assert "Quality: partial (critic 6/10)" in joined
 
 
 def test_the_summary_keeps_topic_and_target_progress_apart() -> None:

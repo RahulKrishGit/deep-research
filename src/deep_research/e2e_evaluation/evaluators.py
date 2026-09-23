@@ -178,9 +178,22 @@ def production_cli_summary(lines: Sequence[str]) -> dict[str, JsonValue]:
         summary["quality_status"] = quality_line.removeprefix("Quality: ").split(
             " ", 1
         )[0]
-        coverage = re.search(r"(\d+)/(\d+) topics claimed, (\d+)%", quality_line)
-        if coverage is not None and int(coverage.group(2)):
-            summary["coverage_ratio"] = int(coverage.group(3)) / 100
+    # The claimed topic reading has its own row. It used to sit inside the
+    # verdict line, where "N/M topics claimed, X%" printed above
+    # "0/M topics covered (substantive, 0%)" read as one run answering one
+    # question two ways; this parser follows the line the number is on.
+    claimed_line = next(
+        (line for line in lines if line.startswith("Coverage claimed: ")), None
+    )
+    if claimed_line is not None:
+        coverage = re.search(r"(\d+)/(\d+) topics ", claimed_line)
+        ratio = re.search(r"\((\d+)%\)", claimed_line)
+        if (
+            coverage is not None
+            and ratio is not None
+            and int(coverage.group(2))
+        ):
+            summary["coverage_ratio"] = int(ratio.group(1)) / 100
     evidence_line = next(
         (line for line in lines if line.startswith("Evidence: ")), None
     )
@@ -319,10 +332,11 @@ def _expected_cli_summary(
     )
     return {
         "quality_status": quality_status,
-        # The formatter prints the *claimed* ratio on its Quality line
-        # ("N/M topics claimed, X%"), so the comparison is against that
-        # reading — the graded one is the substantive ratio, and comparing the
-        # CLI's claim against it would fail every run the two disagree about.
+        # The formatter prints the *claimed* ratio, on its own "Coverage
+        # claimed:" row ("N/M topics recorded as consumed by a checked claim
+        # (X%)"), so the comparison is against that reading — the graded one
+        # is the substantive ratio, and comparing the CLI's claim against it
+        # would fail every run the two disagree about.
         "coverage_ratio": round(
             float(
                 quality.coverage_ratio

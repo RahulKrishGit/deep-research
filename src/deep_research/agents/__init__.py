@@ -387,6 +387,10 @@ from deep_research.agents.react import (
 from deep_research.agents.report import (
     ANSWER_SECTION_HEADINGS,
     ANSWER_TABLE_COLUMNS,
+    ATTRIBUTED_ANSWER_HEADING,
+    COUNTERFACTUAL_ANSWER_HEADING,
+    ESTABLISHED_ANSWER_HEADING,
+    LIMITATION_CONSEQUENCE,
     DEFAULT_ANSWER_HEADING,
     DEFAULT_READER_WORD_LIMIT,
     EVIDENCE_SECTIONS,
@@ -413,6 +417,7 @@ from deep_research.agents.report import (
     StatementMappingError,
     UnknownEvidenceError,
     artifact_content_hashes,
+    asks_for_the_latest,
     backmatter_ratio,
     build_citation_index,
     canonical_claims,
@@ -420,6 +425,7 @@ from deep_research.agents.report import (
     citation_markers,
     collapse_mirror_urls,
     composition_statements,
+    disclosed_limitations,
     distinct_retention_counts,
     error_reading,
     evidence_badge_label,
@@ -427,6 +433,8 @@ from deep_research.agents.report import (
     evidence_status_counts,
     fit_report_composition,
     is_prior_completion,
+    most_consequential_limitation,
+    point_vintage,
     reader_citations,
     reader_sections,
     reader_word_count,
@@ -438,11 +446,13 @@ from deep_research.agents.report import (
     render_quality_record,
     render_reader_report,
     render_statement_map,
+    render_terminal_status,
     report_as_of,
     report_scope,
     statement_citation_urls,
     statement_has_claim_link,
     statement_source_urls,
+    terminal_report_state,
     validate_report_statements,
 )
 from deep_research.agents.report_review import (
@@ -582,6 +592,7 @@ from deep_research.agents.steps import (
     summarize_text,
 )
 from deep_research.agents.synthesizer import (
+    PACKET_SUPPORT_CHARS,
     DEFAULT_MAX_MEMORY_FINDINGS,
     DEFAULT_MAX_SECTIONS,
     DEFAULT_MEMORY_CONFIDENCE,
@@ -611,8 +622,12 @@ from deep_research.agents.synthesizer import (
     claim_registry,
     compose_limitations,
     compose_report,
+    attributes_a_source,
     date_basis_for,
+    dropped_modality,
     evidence_report_filename,
+    hardened_modality,
+    hedge_marker,
     high_confidence_claims,
     invalid_draft_error,
     limitation_reasons,
@@ -627,9 +642,11 @@ from deep_research.agents.synthesizer import (
     report_messages,
     report_provider_error,
     report_output_limit_retry,
+    scope_fact,
     synthesis_completed_event,
     synthesis_started_event,
     unattested_atoms,
+    unattached_qualifiers,
     unattested_words,
 )
 from deep_research.agents.toolset import AgentToolset, ToolDescriptor
@@ -1254,4 +1271,26 @@ __all__ = [
     # public top-level name to be reachable here — the consolidation wiring
     # adds one public helper, and defined-but-unexported is a real gap.
     "claim_consolidation_degraded_error",
+    # The report-honesty pass: what a run's terminal checks decided, the
+    # reader's answer blocks, the vintage a statement carries, and the three
+    # checks that keep a drafted statement inside its evidence. Appended as one
+    # block for the same reason: every public top-level name has to be
+    # reachable here.
+    "ATTRIBUTED_ANSWER_HEADING",
+    "COUNTERFACTUAL_ANSWER_HEADING",
+    "ESTABLISHED_ANSWER_HEADING",
+    "LIMITATION_CONSEQUENCE",
+    "asks_for_the_latest",
+    "attributes_a_source",
+    "disclosed_limitations",
+    "dropped_modality",
+    "hardened_modality",
+    "hedge_marker",
+    "most_consequential_limitation",
+    "point_vintage",
+    "render_terminal_status",
+    "scope_fact",
+    "terminal_report_state",
+    "unattached_qualifiers",
+    "PACKET_SUPPORT_CHARS",
 ]
