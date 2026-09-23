@@ -909,13 +909,23 @@ async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
         )
 
     previous = state.progress_history[-1] if state.progress_history else None
-    after = progress_snapshot(state, previous=previous)
+    # The worklist this hop is about to dispatch on is computed first and the
+    # stop decision is judged against *it*, not against the list the previous
+    # hop left in state. ``_selectable_acquisition_keys`` reads
+    # ``refinement_targets``, and ``route_after_refine`` dispatches on the list
+    # written below, so judging the stale list let a satisfied topic's queue
+    # hold a stalled run open — and, worse, let a run stop on
+    # ``evidence_unavailable`` while the acquire job this hop had just routed
+    # for a review defect still owed work. ``refinement_targets_for`` is pure,
+    # so evaluating against its result changes nothing it computes.
+    targets = refinement_targets_for(state)
+    routed = state.model_copy(update={"refinement_targets": targets})
+    after = progress_snapshot(routed, previous=previous)
     stopped = (
         None
         if previous is None
-        else repair_stop_reason(state, before=previous, after=after)
+        else repair_stop_reason(routed, before=previous, after=after)
     )
-    targets = refinement_targets_for(state)
     recorded = merge_research_state(
         state,
         {
