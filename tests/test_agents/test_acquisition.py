@@ -1956,7 +1956,7 @@ async def test_a_contents_only_fixture_cannot_supply_a_measurement(
                 read_id=read.read_id,
                 locator=locator,
                 excerpt="Basin A | 34 | 128",
-                target_ids=["topic-01"],
+                target_ids=["topic-01-target-01"],
             )
         ]
     )
@@ -1967,7 +1967,7 @@ async def test_a_contents_only_fixture_cannot_supply_a_measurement(
         extracted_at="2026-08-01T12:00:00+00:00",
         known_urls=[read.resolved_url],
         known_reads={read.read_id: read},
-        target_id="topic-01",
+        valid_target_ids=("topic-01-target-01",),
     )
 
     assert findings == []

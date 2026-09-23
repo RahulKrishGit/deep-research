@@ -331,6 +331,58 @@ class Finding(ContractModel):
     extracted_at: AwareISOString
     confidence: UnitScore
     related_sub_topic: str = Field(min_length=1)
+    target_ids: list[str] = Field(default_factory=list)
+    """The planned evidence targets this finding's content answers.
+
+    The extraction names them from the plan's own inventory (``topic-01-
+    target-02``), which is a different vocabulary from the coverage ids the
+    acquisition layer stamps on reads and evidence units (``topic-01``): a
+    read is *fetched for* a sub-topic, while a finding *answers* an
+    obligation, and one read can answer a target of a topic that never
+    fetched it. That is exactly the binding an audited run discarded — it
+    asked the model for "the target id it serves" and then kept only
+    ``related_sub_topic`` — which left every claim unbound and every target
+    unanswered. Empty is a legacy finding, extracted before the binding was
+    kept; a consumer then falls back to the finding's sub-topic, never to
+    "answers everything".
+    """
+    vintage: str | None = None
+    """The dated edition of the data the figure rests on, in the source's words.
+
+    "January 2025 preliminary electric generator inventory" is a vintage;
+    "2024" is a period. Two statements of one quantity can differ only by
+    this, so a later stage comparing "the latest" needs it recorded beside
+    the figure rather than inside its prose.
+    """
+    statement_date: str | None = None
+    """The date the source states the figure or carries it, as it writes it.
+
+    The article's own date — "March 12, 2025" — which is not the vintage of
+    its data and not the period the figure applies to. It is what tells a
+    February 2025 forecast of 18.2 GW from a March 2025 statement of 19.6 GW.
+    """
+    data_period: str | None = None
+    """The period the figure applies to, as the source writes it.
+
+    "2024" for an addition, "2025" for a forecast about that year: the field
+    that says whether two figures are even comparable, so a vintage
+    comparison never ranks a 2024 actual against a 2025 projection.
+    """
+
+    @model_validator(mode="after")
+    def normalize_binding_and_dates(self) -> "Finding":
+        """Keep first-seen target order, and treat a blank date as absent.
+
+        Both are what a consumer compares against: a repeated target id would
+        make one binding look like two, and an empty string would sort as a
+        date a reader could rank against a real one.
+        """
+        self.target_ids = list(dict.fromkeys(self.target_ids))
+        for name in ("vintage", "statement_date", "data_period"):
+            value = getattr(self, name)
+            if value is not None and not value.strip():
+                setattr(self, name, None)
+        return self
 
 
 class SourceTemporal(ContractModel):
