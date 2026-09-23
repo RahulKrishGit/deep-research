@@ -11,6 +11,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents.claim_clusters import (
+    METADATA_DIMENSIONS,
+    atom_answers_target,
+    checkable_dimensions,
+    dimension_is_answered,
+    extract_text_atoms,
+)
 from deep_research.agents.critic import CriticAgent
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.planner import (
@@ -18,6 +25,7 @@ from deep_research.agents.planner import (
     MAX_SUB_TOPICS,
     MIN_SUB_TOPICS,
     PLAN_INSTRUCTION,
+    _PLAN_REPLY_EXAMPLES,
     EvidenceTargetDraft,
     PlannerAgent,
     PlanReviewDraft,
@@ -27,6 +35,7 @@ from deep_research.agents.planner import (
     answer_kind_for,
     apply_answer_contract,
     derive_answer_contract,
+    earned_support_policy,
     extend_plan,
     format_plan_problems,
     frozen_contract_for,
@@ -38,6 +47,7 @@ from deep_research.agents.planner import (
     plan_review_messages,
     stale_year_anchors,
     support_policy_for,
+    support_policy_for_target,
     target_problems,
     targets_requiring_replanning,
     validate_plan_draft,
@@ -92,16 +102,20 @@ def _target(
     *,
     dimensions: list[str] | None = None,
     critical: bool = True,
+    policy: str | None = None,
 ) -> EvidenceTargetDraft:
-    return EvidenceTargetDraft(
-        question=question,
-        required_dimensions=(
+    fields: dict[str, object] = {
+        "question": question,
+        "required_dimensions": (
             ["measure: benchmark result", "period: most recent reported year"]
             if dimensions is None
             else dimensions
         ),
-        critical=critical,
-    )
+        "critical": critical,
+    }
+    if policy is not None:
+        fields["support_policy"] = policy
+    return EvidenceTargetDraft(**fields)
 
 
 def _draft(
@@ -1720,16 +1734,42 @@ def test_planner_regression_plan_instruction_permits_real_search_terms() -> None
         assert phrase in PLAN_INSTRUCTION
 
 
-def test_planner_regression_plan_instruction_requires_balanced_wording() -> None:
+def test_planner_regression_plan_instruction_scopes_benefits_to_the_question() -> None:
+    """Balanced coverage is asked for when the question asks for it, and only then.
+
+    The instruction used to *require* a benefits-and-risks sub-topic for any
+    technology question, which is the scope widening the plan's own review
+    rules against ("Name any target that widens the scope"). The two prompts
+    contradicted each other, and the plan-file reader has no way to tell which
+    one won.
+    """
     task = AgentTask(instruction="Some research question.")
     messages = plan_messages(task, _run())
     rendered = " ".join(message.content for message in messages)
     assert "benefits" in rendered
     assert "risks" in rendered
+    assert "when the question asks about them" in rendered
     # The lexical ban is gone, so what replaces it has to keep the terms it
     # permits out of the plan's assertions.
     assert "Do not assert those terms as facts" in rendered
     assert "use them only as search targets" in rendered
+
+
+def test_planner_regression_plan_instruction_asks_for_a_policy_per_target() -> None:
+    """The corroboration demand belongs to the policy the evidence earns.
+
+    An unconditional demand for a second publisher is what made the run's
+    eleven single-issuer obligations unanswerable and spent 26 of its 44
+    minutes looking for pairs that cannot exist (audit #3 and #10).
+    """
+    task = AgentTask(instruction="Some research question.")
+    messages = plan_messages(task, _run())
+    rendered = " ".join(message.content for message in messages)
+    assert "support_policy" in rendered
+    assert "primary_attribution" in rendered
+    assert "independent_pair" in rendered
+    assert "do not " in rendered and "demand a second publisher" in rendered
+    assert "unless the question itself asks for that date" in rendered
 
 
 # --- Task 2: answer-shaped, scoped, feasible, production-configured plans ----
@@ -4364,3 +4404,515 @@ async def test_an_extension_through_the_agent_keeps_both_inventories(
         merged, {"initial_target_ids": ["topic-01-target-01"]}
     )
     assert preserved.initial_target_ids == merged.initial_target_ids
+
+
+# --------------------------------------------------------------------------
+# T2: the plan is answerable, in scope, and priced for the evidence
+# --------------------------------------------------------------------------
+
+# The live audit question, verbatim: the run that produced zero answered
+# targets planned against this one.
+_AUDIT_QUESTION = (
+    "How much grid-scale battery storage capacity was added in the United "
+    "States in 2024, and what do the latest forecasts project for 2025?"
+)
+
+
+def _stamped_plan(
+    question: str, target: EvidenceTargetDraft
+) -> list[SubTopic]:
+    """One contract, one validated plan, stamped — the way planning stamps it.
+
+    The plan carries three sub-topics because that is the contract's own bound
+    and ``validate_plan_draft`` enforces it; the target under test is the first
+    topic's, and the two fillers are ordinary obligations.
+    """
+    draft = ResearchPlanDraft(
+        sub_topics=[
+            _draft("Topic 1", priority=1, evidence_targets=[target]),
+            _draft("Topic 2", priority=2),
+            _draft("Topic 3", priority=3),
+        ]
+    )
+    sub_topics, problems = validate_plan_draft(draft)
+    assert problems == []
+    return apply_answer_contract(sub_topics, _contract(question))
+
+
+def _stamped(question: str, target: EvidenceTargetDraft) -> EvidenceTarget:
+    """The first topic's stamped obligation, from that same plan."""
+    (first,) = _stamped_plan(question, target)[0].evidence_targets
+    return first
+
+
+# The target the run's plan gave the forecast's publication date. Its own
+# dimension is a metadata obligation the question never asks for, and
+# ``dimension_is_answered`` refuses metadata the question did not ask about —
+# so no claim could ever be bound to it (replay C10).
+_FORECAST_DATE_TARGET = _target(
+    "When was the latest forecast document published?",
+    dimensions=[
+        "measure: publication date of the forecast document",
+        "period: latest vintage available on or before 2025-12-31",
+        "source: the forecast publication's cover page or release notice",
+    ],
+    critical=True,
+)
+
+
+def test_a_metadata_dimension_the_question_never_asks_for_is_not_stamped() -> None:
+    """The planner stops demanding a fact the question does not ask about.
+
+    A metadata dimension is context unless the question asks for it, so
+    stamping one onto a target is the same defect as demanding MWh or a second
+    publisher: the plan owes something the question never requested, and no
+    claim can discharge it.
+    """
+    target = _stamped(_AUDIT_QUESTION, _FORECAST_DATE_TARGET)
+
+    assert [
+        name
+        for requirement in target.required_dimensions
+        for name in checkable_dimensions(requirement)
+        if name in METADATA_DIMENSIONS
+    ] == []
+
+
+def test_a_metadata_dimension_the_question_asks_for_is_kept() -> None:
+    """The control: a question about the release date keeps that obligation."""
+    target = _stamped(
+        "When was the grid storage report published?",
+        _target(
+            "When was the report published?",
+            dimensions=["measure: publication date of the report"],
+        ),
+    )
+
+    assert any(
+        name == "publication_date"
+        for requirement in target.required_dimensions
+        for name in checkable_dimensions(requirement)
+    )
+
+
+def test_the_runs_forecast_date_target_binds_a_claim_that_states_the_date() -> None:
+    """C10's last unbindable target, end to end through the plan stamp."""
+    target = _stamped(_AUDIT_QUESTION, _FORECAST_DATE_TARGET)
+
+    atoms = extract_text_atoms(
+        "According to EIA, the forecast document for capacity additions in the "
+        "United States was published on March 12, 2025.",
+        claim_id="ideal",
+    )
+
+    assert any(
+        atom_answers_target(atom, target, question=_AUDIT_QUESTION)
+        for atom in atoms
+    )
+
+
+def test_a_statistic_with_one_issuer_carries_primary_attribution() -> None:
+    """A single-issuer figure cannot be corroborated by a second measurement.
+
+    The run's plan put 10 of 11 targets on ``independent_pair``, which needs a
+    verified pair — unreachable for a figure one agency issues (audit #3).
+    """
+    target = _stamped(
+        _AUDIT_QUESTION,
+        _target(
+            "How much battery storage capacity was added in 2024?",
+            dimensions=["measure: battery storage capacity added, in MW"],
+            policy="primary_attribution",
+        ),
+    )
+
+    assert target.support_policy == "primary_attribution"
+
+
+def test_a_comparative_target_keeps_the_policy_its_question_earns() -> None:
+    """The floor: the model may not weaken what a comparison needs."""
+    target = _stamped(
+        "Was more battery capacity added in Texas than in California in 2024?",
+        _target(
+            "Was more capacity added in Texas than in California?",
+            dimensions=["measure: battery capacity added, in MW"],
+            policy="primary_attribution",
+        ),
+    )
+
+    assert target.support_policy == "independent_pair"
+
+
+def test_an_unusable_support_policy_falls_back_to_the_local_rule() -> None:
+    target = _stamped(
+        _AUDIT_QUESTION,
+        _target(
+            "How much battery storage capacity was added in 2024?",
+            dimensions=["measure: battery storage capacity added, in MW"],
+            policy="whatever the model felt like",
+        ),
+    )
+
+    assert target.support_policy == "independent_pair"
+
+
+def test_a_target_no_clause_could_answer_is_named_at_plan_time() -> None:
+    """Item 6: the plan-time answerability check, through the adviser path."""
+    sub_topics, problems = validate_plan_draft(
+        ResearchPlanDraft(
+            sub_topics=[
+                _draft(
+                    f"Topic {index}",
+                    priority=index,
+                    evidence_targets=[
+                        _target(
+                            "What modality does the scheme use?",
+                            dimensions=[
+                                "modality: the policy instrument used",
+                                "period: most recent reported year",
+                            ],
+                        )
+                    ],
+                )
+                for index in (1, 2, 3)
+            ]
+        )
+    )
+    stamped = apply_answer_contract(sub_topics, _contract(_AUDIT_QUESTION))
+
+    named = [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "cannot be bound" in problem
+    ]
+
+    assert [problem.split()[0] for problem in named] == [
+        "topic-01-target-01",
+        "topic-02-target-01",
+        "topic-03-target-01",
+    ]
+
+
+def test_a_qualitative_obligation_is_answerable_at_plan_time() -> None:
+    """The control, on the run's own words: no answerability problem is raised."""
+    stamped = _stamped_plan(
+        _AUDIT_QUESTION,
+        _target(
+            "How are hybrid co-located battery plants counted?",
+            dimensions=[
+                "measure: inclusion rule and counting treatment for "
+                "hybrid/co-located battery plants",
+                "period: the 2024 addition and the 2025 forecast as published",
+                "geography: United States",
+                "source: the publisher's methodology note describing "
+                "plant-level counting",
+            ],
+        ),
+    )
+
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "cannot be bound" in problem
+    ] == []
+
+
+@pytest.mark.parametrize(
+    "dimension",
+    [
+        "measure: publication date of the forecast document",
+        "measure: minimum nameplate capacity threshold, in MW, for the "
+        "grid-scale classification",
+    ],
+)
+def test_the_runs_own_targets_raise_no_answerability_problem(
+    dimension: str,
+) -> None:
+    """Every dimension of the run's plan is one a clause can be credited for."""
+    stamped = _stamped_plan(
+        _AUDIT_QUESTION,
+        _target(
+            "What does the plan ask about?",
+            dimensions=[
+                dimension,
+                "period: calendar year 2024",
+                "geography: United States",
+                "source: national generator-inventory dataset",
+            ],
+        ),
+    )
+
+    assert (
+        target_problems(stamped, _contract(_AUDIT_QUESTION)) == []
+    )
+
+
+def _one_topic_plan(
+    question: str,
+    *,
+    title: str,
+    criteria: list[str],
+    target: EvidenceTargetDraft,
+) -> list[SubTopic]:
+    """A stamped three-topic plan whose first topic is the one under test."""
+    sub_topics, problems = validate_plan_draft(
+        ResearchPlanDraft(
+            sub_topics=[
+                _draft(
+                    title,
+                    priority=1,
+                    success_criteria=criteria,
+                    evidence_targets=[target],
+                ),
+                _draft("Topic 2", priority=2),
+                _draft("Topic 3", priority=3),
+            ]
+        )
+    )
+    assert problems == []
+    return apply_answer_contract(sub_topics, _contract(question))
+
+
+_MEASURED_TARGET = _target(
+    "How much capacity was added in 2024?",
+    dimensions=["measure: battery storage capacity added, in MW"],
+)
+
+
+def test_a_subtopic_the_question_never_asked_for_is_named() -> None:
+    """The instruction used to *mandate* a benefits-and-risks sub-topic.
+
+    That is the widening the plan review rules against, so the check names it
+    instead of the planner asking for it.
+    """
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="Costs, benefits and risks",
+        criteria=["Benefits and risks are quantified for both options."],
+        target=_MEASURED_TARGET,
+    )
+
+    named = [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "never asks about" in problem
+    ]
+
+    assert [problem.split()[0] for problem in named] == ["topic-01"]
+
+
+def test_a_subtopic_the_question_does_ask_for_is_not_named() -> None:
+    """The control: a value-judgement question is asking about benefits."""
+    question = "Are grid-scale batteries good for the grid?"
+    stamped = _one_topic_plan(
+        question,
+        title="Costs, benefits and risks",
+        criteria=["Benefits and risks are quantified for both options."],
+        target=_MEASURED_TARGET,
+    )
+
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(question))
+        if "never asks about" in problem
+    ] == []
+
+
+def test_a_compound_target_question_is_named() -> None:
+    """The example's own defect, as a check: two demands in one target."""
+    question = "compare bus and rail options for a city"
+    stamped = _one_topic_plan(
+        question,
+        title="Outcomes",
+        criteria=["A figure is quoted."],
+        target=_target(
+            "Which documented risks does each option carry, and by which "
+            "issuer?",
+            dimensions=[
+                "measure: documented risk",
+                "source: the issuing authority",
+                "geography: the city",
+            ],
+        ),
+    )
+
+    named = [
+        problem
+        for problem in target_problems(stamped, _contract(question))
+        if "questions at once" in problem
+    ]
+
+    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
+
+
+def test_an_atomic_target_question_is_not_named() -> None:
+    """The control: one demand is not compound, however it is worded."""
+    question = "compare bus and rail options for a city"
+    stamped = _one_topic_plan(
+        question,
+        title="Outcomes",
+        criteria=["A figure is quoted."],
+        target=_target(
+            "Which documented risks does each option carry?",
+            dimensions=[
+                "measure: documented risk",
+                "source: the issuing authority",
+                "geography: the city",
+            ],
+        ),
+    )
+
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(question))
+        if "questions at once" in problem
+    ] == []
+
+
+def test_a_criterion_demanding_a_pair_for_a_single_issuer_fact_is_named() -> None:
+    """The instruction's blanket corroboration demand, as a check.
+
+    Every claim in the run's fact-checking pass carried ``retrieval_needed``
+    and zero independent sources, and 11 of 14 exhausted their tool budget
+    looking for a second publisher of figures only EIA issues (audit #10).
+    """
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="Reported additions",
+        criteria=[
+            "At least two sources from different publishers state the 2024 "
+            "addition."
+        ],
+        target=_target(
+            "How much capacity was added in 2024?",
+            dimensions=["measure: battery storage capacity added, in MW"],
+            policy="primary_attribution",
+        ),
+    )
+
+    named = [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "primary_attribution" in problem
+    ]
+
+    assert [problem.split()[0] for problem in named] == ["topic-01"]
+
+
+def test_a_criterion_demanding_a_pair_for_a_measured_fact_is_not_named() -> None:
+    """The control: where independent measurement exists, the demand stands."""
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="Measured additions",
+        criteria=[
+            "At least two sources from different publishers state the 2024 "
+            "addition."
+        ],
+        target=_target(
+            "How much capacity was added in 2024?",
+            dimensions=["measure: battery storage capacity added, in MW"],
+            policy="independent_pair",
+        ),
+    )
+
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "primary_attribution" in problem
+    ] == []
+
+
+def test_the_plan_example_the_model_is_shown_passes_every_plan_check() -> None:
+    """The one-shot example is a plan the planner itself would accept.
+
+    An example the planner's own checks reject teaches the defect the check
+    exists to catch: this one modelled a scope-widening "benefits and risks"
+    sub-topic and a compound target no plan may carry.
+    """
+    label, payload = _PLAN_REPLY_EXAMPLES[0]
+    question = label.split("Example input:", 1)[1].strip().rstrip(".")
+    draft = ResearchPlanDraft.model_validate_json(payload)
+
+    sub_topics, problems = validate_plan_draft(draft)
+
+    assert problems == []
+    assert target_problems(sub_topics, _contract(question)) == []
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # Comparisons the explicit detector does not claim, and causal
+        # questions: before this the model's proposal replaced the
+        # independent_pair they used to fall back to (review F5).
+        "Did Texas or California add more battery storage in 2024?",
+        "Which state added the most battery capacity in 2024?",
+        "How much larger was the 2024 addition than the 2023 addition?",
+        "Is lithium-ion safer than flow batteries for grid storage?",
+        "Why did battery additions grow in 2024?",
+        "What caused the growth in battery storage additions in 2024?",
+        "Does battery storage reduce wholesale electricity prices?",
+    ],
+)
+def test_a_comparative_or_causal_question_keeps_independent_pair(
+    question: str,
+) -> None:
+    """The plan may not lower what the question's own form earns."""
+    assert (
+        support_policy_for_target(
+            question=question, proposed="primary_attribution"
+        )
+        == "independent_pair"
+    )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # The audit question's own obligations: a descriptive quantity whose
+        # one issuer the plan names, where the proposal is the whole point.
+        (
+            "How much grid-scale battery storage capacity was added in the "
+            "United States in 2024?"
+        ),
+        "What do the latest forecasts project for 2025 additions, in MW?",
+        "What was the reported battery storage capacity in Texas in 2024?",
+    ],
+)
+def test_a_descriptive_quantity_still_takes_the_plans_own_policy(
+    question: str,
+) -> None:
+    """The control: where the form earns nothing, the proposal decides."""
+    assert (
+        support_policy_for_target(
+            question=question, proposed="primary_attribution"
+        )
+        == "primary_attribution"
+    )
+
+
+def test_the_earned_policy_is_published_for_the_consumer_that_judges_it() -> None:
+    """``None`` is not ``independent_pair``: the metric that asks whether a
+    policy was *lowered* has to see the difference, and so does the floor."""
+    assert (
+        earned_support_policy(
+            question="Was more capacity added in Texas than in California?"
+        )
+        == "independent_pair"
+    )
+    assert (
+        earned_support_policy(
+            question="How much battery storage capacity was added in 2024?"
+        )
+        is None
+    )
+    assert (
+        earned_support_policy(
+            question="What does the interconnection rule require?"
+        )
+        == "primary_attribution"
+    )
+
+
+
+

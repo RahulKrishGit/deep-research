@@ -25,7 +25,7 @@ from deep_research.agents.fact_checker import (
     claimed_domains_for,
     independent_domains,
 )
-from deep_research.agents.planner import support_policy_for
+from deep_research.agents.planner import earned_support_policy
 from deep_research.agents.report import build_citation_index, collapse_mirror_urls
 from deep_research.agents.sources import (
     normalize_source_url,
@@ -2132,12 +2132,17 @@ def _support_policy_not_downgraded_passes(
     """No obligation lost the support policy its own question earns.
 
     Two clauses, because they catch different plans. The first compares each
-    recorded policy against ``support_policy_for`` — the planner's own rule,
-    the same function that stamps the policy in the first place — and refuses
-    a comparative question recorded under a weaker policy. The second
-    requires the plan's recorded policy set to cover the case's declared set:
-    a plan that dropped the comparative obligation entirely has no downgraded
-    target for the first clause to see.
+    recorded policy against the policy its question *earns* — ``None`` for a
+    descriptive question whose evidence the plan may price itself, which is
+    what lets a plan stamp ``primary_attribution`` on a figure one issuer
+    publishes — and refuses a target recorded under a weaker policy than the
+    one its question earns. It reads ``earned_support_policy`` rather than
+    ``support_policy_for``: the latter falls back to ``independent_pair``
+    wherever the form earns nothing, so reading it scored every obligation the
+    planner is meant to stamp as a downgrade. The second requires the plan's
+    recorded policy set to cover the case's declared set: a plan that dropped
+    the comparative obligation entirely has no downgraded target for the first
+    clause to see.
     """
     planned = _planned_targets(output)
     if not planned:
@@ -2145,7 +2150,7 @@ def _support_policy_not_downgraded_passes(
     targets = [target for group in planned for target in group]
     for target in targets:
         if target.support_policy != "independent_pair" and (
-            support_policy_for(question=target.question) == "independent_pair"
+            earned_support_policy(target.question) == "independent_pair"
         ):
             return False
     required = _reference_strings(case, "required_support_policies")

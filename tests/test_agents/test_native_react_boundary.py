@@ -64,9 +64,12 @@ _PLAN = ResearchPlanDraft(
             priority=index,
             evidence_targets=[
                 EvidenceTargetDraft(
-                    question=(
-                        f"What does angle number {index} report, and where?"
-                    ),
+                    # One demand, because the planner's own plan check names a
+                    # target that asks two things at once as compound — "and
+                    # where?" beside "what does it report" is exactly that, and
+                    # this case exists to measure the native tool boundary, not
+                    # to carry a plan the planner would repair.
+                    question=f"What does angle number {index} report?",
                     required_dimensions=[f"measure: angle number {index}"],
                     critical=index == 1,
                 )

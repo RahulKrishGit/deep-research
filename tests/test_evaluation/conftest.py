@@ -2558,8 +2558,14 @@ def _planner_draft(*titles: str) -> ResearchPlanDraft:
                 priority=index,
                 evidence_targets=[
                     EvidenceTargetDraft(
-                        question=f"What does {title} measure, and per which "
-                        "authority?",
+                        # One demand. "…and per which authority?" beside "what
+                        # does it measure" is the compound obligation the
+                        # planner's own plan check now names, and this fixture
+                        # is the *good* plan these harnesses measure against:
+                        # a compound one would send the planner into its repair
+                        # cycle and the scripted replies would no longer line
+                        # up with the calls.
+                        question=f"What does {title} measure?",
                         required_dimensions=[f"measure: {title}"],
                         critical=index == 1,
                     )

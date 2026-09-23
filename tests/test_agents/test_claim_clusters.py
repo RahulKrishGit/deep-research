@@ -27,7 +27,11 @@ from deep_research.agents.claim_clusters import (
     OVER_CAP_SUBJECT_PREFIX,
     AtomicPairDraft,
     ClaimEquivalenceDraft,
+    _sentences,
+    atom_answers_dimensions,
+    atom_answers_target,
     atomic_compatible,
+    checkable_dimensions,
     claim_cluster_id,
     cluster_for_atom,
     consolidate_claims,
@@ -55,6 +59,7 @@ from deep_research.utils.types import (
     Claim,
     ClaimCluster,
     EvidencePassage,
+    EvidenceTarget,
     EvidenceUnit,
     ResearchState,
     SubTopic,
@@ -2680,3 +2685,842 @@ def test_a_publisher_question_does_not_unlock_a_publication_date() -> None:
         dimension="publication_date",
         stated_dimensions={"publication_date"},
     )
+
+
+# --------------------------------------------------------------------------
+# Attribution: a named issuer that reports is an attribution
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The live run's own claim prose (audit #2). Every one of these named
+        # its issuer and was still recorded unattributed, so no plan target
+        # that requires a source could be bound to it.
+        (
+            "EIA reported that generators in the United States added 10.4 GW "
+            "of new utility-scale battery storage capacity in 2024.",
+            "EIA",
+        ),
+        (
+            "EIA stated that cumulative U.S. utility-scale battery storage "
+            "capacity exceeded 26 GW in 2024.",
+            "EIA",
+        ),
+        (
+            "EIA forecast in its February 24, 2025 In-brief analysis that "
+            "18.2 GW of utility-scale battery storage capacity would be added "
+            "in 2025.",
+            "EIA",
+        ),
+        (
+            "EIA's August 20, 2025 In-brief analysis reported that battery "
+            "storage accounted for 5.9 GW of additions in the first half of "
+            "2025.",
+            "EIA",
+        ),
+        (
+            "EIA expects that developers will add 7.0 GW of battery storage "
+            "capacity in Texas in 2025.",
+            "EIA",
+        ),
+        ("EIA projected that 18.2 GW would be added in 2025.", "EIA"),
+        ("EIA estimated that 10.3 GW was added in 2024.", "EIA"),
+        ("EIA said the 2024 addition set a record.", "EIA"),
+        ("FERC found that the queue grew in 2024.", "FERC"),
+        (
+            "Generators added 10.4 GW of battery storage capacity in 2024, "
+            "EIA reported.",
+            "EIA",
+        ),
+    ],
+)
+def test_a_named_issuer_that_reports_is_the_attribution(
+    text: str, expected: str
+) -> None:
+    """The auditor's C11 contrast: "EIA reported that …" answers "according to EIA"."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A bare pronoun or determiner names nobody: the claim states a fact
+        # with no issuer, and this contract must not invent one.
+        "It reported that generators added 10.4 GW of new capacity in 2024.",
+        "They stated that the queue grew in 2024.",
+        "The agency reported that generators added 10.4 GW in 2024.",
+        "This analysis found that the queue grew in 2024.",
+        "In 2024, generators added 10.4 GW of new capacity.",
+    ],
+)
+def test_a_reporting_verb_with_no_named_issuer_attributes_nothing(
+    text: str,
+) -> None:
+    (atom,) = extract_text_atoms(text)
+
+    assert atom.attribution == ""
+
+
+def test_a_clause_inherits_the_issuer_its_claim_names() -> None:
+    """``according to its <document>`` refers to the claim's own named issuer."""
+    claim = _claim(
+        "EIA stated that utility-scale battery capacity grew in 2024. "
+        "The 2024 addition reached 10.4 GW, according to its January 2025 "
+        "Preliminary Monthly Electric Generator Inventory."
+    )
+
+    first, second = extract_atoms(claim)
+
+    assert first.attribution == "EIA"
+    assert second.attribution == "EIA"
+
+
+def test_an_unnamed_issuers_own_document_attributes_nothing() -> None:
+    """The control: "its" with no named issuer in the claim is not attribution."""
+    claim = _claim(
+        "The 2024 addition reached 10.4 GW, according to its January 2025 "
+        "Preliminary Monthly Electric Generator Inventory."
+    )
+
+    (atom,) = extract_atoms(claim)
+
+    assert atom.attribution == ""
+
+
+def test_the_subject_verb_form_does_not_override_a_named_source() -> None:
+    """A claim that opens with its source keeps that source."""
+    claim = _claim(
+        "According to Energy Global, EIA reported that generators added "
+        "10.4 GW of new battery storage capacity in 2024."
+    )
+
+    (atom,) = extract_atoms(claim)
+
+    assert atom.attribution == "Energy Global"
+
+
+# --------------------------------------------------------------------------
+# Geography: a place named without a preposition is still the place
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The run's own claim prose (audit #2, replay C8): the place is named
+        # adjectivally, so no target that requires the geography could bind.
+        (
+            "EIA stated that cumulative U.S. utility-scale battery storage "
+            "capacity exceeded 26 GW in 2024.",
+            "United States",
+        ),
+        (
+            "EIA reported that battery storage accounted for the "
+            "second-largest share of U.S. capacity additions in the first "
+            "half of 2025.",
+            "United States",
+        ),
+        (
+            "EIA forecast that 18.2 GW would be added to the U.S. grid in "
+            "2025.",
+            "United States",
+        ),
+        (
+            "An EIA article stated that U.S. power providers added 10.3 GW of "
+            "new battery storage capacity in 2024.",
+            "United States",
+        ),
+        # The other spellings of the same place, and the ones a claim uses
+        # when it introduces the place before naming it adjectivally.
+        ("According to EIA, US battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, USA battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, American battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, United States battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, U.S. battery capacity reached 26 GW in 2024.", "United States"),
+        ("According to EIA, the U.S. battery capacity reached 26 GW in 2024.", "United States"),
+    ],
+)
+def test_a_place_named_without_a_preposition_is_the_geography(
+    text: str, expected: str
+) -> None:
+    """``U.S. capacity additions`` names the same place as ``in the United States``.
+
+    The atom already reads a prepositional locative; a clause that names the
+    place adjectivally stated no geography at all, which is what left the
+    run's own claims unable to bind a target that requires one.
+    """
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.geography == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A pronoun is not a country: "tell us about …" names no place.
+        "EIA reported that the plan tells us about battery capacity in 2024.",
+        # A currency code is not a country.
+        "According to EIA, the contract was worth 26 million USD in 2024.",
+        "According to EIA, the contract was worth US$26 million in 2024.",
+        # Where a thing was made is not the place the clause's fact covers.
+        "According to the agency, Canadian plants imported U.S.-made "
+        "inverters in 2024.",
+        # Another region's adjective is not the United States.
+        "According to the agency, Latin American capacity reached 26 GW in 2024.",
+        "According to the agency, South American capacity reached 26 GW in 2024.",
+    ],
+)
+def test_an_alias_that_names_no_place_is_not_a_geography(text: str) -> None:
+    """The negatives the alias list must not over-match."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.geography == ""
+
+
+def test_the_prepositional_place_still_wins_over_an_adjectival_one() -> None:
+    """A clause about Canada that mentions U.S. firms stays about Canada."""
+    atom = extract_text_atoms(
+        "According to the agency, U.S. firms added 26 GW of capacity in Canada "
+        "in 2024."
+    )[0]
+
+    assert atom.geography == "Canada"
+
+
+def test_a_nations_own_reference_is_the_place_the_claim_names() -> None:
+    """"The nation's fleet" is the country its claim names, and nobody else's."""
+    claim = _claim(
+        "EIA reported that U.S. battery capacity grew. The nation's storage "
+        "fleet reached 26 GW in 2024."
+    )
+
+    named, anaphor = extract_atoms(claim)
+
+    assert named.geography == "United States"
+    assert anaphor.geography == "United States"
+
+
+def test_a_nations_own_reference_with_no_named_country_stays_unnamed() -> None:
+    """The control: "the nation" alone names no place this contract can read."""
+    claim = _claim("The nation's storage fleet reached 26 GW in 2024.")
+
+    (atom,) = extract_atoms(claim)
+
+    assert atom.geography == ""
+
+
+def test_the_two_spellings_of_one_place_state_one_geography() -> None:
+    """So both answer the one dimension the plan stamps: "geography: United States"."""
+    prepositional = _claim(
+        "According to EIA, capacity reached 26 GW in the United States in 2024."
+    )
+    adjectival = _claim(
+        "According to EIA, U.S. capacity reached 26 GW in 2024."
+    )
+
+    (prepositional_atom,) = extract_atoms(prepositional)
+    (adjectival_atom,) = extract_atoms(adjectival)
+
+    assert prepositional_atom.geography == adjectival_atom.geography
+    for atom in (prepositional_atom, adjectival_atom):
+        assert atom_answers_dimensions(
+            atom, ["geography: United States"], question=_AUDIT_QUESTION
+        )
+
+
+
+# --------------------------------------------------------------------------
+# Attribution: whose report the clause is, and whose it is not
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A capitalised common noun is not an issuer (review F1).
+        "Analysts reported that generators added 10.4 GW of storage in 2024.",
+        "Nobody reported that generators added 10.4 GW of storage in 2024.",
+        # The pronoun scopes the phrase even when a name follows it, so the
+        # name inside it is not the clause's issuer.
+        "Nobody at EIA reported that 10.4 GW was added in 2024.",
+        "Industry analysts reported that generators added 10.4 GW in 2024.",
+        "Last year developers reported 10.4 GW of additions in 2024.",
+        "Grid operators in California said that 4 GW was added in 2024.",
+        "Critics said that EIA overstated the 10.4 GW added in 2024.",
+        "Earlier Reports said 10.4 GW was added in 2024.",
+        # A trailing reporting verb may not cross a comma to the nearest name.
+        (
+            "Generators added 10,400 MW of battery storage capacity in the "
+            "United States in 2024, the agency reported."
+        ),
+        "Fluence installed 2 GW in Germany in 2024, a U.S. company said.",
+        # "reports" is a noun here: the clause reports a denial, not a report.
+        (
+            "EIA denied reports that generators added 10,400 MW of battery "
+            "storage capacity in the United States in 2024."
+        ),
+    ],
+)
+def test_a_reporting_verb_names_no_issuer_when_none_is_named(
+    text: str,
+) -> None:
+    """The name an attribution may be read from is not "any capital word".
+
+    Every string here met a ``primary_attribution`` obligation at head, because
+    the grammar credited a common noun, crossed a comma to reach the previous
+    clause's place, or read the noun "reports" as a verb.
+    """
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The run's own forms, which the tightening may not lose.
+        (
+            "EIA reported that generators in the United States added 10.4 GW "
+            "of new utility-scale battery storage capacity in 2024.",
+            "EIA",
+        ),
+        (
+            "EIA's August 20, 2025 In-brief analysis reported that battery "
+            "storage accounted for the second-largest share of U.S. capacity "
+            "additions in the first half of 2025.",
+            "EIA",
+        ),
+        (
+            "EIA forecast in its February 24, 2025 In-brief analysis that "
+            "18.2 GW of utility-scale battery storage capacity would be added "
+            "in 2025.",
+            "EIA",
+        ),
+        # Acronyms, multi-token names, and a name that does not start the clause.
+        ("FERC found that the queue grew in 2024.", "FERC"),
+        ("Bloomberg NEF found that 10.4 GW was added in 2024.", "Bloomberg NEF"),
+        (
+            "Wood Mackenzie reported that 10.4 GW was added in 2024.",
+            "Wood Mackenzie",
+        ),
+        ("However, EIA stated that 18.2 GW is expected in 2025.", "EIA"),
+        # The trailing form credits the name it names, not the clause's subject.
+        ("Developers expected 18.2 GW in 2025, EIA said.", "EIA"),
+        (
+            "Generators added 10.4 GW of battery storage capacity in 2024, "
+            "EIA reported.",
+            "EIA",
+        ),
+    ],
+)
+def test_a_named_issuer_still_attributes_after_the_grammar_tightening(
+    text: str, expected: str
+) -> None:
+    """The positive half: acronyms, multi-token names, and trailing forms."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A publisher's name is one token and not an acronym (re-review N2).
+        ("Reuters reported that generators added 10,400 MW in 2024.", "Reuters"),
+        # The run's own claim 11: the page is the publisher's, and "states that"
+        # is a reported clause.
+        (
+            "OpenEI's page for the Form EIA-860 Instructions states that EIA "
+            "requires certain developers of electric generating plants to "
+            "submit Form EIA-860.",
+            "OpenEI",
+        ),
+        # A brand spelling with an internal capital is a name however it is
+        # cased, whatever follows its verb.
+        ("OpenEI reported 10.4 GW of additions in 2024.", "OpenEI"),
+        # A name whose verb states an object rather than a reported clause is
+        # still a name, and a scope phrase in front of it is not part of it.
+        ("Fluence reported 10.4 GW in 2024.", "Fluence"),
+        ("Texas reported that 4 GW was added in 2024.", "Texas"),
+        ("In 2024 Texas reported 4 GW of additions in 2024.", "Texas"),
+    ],
+)
+def test_a_single_token_publisher_still_names_its_claim(
+    text: str, expected: str
+) -> None:
+    """A one-token name is an issuer when nothing reads it as a common noun."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A determiner or pronoun that opens a clause reports nothing (ND1).
+        "Our analysis found that 10.4 GW of battery storage was added in the United States in 2024.",
+        "Every study found that 10.4 GW was added in 2024.",
+        "Several reported that 10.4 GW was added in 2024.",
+        # A common noun that opens a clause is not a publisher.
+        "Reports stated that 10.4 GW was added in 2024.",
+        "Media reported that 10.4 GW was added in 2024.",
+        "Press reported that 10.4 GW was added in 2024.",
+        "Government reported that 10.4 GW was added in 2024.",
+        "Study found that 10.4 GW was added in 2024.",
+        "Studies found that 10.4 GW was added in 2024.",
+        "Analysis found that 10.4 GW was added in 2024.",
+        "Utilities reported that 10.4 GW was added in 2024.",
+        # The shape of a noun phrase: a capitalised modifier in front of a
+        # lowercase common-noun head names nobody, however the head is spelled.
+        "Federal officials reported that 10.4 GW was added in 2024.",
+        "State regulators said that 4 GW was added in 2024.",
+        "Team members reported that 10.4 GW was added in 2024.",
+        "Senior officials reported that 10.4 GW was added in 2024.",
+        # The indefinite pronouns are the same closed class as "nobody".
+        "None reported that 10.4 GW was added in 2024.",
+        "Nothing reported that 10.4 GW was added in 2024.",
+        "Everyone reported that 10.4 GW was added in 2024.",
+        "Someone reported that 10.4 GW was added in 2024.",
+        "Someone at EIA reported that 10.4 GW was added in 2024.",
+    ],
+)
+def test_a_common_noun_that_opens_a_clause_names_no_issuer(text: str) -> None:
+    """One title-case token is a name only when nothing reads it as a noun.
+
+    A determiner ("Our", "Every", "Several") is a closed-class word, and a
+    singular common noun ("Media", "Study", "Analysis") is a noun like the
+    plurals the F1 negatives already cover. Crediting either one recorded a
+    fabricated issuer for a claim that named none.
+    """
+    assert extract_text_atoms(text)[0].attribution == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The denial is the earlier assertion, not the name phrase (ND2).
+        (
+            "No one expected the growth, but EIA reported that 10.4 GW was "
+            "added in 2024.",
+            "EIA",
+        ),
+        (
+            "None of the earlier forecasts matched, and EIA reported that "
+            "10.4 GW was added in 2024.",
+            "EIA",
+        ),
+        (
+            "Nobody in the industry had forecast it, but Wood Mackenzie "
+            "reported that U.S. storage grew 10.4 GW in 2024.",
+            "Wood Mackenzie",
+        ),
+    ],
+)
+def test_an_earlier_denial_does_not_disqualify_a_later_issuer(
+    text: str, expected: str
+) -> None:
+    """The nobody-pronoun scopes the phrase it belongs to, not the whole clause."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A month is only a date when a date follows it (ND3).
+        ("According to March Advisors, 10.4 GW was added in 2024.", "March Advisors"),
+        (
+            "May Advisors reported that 10.4 GW was added in the United "
+            "States in 2024.",
+            "May Advisors",
+        ),
+    ],
+)
+def test_a_publisher_whose_name_opens_with_a_month_is_still_a_name(
+    text: str, expected: str
+) -> None:
+    """A lone month token may name a firm; "December 2024" is a date."""
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.attribution == expected
+
+
+def test_a_document_date_is_not_the_issuer_the_document_belongs_to() -> None:
+    """The run's claim 3, verbatim: the inventory's date is not who stated it.
+
+    The name run reached the verb through the source phrase and captured
+    "December 2024 Preliminary Monthly Electric" — a date, not an issuer — so
+    the run's third claim was attributed to a date phrase while the publisher
+    the page belongs to is EIA. The clause's *geography* is deliberately not
+    asserted here: the prepositional locative reads the document's own title
+    ("Today in Energy") as a place, which is a separate, pre-existing capture
+    that no binding depends on because the dimension check is presence-only.
+    """
+    (atom,) = extract_text_atoms(
+        "An EIA Today in Energy article based on the December 2024 Preliminary "
+        "Monthly Electric Generator Inventory stated that U.S. power providers "
+        "added 10.3 GW of new battery storage capacity in 2024."
+    )
+
+    assert atom.attribution == "EIA"
+
+
+def test_a_date_phrase_alone_names_no_issuer() -> None:
+    """The control: the same inventory with no publisher named names nobody."""
+    (atom,) = extract_text_atoms(
+        "The December 2024 Preliminary Monthly Electric Generator Inventory "
+        "stated that 10.3 GW was added in 2024."
+    )
+
+    assert atom.attribution == ""
+
+
+def test_a_place_is_never_the_issuer_of_its_own_clause() -> None:
+    """A locative names where the fact is, not who reported it."""
+    (atom,) = extract_atoms(
+        _claim("Generators added 4 GW of storage in California in 2024.")
+    )
+
+    assert atom.geography == "California"
+    assert atom.attribution == ""
+
+
+# --------------------------------------------------------------------------
+# Geography: an alias has to modify the measurand, not merely appear
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Another country's figure, with the alias in an adjunct (review F2).
+        "Mexico added 300 MW of battery storage in 2024 using U.S. suppliers.",
+        (
+            "Canada, unlike its U.S. neighbour, added only 500 MW of battery "
+            "storage in 2024."
+        ),
+        (
+            "Germany's battery storage additions trailed U.S. levels in 2024, "
+            "reaching 2,000 MW."
+        ),
+        "Pan-American capacity reached 26 GW in 2024.",
+    ],
+)
+def test_an_alias_that_does_not_modify_the_measurand_is_not_the_geography(
+    text: str,
+) -> None:
+    """An adjectival ``U.S.`` in an adjunct does not move the clause to the US.
+
+    Each of these credited a foreign country's figure to the United States
+    obligation that requires ``geography: United States``.
+    """
+    atom = extract_text_atoms(text)[0]
+
+    assert atom.geography == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The same three adjunct clauses with the run's own issuer in front of
+        # them: the issuer is the clause's source, never its subject, so the
+        # subject of the *reported* clause is what decides (re-review F2).
+        (
+            "EIA reported that Mexico added 300 MW of battery storage in 2024 "
+            "using U.S. suppliers."
+        ),
+        (
+            "EIA reported that Canada, unlike its U.S. neighbour, added only "
+            "500 MW of battery storage in 2024."
+        ),
+        (
+            "EIA reported that Germany's battery storage additions trailed "
+            "U.S. levels in 2024, reaching 2,000 MW."
+        ),
+    ],
+)
+def test_a_reported_clause_is_judged_by_its_own_subject(text: str) -> None:
+    """The issuer in front of the verb is not the clause's subject.
+
+    "EIA reported that Mexico added 300 MW … using U.S. suppliers" is a clause
+    about Mexico: reading the alias made it the United States and met the
+    ``geography: United States`` obligation with a foreign country's figure.
+    """
+    (atom,) = extract_text_atoms(text)
+
+    assert atom.attribution == "EIA"
+    assert atom.geography == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The reviewer's probe_regress strings (re-review N1). Each is a fact
+        # about the United States with its issuer trailing, so the alias is the
+        # clause's own subject and the unit that follows it names nobody.
+        "U.S. utilities added 10.4 GW of battery storage in 2024, EIA reported.",
+        (
+            "The United States added 10.4 GW of battery storage in 2024, "
+            "EIA reported."
+        ),
+        (
+            "U.S. developers added 10.4 GW of battery storage in 2024, "
+            "EIA reported."
+        ),
+        "U.S. capacity additions reached 10.4 GW in 2024, EIA reported.",
+        (
+            "In 2024 cumulative U.S. utility-scale battery storage capacity "
+            "reached 26 GW."
+        ),
+        (
+            "U.S. power providers added 10.3 GW of new battery storage "
+            "capacity in 2024, EIA said."
+        ),
+    ],
+)
+def test_an_alias_the_clause_states_as_its_subject_is_the_geography(
+    text: str,
+) -> None:
+    """A unit or a trailing issuer is not a competing subject.
+
+    Reading the first capitalised token after the alias refused the clause's
+    own place whenever that token was the unit ("10.4 GW") or the issuer, so
+    clauses that were about the United States stated no geography at all and
+    stopped binding the target that requires one.
+    """
+    (atom,) = extract_text_atoms(text)
+
+    assert atom.geography == "United States"
+
+
+# --------------------------------------------------------------------------
+# Sentences: an abbreviation ends one only when the sentence really ends
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Capacity grew in the U.S. It fell in Canada.", 2),
+        ("Built by Acme Co. The plant opened in 2025.", 2),
+        ("The permit came from Main St. The county approved it.", 2),
+        ("The reading was taken at 5 p.m. Demand fell after that.", 2),
+        ("Storage rose, etc. Solar fell over the same period.", 2),
+        # Mid-sentence, the same abbreviations are not sentence ends.
+        ("Capacity in the U.S. utility-scale fleet grew in 2024.", 1),
+        ("Acme Co. reported 10.4 GW of additions in 2024.", 1),
+        ("Demand fell at 5 p.m. local time, the operator said.", 1),
+        ("The figure is approximate, e.g. about 10.4 GW in 2024.", 1),
+    ],
+)
+def test_an_abbreviation_ends_a_sentence_only_before_a_new_one(
+    text: str, expected: int
+) -> None:
+    """The splitter may not fuse two sentences into one clause (review F3)."""
+    assert len(_sentences(text)) == expected
+
+
+def test_the_run_spelling_keeps_its_value_and_place_across_the_period() -> None:
+    """The measured regression: "…in the U.S. Solar added 30,000 MW.".
+
+    Fusing the two sentences made one clause with two measurements, so
+    ``_value_and_unit`` read no value at all and the 2024 target lost its
+    figure.
+    """
+    atoms = extract_text_atoms(
+        "According to EIA, 10,400 MW of battery storage was added in 2024 in "
+        "the U.S. Solar added 30,000 MW."
+    )
+
+    assert [atom.value for atom in atoms] == ["10,400", "30,000"]
+    assert atoms[0].geography == "United States"
+
+
+@pytest.mark.parametrize(
+    "dimension",
+    [
+        "measure: stated grid-connection requirement of the classification",
+        "measure: rating basis (AC or DC) of the reported capacity figures",
+        "measure: inclusion rule and counting treatment for hybrid plants",
+        "measure: inclusion or exclusion of behind-the-meter storage in the "
+        "reported total",
+    ],
+)
+def test_a_qualitative_measure_never_demands_a_numeric_value(
+    dimension: str,
+) -> None:
+    """Four of the run's eleven targets were unanswerable for this reason.
+
+    Each asks what a rule, basis, or treatment *is*. Mapping ``measure:`` to
+    the numeric ``value`` dimension made every one of them unmet by prose that
+    answers them exactly, because such a clause states no number.
+    """
+    assert "value" not in checkable_dimensions(dimension)
+
+
+@pytest.mark.parametrize(
+    "dimension",
+    [
+        "measure: grid-scale battery power capacity added, in MW",
+        "measure: projected battery storage capacity additions, in MW",
+        "measure: minimum nameplate capacity threshold, in MW",
+        "measure: annual ridership",
+        "value",
+        "capacity",
+    ],
+)
+def test_a_quantitative_measure_still_demands_a_numeric_value(
+    dimension: str,
+) -> None:
+    """The control: a measure that names a quantity still needs the number."""
+    assert checkable_dimensions(dimension) == ("value",)
+
+
+_AUDIT_QUESTION = (
+    "How much grid-scale battery storage capacity was added in the United "
+    "States in 2024, and what do the latest forecasts project for 2025?"
+)
+
+
+def test_a_qualitative_obligation_is_answered_by_prose_that_states_it() -> None:
+    (atom,) = extract_text_atoms(
+        "According to EIA, behind-the-meter storage is excluded from the "
+        "reported utility-scale capacity total in the United States in 2024."
+    )
+
+    assert atom_answers_dimensions(
+        atom,
+        [
+            "measure: inclusion or exclusion of behind-the-meter storage in "
+            "the reported total"
+        ],
+        question=_AUDIT_QUESTION,
+    )
+
+
+def test_a_qualitative_obligation_is_not_answered_by_a_number_alone() -> None:
+    """The control: a bare quantity names no subject and settles no rule."""
+    (atom,) = extract_text_atoms("10 GW was added in 2024.")
+
+    assert not atom_answers_dimensions(
+        atom,
+        [
+            "measure: inclusion or exclusion of behind-the-meter storage in "
+            "the reported total"
+        ],
+        question=_AUDIT_QUESTION,
+    )
+
+
+def test_the_runs_four_unbindable_rule_targets_bind_an_ideal_claim() -> None:
+    """C10's first half: the run's own targets, against claims that answer them.
+
+    The targets are the run's, verbatim (audit C5); the claims are the plainest
+    sentence that states each one. Before this change all four failed on
+    ``value`` and no claim could ever have been bound to them.
+    """
+    targets = [
+        (
+            EvidenceTarget(
+                target_id="topic-03-target-02",
+                coverage_id="topic-03",
+                question=(
+                    "What grid-connection requirement does the classification "
+                    "state?"
+                ),
+                required_dimensions=[
+                    "measure: stated grid-connection requirement of the "
+                    "classification",
+                    "period: the classification in force for 2024 and 2025 "
+                    "reporting",
+                    "geography: United States",
+                    "source: the publisher's definition or methodology page "
+                    "for the classification",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            ),
+            "According to EIA, the utility-scale classification in the United "
+            "States in 2024 requires a grid connection at the plant.",
+        ),
+        (
+            EvidenceTarget(
+                target_id="topic-04-target-01",
+                coverage_id="topic-04",
+                question="On which rating basis are the capacity figures stated?",
+                required_dimensions=[
+                    "measure: rating basis (AC or DC) of the reported capacity "
+                    "figures",
+                    "period: the 2024 addition and the 2025 forecast as "
+                    "published",
+                    "geography: United States",
+                    "source: the publisher's methodology or convention "
+                    "documentation for its capacity figures",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            ),
+            "According to EIA, the reported capacity figures in the United "
+            "States for 2024 are stated on an AC rating basis.",
+        ),
+        (
+            EvidenceTarget(
+                target_id="topic-04-target-02",
+                coverage_id="topic-04",
+                question="How are hybrid co-located plants counted?",
+                required_dimensions=[
+                    "measure: inclusion rule and counting treatment for "
+                    "hybrid/co-located battery plants",
+                    "period: the 2024 addition and the 2025 forecast as "
+                    "published",
+                    "geography: United States",
+                    "source: the publisher's methodology note describing "
+                    "plant-level counting",
+                ],
+                required=True,
+                critical=False,
+                support_policy="primary_attribution",
+            ),
+            "According to EIA, hybrid co-located battery plants in the United "
+            "States are counted at the plant level in the 2024 reported "
+            "capacity.",
+        ),
+        (
+            EvidenceTarget(
+                target_id="topic-04-target-03",
+                coverage_id="topic-04",
+                question=(
+                    "Is behind-the-meter storage inside the reported total?"
+                ),
+                required_dimensions=[
+                    "measure: inclusion or exclusion of behind-the-meter "
+                    "storage in the reported total",
+                    "period: the 2024 addition and the 2025 forecast as "
+                    "published",
+                    "geography: United States",
+                    "source: the publisher's definitions page or methodology "
+                    "note",
+                ],
+                required=True,
+                critical=False,
+                support_policy="primary_attribution",
+            ),
+            "According to EIA, behind-the-meter storage is excluded from the "
+            "reported utility-scale capacity total in the United States for "
+            "2024.",
+        ),
+    ]
+
+    for target, text in targets:
+        atoms = extract_text_atoms(text, claim_id="ideal")
+        assert any(
+            atom_answers_target(atom, target, question=_AUDIT_QUESTION)
+            for atom in atoms
+        ), target.target_id
