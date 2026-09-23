@@ -3805,6 +3805,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         the latest pass contradicted therefore replaces its own earlier
         verified record instead of sitting beside it, and it keeps the
         provenance the earlier record consumed.
+
+        ``evaluated_sources`` replaces too, and it is written for the same
+        reason: a document this verification read carries a report statement,
+        so its assessment has to be saved beside the read that produced it.
+        Saving the read without the assessment leaves the report citing a
+        source no record ever judged.
         """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
@@ -3827,6 +3833,14 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             update["evidence_dispositions"] = list(self._new_dispositions)
         if self._adjudication_audits:
             update["boundary_audits"] = dict(self._adjudication_audits)
+        if self._new_reads:
+            # Cumulative and resolved over every read of the run, never per
+            # read: the snapshot is what the pair test itself read its
+            # publisher, work, and origin from, so publishing anything less
+            # would record a verdict against an identity no later step can
+            # reproduce — and would drop the earlier sources this update
+            # replaces.
+            update["evaluated_sources"] = list(self._run_sources)
         return update
 
     def _sufficient_run(self) -> ReActRun:
