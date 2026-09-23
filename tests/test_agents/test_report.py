@@ -2769,6 +2769,50 @@ def test_the_works_count_is_the_identity_the_work_map_publishes() -> None:
     assert record["counts"]["unique_works"] == 1
 
 
+def test_the_work_map_accounts_for_every_retained_source_url() -> None:
+    """The map is the count's own keying, so the two cannot disagree.
+
+    The map and the count are one record read two ways, and they were two
+    resolutions: the map published only the sources whose persisted identity
+    was established, while the count fell back to the read-derived key for a
+    source whose identity was never established — so an identity-less read
+    could appear as a work the map never named. Publishing the keying the
+    count computes makes ``unique_works`` the map's distinct values by
+    construction, which is what the record's own comment claims.
+    """
+    work_id = "doi:10.1234/grid.2025"
+    original = _read(SOURCE_URL, "Grid Storage Outlook 2024: 10 GW in 2024.")
+    unlabelled = _read(
+        OTHER_URL,
+        "Grid Storage Outlook 2024, re-typeset: 10 GW in 2024.",
+        title="Grid Storage Outlook 2024 (repository copy)",
+    )
+    composition = _evidence_composition(
+        sources=[
+            _source(url=SOURCE_URL, work_id=work_id),
+            _source(
+                url=OTHER_URL,
+                title="Grid Storage Outlook 2024 (repository copy)",
+                rationale="Assessed, but the page evidences no issuer.",
+            ),
+        ]
+    )
+    state = _record_state(
+        composition,
+        read_records={original.read_id: original, unlabelled.read_id: unlabelled},
+    )
+
+    record = render_quality_record(state, composition, None)
+
+    assert set(record["work_keys"]) == {SOURCE_URL, OTHER_URL}
+    assert record["counts"]["unique_works"] == len(
+        set(record["work_keys"].values())
+    )
+    # The two sources carry different bytes and no shared alias, so they are
+    # two works: one resolved, one unresolved.
+    assert record["counts"]["unique_works"] == 2
+
+
 def test_a_source_no_assessment_covers_is_its_own_work_entry() -> None:
     """An unresolved work stays its own entry; it is never folded into a peer.
 
@@ -2814,7 +2858,12 @@ def test_a_source_no_assessment_covers_is_its_own_work_entry() -> None:
 
     record = render_quality_record(state, composition, None)
 
-    assert set(record["work_keys"]) == {SOURCE_URL, OTHER_URL}
+    # The map accounts for every retained URL, including the one no
+    # assessment covers, so the count is exactly its distinct values.
+    assert set(record["work_keys"]) == {SOURCE_URL, OTHER_URL, THIRD_URL}
+    assert record["counts"]["unique_works"] == len(
+        set(record["work_keys"].values())
+    )
     # One joined work, plus the unassessed source's own unresolved entry.
     assert record["counts"]["unique_works"] == 2
 
