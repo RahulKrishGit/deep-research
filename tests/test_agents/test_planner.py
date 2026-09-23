@@ -2265,6 +2265,141 @@ def test_stale_year_anchors_are_reported_only_in_a_currency_frame() -> None:
     ) == []
 
 
+# The question the four live CLI runs used. It names 2024 as the period it is
+# about and asks for 2025 forecasts, so ``derive_answer_contract`` stamps
+# ``as_of_date`` 2025-12-31 and 2024 sits below it — which is why the
+# co-occurrence rule reported the question's own wording.
+_AUDIT_QUESTION = (
+    "How much grid-scale battery storage capacity was added in the United "
+    "States in 2024, and what do the latest forecasts project for 2025?"
+)
+
+# The day the audit runs were made, so the contract below is the live one.
+_AUDIT_NOW = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
+
+
+def _audit_contract():
+    return derive_answer_contract(question=_AUDIT_QUESTION, now=_AUDIT_NOW)
+
+
+def _mirroring_audit_plan() -> ResearchPlanDraft:
+    """Run 4's shape: the first topic mirrors the question's own framing."""
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft(
+                "Added capacity",
+                priority=1,
+                evidence_targets=[
+                    _target(
+                        "What do the latest EIA data show for grid-scale "
+                        "battery storage capacity added in the United States "
+                        "in 2024?"
+                    )
+                ],
+                success_criteria=[
+                    "The latest available figures state the 2024 additions "
+                    "and the 2025 forecast."
+                ],
+            ),
+            _draft("Queue totals", priority=2),
+            _draft("Reforms", priority=3),
+        ]
+    )
+
+
+def test_the_year_the_question_itself_names_is_never_a_stale_anchor() -> None:
+    """The question's own period is its subject, not a currency claim.
+
+    The audit question is *about* 2024 under a 2025-12-31 contract, so a target
+    that mirrors the question's wording names a year below the as-of date. The
+    co-occurrence rule reported exactly those targets — and criteria — in live
+    runs 3 and 4, and because a reported anchor was fatal, both runs ended
+    before any research started.
+    """
+    contract = _audit_contract()
+    assert contract.as_of_date == "2025-12-31"
+    sub_topics, problems = validate_plan_draft(_mirroring_audit_plan())
+    assert problems == []
+
+    stamped = apply_answer_contract(sub_topics, contract)
+
+    assert target_problems(stamped, contract) == []
+
+
+def test_a_year_the_question_does_not_name_is_still_a_stale_anchor() -> None:
+    """The exemption is the question's own years, not every older year.
+
+    The TR-04 defect is a plan that treats an earlier year as today. 2023 is
+    not a year the audit question names, so a target that anchors currency to
+    it is still reported under that contract.
+    """
+    contract = _audit_contract()
+    sub_topics, _ = validate_plan_draft(
+        ResearchPlanDraft(
+            sub_topics=[
+                _draft(
+                    "Added capacity",
+                    priority=1,
+                    evidence_targets=[
+                        _target(
+                            "What are the current 2023 figures for added "
+                            "battery storage capacity?"
+                        )
+                    ],
+                ),
+                _draft("Queue totals", priority=2),
+                _draft("Reforms", priority=3),
+            ]
+        )
+    )
+
+    stamped = apply_answer_contract(sub_topics, contract)
+
+    assert target_problems(stamped, contract) == [
+        "topic-01-target-01 anchors currency to 2023 for a session as of "
+        "2025-12-31; ask for the latest available evidence instead"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_plan_mirroring_the_questions_own_years_reaches_the_review(
+    tracker: Tracker,
+) -> None:
+    """Run 4's replay: the mirroring draft is reviewed instead of fatal.
+
+    Run 4 scripted two structured calls (20,509 and 12,549 output tokens) and
+    ended at ``graph_planning_failed`` with ``sub_topics=[]``, because the
+    draft was reported, the repair was reported the same way, and the second
+    report raised. The scripted model below is that run's shape — every plan
+    request answers with the same question-mirroring plan — and a draft the
+    contract's own question sanctions must reach the semantic review instead.
+    """
+
+    def _run_4_reply(messages, schema):
+        del messages
+        return (
+            _mirroring_audit_plan()
+            if schema is ResearchPlanDraft
+            else _review()
+        )
+
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_run_4_reply, _run_4_reply, _run_4_reply],
+    )
+    agent = _planner(tracker, completer, clock=lambda: _AUDIT_NOW)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(_AUDIT_QUESTION))
+
+    assert outcome.result is not None
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+    ]
+    assert outcome.result.repair_attempted is False
+
+
 def test_a_question_about_the_clock_year_is_answered_as_of_today() -> None:
     """Naming the clock's own year is a currency frame, not a closed period.
 

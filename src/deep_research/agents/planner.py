@@ -1329,15 +1329,27 @@ def support_policy_for(*, question: str) -> str:
     ).support_policy
 
 
-def stale_year_anchors(text: str, *, as_of_year: int) -> list[int]:
-    """Years in ``text`` that anchor currency earlier than the as-of year.
+def stale_year_anchors(
+    text: str,
+    *,
+    as_of_year: int,
+    question_years: frozenset[int] = frozenset(),
+) -> list[int]:
+    """Years in ``text`` that a currency marker makes older than the as-of year.
 
-    Only a *currency* frame is reported — "current as of 2024", "the latest
-    2024 figures" — because a question or criterion may legitimately name an
-    older year as its subject. What this must never do is let a plan treat an
-    earlier year as today: that is the TR-04 defect. The check is deliberately
-    conservative in the other direction too; the plan review call is what
-    judges meaning, and this only refuses an explicitly stale anchor.
+    What the rule reads is a co-occurrence, not a frame: any currency marker
+    anywhere in ``text`` brings every year below ``as_of_year`` that appears
+    anywhere in it into the report. That is why ``question_years`` exists —
+    a year the frozen question itself names is the question's subject, not a
+    claim that the year is current, so it is dropped before the report is
+    built. The audit question names 2024 under an as-of date of 2025-12-31, and
+    without this exemption the rule reported the question's own wording and
+    ended two live runs before any research.
+
+    The co-occurrence reading is deliberate in the other direction too: it
+    over-reports rather than under-reports, and the plan review call is what
+    judges meaning. The TR-04 defect this rule exists for is a plan that treats
+    an earlier year as today — "the current 2024 figures", "2024 is current".
     """
     normalized = _normalized_question(text)
     if not _mentions(normalized, _CURRENCY_MARKERS):
@@ -1346,7 +1358,7 @@ def stale_year_anchors(text: str, *, as_of_year: int) -> list[int]:
         {
             int(match)
             for match in _YEAR_PATTERN.findall(text)
-            if int(match) < as_of_year
+            if int(match) < as_of_year and int(match) not in question_years
         }
     )
 
@@ -1431,10 +1443,13 @@ def target_problems(
     judges meaning. What is checkable here is that every sub-topic carries
     1-4 obligations, that each obligation is asked as a question rather than
     asserted, that nothing anchors currency to a year the contract has already
-    left behind, and that nothing invents a numeric agreement tolerance.
+    left behind, and that nothing invents a numeric agreement tolerance. The
+    years the frozen question itself names are exempt from the anchor check:
+    they are the question's subject, not a claim that an older year is current.
     """
     problems: list[str] = []
     as_of_year = int(contract.as_of_date[:4])
+    question_years = frozenset(_past_years(contract.question))
     for sub_topic in sub_topics:
         count = len(sub_topic.evidence_targets)
         if count < MIN_TARGETS_PER_TOPIC or count > MAX_TARGETS_PER_TOPIC:
@@ -1451,7 +1466,9 @@ def target_problems(
                     "the unknown as a question instead"
                 )
             stale = stale_year_anchors(
-                target.question, as_of_year=as_of_year
+                target.question,
+                as_of_year=as_of_year,
+                question_years=question_years,
             )
             if stale:
                 problems.append(
@@ -1470,7 +1487,11 @@ def target_problems(
                     "not state and no measurement basis establishes"
                 )
         for criterion in sub_topic.success_criteria:
-            stale = stale_year_anchors(criterion, as_of_year=as_of_year)
+            stale = stale_year_anchors(
+                criterion,
+                as_of_year=as_of_year,
+                question_years=question_years,
+            )
             if stale:
                 # The measured defect lived here: a criterion that required
                 # "current" numbers pinned to 2024. A criterion that is *about*

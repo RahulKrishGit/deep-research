@@ -811,8 +811,15 @@ CRITIC_PROMPT_FINGERPRINT = "aedce1ccca9e"
 # which the other five pins and the judge prove.
 # ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``
 # asserts rather than this comment.
+# The stale-anchor question-year pass moved the planner alone, ``d2d7dec17bcd``
+# -> ``fc6518cbfe60``: ``stale_year_anchors`` gained the ``question_years``
+# exemption, and ``target_problems`` now derives it once from the frozen
+# question, so a year the question itself names is never reported as a stale
+# currency anchor. Module source only — no prompt string was edited and the
+# shared ``agents.prompts`` library was not touched, which the other five pins
+# and the judge prove.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "d2d7dec17bcd",
+    "planner": "fc6518cbfe60",
     "researcher": "ec5244f2ba7f",
     "source_evaluator": "ad9e2afac12c",
     "fact_checker": "340b8267dbe9",
@@ -1305,7 +1312,7 @@ def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
     (``00e2229ad4fa`` -> ``340b8267dbe9``), which is attributed in
     ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``.
     """
-    assert agent_prompt_fingerprint("planner") == "d2d7dec17bcd"
+    assert agent_prompt_fingerprint("planner") == "fc6518cbfe60"
     assert agent_prompt_fingerprint("researcher") == "ec5244f2ba7f"
     assert agent_prompt_fingerprint("fact_checker") == "340b8267dbe9"
     # The other three target pins are untouched by this step, and the judge
