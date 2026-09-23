@@ -3036,15 +3036,14 @@ def test_a_scoring_dossier_shows_each_obligations_figures_behind_navigation() ->
 
 
 def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
-    """The real update-round shape: boilerplate that carries the plan's words.
+    """The reservation itself yields the figures, with no findings at all.
 
-    On 64586 the navigation and the data note contain the obligation's terms —
-    "battery storage", "capacity additions", "utility-scale", "generator
-    inventory" — while the passage stating the figure sits at rank 3 of that
-    obligation's ranking, and the group's four findings each name only a date.
-    Rank-major interleaving over one query list gave every slot to the
-    findings' picks. Each obligation therefore reserves an excerpt, taken from
-    its own complete ranking and preferring the passage that states a figure.
+    The real 64586 shape: the navigation and the data note carry the plan's
+    words and dates ("February 24, 2025"), the passage that states the figures
+    sits below them, and an incidental measurement ("678.7 MW") sits beside it.
+    Two obligations, two reserved excerpts, and four slots. What is reserved
+    must be a *quantity* — a date is not a figure — and a second obligation
+    must take its own passage rather than the one the first already reserved.
     """
     from deep_research.agents.evidence import build_read_dossiers
     from deep_research.agents.source_evaluator import DEFAULT_EXCERPT_CHARS
@@ -3056,18 +3055,17 @@ def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
         "Statistics Analysis Tools Education News Search Today in Energy Skip "
         "to page content Recent articles liquid fuels natural gas electricity "
         "utility-scale battery storage capacity additions generator inventory "
-        "prices map states exports imports coal renewables forecasts "
-        "projections gasoline capacity steo short-term energy outlook Archive "
-        "About Glossary FAQS In-brief analysis February 24, 2025 "
-    )
-    solar = (
-        "In 2024, generators added a record 30 GW of utility-scale solar to "
-        "the U.S. grid, accounting for 61% of capacity additions last year."
+        "In-brief analysis February 24, 2025 "
     )
     data_note = (
-        "Data source: Preliminary Monthly Electric Generator Inventory. The "
-        "inventory covers utility-scale battery storage capacity additions and "
-        "is published monthly with a three-month lag behind the period."
+        "Data source: Preliminary Monthly Electric Generator Inventory, "
+        "published February 24, 2025. The inventory covers utility-scale "
+        "battery storage capacity additions behind the reporting period."
+    )
+    solar = "In 2024, generators added a record 30 GW of utility-scale solar."
+    project = (
+        "The Intermountain Power Project in Utah and the 678.7-MW Magnolia "
+        "Power project are among the plants the inventory records."
     )
     figure = (
         "Battery storage. In 2025, capacity growth from battery storage could "
@@ -3075,7 +3073,9 @@ def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
         "be added to the grid, up from the 10.3 GW added in 2024."
     )
     glossary = "Glossary and archive of every previous edition of this note."
-    body = "\n\n".join((navigation, solar, data_note, figure, glossary))
+    body = "\n\n".join(
+        (navigation, data_note, solar, project, figure, glossary)
+    )
     read = build_read_record(
         session_id="session-1",
         reader="web_scraper",
@@ -3086,30 +3086,32 @@ def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
         text=body,
         passages={
             "chunk-0": navigation,
-            "chunk-1": solar,
-            "chunk-2": data_note,
-            "chunk-3": figure,
-            "chunk-4": glossary,
+            "chunk-1": data_note,
+            "chunk-2": solar,
+            "chunk-3": project,
+            "chunk-4": figure,
+            "chunk-5": glossary,
         },
         extraction_complete=True,
     )
-    obligation = (
+    actuals = (
         "2024 U.S. grid-scale battery capacity additions reported actuals EIA "
         "electric generator inventory utility-scale battery storage capacity"
     )
-    date_only_findings = [
-        f"The EIA article is dated February {day}, 2025 and covers capacity."
-        for day in (2, 14, 20, 24)
-    ]
+    forecast = (
+        "Latest 2025 forecasts for U.S. grid-scale battery capacity additions "
+        "expected utility-scale battery storage to be added this year"
+    )
 
     (dossier,) = build_read_dossiers(
         [read],
-        queries={read.resolved_url: date_only_findings},
-        obligation_queries={read.resolved_url: [obligation]},
+        obligation_queries={read.resolved_url: [actuals, forecast]},
         excerpt_chars=DEFAULT_EXCERPT_CHARS,
     )
 
     shown = "\n".join(dossier.excerpts)
-    assert len(dossier.excerpts) <= 4
+    assert len(dossier.excerpts) == 4
     assert "18.2 GW" in shown
     assert "10.3 GW" in shown
+    # Two obligations, two distinct reserved passages.
+    assert dossier.excerpts[0] != dossier.excerpts[1]

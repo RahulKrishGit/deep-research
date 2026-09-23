@@ -651,8 +651,35 @@ _VALUE_PERIOD_PATTERN = re.compile(
 # to keep a single long chunk from filling the request.
 DEFAULT_DOSSIER_EXCERPTS = 4
 
-# A figure as a query writes one: ``18.2 GW``, ``26%``, ``1 Megawatt``.
-_FIGURES = re.compile(r"\d")
+# A *figure* as a document writes one: a number with a unit or percent
+# (``18.2 GW``, ``26%``, ``1 Megawatt``) or a decimal (``43.6``, ``5.9``). A
+# bare year does not qualify — a page's navigation is full of dates, and a
+# publication date is not the quantity an obligation asks for.
+_QUANTITY = re.compile(
+    r"\d+(?:[.,]\d+)?\s*"
+    r"(?:%|percent|GW|MW|GWh|MWh|kW|kWh|gigawatt|megawatt|kilowatt)",
+    re.IGNORECASE,
+)
+_DECIMAL = re.compile(r"\d+[.,]\d+")
+
+
+def _numbers(text: str) -> set[str]:
+    return set(_NUMBER_PATTERN.findall(text))
+
+
+def _states_a_figure(text: str, wanted: set[str]) -> bool:
+    """True when the passage carries a quantity, not merely a date.
+
+    ``wanted`` is what the obligation itself states, so a passage repeating the
+    question's own numbers also counts: the question is what the source was
+    read for.
+    """
+    if _DECIMAL.search(text) or _QUANTITY.search(text):
+        return True
+    return bool(wanted and wanted.intersection(_numbers(text)))
+
+
+_NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)?")
 DEFAULT_DOSSIER_EXCERPT_CHARS = 600
 
 
@@ -1865,20 +1892,32 @@ def _dossier_excerpts(
     for query in obligation_queries:
         if len(ordered) >= max_excerpts:
             break
+        wanted = _numbers(query)
         ranking = select_relevant_passages(
             read.passages, query, len(read.passages)
         )
-        pick = next(
-            (
-                locator
-                for locator in ranking
-                if _FIGURES.search(read.passages[locator])
-            ),
-            None,
+        # The walk skips what another obligation already reserved, so a second
+        # obligation contributes its own passage rather than nothing; it takes
+        # the first passage in its ranking that states a figure, and its first
+        # remaining choice only when the read carries no figure at all.
+        fresh = [locator for locator in ranking if locator not in ordered]
+        figures = [
+            locator
+            for locator in fresh
+            if _states_a_figure(read.passages[locator], wanted)
+        ]
+        # The obligation's own numbers first, then the passage stating the most
+        # quantities — a page's incidental measurement is one figure, the
+        # passage that answers a figure obligation usually states several (a
+        # value and its comparison) — then the obligation's first choice.
+        figures.sort(
+            key=lambda locator: (
+                -len(wanted.intersection(_numbers(read.passages[locator]))),
+                -len(_QUANTITY.findall(read.passages[locator])),
+            )
         )
-        if pick is None and ranking:
-            pick = ranking[0]
-        if pick is not None and pick not in ordered:
+        pick = figures[0] if figures else (fresh[0] if fresh else None)
+        if pick is not None:
             ordered.append(pick)
     if queries:
         ranked = [
