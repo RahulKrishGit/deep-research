@@ -341,7 +341,10 @@ class _StructuredValidationFailure(RuntimeError):
         schema_name: str,
         diagnostic: StructuredValidationDiagnostic,
     ) -> None:
-        super().__init__(f"OpenAI output failed {schema_name} validation")
+        super().__init__(
+            f"OpenAI output failed {schema_name} validation "
+            f"({diagnostic.render()})"
+        )
         self.diagnostic = diagnostic
 
 
@@ -440,6 +443,8 @@ class OpenAIChatProvider:
             request["reasoning"] = {"effort": resolved.reasoning_effort}
         if resolved.include_temperature:
             request["temperature"] = self._config.temperature
+        if effective.timeout is not None:
+            request["timeout"] = effective.timeout
         metadata: dict[str, JsonValue] = {
             "provider": "openai",
             "thinking_mode": effective.thinking_mode,
@@ -493,7 +498,10 @@ class OpenAIChatProvider:
 
                 response = await with_retries(
                     _request,
-                    retry_count=self._config.retry_count,
+                    retry_count=(
+                        self._config.retry_count
+                        if effective.retry_count is None else effective.retry_count
+                    ),
                     initial_delay=self._config.retry_initial_delay,
                     max_delay=self._config.retry_max_delay,
                 )
@@ -531,6 +539,7 @@ class OpenAIChatProvider:
         request: dict[str, object],
         metadata: dict[str, JsonValue],
         attempt: int,
+        retry_count: int | None = None,
     ) -> SchemaT:
         payload = [message.model_dump(mode="json") for message in messages]
         async with self._tracker.llm_span(
@@ -572,7 +581,9 @@ class OpenAIChatProvider:
 
             response = await with_retries(
                 _request,
-                retry_count=self._config.retry_count,
+                retry_count=(
+                    self._config.retry_count if retry_count is None else retry_count
+                ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
             )
@@ -669,7 +680,10 @@ class OpenAIChatProvider:
 
             response = await with_retries(
                 _request,
-                retry_count=self._config.retry_count,
+                retry_count=(
+                    self._config.retry_count
+                    if effective.retry_count is None else effective.retry_count
+                ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
             )
@@ -755,6 +769,7 @@ class OpenAIChatProvider:
                     request=request,
                     metadata=metadata,
                     attempt=attempt,
+                    retry_count=effective.retry_count,
                 )
             except _StructuredValidationFailure as error:
                 diagnostics.append(error.diagnostic)

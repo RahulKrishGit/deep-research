@@ -23,6 +23,7 @@ Two consequences are deliberate:
 
 from __future__ import annotations
 
+import calendar
 import re
 from collections.abc import Mapping, Sequence
 
@@ -1558,6 +1559,16 @@ class DraftContext(ContractModel):
     dimensions_by_target: dict[str, list[str]] = Field(default_factory=dict)
     """Each target's required dimensions, as the shared derivation reads them."""
     corpus: str = ""
+    raw_corpus: str = ""
+    """``corpus``'s case-preserved counterpart, for the acronym check alone.
+
+    A statement's own claims usually carry no selected evidence of their own
+    (an unselected or uncited claim), and the per-statement corpus then falls
+    back to this whole-pass one; without a case-preserved fallback here too,
+    that fallback loses the capitalisation the acronym check needs and an
+    attested "EIA's" was refused for having no evidence of its own to read
+    case from.
+    """
     note_corpus: str = ""
     """The figures a *question-shaped* note may name.
 
@@ -1586,6 +1597,8 @@ class DraftContext(ContractModel):
 def _attestation_corpus(
     approved: Mapping[str, Claim],
     evidence: Mapping[str, EvidenceUnit],
+    *,
+    casefold: bool = True,
 ) -> str:
     """The text a drafted statement's specific atoms must appear in.
 
@@ -1596,7 +1609,8 @@ def _attestation_corpus(
     """
     parts = [claim.text for claim in approved.values()]
     parts.extend(unit.excerpt for unit in evidence.values())
-    return " ".join(parts).casefold()
+    text = " ".join(parts)
+    return text.casefold() if casefold else text
 
 
 def _content_tokens(text: str) -> list[str]:
@@ -1627,13 +1641,19 @@ def _corpus_tokens(corpus: str) -> set[str]:
     return tokens
 
 
-def unattested_atoms(text: str, corpus: str) -> list[str]:
+def unattested_atoms(text: str, corpus: str, raw_corpus: str = "") -> list[str]:
     """Specific factual atoms the corpus does not carry.
 
     Figures and names are what a paraphrase does not invent and a fabrication
     does. An unattested ordinary word is prose; an unattested figure or proper
     noun is a new fact, and this is the deterministic half of the support
     review — the half that cannot be argued with.
+
+    ``raw_corpus``, when given, is the *case-preserved* text the acronym
+    check reads: ``corpus`` itself is usually casefolded already by its
+    caller, and a folded corpus can never carry a capitalised name run.
+    Omitted, the acronym check falls back to ``corpus`` as given, which is
+    strict rather than permissive when that text has already lost its case.
     """
     tokens = _corpus_tokens(corpus)
     found: list[str] = []
@@ -1646,9 +1666,14 @@ def unattested_atoms(text: str, corpus: str) -> list[str]:
         # A sentence-opening capitalised word is capitalised by position: this
         # checker cannot tell "Charge" from "California" without a lexicon, so
         # the position exemption stays. An acronym is the exception, because
-        # no ordinary sentence opener is all-caps.
-        if _SENTENCE_INITIAL.search(text[: match.start()]) and not (
-            _ACRONYM_PATTERN.fullmatch(token)
+        # no ordinary sentence opener is all-caps. The acronym is read without
+        # its possessive ("IEA's", "SEIA's"), and a word with an internal
+        # capital ("BloombergNEF") is a name wherever it stands.
+        base = re.sub(r"['\u2019]s$", "", token)
+        if (
+            _SENTENCE_INITIAL.search(text[: match.start()])
+            and not _ACRONYM_PATTERN.fullmatch(base)
+            and not re.search(r"[a-z][A-Z]", base)
         ):
             continue
         folded = token.casefold()
@@ -1659,9 +1684,141 @@ def unattested_atoms(text: str, corpus: str) -> list[str]:
         # writes "EVs" where its evidence writes "electric vehicles".
         if folded in _UNIT_WORDS or folded in _COMMON_ABBREVIATIONS:
             continue
-        if folded not in tokens and token not in found:
+        if (
+            not _name_attested(token, tokens, raw_corpus or corpus)
+            and token not in found
+        ):
             found.append(token)
     return found
+
+
+# Words an organisation's or a place's initials skip: "Energy Information
+# Administration" is EIA, and "United States of America" is USA.
+_INITIAL_SKIP = frozenset({"of", "and", "the", "for", "on", "in", "&"})
+
+
+# A leading word a name run may drop without adding to its own initials:
+# "U.S. Energy Information Administration" spells EIA, not UEIA, because the
+# leading "U.S." names the country the agency belongs to, not a word of the
+# agency's own name. Kept narrow, on the review's own example, rather than
+# generalised to "any leading word may be dropped" — that would let a run
+# spell an acronym it never wrote by discarding whichever word makes it fit.
+_COUNTRY_PREFIXES = frozenset({"us", "u.s", "uk", "u.k"})
+# Punctuation stripped from a run word's ends before it is compared as a
+# whole word: a token carries the sentence's own comma or closing period, and
+# neither is part of the word.
+_NAME_PUNCT = ".,;:!?()[]{}\u2019'\""
+
+
+def _is_title_word(word: str) -> bool:
+    """True when ``word``'s first letter is capitalised."""
+    match = re.search(r"[A-Za-z]", word)
+    return bool(match) and match.group(0).isupper()
+
+
+def _run_initial(word: str) -> str:
+    """The initial letter of one name-run word ("U.S." spells "U")."""
+    match = re.search(r"[A-Za-z]", word)
+    return match.group(0).upper() if match else ""
+
+
+def _name_runs(corpus: str) -> list[list[str]]:
+    """Maximal runs of capitalised words in case-preserved ``corpus`` text.
+
+    Tokenised on whitespace, so "U.S." stays one token and contributes one
+    initial rather than splitting into the two letters "u" and "s" — the
+    split that let a claim spelling "U.S. Energy Information Administration"
+    also spell the invented "SEIA". A connector from ``_INITIAL_SKIP``
+    bridges two capitalised words without ending the run ("United States of
+    America"); any other lowercase word ends it, and so does a sentence
+    carrying no capitalisation at all — a lowercase phrase such as "installed
+    energy additions" is never a name run, however its initials happen to
+    fall.
+    """
+    runs: list[list[str]] = []
+    current: list[str] = []
+    pending: list[str] = []
+    for token in corpus.split():
+        bare = token.strip(_NAME_PUNCT).casefold()
+        if _is_title_word(token):
+            current.extend(pending)
+            current.append(token)
+            pending = []
+        elif bare in _INITIAL_SKIP and current:
+            pending.append(token)
+        else:
+            if current:
+                runs.append(current)
+            current, pending = [], []
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _run_words(run: Sequence[str]) -> list[str]:
+    """A run's words, connectors dropped: they spell no initial of their own."""
+    return [
+        word for word in run if word.strip(_NAME_PUNCT).casefold() not in _INITIAL_SKIP
+    ]
+
+
+def _spelled_out(acronym: str, corpus: str) -> bool:
+    """True when case-preserved ``corpus`` writes the name ``acronym`` spells.
+
+    Matched only against a contiguous span inside one maximal run of
+    capitalised words — never a whole sentence — so a lowercase phrase such
+    as "installed energy additions" carries no name at all, however its
+    initials happen to fall. "U.S. Energy Information Administration" spells
+    EIA, and only EIA once a leading country token ("U.S.") is dropped from
+    the search, never the "SEIA" the old letter-only scan read out of a split
+    "u"/"s"; the span search (rather than requiring the whole run) is what
+    still finds EIA when the run runs on into an adjacent capitalised word —
+    a claim's own "... Administration's March 12, 2025 analysis" sweeps the
+    month into the run, and the name it spells does not move for that.
+    """
+    wanted = acronym.upper()
+    size = len(wanted)
+    if size == 0:
+        return False
+    for run in _name_runs(corpus):
+        words = _run_words(run)
+        searched = [words]
+        if words and words[0].strip(_NAME_PUNCT).casefold() in _COUNTRY_PREFIXES:
+            searched.append(words[1:])
+        for candidate in searched:
+            for start in range(len(candidate) - size + 1):
+                span = candidate[start : start + size]
+                if "".join(_run_initial(word) for word in span) == wanted:
+                    return True
+    return False
+
+
+def _name_attested(token: str, tokens: set[str], corpus: str) -> bool:
+    """Whether the corpus states this name, in any form it writes names in.
+
+    The audited pass refused "EIA's", "Monitor's" and "EIA-based" although
+    the claims said "U.S. Energy Information Administration", "Energy Storage
+    Monitor" and "citing EIA": a possessive and a "-based" compound name the
+    same body, and an acronym is the body its evidence spells out. Every
+    capitalised part of a compound still has to be attested, so an invented
+    "IEA-based" or "Wood Mackenzie's" is refused as before.
+    """
+    # The evidence writing the name whole ("short-term", "year-in-review",
+    # "eia's") attests it before any part of it is looked at.
+    if token.casefold() in tokens:
+        return True
+    base = re.sub(r"['\u2019]s$", "", token)
+    if base.casefold() in tokens:
+        return True
+    parts = [part for part in base.split("-") if part[:1].isupper()] or [base]
+    for part in parts:
+        folded = part.casefold()
+        if folded in tokens:
+            continue
+        if _ACRONYM_PATTERN.fullmatch(part) and _spelled_out(part, corpus):
+            continue
+        return False
+    return True
 
 
 def unattested_words(text: str, corpus: str) -> list[str]:
@@ -2028,7 +2185,9 @@ def _statement_for_claims(
     )
 
 
-def _cited_evidence(claims: Sequence[Claim], context: DraftContext) -> str:
+def _cited_evidence(
+    claims: Sequence[Claim], context: DraftContext, *, casefold: bool = True
+) -> str:
     """The exact passages the named claims selected, as one text.
 
     A statement may restate its evidence; this is the text it may restate
@@ -2065,7 +2224,54 @@ def _cited_evidence(claims: Sequence[Claim], context: DraftContext) -> str:
             unit = context.evidence.get(evidence_id)
             if unit is not None:
                 parts.append(unit.excerpt)
-    return " ".join(parts).casefold()
+    text = " ".join(parts)
+    return text.casefold() if casefold else text
+
+
+def _claims_carrying(
+    claims: Sequence[Claim],
+    accepted: Sequence[str],
+    *,
+    text: str,
+    context: DraftContext,
+    basis: str,
+) -> tuple[list[Claim], list[str]]:
+    """The named claims that carry every URL the point cites, and those URLs.
+
+    A point's citations must resolve through each claim it names: the
+    quality gate reads a claim that does not cite a URL its point cites as an
+    unresolved citation. So a named claim that lacks one of the point's URLs
+    is dropped from the point. No URL is ever added to a claim.
+
+    When no named claim carries them all, the anchor is chosen by evidence,
+    not by the order the draft listed its claims: a relay named beside the
+    issuer's own claim, citing only the issuer's URL, used to keep whichever
+    claim the draft happened to list first, and lost the point when the relay
+    came first and its own claim did not state the point's figure. Each
+    candidate that carries any cited URL is tried, most-cited-URLs first, and
+    the first candidate whose narrowed claims attest the point's own figures
+    is kept; a candidate that carries what the point cites but not what it
+    states is not what the point is about.
+    """
+    def urls(claim: Claim) -> set[str]:
+        return {normalize_source_url(url) for url in claim.source_urls}
+
+    wanted = set(accepted)
+    carriers = [claim for claim in claims if wanted <= urls(claim)]
+    if carriers:
+        return carriers, list(accepted)
+    candidates = [claim for claim in claims if wanted & urls(claim)]
+    ranked = sorted(
+        candidates, key=lambda claim: len(wanted & urls(claim)), reverse=True
+    )
+    for anchor in ranked:
+        kept = [url for url in accepted if url in urls(anchor)]
+        narrowed = [claim for claim in claims if set(kept) <= urls(claim)]
+        if not _unsupported_figures(text, narrowed, context, basis):
+            return narrowed, kept
+    anchor = candidates[0]
+    kept = [url for url in accepted if url in urls(anchor)]
+    return [claim for claim in claims if set(kept) <= urls(claim)], kept
 
 
 def _build_point(
@@ -2123,6 +2329,16 @@ def _build_point(
             "unlinked_statement", where, "no source url for a settled statement"
         )
         return None
+    named = len(claims)
+    claims, accepted = _claims_carrying(
+        claims, accepted, text=text, context=context, basis=basis
+    )
+    if len(claims) < named:
+        # Not a refusal: the point stands on the claims that carry what it
+        # cites. A relay named beside the issuer's own claim, citing only the
+        # issuer's page, left audit2's S001 with an unresolved citation.
+        context.dispositions.append("claim_link_narrowed_to_citation")
+
     if not decision_section and _is_recommendation(text):
         context.note(
             "unsupported_recommendation",
@@ -2204,10 +2420,37 @@ def _unsupported_names(
     attestation the figures get, applied to the names: a geography is either
     in the evidence or it is a new claim.
     """
-    corpus = _cited_evidence(claims, context) or context.corpus
+    # A checked claim's own words, and what its ADMITTED provenance recorded
+    # from the page — the attributed issuer, the measured scope, and the
+    # month of the release date — are names that evidence states. ``vintage``
+    # and ``statement_date`` are not admitted (researcher.py stores them as
+    # the extractor wrote them, never checked against the read), so they are
+    # left out here: setting audit2 claim #1's vintage to a BloombergNEF
+    # title let that name onto an EIA figure with rejected=[].
+    recorded: list[str] = []
+    for claim in claims:
+        provenance = claim.provenance
+        recorded.append(claim.text)
+        recorded.extend(
+            value
+            for value in (provenance.attributed_issuer, provenance.measure_scope)
+            if value
+        )
+        month = re.match(r"(?:19|20)\d{2}-(\d{2})", provenance.release_date or "")
+        if month and 1 <= int(month.group(1)) <= 12:
+            recorded.append(calendar.month_name[int(month.group(1))])
+    joined = " ".join(recorded)
+    corpus = f"{_cited_evidence(claims, context) or context.corpus} {joined.casefold()}"
+    # The acronym check reads case: a folded corpus can spell "SEIA" out of a
+    # split "u"/"s" that a real, case-preserved "U.S. Energy Information
+    # Administration" never does.
+    raw_corpus = (
+        f"{_cited_evidence(claims, context, casefold=False) or context.raw_corpus} "
+        f"{joined}"
+    )
     return [
         atom
-        for atom in unattested_atoms(text, corpus)
+        for atom in unattested_atoms(text, corpus, raw_corpus)
         if not re.match(r"\d", atom)
     ]
 
@@ -2461,6 +2704,7 @@ def _build_uncertainty_statements(
     notes: Sequence[str],
     *,
     context: DraftContext,
+    published: Sequence[ReportPoint] = (),
 ) -> list[ReportStatement]:
     """Turn drafted uncertainty prose into checked, figure-free statements.
 
@@ -2492,6 +2736,24 @@ def _build_uncertainty_statements(
                 "a scope fact with no checked claim behind it",
             )
             continue
+        denied = _denied_stated_figure(text, context.evidence)
+        if denied:
+            context.note(
+                "unsupported_limitation",
+                where,
+                "denies a figure the evidence of that work states",
+            )
+            continue
+        if _REPORT_DERIVATION.search(text) and not any(
+            point.statement is not None and point.statement.basis
+            for point in published
+        ):
+            context.note(
+                "unsupported_limitation",
+                where,
+                "describes a derived value no published statement carries",
+            )
+            continue
         repaired = _strip_unsupported_figures(text, context.note_corpus)
         if repaired != text:
             context.note(
@@ -2514,6 +2776,56 @@ def _build_uncertainty_statements(
             )
         )
     return statements
+
+
+# A note describing a derived value "in this report". Only a published point
+# that declared its derivation basis can be what such a note describes;
+# otherwise it narrates draft content validation already refused.
+_REPORT_DERIVATION = re.compile(
+    r"\bin this report\b[^.;]*\b(?:arithmetic|implication|implied|derived|"
+    r"derivation)\b|\b(?:arithmetic|implication|implied|derived|derivation)\b"
+    r"[^.;]*\bin this report\b",
+    re.IGNORECASE,
+)
+# A note that says a work carries no figure.
+_ABSENT_FIGURE = re.compile(
+    r"\bno\s+(?:[a-z-]+\s+){0,2}figures?\b|\bwithout\s+(?:a|any)\s+"
+    r"(?:[a-z-]+\s+){0,2}figures?\b",
+    re.IGNORECASE,
+)
+# A capitalised multi-word work title ("Short-Term Energy Outlook").
+_WORK_TITLE = re.compile(r"\b[A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)+\b")
+
+
+def _denied_stated_figure(
+    text: str, evidence: Mapping[str, EvidenceUnit]
+) -> bool:
+    """True when a note says a work has no figure while its read states one.
+
+    The audited note denied the January STEO a capacity figure because its
+    checked claim had lost the number; the selected passages of the same read
+    said "growing by 47% (14 GW) in 2025". A limitation about evidence is read
+    against the evidence, never against a lossy restatement of it.
+    """
+    if not _ABSENT_FIGURE.search(text):
+        return False
+    titles = {
+        title.casefold()
+        for title in _WORK_TITLE.findall(text)
+        if " " in title
+    }
+    if not titles:
+        return False
+    urls = {
+        unit.source_url
+        for unit in evidence.values()
+        if any(title in unit.excerpt.casefold() for title in titles)
+    }
+    return any(
+        _CAPACITY_FIGURE.search(unit.excerpt)
+        for unit in evidence.values()
+        if unit.source_url in urls
+    )
 
 
 # The basis a source-free note carries is the group key the renderer reads,
@@ -2692,6 +3004,9 @@ def build_report_composition(
         targets={target.target_id: target for target in task.targets},
         dimensions_by_target=dimensions_by_target(task.targets),
         corpus=_attestation_corpus(approved, task.evidence_units),
+        raw_corpus=_attestation_corpus(
+            approved, task.evidence_units, casefold=False
+        ),
         failures=measured_failures(task),
     )
     context.note_corpus = _note_corpus(task, context.corpus)
@@ -2733,9 +3048,22 @@ def build_report_composition(
                 continue
             sections.append(ReportSection(title=title, points=points))
         uncertainty = _build_uncertainty_statements(
-            draft.uncertainty_notes, context=context
+            draft.uncertainty_notes,
+            context=context,
+            published=[
+                *summary,
+                *(point for section in sections for point in section.points),
+            ],
         )
     contract = task.answer_contract
+    if contract is not None and contract.answer_kind in ("factual", "historical"):
+        summary, sections = _scope_answer_summary(
+            summary, sections, context=context
+        )
+    if draft is not None:
+        sections = _render_omitted_bound_claims(
+            summary, sections, context=context
+        )
     if not rows:
         # A draft that supplied no rows is not a report with no answer: the
         # statements that answer the question are already validated here, so
@@ -2792,6 +3120,168 @@ def build_report_composition(
     validate_report_statements(composition)
     fitted, _fit_reasons = fit_report_composition(composition)
     return fitted, context.rejected
+
+
+_UNMATCHED_TITLE = "Other reported figures (not matched to a planned question)"
+_OMITTED_BOUND_TITLE = "Checked findings for planned questions the draft left out"
+
+
+def _scope_answer_summary(
+    summary: Sequence[ReportPoint],
+    sections: Sequence[ReportSection],
+    *,
+    context: DraftContext,
+) -> tuple[list[ReportPoint], list[ReportSection]]:
+    """Keep the answer slot for figures that answer a planned question.
+
+    A measured summary point whose claims are bound to no planned target
+    moves to the findings, under a heading that says so, but only when a
+    bound summary point already answers the same role: the same stated
+    period, and the same forecast-or-outcome reading. Otherwise it stays,
+    because it is the only answer to that part of the question, and the
+    reader report labels it as not matched to a planned question. It is
+    never dropped. When no measured summary point is bound at all, binding
+    failed for the whole pass, and the summary is left as drafted.
+    """
+    measured = [point for point in summary if _answering_statement(point)]
+    bound_roles = {
+        _answer_role(point)
+        for point in measured
+        if _answers_planned_target(point, context)
+    }
+    if not bound_roles:
+        return list(summary), list(sections)
+    kept: list[ReportPoint] = []
+    moved: list[ReportPoint] = []
+    for point in summary:
+        if (
+            _answering_statement(point)
+            and not _answers_planned_target(point, context)
+            and _answer_role(point) in bound_roles
+        ):
+            moved.append(point)
+        else:
+            kept.append(point)
+    shown = {
+        tuple(point.claim_ids) for section in sections for point in section.points
+    }
+    moved = [point for point in moved if tuple(point.claim_ids) not in shown]
+    result = list(sections)
+    if moved:
+        context.dispositions.append("unmatched_answer_moved_to_findings")
+        result.append(ReportSection(title=_UNMATCHED_TITLE, points=moved))
+    return kept, result
+
+
+def _text_role(text: str) -> tuple[frozenset[str], bool]:
+    """What part of the question a measured text answers.
+
+    The measurement years it states ("in 2025", "for 2025") and whether it is
+    hedged: "could almost double to 18.2 GW" answers the forecast half and
+    "a record 15 GW was added" the outcome half, even for the same year.
+    """
+    years = frozenset(
+        match.group(1) for match in _MEASURE_PERIOD.finditer(text)
+    )
+    return years, bool(hedge_marker(text))
+
+
+def _answer_role(point: ReportPoint) -> tuple[frozenset[str], bool]:
+    """What part of the question a measured point answers."""
+    return _text_role(point.text)
+
+
+def _normalized_text(text: str) -> str:
+    """Case- and whitespace-insensitive text, for matching one restated fact."""
+    return " ".join(text.casefold().split())
+
+
+def _restates_a_rendered_point(
+    claim: Claim, rendered: Sequence[ReportPoint]
+) -> bool:
+    """True when an already-rendered point already states this claim's content.
+
+    Two checked claims can carry one source's own finding twice: audit2's #1
+    and #17 both carry EIA 64705's 10.4 GW addition, from different clusters.
+    Giving #17 its own point under "left out" reprints a fact the reader
+    already met rather than answering a planned question the draft missed.
+    Matched by the same answered role (the same period, forecast or outcome)
+    plus a shared unit-bearing figure, or by the claim's own wording
+    normalizing to a rendered point's — either is one restated fact, however
+    differently worded.
+    """
+    # A unit-bearing figure only: a bare year is not a figure a fact rests on
+    # — it is usually also the role's own period, so two claims about
+    # unrelated facts that both happen to be dated "in 2025" and hedge
+    # neither would otherwise match on the year alone.
+    def unit_bearing(text: str) -> set[str]:
+        return {
+            token
+            for token in _significant_figures(text)
+            if token != _figure_number(token)
+        }
+
+    role = _text_role(claim.text)
+    figures = unit_bearing(claim.text)
+    normalized = _normalized_text(claim.text)
+    for point in rendered:
+        if normalized == _normalized_text(point.text):
+            return True
+        if _answer_role(point) == role and figures & unit_bearing(point.text):
+            return True
+    return False
+
+
+def _render_omitted_bound_claims(
+    summary: Sequence[ReportPoint],
+    sections: Sequence[ReportSection],
+    *,
+    context: DraftContext,
+) -> list[ReportSection]:
+    """Give a statement to every target-bound attributed claim the draft omitted.
+
+    audit2's claim #14, EIA's own 15 GW 2025 actual, reached the reader only
+    as an uncited line in the uncertainty list because no drafted point named
+    it. A claim bound to a planned target, with primary-source or
+    independent support and no contradiction, is stated in its own checked
+    words and cited to the URLs it carries. Every guard a drafted point
+    passes still applies. A claim whose content a rendered point (or an
+    earlier one added here) already states is skipped rather than given a
+    point of its own: audit2's #1 and #17 both carry EIA 64705's 10.4 GW
+    finding from different clusters, and printing #17 here reprinted it a
+    third time under a heading that promises questions the draft left out.
+    """
+    if not context.targets:
+        return list(sections)
+    rendered_points = [
+        *summary, *(p for section in sections for p in section.points)
+    ]
+    rendered = {
+        claim_id for point in rendered_points for claim_id in point.claim_ids
+    }
+    points: list[ReportPoint] = []
+    for label, claim in context.approved.items():
+        if (
+            claim.claim_id in rendered
+            or claim.verdict == "contradicted"
+            or claim.evidence_status not in ("source_supported", "verified_pair")
+            or not set(claim.target_ids).intersection(context.targets)
+            or _restates_a_rendered_point(claim, [*rendered_points, *points])
+        ):
+            continue
+        point = _build_point(
+            text=claim.text,
+            labels=[label],
+            urls=claim.source_urls,
+            context=context,
+            where=f"omitted bound claim {label}",
+        )
+        if point is not None:
+            points.append(point)
+    if not points:
+        return list(sections)
+    context.dispositions.append("omitted_bound_claim_rendered")
+    return [*sections, ReportSection(title=_OMITTED_BOUND_TITLE, points=points)]
 
 
 def _build_points(
@@ -2937,6 +3427,34 @@ _PERIOD_CLAUSE_SPLIT = re.compile(r"(?<=[.;!?])\s+|,(?!\d)\s*")
 # A sentence boundary, so a year in an earlier sentence cannot date this one's
 # figure.
 _SENTENCE_SPLIT = re.compile(r"(?<=[.;!?])\s+")
+# Only a year explicitly dated to a measurement can label it. A release date
+# ("March 12, 2025") or a data vintage ("January 2025 Inventory") is not
+# the year of the adjacent 10.4 GW addition.
+_MEASURE_PERIOD = re.compile(
+    r"\b(?:in|during|for|by|through|as\s+of)\s+"
+    r"(?:calendar\s+year\s+)?((?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+
+def _stated_label(text: str, value: str) -> str:
+    """Return the source's own spelling of a contiguous recorded label.
+
+    Atom extraction discards punctuation, so ``U S energy storage market`` is
+    not what a finding saying ``U.S. energy storage market`` states. Restore
+    the span from the validated point instead of printing the atom splitter's
+    normalized tokens or inventing a subject it does not mention at all.
+    """
+    words = re.findall(r"[A-Za-z0-9]+", value)
+    if not words:
+        return ""
+    pattern = r"\b" + r"[\W_]*".join(map(re.escape, words)) + r"\b"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match is None:
+        return ""
+    stated = match.group(0)
+    return value if stated.casefold() == value.casefold() else stated
+
+
 
 
 def _selected_claims(
@@ -2948,6 +3466,15 @@ def _selected_claims(
     return [
         claim for claim in context.approved.values() if claim.claim_id in wanted
     ]
+
+def _answers_planned_target(point: ReportPoint, context: DraftContext) -> bool:
+    """A measured answer must cite a checked claim bound to this plan."""
+    if not context.targets:
+        return True
+    return any(
+        set(claim.target_ids).intersection(context.targets)
+        for claim in _selected_claims(point, context)
+    )
 
 
 def _answering_statement(point: ReportPoint) -> ReportStatement | None:
@@ -3003,11 +3530,13 @@ def _recorded_label_atom(
             value = " ".join(getattr(proposition, atom, "").split())
             if len(value) < _MIN_LABEL_CHARS:
                 continue
-            if atom == "observation_period" and not _states_the_period(
-                point.text, value
-            ):
-                continue
-            return value
+            if atom == "observation_period":
+                if not _states_the_period(point.text, value):
+                    continue
+                return value
+            stated = _stated_label(point.text, value)
+            if stated:
+                return stated
     return ""
 
 
@@ -3044,26 +3573,32 @@ def _period_span(text: str) -> str:
 
 
 def _states_the_period(text: str, period: str) -> bool:
-    """True when ``text`` states ``period`` as the year of its own figure.
+    """Only date a measured figure with the period the statement assigns it.
 
-    Two conditions, both read from the finding's own words. Every year the atom
-    records has to be stated in the span that dates the finding's figure
-    (``_period_span``), so a comparison's baseline year is not mistaken for the
-    figure's date — reading the whole sentence was too loose in that direction
-    and reading for "the only year stated" was too strict in the other, because
-    a finding that compares two periods states two years and its own is one of
-    them. And the text has to leave no other period unnamed: "for the year of
-    writing" is a period the sentence is *about* and does not state. A span
-    that states no year at all leaves the column to the next atom, and then to
-    "not stated".
+    A year in a release date or inventory vintage may precede the figure, but
+    ``10.4 GW ... in 2024`` names its own period after the figure. Prefer that
+    explicit measurement-year attachment; otherwise admit a fronted ``For
+    2025 ... 19.6 GW``. Bare year mentions (notably a release date) are never
+    measurement periods.
     """
     years = set(_YEAR.findall(period))
-    if not years:
+    if not years or _UNNAMED_PERIOD.search(text):
         return False
     span = _period_span(text)
-    if not span or not years <= set(_YEAR.findall(span)):
+    if not span:
         return False
-    return _UNNAMED_PERIOD.search(text) is None
+    figures = [
+        figure for figure in _significant_figures(span)
+        if figure != _figure_number(figure)
+    ]
+    if not figures:
+        return False
+    figure_at = span.casefold().find(figures[0].casefold())
+    stated = list(_MEASURE_PERIOD.finditer(span))
+    after = [match.group(1) for match in stated if match.start() > figure_at]
+    before = [match.group(1) for match in stated if match.start() < figure_at]
+    year = after[0] if after else (before[-1] if before else None)
+    return year is not None and years == {year}
 
 
 def _derived_label(
@@ -3128,21 +3663,35 @@ def _derive_answer_rows(
     two rows. Every label comes from the cited claims' recorded propositions
     and the finding is the statement the pass already validated, so a derived
     row cites exactly the sources its statement does.
+
+    Rows prefer the pass's own scoped summary: by the time this runs,
+    ``_scope_answer_summary`` has already kept every summary point that is
+    either bound to a planned target or the sole answer for its role (its own
+    period, forecast or outcome), so every one of them earns a row — an
+    unbound sole forecast answers half the question exactly as a bound
+    outcome answers the other half, and filtering the summary down to only
+    the bound half here dropped its row from Key facts. When the summary
+    answers nothing, binding failed for the whole pass and the findings stand
+    in, bound points preferred.
     """
     columns = ANSWER_TABLE_COLUMNS.get(answer_kind or "")
     if not columns:
         return []
-    answering: list[tuple[ReportPoint, ReportStatement]] = []
-    for point in summary:
-        statement = _answering_statement(point)
-        if statement is not None:
-            answering.append((point, statement))
-    if not answering:
-        for section in sections:
-            for point in section.points:
-                statement = _answering_statement(point)
-                if statement is not None:
-                    answering.append((point, statement))
+    def measured(points: Sequence[ReportPoint]) -> list[tuple[ReportPoint, ReportStatement]]:
+        return [
+            (point, statement)
+            for point in points
+            if (statement := _answering_statement(point)) is not None
+        ]
+
+    def bound(
+        pairs: list[tuple[ReportPoint, ReportStatement]],
+    ) -> list[tuple[ReportPoint, ReportStatement]]:
+        return [pair for pair in pairs if _answers_planned_target(pair[0], context)]
+
+    in_summary = measured(summary)
+    in_findings = measured([p for section in sections for p in section.points])
+    answering = in_summary or bound(in_findings) or in_findings
     rows: list[ReportAnswerRow] = []
     for point, statement in answering:
         claims = _selected_claims(point, context)

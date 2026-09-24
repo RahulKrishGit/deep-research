@@ -883,6 +883,15 @@ def _reader_points(
     return points
 
 
+def _stated_claim_ids(composition: ReportComposition) -> set[str]:
+    """The checked claims some reader point already states."""
+    return {
+        claim_id
+        for point in _reader_points(composition)
+        for claim_id in point.claim_ids
+    }
+
+
 def _reader_url_groups(
     composition: ReportComposition,
 ) -> list[list[str]]:
@@ -906,6 +915,25 @@ def _reader_url_groups(
             groups.append(_statement_urls_for_point(point, composition))
     for statement in composition.uncertainty_statements:
         groups.append(_statement_urls(statement, composition))
+    # Checked claims printed under "Insufficient independent evidence" are
+    # reader bullets too, even when no substantive point used them. Without
+    # their URLs the list silently loses its markers and its references. A
+    # claim a point already states is counted there, not reprinted, so it
+    # cites nothing new; one that is printed cites one copy per work, like
+    # every other statement.
+    stated = _stated_claim_ids(composition)
+    for claim in composition.claims:
+        if claim.verdict in dict(_UNCERTAIN_VERDICTS) and claim.claim_id not in stated:
+            groups.append(
+                collapse_mirror_urls(
+                    [
+                        url
+                        for raw in claim.source_urls
+                        if (url := normalize_source_url(raw))
+                    ],
+                    composition.sources,
+                )
+            )
     return [group for group in groups if group]
 
 
@@ -1527,13 +1555,21 @@ def _unestablished_notes(
     bullet would no longer match the claim it marks.
     """
     seen = set(_bullet_lines(already))
+    points = _reader_points(composition)
     notes: dict[str, str] = {}
     for verdict, heading in _UNCERTAIN_VERDICTS:
         for claim in composition.claims:
             if claim.verdict != verdict:
                 continue
+            linked = [point for point in points if claim.claim_id in point.claim_ids]
+            if linked:
+                # The reader already met this checked claim, however reworded;
+                # the uncertainty list will count it rather than reprint it.
+                for point in linked:
+                    notes.setdefault(_note_key(point.text), f" ({heading})")
+                continue
             markers = citation_markers(claim.source_urls, index)
-            text = _clamped(claim.text, limit=_CLAIM_TEXT_CHARS)
+            text = " ".join(claim.text.split())
             line = f"- {text}{_marker_suffix(markers)}"
             if " ".join(line.split()) not in seen:
                 continue
@@ -1561,12 +1597,39 @@ def point_provenance(
     editions names both rather than one of them.
     """
     claims = {claim.claim_id: claim for claim in composition.claims}
+    selected = [
+        claims[claim_id] for claim_id in point.claim_ids if claim_id in claims
+    ]
     parts: list[str] = []
-    for claim_id in point.claim_ids:
-        claim = claims.get(claim_id)
-        if claim is None:
-            continue
-        text = claim.provenance.as_text()
+    for claim in selected:
+        provenance = claim.provenance
+        if provenance.statement_date and not provenance.release_date and not (
+            provenance.vintage or provenance.attributed_issuer
+        ):
+            # A relay's publication day is not the date of a measurement
+            # whose own issuer release is also cited by this very point.
+            # Require the same period, unit-bearing value and at least one
+            # shared cited source before suppressing it; independent works
+            # with the same numerical result must keep their own dates.
+            figures = {
+                (match.group(0).casefold())
+                for match in _MEASURE_UNIT.finditer(claim.text)
+                if match.group(1).casefold() in _MEASURE_UNITS
+            }
+            if any(
+                other is not claim
+                and other.provenance.release_date
+                and other.provenance.data_period == provenance.data_period
+                and set(other.source_urls).intersection(claim.source_urls)
+                and figures.intersection(
+                    match.group(0).casefold()
+                    for match in _MEASURE_UNIT.finditer(other.text)
+                    if match.group(1).casefold() in _MEASURE_UNITS
+                )
+                for other in selected
+            ):
+                continue
+        text = provenance.as_text()
         if text and text not in parts:
             parts.append(text)
     return "; ".join(parts)
@@ -1888,6 +1951,35 @@ def _summary_entries(
     ]
 
 
+_UNMATCHED_LABEL = "not matched to a planned question"
+
+
+def _unmatched_label(point: ReportPoint, composition: ReportComposition) -> str:
+    """Say so when a summary figure answers none of the plan's questions.
+
+    A pass whose claim binding failed keeps its evidenced answer in the
+    summary rather than emptying it, and this label is how the reader learns
+    that the figure was matched to no planned target.
+    """
+    planned = {
+        target.target_id
+        for topic in composition.sub_topics
+        for target in topic.evidence_targets
+    }
+    if not planned or not any(
+        match.group(1).casefold() in _MEASURE_UNITS
+        for match in _MEASURE_UNIT.finditer(point.text)
+    ):
+        return ""
+    claims = {claim.claim_id: claim for claim in composition.claims}
+    bound = any(
+        planned.intersection(claims[claim_id].target_ids)
+        for claim_id in point.claim_ids
+        if claim_id in claims
+    )
+    return "" if bound else _UNMATCHED_LABEL
+
+
 def _reader_summary(
     composition: ReportComposition,
     index: Sequence[Citation],
@@ -1906,7 +1998,10 @@ def _reader_summary(
     """
     if not composition.summary:
         return REPORT_SUMMARY_FALLBACK
-    ordered = _summary_entries(composition)
+    ordered = [
+        (point, ", ".join(part for part in (revision, _unmatched_label(point, composition)) if part))
+        for point, revision in _summary_entries(composition)
+    ]
     blocks: list[str] = []
     established = [
         item for item in ordered if item[0].mode in {"settled", "inference"}
@@ -2295,6 +2390,7 @@ def _reader_uncertainty(
         if grouped[heading]:
             seen.update(_bullet_lines(_bullets(grouped[heading])))
             blocks.append(f"### {heading}\n\n{_bullets(grouped[heading])}")
+    stated_claim_ids = _stated_claim_ids(composition)
     for verdict, heading in _UNCERTAIN_VERDICTS:
         lines: list[str] = []
         repeated = 0
@@ -2307,14 +2403,11 @@ def _reader_uncertainty(
                 if claim.contradictions
                 else ""
             )
-            line = (
-                f"{_clamped(claim.text, limit=_CLAIM_TEXT_CHARS)}"
-                f"{_marker_suffix(markers)}{note}"
-            )
+            line = f"{' '.join(claim.text.split())}{_marker_suffix(markers)}{note}"
             # Keyed the way ``_bullet_lines`` reads a rendered report, so the
             # line compared here is the line the reader would meet there.
             key = " ".join(f"- {line}".split())
-            if key in seen:
+            if key in seen or claim.claim_id in stated_claim_ids:
                 repeated += 1
                 continue
             seen.add(key)
@@ -2398,6 +2491,16 @@ def _reader_methodology(
     ]
     rendered_bullets = _bullet_lines(rendered)
     repeated_bullets = len(rendered_bullets) - len(set(rendered_bullets))
+    # A reworded bullet resting only on claims the reader already met is a
+    # restatement too; verbatim comparison alone certified the audited report
+    # (one 10.4 GW claim stated five times) as free of repeats.
+    met: set[str] = set()
+    restated = 0
+    for point in _reader_points(composition):
+        claim_ids = set(point.claim_ids)
+        if claim_ids and claim_ids <= met:
+            restated += 1
+        met.update(claim_ids)
     lines = [
         f"{len(composition.sources)} reviewed source(s): {scored} scored, "
         f"{unscored} unscored.",
@@ -2442,7 +2545,12 @@ def _reader_methodology(
             f"{repeated_bullets} bullet(s) above repeat another bullet "
             "verbatim."
         )
-    else:
+    if restated:
+        lines.append(
+            f"{restated} statement(s) above restate a checked claim already "
+            "stated earlier in the report."
+        )
+    if not (repeated_bullets or restated):
         lines.append("No statement above repeats another.")
     if duplicated_limitations:
         lines.append(

@@ -146,11 +146,13 @@ from deep_research.utils.types import (
     EvidenceUnit,
     Finding,
     MemorySnapshot,
+    ReadRecord,
     RefinementTarget,
     ReportComposition,
     ReportStatement,
     ResearchState,
     ScoredSource,
+    SourceTemporal,
     SubTopic,
     clusters_for_claims,
     merge_research_state,
@@ -2428,9 +2430,15 @@ async def test_a_run_without_findings_verifies_nothing_and_says_so(
 
 
 @pytest.mark.asyncio
-async def test_a_verification_provider_failure_stops_further_claims(
+async def test_a_verification_outage_stops_further_claims(
     tracker: Tracker,
 ) -> None:
+    """An outage is a fact about the machine, so the pass stops on it.
+
+    The next claim's verdict request would almost certainly meet the same
+    outage at cost: the judged claim is kept, and every claim the pass did
+    not reach stays pending for the next pass.
+    """
     completer = ScriptedCompleter(
         decisions=[*_check_decisions(), *_check_decisions()],
         outputs=[
@@ -2438,10 +2446,11 @@ async def test_a_verification_provider_failure_stops_further_claims(
                 claims=[
                     ClaimDraft(text="First.", source_urls=["https://example.org/a"]),
                     ClaimDraft(text="Second.", source_urls=["https://example.org/a"]),
+                    ClaimDraft(text="Third.", source_urls=["https://example.org/a"]),
                 ]
             ),
             _verdict_draft(),
-            _output_limit_error(),
+            ProviderTimeoutError("timed out"),
         ],
     )
     agent = _checker(
@@ -2471,23 +2480,98 @@ async def test_a_verification_provider_failure_stops_further_claims(
     assert [claim.verdict for claim in outcome.result.claims] == [
         "unverified"
     ]
-    assert [claim.text for claim in outcome.result.pending_claims] == ["Second."]
+    assert [claim.text for claim in outcome.result.pending_claims] == [
+        "Second.",
+        "Third.",
+    ]
+    # An outage is not re-asked at another effort.
+    assert [
+        schema for schema, _, _ in completer.calls
+    ].count("PassageVerdictDraft") == 2
     assert outcome.react.stop_reason == "provider_error"
-    types = {error.error_type for error in outcome.errors}
-    assert "fact_checker_verification_provider_error" in types
     verification_error = next(
         error
         for error in outcome.errors
         if error.error_type == "fact_checker_verification_provider_error"
     )
+    assert verification_error.recoverable is False
     assert verification_error.details["operation"] == (
         "fact_checker_claim_verification"
     )
     provider = verification_error.details["provider_failure"]
-    assert provider["kind"] == "output_limit"
-    assert provider["configured_max_tokens"] == 4096
-    assert provider["request_attempt"] == 1
+    assert provider["kind"] == "provider_timeout"
 
+
+@pytest.mark.asyncio
+async def test_a_passage_verdict_truncated_twice_does_not_stop_the_pass(
+    tracker: Tracker,
+) -> None:
+    """A truncation is a fact about one request, never about the provider.
+
+    Audit-2's second pass lost 13 of 15 claims this way: one verdict reply
+    reached the output limit and the pass stopped as if the provider were
+    down. The truncated verdict is re-asked once at the lower effort; when
+    that is truncated too, the claim stays pending with a typed reason and
+    the pass goes on to the next claim.
+    """
+    completer = ScriptedCompleter(
+        decisions=[*_check_decisions(), *_check_decisions()],
+        outputs=[
+            ClaimsDraft(
+                claims=[
+                    ClaimDraft(text="First.", source_urls=["https://example.org/a"]),
+                    ClaimDraft(text="Second.", source_urls=["https://example.org/a"]),
+                ]
+            ),
+            _output_limit_error(),
+            _output_limit_error(),
+            _verdict_draft(),
+        ],
+    )
+    agent = _checker(
+        tracker,
+        completer,
+        tools=fact_checker_tools(
+            tracker,
+            search=FakeSearchClient(
+                [
+                    search_response(url="https://third.test/x"),
+                    search_response(url="https://third.test/x"),
+                ]
+            ),
+        ),
+    )
+    state = _check_state([_check_finding("https://example.org/a")])
+
+    async with tracker.session_span("session-1", state.original_question):
+        outcome = await agent.run(state)
+
+    assert outcome.result is not None
+    assert [claim.text for claim in outcome.result.claims] == ["Second."]
+    (pending,) = outcome.result.pending_claims
+    assert pending.text == "First."
+    assert pending.reason == "output_limit"
+    verdict_calls = [
+        (budget, effort)
+        for (schema, _, _), budget, effort in zip(
+            completer.calls, completer.budgets, completer.efforts, strict=True
+        )
+        if schema == "PassageVerdictDraft"
+    ]
+    budget = AgentRuntimeConfig().claim_verification_max_tokens
+    assert verdict_calls == [(budget, None), (budget, "high"), (budget, None)]
+    # The pass did not end on the truncation, so the run does not say it did.
+    assert outcome.react.stop_reason == "finished"
+    errors = {error.error_type: error for error in outcome.errors}
+    retry = errors["fact_checker_verification_output_limit_retry"]
+    assert retry.recoverable is True
+    assert retry.details["outcome"] == "truncated"
+    assert retry.details["reasoning_effort"] == "high"
+    assert retry.details["max_tokens"] == budget
+    failure = errors["fact_checker_verification_provider_error"]
+    assert failure.recoverable is True
+    assert failure.details["claim_id"] == pending.claim_id
+    assert failure.details["provider_failure"]["kind"] == "output_limit"
 
 @pytest.mark.asyncio
 async def test_react_decision_output_limit_remains_a_conservative_fallback(
@@ -4422,6 +4506,153 @@ async def test_a_qualifying_upstream_pair_is_verified_with_no_retrieval_at_all(
     assert client.calls == 0
 
 
+def _verdict_calls(
+    completer: ScriptedCompleter,
+) -> list[tuple[int | None, str | None]]:
+    """The output budget and effort of every adjudication request, in order."""
+    return [
+        (budget, effort)
+        for (schema, _, _), budget, effort in zip(
+            completer.calls, completer.budgets, completer.efforts, strict=True
+        )
+        if schema == "ClaimVerdictDraft"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_adjudication_is_re_asked_once_at_high_effort(
+    tracker: Tracker,
+) -> None:
+    """The branch rule for a truncated structured call, on the verdict call.
+
+    A reasoning token is a completion token, so the same budget buys more
+    answer at the lower effort. The retry is a second paid call and is
+    recorded even though it answered; the verdict it returns is validated by
+    the same local test as any other, so strictness is unchanged.
+    """
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])]),
+            _output_limit_error(),
+            _select_every_shown_id,
+        ]
+    )
+    agent = _checker(tracker, completer)
+
+    outcome = await _task6_run(agent, _ab_state(), tracker)
+
+    (claim,) = outcome.result.claims
+    assert claim.verdict == "verified"
+    assert claim.evidence_status == "verified_pair"
+    assert outcome.result.pending_claims == []
+    budget = AgentRuntimeConfig().claim_verification_max_tokens
+    assert _verdict_calls(completer) == [(budget, None), (budget, "high")]
+    assert outcome.react.stop_reason != "provider_error"
+    assert [error.error_type for error in outcome.errors] == [
+        "fact_checker_verification_output_limit_retry"
+    ]
+    (retry,) = outcome.errors
+    assert retry.recoverable is True
+    assert retry.details["outcome"] == "answered"
+    assert retry.details["reasoning_effort"] == "high"
+    assert retry.details["max_tokens"] == budget
+
+
+class _TruncateFirstClaim:
+    """Truncate every adjudication of the first claim asked about.
+
+    Order-agnostic on purpose: which claim the fair scheduler serves first is
+    not this test's business, only that the one truncated first is the one
+    that stays pending while the others are still judged in the same pass.
+    """
+
+    def __init__(self, texts: Sequence[str]) -> None:
+        self.texts = list(texts)
+        self.truncated: str | None = None
+
+    def __call__(
+        self, messages: list[ChatMessage], schema: type[ClaimVerdictDraft]
+    ) -> ClaimVerdictDraft:
+        body = "\n".join(message.content for message in messages)
+        (text,) = [text for text in self.texts if text in body]
+        if self.truncated is None:
+            self.truncated = text
+        if text == self.truncated:
+            raise _output_limit_error()
+        return _select_every_shown_id(messages, schema)
+
+
+@pytest.mark.asyncio
+async def test_a_claim_truncated_at_both_efforts_leaves_the_rest_of_the_pass_judged(
+    tracker: Tracker,
+) -> None:
+    """Audit-2: one truncated adjudication must not strand the whole pass.
+
+    The live pass extracted 15 claims, judged two, and stopped when the third
+    claim's adjudication reached the 32768-token output limit — 13 claims were
+    left unchecked, and a one-iteration run has no later pass to resume them.
+    A truncation is a fact about one request: the claim is re-asked once at
+    the lower effort, stays pending with a typed reason when that truncates
+    too, and every other claim is still adjudicated in the same pass.
+    """
+    texts = [
+        TASK6_CLAIM,
+        "In 2025 wind capacity reached 10 GW.",
+        "Wind capacity stood at 10 GW in 2025.",
+    ]
+    responder = _TruncateFirstClaim(texts)
+    completer = ScriptedCompleter(
+        outputs=[
+            ClaimsDraft(
+                claims=[ClaimDraft(text=text, source_urls=[A_URL]) for text in texts]
+            ),
+            responder,
+            responder,
+            responder,
+            responder,
+            ClaimEquivalenceDraft(pairs=[]),
+        ]
+    )
+    agent = _checker(tracker, completer)
+
+    outcome = await _task6_run(agent, _ab_state(), tracker)
+
+    truncated = responder.truncated
+    assert truncated is not None
+    assert sorted(claim.text for claim in outcome.result.claims) == sorted(
+        text for text in texts if text != truncated
+    )
+    assert all(claim.verdict == "verified" for claim in outcome.result.claims)
+    (pending,) = outcome.result.pending_claims
+    assert pending.text == truncated
+    assert pending.reason == "output_limit"
+    budget = AgentRuntimeConfig().claim_verification_max_tokens
+    assert _verdict_calls(completer) == [
+        (budget, None),
+        (budget, "high"),
+        (budget, None),
+        (budget, None),
+    ]
+    # The pass did not end on the truncation, so the run does not say it did.
+    assert outcome.react.stop_reason != "provider_error"
+    errors = {error.error_type: error for error in outcome.errors}
+    retry = errors["fact_checker_verification_output_limit_retry"]
+    assert retry.details["outcome"] == "truncated"
+    failure = errors["fact_checker_verification_provider_error"]
+    # Recoverable, because the pass did not end on it: a non-recoverable
+    # provider error is how the graph reads "a provider failure ended the
+    # pass", and this one did not.
+    assert failure.recoverable is True
+    assert failure.details["claim_id"] == pending.claim_id
+    assert failure.details["provider_failure"]["kind"] == "output_limit"
+    pending_event = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "fact_checker.claims.pending"
+    )
+    assert pending_event.metadata["pending_claim_count"] == 1
+
+
 @pytest.mark.asyncio
 async def test_a_locally_sufficient_pool_the_model_cannot_use_gets_one_retrieval(
     tracker: Tracker,
@@ -5326,8 +5557,9 @@ class _RepairingAdjudicator:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> object:
-        del agent_name, max_tokens
+        del agent_name, max_tokens, reasoning_effort
         if schema.__name__ == "ClaimsDraft":
             return ClaimsDraft(
                 claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])]
@@ -5891,8 +6123,9 @@ class _RepairBuffering:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> object:
-        del agent_name, max_tokens
+        del agent_name, max_tokens, reasoning_effort
         if schema.__name__ == "ClaimsDraft":
             return ClaimsDraft(
                 claims=[ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])]
@@ -9012,6 +9245,288 @@ def test_an_ambiguous_finding_records_no_provenance() -> None:
     assert recorded.recorded is False
 
 
+def _evidenced_source(
+    url: str,
+    *,
+    issuer: str = "",
+    publication_date: str = "",
+) -> ScoredSource:
+    """One assessed source, evidenced as ``issuer``'s own page when given one."""
+    return ScoredSource(
+        url=url,
+        title="EIA Today in Energy",
+        authority_score=0.9,
+        recency_score=0.9,
+        relevance_score=0.9,
+        overall_score=0.9,
+        rationale="Primary federal statistical agency publication.",
+        evaluation_status="scored",
+        identity_anchors={"issuer": issuer} if issuer else {},
+        temporal=SourceTemporal(publication_date=publication_date or None),
+    )
+
+
+EIA_GOV_URL = "https://eia.gov/todayinenergy/detail.php?id=67205"
+
+
+def _evidenced_read(url: str, *, title: str, text: str) -> ReadRecord:
+    """One read whose own host and body a first-party host check can read."""
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title=title,
+        retrieved_at=CHECK_EXTRACTED_AT,
+        text=text,
+        passages={"p-1": text},
+    )
+
+
+def test_an_evidenced_first_party_page_fills_the_missing_issuer_and_release_date() -> (
+    None
+):
+    """The Source Evaluator's institutional anchor recovers what the page never phrased as "released".
+
+    EIA's February 2026 in-brief analysis carries a plain publication date —
+    "February 20, 2026" — never the word "released", so Finding extraction
+    admits it only as ``statement_date`` and leaves ``attributed_issuer``
+    empty (the page states the figure as its own). The evidenced issuer
+    anchor is what tells a reader this page IS EIA's own account, and that
+    its date is the release the figure belongs to.
+    """
+    finding = _provenance_finding(
+        EIA_GOV_URL,
+        content=(
+            "EIA reported a record 15 GW of utility-scale battery storage "
+            "added in 2025."
+        ),
+        period="2025",
+    ).model_copy(update={"statement_date": "2026-02-20"})
+    source = _evidenced_source(
+        EIA_GOV_URL,
+        issuer="U.S. Energy Information Administration",
+        publication_date="2026-02-20",
+    )
+    read = _evidenced_read(
+        EIA_GOV_URL,
+        title=(
+            "New U.S. electric generating capacity expected to reach a "
+            "record high in 2026 - U.S. Energy Information Administration "
+            "(EIA)"
+        ),
+        text=(
+            "EIA reported a record 15 GW of utility-scale battery storage "
+            "added in 2025."
+        ),
+    )
+
+    provenance = claim_provenance_for(
+        ClaimDraft(
+            text=(
+                "The U.S. Energy Information Administration reported a "
+                "record 15 GW added in 2025."
+            ),
+            source_urls=[EIA_GOV_URL],
+        ),
+        findings=[finding],
+        sources=[source],
+        reads=[read],
+    )
+
+    assert (
+        provenance.attributed_issuer == "U.S. Energy Information Administration"
+    )
+    assert provenance.release_date == "2026-02-20"
+
+
+def test_an_evidenced_page_never_overwrites_a_release_date_the_page_already_stated() -> (
+    None
+):
+    """A release date the page itself states outranks the source's own publication date.
+
+    EIA's March 2025 article states its own release ("2025-03-12") beside
+    the figure, which Finding extraction already admitted. The source's
+    coarser ``temporal.publication_date`` must never clobber a date the page
+    itself already recorded more precisely for this figure.
+    """
+    finding = _provenance_finding(
+        EIA_GOV_URL,
+        content=EIA_2024_FINDING,
+        release="2025-03-12",
+        period="2024",
+    )
+    source = _evidenced_source(
+        EIA_GOV_URL,
+        issuer="U.S. Energy Information Administration",
+        publication_date="2025-03-13",
+    )
+    read = _evidenced_read(
+        EIA_GOV_URL,
+        title=(
+            "U.S. battery capacity increased 66% in 2024 - U.S. Energy "
+            "Information Administration (EIA)"
+        ),
+        text=EIA_2024_FINDING,
+    )
+
+    provenance = claim_provenance_for(
+        ClaimDraft(
+            text=(
+                "The U.S. Energy Information Administration reported 10.4 "
+                "GW added in 2024."
+            ),
+            source_urls=[EIA_GOV_URL],
+        ),
+        findings=[finding],
+        sources=[source],
+        reads=[read],
+    )
+
+    assert (
+        provenance.attributed_issuer == "U.S. Energy Information Administration"
+    )
+    assert provenance.release_date == "2025-03-12"
+
+
+
+
+def test_a_relay_with_a_body_attribution_never_gets_the_issuers_release_date() -> (
+    None
+):
+    """A body attribution the evaluator accepted as an anchor is not the page's own release.
+
+    Real audit-2 Utility Dive title ("...: EIA | Utility Dive") plus a body
+    attribution ("Data released by the EIA") is exactly the shape the Source
+    Evaluator accepts an "EIA" identity anchor for. utilitydive.com is not
+    EIA's own domain, and its own copyright names Utility Dive, not EIA — so
+    neither the institutional rule nor the commercial-copyright rule reads
+    this page as EIA's own. The fill must never turn this relay's own page
+    date into EIA's release.
+    """
+    url = (
+        "https://utilitydive.com/news/us-utility-scale-energy-storage-to-"
+        "double-reach-65-gw-by-2027-eia/750338"
+    )
+    title = (
+        "US utility-scale energy storage to double, reach 65 GW by 2027: "
+        "EIA | Utility Dive"
+    )
+    body = (
+        "Data released by the EIA shows U.S. utility-scale energy storage "
+        "capacity is expected to double to 65 GW by 2027, Utility Dive "
+        "reported. \u00a9 2025 Utility Dive."
+    )
+    finding = _provenance_finding(
+        url,
+        content=(
+            "Utility Dive reported that data released by the EIA shows "
+            "U.S. utility-scale energy storage capacity is expected to "
+            "double to 65 GW by 2027."
+        ),
+        period="2027",
+    ).model_copy(update={"statement_date": "2025-02-24"})
+    source = _evidenced_source(
+        url, issuer="EIA", publication_date="2025-02-24"
+    ).model_copy(update={"title": title})
+    read = _evidenced_read(url, title=title, text=body)
+
+    provenance = claim_provenance_for(
+        ClaimDraft(
+            text=(
+                "New U.S. utility-scale energy storage capacity is "
+                "expected to double to 65 GW by 2027, according to the "
+                "EIA."
+            ),
+            source_urls=[url],
+        ),
+        findings=[finding],
+        sources=[source],
+        reads=[read],
+    )
+
+    assert provenance.attributed_issuer is None
+    assert provenance.release_date is None
+
+
+def test_a_relay_with_no_evidenced_issuer_fills_neither_issuer_nor_release_date() -> (
+    None
+):
+    """A relay's own page is not the agency's account, so nothing is inferred.
+
+    EnerKnol's article about EIA's data is scored, but the Source Evaluator
+    accepted no issuer anchor for it — the institutional rule that evidences
+    a page as a body's own publication never fires for a commercial relay.
+    With no evidenced issuer, neither field may be filled, and the claim's
+    own stated date stays exactly what the page said, unpromoted to a
+    release.
+    """
+    finding = _provenance_finding(
+        A_URL,
+        content=(
+            "EnerKnol reported that U.S. battery storage capacity rose by "
+            "66 percent during 2024."
+        ),
+        period="2024",
+    ).model_copy(update={"statement_date": "2025-03-13"})
+    source = _evidenced_source(A_URL)  # no issuer anchor: not evidenced.
+
+    provenance = claim_provenance_for(
+        ClaimDraft(
+            text=(
+                "EnerKnol reported that U.S. battery storage capacity rose "
+                "by 66 percent during 2024."
+            ),
+            source_urls=[A_URL],
+        ),
+        findings=[finding],
+        sources=[source],
+    )
+
+    assert provenance.attributed_issuer is None
+    assert provenance.release_date is None
+    assert provenance.statement_date == "2025-03-13"
+
+
+def test_a_claim_naming_a_different_issuer_on_an_evidenced_page_gets_no_issuer_fill() -> (
+    None
+):
+    """The page's own evidenced issuer never overrides a body the claim itself names.
+
+    The page is EIA's own, evidenced as such, but this claim's own words
+    credit the figure to Wood Mackenzie instead — a different body the page
+    happens to mention. Stamping "U.S. Energy Information Administration"
+    here would attribute Wood Mackenzie's figure to the wrong body.
+    """
+    finding = _provenance_finding(
+        A_URL,
+        content=(
+            "Wood Mackenzie's data shows 15 GW would be installed in 2025."
+        ),
+        period="2025",
+    ).model_copy(update={"statement_date": "2025-06-25"})
+    source = _evidenced_source(
+        A_URL,
+        issuer="U.S. Energy Information Administration",
+        publication_date="2025-06-25",
+    )
+
+    provenance = claim_provenance_for(
+        ClaimDraft(
+            text=(
+                "Wood Mackenzie reported that 15 GW of energy storage "
+                "capacity would be installed across all segments in 2025."
+            ),
+            source_urls=[A_URL],
+        ),
+        findings=[finding],
+        sources=[source],
+    )
+
+    assert provenance.attributed_issuer is None
+    assert provenance.release_date is None
+
+
 def test_the_packet_carries_the_claims_provenance_into_the_verdict() -> None:
     """What the extraction read is what the verdict records.
 
@@ -9922,3 +10437,258 @@ async def test_the_loop_stops_when_only_the_cited_issuer_can_answer(
     assert claim.verdict == "insufficient_evidence"
     assert claim.evidence_status == "source_supported"
     assert claim.target_ids == [TASK6_TARGET]
+
+
+def test_audit_eia_headline_binds_only_to_its_evidenced_2024_fact() -> None:
+    """The issuer's US-capacity masthead establishes geography, not its name."""
+    url = "https://eia.gov/todayinenergy/detail.php?id=64705"
+    text = (
+        "The U.S. Energy Information Administration's March 12, 2025 Today "
+        "in Energy analysis reported that generators added 10.4 GW of new "
+        "battery storage capacity in 2024, the second-largest generating "
+        "capacity addition after solar, based on EIA's January 2025 "
+        "Preliminary Monthly Electric Generator Inventory."
+    )
+    target = EvidenceTarget(
+        target_id="topic-01-target-01",
+        coverage_id="topic-01",
+        question="What 2024 US utility-scale battery storage capacity additions does EIA report?",
+        required_dimensions=[
+            "measure: annual utility-scale battery storage capacity additions",
+            "period: calendar year 2024",
+            "geography: United States",
+            "source: EIA-published report or dataset stating its own figure",
+            "unit",
+        ],
+        required=True,
+        critical=True,
+        support_policy="primary_attribution",
+    )
+    finding = _check_finding(
+        url,
+        content=(
+            "EIA's March 12, 2025 Today in Energy analysis states that "
+            "generators added 10.4 GW of new battery storage capacity in "
+            "2024, and cumulative U.S. capacity exceeded 26 GW."
+        ),
+        sub_topic="EIA 2024 additions",
+        target_ids=[target.target_id],
+    ).model_copy(
+        update={
+            "source_title": (
+                "U.S. battery capacity increased 66% in 2024 - "
+                "U.S. Energy Information Administration (EIA)"
+            )
+        }
+    )
+    attributed = claim_attribution(
+        ClaimDraft(text=text, source_urls=[url]),
+        findings=[finding],
+        coverage_ids={"eia 2024 additions": "topic-01"},
+        targets={"eia 2024 additions": [target]},
+        question=target.question,
+    )
+    assert attributed.target_ids == [target.target_id]
+
+    unrelated = finding.model_copy(
+        update={
+            "source_title": "EIA analysis of Canadian storage capacity",
+            "content": "Canadian generators added 10.4 GW in 2024.",
+        }
+    )
+    assert claim_attribution(
+        ClaimDraft(text=text, source_urls=[url]),
+        findings=[unrelated],
+        coverage_ids={"eia 2024 additions": "topic-01"},
+        targets={"eia 2024 additions": [target]},
+        question=target.question,
+    ).target_ids == []
+
+
+def test_audit_extraction_keeps_a_lossy_drafts_finding_figure() -> None:
+    """A paraphrase cannot erase the issuer figure its cited finding states."""
+    steo_url = "https://ent.news/2025/1/940.pdf"
+    eia_url = "https://eia.gov/todayinenergy/detail.php?id=64705"
+    steo = _check_finding(
+        steo_url,
+        content=(
+            "The EIA Short-Term Energy Outlook, January 2025 edition, projects "
+            "that new utility-scale battery storage projects will help "
+            "renewables integrate onto the power grid, with battery storage "
+            "capacity growing by 47% (14 GW) in 2025."
+        ),
+        sub_topic="EIA 2025 forecast vintage",
+    )
+    inventory = _check_finding(
+        eia_url,
+        content=(
+            "The same EIA analysis states that in 2025 capacity growth from "
+            "battery storage could set a record as operators report plans to "
+            "add 19.6 GW of utility-scale battery storage to the grid, per "
+            "EIA's January 2025 preliminary electric generator inventory data."
+        ),
+        sub_topic="EIA 2024 utility-scale battery storage additions",
+    )
+    drafts = fact_checker_module.retain_finding_figures(
+        [
+            ClaimDraft(
+                text=(
+                    "The EIA's January 2025 Short-Term Energy Outlook projected "
+                    "that new utility-scale battery storage projects would help "
+                    "integrate renewables onto the power grid, with battery "
+                    "storage capacity growing over the forecast period."
+                ),
+                source_urls=[steo_url],
+            )
+        ],
+        findings=[steo, inventory],
+        prior_claims=[],
+    )
+    assert [(draft.text, draft.source_urls) for draft in drafts] == [
+        (steo.content, [steo_url])
+    ]
+    (swapped,) = drafts
+    atoms = [
+        atom
+        for atom in extract_text_atoms(swapped.text)
+        if atom.value or atom.unit
+    ]
+    assert [(atom.value, atom.unit) for atom in atoms] == [("14", "GW")]
+
+
+def test_retain_finding_figures_refuses_a_state_scoped_location_draft() -> None:
+    """A figure-free location draft is not swapped for an unrelated cumulative stock.
+
+    Real audit-2 finding (eia.gov id=67925): a 43.6 GW cumulative-stock figure
+    the draft never mentions, on a page that also states an unrelated 8.3 GW
+    addition for a different period. The draft shares only some vocabulary
+    with that finding and never states its own year inside the finding's;
+    swapping it in would silently replace the model's own (unverified but
+    different) proposition with a fact about a different quantity.
+    """
+    url = "https://eia.gov/todayinenergy/detail.php?id=67925"
+    finding = _check_finding(
+        url,
+        content=(
+            "The U.S. Energy Information Administration reports that by "
+            "the end of 2025 the U.S. power system had 43.6 gigawatts (GW) "
+            "of operational utility-scale battery storage nameplate "
+            "capacity \u2014 a cumulative stock, not an annual addition "
+            "\u2014 and that operators added another 8.3 GW of battery "
+            "storage in the first six months of 2026, based on its "
+            "Preliminary Monthly Electric Generator Inventory."
+        ),
+        sub_topic="EIA cumulative battery storage stock",
+    )
+    draft = ClaimDraft(
+        text=(
+            "EIA reports that most operational utility-scale battery "
+            "storage capacity at the end of 2025 was located in Texas and "
+            "California."
+        ),
+        source_urls=[url],
+    )
+
+    drafts = fact_checker_module.retain_finding_figures(
+        [draft], findings=[finding], prior_claims=[]
+    )
+
+    assert drafts == [draft]
+
+
+def test_retain_finding_figures_refuses_when_the_draft_names_a_year_the_finding_does_not() -> (
+    None
+):
+    """A 2026-slowdown draft is not swapped for either year's own addition figure.
+
+    Real audit-2 Utility Dive URL (id=740742) carries two measured findings —
+    the 2024 actual and the 2025 projection — and a prior claim already
+    consumed the 2025 one. The draft names 2026, a year neither finding
+    states, so ``_years(draft) <= _years(finding)`` refuses both regardless
+    of which one a naive word-overlap floor would otherwise have picked.
+    """
+    url = (
+        "https://utilitydive.com/news/solar-and-battery-storage-will-lead-"
+        "new-generation-in-2025-eia/740742"
+    )
+    addition_2025 = _check_finding(
+        url,
+        content=(
+            "Utility Dive relays the U.S. Energy Information "
+            "Administration's projection that new battery storage "
+            "capacity additions in 2025 could almost double from 2024 to "
+            "an addition of 18.2 GW, in the EIA's February 2025 "
+            "utility-scale capacity report."
+        ),
+        sub_topic="EIA 2025 forecast",
+    )
+    actual_2024 = _check_finding(
+        url,
+        content=(
+            "Utility Dive relays the U.S. Energy Information "
+            "Administration's figure that power providers added a record "
+            "10.3 GW of new battery storage capacity in 2024, in the "
+            "EIA's February 2025 utility-scale capacity report."
+        ),
+        sub_topic="EIA 2024 actual",
+    )
+    draft = ClaimDraft(
+        text=(
+            "EIA expects new utility-scale battery storage capacity "
+            "additions to slow in 2026."
+        ),
+        source_urls=[url],
+    )
+    prior_consuming_2025 = Claim(
+        claim_id="prior-claim-1",
+        text=(
+            "Utility Dive, citing EIA, reported that new battery storage "
+            "capacity additions in 2025 could almost double from 2024 to "
+            "an addition of 18.2 GW."
+        ),
+        source_urls=[url],
+        verdict="insufficient_evidence",
+        evidence_status="verified_pair",
+        confidence=0.0,
+        evidence=[],
+        contradictions=[],
+        verification_evidence=[],
+        consumed_finding_fingerprints=[finding_fingerprint(addition_2025)],
+        consumed_coverage_ids=["topic-01"],
+    )
+
+    drafts = fact_checker_module.retain_finding_figures(
+        [draft],
+        findings=[addition_2025, actual_2024],
+        prior_claims=[prior_consuming_2025],
+    )
+
+    assert drafts == [draft]
+
+
+def test_retain_finding_figures_keeps_every_cited_url_after_a_swap() -> None:
+    """A swap fills the missing figure without dropping the draft's other citations."""
+    finding_url = "https://example.org/finding"
+    other_url = "https://example.org/other"
+    finding = _check_finding(
+        finding_url,
+        content=(
+            "EIA reported that generators added 10.4 GW of new battery "
+            "storage capacity in 2024."
+        ),
+    )
+    draft = ClaimDraft(
+        text=(
+            "EIA reported that generators added new battery storage "
+            "capacity in 2024."
+        ),
+        source_urls=[finding_url, other_url],
+    )
+
+    drafts = fact_checker_module.retain_finding_figures(
+        [draft], findings=[finding], prior_claims=[]
+    )
+
+    assert drafts == [
+        ClaimDraft(text=finding.content, source_urls=[finding_url, other_url])
+    ]

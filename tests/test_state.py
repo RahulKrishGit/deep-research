@@ -1429,6 +1429,40 @@ def test_a_battery_measure_accepts_a_clause_excluding_pumped_hydro() -> None:
     )
 
 
+
+def test_a_source_requirement_accepts_the_issuers_acronym_after_a_generic_suffix() -> (
+    None
+):
+    """"ACP" is the initials of "American Clean Power" once "Association" drops.
+
+    The evaluator accepted "ACP" as the issuer anchor for cleanpower.org
+    (review P2): the initials of "american clean power association" are
+    "acpa", not "acp", so the bare-initials rule refused every ACP-attributed
+    figure against a Monitor source requirement that names the issuer's full
+    name. Dropping a trailing generic organisation word before taking
+    initials is what "ACP" is short for.
+    """
+    assert qualifier_matches_requirement(
+        _tracker_proposition(attribution="ACP"),
+        "source: American Clean Power Association or Wood Mackenzie",
+    )
+
+
+def test_a_source_requirement_still_needs_the_issuers_own_initials() -> None:
+    """The control: dropping a generic suffix may not manufacture a match.
+
+    "EIA" is not the initials of "Energy Information Administration" once a
+    (non-existent) trailing generic word is dropped; it already matches
+    because "administration" is not a generic organisation word this rule
+    strips, so its own initials are read whole. An issuer whose initials
+    genuinely differ, with or without a trailing generic word, still refuses.
+    """
+    assert not qualifier_matches_requirement(
+        _tracker_proposition(attribution="ACP"),
+        "source: Energy Information Administration",
+    )
+
+
 def test_a_battery_measure_accepts_a_clause_not_counting_hydrogen() -> None:
     """The control: the same rule for a different exclusion cue and tech."""
     assert qualifier_matches_requirement(
@@ -1524,3 +1558,23 @@ def test_a_period_requirement_still_refuses_a_claim_that_states_another_year() -
     )
 
     assert not qualifier_matches_requirement(dated, _CLASSIFICATION_PERIOD)
+
+
+def test_published_unit_and_facility_definition_are_recorded_per_atom() -> None:
+    """A plan's checkable unit and rule must survive statement derivation."""
+    from deep_research.agents.claim_clusters import extract_text_atoms
+
+    figure = extract_text_atoms(
+        "EIA reported that generators added 10.4 GW of new utility-scale "
+        "battery storage capacity in the United States in 2024."
+    )[0]
+    definition = extract_text_atoms(
+        "According to EIA, the United States utility-scale battery storage "
+        "count includes stand-alone and co-located projects."
+    )[0]
+    assert answered_required_dimensions(["unit"], [figure]) == ["unit"]
+    assert answered_required_dimensions(
+        ["measure: facility types included in EIA's utility-scale count"],
+        [definition],
+    ) == ["measure: facility types included in EIA's utility-scale count"]
+    assert answered_required_dimensions(["unit"], [definition]) == []

@@ -2132,6 +2132,7 @@ _DIMENSION_SIGNALS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
         ),
         ("value", "unit"),
     ),
+    (("unit",), ("unit",)),
     (("population", "subject", "entity", "who"), ("subject", "population")),
     (
         ("mechanism", "how", "cause", "driver", "method", "instrument"),
@@ -2258,6 +2259,14 @@ _DEFINITIONAL_CUES: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
             re.I,
         ),
     ),
+    (
+        re.compile(r"\b(?:ownership|owners?|categor(?:y|ies))\b", re.I),
+        re.compile(
+            r"\b(?:owner\w*|categor\w*|utility[\s-]owned|independent power|"
+            r"merchant|commercial|industrial)\b",
+            re.I,
+        ),
+    ),
 )
 
 
@@ -2375,6 +2384,71 @@ def _measure_scale(text: str) -> frozenset[str]:
     scoped = _before_exclusion_cue(text)
     return frozenset(scale for scale, pattern in _MEASURE_SCALES if pattern.search(scoped))
 
+_SOURCE_NAME_RUN = re.compile(
+    r"\b(?:[A-Z]{2,}|[A-Z][a-z]+)(?:[\s-]+(?:[A-Z]{2,}|[A-Z][a-z]+))*"
+)
+_GENERIC_SOURCE_NAMES = frozenset(
+    {
+        "us",
+        "u s",
+        "united states",
+        "american",
+        "freely",
+        "source",
+        "report",
+        "dataset",
+    }
+)
+
+
+def _identity_text(value: str) -> str:
+    words = " ".join(re.findall(r"[a-z0-9]+", value.casefold()))
+    return re.sub(r"\bu s\b", "us", words)
+
+
+def _identity_initials(value: str) -> str:
+    return "".join(word[0] for word in value.split() if word not in {"us"})
+
+
+# A trailing word this generic never carries an organisation'''s own initial:
+# "American Clean Power Association" is short for "ACP", not "ACPA", because
+# "Association" names the entity'''s legal form, not a word its own acronym
+# spells. Only a *trailing* occurrence is stripped — a generic word earlier in
+# the name is still part of what the acronym stands for.
+_GENERIC_ORGANIZATION_SUFFIXES = frozenset(
+    {"association", "institute", "council", "agency"}
+)
+
+
+def _identity_initials_without_generic_suffix(value: str) -> str:
+    words = value.split()
+    if words and words[-1] in _GENERIC_ORGANIZATION_SUFFIXES:
+        words = words[:-1]
+    return "".join(word[0] for word in words if word not in {"us"})
+
+
+def _names_source(requirement: str, attribution: str) -> bool:
+    """Whether an attribution is one of the issuers a source requirement names."""
+    _kind, _separator, detail = requirement.partition(":")
+    names = {
+        _identity_text(match.group(0))
+        for match in _SOURCE_NAME_RUN.finditer(detail)
+    } - _GENERIC_SOURCE_NAMES
+    if not names:
+        return True
+    issuer = _identity_text(attribution)
+    initials = _identity_initials(issuer)
+    return any(
+        name == issuer
+        or name in issuer
+        or issuer in name
+        or name == initials
+        or name.startswith(f"{initials} ")
+        or _identity_initials(name) == issuer
+        or _identity_initials_without_generic_suffix(name) == issuer
+        for name in names
+    )
+
 
 def qualifier_matches_requirement(
     proposition: AtomicProposition, requirement: str, *, question: str = ""
@@ -2445,6 +2519,8 @@ def qualifier_matches_requirement(
             if government:
                 return False
         elif named_government and not government:
+            return False
+        if not _names_source(requirement, proposition.attribution):
             return False
     if "measure" in kind or "capacity" in kind or "quantity" in kind:
         wanted = (

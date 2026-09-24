@@ -962,6 +962,92 @@ def _first_party_issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
     return bool(label) and label in _title_spellings(read.title, issuer)
 
 
+def _commercial_first_party_issuer_evidenced(
+    read: ReadRecord, issuer: str
+) -> bool:
+    """A commercial release names its publisher both in title and its imprint.
+
+    Neither a headline merely mentioning another issuer nor a borrowed
+    copyright line alone establishes whose document was served. This path is
+    limited to commercial ``.com`` hosts; it never turns an arbitrary
+    registrable lookalike such as ``eia.news`` into an institutional source.
+    """
+    if not publisher_identity(read.resolved_url).endswith(".com"):
+        return False
+    name = _issuer_name_pattern(issuer)
+    if not name or not re.search(
+        rf"(?<![A-Za-z0-9]){name}(?![A-Za-z0-9])",
+        read.title,
+        re.IGNORECASE,
+    ):
+        return False
+    text = _document_text(read)
+    for phrase in (*_ATTRIBUTION_PHRASES, r"©"):
+        if re.search(
+            rf"(?<![A-Za-z0-9])(?:{phrase}){_ATTRIBUTION_GAP}"
+            rf"(?:the\s+)?(?:\d{{4}}\s*)?{name}(?![A-Za-z0-9])",
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+    return False
+
+
+_COPYRIGHT_PHRASES = (r"copyright", r"©")
+
+
+def _commercial_copyright_issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
+    """A commercial page whose own copyright line names ``issuer`` as its publisher.
+
+    Narrower than :func:`_commercial_first_party_issuer_evidenced` on purpose:
+    that function also accepts a body attribution such as "Data released by
+    the EIA", which states whose data a page relays, not whose page it is.
+    Only a copyright line — the one statement a page makes about its own
+    authorship, not about a source it cites — establishes that a ``.com``
+    masthead is the issuer's own release rather than a syndicated citation of
+    someone else's.
+    """
+    if not publisher_identity(read.resolved_url).endswith(".com"):
+        return False
+    name = _issuer_name_pattern(issuer)
+    if not name or not re.search(
+        rf"(?<![A-Za-z0-9]){name}(?![A-Za-z0-9])",
+        read.title,
+        re.IGNORECASE,
+    ):
+        return False
+    text = _document_text(read)
+    for phrase in _COPYRIGHT_PHRASES:
+        if re.search(
+            rf"(?<![A-Za-z0-9])(?:{phrase}){_ATTRIBUTION_GAP}"
+            rf"(?:the\s+)?(?:\d{{4}}\s*)?{name}(?![A-Za-z0-9])",
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+    return False
+
+
+def first_party_host_evidences_issuer(read: ReadRecord, issuer: str) -> bool:
+    """True when the read's own *host* — not a body attribution — is ``issuer``'s.
+
+    A stricter test than the anchor-acceptance rule :func:`_issuer_evidenced`
+    runs: that function also accepts a relay whose body attributes its data
+    to another body ("Data released by the EIA", "Data published by the U.S.
+    Energy Information Administration"), which says whose data the page
+    relays, never whose page it is. A caller that means to treat a page's own
+    date or masthead AS the issuer's own release — rather than merely
+    crediting the issuer as an accepted identity anchor — needs this
+    narrower test instead: an institutional domain whose label spells the
+    issuer the way its own title does, or a commercial ``.com`` masthead
+    that both names the issuer in its title and carries its own copyright
+    line naming the issuer.
+    """
+    return _first_party_issuer_evidenced(
+        read, issuer
+    ) or _commercial_copyright_issuer_evidenced(read, issuer)
+
+
 def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
     """True when the read attributes the document to ``issuer``.
 
@@ -977,6 +1063,8 @@ def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
     words = _identity_words(issuer).split()
     if not words:
         return False
+    if publisher_identity(read.resolved_url).endswith(".com"):
+        return _commercial_first_party_issuer_evidenced(read, issuer)
     name = _issuer_name_pattern(issuer)
     haystack = _document_text(read)
     for phrase in _ATTRIBUTION_PHRASES:

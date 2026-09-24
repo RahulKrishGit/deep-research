@@ -159,10 +159,11 @@ def _json_instruction(schema: type[BaseModel]) -> ChatMessage:
 
 
 class _StructuredValidationFailure(RuntimeError):
-    """Carry validation diagnostics for the repair prompt only.
+    """Carry validation diagnostics for the repair prompt and the trace.
 
-    The message names the schema but never the provider output. The typed
-    diagnostic contains only bounded locations and a stable category.
+    The message names the schema and renders the typed diagnostic -- field
+    paths, category, and pydantic error types -- so the failed attempt's span
+    says which field broke which constraint. It never carries provider output.
     """
 
     def __init__(
@@ -170,7 +171,10 @@ class _StructuredValidationFailure(RuntimeError):
         schema_name: str,
         diagnostic: StructuredValidationDiagnostic,
     ) -> None:
-        super().__init__(f"DeepSeek output failed {schema_name} validation")
+        super().__init__(
+            f"DeepSeek output failed {schema_name} validation "
+            f"({diagnostic.render()})"
+        )
         self.diagnostic = diagnostic
 
 
@@ -246,6 +250,7 @@ def _validation_diagnostic(
 ) -> StructuredValidationDiagnostic:
     """Extract only bounded schema locations from a validation failure."""
     paths: list[str] = []
+    error_types: list[str] = []
     errors = getattr(error, "errors", None)
     if callable(errors):
         try:
@@ -256,12 +261,15 @@ def _validation_diagnostic(
             location = item.get("loc", ()) if isinstance(item, dict) else ()
             path = _schema_field_path(schema, location)
             paths.append(path)
+            error_type = item.get("type") if isinstance(item, dict) else None
+            error_types.append(error_type if isinstance(error_type, str) else "other")
             if len(paths) == _MAX_VALIDATION_FIELD_PATHS:
                 break
     return StructuredValidationDiagnostic(
         attempt=attempt,
         field_paths=tuple(paths) or ("$",),
         category=validation_category(error),
+        error_types=tuple(error_types),
     )
 
 
@@ -673,6 +681,8 @@ def _responses_request_options(
             )
         },
     }
+    if effective.timeout is not None:
+        request["timeout"] = effective.timeout
     if resolved.include_temperature:
         request["temperature"] = config.temperature
     metadata: dict[str, JsonValue] = {
@@ -781,6 +791,8 @@ class DeepSeekChatProvider:
             request["reasoning_effort"] = resolved.reasoning_effort
         if resolved.include_temperature:
             request["temperature"] = self._config.temperature
+        if effective.timeout is not None:
+            request["timeout"] = effective.timeout
         metadata: dict[str, JsonValue] = {
             "provider": "deepseek",
             "thinking_mode": effective.thinking_mode,
@@ -837,7 +849,10 @@ class DeepSeekChatProvider:
 
                 response = await with_retries(
                     _request,
-                    retry_count=self._config.retry_count,
+                    retry_count=(
+                        self._config.retry_count
+                        if effective.retry_count is None else effective.retry_count
+                    ),
                     initial_delay=self._config.retry_initial_delay,
                     max_delay=self._config.retry_max_delay,
                 )
@@ -877,6 +892,7 @@ class DeepSeekChatProvider:
         metadata: dict[str, JsonValue],
         configured_max_tokens: int,
         attempt: int,
+        retry_count: int | None = None,
     ) -> SchemaT:
         async with self._tracker.llm_span(
             model,
@@ -917,7 +933,9 @@ class DeepSeekChatProvider:
 
             response = await with_retries(
                 _request,
-                retry_count=self._config.retry_count,
+                retry_count=(
+                    self._config.retry_count if retry_count is None else retry_count
+                ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
             )
@@ -990,6 +1008,7 @@ class DeepSeekChatProvider:
                     metadata=metadata,
                     configured_max_tokens=resolved_max_tokens,
                     attempt=attempt,
+                    retry_count=effective.retry_count,
                 )
             except _StructuredValidationFailure as error:
                 diagnostics.append(error.diagnostic)
@@ -1122,7 +1141,10 @@ class DeepSeekChatProvider:
 
             response = await with_retries(
                 _request,
-                retry_count=self._config.retry_count,
+                retry_count=(
+                    self._config.retry_count
+                    if effective.retry_count is None else effective.retry_count
+                ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
             )
@@ -1251,6 +1273,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
         metadata: dict[str, JsonValue],
         configured_max_tokens: int,
         attempt: int,
+        retry_count: int | None = None,
     ) -> SchemaT:
         async with self._tracker.llm_span(
             model,
@@ -1298,7 +1321,9 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
 
             response = await with_retries(
                 _request,
-                retry_count=self._config.retry_count,
+                retry_count=(
+                    self._config.retry_count if retry_count is None else retry_count
+                ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
             )
@@ -1396,6 +1421,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                     metadata=metadata,
                     configured_max_tokens=resolved_max_tokens,
                     attempt=attempt,
+                    retry_count=effective.retry_count,
                 )
             except _StructuredValidationFailure as error:
                 diagnostics.append(error.diagnostic)

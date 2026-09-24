@@ -261,6 +261,30 @@ def test_agent_model_overrides_support_string_and_structured_forms() -> None:
     assert llm.resolve_for("researcher") == llm.resolve_for(None)
 
 
+def test_report_judge_timeout_and_retries_leave_other_roles_on_transport_defaults() -> None:
+    llm = LLMConfig(
+        timeout=60.0,
+        retry_count=5,
+        model_overrides={"report_judge": {"timeout": 360.0, "retry_count": 1}},
+    )
+
+    assert llm.resolve_for("report_judge").timeout == 360.0
+    assert llm.resolve_for("report_judge").retry_count == 1
+    assert llm.resolve_for("critic").timeout is None
+    assert llm.resolve_for("critic").retry_count is None
+
+
+@pytest.mark.parametrize(
+    "invalid_override",
+    [{"timeout": 0}, {"timeout": -5}, {"retry_count": -1}],
+)
+def test_role_transport_bounds_reject_nonpositive_timeout_or_negative_retries(
+    invalid_override: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        LLMConfig(model_overrides={"report_judge": invalid_override})
+
+
 def test_effective_model_config_is_immutable() -> None:
     effective = LLMConfig().resolve_for("planner")
 
@@ -808,6 +832,9 @@ def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
         "critic_review_max_tokens": settings.agents.critic_review_max_tokens,
         "judge_max_tokens": settings.agents.judge_max_tokens,
         "react_decision_max_tokens": settings.agents.react_decision_max_tokens,
+        "claim_verification_max_tokens": (
+            settings.agents.claim_verification_max_tokens
+        ),
     }
 
     for name, value in budgets.items():
@@ -952,7 +979,11 @@ def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
         "source_evaluator": {"reasoning_effort": "high"},
         # Task 10's terminal semantic reviewer, resolved as its own service
         # role: a separate call role with its own effort, not a seventh agent.
-        "report_judge": {"reasoning_effort": "max"},
+        "report_judge": {
+            "reasoning_effort": "max",
+            "timeout": 360.0,
+            "retry_count": 1,
+        },
     }
     # The snippet amends the ``llm`` mapping; the other fields stay.
     assert raw["llm"]["provider"] == "deepseek"

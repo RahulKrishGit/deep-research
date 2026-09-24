@@ -35,6 +35,8 @@ class AgentModelOverride(BaseModel):
     model: str | None = Field(default=None, min_length=1)
     thinking_mode: ThinkingMode | None = None
     reasoning_effort: ReasoningEffort | None = None
+    timeout: float | None = Field(default=None, gt=0)
+    retry_count: int | None = Field(default=None, ge=0)
 
 
 class EffectiveModelConfig(BaseModel):
@@ -44,6 +46,8 @@ class EffectiveModelConfig(BaseModel):
     model: str = Field(min_length=1)
     thinking_mode: ThinkingMode
     reasoning_effort: ReasoningEffort
+    timeout: float | None = Field(default=None, gt=0)
+    retry_count: int | None = Field(default=None, ge=0)
 
 
 class LLMConfig(BaseModel):
@@ -95,6 +99,14 @@ class LLMConfig(BaseModel):
                 self.reasoning_effort
                 if override is None or override.reasoning_effort is None
                 else override.reasoning_effort
+            ),
+            timeout=(
+                None if override is None or override.timeout is None
+                else override.timeout
+            ),
+            retry_count=(
+                None if override is None or override.retry_count is None
+                else override.retry_count
             ),
         )
 
@@ -292,6 +304,17 @@ class AgentRuntimeConfig(BaseModel):
     """
     judge_max_tokens: int = Field(default=32768, ge=1)
     react_decision_max_tokens: int = Field(default=32768, ge=1)
+    claim_verification_max_tokens: int = Field(default=65536, ge=1)
+    """Output headroom for the Fact Checker's per-claim verdict requests.
+
+    The adjudication reasons at ``max`` over a ~4k-token packet, so its
+    completion tokens are almost all reasoning. Audit-2 measured 17 completed
+    adjudications at up to 29162 tokens (four above 24000) and two more that
+    stopped at exactly the old 32768 cap, the second of which ended the pass.
+    65536 is the ceiling a thinking-enabled request has completed under with
+    this provider, not a known maximum; the one high-effort retry still bounds
+    a request that reasons past it.
+    """
 
     @model_validator(mode="after")
     def validate_tool_budget_overrides(self) -> "AgentRuntimeConfig":
@@ -537,6 +560,10 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_REACT_DECISION_MAX_TOKENS": (
         "agents",
         "react_decision_max_tokens",
+    ),
+    "AGENTS_CLAIM_VERIFICATION_MAX_TOKENS": (
+        "agents",
+        "claim_verification_max_tokens",
     ),
     "GRAPH_MAX_ITERATIONS": ("graph", "max_iterations"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),

@@ -39,9 +39,17 @@ llm:
     # resolves its model and effort here like one, so the review that decides
     # whether a report is accepted is independently configured from every agent
     # whose work it judges. `max` because a wrong acceptance is more expensive
-    # than a slower review.
+    # than a slower review. The 65,536-token output cap includes thinking
+    # (DeepSeek Responses API); audit-2 returned 44,319 tokens in 174 s, or
+    # ~255 tokens/s. A full-cap response at that observed rate takes ~257 s,
+    # so 360 s leaves room for slower generations and network overhead.
+    # The transport default remains 60 s for other roles. A timed-out review
+    # gets one transport retry, not the global five full-size repeats; failed
+    # attempts still leave the terminal review unscored.
     report_judge:
       reasoning_effort: max
+      timeout: 360.0
+      retry_count: 1
   timeout: 60.0
   # Repo-owned retry policy: up to 5 retries with exponential backoff from
   # 1s doubling to a 16s cap (the openai SDK only exposes max_retries with a
@@ -51,8 +59,9 @@ llm:
   retry_max_delay: 16.0
   temperature: 0.7
   # Default output budget. Most operations use 32768; the planner's plan
-  # requests and terminal report review use 65536. Both reason at `max`
-  # effort, where thinking consumes completion tokens as well as the answer.
+  # requests, the Fact Checker's claim verdicts, and terminal report review
+  # use 65536. All three reason at `max` effort, where thinking consumes
+  # completion tokens as well as the answer.
   # The operation-specific bounds below are provider-tested headroom, not
   # known provider maxima. A cap unused by the model costs no output tokens;
   # a cap reached before the JSON reply costs a whole request.
@@ -170,6 +179,15 @@ agents:
   # spot-check phase silently rather than failing the run. A decision carries
   # the agent's reasoning, one tool call, and that call's arguments.
   react_decision_max_tokens: 32768
+  # Operation-specific cap for the Fact Checker's per-claim verdict requests
+  # (AGENTS_CLAIM_VERIFICATION_MAX_TOKENS overrides it). The adjudication
+  # reasons at `max` over a ~4k-token packet, so its completion tokens are
+  # almost all thinking. Audit-2 measured completed verdicts up to 29162
+  # tokens and two that stopped at exactly 32768 with finish=length; the
+  # second ended the pass with 13 of 15 claims unchecked. 65536 is headroom a
+  # thinking-enabled request has completed under, not a known provider
+  # maximum; a truncated verdict is still re-asked once at `high`.
+  claim_verification_max_tokens: 65536
 
 graph:
   max_iterations: 3

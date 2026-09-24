@@ -1344,16 +1344,20 @@ async def test_deepseek_structured_error_retains_safe_diagnostics() -> None:
 
     diagnostics = getattr(caught.value, "diagnostics", None)
     assert diagnostics is not None
+    # ``value_error`` is pydantic's identifier for the model validator that
+    # refused the reply: the constraint, never the value.
     assert [item.model_dump(mode="json") for item in diagnostics] == [
         {
             "attempt": 1,
             "field_paths": ["$"],
             "category": "other_schema",
+            "error_types": ["value_error"],
         },
         {
             "attempt": 2,
             "field_paths": ["$"],
             "category": "other_schema",
+            "error_types": ["value_error"],
         },
     ]
     serialized = json.dumps(
@@ -2936,6 +2940,61 @@ async def test_schema_target_unparseable_output_is_json_invalid_at_root() -> Non
 
 
 @pytest.mark.asyncio
+async def test_structured_validation_span_errors_name_field_and_constraint() -> None:
+    """A failed reply is diagnosable from the trace, without its values."""
+    rejected = json.dumps(
+        {"answer": "SECRET_ANSWER_VALUE", "confidence": "SECRET_CONFIDENCE"}
+    )
+    responses = RecordingResponses(
+        responses_response(output_text=rejected),
+        responses_response(output_text=rejected),
+    )
+
+    class ErrorCapturingTracker(Tracker):
+        def __init__(self) -> None:
+            super().__init__(LangSmithRuntimeConfig(tracing_enabled=False))
+            self.llm_errors: list[str] = []
+
+        def llm_span(self, model, inputs):
+            manager = super().llm_span(model, inputs)
+
+            @asynccontextmanager
+            async def capture_errors():
+                async with manager as span:
+                    try:
+                        yield span
+                    except BaseException as error:
+                        self.llm_errors.append(str(error))
+                        raise
+
+            return capture_errors()
+
+    tracker = ErrorCapturingTracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(responses=responses)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(StructuredOutputError) as caught:
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="decide")], TinyAnswer
+            )
+
+    assert [item.error_types for item in caught.value.diagnostics] == [
+        ("int_parsing",),
+        ("int_parsing",),
+    ]
+    assert len(tracker.llm_errors) == 2
+    for attempt, message in enumerate(tracker.llm_errors, start=1):
+        assert (
+            f"attempt={attempt} category=type_mismatch "
+            "field_paths=confidence error_types=int_parsing"
+        ) in message
+    surfaces = " ".join([*tracker.llm_errors, str(caught.value)])
+    assert "SECRET" not in surfaces
+
+
+@pytest.mark.asyncio
 async def test_schema_target_output_limit_stays_typed() -> None:
     responses = RecordingResponses(
         responses_response(
@@ -3441,6 +3500,38 @@ async def test_deepseek_every_entry_point_severs_the_sdk_exception(
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     assert not _exception_reaches(caught.value, sdk_error)
+
+
+@pytest.mark.asyncio
+async def test_slow_report_judge_timeout_retries_only_once(monkeypatch) -> None:
+    """A still-slow review cannot restart six costly full-size generations."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APITimeoutError(
+        request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+    )
+    responses = RecordingResponses(sdk_error, sdk_error, sdk_error)
+    tracker = local_tracker()
+    provider = DeepSeekJudgeProvider(
+        deepseek_config(
+            retry_count=5,
+            model_overrides={
+                "report_judge": {"timeout": 360.0, "retry_count": 1}
+            },
+        ),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderTimeoutError):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="review")],
+                TinyAnswer,
+                agent_name="report_judge",
+            )
+
+    assert len(responses.calls) == 2
+    assert [call["timeout"] for call in responses.calls] == [360.0, 360.0]
 
 
 @pytest.mark.asyncio

@@ -2417,6 +2417,94 @@ def _demanded_widening(sub_topic: SubTopic) -> list[str]:
     ]
 
 
+_EDITION_DATE = re.compile(
+    r"\b(?:January|February|March|April|May|June|July|August|September|"
+    r"October|November|December|Q[1-4])\s+(?:19|20)\d{2}\b",
+    re.IGNORECASE,
+)
+
+# "January of 2025" and "January 2025" name the same edition; only the
+# insertion of "of" differs. Folded to the plain form before either side of
+# the unrequested-vintage check reads it, so a question that names an edition
+# the natural way is never read as silent about it just because a dimension
+# (or the question itself) spelled the same date without "of".
+_MONTH_OF_YEAR = re.compile(
+    r"\b((?:January|February|March|April|May|June|July|August|September|"
+    r"October|November|December|Q[1-4]))\s+of\s+((?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_month_of_year(text: str) -> str:
+    """Fold "Month of YYYY" (or "QN of YYYY") to "Month YYYY"."""
+    return _MONTH_OF_YEAR.sub(r"\1 \2", text)
+
+
+# Grouped so each alternative is matched as a whole word: the prior ungrouped
+# forecast|project|outlook\b read "project" as a bare substring of
+# "projects", and of the present-tense verb ("EIA project the grid will
+# add"), neither of which names a forecast edition. "forecast\w*" covers
+# "forecast", "forecasts", "forecasted", and "forecasting"; "projected" and
+# "projection" are named on their own because a bare "project"/"projects" is
+# at least as often a noun ("projects larger than 1 MW") or a present-tense
+# verb as it is a forecast cue.
+_FORECAST_CUE = re.compile(
+    r"\b(?:forecast\w*|projected|projection|outlook)\b", re.IGNORECASE
+)
+
+# A date is a *publication* edition only near one of these markers; a bare
+# date is just as often the data period the figure covers. "as projected in"
+# is a phrase, not a single word, so it is matched on its own.
+_EDITION_PHRASE_MARKER = re.compile(
+    r"\b(?:edition|vintage|outlook|monitor|released)\b|as\s+projected\s+in",
+    re.IGNORECASE,
+)
+# Characters of context read on each side of a candidate date when deciding
+# whether it sits in an edition phrase: enough to span "as projected in the"
+# or "...'s ... edition" without reaching into an unrelated clause.
+_EDITION_PHRASE_WINDOW = 40
+
+
+def _in_edition_phrase(wording: str, match: "re.Match[str]") -> bool:
+    """True when a marker names the match as a publication edition, not a period."""
+    start = max(0, match.start() - _EDITION_PHRASE_WINDOW)
+    end = min(len(wording), match.end() + _EDITION_PHRASE_WINDOW)
+    return _EDITION_PHRASE_MARKER.search(wording[start:end]) is not None
+
+
+def _unrequested_forecast_vintage(
+    target: EvidenceTarget, contract: AnswerContract
+) -> str:
+    """A forecast's publication edition is not the projected data year.
+
+    A "period:" requirement states the data year or quarter a figure covers,
+    never the edition that published it -- "period: Q4 2025" beside a
+    question asking for "the fourth quarter of 2025" is one obligation
+    spelled two ways, not a planner-invented vintage -- so its own text is
+    never scanned for a candidate edition date. What survives that filter
+    still has to sit inside an edition phrase (see _in_edition_phrase): a
+    bare date elsewhere in the question or another requirement is still just
+    as likely to be the data period as the release.
+    """
+    non_period_dimensions = [
+        dimension
+        for dimension in target.required_dimensions
+        if "period" not in dimension.partition(":")[0].casefold()
+    ]
+    wording = _normalize_month_of_year(
+        " ".join((target.question, *non_period_dimensions))
+    )
+    if not _FORECAST_CUE.search(wording):
+        return ""
+    question = _normalize_month_of_year(contract.question).casefold()
+    for match in _EDITION_DATE.finditer(wording):
+        if not _in_edition_phrase(wording, match):
+            continue
+        if match.group(0).casefold() not in question:
+            return match.group(0)
+    return ""
+
+
 
 def _plan_problems(
     sub_topics: Sequence[SubTopic],
@@ -2490,6 +2578,17 @@ def _plan_problems(
                         "split it into one obligation per target, because a "
                         "target that needs two measures settled is compound "
                         "however it reads",
+                        "advisory",
+                    )
+                )
+            vintage = _unrequested_forecast_vintage(target, contract)
+            if vintage:
+                problems.append(
+                    _PlanProblem(
+                        f"{target.target_id} hard-codes forecast vintage "
+                        f"{vintage} absent from the question; name the issuer's "
+                        "latest available forecast across its published series, "
+                        "and report the edition beside the eventual figure",
                         "advisory",
                     )
                 )
@@ -2678,6 +2777,18 @@ def apply_answer_contract(
     return stamped
 
 
+def _checkable_plan_requirement(requirement: str) -> str:
+    """Spell publisher unit and qualitative-definition asks in atom vocabulary."""
+    head, separator, detail = requirement.partition(":")
+    if not separator:
+        return requirement
+    if head.strip().casefold() == "unit":
+        return "unit"
+    if head.strip().casefold() == "definition":
+        return f"measure: {detail.strip()}"
+    return requirement
+
+
 def _asked_dimensions(
     required_dimensions: Sequence[str],
     *,
@@ -2707,7 +2818,7 @@ def _asked_dimensions(
             for dimension in dimensions
         ):
             continue
-        kept.append(requirement)
+        kept.append(_checkable_plan_requirement(requirement))
     return kept
 
 

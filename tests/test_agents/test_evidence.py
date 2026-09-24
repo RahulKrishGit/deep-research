@@ -2010,6 +2010,49 @@ def test_a_commercial_domain_is_refused_even_when_its_title_names_it() -> None:
 
     assert "issuer" not in read_metadata_row(read, anchors={"issuer": "Clean Edge"})
 
+def test_a_commercial_issuer_owns_its_release_only_with_title_and_imprint() -> None:
+    """A commercial host needs two independent in-page publisher statements."""
+    own = _web_read(
+        "https://woodmac.com/press-releases/2025-u.s.-energy-storage",
+        title="2025 U.S. Energy Storage Installations | Wood Mackenzie",
+        text=(
+            "Wood Mackenzie reports that 18.9 GW of storage was installed in "
+            "2025. © 2026 Wood Mackenzie."
+        ),
+    )
+    assert read_metadata_row(own, anchors={"issuer": "Wood Mackenzie"})[
+        "issuer"
+    ] == "Wood Mackenzie"
+    for url, title, text in (
+        (
+            "https://utilitydive.com/news/eia-storage",
+            "EIA's battery forecast | Utility Dive",
+            "EIA projects 18.2 GW. © 2025 TechTarget.",
+        ),
+        (
+            "https://energyglobal.com/eia-storage",
+            "EIA's battery capacity | Energy Global",
+            "EIA reported 10.4 GW. © 2025 Palladian Publications.",
+        ),
+        (
+            "https://eia.news/storage",
+            "U.S. Energy Information Administration (EIA) forecast",
+            "EIA projected 19.6 GW. © 2025 EIA.",
+        ),
+    ):
+        relay = _web_read(url, title=title, text=text)
+        assert "issuer" not in read_metadata_row(
+            relay, anchors={"issuer": AGENCY_ISSUER}
+        )
+    assert "issuer" not in read_metadata_row(
+        _web_read(
+            "https://woodmac.com/press-releases/no-imprint",
+            title=own.title,
+            text="The Monitor projects 15 GW.",
+        ),
+        anchors={"issuer": "Wood Mackenzie"},
+    )
+
 
 def test_a_national_institutional_suffix_still_carries_a_first_party_claim() -> None:
     """The rule is "institutionally registered", not "American".

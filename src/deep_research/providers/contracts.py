@@ -52,6 +52,7 @@ StructuredDiagnosticCategory: TypeAlias = Literal[
 PositiveInt: TypeAlias = Annotated[int, Field(gt=0, strict=True)]
 
 _FIELD_PATH_SEGMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$|^[0-9]+$")
+_ERROR_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _MAX_FIELD_PATHS = 16
 _MAX_FIELD_PATH_LENGTH = 128
 _MAX_STRUCTURED_DIAGNOSTICS = 2
@@ -164,6 +165,13 @@ class StructuredValidationDiagnostic(ProviderContract):
         min_length=1, max_length=_MAX_FIELD_PATHS
     )
     category: StructuredDiagnosticCategory | None = None
+    error_types: tuple[str, ...] = Field(default=(), max_length=_MAX_FIELD_PATHS)
+    """Pydantic's own error type per failing location, e.g. ``too_long``.
+
+    The constraint that failed, never the value that failed it: a pydantic
+    error type is a fixed identifier from the validator, not provider text,
+    and anything that does not look like one is recorded as ``other``.
+    """
 
     @field_validator("field_paths", mode="before")
     @classmethod
@@ -174,6 +182,28 @@ class StructuredValidationDiagnostic(ProviderContract):
             raise TypeError("field_paths must be a sequence of strings")
         normalized = tuple(_normalize_field_path(item) for item in value)
         return normalized or ("$",)
+
+    @field_validator("error_types", mode="before")
+    @classmethod
+    def normalize_error_types(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, str):
+            value = (value,)
+        if not isinstance(value, Sequence):
+            raise TypeError("error_types must be a sequence of strings")
+        return tuple(
+            item if isinstance(item, str) and _ERROR_TYPE.fullmatch(item) else "other"
+            for item in islice(value, _MAX_FIELD_PATHS)
+        )
+
+    def render(self) -> str:
+        """One provider-free line: attempt, category, paths, constraint types."""
+        rendered = (
+            f"attempt={self.attempt} category={self.category or 'schema_output'} "
+            f"field_paths={','.join(self.field_paths)}"
+        )
+        if self.error_types:
+            rendered += f" error_types={','.join(self.error_types)}"
+        return rendered
 
 
 # How many repaired-reply records one provider keeps before the oldest is
@@ -341,6 +371,10 @@ class StructuredOutputError(ProviderError):
     def validation_diagnostics(self) -> tuple[StructuredValidationDiagnostic, ...]:
         """Compatibility alias for callers that name the validation records."""
         return self.diagnostics
+
+    def redacted_copy(self, message: str) -> "StructuredOutputError":
+        """Keep the provider-free diagnostics; only the message is replaced."""
+        return StructuredOutputError(message, diagnostics=self.diagnostics)
 
 
 class ProviderFailureSnapshot(ProviderContract):

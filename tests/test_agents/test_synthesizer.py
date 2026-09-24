@@ -61,6 +61,7 @@ from deep_research.agents.synthesizer import (
     _selected_ids,
     _significant_figures,
     _strip_unsupported_figures,
+    _unsupported_names,
     bounded_claim_packet,
     bounded_finding_digest,
     build_canonical_packet,
@@ -2809,6 +2810,300 @@ def _compose_uncertainty(note: str) -> ReportComposition:
     return composition
 
 
+def _uncertainty_texts(task: SynthesisTask, note: str) -> list[str]:
+    composition, _ = build_report_composition(
+        task,
+        ReportDraft(
+            executive_summary=[],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[note],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+    return [statement.text for statement in composition.uncertainty_statements]
+
+
+def test_a_note_denying_a_figure_its_source_states_is_not_published() -> None:
+    """The audited U018 said the January STEO had no capacity figure."""
+    steo = "https://ent.news/2025/1/940.pdf"
+    task = _grounded_task(
+        evidence_units={
+            "steo-title": _unit(
+                evidence_id="steo-title",
+                url=steo,
+                excerpt=(
+                    "Data source: U.S. Energy Information Administration, "
+                    "Short-Term Energy Outlook, January 2025"
+                ),
+            ),
+            "steo-battery": _unit(
+                evidence_id="steo-battery",
+                url=steo,
+                excerpt=(
+                    "battery storage capacity growing by 47% (14 GW) in 2025 "
+                    "and 25% (11) GW in 2026."
+                ),
+            ),
+        }
+    )
+    note = (
+        "The EIA January 2025 Short-Term Energy Outlook entry in the checked "
+        "evidence records a direction of growth with no capacity figure, so it "
+        "cannot be used to quantify a 2025 projection."
+    )
+
+    assert _uncertainty_texts(task, note) == []
+
+
+def test_a_note_about_an_unpublished_derivation_is_not_published() -> None:
+    """The audited U017 described a rejected draft's arithmetic as report content."""
+    note = (
+        "No U.S. Energy Storage Monitor figure for 2024 grid-scale additions "
+        "appears in the checked evidence; the only 2024 Monitor-derived value "
+        "in this report is an arithmetic implication from the 2025 total and "
+        "its stated growth rate."
+    )
+
+    assert _uncertainty_texts(_grounded_task(), note) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "corpus"),
+    [
+        # audit2 section 3 point 1 / summary point 4 (claim #14, EIA 15 GW).
+        # The acronym check reads case-preserved evidence, so the corpus is
+        # written the way a real excerpt is, not folded by the fixture.
+        (
+            "A published 2025 outcome now exists for EIA's utility-scale "
+            "series: a record 15 GW of utility-scale battery storage was added "
+            "to the grid in 2025.",
+            "The U.S. Energy Information Administration reported that a "
+            "record 15 GW of utility-scale battery storage was added to the "
+            "grid in 2025.",
+        ),
+        # audit2 section 3 point 2 (claim #15, 43.6 GW stock).
+        (
+            "EIA reported that by the end of 2025 the U.S. power system had "
+            "43.6 GW of operational utility-scale battery storage nameplate "
+            "capacity.",
+            "The U.S. Energy Information Administration reported that by the "
+            "end of 2025 the U.S. power system had 43.6 GW of operational "
+            "utility-scale battery storage nameplate capacity.",
+        ),
+        # audit2 summary point 3 and section 4 point 3: a possessive.
+        (
+            "The Monitor's nationwide quarterly total is broader than its "
+            "utility-scale figure for the same quarter.",
+            "the u.s. energy storage monitor reported that the utility-scale "
+            "storage segment drove growth.",
+        ),
+        # audit2 summary point 2: a hyphenated compound of an attested name.
+        (
+            "For 2025, the checked evidence carries an EIA-based projection.",
+            "utility dive, citing eia, reported that additions could almost "
+            "double.",
+        ),
+        # The acronym of a place the evidence spells out.
+        ("Output rose in the US.", "Output rose in the United States."),
+    ],
+)
+def test_a_name_the_evidence_states_in_another_form_is_attested(
+    text: str, corpus: str
+) -> None:
+    """The audited pass refused these real statements as unattested names."""
+    assert [
+        atom for atom in unattested_atoms(text, corpus) if not atom[0].isdigit()
+    ] == []
+
+
+def test_a_claims_recorded_provenance_attests_the_names_it_carries() -> None:
+    """Only ADMITTED provenance attests a name: the issuer, the measured
+    scope, and the month of the release date.
+
+    ``vintage`` and ``statement_date`` are the extractor's own unadmitted
+    fields (researcher.py stores them as written, never checked against the
+    read); a name recorded only there does not attest anything here.
+    """
+    text = (
+        "EIA's utility-scale, 1 MW and above series shows generators added "
+        "a record 15 GW of battery storage to the grid in 2025, released in "
+        "February 2026."
+    )
+    claim = _claim(
+        text="EIA reported that generators added a record 15 GW of battery "
+        "storage to the grid in 2025.",
+        provenance=ClaimProvenance(
+            attributed_issuer="EIA",
+            measure_scope="utility-scale, 1 MW and above",
+            release_date="2026-02-20",
+        ),
+    )
+    context = DraftContext(evidence={EVIDENCE_ID: _unit(excerpt="a record 15 GW added in 2025")})
+    claim = claim.model_copy(update={"evidence_selection": {EVIDENCE_ID: "supports"}})
+
+    assert _unsupported_names(text, [claim], context) == []
+    assert _unsupported_names(
+        text.replace("released in February 2026", "released in Texas"),
+        [claim],
+        context,
+    ) == ["Texas"]
+
+
+def test_an_unadmitted_vintage_does_not_attest_an_invented_issuer() -> None:
+    """audit2's #1: an invented vintage let a different body's name onto an
+    EIA figure with rejected=[].
+
+    ``vintage`` and ``statement_date`` are stored as the extractor wrote
+    them, never checked against the read (researcher.py:1176-1179), so a
+    name recorded only there is not evidence a page states — unlike
+    ``attributed_issuer``, ``measure_scope`` and ``release_date``, which are
+    admitted only when the read's own text carries them.
+    """
+    text = (
+        "BloombergNEF reported that generators added 10.4 GW of new battery "
+        "storage capacity in 2024."
+    )
+    claim = _claim(
+        text="Generators added 10.4 GW of new battery storage capacity "
+        "in 2024.",
+        provenance=ClaimProvenance(
+            vintage="BloombergNEF 2H 2024 Energy Storage Market Outlook",
+            statement_date="2025-03-12",
+        ),
+    )
+    context = DraftContext(
+        evidence={
+            EVIDENCE_ID: _unit(
+                excerpt="generators added 10.4 GW of new battery storage "
+                "capacity in 2024"
+            )
+        }
+    )
+    claim = claim.model_copy(update={"evidence_selection": {EVIDENCE_ID: "supports"}})
+
+    assert _unsupported_names(text, [claim], context) == ["BloombergNEF"]
+
+
+def test_an_acronym_not_spelled_out_by_the_evidence_is_still_refused() -> None:
+    """SEIA, IEA, BNEF, and EU are refused even though the evidence spells
+    "U.S. Energy Information Administration" out in full.
+
+    The old letter-only scan spelled every one of these out of a corpus that
+    only ever wrote the real name: "SEIA" out of a split "u"/"s", "IEA" out
+    of an unrelated lowercase phrase's initials falling the wrong way, "BNEF"
+    the same way, and "EU" as a sentence opener.
+    """
+    eia_claim = _claim(
+        text="The U.S. Energy Information Administration reported that "
+        "generators added 10.4 GW of new battery storage capacity in the "
+        "United States in 2024.",
+    )
+    context = DraftContext(evidence={EVIDENCE_ID: _unit(excerpt=eia_claim.text)})
+    eia_claim = eia_claim.model_copy(
+        update={"evidence_selection": {EVIDENCE_ID: "supports"}}
+    )
+
+    assert _unsupported_names(
+        "SEIA reported that generators added 10.4 GW of new battery storage "
+        "capacity in the United States in 2024.",
+        [eia_claim],
+        context,
+    ) == ["SEIA"]
+    assert _unsupported_names(
+        "IEA reported that generators added 10.4 GW of new battery storage "
+        "capacity in the United States in 2024.",
+        [eia_claim],
+        context,
+    ) == ["IEA"]
+    assert _unsupported_names(
+        "EU reported that generators added 10.4 GW of new battery storage "
+        "capacity in the United States in 2024.",
+        [eia_claim],
+        context,
+    ) == ["EU"]
+    # Lowercase runs attest nothing, whatever their initials spell.
+    assert unattested_atoms(
+        "Output rose, per IEA.", "installed energy additions rose"
+    ) == ["IEA"]
+    assert unattested_atoms(
+        "Output rose, per BNEF.", "battery new energy facilities rose"
+    ) == ["BNEF"]
+
+
+@pytest.mark.parametrize(
+    ("text", "corpus"),
+    [
+        # audit2 S007, published before the matcher change.
+        (
+            "EIA's January 2025 Short-Term Energy Outlook projected that "
+            "battery storage capacity would grow.",
+            "the eia's january 2025 short-term energy outlook projected growth",
+        ),
+        # audit2 S013/S014.
+        (
+            "The American Clean Power page for the Q1 2025 & 2024 "
+            "Year-in-Review describes the insights.",
+            "u.s. energy storage monitor: q1 2025 & 2024 year-in-review "
+            "american clean power page describes the insights",
+        ),
+    ],
+)
+def test_a_hyphenated_name_the_evidence_writes_whole_is_attested(
+    text: str, corpus: str
+) -> None:
+    assert unattested_atoms(text, corpus) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "corpus", "expected"),
+    [
+        ("An IEA-based figure rose.", "output rose", ["IEA-based"]),
+        ("Output rose per IEA.", "the energy information administration", ["IEA"]),
+        ("The figure in EIA's survey rose.", "the storage monitor reported growth", ["EIA's"]),
+        ("Output rose in the UK.", "output rose in the united states", ["UK"]),
+        ("The count in Wood Mackenzie's monitor rose.", "the storage monitor count rose", ["Wood", "Mackenzie's"]),
+        # SynthFollowup's probe: invented agencies opening a sentence passed,
+        # because a possessive hid the acronym from the opener exception.
+        ("IEA's February 2026 analysis reported 15 GW.", "the u.s. energy information administration's february 2026 analysis reported 15 gw", ["IEA's"]),
+        ("SEIA's Monitor release reported 18.9 GW.", "the u.s. energy storage monitor release reported 18.9 gw", ["SEIA's"]),
+        ("BloombergNEF projected 15 GW.", "the monitor projected 15 gw", ["BloombergNEF"]),
+    ],
+)
+def test_a_name_no_form_of_the_evidence_states_is_still_refused(
+    text: str, corpus: str, expected: list[str]
+) -> None:
+    assert unattested_atoms(text, corpus) == expected
+
+
+def test_a_name_recorded_as_the_claims_issuer_is_attested() -> None:
+    """An issuer recorded in the claim's provenance is evidence the page names."""
+    text = (
+        "Wood Mackenzie projected 15 GW of energy storage capacity installed "
+        "across all segments in 2025."
+    )
+    claim = _claim(
+        text="The Monitor projected 15 GW of energy storage capacity installed "
+        "across all segments in 2025.",
+        provenance=ClaimProvenance(attributed_issuer="Wood Mackenzie"),
+    )
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim]),
+        ReportDraft(
+            executive_summary=[_point_draft(text)],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == []
+    assert [point.text for point in composition.summary] == [text]
+
+
 def test_a_cell_word_is_not_attested_by_a_longer_word_that_contains_it() -> None:
     """"generation" does not vouch for "gen": the cell check is whole-token."""
     assert unattested_words("gen", "carbon capture generation") == ["gen"]
@@ -3542,6 +3837,415 @@ def test_a_period_comes_from_the_clause_that_states_the_figure(
     """
     assert _derived_dimension(text, period=period) == expected
 
+
+def test_eia_2024_addition_uses_measurement_year_not_march_2025_release() -> None:
+    """The release day precedes 10.4 GW; the measured addition follows it."""
+    text = (
+        "EIA's March 12, 2025 Today in Energy analysis states that generators "
+        "added 10.4 GW of new battery storage capacity in the United States "
+        "in 2024, the second-largest generating capacity addition after solar, "
+        "based on the January 2025 Preliminary Monthly Electric Generator Inventory."
+    )
+
+    assert _derived_dimension(text, period="2025") == "not stated"
+    assert _derived_dimension(text, period="2024") == "2024"
+
+
+def test_key_fact_subject_keeps_the_source_words_not_atom_tokenization() -> None:
+    """The atom splitter erases dots; the report must not claim those were the source's words."""
+    text = (
+        "The U.S. Energy Storage Monitor reported that the U.S. energy storage "
+        "market hit a record 18.9 GW of battery energy storage system "
+        "installations in 2025, surpassing 2024 by 52 percent."
+    )
+    claim = _claim(text=text)
+    task = _factual_task(
+        claim=claim,
+        evidence_units={EVIDENCE_ID: _unit(excerpt=text)},
+        claim_clusters={
+            CLUSTER_ID: _fact_cluster(
+                claim,
+                text=text,
+                subject="U S energy storage market",
+                quantity_noun="",
+                observation_period="2025",
+            )
+        },
+    )
+
+    composition, _ = build_report_composition(
+        task, _factual_draft(summary=text), max_sections=4, limitations=[]
+    )
+
+    assert [cell.text for cell in composition.answer_rows[0].labels] == [
+        "U.S. energy storage market",
+        "2025",
+    ]
+    assert "| U.S. energy storage market | 2025 |" in render_reader_report(composition)
+
+
+MARKET_TEXT = (
+    "The U.S. Energy Storage Monitor reported that the U.S. energy storage "
+    "market hit a record 18.9 GW of battery energy storage system "
+    "installations in 2025, surpassing 2024 by 52 percent."
+)
+ACTUAL_TEXT = (
+    "The U.S. Energy Information Administration reported that a record "
+    "15 GW of utility-scale battery storage was added to the grid in 2025."
+)
+
+
+def _eia_actual_topic() -> SubTopic:
+    """The planned topic whose target EIA's 15 GW 2025 actual answers."""
+    topic = _sub_topic("EIA 2025 actual")
+    return topic.model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id="topic-05-target-01",
+                    coverage_id=topic.coverage_id,
+                    question="How much utility-scale battery storage was added in 2025?",
+                    required_dimensions=[
+                        "measure: annual utility-scale battery storage capacity additions",
+                        "period: calendar year 2025",
+                    ],
+                    required=True,
+                    critical=True,
+                    support_policy="primary_attribution",
+                )
+            ]
+        }
+    )
+
+
+def _market_and_actual(*, actual_bound: bool) -> ReportComposition:
+    """The audited pair: an unbound all-market total and EIA's 2025 actual."""
+    market, actual = MARKET_TEXT, ACTUAL_TEXT
+    market_claim = _claim(text=market)
+    actual_claim = _claim(
+        text=actual, target_ids=["topic-05-target-01"] if actual_bound else None
+    )
+    topic = _eia_actual_topic()
+    task = _factual_task(
+        claims=[market_claim, actual_claim],
+        sub_topics=[topic],
+        claim_clusters={
+            "market": _fact_cluster(
+                market_claim, text=market, subject="U S energy storage market",
+                quantity_noun="", observation_period="2025",
+            ).model_copy(update={"cluster_id": "market"}),
+            "actual": _fact_cluster(
+                actual_claim, text=actual, subject="battery storage",
+                quantity_noun="utility-scale battery storage",
+                observation_period="2025",
+            ).model_copy(update={"cluster_id": "actual"}),
+        },
+        evidence_units={EVIDENCE_ID: _unit(excerpt=f"{market} {actual}")},
+    )
+    draft = _factual_draft(
+        summary=market,
+        executive_summary=[
+            _point_draft(market, claim_ids=["C001"]),
+            _point_draft(actual, claim_ids=["C002"]),
+        ],
+    )
+    composition, _ = build_report_composition(
+        task, draft, max_sections=4, limitations=[]
+    )
+    return composition
+
+
+def test_unbound_market_total_does_not_take_a_grid_scale_answer_slot() -> None:
+    """The recorded 18.9 GW all-market outcome cannot answer grid-scale additions.
+
+    It is not dropped either: it moves to the findings under a heading that
+    says it answers no planned question.
+    """
+    composition = _market_and_actual(actual_bound=True)
+
+    summary = [point.text for point in composition.summary]
+    assert summary == [ACTUAL_TEXT]
+    assert "topic-05-target-01" in composition.summary[0].statement.target_ids
+    assert [row.statement.text for row in composition.answer_rows] == [ACTUAL_TEXT]
+    moved = [
+        section
+        for section in composition.sections
+        if any(point.text == MARKET_TEXT for point in section.points)
+    ]
+    assert [section.title for section in moved] == [
+        "Other reported figures (not matched to a planned question)"
+    ]
+
+
+def test_an_unbound_forecast_stays_when_no_bound_point_answers_its_half() -> None:
+    """SynthFollowup's rebound replay: the forecast half left the summary.
+
+    Only EIA's 2025 actual was bound, so moving every unbound figure took
+    the 18.2 GW projection with it. An unbound point moves only when a bound
+    point already answers the same role (the same period, forecast or
+    outcome). The all-market 18.9 GW outcome is displaced; the projection
+    stays, and the reader is told it is unmatched.
+    """
+    forecast = (
+        "Utility Dive, citing EIA, reported that new battery storage capacity "
+        "additions in 2025 could almost double from 2024 to an addition of "
+        "18.2 GW."
+    )
+    market_claim = _claim(text=MARKET_TEXT)
+    forecast_claim = _claim(text=forecast)
+    actual_claim = _claim(text=ACTUAL_TEXT, target_ids=["topic-05-target-01"])
+    task = _factual_task(
+        claims=[market_claim, forecast_claim, actual_claim],
+        sub_topics=[_eia_actual_topic()],
+        claim_clusters={},
+        evidence_units={
+            EVIDENCE_ID: _unit(excerpt=f"{MARKET_TEXT} {forecast} {ACTUAL_TEXT}")
+        },
+    )
+    draft = _factual_draft(
+        executive_summary=[
+            _point_draft(MARKET_TEXT, claim_ids=["C001"]),
+            _point_draft(forecast, claim_ids=["C002"]),
+            _point_draft(ACTUAL_TEXT, claim_ids=["C003"]),
+        ],
+    )
+
+    composition, _ = build_report_composition(
+        task, draft, max_sections=4, limitations=[]
+    )
+
+    assert [point.text for point in composition.summary] == [forecast, ACTUAL_TEXT]
+    assert MARKET_TEXT in [
+        point.text for section in composition.sections for point in section.points
+    ]
+
+
+def test_an_unbound_forecast_still_gets_a_key_facts_row() -> None:
+    """The Key facts table must not drop the forecast half either.
+
+    ``_scope_answer_summary`` already kept the unbound forecast because it is
+    the sole answer for its role; the answer-rows derivation used to filter
+    the summary back down to only the bound points, so Key facts lost the
+    forecast's row even though it was still in the executive summary.
+    """
+    forecast = (
+        "Utility Dive, citing EIA, reported that new battery storage capacity "
+        "additions in 2025 could almost double from 2024 to an addition of "
+        "18.2 GW."
+    )
+    market_claim = _claim(text=MARKET_TEXT)
+    forecast_claim = _claim(text=forecast)
+    actual_claim = _claim(text=ACTUAL_TEXT, target_ids=["topic-05-target-01"])
+    task = _factual_task(
+        claims=[market_claim, forecast_claim, actual_claim],
+        sub_topics=[_eia_actual_topic()],
+        claim_clusters={},
+        evidence_units={
+            EVIDENCE_ID: _unit(excerpt=f"{MARKET_TEXT} {forecast} {ACTUAL_TEXT}")
+        },
+    )
+    draft = _factual_draft(
+        executive_summary=[
+            _point_draft(MARKET_TEXT, claim_ids=["C001"]),
+            _point_draft(forecast, claim_ids=["C002"]),
+            _point_draft(ACTUAL_TEXT, claim_ids=["C003"]),
+        ],
+    )
+
+    composition, _ = build_report_composition(
+        task, draft, max_sections=4, limitations=[]
+    )
+
+    row_findings = [row.statement.text for row in composition.answer_rows]
+    assert forecast in row_findings
+    assert ACTUAL_TEXT in row_findings
+    assert len(composition.answer_rows) == 2
+
+
+def test_a_pass_whose_binding_failed_keeps_its_evidenced_summary() -> None:
+    """With no claim bound at all, the scope rule must not empty the answer."""
+    composition = _market_and_actual(actual_bound=False)
+
+    assert [point.text for point in composition.summary] == [
+        MARKET_TEXT,
+        ACTUAL_TEXT,
+    ]
+    assert len(composition.answer_rows) == 2
+
+
+EIA_64705 = "https://eia.gov/todayinenergy/detail.php?id=64705"
+ENERKNOL = "https://enerknol.com/u-s-battery-storage-capacity-rose-by-66-percent-during-2024-eia"
+
+
+def test_a_point_drops_a_named_claim_that_does_not_carry_its_citation() -> None:
+    """audit2 S001 named EIA's claim and EnerKnol's relay but cited only eia.gov.
+
+    The relay does not carry that URL, so the point's citation was unresolved
+    and the gate failed. The relay is dropped from the point; no URL is added
+    to either claim.
+    """
+    text = (
+        "EIA's March 12, 2025 analysis states that generators added 10.4 GW "
+        "of new battery storage capacity in 2024."
+    )
+    eia = _claim(
+        text="The U.S. Energy Information Administration's March 12, 2025 "
+        "analysis reported that generators added 10.4 GW of new battery "
+        "storage capacity in 2024.",
+        urls=[EIA_64705, ENERKNOL],
+    )
+    relay = _claim(
+        text="EnerKnol reported that the 10.4 GW added in 2024 was the second "
+        "largest addition.",
+        urls=[ENERKNOL],
+    )
+    composition, _ = build_report_composition(
+        _grounded_task(
+            claims=[eia, relay],
+            evidence_units={EVIDENCE_ID: _unit(url=EIA_64705, excerpt=eia.text)},
+        ),
+        ReportDraft(
+            executive_summary=[
+                _point_draft(text, claim_ids=["C001", "C002"], source_urls=[EIA_64705])
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    point = composition.summary[0]
+    assert point.claim_ids == [eia.claim_id]
+    assert point.source_urls == [EIA_64705]
+    assert eia.source_urls == [EIA_64705, ENERKNOL]
+
+
+UD_RELAY_URL = "https://utilitydive.com/news/example-relay"
+
+
+def test_the_narrowed_anchor_is_chosen_by_evidence_not_list_order() -> None:
+    """A relay named beside the issuer's claim must not cost the point its figure.
+
+    Neither named claim carries both cited URLs, so the anchor is chosen by
+    which narrowed claim actually attests the point's own figure — not by
+    which claim the draft happened to list first. Both claim orders publish
+    the same point, citing only the issuer's claim and URL.
+    """
+    text = (
+        "EIA reported that generators added 10.4 GW of new battery storage "
+        "capacity in 2024."
+    )
+    eia = _claim(
+        text="EIA reported that generators added 10.4 GW of new battery "
+        "storage capacity in 2024.",
+        urls=[EIA_64705],
+    )
+    relay = _claim(
+        text="Utility Dive reported that battery storage additions could "
+        "almost double in 2025.",
+        urls=[UD_RELAY_URL],
+    )
+    for claims in ([eia, relay], [relay, eia]):
+        composition, rejected = build_report_composition(
+            _grounded_task(
+                claims=claims,
+                evidence_units={EVIDENCE_ID: _unit(url=EIA_64705, excerpt=eia.text)},
+            ),
+            ReportDraft(
+                executive_summary=[
+                    _point_draft(
+                        text,
+                        claim_ids=["C001", "C002"],
+                        source_urls=[EIA_64705, UD_RELAY_URL],
+                    )
+                ],
+                ranked_constraints=[],
+                sections=[],
+                uncertainty_notes=[],
+            ),
+            max_sections=4,
+            limitations=[],
+        )
+
+        assert rejected == [], claims
+        point = composition.summary[0]
+        assert point.claim_ids == [eia.claim_id], claims
+        assert point.source_urls == [EIA_64705], claims
+
+
+def test_a_bound_primary_claim_the_draft_omits_becomes_a_finding() -> None:
+    """audit2 claim #14 (EIA's 15 GW 2025 actual) sat only in the uncertainty list."""
+    bound = _claim(
+        text=ACTUAL_TEXT,
+        verdict="insufficient_evidence",
+        target_ids=["topic-05-target-01"],
+    )
+    other = _claim(text="Logical error rates fell below break-even in 2025.")
+    composition, _ = build_report_composition(
+        _grounded_task(
+            claims=[other, bound],
+            sub_topics=[_eia_actual_topic()],
+            evidence_units={EVIDENCE_ID: _unit(excerpt=ACTUAL_TEXT)},
+        ),
+        ReportDraft(
+            executive_summary=[_point_draft(other.text, claim_ids=["C001"])],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    rendered = {
+        point.text: section.title
+        for section in composition.sections
+        for point in section.points
+    }
+    assert rendered.get(ACTUAL_TEXT) == (
+        "Checked findings for planned questions the draft left out"
+    )
+
+
+
+def test_an_omitted_claim_that_restates_a_rendered_point_is_not_repeated() -> None:
+    """audit2's #1 and #17: the same source's finding, two checked claims.
+
+    #17 is bound to the same target as an already-rendered #1 and carries the
+    same 15 GW figure for the same year, unhedged like #1. Printing it under
+    "left out" would reprint a fact the reader already met a third time; it
+    is skipped instead, and no left-out section is created just to hold it.
+    """
+    rendered_claim = _claim(text=ACTUAL_TEXT, target_ids=["topic-05-target-01"])
+    mirror_claim = _claim(
+        text="EIA's own page states that a record 15 GW of utility-scale "
+        "battery storage was added to the grid in 2025.",
+        target_ids=["topic-05-target-01"],
+    )
+    composition, _ = build_report_composition(
+        _grounded_task(
+            claims=[rendered_claim, mirror_claim],
+            sub_topics=[_eia_actual_topic()],
+            evidence_units={EVIDENCE_ID: _unit(excerpt=ACTUAL_TEXT)},
+        ),
+        ReportDraft(
+            executive_summary=[_point_draft(ACTUAL_TEXT, claim_ids=["C001"])],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    rendered_texts = [point.text for point in composition.summary] + [
+        point.text for section in composition.sections for point in section.points
+    ]
+    assert mirror_claim.text not in rendered_texts
+    assert composition.sections == []
+    assert "omitted_bound_claim_rendered" not in composition.statement_dispositions
 
 def test_a_filled_statement_is_never_given_a_kept_id() -> None:
     """The fill path must not number a repaired point over a kept record.

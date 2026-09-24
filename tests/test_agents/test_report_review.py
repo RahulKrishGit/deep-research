@@ -10,6 +10,12 @@ from __future__ import annotations
 
 import math
 import re
+from pathlib import Path
+from types import SimpleNamespace
+
+import httpx
+import yaml
+from openai import APITimeoutError
 
 import pytest
 
@@ -38,6 +44,8 @@ from deep_research.providers import (
     ProviderResponseError,
     ProviderResponseTelemetry,
 )
+from deep_research.providers.deepseek_provider import DeepSeekSchemaChatProvider
+from deep_research.utils.config import LLMConfig
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     UNREVIEWED_STATEMENT_DISPOSITION,
@@ -1189,6 +1197,54 @@ async def test_a_reused_review_records_no_retry() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("generation_seconds", "expected_status"),
+    [(240, "scored"), (400, "provider_failed")],
+)
+async def test_report_judge_generation_respects_its_own_request_deadline(
+    generation_seconds: int, expected_status: str
+) -> None:
+    """A long complete review must be scored; a later transport timeout cannot be."""
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    config = LLMConfig.model_validate(raw["llm"]).model_copy(
+        update={"retry_count": 0}
+    )
+
+    class TimedResponses:
+        async def create(self, **kwargs):
+            if generation_seconds > kwargs.get("timeout", config.timeout):
+                raise APITimeoutError(
+                    request=httpx.Request("POST", "https://api.deepseek.com/responses")
+                )
+            return SimpleNamespace(
+                status="completed",
+                incomplete_details=None,
+                output_text=_draft_payload().model_dump_json(),
+                model="deepseek-v4-flash",
+                usage=SimpleNamespace(
+                    input_tokens=100, output_tokens=1000, total_tokens=1100
+                ),
+            )
+
+    tracker = _tracker()
+    provider = DeepSeekSchemaChatProvider(
+        config, tracker, client=SimpleNamespace(responses=TimedResponses())
+    )
+    async with tracker.session_span(SESSION_ID, QUESTION):
+        review = await ReportReviewer(provider=provider).review(
+            _packet(_state(composition=_composition(), report="Break-even was reached."))
+        )
+
+    assert review.status == expected_status
+    if expected_status == "scored":
+        assert semantic_review_passes(review)
+    else:
+        assert review.dimensions == {}
+        assert "ProviderTimeoutError" in review.rationale
+        assert not semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
 async def test_a_provider_failure_is_recorded_provider_failed_never_scored() -> None:
     from deep_research.providers import ProviderError
 
@@ -1201,6 +1257,163 @@ async def test_a_provider_failure_is_recorded_provider_failed_never_scored() -> 
     assert review.dimensions == {}
     assert not semantic_review_passes(review)
     assert review.rationale.strip()
+
+
+@pytest.mark.asyncio
+async def test_a_complete_review_keeps_all_distinct_material_defects() -> None:
+    """One defect per statement must not lose the thirteenth finding."""
+    statement_ids = [f"S{number:03d}" for number in range(1, 14)]
+    composition = _composition(
+        statements=tuple(
+            _statement(statement_id, f"Unsupported assertion {index}.")
+            for index, statement_id in enumerate(statement_ids, start=1)
+        )
+    )
+    packet = _packet(_state(composition=composition, report="Thirteen assertions."))
+    payload = _draft_payload(
+        dimensions=_scores(0.2),
+        dispositions=dict.fromkeys(statement_ids, "unsupported"),
+        reviewed_statements=statement_ids,
+    ).model_dump(mode="python")
+    payload["defects"] = [
+        CritiqueGapDraft(
+            target_ids=["t1"],
+            statement_ids=[statement_id],
+            kind="missing_support",
+            severity="major",
+            repair_action="adjudicate",
+            problem=f"No cited passage establishes assertion {index}.",
+        ).model_dump(mode="python")
+        for index, statement_id in enumerate(statement_ids, start=1)
+    ]
+    completer = ScriptedCompleter(outputs=[payload])
+
+    review = await review_report(completer, packet)
+
+    assert review.status == "scored"
+    assert [gap.statement_ids for gap in review.material_defects] == [
+        [statement_id] for statement_id in statement_ids
+    ]
+    assert not semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_a_reply_over_the_stated_defect_bound_is_refused_not_cut() -> None:
+    """The request states the defect bound it enforces, and beyond it refuses."""
+    statement_ids = [f"S{number:03d}" for number in range(1, 14)]
+    composition = _composition(
+        statements=tuple(
+            _statement(statement_id, f"Unsupported assertion {index}.")
+            for index, statement_id in enumerate(statement_ids, start=1)
+        )
+    )
+    packet = _packet(_state(composition=composition, report="Thirteen assertions."))
+    stated = re.search(r"at most (\d+) defects", _render(packet))
+    assert stated is not None
+    bound = int(stated.group(1))
+    payload = _draft_payload(
+        dimensions=_scores(0.2),
+        dispositions=dict.fromkeys(statement_ids, "unsupported"),
+        reviewed_statements=statement_ids,
+    ).model_dump(mode="python")
+    payload["defects"] = [
+        CritiqueGapDraft(
+            target_ids=["t1"],
+            statement_ids=["S001"],
+            kind="missing_support",
+            severity="major",
+            repair_action="adjudicate",
+            problem=f"Distinct unsupported reading number {index}.",
+        ).model_dump(mode="python")
+        for index in range(bound + 1)
+    ]
+
+    review = await review_report(ScriptedCompleter(outputs=[payload]), packet)
+
+    assert bound >= len(statement_ids)
+    assert review.status == "incomplete"
+    assert review.defects == []
+    assert not semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_failed_review_records_validation_fields_without_provider_values() -> None:
+    from deep_research.providers import (
+        StructuredOutputError,
+        StructuredValidationDiagnostic,
+    )
+
+    diagnostics = (
+        StructuredValidationDiagnostic(
+            attempt=1,
+            field_paths=("dimensions.attribution",),
+            category="missing",
+        ),
+        StructuredValidationDiagnostic(
+            attempt=2,
+            field_paths=("defects.0.problem",),
+            category="string_bounds",
+        ),
+    )
+    completer = ScriptedCompleter(
+        outputs=[
+            StructuredOutputError(
+                "provider body contains SECRET_REVIEW_VALUE",
+                diagnostics=diagnostics,
+            )
+        ]
+    )
+
+    review = await review_report(
+        completer,
+        _packet(_state(composition=_composition(), report="Break-even was reached.")),
+    )
+
+    assert review.status == "incomplete"
+    assert review.dimensions == {}
+    assert "attempt=1 category=missing field_paths=dimensions.attribution" in review.rationale
+    assert "attempt=2 category=string_bounds field_paths=defects.0.problem" in review.rationale
+    assert "SECRET_REVIEW_VALUE" not in review.rationale
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_retry_after_truncation_keeps_its_validation_fields() -> None:
+    """The re-ask path must not strip the diagnostics off the schema failure."""
+    from deep_research.providers import (
+        StructuredOutputError,
+        StructuredValidationDiagnostic,
+    )
+
+    completer = ScriptedCompleter(
+        outputs=[
+            _output_limit_error(),
+            StructuredOutputError(
+                "safe schema failure",
+                diagnostics=(
+                    StructuredValidationDiagnostic(
+                        attempt=2,
+                        field_paths=("defects",),
+                        category="other_schema",
+                        error_types=("too_long",),
+                    ),
+                ),
+            ),
+        ]
+    )
+    reviewer = ReportReviewer(
+        provider=completer,
+        config=AgentRuntimeConfig(report_review_max_tokens=4096),
+    )
+
+    review = await reviewer.review(
+        _packet(_state(composition=_composition(), report="Break-even was reached."))
+    )
+
+    assert review.status == "incomplete"
+    assert (
+        "attempt=2 category=other_schema field_paths=defects error_types=too_long"
+        in review.rationale
+    )
 
 
 @pytest.mark.asyncio

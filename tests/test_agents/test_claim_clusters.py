@@ -47,6 +47,7 @@ from deep_research.agents.claim_clusters import (
     reverification_cache_key,
     select_claim_batch,
     select_claim_batch_indices,
+    source_title_geography,
     target_order_for,
 )
 from deep_research.observability import TokenUsage
@@ -3459,6 +3460,29 @@ def test_a_parenthetical_restatement_is_one_measurement(
     assert [(atom.value, atom.unit) for atom in atoms] == [(value, unit)]
 
 
+def test_a_share_restated_absolutely_in_parentheses_keeps_the_absolute_figure() -> (
+    None
+):
+    """"growing by 47% (14 GW)" is one measurement: the absolute figure.
+
+    A percentage is not directly comparable to the power/energy units
+    ``_restates`` scales between, so the parenthetical was read as a second,
+    conflicting measurement and the clause lost its figure entirely — the
+    exact STEO claim-6 shape a swapped draft states: "47% (14 GW) in 2025".
+    """
+    atoms = [
+        atom
+        for atom in extract_text_atoms(
+            "The EIA Short-Term Energy Outlook, January 2025 edition, "
+            "projects that battery storage capacity will grow by 47% "
+            "(14 GW) in 2025."
+        )
+        if atom.value or atom.unit
+    ]
+
+    assert [(atom.value, atom.unit) for atom in atoms] == [("14", "GW")]
+
+
 def test_the_run_spelling_keeps_its_value_and_place_across_the_period() -> None:
     """The measured regression: "…in the U.S. Solar added 30,000 MW.".
 
@@ -4292,4 +4316,209 @@ def test_a_qualitative_facility_types_answer_answers_its_target() -> None:
         "According to EIA, the utility-scale battery storage count in the "
         "United States includes co-located and stand-alone battery storage "
         "projects.",
+    )
+
+
+def test_audit_eia_claims_keep_observation_year_and_separate_contrast() -> None:
+    """Publication dates and next-year comparisons are not the measured year."""
+    headline = (
+        "The U.S. Energy Information Administration's March 12, 2025 Today "
+        "in Energy analysis reported that generators added 10.4 GW of new "
+        "battery storage capacity in 2024, the second-largest generating "
+        "capacity addition after solar, based on EIA's January 2025 "
+        "Preliminary Monthly Electric Generator Inventory."
+    )
+    actual = (
+        "The U.S. Energy Information Administration reported that a record "
+        "15 GW of utility-scale battery storage was added to the grid in "
+        "2025, against the 24 GW developers plan to add in 2026, in its "
+        "February 2026 analysis based on the December 2025 Preliminary "
+        "Monthly Electric Generator Inventory."
+    )
+    assert any(
+        atom.value == "10.4" and atom.observation_period == "2024"
+        for atom in extract_text_atoms(headline)
+    )
+    assert any(
+        atom.value == "15" and atom.observation_period == "2025"
+        for atom in extract_text_atoms(actual)
+    )
+    assert not any(
+        atom.value == "15" and atom.observation_period == "2026"
+        for atom in extract_text_atoms(actual)
+    )
+
+
+def test_a_year_end_stock_never_answers_an_additions_target() -> None:
+    target = EvidenceTarget(
+        target_id="topic-05-target-01",
+        coverage_id="topic-05",
+        question="What 2025 US utility-scale battery storage capacity additions does EIA report as an actual?",
+        required_dimensions=[
+            "measure: annual utility-scale battery storage capacity additions, actual",
+            "period: calendar year 2025",
+            "geography: United States",
+            "source: EIA-published report or dataset",
+            "unit",
+        ],
+        required=True,
+        critical=True,
+        support_policy="primary_attribution",
+    )
+    stock = (
+        "The U.S. Energy Information Administration reported that by the end "
+        "of 2025 the U.S. power system had 43.6 GW of operational "
+        "utility-scale battery storage nameplate capacity."
+    )
+    assert not any(
+        atom_answers_target(atom, target, question=target.question)
+        for atom in extract_text_atoms(stock)
+    )
+
+
+def test_a_source_headline_can_scope_its_supported_measurement() -> None:
+    """The source's capacity headline is evidence; an issuer's name is not."""
+    text = (
+        "The U.S. Energy Information Administration's March 12, 2025 Today "
+        "in Energy analysis reported that generators added 10.4 GW of new "
+        "battery storage capacity in 2024."
+    )
+    claim = _claim(
+        text,
+        verification_evidence=[
+            EvidencePassage(
+                source_url="https://eia.gov/todayinenergy/detail.php?id=64705",
+                source_title=(
+                    "U.S. battery capacity increased 66% in 2024 - "
+                    "U.S. Energy Information Administration (EIA)"
+                ),
+                locator="chunk-1",
+                excerpt="Generators added 10.4 GW of new battery storage capacity in 2024.",
+                stance="supports",
+            )
+        ],
+    )
+    assert extract_atoms(claim)[0].geography == "United States"
+    assert extract_text_atoms(text)[0].geography == ""
+    no_scope = claim.model_copy(
+        update={
+            "verification_evidence": [
+                claim.verification_evidence[0].model_copy(
+                    update={
+                        "source_title": "EIA's Canadian battery storage report"
+                    }
+                )
+            ]
+        }
+    )
+    assert extract_atoms(no_scope)[0].geography == ""
+
+
+def test_source_title_geography_refuses_a_state_named_in_the_supporting_sentence() -> (
+    None
+):
+    """A California figure on an EIA U.S.-capacity page stays state-scoped.
+
+    Real audit-2 read (eia.gov id=67205): the masthead reads "New U.S.
+    electric generating capacity expected to reach a record high in 2026",
+    and the sentence that actually states the 3.4 GW figure names Texas,
+    California and Arizona. The title's national scope may not be lent to a
+    number the source itself scoped to one state.
+    """
+    atom = extract_text_atoms(
+        "EIA expects California to add 3.4 GW of battery storage capacity "
+        "in 2026."
+    )[0]
+    source_title = (
+        "New U.S. electric generating capacity expected to reach a record "
+        "high in 2026 - U.S. Energy Information Administration (EIA)"
+    )
+    supporting_text = (
+        "Developers plan to add 24 GW of utility-scale battery storage to "
+        "the grid this year, accounting for about 80% of the new U.S. "
+        "battery storage capacity: 53%, or 12.9 GW, in Texas; 14%, or 3.4 "
+        "GW, in California; and 13%, or 3.2 GW, in Arizona."
+    )
+
+    assert source_title_geography(atom, source_title, supporting_text) == ""
+
+
+def test_source_title_geography_refuses_a_state_named_in_the_claim_itself() -> (
+    None
+):
+    """Texas' own figure is not lent a same-titled masthead's U.S. scope."""
+    atom = extract_text_atoms(
+        "Texas added 4.4 GW of battery storage capacity in 2024."
+    )[0]
+    source_title = (
+        "U.S. battery capacity increased 66% in 2024 - "
+        "U.S. Energy Information Administration (EIA)"
+    )
+    supporting_text = "Texas added 4.4 GW of battery storage capacity in 2024."
+
+    assert source_title_geography(atom, source_title, supporting_text) == ""
+
+
+def test_source_title_geography_refuses_a_global_figure() -> None:
+    """A worldwide figure is not lent the masthead's U.S. scope either."""
+    atom = extract_text_atoms(
+        "Globally, 69 GW of battery storage capacity was added in 2024."
+    )[0]
+    source_title = (
+        "U.S. battery capacity increased 66% in 2024 - "
+        "U.S. Energy Information Administration (EIA)"
+    )
+    supporting_text = (
+        "Globally, 69 GW of battery storage capacity was added in 2024."
+    )
+
+    assert source_title_geography(atom, source_title, supporting_text) == ""
+
+
+
+def test_audit_figures_do_not_answer_another_issuers_or_definition_target() -> None:
+    """A named source and ownership definition are obligations, not decoration."""
+    ownership = EvidenceTarget(
+        target_id="topic-01-target-03",
+        coverage_id="topic-01",
+        question="Which ownership categories does EIA include in its 2024 utility-scale battery storage figure?",
+        required_dimensions=[
+            "measure: ownership categories included in EIA's utility-scale battery storage count",
+            "period: 2024",
+            "geography: United States",
+            "source: EIA methodology or data documentation",
+        ],
+        required=True,
+        critical=True,
+        support_policy="primary_attribution",
+    )
+    monitor = EvidenceTarget(
+        target_id="topic-05-target-02",
+        coverage_id="topic-05",
+        question="What 2025 US grid-scale battery storage capacity additions does the US Energy Storage Monitor report as an actual?",
+        required_dimensions=[
+            "measure: annual grid-scale battery storage capacity additions, actual",
+            "period: calendar year 2025",
+            "geography: United States",
+            "source: freely reachable US Energy Storage Monitor summary or press release published by the American Clean Power Association or Wood Mackenzie",
+        ],
+        required=True,
+        critical=True,
+        support_policy="primary_attribution",
+    )
+    assert not _binds(
+        ownership,
+        "Cumulative U.S. utility-scale battery storage capacity exceeded 26 GW "
+        "in 2024, according to EIA's January 2025 Preliminary Monthly Electric "
+        "Generator Inventory.",
+    )
+    assert not _binds(
+        monitor,
+        "The U.S. Energy Information Administration reported that a record 15 GW "
+        "of utility-scale battery storage was added to the grid in 2025.",
+    )
+    assert _binds(
+        monitor,
+        "The U.S. Energy Storage Monitor reported that the U.S. grid-scale "
+        "segment added 12 GW of battery storage in 2025.",
     )

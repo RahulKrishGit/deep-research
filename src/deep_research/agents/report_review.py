@@ -37,7 +37,7 @@ import json
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any, ClassVar
 
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from deep_research.agents.base import (
     OUTPUT_LIMIT_ATTEMPT_EFFORTS,
@@ -69,6 +69,7 @@ from deep_research.providers import (
     ProviderOutputLimitError,
     StructuredOutputError,
 )
+from deep_research.providers.validation import validation_diagnostic
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     EVIDENCE_BADGE_LABELS,
@@ -103,7 +104,7 @@ Preflight validates it exactly like an agent, so a misconfigured judge fails
 the run before any collaborator exists.
 """
 
-REPORT_REVIEW_PROMPT_VERSION = "report-review-1"
+REPORT_REVIEW_PROMPT_VERSION = "report-review-2"
 """The prompt and reply contract this review's requests are versioned under."""
 
 REPORT_REVIEW_MAX_TOKENS = 65536
@@ -170,7 +171,33 @@ def report_review_output_limit_retry(
     )
 
 MAX_REVIEW_DEFECTS = 12
-"""How many distinct defects one review may carry before it is refused."""
+"""The smallest defect bound any review is given, however small its packet.
+
+The bound itself is :func:`review_defect_limit`: a fixed twelve contradicted
+the instruction to report every defect, since a report with more than twelve
+unsupported statements has more than twelve true findings.
+"""
+
+
+def review_defect_limit(packet: ReportReviewInput) -> int:
+    """How many distinct defects one review of ``packet`` may carry.
+
+    One per record a defect can be scoped to -- every statement, target, and
+    claim cluster the packet carries -- and never fewer than
+    ``MAX_REVIEW_DEFECTS``, so a small packet can still hold several kinds of
+    defect against one statement. The request states this number and the
+    merge enforces it: a reply beyond it is refused whole, never cut, because
+    the tail of a padded list is where one material defect can hide.
+    """
+    clusters = {
+        cluster_id
+        for statement in packet.statements
+        for cluster_id in statement.claim_cluster_ids
+    }
+    return max(
+        MAX_REVIEW_DEFECTS,
+        len(packet.expected_statement_ids) + len(packet.targets) + len(clusters),
+    )
 
 # The dimensions, in a stable order, with the semantic definition of each. The
 # names are the whole-report campaign's own seven; the definitions are what
@@ -272,6 +299,31 @@ REPORT_REVIEW_INSTRUCTION = (
     "review that does not cover what it was shown is recorded as incomplete "
     "rather than as a result."
 )
+
+REVIEW_DEFECT_RULES = (
+    "Every defect must also satisfy these rules, which the schema cannot "
+    "show and which refuse the whole reply when broken:\n"
+    "- A critical or major defect names at least one target_ids, "
+    "statement_ids, or claim_cluster_ids entry.\n"
+    "- A defect with repair_action acquire names the target_ids (or the "
+    "coverage_id) whose evidence is owed; a statement id alone does not say "
+    "what to acquire. Name the statement ids as well where they help.\n"
+    "- recommended_queries appear only on an acquire defect, and never on a "
+    "presentation defect; every other repair runs no search, so leave the "
+    "list empty.\n"
+    "- Report each distinct problem once. When one problem affects several "
+    "statements, name them all in one defect rather than repeating it."
+)
+
+
+def _render_defect_contract(packet: ReportReviewInput) -> str:
+    """The defect rules with this packet's own bound, as the merge enforces it."""
+    return (
+        f"{REVIEW_DEFECT_RULES}\n"
+        f"- Return at most {review_defect_limit(packet)} defects in total. "
+        "That is one per statement, target, and claim cluster in this "
+        "request, so every real finding fits; more is refused, never cut."
+    )
 
 
 def semantic_review_passes(review: ReportReview | None) -> bool:
@@ -1192,9 +1244,10 @@ class ReportReviewDraft(ContractModel):
     statement_dispositions: list[StatementDispositionDraft] = Field(
         default_factory=list
     )
-    defects: list[CritiqueGapDraft] = Field(
-        default_factory=list, max_length=MAX_REVIEW_DEFECTS
-    )
+    # No static ``max_length``: the bound depends on the packet, so the merge
+    # enforces ``review_defect_limit`` and the request states it. A schema cap
+    # of twelve refused truthful reviews of larger reports whole.
+    defects: list[CritiqueGapDraft] = Field(default_factory=list)
     reviewed_statement_ids: list[str] = Field(default_factory=list)
     reviewed_evidence_ids: list[str] = Field(default_factory=list)
     rationale: str = Field(min_length=1)
@@ -1460,7 +1513,10 @@ def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
             "Score each dimension in [0,1] against its own definition:\n"
             + _render_dimension_guidance()
         ),
-        f"# Response contract\n{REPORT_REVIEW_INSTRUCTION}",
+        (
+            f"# Response contract\n{REPORT_REVIEW_INSTRUCTION}\n\n"
+            f"{_render_defect_contract(packet)}"
+        ),
         f"# Manifest of what you were shown\n{_render_manifest(packet)}",
     ]
     return [
@@ -1515,7 +1571,8 @@ def batch_review_messages(
             "statement you can now judge), defects (typed, naming the ids "
             "above), reviewed_statement_ids, reviewed_evidence_ids (every "
             "evidence id in this batch that you read), and problem (anything "
-            "that stopped you reading it, or an empty string)."
+            "that stopped you reading it, or an empty string).\n\n"
+            + _render_defect_contract(packet)
         ),
     ]
     return [
@@ -1602,7 +1659,7 @@ def _resolved_defects(
             list(drafts),
             known_coverage_ids=packet.coverage_ids,
             packet=None,
-            limit=MAX_REVIEW_DEFECTS,
+            limit=review_defect_limit(packet),
         )
     except CritiqueContractViolation as violation:
         raise ReportReviewContractViolation(str(violation)) from violation
@@ -2163,7 +2220,9 @@ async def _review_packet(
             review_messages(packet), ReportReviewDraft
         )
     except (StructuredOutputError, ValidationError) as error:
-        return _failed_review(packet, _schema_reason(error), status="incomplete")
+        return _failed_review(
+            packet, _schema_reason(error, ReportReviewDraft), status="incomplete"
+        )
     except ProviderError as error:
         return _failed_review(packet, _provider_reason(error))
     except ReportReviewContractViolation as violation:
@@ -2188,7 +2247,9 @@ async def _review_packet(
                 batch_review_messages(packet, batch), ReviewBatchDraft
             )
         except (StructuredOutputError, ValidationError) as error:
-            return _failed_review(packet, _schema_reason(error), status="incomplete")
+            return _failed_review(
+                packet, _schema_reason(error, ReviewBatchDraft), status="incomplete"
+            )
         except ProviderError as error:
             return _failed_review(packet, _provider_reason(error))
         except ReportReviewContractViolation as violation:
@@ -2297,11 +2358,25 @@ def _provider_reason(error: Exception) -> str:
     )
 
 
-def _schema_reason(error: Exception) -> str:
+def _schema_reason(error: Exception, schema: type[BaseModel]) -> str:
+    """Why the reply was refused: which field broke which constraint.
+
+    Rendered from the typed diagnostics only -- schema-proven field paths,
+    the category, and pydantic's error types -- so the record names the
+    failing field without carrying a single character of the reply.
+    """
+    if isinstance(error, StructuredOutputError):
+        diagnostics = error.diagnostics
+    elif isinstance(error, ValidationError):
+        diagnostics = (validation_diagnostic(error, attempt=1, schema=schema),)
+    else:
+        diagnostics = ()
+    detail = "; ".join(diagnostic.render() for diagnostic in diagnostics)
     return (
         "The review could not be recorded: the reply did not satisfy the "
-        f"review contract ({type(error).__name__}). No judgement of this "
-        "report exists."
+        f"{schema.__name__} contract ({type(error).__name__}"
+        + (f": {detail}" if detail else "")
+        + "). No judgement of this report exists."
     )
 
 
@@ -2350,6 +2425,7 @@ __all__ = [
     "build_report_review_input",
     "composition_semantic_fingerprint",
     "report_review_input_fingerprint",
+    "review_defect_limit",
     "review_defects_as_refinement_jobs",
     "review_messages",
     "review_report",

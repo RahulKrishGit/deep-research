@@ -1944,6 +1944,368 @@ def test_targets_carry_locally_stamped_ids_and_the_contract_dimensions() -> None
     )
     assert target_problems(stamped, contract) == []
 
+def test_audit_battery_plan_stamps_only_checkable_dimensions() -> None:
+    """A required published unit or facility definition must be dischargeable."""
+    contract = _contract(
+        "How much grid-scale battery storage capacity was added in the "
+        "United States in 2024, and what do the latest forecasts project for 2025?"
+    )
+    topic = SubTopic(
+        coverage_id="topic-01",
+        title="EIA 2024 utility-scale battery storage additions",
+        rationale="Use the statistical agency's own published count.",
+        search_queries=["EIA battery storage 2024"],
+        success_criteria=["Report the agency figure and definition."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id="topic-01-target-01",
+                coverage_id="topic-01",
+                question="What 2024 US utility-scale battery storage capacity additions does EIA report?",
+                required_dimensions=[
+                    "measure: annual utility-scale battery storage capacity additions",
+                    "period: calendar year 2024",
+                    "unit: as published by EIA",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            ),
+            EvidenceTarget(
+                target_id="topic-01-target-02",
+                coverage_id="topic-01",
+                question="Which facility types does EIA include in its utility-scale count?",
+                required_dimensions=[
+                    "definition: facility types included in EIA's utility-scale battery storage count"
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            ),
+        ],
+    )
+    stamped = apply_answer_contract([topic], contract)[0].evidence_targets
+    assert [
+        dimension
+        for target in stamped
+        for dimension in target.required_dimensions
+        if not dimension.startswith(("evidence period:", "answer form:"))
+        and not checkable_dimensions(dimension)
+    ] == []
+    assert any("unit" in dimension for dimension in stamped[0].required_dimensions)
+    assert any(
+        "facility types" in dimension for dimension in stamped[1].required_dimensions
+    )
+
+
+def test_an_unrequested_forecast_edition_requires_plan_repair() -> None:
+    """'2025 forecast' does not authorize a planner-chosen January edition."""
+    contract = _contract(
+        "How much grid-scale battery storage capacity was added in the "
+        "United States in 2024, and what do the latest forecasts project for 2025?"
+    )
+    topic = SubTopic(
+        coverage_id="topic-02",
+        title="EIA 2025 forecast vintage",
+        rationale="Report the issuer's forecast and release vintage.",
+        search_queries=["EIA 2025 battery storage additions forecast"],
+        success_criteria=["Date the forecast the issuer publishes."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id="topic-02-target-01",
+                coverage_id="topic-02",
+                question=(
+                    "What did the EIA Short-Term Energy Outlook's January 2025 "
+                    "edition project for 2025 US utility-scale battery storage "
+                    "capacity additions?"
+                ),
+                required_dimensions=[
+                    "measure: projected annual utility-scale battery storage capacity additions",
+                    "period: calendar year 2025 as projected in the January 2025 EIA Short-Term Energy Outlook",
+                    "source: EIA Short-Term Energy Outlook, January 2025 edition",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            )
+        ],
+    )
+    assert any(
+        "January 2025" in issue and "vintage" in issue
+        for issue in target_problems([topic], contract)
+    )
+
+
+
+def test_a_non_forecast_target_naming_a_project_noun_is_not_flagged() -> None:
+    """"Counting projects larger than 1 MW" is a noun, not a forecast cue.
+
+    The ungrouped cue alternation matched "project" as a bare substring of
+    "projects", so a non-forecast target's own qualifier ("counting projects
+    larger than 1 MW") was read as forecast wording, and the period
+    requirement's own "December 2024" was flagged as an unrequested vintage
+    even though the target asks about nothing but calendar year 2024.
+    """
+    contract = _contract(
+        "How much battery storage capacity did EIA report was added in "
+        "the United States by the end of 2024?"
+    )
+    topic = SubTopic(
+        coverage_id="topic-01",
+        title="EIA 2024 additions",
+        rationale="Report the issuer's own 2024 figure.",
+        search_queries=["EIA 2024 battery storage additions"],
+        success_criteria=["Cite EIA's own count."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id="topic-01-target-01",
+                coverage_id="topic-01",
+                question=(
+                    "What 2024 US utility-scale battery storage capacity "
+                    "additions, counting projects larger than 1 MW, does "
+                    "EIA report?"
+                ),
+                required_dimensions=[
+                    "measure: annual utility-scale battery storage capacity additions",
+                    "period: December 2024",
+                    "source: EIA",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            )
+        ],
+    )
+    assert not any(
+        "vintage" in issue for issue in target_problems([topic], contract)
+    )
+
+
+def test_a_period_requirements_own_quarter_is_not_flagged_as_a_vintage() -> None:
+    """A "period:" requirement's own spelling is not a forecast edition.
+
+    The question asks for "the fourth quarter of 2025" and the period
+    requirement spells the same quarter "Q4 2025"; neither is a publication
+    edition the plan invented. Reading every date inside a period
+    requirement as a candidate edition flagged it anyway, because the
+    question's own spelling ("fourth quarter") never literally contains the
+    requirement's abbreviated one ("Q4 2025").
+    """
+    contract = _contract(
+        "What does the EIA forecast for battery storage additions in the "
+        "fourth quarter of 2025?"
+    )
+    topic = SubTopic(
+        coverage_id="topic-02",
+        title="EIA Q4 2025 forecast",
+        rationale="Report the issuer's own quarterly forecast.",
+        search_queries=["EIA Q4 2025 battery storage forecast"],
+        success_criteria=["Cite EIA's own forecast."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id="topic-02-target-01",
+                coverage_id="topic-02",
+                question=(
+                    "What does EIA's outlook project for battery storage "
+                    "additions in the fourth quarter of 2025?"
+                ),
+                required_dimensions=[
+                    "measure: projected quarterly battery storage capacity additions",
+                    "period: Q4 2025",
+                    "source: EIA Short-Term Energy Outlook",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            )
+        ],
+    )
+    assert not any(
+        "vintage" in issue for issue in target_problems([topic], contract)
+    )
+
+
+def test_a_month_of_year_edition_the_question_already_names_is_not_flagged() -> (
+    None
+):
+    """"January of 2025" and "January 2025" name the same edition.
+
+    The question phrases the edition naturally ("released in January of
+    2025"); the target's own dimensions spell the identical edition without
+    "of" ("January 2025 edition"). A literal substring check never reads
+    these as the same date, so the plan's own edition was flagged as
+    unrequested even though the question named exactly it.
+    """
+    contract = _contract(
+        "What did the EIA Short-Term Energy Outlook, released in January "
+        "of 2025, project for battery storage additions in 2025?"
+    )
+    topic = SubTopic(
+        coverage_id="topic-02",
+        title="EIA January 2025 forecast vintage",
+        rationale="Report the issuer's forecast and release vintage.",
+        search_queries=["EIA January 2025 battery storage forecast"],
+        success_criteria=["Date the forecast the issuer publishes."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id="topic-02-target-01",
+                coverage_id="topic-02",
+                question=(
+                    "What did the EIA Short-Term Energy Outlook's January "
+                    "2025 edition project for battery storage additions in "
+                    "2025?"
+                ),
+                required_dimensions=[
+                    "measure: projected annual battery storage capacity additions",
+                    "source: EIA Short-Term Energy Outlook, January 2025 edition",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            )
+        ],
+    )
+    assert not any(
+        "vintage" in issue for issue in target_problems([topic], contract)
+    )
+
+
+def test_a_forecast_verb_naming_no_edition_is_not_flagged() -> None:
+    """"EIA project[s]" the bare verb is not "projected": no cue, no flag.
+
+    The ungrouped cue alternation read "project" inside "EIA project the
+    grid will add" as a forecast cue, and then flagged the period
+    requirement's own "December 2025" as an invented edition. Grouping the
+    cue to whole words ("forecast", "forecasted", "projected", "projection",
+    "outlook") leaves a bare present-tense "project" unmatched.
+    """
+    contract = _contract(
+        "How much battery storage capacity will be added by the end of "
+        "2025?"
+    )
+    topic = SubTopic(
+        coverage_id="topic-01",
+        title="EIA 2025 additions",
+        rationale="Report the issuer's own count.",
+        search_queries=["EIA battery storage additions 2025"],
+        success_criteria=["Cite EIA's own count."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id="topic-01-target-01",
+                coverage_id="topic-01",
+                question=(
+                    "What battery storage capacity does EIA project the "
+                    "grid will add by the end of 2025?"
+                ),
+                required_dimensions=[
+                    "measure: annual battery storage capacity additions",
+                    "period: December 2025",
+                    "source: EIA",
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            )
+        ],
+    )
+    assert not any(
+        "vintage" in issue for issue in target_problems([topic], contract)
+    )
+
+
+def test_audit2_forecast_vintages_stay_flagged() -> None:
+    """The real audit-2 topic-02 and topic-04 targets still name unrequested editions.
+
+    Real targets from the audited run: topic-02 pins the January 2025 STEO
+    edition, topic-04 pins the Q1 2025 US Energy Storage Monitor edition, and
+    the original question names neither. Both are genuine, intended flags
+    that must survive every false-positive fix above.
+    """
+    contract = _contract(
+        "How much grid-scale battery storage capacity was added in the "
+        "United States in 2024, and what do the latest forecasts project "
+        "for 2025?"
+    )
+    evidence_period = (
+        "evidence period: the period the question names (2024, 2025); "
+        "answer that period from the latest evidence available as of "
+        "2026-09-24 \u2014 a projection is reported as a forecast with its "
+        "issuer and release vintage and a published outcome as an actual "
+        "\u2014 and never substitute today's figures for the period the "
+        "question names"
+    )
+    topic_02 = SubTopic(
+        coverage_id="topic-02",
+        title="EIA 2025 forecast vintage",
+        rationale="Report the issuer's forecast and release vintage.",
+        search_queries=["EIA 2025 battery storage additions forecast"],
+        success_criteria=["Date the forecast the issuer publishes."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id="topic-02-target-01",
+                coverage_id="topic-02",
+                question=(
+                    "What did the EIA Short-Term Energy Outlook's January "
+                    "2025 edition project for 2025 US utility-scale battery "
+                    "storage capacity additions, in the unit that edition "
+                    "reports?"
+                ),
+                required_dimensions=[
+                    "measure: projected annual utility-scale battery storage capacity additions",
+                    "period: calendar year 2025 as projected in the January 2025 EIA Short-Term Energy Outlook",
+                    "geography: United States",
+                    "source: EIA Short-Term Energy Outlook, January 2025 edition",
+                    "answer form: the specific fact asked for, with its value, unit, and the date the value applies to",
+                    evidence_period,
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            )
+        ],
+    )
+    topic_04 = SubTopic(
+        coverage_id="topic-04",
+        title="US Energy Storage Monitor 2025 forecast vintage",
+        rationale="Report the Monitor's forecast and release vintage.",
+        search_queries=["US Energy Storage Monitor Q1 2025 forecast"],
+        success_criteria=["Date the forecast the Monitor publishes."],
+        priority=1,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id="topic-04-target-01",
+                coverage_id="topic-04",
+                question=(
+                    "What did the US Energy Storage Monitor's Q1 2025 "
+                    "edition project for 2025 US grid-scale battery storage "
+                    "capacity additions, in the unit that edition reports?"
+                ),
+                required_dimensions=[
+                    "measure: projected annual grid-scale battery storage capacity additions",
+                    "period: calendar year 2025 as projected in the Q1 2025 US Energy Storage Monitor",
+                    "geography: United States",
+                    "source: freely reachable US Energy Storage Monitor Q1 2025 summary or press release published by the American Clean Power Association or Wood Mackenzie",
+                    "answer form: the specific fact asked for, with its value, unit, and the date the value applies to",
+                    evidence_period,
+                ],
+                required=True,
+                critical=True,
+                support_policy="primary_attribution",
+            )
+        ],
+    )
+    issues = target_problems([topic_02, topic_04], contract)
+    assert any(
+        "January 2025" in issue and "vintage" in issue for issue in issues
+    )
+    assert any("Q1 2025" in issue and "vintage" in issue for issue in issues)
+
 
 def test_a_legacy_plan_without_targets_requires_replanning() -> None:
     legacy = SubTopic(

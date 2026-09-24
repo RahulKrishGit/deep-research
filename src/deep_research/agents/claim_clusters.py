@@ -778,6 +778,13 @@ _CAUSAL_CONNECTIVE = re.compile(
     r"therefore|thus)\s+)\s*",
     re.IGNORECASE,
 )
+# A contrasting measured quantity is a different assertion, not a second
+# reading of the same one: "15 GW added in 2025, against 24 GW planned in
+# 2026" must retain the first actual even when the second comparison differs.
+_MEASURED_CONTRAST = re.compile(
+    r",\s*(?=against\s+(?:the\s+)?\d[\d,.]*\s*(?:GW|MW|GWh|MWh)\b)",
+    re.IGNORECASE,
+)
 
 # A sentence ends at a period, a question mark, or an exclamation mark, and
 # the whitespace after it is where the split falls. What precedes that
@@ -1631,7 +1638,8 @@ def _split_clauses(text: str) -> list[str]:
     clauses: list[str] = []
     for sentence in _sentences(text):
         for stated in re.split(r"\s*;\s*", sentence):
-            clauses.extend(_CAUSAL_CONNECTIVE.split(stated))
+            for contrasted in _MEASURED_CONTRAST.split(stated):
+                clauses.extend(_CAUSAL_CONNECTIVE.split(contrasted))
     cleaned: list[str] = []
     for clause in clauses:
         stripped = clause.strip()
@@ -1647,17 +1655,26 @@ def _restates(
 ) -> bool:
     """True when ``current`` is ``previous`` restated in parentheses.
 
-    Only the form "X u1 (Y u2)" with both units on one SI base (watts or
-    watt-hours) and the same quantity after scaling counts. Two quantities in
-    different bases ("10 GW (40 GWh)"), different values ("10.4 GW (26,000
-    MW)"), or any other arrangement ("18.2 GW, up from 10.3 GW") stay two.
+    Two shapes count. "X u1 (Y u2)" with both units on one SI base (watts or
+    watt-hours) and the same quantity after scaling is a rescaled restatement.
+    "N% (Y u)" — a share immediately followed by its own absolute figure in
+    parentheses, such as "growing by 47% (14 GW)" — is a restatement too: the
+    parenthetical spells the share's own quantity, not a second measurement,
+    and a percentage has no SI base to scale against so no magnitude check
+    applies to it. Two quantities in different bases ("10 GW (40 GWh)"),
+    different values ("10.4 GW (26,000 MW)"), or any other arrangement
+    ("18.2 GW, up from 10.3 GW") stay two.
     """
     if not _OPENS_PARENTHESIS.fullmatch(clause[previous.end() : current.start()]):
         return False
     if not _CLOSES_PARENTHESIS.match(clause[current.end() :]):
         return False
-    first = _SI_UNIT_SCALE.get(_canonical_unit(previous.group("unit")))
-    second = _SI_UNIT_SCALE.get(_canonical_unit(current.group("unit")))
+    previous_unit = _canonical_unit(previous.group("unit"))
+    current_unit = _canonical_unit(current.group("unit"))
+    if previous_unit in ("%", "pp") and current_unit not in ("%", "pp"):
+        return True
+    first = _SI_UNIT_SCALE.get(previous_unit)
+    second = _SI_UNIT_SCALE.get(current_unit)
     if first is None or second is None or first[0] != second[0]:
         return False
     try:
@@ -1679,7 +1696,10 @@ def _value_and_unit(clause: str, *, period: str) -> tuple[str, str]:
     an unstated dimension as unstated and refuses accordingly. A parenthetical
     restatement of the same quantity is one measurement, not two: the live
     claims "added 10.4 GW (10,400 MW)" and "add 19.6 GW (19,600 MW)" read no
-    value at all, so neither could answer the target it was written for.
+    value at all, so neither could answer the target it was written for. A
+    share restated as its own absolute figure in parentheses — "grew by 47%
+    (14 GW)" — keeps that absolute figure rather than the share, because the
+    unit a target asks for is the checkable one.
     """
     period_digits = set(re.findall(r"\d+", period))
     found: list[re.Match[str]] = []
@@ -1687,6 +1707,8 @@ def _value_and_unit(clause: str, *, period: str) -> tuple[str, str]:
         if match.group("value") in period_digits:
             continue
         if found and _restates(clause, found[-1], match):
+            if _canonical_unit(found[-1].group("unit")) in ("%", "pp"):
+                found[-1] = match
             continue
         found.append(match)
     if len(found) != 1:
@@ -2804,7 +2826,12 @@ def extract_text_atoms(
     claim_geography = _claim_geography(text)
     atoms: list[AtomicProposition] = []
     for index, clause in enumerate(_split_clauses(text), start=1):
-        period_match = _PERIOD_PATTERN.search(clause)
+        # The issuer's release date precedes its reported assertion. Once a
+        # reporting verb introduces "that", the observed period belongs to
+        # the assertion, never to the preceding publication date.
+        period_match = _PERIOD_PATTERN.search(
+            clause, _reported_clause_start(clause)
+        ) or _PERIOD_PATTERN.search(clause)
         period = (
             " ".join(period_match.group("period").split())
             if period_match is not None
@@ -2895,17 +2922,115 @@ def extract_text_atoms(
     return atoms
 
 
+# States and grid operators a document may scope a figure to instead of the
+# nation as a whole. A masthead's "U.S." reads as the country; it does not
+# read as one of these, so a clause or a supporting sentence naming one is
+# never handed the title's geography, however the title itself is worded.
+_OTHER_PLACE_NAMES = frozenset(
+    {
+        "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+        "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+        "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
+        "maine", "maryland", "massachusetts", "michigan", "minnesota",
+        "mississippi", "missouri", "montana", "nebraska", "nevada",
+        "new hampshire", "new jersey", "new mexico", "new york",
+        "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
+        "pennsylvania", "rhode island", "south carolina", "south dakota",
+        "tennessee", "texas", "utah", "vermont", "virginia", "washington",
+        "west virginia", "wisconsin", "wyoming",
+        "ercot", "caiso", "pjm", "miso", "spp", "nyiso", "iso-ne",
+    }
+)
+_OTHER_PLACE_PATTERN = re.compile(
+    r"\b(?:"
+    + "|".join(
+        re.escape(name)
+        for name in sorted(_OTHER_PLACE_NAMES, key=len, reverse=True)
+    )
+    + r")\b",
+    re.IGNORECASE,
+)
+_GLOBAL_SCOPE = re.compile(r"\b(?:global(?:ly)?|world(?:wide)?)\b", re.IGNORECASE)
+
+
+def _names_other_place(clause: str) -> bool:
+    """True when the fact a clause states names a place the nation is not.
+
+    Read only after the clause's own reporting verb — the same restriction
+    :func:`_geography_for` applies to its own locative search — so a preamble
+    such as "EIA's ... Today in Energy analysis states that" is never read as
+    a locative itself; it is the issuer's own section title, not a place the
+    fact was scoped to.
+    """
+    fact = clause[_reported_clause_start(clause):]
+    return (
+        _OTHER_PLACE_PATTERN.search(fact) is not None
+        or _GLOBAL_SCOPE.search(fact) is not None
+        or _GEOGRAPHY.search(fact) is not None
+    )
+
+
+def source_title_geography(
+    atom: AtomicProposition, source_title: str, supporting_text: str
+) -> str:
+    """Read a measured fact's geographic context from its supporting source.
+
+    An issuer named ``U.S. ...`` is not the geography of every measurement it
+    publishes. A headline saying ``U.S. battery capacity`` does scope a
+    measurement that the same source text actually states — but only when
+    neither the claim's own clause nor the specific supporting sentence that
+    states this value and unit names anywhere else: a state, an ISO/RTO, a
+    city-like locative, or a global/worldwide scope. "14%, or 3.4 GW, in
+    California" on a "New U.S. electric generating capacity" masthead is
+    California's number, not the nation's, however the headline reads.
+    """
+    if atom.geography or not atom.value or not atom.unit:
+        return ""
+    value = _canonical_number(atom.value)
+    unit = _canonical_unit(atom.unit)
+    stated_sentence = ""
+    for sentence in _sentences(supporting_text):
+        if any(
+            _canonical_number(match.group("value")) == value
+            and _canonical_unit(match.group("unit")) == unit
+            for match in _VALUE_UNIT_PATTERN.finditer(sentence)
+        ):
+            stated_sentence = sentence
+            break
+    if not stated_sentence:
+        return ""
+    if _names_other_place(stated_sentence) or _names_other_place(atom.text):
+        return ""
+    for match in _UNITED_STATES.finditer(source_title):
+        following = source_title[match.end():].split()[:4]
+        if re.search(r"\bcapacit(?:y|ies)\b", " ".join(following), re.I):
+            return "United States"
+    return ""
+
+
 def extract_atoms(
     claim: Claim,
     evidence: tuple[EvidenceUnit, ...] | list[EvidenceUnit] = (),
 ) -> list[AtomicProposition]:
-    """Reduce one adjudicated claim to its atomic propositions."""
-    return extract_text_atoms(
+    atoms = extract_text_atoms(
         claim.text,
         claim_id=claim.claim_id,
         evidence_ids=_evidence_ids_for(claim, tuple(evidence)),
         target_ids=claim.target_ids,
     )
+    for index, atom in enumerate(atoms):
+        if atom.geography:
+            continue
+        for passage in claim.verification_evidence:
+            if passage.stance != "supports":
+                continue
+            place = source_title_geography(
+                atom, passage.source_title, passage.excerpt
+            )
+            if place:
+                atoms[index] = atom.model_copy(update={"geography": place})
+                break
+    return atoms
 
 
 def target_order_for(state: ResearchState) -> list[str]:

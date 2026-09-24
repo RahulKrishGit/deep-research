@@ -1134,6 +1134,37 @@ async def test_openai_complete_structured_raises_after_retries_exhausted(
     assert slept == [1.0, 2.0]
 
 
+@pytest.mark.asyncio
+async def test_openai_report_judge_uses_role_timeout_and_retry_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _recorded_sleeps(monkeypatch)
+    error = APITimeoutError(request=httpx.Request("POST", "https://api.openai.com"))
+    responses = RecordingResponses(*([error] * 6))
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(
+            retry_count=5,
+            model_overrides={
+                "report_judge": {"timeout": 360.0, "retry_count": 1}
+            },
+        ),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderTimeoutError):
+            await provider.complete_structured(
+                [ChatMessage(role="user", content="Review")],
+                Outline,
+                agent_name="report_judge",
+            )
+
+    assert len(responses.parse_calls) == 2
+    assert [call["timeout"] for call in responses.parse_calls] == [360.0, 360.0]
+
+
 # --- native ReAct tool turns (offline parity with DeepSeek) ------------------
 
 WEB_SEARCH_DEFINITION = ToolDefinition(

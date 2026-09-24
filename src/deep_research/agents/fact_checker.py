@@ -20,7 +20,7 @@ import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, TypeVar
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator
@@ -33,7 +33,15 @@ from deep_research.agents.acquisition import (
     build_boundary_audit,
     select_relevant_passages,
 )
-from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.base import (
+    OUTPUT_LIMIT_ATTEMPT_EFFORTS,
+    OUTPUT_LIMIT_RETRY_EFFORT,
+    OUTPUT_LIMIT_RETRY_OUTCOMES,
+    OUTPUT_LIMIT_RETRY_READINGS,
+    AgentCompleter,
+    AgentRun,
+    BaseAgent,
+)
 from deep_research.agents.claim_clusters import (
     LEGACY_COVERAGE_DIMENSION,
     ClaimConsolidation,
@@ -47,6 +55,7 @@ from deep_research.agents.claim_clusters import (
     consolidate_claims,
     critical_target_ids,
     extract_text_atoms,
+    source_title_geography,
     resolved_verdict_and_status,
     select_claim_batch_indices,
     target_order_for,
@@ -62,6 +71,7 @@ from deep_research.agents.evidence import (
     _identity_words,
     canonical_read_text,
     eligible_independent_pair,
+    first_party_host_evidences_issuer,
     resolve_source_identities,
     shares_lineage,
     source_origin_id,
@@ -100,6 +110,7 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.providers.contracts import (
+    ProviderOutputLimitError,
     StructuredOutputError,
     StructuredRepairRecord,
 )
@@ -301,6 +312,14 @@ class PendingClaim(ContractModel):
     source_urls: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
     deferred: bool = False
+    reason: str = ""
+    """Why the latest pass that tried this claim could not adjudicate it.
+
+    An ``INSUFFICIENT_REASONS`` key — ``output_limit`` for a verdict truncated
+    at both efforts — or ``""`` for a claim no pass has tried yet. Kept apart
+    from ``deferred``: a tried-and-failed claim and an untried one are both
+    pending, and only the first says why.
+    """
 
 
 class VerifiedClaims(ContractModel):
@@ -522,8 +541,37 @@ def consumed_provenance(
     )
 
 
+def _source_for_finding(
+    finding: Finding, *, sources: Sequence[ScoredSource]
+) -> ScoredSource | None:
+    """The assessed source behind one finding's own page, if there is one."""
+    url = normalize_source_url(finding.source_url)
+    for source in sources:
+        if normalize_source_url(source.url) == url:
+            return source
+    return None
+
+
+def _read_for_finding(
+    finding: Finding, *, reads: Sequence[ReadRecord]
+) -> ReadRecord | None:
+    """The read behind one finding's own page, if this run has one."""
+    url = normalize_source_url(finding.source_url)
+    for read in reads:
+        if (
+            normalize_source_url(read.resolved_url) == url
+            or normalize_source_url(read.requested_url) == url
+        ):
+            return read
+    return None
+
+
 def claim_provenance_for(
-    draft: ClaimDraft, *, findings: Sequence[Finding]
+    draft: ClaimDraft,
+    *,
+    findings: Sequence[Finding],
+    sources: Sequence[ScoredSource] = (),
+    reads: Sequence[ReadRecord] = (),
 ) -> ClaimProvenance:
     """The provenance of the one finding this claim's figure came from.
 
@@ -534,6 +582,23 @@ def claim_provenance_for(
     findings carry the same figure the attribution is ambiguous and nothing is
     copied: a guess here would print an edition and a release date beside a
     figure that did not come from it.
+
+    When the chosen finding's own page is a first-party publication — its own
+    HOST is the issuer's, per ``first_party_host_evidences_issuer``, not
+    merely an accepted ``evidenced_issuer`` anchor a relay could also earn by
+    attributing its body to another body ("Data released by the EIA") — that
+    issuer fills a still-empty ``attributed_issuer``, and the page's own
+    stated publication date (``ScoredSource.temporal.publication_date``, or
+    the finding's own ``statement_date`` for that same read) fills a
+    still-empty ``release_date``: a first-party page's date IS the issuer's
+    release, even on a page that never phrases it as "released". A relay's
+    page is never read as the body it relays, however confidently the
+    evaluator accepted that body as an identity anchor for it. Neither fill
+    ever fires when the claim already names a *different* body
+    (``issuer_matches`` decides "different"), when the source carries no
+    evidenced issuer at all, when this run holds no read of that page, or
+    when neither the source nor the finding states a date: a field this
+    function cannot ground in the evidence stays ``None``.
     """
     cited = _cited_findings(draft, findings=findings)
     if not cited:
@@ -552,12 +617,29 @@ def claim_provenance_for(
         chosen = cited[winners[0]] if len(winners) == 1 else None
     if chosen is None:
         return ClaimProvenance()
+    attributed_issuer = chosen.attributed_issuer
+    release_date = chosen.release_date
+    source = _source_for_finding(chosen, sources=sources)
+    issuer = evidenced_issuer(source)
+    if issuer:
+        claimed = (attributed_issuer or "").strip() or _claim_issuer(draft.text)
+        read = _read_for_finding(chosen, reads=reads)
+        if (
+            (not claimed or issuer_matches(claimed, issuer))
+            and read is not None
+            and first_party_host_evidences_issuer(read, issuer)
+        ):
+            attributed_issuer = attributed_issuer or issuer
+            if not release_date:
+                release_date = (
+                    source.temporal.publication_date if source else None
+                ) or chosen.statement_date
     return ClaimProvenance(
-        attributed_issuer=chosen.attributed_issuer,
+        attributed_issuer=attributed_issuer,
         measure_scope=chosen.measure_scope,
         vintage=chosen.vintage,
         statement_date=chosen.statement_date,
-        release_date=chosen.release_date,
+        release_date=release_date,
         data_period=chosen.data_period,
     )
 
@@ -569,6 +651,8 @@ def claim_attribution(
     coverage_ids: Mapping[str, str],
     targets: Mapping[str, Sequence[EvidenceTarget]],
     question: str,
+    sources: Sequence[ScoredSource] = (),
+    reads: Sequence[ReadRecord] = (),
 ) -> ClaimAttribution:
     """Everything one extraction pass attributes to one accepted claim.
 
@@ -595,7 +679,18 @@ def claim_attribution(
     fingerprints, consumed_coverage = consumed_provenance(
         draft, findings=findings, coverage_ids=coverage_ids
     )
+    cited_findings = _cited_findings(draft, findings=findings)
     atoms = extract_text_atoms(draft.text)
+    for index, atom in enumerate(atoms):
+        if atom.geography:
+            continue
+        for finding in cited_findings:
+            place = source_title_geography(
+                atom, finding.source_title, finding.content
+            )
+            if place:
+                atoms[index] = atom.model_copy(update={"geography": place})
+                break
     obligations: list[str] = []
     policies: dict[str, str] = {}
     planned = {
@@ -604,9 +699,7 @@ def claim_attribution(
         for target in group
     }
     candidates = _candidate_targets(
-        _cited_findings(draft, findings=findings),
-        targets=targets,
-        planned=planned,
+        cited_findings, targets=targets, planned=planned
     )
     for target in candidates:
         if any(
@@ -622,7 +715,9 @@ def claim_attribution(
         target_policies={
             target_id: policies[target_id] for target_id in obligations
         },
-        provenance=claim_provenance_for(draft, findings=findings),
+        provenance=claim_provenance_for(
+            draft, findings=findings, sources=sources, reads=reads
+        ),
     )
 
 
@@ -836,6 +931,89 @@ def build_claim_drafts(
         claims.append(ClaimDraft(text=text, source_urls=urls))
     return claims, rejected
 
+_FINDING_CONTAINMENT_FLOOR = 0.9
+
+
+def _content_words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z]{4,}", text.casefold()))
+
+
+def _near_contains_the_finding(draft_words: set[str], finding_content: str) -> bool:
+    """True when little of ``finding_content`` is outside what the draft said.
+
+    Measured against the *finding's* own word count, not the draft's: a
+    figure-free draft's vague tail ("growing over the forecast period")
+    shares no words with any finding's own account of the number, so a floor
+    read against the draft's own word count could never sit near 1.0 for the
+    very paraphrases this function exists to fix. What has to stay high is
+    the other direction — the finding states little the draft did not already
+    gesture at — so a finding carrying a different scope, a different
+    quantity, or a different period (a cumulative stock beside an unrelated
+    addition) is refused however many of the draft's own words happen to
+    recur in it.
+    """
+    finding_words = _content_words(finding_content)
+    if not finding_words:
+        return False
+    shared = len(draft_words & finding_words)
+    return shared / len(finding_words) >= _FINDING_CONTAINMENT_FLOOR
+
+
+def retain_finding_figures(
+    drafts: Sequence[ClaimDraft],
+    *,
+    findings: Sequence[Finding],
+    prior_claims: Sequence[Claim],
+) -> list[ClaimDraft]:
+    """Keep a newly mined figure when a draft paraphrases it away.
+
+    The model is allowed to rephrase a finding, not to delete the number that
+    makes the finding answer its question. A figure-free draft citing exactly
+    one qualifying measured finding on a cited URL is replaced by that
+    finding, and every URL the draft cited is kept, the substituted one
+    included. A finding the model omitted altogether is not added here: that
+    would turn every mined figure into adjudication work, while the trace
+    does not show extraction omission.
+
+    A finding qualifies only when the draft's own years are a subset of the
+    finding's (a draft naming no year qualifies against any finding; a draft
+    naming 2026 never qualifies against a finding that states only 2024 or
+    2025) and the finding's own words are near-contained in what the draft
+    already said (:func:`_near_contains_the_finding`). Candidacy is computed
+    over *every* measured finding on the cited URL, consumed ones included: a
+    consumed finding that also qualifies makes the match ambiguous and
+    refuses the swap even though only a new finding could ever be substituted
+    in. The swap itself still requires the single qualifying finding to be
+    new — a draft is never rewritten into a fact a prior claim already
+    recorded consuming.
+    """
+    measured = [
+        finding for finding in findings if _measured_pairs(finding.content)
+    ]
+    kept: list[ClaimDraft] = []
+    for draft in drafts:
+        cited = {normalize_source_url(url) for url in draft.source_urls}
+        words = _content_words(draft.text)
+        draft_years = _years(draft.text)
+        candidates = [
+            finding
+            for finding in measured
+            if normalize_source_url(finding.source_url) in cited
+            and draft_years <= _years(finding.content)
+            and _near_contains_the_finding(words, finding.content)
+        ]
+        if (
+            not _measured_pairs(draft.text)
+            and len(candidates) == 1
+            and _finding_is_new(candidates[0], prior_claims)
+        ):
+            draft = ClaimDraft(
+                text=candidates[0].content,
+                source_urls=list(draft.source_urls),
+            )
+        kept.append(draft)
+    return _unique_drafts(kept)
+
 
 def claim_extraction_messages(
     state: ResearchState,
@@ -1000,6 +1178,10 @@ INSUFFICIENT_REASONS = {
         "The provider's structured reply could not be validated; nothing was "
         "adjudicated."
     ),
+    "output_limit": (
+        "The verdict reply reached the output limit at the configured and the "
+        "lower reasoning effort; nothing was adjudicated."
+    ),
     "model_disagreement": (
         "The model's own assessments of the packet contradict its selections."
     ),
@@ -1103,6 +1285,11 @@ class ClaimVerdictDraft(ContractModel):
     support_ids: list[str]
     contradiction_ids: list[str]
     rationale: str = ""
+
+
+# The two schemas one claim's verdict is requested as: the packet adjudication
+# and the legacy passage verdict. Both go through ``_request_verdict``.
+_VerdictT = TypeVar("_VerdictT", ClaimVerdictDraft, PassageVerdictDraft)
 
 
 # Two examples, because the verdict set has opposite populated/empty shapes:
@@ -3219,15 +3406,20 @@ def _packet_independent_publishers(
 def provider_failure_reason(error: Exception) -> str:
     """Which enumerated reason a provider failure records.
 
-    A structured-output schema failure exhausted the provider's one repair, and
-    an outage never reached it. Both are operational states, and neither is an
-    evidence verdict — the caller keeps the claim pending either way — but a
-    reviewer reading the ledger needs to tell a malformed reply from a
-    transport failure.
+    A structured-output schema failure exhausted the provider's one repair, a
+    truncation reached the output limit, and an outage never reached the model
+    at all. All three are operational states, and none is an evidence verdict
+    — the caller keeps the claim pending either way — but a reviewer reading
+    the ledger needs to tell a malformed or runaway reply from a transport
+    failure. A truncation is also the one the pass does not stop on: it is a
+    fact about one claim's request, where an outage is a fact about the
+    provider that the next claim would meet again.
     """
-    return "schema_failed" if isinstance(error, StructuredOutputError) else (
-        "provider_unavailable"
-    )
+    if isinstance(error, StructuredOutputError):
+        return "schema_failed"
+    if isinstance(error, ProviderOutputLimitError):
+        return "output_limit"
+    return "provider_unavailable"
 
 
 def adjudication_repaired_event(
@@ -3616,6 +3808,7 @@ def _pending_claim(
     target_ids: Sequence[str],
     *,
     deferred: bool = False,
+    reason: str = "",
 ) -> PendingClaim:
     """One unadjudicated draft as the caller sees it."""
     return PendingClaim(
@@ -3624,6 +3817,7 @@ def _pending_claim(
         source_urls=list(draft.source_urls),
         target_ids=list(target_ids),
         deferred=deferred,
+        reason=reason,
     )
 
 
@@ -3731,22 +3925,68 @@ def verdict_counts(claims: Sequence[Claim]) -> dict[str, int]:
     return counts
 
 
-def claim_verification_provider_error(error: Exception) -> ResearchError:
-    """Record that one claim's verdict call could not reach the provider.
+def claim_verification_provider_error(
+    error: Exception, *, claim_id: str
+) -> ResearchError:
+    """Record that one claim's verdict call produced no reply to judge.
 
-    Non-recoverable, and the claim is recorded as
-    ``insufficient_evidence``: an outage is not evidence.
+    Nothing was adjudicated, so the claim stays pending: an outage is not
+    evidence. An outage stops the pass and is non-recoverable. A truncation
+    that survived its one retry is recoverable: it is a fact about this
+    claim's request, the pass goes on to the next claim, and a non-recoverable
+    provider error is how the graph reads "a provider failure ended the pass".
     """
     return agent_error(
         agent_name=FACT_CHECKER_NAME,
         error_type="fact_checker_verification_provider_error",
         message=(
-            "The model provider failed while a claim's verdict was "
-            "requested; the claim was recorded as insufficient evidence."
+            "The model provider returned no usable reply while a claim's "
+            "verdict was requested; nothing was adjudicated and the claim "
+            "stays pending."
         ),
-        recoverable=False,
+        recoverable=isinstance(error, ProviderOutputLimitError),
         details=agent_provider_failure_details(
-            "fact_checker_claim_verification", error
+            "fact_checker_claim_verification",
+            error,
+            claim_id=claim_id,
+            reason=provider_failure_reason(error),
+        ),
+    )
+
+
+def verification_output_limit_retry(
+    error: Exception,
+    *,
+    schema: str,
+    max_tokens: int,
+    outcome: str,
+) -> ResearchError:
+    """Record that a truncated verdict call was re-asked at the lower effort.
+
+    The retry is a second paid call, so it is recorded even when it answers.
+    Recoverable either way: a retry that answers produced the verdict, and one
+    that truncates again leaves the claim's own failure record beside this one.
+    """
+    if outcome not in OUTPUT_LIMIT_RETRY_OUTCOMES:
+        raise ValueError(f"unknown retry outcome: {outcome!r}")
+    return agent_error(
+        agent_name=FACT_CHECKER_NAME,
+        error_type="fact_checker_verification_output_limit_retry",
+        message=(
+            f"The {schema} verdict call was truncated by the output limit; it "
+            f"was re-asked once at reasoning_effort {OUTPUT_LIMIT_RETRY_EFFORT} "
+            f"with the same {max_tokens}-token output budget, and "
+            f"{OUTPUT_LIMIT_RETRY_READINGS[outcome]}"
+        ),
+        recoverable=True,
+        details=agent_provider_failure_details(
+            "fact_checker_claim_verification",
+            error,
+            attempt=2,
+            schema=schema,
+            reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
+            max_tokens=max_tokens,
+            outcome=outcome,
         ),
     )
 
@@ -4008,6 +4248,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # deferred claim resumes instead of disappearing.
         self._continuation: list[ClaimDraft] = []
         self._deferred: list[ClaimDraft] = []
+        # Why the latest pass that tried a pending claim could not adjudicate
+        # it, by claim fingerprint. Only ever holds queued claims: an entry is
+        # dropped when its claim is judged or leaves the queue.
+        self._pending_reasons: dict[str, str] = {}
         # The identities of the drafts this run drained from the queue. They
         # are work this run will do, so the provenance reset must keep their
         # attribution: a resumed claim that the model does not restate has no
@@ -4068,16 +4312,26 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         """
         return [
             *(
-                _pending_claim(draft, self._obligations_for(draft))
+                _pending_claim(
+                    draft,
+                    self._obligations_for(draft),
+                    reason=self._pending_reason(draft),
+                )
                 for draft in self._continuation
             ),
             *(
                 _pending_claim(
-                    draft, self._obligations_for(draft), deferred=True
+                    draft,
+                    self._obligations_for(draft),
+                    deferred=True,
+                    reason=self._pending_reason(draft),
                 )
                 for draft in self._deferred
             ),
         ]
+
+    def _pending_reason(self, draft: ClaimDraft) -> str:
+        return self._pending_reasons.get(claim_fingerprint(draft.text), "")
 
     @property
     def output_schema(self) -> type[VerifiedClaims]:
@@ -4690,6 +4944,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         window, deferred = partition_pending_claims(drafts)
         self._continuation = window
         self._deferred = deferred
+        queued = {claim_fingerprint(draft.text) for draft in drafts}
+        self._pending_reasons = {
+            fingerprint: reason
+            for fingerprint, reason in self._pending_reasons.items()
+            if fingerprint in queued
+        }
 
     async def extract_claims(
         self,
@@ -4783,6 +5043,9 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             critique_texts=critique_texts,
             refinement_targets=state.refinement_targets,
         )
+        claims = retain_finding_figures(
+            claims, findings=visible_findings, prior_claims=self._prior_claims
+        )
         errors = [invalid_claim_error(rejected)] if rejected else []
         self._reset_provenance()
         coverage_ids = coverage_ids_by_title(state)
@@ -4796,6 +5059,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                     coverage_ids=coverage_ids,
                     targets=targets,
                     question=question,
+                    sources=state.evaluated_sources,
+                    reads=list(state.read_records.values()),
                 )
                 for item in claims
             }
@@ -4875,20 +5140,18 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         # under this packet's fingerprint would be a diagnostic about the wrong
         # claim. Discarded here, so what is drained afterwards is this call's.
         self._discard_stale_repairs()
-        try:
-            draft = await self.provider.complete_structured(
-                adjudication_messages(
-                    packet, evidence_chars=self._evidence_chars
-                ),
-                ClaimVerdictDraft,
-                agent_name=self.name,
-            )
-        except ProviderError as error:
-            # A provider failure, including a structured-output schema failure:
-            # the adjudication was never read, so nothing was judged. Recording
+        draft, failure, records = await self._request_verdict(
+            adjudication_messages(packet, evidence_chars=self._evidence_chars),
+            ClaimVerdictDraft,
+        )
+        if draft is None:
+            # A provider failure, including a structured-output schema failure
+            # and a truncation that survived its one retry: the adjudication
+            # was never read, so nothing was judged. Recording
             # insufficient_evidence here would make an outage read as a finding
             # about the claim and would mark its findings consumed.
-            reason = provider_failure_reason(error)
+            assert failure is not None
+            reason = provider_failure_reason(failure)
             self._adjudication_failure[packet.claim_id] = (
                 "schema_failed"
                 if reason == "schema_failed"
@@ -4897,7 +5160,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             return (
                 None,
                 reason,
-                [claim_verification_provider_error(error)],
+                [
+                    *records,
+                    claim_verification_provider_error(
+                        failure, claim_id=claim_fingerprint(task.claim.text)
+                    ),
+                ],
                 True,
             )
         claim = validate_adjudication(draft, packet, None)
@@ -4915,7 +5183,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 }
             ),
             claim.insufficient_reason,
-            [],
+            records,
             False,
         )
 
@@ -4964,25 +5232,29 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 False,
             )
 
-        try:
-            draft = await self.provider.complete_structured(
-                claim_verification_messages(
-                    task,
-                    run,
-                    evidence_chars=self._evidence_chars,
-                    independent=independent,
-                ),
-                PassageVerdictDraft,
-                agent_name=self.name,
-            )
-        except ProviderError as error:
+        draft, failure, records = await self._request_verdict(
+            claim_verification_messages(
+                task,
+                run,
+                evidence_chars=self._evidence_chars,
+                independent=independent,
+            ),
+            PassageVerdictDraft,
+        )
+        if draft is None:
             # A provider failure, including a structured-output schema
             # failure: the verdict was never read, so nothing was judged and
             # nothing may look consumed.
+            assert failure is not None
             return (
                 None,
-                provider_failure_reason(error),
-                [claim_verification_provider_error(error)],
+                provider_failure_reason(failure),
+                [
+                    *records,
+                    claim_verification_provider_error(
+                        failure, claim_id=claim_fingerprint(task.claim.text)
+                    ),
+                ],
                 True,
             )
 
@@ -5009,9 +5281,71 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 }
             ),
             None,
-            [],
+            records,
             False,
         )
+
+    async def _request_verdict(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[_VerdictT],
+    ) -> tuple[_VerdictT | None, ProviderError | None, list[ResearchError]]:
+        """Ask for one claim's verdict, re-asking a truncation once.
+
+        Returns ``(draft, failure, records)``: exactly one of ``draft`` and
+        ``failure`` is set, and ``records`` holds the retry record when a
+        second attempt was made. A truncation is re-asked once at the lower
+        effort under the same budget — the branch rule every truncated
+        structured call follows — because a reasoning token is a completion
+        token and the same budget then buys more answer. An outage or a
+        schema failure is not re-asked here: the provider already retried the
+        transport and repaired the schema once.
+        """
+        max_tokens = self.config.claim_verification_max_tokens
+        truncations: list[ProviderOutputLimitError] = []
+        for position, effort in enumerate(OUTPUT_LIMIT_ATTEMPT_EFFORTS):
+            last_attempt = position + 1 == len(OUTPUT_LIMIT_ATTEMPT_EFFORTS)
+            try:
+                draft = await self.provider.complete_structured(
+                    messages,
+                    schema,
+                    agent_name=self.name,
+                    max_tokens=max_tokens,
+                    reasoning_effort=effort,
+                )
+            except ProviderOutputLimitError as error:
+                truncations.append(error)
+                if last_attempt:
+                    return None, error, self._verdict_retry_records(
+                        truncations, schema, "truncated"
+                    )
+                continue
+            except ProviderError as error:
+                return None, error, self._verdict_retry_records(
+                    truncations, schema, "failed"
+                )
+            return draft, None, self._verdict_retry_records(
+                truncations, schema, "answered"
+            )
+        raise AssertionError("a verdict attempt must produce a draft or a failure")
+
+    def _verdict_retry_records(
+        self,
+        truncations: Sequence[ProviderOutputLimitError],
+        schema: type[ContractModel],
+        outcome: str,
+    ) -> list[ResearchError]:
+        """The record of one verdict call's retry, or nothing when none ran."""
+        if not truncations:
+            return []
+        return [
+            verification_output_limit_retry(
+                truncations[0],
+                schema=schema.__name__,
+                max_tokens=self.config.claim_verification_max_tokens,
+                outcome=outcome,
+            )
+        ]
 
     async def finalize(
         self,
@@ -5241,6 +5575,10 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         )
 
         adjudicated: set[str] = set()
+        # Claims whose verdict was truncated at both efforts this pass. They
+        # stay pending, and are not served again by a later batch of the same
+        # pass: the same packet would meet the same limit at the same cost.
+        unjudgeable: set[str] = set()
         answered_targets: set[str] = set()
         critical_targets = critical_target_ids(state)
         cursor = 0
@@ -5249,10 +5587,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
         memory_candidates_seen = 0
         memory_recalls_seen = 0
         for batch_number in range(1, self._batches_per_pass + 1):
+            settled = adjudicated | unjudgeable
             outstanding = [
                 draft
                 for draft in pool
-                if claim_fingerprint(draft.text) not in adjudicated
+                if claim_fingerprint(draft.text) not in settled
             ]
             if not outstanding:
                 break
@@ -5348,10 +5687,11 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                             target_ids=task.target_ids,
                         )
                         self._adjudicated_packets.add(task.packet.fingerprint)
-                    if verify_failed:
+                    if verify_failed and reason != "output_limit":
                         # Mirror the loop-level provider_error path so the
                         # merged run never claims "finished" over an abort that
-                        # actually happened during verification.
+                        # actually happened during verification. A truncation
+                        # is not an abort: the pass goes on past it.
                         react = react.model_copy(
                             update={"stop_reason": "provider_error"}
                         )
@@ -5420,13 +5760,24 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
                 if claim is None:
                     # A provider or schema failure is not an evidence verdict.
                     # The claim consumed nothing, is not published, and stays
-                    # in the continuation queue for the next pass.
+                    # in the continuation queue with the reason it was not
+                    # judged.
+                    fingerprint = claim_fingerprint(draft.text)
+                    self._pending_reasons[fingerprint] = reason or "loop_failed"
+                    if reason == "output_limit":
+                        # A truncation that survived its one retry is a fact
+                        # about this claim's request, not about the provider:
+                        # the next claim is still judged, and this one is not
+                        # re-asked again in this pass.
+                        unjudgeable.add(fingerprint)
+                        continue
                     stopped = True
                     break
                 claims.append(claim)
                 # Adjudicated, and only now: the verdict exists, so this
                 # claim's findings are genuinely consumed.
                 adjudicated.add(claim_fingerprint(draft.text))
+                self._pending_reasons.pop(claim_fingerprint(draft.text), None)
                 # What the *published* claim answers, not what it reached for
                 # before it was judged: an obligation the support policy
                 # refused is still outstanding, and the critical-target

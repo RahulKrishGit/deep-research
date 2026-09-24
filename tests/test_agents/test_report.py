@@ -746,7 +746,9 @@ def test_every_point_carries_its_own_inline_markers() -> None:
     findings = _section_body(reader, "## Findings")
 
     assert "- Break-even was reached. [1]" in findings
-    assert "- Costs fell. [2]" in findings
+    # The bullet's claim is unverified and is not reprinted below, so the
+    # bullet itself carries the verdict.
+    assert "- Costs fell. (Not addressed by independent sources) [2]" in findings
     # The old renderer closed every section with one pile of markers.
     assert "Sources: [" not in reader
     assert "Sources: none cited" not in reader
@@ -871,6 +873,110 @@ def test_a_claim_the_findings_already_state_is_not_printed_twice() -> None:
     assert "No statement above repeats another." in reader
 
 
+def test_a_summary_figure_matched_to_no_planned_question_says_so() -> None:
+    """audit2 had every claim unbound, so its summary answered with no binding.
+
+    The figure stays in the summary, where it is the evidenced answer, but the
+    bullet says it is not matched to a planned question. A bound figure
+    carries no such note.
+    """
+    target = EvidenceTarget(
+        target_id="topic-05-target-01",
+        coverage_id="topic-05",
+        question="How much utility-scale battery storage was added in 2025?",
+        required_dimensions=["measure: annual additions"],
+        required=True,
+        critical=True,
+        support_policy="primary_attribution",
+    )
+    topic = SubTopic(
+        coverage_id="topic-05",
+        title="2025 actual",
+        rationale="The 2025 outcome.",
+        search_queries=["2025 battery additions"],
+        success_criteria=["EIA's 2025 figure"],
+        priority=1,
+        evidence_targets=[target],
+    )
+    unbound = _claim(text="The Monitor reported 18.9 GW installed in 2025.")
+    bound = _claim(
+        text="EIA reported 15 GW added in 2025.", target_ids=[target.target_id]
+    )
+    composition = _composition(
+        claims=[unbound, bound],
+        sub_topics=[topic],
+        summary=[
+            _point(text=unbound.text, claim_ids=[unbound.claim_id]),
+            _point(text=bound.text, claim_ids=[bound.claim_id]),
+        ],
+        sections=[],
+    )
+
+    summary = _section_body(render_reader_report(composition), "## Executive summary")
+    lines = {line for line in summary.splitlines() if line.startswith("- ")}
+
+    assert any(
+        "18.9 GW" in line and "not matched to a planned question" in line
+        for line in lines
+    )
+    assert not any(
+        "15 GW" in line and "not matched to a planned question" in line
+        for line in lines
+    )
+
+
+def test_a_paraphrased_reader_claim_is_not_reprinted_as_uncertain() -> None:
+    """The audited 10.4 GW bullet was reworded, then reprinted in the list."""
+    claim_text = (
+        "The U.S. Energy Information Administration's March 12, 2025 Today in "
+        "Energy analysis reported that generators added 10.4 GW of new battery "
+        "storage capacity in 2024."
+    )
+    reader_text = (
+        "EIA's March 12, 2025 analysis states that generators added 10.4 GW "
+        "of new battery storage capacity in 2024."
+    )
+    claim = _claim(text=claim_text, verdict="insufficient_evidence")
+    composition = _composition(
+        claims=[claim],
+        summary=[_point(text=reader_text, claim_ids=[claim.claim_id])],
+        sections=[],
+    )
+
+    reader = render_reader_report(composition)
+    uncertainty = _section_body(reader, "## Uncertainty and conflicting evidence")
+
+    assert claim_text not in uncertainty
+    assert "1 checked claim(s) for this heading are already stated above" in (
+        uncertainty
+    )
+    assert f"{reader_text} (Insufficient independent evidence)" in reader
+
+
+def test_methodology_counts_a_reworded_restatement_of_one_claim() -> None:
+    """Different wording of one checked claim is still a repeated statement."""
+    claim = _claim(text="EIA reported 10.4 GW of battery storage added in 2024.")
+    composition = _composition(
+        claims=[claim],
+        summary=[_point(text="EIA says 10.4 GW was added in 2024.", claim_ids=[claim.claim_id])],
+        sections=[
+            ReportSection(
+                title="2024",
+                points=[
+                    _point(
+                        text="Generators added 10.4 GW of battery storage in 2024, per EIA.",
+                        claim_ids=[claim.claim_id],
+                    )
+                ],
+            )
+        ],
+    )
+
+    methodology = _section_body(render_reader_report(composition), "## Methodology")
+
+    assert "No statement above repeats another." not in methodology
+    assert "1 statement(s) above restate a checked claim already stated" in methodology
+
 def _unestablished_bullet_composition(
     *, where: str, verdict: str = "insufficient_evidence"
 ) -> tuple[ReportComposition, str]:
@@ -937,27 +1043,19 @@ def test_a_bullet_stating_an_established_claim_carries_no_verdict_note() -> None
     assert "Insufficient independent evidence" not in body
 
 
-def test_a_clamped_bullet_is_cut_on_a_word_boundary_and_says_it_was_cut() -> None:
-    """The audited report cut two bullets mid-word (``c...``, ``expect...``).
+def test_a_long_answer_bullet_is_cut_on_a_word_boundary_and_says_it_was_cut() -> None:
+    """An answer point bound to 600 characters still marks a word-safe cut.
 
-    A character-count cut leaves a fragment that reads as the source's own
-    wording, and nothing in the bullet says the sentence stops there. The
-    display bound still bounds the bullet: the marker is inside the limit and
-    the text before it ends where the source has a space.
+    Checked claims in the uncertainty list now print complete sentences;
+    answer bullets retain their separate publication bound.
     """
-    text = " ".join(f"w{index}" * (index % 4 + 1) for index in range(60))
+    text = " ".join(f"w{index}" * (index % 4 + 1) for index in range(120))
     claim = _claim(text=text, verdict="insufficient_evidence")
     composition = _composition(
         claims=[claim],
-        summary=[],
-        sections=[
-            ReportSection(
-                title="Reported additions",
-                points=[_point(text="Another fact.", claim_ids=[claim.claim_id])],
-            )
-        ],
+        summary=[_point(text=text, claim_ids=[claim.claim_id])],
+        sections=[],
     )
-
     reader = render_reader_report(composition)
     bullet = next(
         line
@@ -972,7 +1070,29 @@ def test_a_clamped_bullet_is_cut_on_a_word_boundary_and_says_it_was_cut() -> Non
 
     assert text.startswith(body)
     assert text[len(body)] == " "
-    assert len(body) + len(" […] (cut)") <= 240
+    assert len(body) + len(" […] (cut)") <= 600
+
+
+def test_uncertainty_lists_complete_eia_claim_instead_of_cutting_its_sentence() -> None:
+    """A checked claim's own qualifier must survive the reader's uncertainty list."""
+    text = (
+        "The U.S. Energy Information Administration's March 12, 2025 Today in "
+        "Energy analysis reported that generators added 10.4 GW of new battery "
+        "storage capacity in 2024, the second-largest generating capacity "
+        "addition after solar, based on EIA's January 2025 Preliminary Monthly "
+        "Electric Generator Inventory."
+    )
+    composition = _composition(
+        claims=[_claim(text=text, verdict="insufficient_evidence")],
+        summary=[],
+        sections=[],
+    )
+
+    reader = render_reader_report(composition)
+    uncertainty = _section_body(reader, "### Insufficient independent evidence")
+
+    assert f"- {text} [1]" in uncertainty
+    assert "(cut)" not in uncertainty
 
 
 def test_methodology_is_a_compact_locally_generated_run_summary() -> None:
@@ -1060,7 +1180,9 @@ def test_no_reader_section_repeats_a_canonical_url_row() -> None:
     uncited = "https://example.test/source-042"
     assessment = _section_body(ledger, "## Source assessment")
 
-    assert cited == {"https://example.test/source-001"}
+    # Every source a printed bullet rests on is cited, including the checked
+    # claims the uncertainty list prints; the assessed-only source is not.
+    assert "https://example.test/source-001" in cited
     assert uncited not in cited
     for source_url in cited:
         assert reader.count(source_url) == 1
@@ -1916,6 +2038,71 @@ def test_a_mirror_pair_collapses_to_one_reader_reference() -> None:
     assert mirror not in render_reader_report(composition)
 
 
+def test_an_uncertain_claim_printed_from_a_mirror_pair_cites_one_reference() -> None:
+    """The uncertainty list's own bullets collapse a mirror like any statement.
+
+    A checked claim no finding states is printed under its verdict heading
+    and cites what it rests on; one work served from two hosts is still one
+    reference there, and the bullet's marker resolves to it.
+    """
+    mirror = "https://mirror.test/qec"
+    claim = _claim(verdict="insufficient_evidence", urls=[mirror, SOURCE_URL])
+    composition = _composition(
+        claims=[claim],
+        summary=[],
+        sections=[],
+        sources=[
+            _source(url=mirror, work_id="work-qec-2025", transport="mirror"),
+            _source(url=SOURCE_URL, work_id="work-qec-2025", transport="original"),
+        ],
+    )
+
+    index = reader_citations(composition)
+    uncertainty = _section_body(
+        render_reader_report(composition), "### Insufficient independent evidence"
+    )
+
+    assert [citation.url for citation in index] == [SOURCE_URL]
+    assert f"- {claim.text} [1]" in uncertainty
+
+
+def test_an_uncertain_claim_a_finding_states_adds_no_reference_of_its_own() -> None:
+    """A claim the list does not reprint puts no second copy of its work there.
+
+    Both copies are declared original, so the only thing keeping the mirror
+    out is that the reader never meets the claim a second time: the finding
+    that states it already cites the work, and the list counts the claim
+    rather than reprinting it.
+    """
+    mirror = "https://mirror.test/qec"
+    claim = _claim(verdict="insufficient_evidence", urls=[mirror, SOURCE_URL])
+    composition = _composition(
+        claims=[claim],
+        summary=[],
+        sources=[
+            _source(url=SOURCE_URL, work_id="work-qec-2025", transport="original"),
+            _source(url=mirror, work_id="work-qec-2025", transport="original"),
+        ],
+        sections=[
+            ReportSection(
+                title="Error correction",
+                points=[
+                    _point(
+                        "Break-even was reported.",
+                        claim_ids=[claim.claim_id],
+                        source_urls=[SOURCE_URL],
+                    )
+                ],
+            )
+        ],
+    )
+
+    index = reader_citations(composition)
+
+    assert [citation.url for citation in index] == [SOURCE_URL]
+    assert mirror not in render_reader_report(composition)
+
+
 def test_every_reader_statement_is_mapped_in_the_ledger() -> None:
     composition = _evidence_composition(
         evidence_units={"e1": _unit()},
@@ -2314,6 +2501,47 @@ def test_two_releases_of_one_series_are_shown_as_older_and_newer() -> None:
     assert summary.count("newer release") == 2
     assert f"(older release: EIA, {DECEMBER_VINTAGE}, released 2025-02-24)" in summary
     assert f"(newer release: EIA, {JANUARY_VINTAGE}, released 2025-03-12)" in summary
+
+
+def test_primary_measurement_does_not_inherit_relay_publication_day() -> None:
+    """One 10.4 GW fact cites both EIA and a relay, but has one release date."""
+    primary = _claim(
+        text=(
+            "EIA reported generators added 10.4 GW of battery storage capacity "
+            "in 2024."
+        ),
+        urls=["https://eia.gov/todayinenergy/detail.php?id=64705", SOURCE_URL],
+        provenance=_eia_provenance(),
+    )
+    relay = _claim(
+        text=(
+            "EnerKnol reported that EIA's 10.4 GW of battery storage capacity "
+            "was added in 2024."
+        ),
+        urls=[SOURCE_URL],
+        provenance=ClaimProvenance(
+            statement_date="2025-03-13", data_period="2024"
+        ),
+    )
+    composition = _evidence_composition(
+        question="How much was added in 2024?",
+        claims=[primary, relay],
+        summary=[
+            _stated(
+                primary.text,
+                claim_ids=[primary.claim_id, relay.claim_id],
+                statement=_statement(primary.text),
+            )
+        ],
+        sections=[],
+    )
+
+    reader = render_reader_report(composition)
+    summary = _section_body(reader, "## Executive summary")
+
+    assert "January 2025 Preliminary Monthly Electric Generator Inventory" in summary
+    assert "released 2025-03-12" in summary
+    assert "stated 2025-03-13" not in summary
 
 
 def test_a_question_that_does_not_ask_for_the_latest_keeps_its_order() -> None:

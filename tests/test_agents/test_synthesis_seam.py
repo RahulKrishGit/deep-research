@@ -251,8 +251,13 @@ async def test_verified_claims_become_a_cited_report_the_critic_accepts(
     for heading in REPORT_SECTIONS:
         assert heading in state.report
     # The claim the Fact Checker verified is cited against the source the
-    # Researcher actually retrieved, inline in the point that rests on it.
-    assert "- Break-even was reached. [1]" in state.report
+    # Researcher actually retrieved, inline in the point that rests on it. The
+    # claim was not addressed by independent sources, so the bullet that
+    # states it carries that reading instead of the claim being reprinted.
+    assert (
+        "- Break-even was reached. (Not addressed by independent sources) [1]"
+        in state.report
+    )
     assert f"1. QEC 2025 — {SEAM_SOURCE_URL}" in state.report
     # Task 7: every reader statement is mapped, and the independent passage
     # that carried the attribution is a reference in its own right.
@@ -266,7 +271,10 @@ async def test_verified_claims_become_a_cited_report_the_critic_accepts(
     assert "settled" not in {statement.mode for statement in statements}
     assert f"2. Independent review — {SEAM_INDEPENDENT_URL}" in state.report
     assert "## Statement support map" in (state.report_evidence or "")
-    assert "- Break-even was reached. [1][2]" in state.report
+    assert (
+        "- Break-even was reached. (Not addressed by independent sources) [1][2]"
+        in state.report
+    )
     # Both artifacts are composed into state; synthesis publishes neither and
     # keeps nothing in long-term memory.
     assert state.report_evidence is not None
