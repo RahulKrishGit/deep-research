@@ -163,6 +163,7 @@ from deep_research.agents.evidence import (
     canonical_publisher_id,
     canonical_read_text,
     compute_assessment_revision,
+    cosmetic_text,
     eligible_independent_pair,
     first_party_host_evidences_issuer,
     excerpt_matches,
@@ -194,6 +195,12 @@ from deep_research.agents.evidence import (
     validated_source_role,
     validated_temporal,
     validated_transport_relation,
+)
+from deep_research.agents.evidence_verifier import (
+    EVIDENCE_VERIFIER_NAME,
+    FigureMatch,
+    figure_match,
+    read_text,
 )
 from deep_research.agents.fact_checker import (
     ADJUDICATION_OPERATION,
@@ -290,6 +297,17 @@ from deep_research.agents.fact_checker import (
     validate_adjudication,
     verdict_counts,
     with_render_boundaries,
+)
+from deep_research.agents.figures import (
+    Quantity,
+    bare_numbers,
+    dates_in,
+    figure_in_text,
+    parse_figure,
+    quantities_in,
+    same_quantity,
+    unit_dimension,
+    without_dates,
 )
 from deep_research.agents.planner import (
     MAX_PLAN_REVIEW_CALLS,
@@ -526,6 +544,7 @@ from deep_research.agents.researcher import (
     BoundedFindings,
     Clock,
     FindingDraft,
+    FindingFigureDraft,
     ResearcherAgent,
     ResearchFindings,
     SubTopicFindingsDraft,
@@ -648,8 +667,6 @@ from deep_research.agents.synthesizer import (
     date_basis_for,
     dropped_modality,
     evidence_report_filename,
-    hardened_modality,
-    hedge_marker,
     high_confidence_claims,
     invalid_draft_error,
     limitation_reasons,
@@ -667,11 +684,23 @@ from deep_research.agents.synthesizer import (
     scope_fact,
     synthesis_completed_event,
     synthesis_started_event,
-    unattested_atoms,
     unattached_qualifiers,
-    unattested_words,
 )
 from deep_research.agents.toolset import AgentToolset, ToolDescriptor
+from deep_research.agents.wording import (
+    SCOPE_TERMS,
+    clause_around,
+    hardened_modality,
+    hedge_forecast,
+    hedge_marker,
+    page_modal,
+    stated_role,
+    stated_scopes,
+    stated_years,
+    unattested_atoms,
+    unattested_names,
+    unattested_words,
+)
 from deep_research.tools.passage_selection import select_relevant_passages
 from deep_research.utils.types import EVIDENCE_BADGE_LABELS, CritiqueGap
 
@@ -1340,4 +1369,33 @@ __all__ = [
     "deferred_candidates",
     "issuer_passage_carried",
     "single_source_suffices",
+    # Evidence Verifier plan, Tasks 1.2, 1.3 and 3.3: the read-text cosmetic
+    # normalisation, the figure and evidence-verifier surfaces, and the
+    # wording rules shared with the report writer. Appended as one block, the
+    # way earlier tasks appended theirs, because ``tests/test_imports.py``
+    # walks each submodule's AST and requires every public top-level name to
+    # be reachable here.
+    "cosmetic_text",
+    "Quantity",
+    "bare_numbers",
+    "dates_in",
+    "figure_in_text",
+    "parse_figure",
+    "quantities_in",
+    "same_quantity",
+    "unit_dimension",
+    "without_dates",
+    "EVIDENCE_VERIFIER_NAME",
+    "FigureMatch",
+    "figure_match",
+    "read_text",
+    "SCOPE_TERMS",
+    "clause_around",
+    "hedge_forecast",
+    "page_modal",
+    "stated_role",
+    "stated_scopes",
+    "stated_years",
+    "unattested_names",
+    "FindingFigureDraft",
 ]

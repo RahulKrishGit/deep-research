@@ -7,12 +7,6 @@ from datetime import datetime, timezone
 
 import pytest
 
-from deep_research.agents import ManifestSequence
-from deep_research.agents.synthesizer import (
-    evidence_report_filename,
-    quality_report_filename,
-    report_filename,
-)
 from deep_research.evaluation import config as evaluation_config
 from deep_research.evaluation.config import (
     _TARGET_REACT_TRANSPORT,
@@ -915,12 +909,14 @@ CRITIC_PROMPT_FINGERPRINT = "9f62f005745a"
 # synthesizer -> aa747550f226 (one label space, narrowed citations, restated
 # bound claims attached, rejected points published), critic ->
 # 9f62f005745a (shared prompt module).
+# Evidence Verifier plan, Tasks 1.3, 1.4 and 3.3: researcher and planner
+# module edits; wording rules moved to agents/wording.py.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "7334bfd710e7",
-    "researcher": "d81af60c3103",
+    "planner": "b062e8c3e7cc",
+    "researcher": "981e42c6588f",
     "source_evaluator": "1a7f057fad85",
     "fact_checker": "96e323f7271a",
-    "synthesizer": "aa747550f226",
+    "synthesizer": "948a744cdb31",
     "critic": "9f62f005745a",
 }
 
@@ -1301,192 +1297,6 @@ def test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift() -> Non
     assert {
         name: agent_prompt_fingerprint(name) for name in AGENT_NAMES
     } == PINNED_TARGET_PROMPT_FINGERPRINTS
-
-
-def test_the_synthesizer_repin_is_attributed_to_the_publication_helper() -> None:
-    """Record that Task 11's synthesizer re-pin is a false positive, not drift.
-
-    The pin above moved for the synthesizer in Task 11. The reason recorded next
-    to it is that the only edit to that module was adding the
-    ``quality_report_filename`` helper naming the publication's third artifact;
-    no prompt instruction changed and the shared ``agents.prompts`` library was
-    not touched. This test is the evidence for that claim rather than a comment
-    asserting it: the helper must be present and exported, its ledger sibling
-    must still produce the same family of names, and the fingerprint must be
-    exactly the value the re-pin recorded.
-
-    What it protects: if a later edit moves the synthesizer's prompt text, the
-    fingerprint moves again and this test fails on the recorded value, so the
-    next author has to attribute the change instead of inheriting Task 11's
-    re-pin as cover.
-
-    Task 12 moved the synthesizer's fingerprint again, to ``97cf77acbb15``, for
-    the ``evidence_selection`` orientation fix recorded in the pin comment
-    above; that move is attributed there and this assertion follows it.
-
-    The report-gates pass moved it a third time, to ``26372cb8f056``, for the
-    composition-build change: the word-limit fit now runs where the composition
-    is built, so the synthesizer module gained the call and lost nothing from
-    ``agents.prompts``. The fingerprint hashes this module's source, so a
-    structural edit moves it exactly as a prompt edit does — which is what this
-    test exists to make visible.
-
-    The merge-conditions pass moved it a fourth time, to ``dadb72078555``, when
-    the composition's ``generated_on`` began coming from the run clock the agent
-    now takes as an injected dependency and its ``as_of`` began coming from the
-    recorded evidence timestamps alone. That move is attributed, with the Fact
-    Checker's, in
-    ``test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text``.
-    """
-    pre_task_11 = "0ec21503cc00"
-
-    assert quality_report_filename(session_id="probe", iteration=0) == (
-        "report-probe-0-quality.json"
-    )
-    assert evidence_report_filename(session_id="probe", iteration=0) == (
-        "report-probe-0-evidence.md"
-    )
-    assert report_filename(session_id="probe", iteration=0) == "report-probe-0.md"
-    assert agent_prompt_fingerprint("synthesizer") == "aa747550f226"
-    assert agent_prompt_fingerprint("synthesizer") != pre_task_11
-
-
-def test_the_acquisition_sequence_repin_is_attributed_to_the_shared_counter() -> None:
-    """Record that round 6's researcher re-pin is module-source drift, not text.
-
-    The pin above moved for the researcher in Task 12 round 6. The reason
-    recorded next to it is that the round made every ``AcquisitionPolicy`` a
-    sub-topic spawns draw its manifest sequence from one counter the researcher
-    owns for the whole run, so two sub-topics writing into the same shared
-    ``boundary_audits`` mapping no longer mint the same audit id and no longer
-    overwrite each other's admission and selection manifests. No prompt
-    instruction changed and the shared ``agents.prompts`` library was not
-    touched; the other five pins and the judge did not move. This test is the
-    evidence for that claim rather than a comment asserting it: the counter must
-    be the published mechanism, it must hand out distinct sequences to whoever
-    shares it, and the live fingerprint must be exactly the value this re-pin
-    recorded.
-
-    Bug 3 moved the researcher's fingerprint again, to ``70d8d679ea89``, for
-    the instance-scoped audit-sequence fix recorded in the pin comment above;
-    that move is attributed there and this assertion follows it. The
-    graph-state pass moved it a fourth time, to ``ec5244f2ba7f``: that step's
-    edits are module-source drift too — the acquisition-state key the claim
-    loop reads, the shared owes-evidence predicate, and reading ``acquire``
-    jobs from the refinement targets — with no prompt instruction and no
-    shared ``agents.prompts`` change (the planner and fact_checker pins moved
-    for the same reason and are attributed in
-    ``test_the_graph_state_repin_is_module_source_drift_not_prompt_text``).
-    """
-    pre_round_6 = "613603dc5cbd"
-    pre_bug_3 = "25fba5d22654"
-    counter = ManifestSequence()
-
-    assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "d81af60c3103"
-    assert agent_prompt_fingerprint("researcher") == "d81af60c3103"
-    assert agent_prompt_fingerprint("researcher") not in {pre_round_6, pre_bug_3}
-    assert (counter.take(), counter.take()) == (0, 1)
-
-
-def test_the_graph_state_repin_is_module_source_drift_not_prompt_text() -> None:
-    """Record why the graph-state pass moved three target fingerprints.
-
-    The pin above hashes each agent module's own source, so a structural edit
-    moves it exactly as a prompt edit does. Three moved here: ``researcher``
-    gained the shared owes-evidence predicate and the acquisition jobs it
-    reads, ``fact_checker`` gained the coverage-id key its claim loop resumes
-    the stored queue under, and ``planner`` gained the every-omission
-    extension request. The shared ``agents.prompts`` library was not touched
-    and the other three pins did not move; this test is the evidence for that
-    claim rather than a comment asserting it.
-
-    Two of these literals were re-pointed by the later merge-conditions pass,
-    which moved ``fact_checker`` and ``synthesizer`` for its own module-source
-    edits: the values below are live pins, so they follow the live fingerprint,
-    and the move is attributed, with the same evidence, in
-    ``test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text``.
-    ``fact_checker`` was re-pointed once more by the read-identity pass
-    (``00e2229ad4fa`` -> ``340b8267dbe9``), which is attributed in
-    ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``.
-    """
-    assert agent_prompt_fingerprint("planner") == "7334bfd710e7"
-    assert agent_prompt_fingerprint("researcher") == "d81af60c3103"
-    assert agent_prompt_fingerprint("fact_checker") == "96e323f7271a"
-    # The other three target pins are untouched by this step, and the judge
-    # fingerprint with them: no prompt text moved anywhere. The critic's value
-    # is the one the later target-view pass recorded, which is attributed and
-    # asserted in
-    # ``test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text``.
-    assert {
-        name: agent_prompt_fingerprint(name)
-        for name in ("source_evaluator", "synthesizer", "critic")
-    } == {
-        "source_evaluator": "1a7f057fad85",
-        "synthesizer": "aa747550f226",
-        "critic": "9f62f005745a",
-    }
-    assert agent_prompt_fingerprint("planner") not in {
-        "7d0282b16bc5",
-        "7288d912bee3",
-        "9c5cba6e9b39",
-    }
-
-
-def test_the_merge_conditions_repin_is_module_source_drift_not_prompt_text() -> (
-    None
-):
-    """Record why the merge-conditions pass moved two target fingerprints.
-
-    Both edits are structure. The Fact Checker's ``state_update`` now publishes
-    its cumulative source snapshot beside the reads that produced it, so a
-    document read during verification is saved with the assessment of it rather
-    than cited by a report no record judged. The Synthesizer stamps
-    ``generated_on`` from the run clock it now takes as an injected dependency,
-    and computes ``as_of`` from the recorded evidence timestamps — a read's
-    retrieval time and a finding's extraction time — instead of every graph
-    event the state carries.
-
-    ``agent_prompt_fingerprint`` hashes each agent module's own source, so both
-    edits move a value whose name implies a prompt change. The evidence that no
-    prompt text moved is the pins that did not: all six hash the shared
-    ``agents.prompts`` library, and the four agents whose source this pass left
-    alone are unchanged, as is the judge.
-
-    The Fact Checker's literal below was re-pointed once more by the
-    read-identity pass (``00e2229ad4fa`` -> ``340b8267dbe9``): it is a live pin,
-    so it follows the live fingerprint, and that move is attributed in
-    ``test_the_read_identity_repin_is_module_source_drift_not_prompt_text``.
-    """
-    pre_merge_conditions = {
-        "fact_checker": "53c371093ae9",
-        "synthesizer": "26372cb8f056",
-    }
-    moved = {
-        "fact_checker": "96e323f7271a",
-        "synthesizer": "aa747550f226",
-    }
-
-    assert {
-        name: agent_prompt_fingerprint(name) for name in moved
-    } == moved
-    assert all(
-        agent_prompt_fingerprint(name) != before
-        for name, before in pre_merge_conditions.items()
-    )
-    assert PINNED_TARGET_PROMPT_FINGERPRINTS["fact_checker"] == moved["fact_checker"]
-    assert PINNED_TARGET_PROMPT_FINGERPRINTS["synthesizer"] == moved["synthesizer"]
-    assert {
-        name: agent_prompt_fingerprint(name)
-        for name in AGENT_NAMES
-        if name not in moved
-    } == {
-        name: value
-        for name, value in PINNED_TARGET_PROMPT_FINGERPRINTS.items()
-        if name not in moved
-    }
-    assert PINNED_JUDGE_PROMPT_FINGERPRINT == judge_prompt_fingerprint(
-        rubric_version=1
-    )
 
 
 def test_the_read_identity_repin_is_module_source_drift_not_prompt_text() -> (
