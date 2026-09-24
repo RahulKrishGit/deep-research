@@ -161,7 +161,11 @@ _QUOTE_TABLE = str.maketrans(
 )
 # A word broken across a line: "stor-\nage". Joined by default; kept as one
 # hyphenated word ("grid-\nscale" -> "grid-scale") in the second reading.
-_LINE_BREAK_HYPHEN = re.compile(r"(?<=\w)-[ \t]*\r?\n[ \t]*(?=\w)")
+# Letters only: a digit-hyphen-digit break ("10-\n12") is a number range, not
+# a broken word, and joining it would let a snippet state a figure the page
+# never wrote. _NUMERIC_LINE_BREAK keeps that hyphen in both readings.
+_LINE_BREAK_HYPHEN = re.compile(r"(?<=[^\W\d_])-[ \t]*\r?\n[ \t]*(?=[^\W\d_])")
+_NUMERIC_LINE_BREAK = re.compile(r"(?<=\d)-[ \t]*\r?\n[ \t]*(?=\d)")
 
 
 def cosmetic_text(text: str, *, join_hyphenation: bool = True) -> str:
@@ -175,6 +179,7 @@ def cosmetic_text(text: str, *, join_hyphenation: bool = True) -> str:
         raise EvidenceContractError("text must be a string")
     value = unicodedata.normalize("NFC", text).replace(_SOFT_HYPHEN, "")
     value = value.translate(_QUOTE_TABLE)
+    value = _NUMERIC_LINE_BREAK.sub("-", value)
     value = _LINE_BREAK_HYPHEN.sub("" if join_hyphenation else "-", value)
     return " ".join(value.split()).casefold()
 
