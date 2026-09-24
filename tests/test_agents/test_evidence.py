@@ -3197,31 +3197,46 @@ def test_cosmetic_text_keeps_digits_units_and_dashes() -> None:
 
 
 def test_a_stale_locator_neither_raises_nor_hides_a_relay() -> None:
-    read = make_read("According to Wood Mackenzie, utility-scale installations reached 16 GW in 2025.")
+    snippet = "According to Wood Mackenzie, utility-scale installations reached 16 GW in 2025."
+    read = make_read(snippet)
     assert neighbouring_passage_text(read, "no-such-locator") == ""
-    assert relay_attribution_on_page(read, "no-such-locator", "Wood Mackenzie")
-    assert not relay_attribution_on_page(read, "no-such-locator", "BloombergNEF")
+    assert relay_attribution_on_page(read, "no-such-locator", snippet, "Wood Mackenzie")
+    assert not relay_attribution_on_page(read, "no-such-locator", snippet, "BloombergNEF")
 
 
 def test_a_relay_is_read_from_the_cue_beside_the_name() -> None:
+    snippet = "Utility-scale additions reached 16 GW in 2025, according to Wood Mackenzie."
     read = make_read(
-        "Utility-scale additions reached 16 GW in 2025, according to Wood Mackenzie. "
-        "Unlike BloombergNEF, the firm counts all segments.",
+        f"{snippet} Unlike BloombergNEF, the firm counts all segments.",
         url="https://www.utilitydive.com/news/x", title="x",
     )
-    assert relay_attribution_on_page(read, "page-1-chunk-0", "Wood Mackenzie")
-    assert not relay_attribution_on_page(read, "page-1-chunk-0", "BloombergNEF")
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Wood Mackenzie")
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", snippet, "BloombergNEF")
 
 
 def test_a_source_line_is_an_attribution_cue() -> None:
     """``ATTRIBUTION_CUE_PATTERN`` gains ``sources?\\s*:``: a mirrored or relayed
     document that credits its originator in a source line is labelled a relay
     of that originator, the same as it would be for "according to"."""
+    snippet = "Utility-scale additions reached 16 GW in 2025. Data source: Wood Mackenzie."
     read = make_read(
-        "Utility-scale additions reached 16 GW in 2025. Data source: Wood Mackenzie.",
+        snippet,
         url="https://www.utilitydive.com/news/x", title="x",
     )
-    assert relay_attribution_on_page(read, "page-1-chunk-0", "Wood Mackenzie")
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Wood Mackenzie")
+
+
+def test_a_stale_locator_windows_around_the_snippet_not_the_whole_page() -> None:
+    """A stale locator falls back to a bounded window centred on the snippet,
+    never the unbounded page: a distant, unrelated mention on the far side of
+    a long page must not credit that body for a figure it never attributed.
+    """
+    snippet = "According to Wood Mackenzie, utility-scale installations reached 16 GW in 2025."
+    filler = "Unrelated background text about the market. " * 200
+    page = f"According to BloombergNEF, unrelated context follows. {filler}{snippet}"
+    read = make_read(page, url="https://www.utilitydive.com/news/x", title="x")
+    assert relay_attribution_on_page(read, "no-such-locator", snippet, "Wood Mackenzie")
+    assert not relay_attribution_on_page(read, "no-such-locator", snippet, "BloombergNEF")
 
 
 def test_own_organisation_on_an_agency_host() -> None:
