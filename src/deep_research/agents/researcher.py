@@ -1109,6 +1109,7 @@ def build_findings(
     valid_target_ids: Sequence[str] | None = None,
     admitted_evidence_keys: list[tuple[str, str]] | None = None,
     dropped_target_ids: list[str] | None = None,
+    dropped_figures: list[str] | None = None,
 ) -> tuple[list[Finding], list[str]]:
     """Stamp drafts into ``Finding`` values, naming the ones that were dropped.
 
@@ -1142,6 +1143,12 @@ def build_findings(
     fetched its read, with the claim's own prose still deciding the binding.
     ``None`` means no plan was in hand (a legacy caller), and then no binding
     is checked or invented.
+
+    A figure with no value or no unit is likewise dropped from the finding
+    alone and named in ``dropped_figures``, never in the returned rejection
+    list: an unusable figure is not a reason to distrust the finding it came
+    from, so ``extract_findings`` must not tell an operator the finding
+    itself was dropped when it was kept with its other figures.
     """
     findings: list[Finding] = []
     rejected: list[str] = []
@@ -1205,6 +1212,12 @@ def build_findings(
                 read=read,
                 locator=item.locator,
             )
+            if read is not None:
+                figures, figure_drops = _admitted_figures(item.figures, index=index)
+                if dropped_figures is not None:
+                    dropped_figures.extend(figure_drops)
+            else:
+                figures = []
             findings.append(
                 Finding(
                     content=item.content,
@@ -1224,11 +1237,7 @@ def build_findings(
                     snippet=item.snippet if read is not None else None,
                     read_id=item.read_id if read is not None else None,
                     locator=item.locator if read is not None else None,
-                    figures=(
-                        _admitted_figures(item.figures, index=index, rejected=rejected)
-                        if read is not None
-                        else []
-                    ),
+                    figures=figures,
                 )
             )
         except ValidationError as error:
@@ -1271,14 +1280,21 @@ def _admitted_target_ids(
 
 
 def _admitted_figures(
-    drafts: Sequence[FindingFigureDraft], *, index: int, rejected: list[str]
-) -> list[FindingFigure]:
-    """The figures a finding may carry; an unusable one is named and dropped."""
+    drafts: Sequence[FindingFigureDraft], *, index: int
+) -> tuple[list[FindingFigure], list[str]]:
+    """The figures a finding may carry, and the ones it could not state.
+
+    An unusable figure -- no value or no unit -- is named in the returned
+    ``dropped`` list, never in the finding's own rejection reasons: a figure
+    a draft could not usably state is not a reason to distrust the finding
+    itself, so it is left off ``figures`` alone and the finding still stands.
+    """
     figures: list[FindingFigure] = []
+    dropped: list[str] = []
     for position, draft in enumerate(drafts, start=1):
         value, unit = draft.value.strip(), draft.unit.strip()
         if not value or not unit:
-            rejected.append(
+            dropped.append(
                 f"finding {index}: figure {position} has no value or unit"
             )
             continue
@@ -1291,7 +1307,7 @@ def _admitted_figures(
                 kind=kind if kind in ("actual", "forecast") else None,
             )
         )
-    return figures
+    return figures, dropped
 
 
 class BoundedFindings(NamedTuple):
@@ -1971,6 +1987,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
         admitted_keys: list[tuple[str, str]] = []
         unplanned_target_ids: list[str] = []
+        dropped_figures: list[str] = []
         known_reads = (
             {
                 read_id: read
@@ -1999,6 +2016,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 valid_target_ids=valid_target_ids,
                 admitted_evidence_keys=admitted_keys,
                 dropped_target_ids=unplanned_target_ids,
+                dropped_figures=dropped_figures,
             )
 
         findings, rejected = mine(draft)
@@ -2099,6 +2117,25 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     details={
                         "sub_topic": summarize_text(task.sub_topic.title),
                         "dropped_target_ids": unplanned_target_ids,
+                    },
+                )
+            )
+        if dropped_figures:
+            # Recorded even though the finding was kept: a figure with no
+            # value or unit is not a reason to distrust the finding, so the
+            # drop gets its own error type rather than the "malformed
+            # finding" one, which would misreport a kept finding as dropped.
+            errors.append(
+                agent_error(
+                    agent_name=self.name,
+                    error_type="researcher_dropped_figure",
+                    message=(
+                        "Some extracted findings named a figure with no "
+                        "value or unit; that figure was dropped."
+                    ),
+                    details={
+                        "sub_topic": summarize_text(task.sub_topic.title),
+                        "dropped_figures": dropped_figures,
                     },
                 )
             )
