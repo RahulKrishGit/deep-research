@@ -57,12 +57,14 @@ from deep_research.utils.types import (
     AnswerKind,
     ContractModel,
     EvidenceTarget,
+    FigureKind,
     MemorySnapshot,
     ResearchError,
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
     SubTopic,
+    UnitDimension,
     _ENERGY_UNIT,
     _POWER_UNIT,
     counted_evidence_targets,
@@ -584,6 +586,15 @@ PLAN_INSTRUCTION = (
     "two measures, two rule dates, or two jurisdictions into one target, and "
     "never require two sources to agree within a numeric tolerance unless the "
     "question itself states that tolerance.\n"
+    "For every target also fill the fields a program checks answers against: "
+    "measure (what is measured, in words: \"battery storage power capacity "
+    "added\"), unit_dimension (power for a capacity in kW, MW or GW; energy for "
+    "MWh or GWh; percent for a share; empty when the answer is not a quantity), "
+    "period (the year or period the answer applies to), kind "
+    "(actual for a measured outcome, forecast for a projection; empty when the "
+    "answer is not a quantity), geography, and organisation (the one body whose "
+    "figure the target asks for, or empty when any body's figure answers it). "
+    "Plan one target per organisation, measure, period and kind.\n"
     "Mark a target critical when the question cannot be answered without it, "
     "and give every target the dimensions a reader needs to judge it: the "
     "measure, the period, the geography, and the kind of source that settles "
@@ -625,12 +636,18 @@ _PLAN_REPLY_EXAMPLES = (
         'recent reported year?","required_dimensions":["measure: annual '
         'ridership","period: most recent reported year","geography: the '
         'city","source: the operator\'s published ridership report"],'
-        '"critical":true,"support_policy":"primary_attribution"},'
+        '"critical":true,"support_policy":"primary_attribution",'
+        '"measure":"annual ridership","unit_dimension":"",'
+        '"period":"most recent reported year","kind":"actual",'
+        '"geography":"the city","organisation":"the operator"},'
         '{"question":"What ridership did the rail option carry in the most '
         'recent reported year?","required_dimensions":["measure: annual '
         'ridership","period: most recent reported year","geography: the '
         'city","source: the operator\'s published ridership report"],'
-        '"critical":true,"support_policy":"primary_attribution"}]},'
+        '"critical":true,"support_policy":"primary_attribution",'
+        '"measure":"annual ridership","unit_dimension":"",'
+        '"period":"most recent reported year","kind":"actual",'
+        '"geography":"the city","organisation":"the operator"}]},'
         '{"title":"cost and delivery",'
         '"rationale":"Compare the resources and time required to deliver each '
         'option.",'
@@ -644,7 +661,10 @@ _PLAN_REPLY_EXAMPLES = (
         'kilometre","period: the most recent published estimate",'
         '"geography: the city","source: the cost analysis each body '
         'publishes"],'
-        '"critical":false,"support_policy":"independent_pair"}]},'
+        '"critical":false,"support_policy":"independent_pair",'
+        '"measure":"capital cost per route kilometre","unit_dimension":"",'
+        '"period":"the most recent published estimate","kind":"actual",'
+        '"geography":"the city","organisation":""}]},'
         '{"title":"service reliability",'
         '"rationale":"Establish how reliably each option delivers its '
         'timetable.",'
@@ -657,7 +677,10 @@ _PLAN_REPLY_EXAMPLES = (
         '"required_dimensions":["measure: on-time performance, in percent",'
         '"period: the most recent reported year","geography: the city",'
         '"source: the operator\'s performance report"],'
-        '"critical":false,"support_policy":"primary_attribution"}]}'
+        '"critical":false,"support_policy":"primary_attribution",'
+        '"measure":"on-time performance","unit_dimension":"percent",'
+        '"period":"the most recent reported year","kind":"actual",'
+        '"geography":"the city","organisation":"the operator"}]}'
         "]}",
     ),
 )
@@ -690,6 +713,14 @@ class EvidenceTargetDraft(ContractModel):
     and ``support_policy_for_target`` validates the name and keeps every
     policy the question's own form earns.
     """
+    measure: str = ""
+    unit_dimension: str = ""
+    period: str = ""
+    kind: str = ""
+    geography: str = ""
+    organisation: str = ""
+    """The fields a program checks an answer against; empty when the question
+    does not name one."""
 
 
 class SubTopicDraft(ContractModel):
@@ -2000,6 +2031,24 @@ def support_policy_for_target(
     return "independent_pair"
 
 
+def _structured_fields(target: EvidenceTargetDraft) -> dict[str, object]:
+    """The draft's checkable fields, blank ones and unknown values stamped empty."""
+
+    def text(value: str) -> str | None:
+        return " ".join(value.split()) or None
+
+    dimension = (text(target.unit_dimension) or "").casefold()
+    kind = (text(target.kind) or "").casefold()
+    return {
+        "measure": text(target.measure),
+        "unit_dimension": dimension if dimension in get_args(UnitDimension) else None,
+        "period": text(target.period),
+        "kind": kind if kind in get_args(FigureKind) else None,
+        "geography": text(target.geography),
+        "organisation": text(target.organisation),
+    }
+
+
 def _draft_targets(
     item: SubTopicDraft, coverage_id: str
 ) -> list[EvidenceTarget]:
@@ -2027,6 +2076,7 @@ def _draft_targets(
                 proposed=target.support_policy,
                 required_dimensions=target.required_dimensions,
             ),
+            **_structured_fields(target),
         )
         for position, target in enumerate(item.evidence_targets, start=1)
     ]
@@ -2868,6 +2918,12 @@ def apply_answer_contract(
                     required_dimensions=target.required_dimensions,
                     contract_question=contract.question,
                 ),
+                measure=target.measure,
+                unit_dimension=target.unit_dimension,
+                period=target.period,
+                kind=target.kind,
+                geography=target.geography,
+                organisation=target.organisation,
             )
             for position, target in enumerate(
                 sub_topic.evidence_targets, start=1
