@@ -2928,9 +2928,9 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 
 ---
 
-## Phases 3–6 — outline (step-by-step bodies not yet written)
+## Phases 3–6 at a glance
 
-> **Status of this plan revision.** Everything above this line is complete and executable. For Phases 3–6, the task list, order, roles, owned files (wave table), interfaces ("Shared interfaces") and proofs below are decided and final, but the step-by-step TDD bodies (test code, implementation code, exact commands) are **not yet written**. Write each body in the form of Tasks 1.1–2.3 before dispatching it; never dispatch an implementer from this outline alone. Phases 1–2 can be executed now; the remaining bodies are the next planning pass.
+> The full, step-by-step bodies of Tasks 3.1–6.4 follow this overview (after the horizontal rule). This overview only summarises them; dispatch from the bodies, never from these bullets.
 
 ### Phase 3 (spec step 3): the Report Writer on verified findings
 
@@ -2975,6 +2975,2278 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 
 ---
 
+## Phase 3 — Report Writer on verified findings (spec step 3)
+
+Phase goal: a report is composed from verified findings only, cited by label, with the reader labels of §6.1, a code-built key facts table (duplicates folded, revisions noted), a Not found list, and the §6.2 guards. The writer agent exists and is unit-tested; the graph does not run it yet (PD-3). Wave 3A (Tasks 3.1, 3.2, 3.3) runs in parallel; 3.4 needs all three; 3.5 and 3.6 run in parallel after 3.4.
+
+### Task 3.1: Verified facts: answering, duplicates, revisions, Not found, number tracing
+
+**Role:** sp-hard-implementer. **Wave:** 3A, parallel with Tasks 3.2 and 3.3. **Depends on:** Gate G2.
+
+**Owns:** `src/deep_research/agents/verified_facts.py` (new), `tests/test_agents/test_verified_facts.py` (new).
+
+**Interfaces:**
+- Consumes: the Task 1.1 types; `cosmetic_text` (`agents/evidence.py`); `parse_figure`, `quantities_in`, `same_quantity`, `bare_numbers`, `Quantity` (`agents/figures.py`); `finding_fingerprint` (`agents/identity.py`); `publisher_identity` (`agents/sources.py`).
+- Produces: exactly the `verified_facts.py` block of "Shared interfaces".
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_agents/test_verified_facts.py`):
+
+```python
+"""Spec §5.3, §6.4 and §6.6: facts are read from verified fields, never from prose."""
+
+from __future__ import annotations
+
+import pytest
+
+from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.verified_facts import (
+    answered_target_ids,
+    fact_rows,
+    finding_answers,
+    not_found_targets,
+    release_key,
+    same_organisation,
+    same_period,
+    untraced_numbers,
+)
+from deep_research.utils.types import (
+    AcquisitionState,
+    FigureContext,
+    FigureResult,
+    FindingVerification,
+    SubTopic,
+)
+from tests.evidence_fakes import figure, make_finding, make_read, make_target
+
+EIA = "U.S. Energy Information Administration"
+
+
+def ctx(organisation=EIA, attribution="own", period="2024", kind="actual", scope=None):
+    return FigureContext(period=period, scope=scope, attribution=attribution,
+                         organisation=organisation, kind=kind)
+
+
+def verified(finding, *contexts, unchecked=False, dropped=False):
+    if dropped:
+        verification = FindingVerification(status="dropped", dropped_reason="snippet_not_on_page")
+    else:
+        results = [FigureResult(figure=f, matched=True, context=c)
+                   for f, c in zip(finding.figures, contexts)]
+        verification = FindingVerification(status="verified", figure_results=results,
+                                           context_unchecked=unchecked)
+    return finding.model_copy(update={"verification": verification})
+
+
+def eia_2024(value="10.4", **fields):
+    read = make_read()
+    finding = make_finding(read, "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,",
+                           figures=[figure(value, "GW", "2024", "actual")],
+                           target_ids=["topic-01-target-01"], **fields)
+    return verified(finding, ctx())
+
+
+@pytest.mark.parametrize(("left", "right", "same"), [
+    (EIA, "EIA", True),
+    ("EIA", "eia.gov", True),
+    (EIA, "eia.gov", True),
+    ("Wood Mackenzie", "woodmac.com", True),
+    ("BloombergNEF", "bnef.com", True),
+    ("American Clean Power Association", "ACP", True),
+    ("Energy Information Administration", EIA, True),
+    ("EIA", "eia.news", False),
+    ("EIA", "IEA", False),
+    ("Wood Mackenzie", "BloombergNEF", False),
+])
+def test_same_organisation(left, right, same) -> None:
+    assert same_organisation(left, right) is same
+    assert same_organisation(right, left) is same
+
+
+def test_same_period() -> None:
+    assert same_period("2025", "in 2025") and same_period("calendar year 2024", "2024")
+    assert not same_period("2025", "Q3 2025") and not same_period(None, "2025")
+
+
+def test_a_verified_figure_answers_its_matching_target() -> None:
+    finding = eia_2024()
+    assert finding_answers(finding, make_target(organisation="EIA"))
+    assert not finding_answers(finding, make_target(organisation="Wood Mackenzie"))
+    assert not finding_answers(finding, make_target(kind="forecast"))
+    assert not finding_answers(finding, make_target(period="2025"))
+    assert not finding_answers(finding, make_target("topic-02-target-01", period="2024"))
+    assert not finding_answers(finding.model_copy(update={"verification": None}), make_target())
+
+
+def test_a_qualitative_target_is_answered_by_naming_it() -> None:
+    read = make_read()
+    finding = make_finding(read, "Generators added 10.4 gigawatts", target_ids=["topic-01-target-01"])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified")})
+    assert finding_answers(finding, make_target(unit_dimension=None, organisation="eia.gov"))
+
+
+def test_an_own_page_and_its_relay_are_one_row_citing_the_own_page() -> None:
+    own = eia_2024()
+    relay_read = make_read("According to EIA, generators added 10.4 GW in 2024.",
+                           url="https://www.utilitydive.com/news/x", title="x")
+    relay = verified(make_finding(relay_read, "According to EIA, generators added 10.4 GW in 2024.",
+                                  figures=[figure("10.4", "GW", "2024", "actual")],
+                                  target_ids=["topic-01-target-01"]),
+                     ctx(organisation="EIA", attribution="relayed"))
+    [row] = fact_rows([relay, own], [make_target()])
+    assert row.finding_id == finding_fingerprint(own) and row.attribution == "own"
+    assert row.duplicate_finding_ids == [finding_fingerprint(relay)]
+    assert row.row_id == "K001" and row.target_ids == ["topic-01-target-01"]
+
+
+def test_a_later_release_is_a_revision_with_the_earlier_edition_noted() -> None:
+    latest = eia_2024(release_date="2025-03-12")
+    earlier = eia_2024(value="10.3", release_date="2025-02-10").model_copy(update={"snippet": "power providers added a record 10.3 GW"})
+    [row] = fact_rows([earlier, latest], [make_target()])
+    assert row.value == "10.4 GW" and row.release == "released 2025-03-12"
+    assert [(e.value, e.release) for e in row.earlier] == [("10.3 GW", "released 2025-02-10")]
+
+
+def test_forecast_and_actual_never_merge_and_two_organisations_stay_two_rows() -> None:
+    actual = eia_2024()
+    forecast = verified(actual.model_copy(update={"figures": [figure("10.4", "GW", "2024", "forecast")], "verification": None}),
+                        ctx(kind="forecast"))
+    other = verified(actual.model_copy(update={"verification": None}), ctx(organisation="Wood Mackenzie"))
+    rows = fact_rows([actual, forecast, other], [make_target()])
+    assert len(rows) == 3 and all(not row.earlier for row in rows)
+
+
+def test_dropped_findings_answer_nothing_and_make_no_row() -> None:
+    dropped = verified(eia_2024().model_copy(update={"verification": None}), dropped=True)
+    assert answered_target_ids([dropped], [make_target()]) == {}
+    assert fact_rows([dropped], [make_target()]) == []
+
+
+def test_release_key() -> None:
+    assert release_key(eia_2024(release_date="2025-03-12")) == (2025, 3, 12)
+    assert release_key(eia_2024(vintage="January 2025 STEO")) == (2025, 1, 0)
+    assert release_key(eia_2024()) is None
+
+
+def test_not_found_lists_required_unanswered_targets_with_their_trail() -> None:
+    required, optional = make_target("topic-02-target-01", kind="forecast", period="2025"), make_target("topic-02-target-02", required=False)
+    topic = SubTopic(coverage_id="topic-02", title="EIA forecast", rationale="r", search_queries=["EIA STEO 2025 battery"],
+                     success_criteria=["c"], priority=1, evidence_targets=[required, optional])
+    acquisition = {"topic-02": AcquisitionState(read_urls=["https://www.eia.gov/outlooks/steo/"], consecutive_searches=1)}
+    [row] = not_found_targets([topic], {}, acquisition)
+    assert (row.target_id, row.queries, row.searched) == ("topic-02-target-01", ["EIA STEO 2025 battery"], True)
+    assert row.pages_read == ["https://www.eia.gov/outlooks/steo"] or row.pages_read[0].startswith("https://www.eia.gov/outlooks/steo")
+
+
+def test_untraced_numbers() -> None:
+    cited = [eia_2024()]
+    assert untraced_numbers("EIA reports 10,400 MW added in 2024.", cited) == []
+    assert untraced_numbers("EIA reports 12 GW added in 2024.", cited) == ["12 GW"]
+    assert untraced_numbers("EIA reports 10.4 GW across 37 states.", cited) == ["37"]
+```
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_verified_facts.py`. Expected: FAIL (`ModuleNotFoundError: deep_research.agents.verified_facts`).
+
+- [ ] **Step 3: Implement** `src/deep_research/agents/verified_facts.py`:
+
+```python
+"""Facts from verified findings (spec §5.3, §6.1, §6.4, §6.6).
+
+Deterministic and field-driven: target answering, duplicates and revisions,
+the Not found list and number tracing read verified fields and structured
+figures only. Nothing here parses a finding's ``content``.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+
+from deep_research.agents.evidence import cosmetic_text
+from deep_research.agents.figures import (
+    Quantity,
+    bare_numbers,
+    parse_figure,
+    quantities_in,
+    same_quantity,
+)
+from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.sources import publisher_identity
+from deep_research.utils.types import (
+    AcquisitionState,
+    EarlierEdition,
+    EvidenceTarget,
+    FactRow,
+    Finding,
+    FigureContext,
+    FindingFigure,
+    NotFoundTarget,
+    SubTopic,
+)
+
+_WORD = re.compile(r"[A-Z]{2,}(?![a-z])|[A-Z]?[a-z]+|[A-Z]|\d+")
+_HOST = re.compile(r"(?:[a-z0-9-]+\.)+[a-z]{2,}")
+_COUNTRY_WORDS = frozenset({"us", "usa", "uk"})
+_CONNECTORS = frozenset({"of", "and", "the", "for", "on", "in"})
+_LEGAL_SUFFIXES = frozenset(
+    {"inc", "llc", "ltd", "corp", "corporation", "co", "association", "institute", "council", "agency"}
+)
+# A host label may stand for an organisation's name only on a suffix whose
+# label is the organisation's own choice or an institution's (PD-18): never on
+# a suffix anyone buys to look like someone else ("eia.news").
+_NAMEABLE_SUFFIXES = frozenset({"gov", "edu", "int", "mil", "com", "org"})
+_YEAR = re.compile(r"(?:19|20)\d{2}")
+_PERIOD_FILLER = frozenset({"in", "during", "calendar", "year", "full", "the", "of", "cy"})
+_MONTHS = {
+    name: number
+    for number, names in enumerate(
+        (("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"),
+         ("may",), ("june", "jun"), ("july", "jul"), ("august", "aug"),
+         ("september", "sep", "sept"), ("october", "oct"), ("november", "nov"),
+         ("december", "dec")),
+        start=1,
+    )
+    for name in names
+}
+_MONTH_YEAR = re.compile(
+    r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) + r")\.?\s+((?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+_ISO_DATE = re.compile(r"\b((?:19|20)\d{2})(?:-(\d{1,2})(?:-(\d{1,2}))?)?\b")
+_MEASURE_BY_DIMENSION = {"power": "power capacity", "energy": "energy capacity", "percent": "share"}
+_ATTRIBUTION_RANK = {"own": 0, "relayed": 1, "unattributed": 2}
+
+
+@dataclass(frozen=True)
+class VerifiedFigure:
+    """One kept figure of a citable finding, with its verified context."""
+
+    finding: Finding
+    finding_id: str
+    index: int
+    figure: FindingFigure
+    context: FigureContext
+    quantity: Quantity | None
+    unchecked: bool
+
+
+def citable_findings(findings: Sequence[Finding]) -> list[Finding]:
+    """§4: only verified and verified_corrected findings can be cited."""
+    return [f for f in findings if f.verification is not None and f.verification.status != "dropped"]
+
+
+def verified_figures(findings: Sequence[Finding]) -> list[VerifiedFigure]:
+    """Every kept figure of every citable finding, in finding order."""
+    figures: list[VerifiedFigure] = []
+    for finding in citable_findings(findings):
+        verification = finding.verification
+        assert verification is not None
+        finding_id = finding_fingerprint(finding)
+        for index, result in enumerate(verification.figure_results):
+            if result.kept and result.context is not None:
+                figures.append(
+                    VerifiedFigure(
+                        finding=finding, finding_id=finding_id, index=index,
+                        figure=result.figure, context=result.context,
+                        quantity=parse_figure(result.figure.value, result.figure.unit),
+                        unchecked=verification.context_unchecked,
+                    )
+                )
+    return figures
+
+
+def _tokens(value: str) -> list[str]:
+    """A name's words, case kept, camel case split, "U.S." read as one word."""
+    text = value.replace("U.S.", "US").replace("U.K.", "UK").replace("&", " and ")
+    return _WORD.findall(text)
+
+
+def _core(tokens: Sequence[str]) -> list[str]:
+    return [t.casefold() for t in tokens if t.casefold() not in _COUNTRY_WORDS | _CONNECTORS]
+
+
+def _initials(tokens: Sequence[str]) -> str:
+    kept = [t for t in tokens if t.casefold() not in _COUNTRY_WORDS | _CONNECTORS]
+    if len(kept) > 1 and kept[-1].casefold() in _LEGAL_SUFFIXES:
+        kept = kept[:-1]
+    return "".join(t.casefold() if t.isupper() and len(t) > 1 else t[0].casefold() for t in kept)
+
+
+def _single_token(value: str) -> str | None:
+    """The one token a host label or a one-word name stands for, else ``None``."""
+    text = value.strip().casefold()
+    if _HOST.fullmatch(text):
+        label, _, suffix = publisher_identity(f"https://{text}").partition(".")
+        return label if suffix.rsplit(".", 1)[-1] in _NAMEABLE_SUFFIXES else None
+    tokens = _tokens(value)
+    return tokens[0].casefold() if len(tokens) == 1 else None
+
+
+def same_organisation(left: str, right: str) -> bool:
+    """Whether two organisation names, acronyms or hosts name one organisation."""
+    if not left.strip() or not right.strip():
+        return False
+    if _HOST.fullmatch(left.strip().casefold()) and _HOST.fullmatch(right.strip().casefold()):
+        return publisher_identity(f"https://{left.strip()}") == publisher_identity(f"https://{right.strip()}")
+    if not _HOST.fullmatch(left.strip().casefold()) and not _HOST.fullmatch(right.strip().casefold()):
+        if _core(_tokens(left)) == _core(_tokens(right)):
+            return True
+    for one, other in ((left, right), (right, left)):
+        token = _single_token(one)
+        if token is None:
+            continue
+        if _single_token(other) == token:
+            return True
+        if _HOST.fullmatch(other.strip().casefold()):
+            continue
+        tokens = _tokens(other)
+        joined = "".join(_core(tokens))
+        if token in {_initials(tokens), joined} or (len(token) >= 4 and joined.startswith(token)):
+            return True
+    return False
+
+
+def _period_key(value: str | None) -> str | None:
+    if not value or not value.strip():
+        return None
+    words = [w for w in re.findall(r"[a-z0-9]+", cosmetic_text(value)) if w not in _PERIOD_FILLER]
+    return " ".join(words) or None
+
+
+def same_period(left: str | None, right: str | None) -> bool:
+    """Equal after cosmetic normalisation, or both the same bare year."""
+    key = _period_key(left)
+    return key is not None and key == _period_key(right)
+
+
+def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget) -> bool:
+    return (
+        figure.quantity is not None
+        and figure.quantity.dimension == target.unit_dimension
+        and (target.period is None or same_period(figure.context.period, target.period))
+        and (target.kind is None or figure.context.kind == target.kind)
+        and (target.organisation is None or same_organisation(target.organisation, figure.context.organisation))
+    )
+
+
+def _finding_organisations(finding: Finding) -> list[str]:
+    names = [figure.context.organisation for figure in verified_figures([finding])]
+    if finding.attributed_issuer:
+        names.append(finding.attributed_issuer)
+    names.append(publisher_identity(finding.source_url))
+    return names
+
+
+def finding_answers(finding: Finding, target: EvidenceTarget) -> bool:
+    """§6.6, plus PD-7 for a target with no unit dimension."""
+    if finding.verification is None or finding.verification.status == "dropped":
+        return False
+    if target.target_id not in finding.target_ids:
+        return False
+    if target.unit_dimension is None:
+        return target.organisation is None or any(
+            same_organisation(target.organisation, name) for name in _finding_organisations(finding)
+        )
+    return any(_figure_answers(figure, target) for figure in verified_figures([finding]))
+
+
+def answered_target_ids(
+    findings: Sequence[Finding], targets: Sequence[EvidenceTarget]
+) -> dict[str, list[str]]:
+    """Target id -> the ids of the findings that answer it (answered targets only)."""
+    answered: dict[str, list[str]] = {}
+    for target in targets:
+        ids = [finding_fingerprint(f) for f in findings if finding_answers(f, target)]
+        if ids:
+            answered[target.target_id] = ids
+    return answered
+
+
+def release_text(finding: Finding) -> str | None:
+    """The finding's edition as the reader sees it: vintage, then release or statement date."""
+    parts: list[str] = []
+    if finding.vintage:
+        parts.append(finding.vintage)
+    if finding.release_date:
+        parts.append(f"released {finding.release_date}")
+    elif finding.statement_date:
+        parts.append(f"stated {finding.statement_date}")
+    return "; ".join(parts) or None
+
+
+def _date_key(text: str | None) -> tuple[int, int, int] | None:
+    if not text:
+        return None
+    month_year = _MONTH_YEAR.search(text)
+    if month_year:
+        return (int(month_year.group(2)), _MONTHS[month_year.group(1).casefold()], 0)
+    iso = _ISO_DATE.search(text)
+    if iso:
+        return (int(iso.group(1)), int(iso.group(2) or 0), int(iso.group(3) or 0))
+    return None
+
+
+def release_key(finding: Finding) -> tuple[int, int, int] | None:
+    """A sortable release: release date, else statement date, else vintage."""
+    for value in (finding.release_date, finding.statement_date, finding.vintage):
+        key = _date_key(value)
+        if key is not None:
+            return key
+    return None
+
+
+def _value_text(figure: FindingFigure) -> str:
+    return f"{figure.value} {figure.unit}"
+
+
+def _same_fact(left: VerifiedFigure, right: VerifiedFigure) -> bool:
+    if left.context.kind != right.context.kind:
+        return False
+    if not same_period(left.context.period, right.context.period):
+        return False
+    if not same_organisation(left.context.organisation, right.context.organisation):
+        return False
+    if left.quantity is not None and right.quantity is not None:
+        return same_quantity(left.quantity, right.quantity)
+    return cosmetic_text(_value_text(left.figure)) == cosmetic_text(_value_text(right.figure))
+
+
+def _primary(group: Sequence[VerifiedFigure]) -> VerifiedFigure:
+    """§5.3: the organisation's own page ahead of a relay; then the latest release."""
+    def rank(figure: VerifiedFigure) -> tuple[int, tuple[int, int, int]]:
+        key = release_key(figure.finding) or (0, 0, 0)
+        return (_ATTRIBUTION_RANK[figure.context.attribution], tuple(-part for part in key))  # type: ignore[return-value]
+    return min(group, key=rank)
+
+
+def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) -> list[FactRow]:
+    """§5.3 and PD-9: one row per fact; revisions folded; row ids K001, K002, ..."""
+    by_id = {target.target_id: target for target in targets}
+    groups: list[list[VerifiedFigure]] = []
+    for figure in verified_figures(findings):
+        for group in groups:
+            if _same_fact(group[0], figure):
+                group.append(figure)
+                break
+        else:
+            groups.append([figure])
+    rows: list[FactRow] = []
+    for group in groups:
+        primary = _primary(group)
+        target_ids = sorted(
+            {t for figure in group for t in figure.finding.target_ids
+             if t in by_id and _figure_answers(figure, by_id[t])}
+        )
+        dimension = primary.quantity.dimension if primary.quantity is not None else None
+        measure = next((by_id[t].measure for t in target_ids if by_id[t].measure), None)
+        rows.append(
+            FactRow(
+                row_id="pending",
+                organisation=primary.context.organisation,
+                attribution=primary.context.attribution,
+                relay_host=publisher_identity(primary.finding.source_url)
+                if primary.context.attribution == "relayed" else None,
+                measure=measure or _MEASURE_BY_DIMENSION.get(dimension or "", "stated figure"),
+                period=primary.context.period,
+                value=_value_text(primary.figure),
+                kind=primary.context.kind,
+                scope=primary.context.scope,
+                release=release_text(primary.finding),
+                finding_id=primary.finding_id,
+                duplicate_finding_ids=sorted({f.finding_id for f in group} - {primary.finding_id}),
+                target_ids=target_ids,
+                context_unchecked=primary.unchecked,
+            )
+        )
+    by_finding = {finding_fingerprint(f): f for f in findings}
+    folded = _fold_revisions(rows, by_finding)
+    return [row.model_copy(update={"row_id": f"K{n:03d}"}) for n, row in enumerate(folded, start=1)]
+
+
+def _fold_revisions(rows: list[FactRow], findings: Mapping[str, Finding]) -> list[FactRow]:
+    """PD-9: same organisation, target, period and kind, both released, releases differ."""
+    kept = list(rows)
+    while True:
+        pair = next(
+            ((a, b) for a in kept for b in kept
+             if a is not b and set(a.target_ids) & set(b.target_ids)
+             and a.kind == b.kind and same_period(a.period, b.period)
+             and same_organisation(a.organisation, b.organisation)
+             and (ka := release_key(findings[a.finding_id])) is not None
+             and (kb := release_key(findings[b.finding_id])) is not None and ka > kb),
+            None,
+        )
+        if pair is None:
+            return kept
+        latest, earlier = pair
+        merged = latest.model_copy(update={"earlier": [
+            *latest.earlier,
+            EarlierEdition(value=earlier.value, release=earlier.release, finding_id=earlier.finding_id),
+            *earlier.earlier,
+        ]})
+        kept = [merged if row is latest else row for row in kept if row is not earlier]
+
+
+def not_found_targets(
+    sub_topics: Sequence[SubTopic],
+    answered: Mapping[str, list[str]],
+    acquisition: Mapping[str, AcquisitionState],
+) -> list[NotFoundTarget]:
+    """§6.1 item 5: each required target with no verified finding, and where it was searched."""
+    rows: list[NotFoundTarget] = []
+    for topic in sub_topics:
+        state = acquisition.get(topic.coverage_id)
+        for target in topic.evidence_targets:
+            if not target.required or target.target_id in answered:
+                continue
+            pages = list(dict.fromkeys([*(state.read_urls if state else []), *(state.attempted_urls if state else [])]))
+            searched = bool(state and (state.attempted_urls or state.read_urls
+                                       or state.consecutive_searches or state.empty_searches))
+            rows.append(NotFoundTarget(target_id=target.target_id, question=target.question,
+                                       queries=list(topic.search_queries), pages_read=pages,
+                                       searched=searched))
+    return rows
+
+
+def untraced_numbers(text: str, cited: Sequence[Finding]) -> list[str]:
+    """§6.4: the numbers ``text`` states that no kept figure of ``cited`` carries."""
+    figures = verified_figures(cited)
+    known = [f.quantity for f in figures if f.quantity is not None and f.quantity.base is not None]
+    literal = {
+        cosmetic_text(f.figure.value).replace(",", "").replace(" ", "")
+        for f in figures if f.quantity is None or f.quantity.base is None
+    }
+    untraced = [
+        f"{q.value_text} {q.unit_text}" for q in quantities_in(text)
+        if not any(same_quantity(q, k) for k in known)
+    ]
+    untraced.extend(number for number in bare_numbers(text) if number not in literal)
+    return untraced
+```
+
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_verified_facts.py`. Expected: PASS. If `test_not_found_lists_required_unanswered_targets_with_their_trail` fails only on the exact spelling `AcquisitionState` normalises a URL to, assert with the normalised URL the model returns (behaviour is what the test pins, not the trailing slash).
+
+- [ ] **Step 5: Commit.**
+
+```bash
+git add src/deep_research/agents/verified_facts.py tests/test_agents/test_verified_facts.py
+git commit -m "feat(verified_facts): target answering, fact rows, revisions, Not found and number tracing"
+```
+
+**Acceptance:** every rule of §5.3, §6.4 (number tracing) and §6.6 has a passing test; eia.news is never EIA; an own page and its relay are one row that cites the own page.
+
+### Task 3.2: Reader report and evidence log layout
+
+**Role:** sp-implementer. **Wave:** 3A, parallel with Tasks 3.1 and 3.3. **Depends on:** Gate G2.
+
+**Owns:** `src/deep_research/agents/report.py` (additions only; nothing existing changes in this phase, PD-3), `tests/test_agents/test_report_layout.py` (new).
+
+**Interfaces:**
+- Consumes: `FactRow`, `NotFoundTarget`, `ReportComposition`, `FigureAttribution`, `FigureKind` (Task 1.1); `quantities_in`, `same_quantity` (`agents/figures.py`); `finding_fingerprint`; `publisher_identity`; the existing `Citation`, `citation_markers`, `render_citations`, `normalize_source_url` in `report.py`.
+- Produces: `figure_label`, `written_citations`, `render_written_report`, `render_finding_log` (the `report.py` block of "Shared interfaces"). Task 3.4 renders with them; Task 4.8 publishes with them.
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_agents/test_report_layout.py`):
+
+```python
+"""Spec §6.1: the report's shape, its reader labels, and the evidence log."""
+
+from __future__ import annotations
+
+import re
+
+from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.report import (
+    figure_label,
+    render_finding_log,
+    render_written_report,
+    written_citations,
+)
+from deep_research.utils.types import (
+    FactRow,
+    FigureContext,
+    FigureResult,
+    FindingVerification,
+    NotFoundTarget,
+    RejectedDraftPoint,
+    ReportComposition,
+    ReportPoint,
+    ReportSection,
+    ReportStatement,
+)
+from tests.evidence_fakes import figure, make_finding, make_read
+
+VERDICT_WORDS = re.compile(r"\b(verified|unverified|corroborat\w*|independently|insufficient evidence|contested|contradicted|not established)\b", re.I)
+
+
+def _finding(url, snippet, value, unit, *, organisation, attribution="own", kind="actual", period="2024", dropped_figure=None):
+    read = make_read(snippet, url=url, title=f"Page at {url}")
+    figures = [figure(value, unit, period, kind)] + ([dropped_figure] if dropped_figure else [])
+    finding = make_finding(read, snippet, figures=figures, target_ids=["topic-01-target-01"])
+    results = [FigureResult(figure=figures[0], matched=True, evidence_words=snippet,
+                            context=FigureContext(period=period, attribution=attribution,
+                                                  organisation=organisation, kind=kind))]
+    if dropped_figure:
+        results.append(FigureResult(figure=dropped_figure, matched=True, dropped_reason="context_rejected",
+                                    reason="A growth rate, not a capacity."))
+    status = "verified_corrected" if dropped_figure else "verified"
+    return finding.model_copy(update={"verification": FindingVerification(status=status, figure_results=results)})
+
+
+def _composition():
+    eia = _finding("https://www.eia.gov/todayinenergy/detail.php?id=64705",
+                   "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,",
+                   "10.4", "GW", organisation="U.S. Energy Information Administration",
+                   dropped_figure=figure("66", "%", "2024", "actual"))
+    steo = _finding("https://ent.news/2025/1/940.pdf", "battery storage capacity growing by 47% (14 GW) in 2025",
+                    "14", "GW", organisation="U.S. Energy Information Administration",
+                    attribution="relayed", kind="forecast", period="2025")
+    eia_id, steo_id = finding_fingerprint(eia), finding_fingerprint(steo)
+    rows = [
+        FactRow(row_id="K001", organisation="U.S. Energy Information Administration", attribution="own",
+                measure="battery storage power capacity added", period="2024", value="10.4 GW", kind="actual",
+                release="released 2025-03-12", finding_id=eia_id),
+        FactRow(row_id="K002", organisation="U.S. Energy Information Administration", attribution="relayed",
+                relay_host="ent.news", measure="battery storage power capacity added", period="2025",
+                value="14 GW", kind="forecast", release="January 2025 STEO", finding_id=steo_id),
+    ]
+    def point(n, text, finding):
+        return ReportPoint(text=text, source_urls=[finding.source_url],
+                           statement=ReportStatement(statement_id=f"S00{n}", text=text,
+                                                     finding_ids=[finding_fingerprint(finding)]))
+    return ReportComposition(
+        question="How much grid-scale battery storage capacity was added in the United States in 2024, and what do the latest forecasts project for 2025?",
+        session_id="s", as_of="2026-09-24T00:00:00+00:00", scope="United States",
+        findings=[eia, steo],
+        summary=[point(1, "Generators added 10.4 GW of battery storage in 2024.", eia),
+                 point(2, "EIA expects 14 GW of battery storage to be added in 2025.", steo)],
+        sections=[ReportSection(title="Basis", points=[point(3, "EIA counts 10.4 GW of new capacity.", eia)])],
+        fact_rows=rows,
+        not_found=[NotFoundTarget(target_id="topic-03-target-01", question="What does BloombergNEF project for 2025?",
+                                  queries=["BloombergNEF 2025 US storage forecast"], pages_read=["https://about.bnef.com/x"], searched=True)],
+        finding_labels={"F01": eia_id, "F02": steo_id},
+        rejected_points=[RejectedDraftPoint(where="summary[2]", text="Wood Mackenzie reports 18.9 GW of grid-scale storage.",
+                                            finding_labels=["F03"], reason="scope not carried by the cited figures: grid-scale")],
+    )
+
+
+def test_figure_label_follows_the_spec_labels() -> None:
+    assert figure_label(organisation="EIA", attribution="own", relay_host=None, kind="actual",
+                        release="released 2025-03-12", unchecked=False) == "EIA's own figure; actual; released 2025-03-12"
+    assert figure_label(organisation="EIA", attribution="relayed", relay_host="ent.news", kind="forecast",
+                        release="January 2025 STEO", unchecked=True) == "relayed by ent.news from EIA; forecast (January 2025 STEO); unchecked context"
+    assert figure_label(organisation="ent.news", attribution="unattributed", relay_host=None, kind="forecast",
+                        release=None, unchecked=False) == "source does not attribute it; forecast"
+
+
+def test_the_report_has_the_spec_shape_in_order() -> None:
+    report = render_written_report(_composition())
+    headings = [line for line in report.splitlines() if line.startswith("#")]
+    assert headings[1:] == ["## Executive summary", "## Key facts", "## Basis", "## Not found", "## Sources"]
+    assert "| Organisation | Measure | Period | Value | Kind | Scope | Release or edition | Source |" in report
+    assert "U.S. Energy Information Administration (relayed by ent.news)" in report
+    assert "— *U.S. Energy Information Administration's own figure; actual; released 2025-03-12*" in report
+    assert "relayed by ent.news from U.S. Energy Information Administration; forecast (January 2025 STEO)" in report
+    assert '"BloombergNEF 2025 US storage forecast"' in report and "Pages read: 1" in report
+    assert not VERDICT_WORDS.search(report)
+
+
+def test_sources_are_only_the_cited_ones_in_first_use_order() -> None:
+    index = written_citations(_composition())
+    assert [c.number for c in index] == [1, 2]
+    assert index[0].url.startswith("https://www.eia.gov") and index[1].url.startswith("https://ent.news")
+
+
+def test_the_evidence_log_keeps_snippets_drop_reasons_and_refusals() -> None:
+    log = render_finding_log(_composition())
+    assert "### F01" in log and "Generators added 10.4 gigawatts" in log
+    assert "66 %: dropped (context_rejected): A growth rate, not a capacity." in log
+    assert '"Wood Mackenzie reports 18.9 GW of grid-scale storage." (cited F03): scope not carried' in log
+```
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_report_layout.py`. Expected: FAIL (`ImportError: figure_label`).
+
+- [ ] **Step 3: Implement** — append to `src/deep_research/agents/report.py` (import `finding_fingerprint`, `publisher_identity`, `quantities_in`, `same_quantity` and the Task 1.1 types at the top of the module; if an import cycle appears, import `finding_fingerprint` inside the functions that use it, as `ReportComposition`'s validator already does for `agents.identity`):
+
+```python
+_FACTS_HEADER = "| Organisation | Measure | Period | Value | Kind | Scope | Release or edition | Source |"
+
+
+def figure_label(
+    *,
+    organisation: str,
+    attribution: FigureAttribution,
+    relay_host: str | None,
+    kind: FigureKind,
+    release: str | None,
+    unchecked: bool,
+) -> str:
+    """§6.1's reader label: who, kind (with a forecast's release), edition, unchecked."""
+    if attribution == "own":
+        who = f"{organisation}'s own figure"
+    elif attribution == "relayed":
+        who = f"relayed by {relay_host or 'another site'} from {organisation}"
+    else:
+        who = "source does not attribute it"
+    parts = [who, f"forecast ({release})" if kind == "forecast" and release else kind]
+    if kind == "actual" and release:
+        parts.append(release)
+    if unchecked:
+        parts.append("unchecked context")
+    return "; ".join(parts)
+
+
+def _row_label(row: FactRow) -> str:
+    return figure_label(organisation=row.organisation, attribution=row.attribution,
+                        relay_host=row.relay_host, kind=row.kind, release=row.release,
+                        unchecked=row.context_unchecked)
+
+
+def _table_cell(text: str) -> str:
+    return " ".join(text.split()).replace("|", "\\|")
+
+
+def _findings_by_id(composition: ReportComposition) -> dict[str, Finding]:
+    return {finding_fingerprint(finding): finding for finding in composition.findings}
+
+
+def written_citations(composition: ReportComposition) -> list[Citation]:
+    """Only the pages the report cites, numbered in the order a reader meets them."""
+    by_id = _findings_by_id(composition)
+    ordered: list[str] = []
+
+    def add(url: str) -> None:
+        normalized = normalize_source_url(url)
+        if normalized and normalized not in ordered:
+            ordered.append(normalized)
+
+    for point in composition.summary:
+        for url in point.source_urls:
+            add(url)
+    for row in composition.fact_rows:
+        if row.finding_id in by_id:
+            add(by_id[row.finding_id].source_url)
+    for section in composition.sections:
+        for point in section.points:
+            for url in point.source_urls:
+                add(url)
+    titles = {normalize_source_url(s.url): s.title for s in composition.sources}
+    for finding in composition.findings:
+        titles.setdefault(normalize_source_url(finding.source_url), finding.source_title)
+    return [Citation(number=n, url=url, title=titles.get(url, url)) for n, url in enumerate(ordered, start=1)]
+
+
+def _point_labels(point: ReportPoint, composition: ReportComposition) -> list[str]:
+    cited = set(point.statement.finding_ids) if point.statement is not None else set()
+    stated = quantities_in(point.text)
+    labels: list[str] = []
+    for row in composition.fact_rows:
+        if row.finding_id not in cited and not cited & set(row.duplicate_finding_ids):
+            continue
+        if any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated):
+            label = _row_label(row)
+            if label not in labels:
+                labels.append(label)
+    return labels
+
+
+def _written_point(point: ReportPoint, composition: ReportComposition, index: Sequence[Citation]) -> str:
+    markers = citation_markers(point.source_urls, index)
+    labels = _point_labels(point, composition)
+    suffix = f" — *{' | '.join(labels)}*" if labels else ""
+    return f"- {point.text} {markers}{suffix}".rstrip()
+
+
+def _header_counts(composition: ReportComposition) -> str:
+    statuses = [f.verification for f in composition.findings if f.verification is not None]
+    checked = sum(1 for v in statuses if v.status != "dropped")
+    corrected = sum(1 for v in statuses if v.status == "verified_corrected")
+    unchecked = sum(1 for v in statuses if v.status != "dropped" and v.context_unchecked)
+    dropped = sum(1 for v in statuses if v.status == "dropped")
+    return (f"{len(written_citations(composition))} sources cited; {checked} findings checked against "
+            f"their pages ({corrected} with corrected context, {unchecked} with unchecked context), "
+            f"{dropped} dropped; {len(composition.not_found)} required targets not found.")
+
+
+def render_written_report(composition: ReportComposition) -> str:
+    """§6.1 items 1-6: header, summary, key facts, findings sections, Not found, sources."""
+    index = written_citations(composition)
+    by_id = _findings_by_id(composition)
+    lines = [
+        f"# {composition.question}", "",
+        f"*As of {composition.as_of or 'not recorded'}. Scope: {composition.scope or 'not recorded'}. "
+        f"{_header_counts(composition)}*", "",
+        "## Executive summary", "",
+    ]
+    lines += [_written_point(p, composition, index) for p in composition.summary] or [
+        "No summary statement could be printed from the checked findings; the key facts follow."
+    ]
+    lines += ["", "## Key facts", ""]
+    if composition.fact_rows:
+        lines += [_FACTS_HEADER, "|---|---|---|---|---|---|---|---|"]
+        for row in composition.fact_rows:
+            finding = by_id.get(row.finding_id)
+            organisation = {
+                "own": row.organisation,
+                "relayed": f"{row.organisation} (relayed by {row.relay_host})",
+                "unattributed": f"{row.organisation} (source does not attribute it)",
+            }[row.attribution]
+            release = "; ".join([row.release or "not stated", *(
+                f"earlier edition {e.value}" + (f" ({e.release})" if e.release else "") for e in row.earlier
+            )])
+            cells = [organisation, row.measure, row.period or "not stated", row.value,
+                     row.kind + (" (unchecked context)" if row.context_unchecked else ""),
+                     row.scope or "not stated", release,
+                     citation_markers([finding.source_url], index) if finding else ""]
+            lines.append("| " + " | ".join(_table_cell(c) for c in cells) + " |")
+    else:
+        lines.append("No figure passed the Evidence Verifier.")
+    for section in composition.sections:
+        lines += ["", f"## {section.title}", ""]
+        lines += [_written_point(p, composition, index) for p in section.points]
+    if composition.not_found:
+        lines += ["", "## Not found", ""]
+        for target in composition.not_found:
+            if target.searched:
+                trail = "Searched: " + "; ".join(f'"{q}"' for q in target.queries) + f". Pages read: {len(target.pages_read)}"
+                trail += (" (" + ", ".join(target.pages_read[:5]) + ")." if target.pages_read else ".")
+            else:
+                trail = "Not searched in this run."
+            lines.append(f"- **{target.question}** No checked finding answers it. {trail}")
+    lines += ["", "## Sources", "", render_citations(index)]
+    return "\n".join(lines) + "\n"
+
+
+def render_finding_log(composition: ReportComposition) -> str:
+    """§6.1 item 7: every finding with its snippet and verification, every drop and refusal."""
+    labels = {finding_id: label for label, finding_id in composition.finding_labels.items()}
+    lines = [f"# Evidence log: {composition.question}", "",
+             f"Session {composition.session_id}, pass {composition.iteration}. Every finding the "
+             "researcher recorded, with its snippet and its verification result.", "", "## Findings", ""]
+    unlabelled = 0
+    for finding in composition.findings:
+        label = labels.get(finding_fingerprint(finding))
+        if label is None:
+            unlabelled += 1
+            label = f"X{unlabelled:02d}"
+        verification = finding.verification
+        if verification is None:
+            status = "not checked"
+        else:
+            status = {"verified": "verified", "verified_corrected": "verified with corrections",
+                      "dropped": f"dropped ({verification.dropped_reason})"}[verification.status]
+            if verification.context_unchecked:
+                status += "; context unchecked"
+        lines += [f"### {label} — {finding.source_title}", "", f"- Source: {finding.source_url}",
+                  f"- Read: {finding.read_id or 'none'}, locator {finding.locator or 'none'}",
+                  f'- Snippet: "{finding.snippet or ""}"', f"- Verification: {status}"]
+        for result in verification.figure_results if verification else []:
+            text = f"{result.figure.value} {result.figure.unit}"
+            if result.kept and result.context is not None:
+                context = result.context
+                line = (f"  - {text}: kept; period {context.period or 'not stated'}; scope "
+                        f"{context.scope or 'not stated'}; "
+                        + figure_label(organisation=context.organisation, attribution=context.attribution,
+                                       relay_host=publisher_identity(finding.source_url), kind=context.kind,
+                                       release=None, unchecked=verification.context_unchecked))
+                if result.evidence_words:
+                    line += f'; evidence words: "{result.evidence_words}"'
+                if result.corrected:
+                    line += "; corrected"
+            else:
+                line = f"  - {text}: dropped ({result.dropped_reason})" + (f": {result.reason}" if result.reason else "")
+            lines.append(line)
+        lines.append("")
+    if composition.rejected_points:
+        lines += ["## Refused sentences", ""]
+        for rejected in composition.rejected_points:
+            lines.append(f'- "{rejected.text}" (cited {", ".join(rejected.finding_labels) or "nothing"}): {rejected.reason}')
+    return "\n".join(lines) + "\n"
+```
+
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_report_layout.py tests/test_agents/test_report.py`. Expected: PASS (`test_report.py` proves nothing existing moved).
+
+- [ ] **Step 5: Commit.**
+
+```bash
+git add src/deep_research/agents/report.py tests/test_agents/test_report_layout.py
+git commit -m "feat(report): the evidence-verifier report layout, reader labels and evidence log (spec 6.1)"
+```
+
+**Acceptance:** the report has §6.1's sections in order, labels on every figure, only cited sources, a Not found trail and no verdict wording; the evidence log keeps every snippet, drop reason and refused sentence.
+
+### Task 3.3: Shared wording rules
+
+**Role:** sp-hard-implementer. **Wave:** 3A, parallel with Tasks 3.1 and 3.2. **Depends on:** Gate G2.
+
+**Owns:** `src/deep_research/agents/wording.py` (new), `src/deep_research/agents/synthesizer.py`, `src/deep_research/agents/evidence_verifier.py` (one import), `tests/test_agents/test_wording.py` (new).
+
+**Interfaces:**
+- Produces: the `wording.py` block of "Shared interfaces". `synthesizer.py` keeps working unchanged (it imports what moved); `evidence_verifier.py` calls `stated_role` instead of `_stated_role`.
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_agents/test_wording.py`):
+
+```python
+"""The wording rules the Evidence Verifier and the Report Writer share (PD-19)."""
+
+from __future__ import annotations
+
+from deep_research.agents.wording import (
+    hardened_modality,
+    hedge_forecast,
+    hedge_marker,
+    stated_role,
+    stated_scopes,
+    stated_years,
+    unattested_names,
+)
+
+
+def test_the_moved_rules_behave_as_before() -> None:
+    assert hedge_marker("capacity could set a record") == "could"
+    assert stated_role("16 GW was installed in 2025") == "actual"
+    assert stated_role("EIA forecast that 18.2 GW would be added in 2025") == "forecast"
+    assert stated_role("the operator beat projections: 16 GW was installed in 2025") == "mixed"
+    assert hardened_modality("the fleet will set a record", "capacity could set a record") == "will"
+
+
+def test_a_verb_after_to_be_is_not_an_outcome() -> None:
+    assert stated_role("18.2 GW is expected to be added in 2025") == "forecast"
+
+
+def test_names_must_be_attested_and_an_acronym_may_be_spelled_out() -> None:
+    corpus = "U.S. Energy Information Administration expects 14 GW"
+    assert unattested_names("Analysts say EIA expects 14 GW", corpus.casefold(), corpus) == []
+    assert "BloombergNEF" in unattested_names("Analysts say BloombergNEF expects 14 GW", corpus.casefold(), corpus)
+
+
+def test_years_and_scopes_are_read_from_the_text() -> None:
+    assert stated_years("From 2024 to 2025, 10.4 GW") == ["2024", "2025"]
+    assert stated_scopes("18.9 GW of grid scale storage") == ["grid-scale"]
+    assert stated_scopes("utility, C&I, and residential systems") == ["residential", "c&i"]
+
+
+def test_hedge_forecast_makes_a_forecast_read_as_one() -> None:
+    eia = "U.S. Energy Information Administration"
+    rewritten = hedge_forecast("EIA's outlook adds 14 GW in 2025.", eia)
+    assert rewritten == "EIA's outlook adds 14 GW in 2025, according to U.S. Energy Information Administration's forecast."
+    assert stated_role(rewritten) == "forecast"
+    passive = hedge_forecast("In 2025, 18.2 GW was added.", eia)
+    assert passive == "In 2025, 18.2 GW is expected to be added."
+    assert stated_role(passive) == "forecast"
+    active = hedge_forecast("Developers added 14 GW in 2025.", eia)
+    assert active == "Developers expected to add 14 GW in 2025."
+    assert stated_role(active) == "forecast"
+```
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_wording.py`. Expected: FAIL (`ModuleNotFoundError`).
+
+- [ ] **Step 3: Move the rules.** Create `agents/wording.py` with a module docstring ("The wording rules the Evidence Verifier and the Report Writer share: hedges, forecast versus outcome, attested names, years and scopes (PD-19)."). Move these definitions out of `synthesizer.py` **unchanged**, with their comments: `_FIGURE_PATTERN` (line 174), `_PROPER_NOUN_PATTERN` (182), `_ACRONYM_PATTERN` (187), `_SENTENCE_INITIAL` (193), `_is_significant_figure` (221), `_figure_number` (241), `_significant_figures` (247), `_HEDGE_PATTERN` (367), `_HEDGE_REPORTING_PATTERN` (380), `_HEDGE_MAY_PATTERN` (386), `_STRONG_MODALS` (392), the clause-split pattern above `_clause_around` and `_clause_around` itself (410), `_content_tokens` (1669), `_corpus_tokens` (1678), `unattested_atoms` (1697), `_INITIAL_SKIP`, `_COUNTRY_PREFIXES`, `_NAME_PUNCT`, `_is_title_word`, `_run_initial`, `_name_runs`, `_run_words`, `_spelled_out`, `_name_attested` (1750–1875), `unattested_words` (1877), `hedge_marker` (1889), `hardened_modality` (1943), `_UNIT_WORDS` (2963), `_COMMON_ABBREVIATIONS` (2988), `_FORECAST_MARKER_PATTERN` (3303), `_forecast_role` (3311), `_REALIZED_OUTCOME_PATTERN` (3326), `_FUTURE_MODAL_PATTERN` (3331), `_realized_outcome` (3336) and `_stated_role` (3356), plus any private helper one of them calls that nothing else in `synthesizer.py` needs. Rename two on the way: `_clause_around` → `clause_around` and `_stated_role` → `stated_role`, updating every call site in `synthesizer.py` to the new names. In `synthesizer.py` add one `from deep_research.agents.wording import (...)` block naming every moved name it still uses (it is deleted whole in Task 4.10). In `evidence_verifier.py` replace the `_stated_role` import from `synthesizer` with `stated_role` from `wording` and update its one call.
+
+- [ ] **Step 4: Add the new rules** to `wording.py`:
+
+```python
+def unattested_names(text: str, corpus: str, raw_corpus: str = "") -> list[str]:
+    """The proper names ``text`` states that ``corpus`` does not: the name half of
+    ``unattested_atoms``, for sentences whose figures are checked by the
+    structured-figure rule instead (spec §6.2)."""
+```
+
+Move the proper-noun loop of `unattested_atoms` into `unattested_names` verbatim, and make `unattested_atoms` return its figure part followed by `unattested_names(text, corpus, raw_corpus)` (same result as before; `test_synthesizer.py` proves it). Then:
+
+```python
+_YEAR_TOKEN = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def stated_years(text: str) -> list[str]:
+    """The four-digit years ``text`` names, in order, once each."""
+    return list(dict.fromkeys(_YEAR_TOKEN.findall(text)))
+
+
+# Question-independent segment and basis words (spec §6.2: "no ... scope that the
+# cited findings' verified fields do not carry"). Longest first.
+SCOPE_TERMS: tuple[str, ...] = (
+    "commercial and industrial", "front-of-the-meter", "behind-the-meter",
+    "utility-scale", "grid-scale", "all segments", "all sectors", "residential",
+    "commercial", "industrial", "distributed", "community", "c&i",
+)
+
+
+def stated_scopes(text: str) -> list[str]:
+    """The scope terms ``text`` states, hyphen and space spellings alike."""
+    folded = " ".join(text.casefold().replace("-", " ").split())
+    found: list[str] = []
+    for term in SCOPE_TERMS:
+        pattern = re.escape(term.replace("-", " "))
+        if re.search(rf"(?<![a-z&]){pattern}(?![a-z])", folded) and term not in found:
+            found.append(term)
+    return found
+
+
+_PAST_PASSIVE = re.compile(r"\b(was|were|has been|have been)\s+(added|installed|deployed|commissioned|built)\b", re.I)
+_PAST_ACTIVE = re.compile(r"\b(added|installed|deployed|commissioned|built|reached|hit|exceeded|surpassed)\b", re.I)
+_BASE_FORM = {"added": "add", "installed": "install", "deployed": "deploy", "commissioned": "commission",
+              "built": "build", "reached": "reach", "hit": "hit", "exceeded": "exceed", "surpassed": "surpass"}
+
+
+def hedge_forecast(text: str, organisation: str) -> str:
+    """Spec §6.2: re-attach the verified hedge to a forecast stated as fact, once."""
+    def passive(match: re.Match[str]) -> str:
+        plural = match.group(1).casefold() in {"were", "have been"}
+        return f"{'are' if plural else 'is'} expected to be {match.group(2)}"
+
+    def active(match: re.Match[str]) -> str:
+        if re.search(r"\bbe\s+\Z", match.string[: match.start()], re.I):
+            return match.group(0)
+        return f"expected to {_BASE_FORM[match.group(1).casefold()]}"
+
+    hedged = _PAST_ACTIVE.sub(active, _PAST_PASSIVE.sub(passive, text))
+    if not _forecast_role(hedged):
+        hedged = f"{hedged.rstrip().rstrip('.')}, according to {organisation}'s forecast."
+    return hedged
+```
+
+and change `_realized_outcome`'s infinitive guard from `r"\bto\s+\Z"` to `r"\bto\s+(?:be\s+|have\s+been\s+)?\Z"` ("expected to be added" is a plan, not an outcome).
+
+- [ ] **Step 5: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_wording.py tests/test_agents/test_synthesizer.py tests/test_agents/test_evidence_verifier.py`. Expected: PASS. A `test_synthesizer.py` failure means a moved rule changed behaviour: restore it (only `_realized_outcome`'s guard may change; if a synthesizer test pinned the old "to be <verb>" reading, report its id to the controller).
+
+- [ ] **Step 6: Commit.**
+
+```bash
+git add src/deep_research/agents/wording.py src/deep_research/agents/synthesizer.py src/deep_research/agents/evidence_verifier.py tests/test_agents/test_wording.py
+git commit -m "refactor(wording): shared hedge, forecast and attested-name rules move out of the synthesizer"
+```
+
+**Acceptance:** the moved rules behave as before (the synthesizer's tests pass); the new rules pass their tests; `evidence_verifier.py` no longer imports `synthesizer.py`.
+
+### Task 3.4: The Report Writer agent
+
+**Role:** sp-hard-implementer. **Wave:** 3B, alone. **Depends on:** Tasks 3.1, 3.2 and 3.3 merged.
+
+**Owns:** `src/deep_research/agents/report_writer.py` (new), `tests/test_agents/test_report_writer.py` (new).
+
+**Interfaces:**
+- Consumes: `verified_facts` (Task 3.1); `figure_label`, `render_written_report`, `render_finding_log`, `written_citations`, `report_as_of`, `report_scope` (`report.py`, Task 3.2 and existing); `hedge_forecast`, `hardened_modality`, `stated_role`, `clause_around`, `stated_scopes`, `stated_years`, `unattested_names` (Task 3.3); `quantities_in`, `same_quantity` (`figures.py`); `cosmetic_text`; `finding_fingerprint`; `publisher_identity`; `render_structured_reply_format`; `OUTPUT_LIMIT_RETRY_EFFORT`, `BaseAgent`, `AgentRun`, `AgentTask` (`agents/base.py`); `ReActRun`; `agent_error`; `agent_event`; the provider errors.
+- Produces: the `report_writer.py` block of "Shared interfaces" (the filename helpers arrive in Task 4.1). The registry line format `F01 | figure 1: <value> <unit> | period <period> | kind <kind> | organisation <name> | label: <label>` is a contract: Task 4.9's replay double parses it.
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_agents/test_report_writer.py`). Build the agent like `_synthesizer` in `tests/test_agents/test_synthesizer.py` lines 314–331 (a `ScriptedCompleter` from `tests/agent_fakes.py`, a `ScratchpadMemory`, `AgentRuntimeConfig(max_iterations=2, tool_budget=0)`), and run it in the same tracker/session scope that file's async `run` tests use; construct `ProviderOutputLimitError` and `ProviderError` the way that file does.
+
+```python
+"""Spec §6.1-6.2: the Report Writer writes from verified findings only."""
+
+from __future__ import annotations
+
+import re
+
+from deep_research.agents.report_writer import (
+    ReportWriterDraft,
+    WriterPointDraft,
+    check_point,
+    compose_written_report,
+    finding_registry,
+    writer_messages,
+)
+from deep_research.utils.types import FigureContext, FigureResult, FindingVerification, ResearchState, SubTopic
+from tests.evidence_fakes import figure, make_finding, make_read, make_target
+
+EIA = "U.S. Energy Information Administration"
+
+
+def _checked(url, text, value, unit, *, organisation, attribution="own", kind="actual", period="2024",
+             scope=None, target="topic-01-target-01", **fields):
+    read = make_read(text, url=url, title=f"{organisation} page")
+    finding = make_finding(read, text, figures=[figure(value, unit, period, kind)], target_ids=[target], **fields)
+    result = FigureResult(figure=finding.figures[0], matched=True, evidence_words=text,
+                          context=FigureContext(period=period, scope=scope, attribution=attribution,
+                                                organisation=organisation, kind=kind))
+    return finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[result])})
+
+
+EIA_2024 = _checked("https://www.eia.gov/todayinenergy/detail.php?id=64705",
+                    "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,",
+                    "10.4", "GW", organisation=EIA, release_date="2025-03-12")
+STEO = _checked("https://ent.news/2025/1/940.pdf",
+                "Data source: U.S. Energy Information Administration, Short-Term Energy Outlook, January 2025. "
+                "Battery storage capacity grows by 47% (14 GW) in 2025.",
+                "14", "GW", organisation=EIA, attribution="relayed", kind="forecast", period="2025",
+                target="topic-02-target-01", vintage="January 2025 STEO")
+WOODMAC_ALL = _checked("https://www.woodmac.com/press-releases/2025-record",
+                       "The U.S. energy storage market hit a record 18.9 gigawatts of battery energy storage system "
+                       "installations in 2025 across all segments.",
+                       "18.9", "gigawatts", organisation="Wood Mackenzie", period="2025", scope="all segments",
+                       target="topic-04-target-01")
+
+
+def _task_state():
+    targets = [make_target(organisation="EIA"),
+               make_target("topic-02-target-01", kind="forecast", period="2025", organisation="EIA"),
+               make_target("topic-04-target-01", period="2025", required=False)]
+    topics = [SubTopic(coverage_id=t.coverage_id, title=t.target_id, rationale="r", search_queries=["q"],
+                       success_criteria=["c"], priority=n, evidence_targets=[t]) for n, t in enumerate(targets, 1)]
+    return ResearchState(session_id="s", original_question="How much battery storage was added in 2024, and what is forecast for 2025?",
+                         sub_topics=topics, verified_findings=[EIA_2024, STEO, WOODMAC_ALL])
+
+
+def _labels(registry):
+    return {finding.source_url.split("/")[2]: label for label, finding in registry}
+
+
+def test_the_registry_labels_citable_findings_answers_first() -> None:
+    state = _task_state()
+    targets = [t for topic in state.sub_topics for t in topic.evidence_targets]
+    registry = finding_registry(state.verified_findings, targets)
+    assert [label for label, _ in registry] == ["F01", "F02", "F03"]
+    assert registry[2][1] is WOODMAC_ALL   # answers only an optional target
+
+
+def test_writer_messages_list_every_figure_in_the_fixed_format(writer) -> None:
+    messages = writer_messages(writer.build_task(_task_state()))
+    line = re.compile(r"^F\d{2} \| figure 1: 14 GW \| period 2025 \| kind forecast \| organisation " + re.escape(EIA)
+                      + r" \| label: relayed by ent\.news from " + re.escape(EIA) + r"; forecast \(January 2025 STEO\)$", re.M)
+    assert line.search(messages[-1].content)
+
+
+def test_check_point_refuses_untraced_numbers_and_unattested_names() -> None:
+    assert check_point("Generators added 12 GW in 2024.", [EIA_2024], geographies=["United States"]).reasons
+    assert check_point("BloombergNEF reports 10.4 GW added in 2024.", [EIA_2024], geographies=[]).reasons
+    assert check_point("Generators added 10.4 GW in the United States in 2024.", [EIA_2024],
+                       geographies=["United States"]).reasons == ()
+
+
+def test_grid_scale_wording_on_an_all_segment_figure_is_refused(writer) -> None:
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["www.woodmac.com"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="Wood Mackenzie reports 18.9 GW of grid-scale storage installed in 2025.", finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert "grid-scale" in refused.reason and refused.finding_labels == [label]
+
+
+def test_forecast_stated_as_fact_is_rewritten_once_and_kept(writer) -> None:
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["ent.news"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="EIA's outlook adds 14 GW in 2025.", finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    [point] = composition.summary
+    assert point.text == f"EIA's outlook adds 14 GW in 2025, according to {EIA}'s forecast."
+    assert composition.rejected_points == []
+
+
+def test_an_actual_stated_as_a_forecast_is_refused(writer) -> None:
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["www.eia.gov"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="EIA expects 10.4 GW to be added in 2024.", finding_labels=[label])], sections=[])
+    assert compose_written_report(task, draft).summary == []
+
+
+def test_a_summary_restatement_and_an_unknown_label_are_refused(writer) -> None:
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["www.eia.gov"]
+    draft = ReportWriterDraft(executive_summary=[
+        WriterPointDraft(text="Generators added 10.4 GW of battery storage in 2024.", finding_labels=[label]),
+        WriterPointDraft(text="In 2024, 10.4 GW of battery storage was added.", finding_labels=[label]),
+        WriterPointDraft(text="Generators added 10.4 GW in 2024.", finding_labels=["F99"]),
+    ], sections=[])
+    composition = compose_written_report(task, draft)
+    assert [p.statement.statement_id for p in composition.summary] == ["S001"]
+    assert [r.where for r in composition.rejected_points] == ["summary[1]", "summary[2]"]
+
+
+async def test_a_failed_draft_still_composes_the_key_facts(writer_failing) -> None:
+    run = await writer_failing.run(_task_state())
+    assert "## Key facts" in run.result.markdown and "10.4 GW" in run.result.markdown
+    assert any(e.error_type == "report_writer_provider_error" for e in run.errors)
+
+
+async def test_a_truncated_draft_is_asked_once_more_at_high_effort(writer_truncated_then_ok) -> None:
+    agent, completer = writer_truncated_then_ok
+    run = await agent.run(_task_state())
+    assert [name for name, _, _ in completer.calls] == ["ReportWriterDraft", "ReportWriterDraft"]
+    assert completer.efforts == ["high", "high"] and run.result.statement_count >= 1
+```
+
+Write the three fixtures (`writer`: a scripted completer with no queued output; `writer_failing`: one queued `ProviderError`; `writer_truncated_then_ok`: a queued `ProviderOutputLimitError` then a `ReportWriterDraft` with one valid point citing the EIA label) in the same file, following `_synthesizer`. Mark the async tests with `pytest.mark.asyncio` if the repo's config does not do it automatically (check `tests/test_agents/test_synthesizer.py`).
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_report_writer.py`. Expected: FAIL (`ModuleNotFoundError`).
+
+- [ ] **Step 3: Implement** `src/deep_research/agents/report_writer.py`. Mirror `SynthesizerAgent`'s class structure and member signatures (`synthesizer.py` 4349–4714: `__init__` with `provider`, `tracker`, `scratchpad`, `tools`, `config`, `model_profile`, `clock`; `output_schema`; `system_prompt`; `build_task`; `finalize`; `state_update`; `run`; `publish_document`; `publish_claim`, renamed `publish_finding`; `_require_tool`), copying `publish_document`, `publish_claim` (as `publish_finding`) and `_require_tool` verbatim and replacing the other bodies with this module's logic:
+
+```python
+"""The Report Writer (spec §6): prose from verified findings only, cited by label.
+
+The model writes the executive summary and a few short sections, citing
+findings by the labels one registry stamps. Code builds everything else -- the
+key facts table, duplicates and revisions, the Not found list, the labels and
+the sources -- and checks every sentence against the cited findings' verified
+fields before it can reach the reader (§6.2).
+"""
+
+REPORT_WRITER_NAME = "report_writer"
+DEFAULT_MAX_SECTIONS = 4
+MAX_POINT_CHARS = 600
+_SECTION_TITLE_CHARS = 120
+# The synthesizer's measured ladder (two attempts, both at high effort): a
+# default-effort draft truncated before any point was written in a live pass.
+_WRITER_ATTEMPT_EFFORTS = (OUTPUT_LIMIT_RETRY_EFFORT, OUTPUT_LIMIT_RETRY_EFFORT)
+
+REPORT_WRITER_SYSTEM_PROMPT = (
+    "You write the reader-facing prose of a research report from verified findings. "
+    "Every finding you may cite is listed with a label (F01, F02, ...), its verbatim "
+    "snippet, and each of its figures with the figure's verified period, kind (actual "
+    "or forecast), organisation and reader label. Code builds the key facts table, the "
+    "Not found list and the sources; you write the executive summary and a few short "
+    "explanatory sections."
+)
+
+REPORT_WRITER_INSTRUCTION = (
+    "Rules:\n"
+    "- Cite by label only: every point lists in finding_labels the one to three labels it "
+    "rests on. Never write a URL.\n"
+    "- Every number you write must be a figure of a finding the point cites, with its unit "
+    "as listed (\"10.4 GW\"). Do not add, subtract, convert or round figures.\n"
+    "- Name only organisations, dates and scopes that the cited findings' figures, labels or "
+    "snippets state.\n"
+    "- State an actual as what happened (\"added\", \"installed\"). State a forecast as a "
+    "forecast of its organisation (\"EIA expects\", \"Wood Mackenzie projects\") and give its "
+    "release when the label shows one.\n"
+    "- For a figure one site relays from another organisation, name the organisation and "
+    "the site (\"according to Wood Mackenzie, as reported by Utility Dive\").\n"
+    "- The executive summary answers each part of the question directly, first: the actual "
+    "figure the question asks for; then each organisation's latest forecast with its "
+    "release; then later actuals, labelled as actuals. One point per fact; never state the "
+    "same figure twice.\n"
+    "- At most four sections, explaining segment basis, revisions, units or definitions, "
+    "only as the findings state them.\n"
+    "- Never write verdict or corroboration words: verified, confirmed, corroborated, "
+    "independently, insufficient evidence, contested."
+)
+
+_WRITER_REPLY_EXAMPLES = (
+    (
+        "Example input: F01 | figure 1: 12 percent | period 2024 | kind actual | organisation "
+        "Example Statistical Agency | label: Example Statistical Agency's own figure; actual; "
+        "released 2025-02-01",
+        '{"executive_summary":[{"text":"The Example Statistical Agency reports a 12 percent '
+        'reduction in 2024.","finding_labels":["F01"]}],"sections":[]}',
+    ),
+)
+
+
+class WriterPointDraft(ContractModel):
+    text: str
+    finding_labels: list[str] = Field(default_factory=list)
+
+
+class WriterSectionDraft(ContractModel):
+    title: str
+    points: list[WriterPointDraft] = Field(default_factory=list)
+
+
+class ReportWriterDraft(ContractModel):
+    """The provider-facing reply: prose and labels, nothing else."""
+
+    executive_summary: list[WriterPointDraft] = Field(default_factory=list)
+    sections: list[WriterSectionDraft] = Field(default_factory=list)
+
+
+class ReportWriterTask(AgentTask):
+    session_id: str
+    iteration: int = 0
+    max_iterations: int = 0          # Task 4.1 renames this max_extra_passes
+    question: str
+    as_of: str = ""
+    scope: str = ""
+    generated_on: str = ""
+    sub_topics: list[SubTopic] = Field(default_factory=list)
+    targets: list[EvidenceTarget] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)       # the whole verified snapshot
+    sources: list[ScoredSource] = Field(default_factory=list)
+    registry: list[tuple[str, Finding]] = Field(default_factory=list)
+    facts: list[FactRow] = Field(default_factory=list)
+    not_found: list[NotFoundTarget] = Field(default_factory=list)
+    answered: dict[str, list[str]] = Field(default_factory=dict)
+    geographies: list[str] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PointCheck:
+    reasons: tuple[str, ...]
+    forecast_as_fact: bool
+    organisation: str | None
+
+
+class WrittenReport(ContractModel):
+    markdown: str
+    evidence_markdown: str
+    composition: ReportComposition
+    statement_count: int = Field(ge=0)
+    citation_count: int = Field(ge=0)
+    refused_count: int = Field(ge=0)
+
+
+def finding_registry(findings, targets) -> list[tuple[str, Finding]]:
+    """One label per citable finding: answers to required targets first, then the rest."""
+    citable = citable_findings(findings)
+    answered = answered_target_ids(citable, [t for t in targets if t.required])
+    first = list(dict.fromkeys(fid for ids in answered.values() for fid in ids))
+    rank = {fid: n for n, fid in enumerate(first)}
+    ordered = sorted(citable, key=lambda f: rank.get(finding_fingerprint(f), len(rank)))
+    return [(f"F{n:02d}", finding) for n, finding in enumerate(ordered, start=1)]
+
+
+def _figure_label_for(finding: Finding, context: FigureContext) -> str:
+    return figure_label(
+        organisation=context.organisation, attribution=context.attribution,
+        relay_host=publisher_identity(finding.source_url) if context.attribution == "relayed" else None,
+        kind=context.kind, release=release_text(finding),
+        unchecked=bool(finding.verification and finding.verification.context_unchecked),
+    )
+
+
+def registry_lines(label: str, finding: Finding) -> list[str]:
+    lines = [f"## {label}: {finding.source_title} ({publisher_identity(finding.source_url)})",
+             f"snippet: {finding.snippet or finding.content}"]
+    number = 0
+    for result in finding.verification.figure_results if finding.verification else []:
+        if not result.kept or result.context is None:
+            continue
+        number += 1
+        context = result.context
+        lines.append(
+            f"{label} | figure {number}: {result.figure.value} {result.figure.unit} | period "
+            f"{context.period or 'not stated'} | kind {context.kind} | organisation "
+            f"{context.organisation} | label: {_figure_label_for(finding, context)}"
+        )
+    return lines
+
+
+def writer_messages(task: ReportWriterTask) -> list[ChatMessage]:
+    labels = {finding_fingerprint(f): label for label, f in task.registry}
+    targets = "\n".join(
+        f"- {t.target_id}: {t.question} ("
+        + (", ".join(labels[i] for i in task.answered.get(t.target_id, []) if i in labels) or "not found")
+        + ")"
+        for t in task.targets if t.required
+    ) or "(none)"
+    registry = "\n\n".join("\n".join(registry_lines(label, f)) for label, f in task.registry) or "(none)"
+    user = "\n\n".join([
+        f"# Question\n{task.question}",
+        f"# Required targets and the findings that answer them\n{targets}",
+        f"# Verified findings\n{registry}",
+        f"# Rules\n{REPORT_WRITER_INSTRUCTION}",
+        "# Reply format\n" + render_structured_reply_format(_WRITER_REPLY_EXAMPLES),
+    ])
+    return [ChatMessage(role="developer", content=REPORT_WRITER_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=user)]
+
+
+def _attested_corpus(cited: Sequence[Finding], geographies: Sequence[str]) -> str:
+    parts = list(geographies)
+    for finding in cited:
+        parts += [finding.snippet or "", finding.source_title, publisher_identity(finding.source_url),
+                  release_text(finding) or "", finding.attributed_issuer or ""]
+        for result in finding.verification.figure_results if finding.verification else []:
+            if result.kept and result.context is not None:
+                parts += [result.context.organisation, result.context.period or "",
+                          result.context.scope or "", result.evidence_words or ""]
+    return "\n".join(part for part in parts if part)
+
+
+def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[str]) -> PointCheck:
+    """§6.2's guards for one sentence against the findings it cites."""
+    if not cited:
+        return PointCheck(("cites no checked finding",), False, None)
+    reasons: list[str] = []
+    untraced = untraced_numbers(text, cited)
+    if untraced:
+        reasons.append("numbers not among the cited figures: " + ", ".join(untraced))
+    corpus = _attested_corpus(cited, geographies)
+    names = unattested_names(text, corpus.casefold(), corpus)
+    if names:
+        reasons.append("names the cited findings do not carry: " + ", ".join(names))
+    years = [year for year in stated_years(text) if year not in corpus]
+    if years:
+        reasons.append("years the cited findings do not carry: " + ", ".join(years))
+    normalised = cosmetic_text(text)
+    stated = quantities_in(text)
+    figures = [f for f in verified_figures(cited) if f.quantity is not None]
+    stated_figures = [(q, f) for q in stated for f in figures if same_quantity(q, f.quantity)]
+    scope_sources = [f"{f.context.scope or ''} {_evidence_words(f)}" for _, f in stated_figures] or [corpus]
+    attested_scopes = set(stated_scopes(" ".join(scope_sources)))
+    unsupported = [s for s in stated_scopes(text) if s not in attested_scopes]
+    if unsupported:
+        reasons.append("scope not carried by the cited figures: " + ", ".join(unsupported))
+    forecast_as_fact: list[str] = []
+    for quantity, figure in stated_figures:
+        role = stated_role(clause_around(normalised, quantity.start))
+        if figure.context.kind == "forecast" and role == "actual":
+            forecast_as_fact.append(figure.context.organisation)
+        elif figure.context.kind == "actual" and role == "forecast":
+            reasons.append("an actual stated as a forecast")
+        elif role == "mixed":
+            reasons.append("one clause reads as both forecast and outcome")
+    hardened = hardened_modality(text, corpus)
+    if hardened:
+        reasons.append(f"asserts with '{hardened}' what the page hedges")
+    if forecast_as_fact:
+        only = not reasons
+        reasons.append("a forecast stated as fact")
+        return PointCheck(tuple(reasons), only, forecast_as_fact[0])
+    return PointCheck(tuple(reasons), False, None)
+
+
+def _evidence_words(figure: VerifiedFigure) -> str:
+    results = figure.finding.verification.figure_results if figure.finding.verification else []
+    words = results[figure.index].evidence_words if figure.index < len(results) else None
+    return words or (figure.finding.snippet or "")
+
+
+def compose_written_report(task: ReportWriterTask, draft: ReportWriterDraft | None) -> ReportComposition:
+    """Check every drafted point, rewrite a forecast-as-fact once, and compose (§6.1-6.2)."""
+    by_label = dict(task.registry)
+    ids = {label: finding_fingerprint(f) for label, f in task.registry}
+    rejected: list[RejectedDraftPoint] = []
+    stated_rows: set[str] = set()
+    numbers = iter(range(1, 10_000))
+
+    def build(point: WriterPointDraft, where: str, summary: bool) -> ReportPoint | None:
+        text = " ".join(point.text.split())[:MAX_POINT_CHARS]
+        wanted = [label.strip() for label in point.finding_labels]
+
+        def refuse(reason: str) -> None:
+            rejected.append(RejectedDraftPoint(where=where, text=text, finding_labels=list(point.finding_labels), reason=reason))
+
+        if not text:
+            return refuse("empty text")
+        unknown = [label for label in wanted if label not in by_label]
+        if unknown:
+            return refuse("unknown labels: " + ", ".join(unknown))
+        cited = [by_label[label] for label in wanted]
+        check = check_point(text, cited, geographies=task.geographies)
+        if check.forecast_as_fact and check.organisation:
+            text = hedge_forecast(text, check.organisation)
+            check = check_point(text, cited, geographies=task.geographies)
+        if check.reasons:
+            return refuse("; ".join(check.reasons))
+        cited_ids = {ids[label] for label in wanted}
+        stated = quantities_in(text)
+        rows = {row.row_id for row in task.facts
+                if (row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids))
+                and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)}
+        if summary and rows and rows <= stated_rows:
+            return refuse("restates " + ", ".join(sorted(rows)))
+        stated_rows.update(rows)
+        own_first = sorted(cited, key=lambda f: 0 if any(
+            r.context is not None and r.context.attribution == "own"
+            for r in (f.verification.figure_results if f.verification else [])) else 1)
+        statement = ReportStatement(
+            statement_id=f"S{next(numbers):03d}", text=text, finding_ids=[ids[label] for label in wanted],
+            target_ids=sorted({t for t, fids in task.answered.items() if cited_ids & set(fids)}),
+        )
+        return ReportPoint(text=text, source_urls=list(dict.fromkeys(f.source_url for f in own_first)),
+                           statement=statement)
+
+    summary = [p for n, d in enumerate(draft.executive_summary if draft else [])
+               if (p := build(d, f"summary[{n}]", True)) is not None]
+    sections: list[ReportSection] = []
+    for s, section in enumerate((draft.sections if draft else [])[:DEFAULT_MAX_SECTIONS]):
+        points = [p for n, d in enumerate(section.points)
+                  if (p := build(d, f"sections[{s}].points[{n}]", False)) is not None]
+        title = " ".join(section.title.split())[:_SECTION_TITLE_CHARS]
+        if points and title:
+            sections.append(ReportSection(title=title, points=points))
+    return ReportComposition(
+        question=task.question, session_id=task.session_id, iteration=task.iteration,
+        max_iterations=task.max_iterations, as_of=task.as_of, scope=task.scope,
+        sub_topics=list(task.sub_topics), sources=list(task.sources), findings=list(task.findings),
+        summary=summary, sections=sections, rejected=[r.reason for r in rejected],
+        rejected_points=rejected, fact_rows=list(task.facts), not_found=list(task.not_found),
+        finding_labels={label: finding_id for label, finding_id in ids.items()},
+        generated_on=task.generated_on,
+    )
+
+
+def finding_memory_payload(finding: Finding, *, session_id: str) -> tuple[str, dict[str, JsonValue]]:
+    """What long-term memory keeps of one cited finding of an accepted report."""
+    figures = [
+        f"{r.figure.value} {r.figure.unit} ({r.context.kind}, {r.context.period or 'period not stated'}, {r.context.organisation})"
+        for r in (finding.verification.figure_results if finding.verification else [])
+        if r.kept and r.context is not None
+    ]
+    metadata: dict[str, JsonValue] = {
+        "session_id": session_id, "finding_id": finding_fingerprint(finding),
+        "source_url": finding.source_url, "source_title": finding.source_title,
+        "figures": "; ".join(figures),
+        "verification": finding.verification.status if finding.verification else "unchecked",
+        "context_unchecked": bool(finding.verification and finding.verification.context_unchecked),
+    }
+    return finding.snippet or finding.content, metadata
+```
+
+The agent's own logic:
+- `build_task(state)`: `targets` = every target of every sub-topic; `findings = list(state.verified_findings)`; `registry = finding_registry(findings, targets)`; `answered = answered_target_ids(citable_findings(findings), targets)`; `facts = fact_rows(findings, targets)`; `not_found = not_found_targets(state.sub_topics, answered, state.acquisition_state_by_target)`; `as_of = report_as_of(findings=findings, reads=list(state.read_records.values()))`; `scope = report_scope(state.sub_topics)`; `generated_on = self._clock().date().isoformat()`; `geographies` = the targets' distinct non-empty `geography`; `sources = list(state.evaluated_sources)`; `instruction = state.original_question`.
+- `draft(task)`: no provider call when `task.registry` is empty (record `report_writer_no_verified_findings`). Otherwise try `_WRITER_ATTEMPT_EFFORTS` in order with `self.provider.complete_structured(writer_messages(task), ReportWriterDraft, agent_name=self.name, reasoning_effort=effort)`: a `ProviderOutputLimitError` records `report_writer_output_limit` and tries the next effort; `ProviderError`, `StructuredOutputError` or `ValidationError` records `report_writer_provider_error` and stops; exhausting the ladder records `report_writer_provider_error` too. Every error is `agent_error(agent_name=REPORT_WRITER_NAME, ..., details={"exception_type": type(error).__name__, "attempt": n})`.
+- `run(state)`: inside `self.tracker.agent_span(self.name)`, `task = self.build_task(state)`, `draft, errors = await self.draft(task)`, `composition = compose_written_report(task, draft)`, `result = WrittenReport(markdown=render_written_report(composition), evidence_markdown=render_finding_log(composition), composition=composition, statement_count=len(composition.statements), citation_count=len(written_citations(composition)), refused_count=len(composition.rejected_points))`; return `AgentRun(agent_name=self.name, result=result, react=ReActRun(agent_name=self.name, stop_reason="provider_error" if draft is None and task.registry else "finished", errors=errors), errors=errors, state_update=..., call_fingerprints=dict(self._call_fingerprints))`, like Task 2.1's agent.
+- `state_update`: `{"report": result.markdown, "report_evidence": result.evidence_markdown, "composition": result.composition, "unique_source_count": result.citation_count, "errors": list(errors), "events": [report_written_event(result)]}` where `report_written_event` is `agent_event(agent_name=REPORT_WRITER_NAME, event_type="report_writer.report.written", message=..., metadata={"statements": ..., "citations": ..., "refused": ..., "fact_rows": len(composition.fact_rows), "not_found": len(composition.not_found)})` (check `agent_event`'s keyword names in `agents/events.py` line 18).
+- `allowed_tools = ("write_document", "save_to_memory")`, as the synthesizer's.
+
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_report_writer.py tests/test_agents/test_report_layout.py tests/test_agents/test_verified_facts.py tests/test_agents/test_wording.py`. Expected: PASS. If `ReportComposition`'s validator rewrites the statements this module passes, stop and report it: Task 1.1's contract is that it keeps them.
+
+- [ ] **Step 5: Commit.**
+
+```bash
+git add src/deep_research/agents/report_writer.py tests/test_agents/test_report_writer.py
+git commit -m "feat(report_writer): the Report Writer cites verified findings by label with the 6.2 guards"
+```
+
+**Acceptance:** the named Review Focus tests pass (forecast-as-fact rewritten once and kept; grid-scale on an all-segment figure refused); a failed or truncated draft still publishes the code-built facts; no path cites a URL the findings do not carry.
+
+### Task 3.5: Phase-3 integration: exports and pins
+
+**Role:** sp-implementer. **Wave:** 3C, parallel with Task 3.6. **Depends on:** Task 3.4 merged.
+
+**Owns:** `src/deep_research/agents/__init__.py`, `tests/test_evaluation/test_config.py`.
+
+- [ ] **Step 1: Re-export** every public name of `wording.py`, `verified_facts.py`, `report_writer.py` and the four new `report.py` functions from `agents/__init__.py` and `__all__`. Where `agents/__init__.py` imported a moved wording name (`hedge_marker` and others) from `synthesizer`, import it from `wording` instead.
+- [ ] **Step 2: Re-pin the synthesizer fingerprint** as Task 1.5 Step 2 does (only the synthesizer may move: Task 3.3 edited `synthesizer.py`); comment "Evidence Verifier plan, Task 3.3: wording rules moved to agents/wording.py".
+- [ ] **Step 3: Run the tests.** Run: `"$PY" -m pytest -q tests/test_imports.py tests/test_evaluation/test_config.py tests/test_agents`. Expected: PASS.
+- [ ] **Step 4: Commit** `src/deep_research/agents/__init__.py` and `tests/test_evaluation/test_config.py` with "chore(agents): export phase-3 names; re-pin the synthesizer fingerprint".
+
+### Task 3.6: Step-3 proof on the audit-2 findings (Gate G3)
+
+**Role:** sp-implementer, in `$W` (rule R1); the `--live` run is an operator step. **Wave:** 3C, parallel with Task 3.5. **Depends on:** Task 3.4 merged.
+
+**Files:** Create (untracked) `scratch/ev_compose_audit2.py`.
+
+**Interfaces:** Consumes `rebuild()`, `QUESTION`, `fixture_plan()` (Task 1.6); `scripted_replies()`, `verify_scripted()` (Task 2.3); `ReportWriterAgent`, `compose_written_report`, `ReportWriterDraft`, `WriterPointDraft` (Task 3.4); `render_written_report`, `render_finding_log` (Task 3.2).
+
+- [ ] **Step 1: Write the harness.** Behaviour:
+  - Offline (default): `rebuilt = rebuild()`; `findings = verify_scripted(rebuilt)`, with two extra scripted overrides: every figure from `ent.news` gets `attribution="relayed"`, `organisation="U.S. Energy Information Administration"` (the STEO PDF's "Data source" line; Task 2.1's `source:` cue must admit it), and every figure from `woodmac.com` keeps `own`. Build `state = ResearchState(session_id="ev-proof-audit2", original_question=QUESTION, sub_topics=rebuilt.sub_topics, verified_findings=findings, read_records=rebuilt.reads, evaluated_sources=rebuilt.sources)`, build a `ReportWriterAgent` with a `ScriptedCompleter` whose one queued output is the scripted draft below, and run it.
+  - The scripted draft, labels looked up in `task.registry` by host and figure value: (1) "Generators added 10.4 GW of new battery storage capacity in the United States in 2024." citing the eia.gov 10.4 GW finding; (2) "EIA's outlook adds 14 GW in 2025." citing the ent.news 14 GW finding (a forecast stated as fact: must be rewritten and kept); (3) "Wood Mackenzie projects 15 GW of energy storage installations in 2025." citing the woodmac.com Q1-2025 15 GW finding; (4) "Wood Mackenzie reports 18.9 GW of grid-scale storage installed in 2025." citing a woodmac.com 18.9 GW finding (must be refused for scope); (5) "In 2024, 10.4 GW of battery storage was added." citing the eia.gov finding again (a restatement: must be dropped).
+  - `--live` (operator, off-peak): the same state, the writer built with the real provider exactly as Task 2.3's `--live` builds the verifier (`model_profile=settings.llm.resolve_for("report_writer")`; before Task 4.1 renames it, `resolve_for` falls back to the global profile for an unknown name, so pass `settings.llm.resolve_for("synthesizer")` to keep the measured effort).
+  - Write `scratch/ev-compose-report.md` and `scratch/ev-compose-evidence.md`, print the summary lines with their labels, then the checks:
+    - **C1** a summary line states 10.4 GW and its label contains "actual", and its fact row's organisation is EIA (`same_organisation(row.organisation, "EIA")`);
+    - **C2** at least two summary lines state 2025 forecasts whose labels start with different organisations and contain "forecast"; each carries a release when its finding does (print any forecast finding without a release field, and fail C2 in `--live` mode if one lacks it);
+    - **C3** (offline only) line (2) is kept, rewritten to contain "forecast";
+    - **C4** (offline only) line (4) is in `rejected_points` with a reason containing "grid-scale";
+    - **C5** no two summary lines state the same fact row, and no two key facts rows share organisation, unit dimension, period, kind and value;
+    - **C6** the rendered report matches none of `\b(verified|unverified|corroborat\w*|independently|insufficient evidence|contested|contradicted|not established)\b` (case-insensitive);
+    - **C7** `untraced_numbers` is empty for every kept point.
+  - Exit 0 only when every applicable check prints `PASS`.
+
+- [ ] **Step 2: Run offline.** Run: `"$PY" scratch/ev_compose_audit2.py`. Expected: `PASS C1`–`PASS C7`, exit 0. A failure caused by the harness's scripted data (a label lookup that finds nothing) is fixed in the harness; a failure in composition, checks or labels goes back to Task 3.1, 3.2, 3.3 or 3.4 (rule R6).
+
+- [ ] **Step 3: Run live (operator, off-peak).** Run the OFF-PEAK CHECK; if `OK`, run `"$PY" scratch/ev_compose_audit2.py --live`. Expected: `PASS` for C1, C2, C5, C6 and C7, one or two `ReportWriterDraft` calls, under 6 minutes. Report the printed summary to the controller.
+
+- [ ] **Step 4: No commit** (scratch).
+
+### Gate G3 — end of step 3
+
+Run in `$W` once Tasks 3.1–3.6 are merged and review-clean (rule R8):
+
+```bash
+"$PY" -m pytest -q tests/test_agents/test_verified_facts.py tests/test_agents/test_wording.py tests/test_agents/test_report_layout.py tests/test_agents/test_report_writer.py
+"$PY" -m pytest -q tests --ignore=tests/test_state.py
+"$PY" -m pytest -q tests/test_state.py
+"$PY" scratch/ev_compose_audit2.py
+"$PY" scratch/ev_compose_audit2.py --live      # operator, off-peak only
+```
+
+**Pass condition:** the tests pass and the full suite is green (the old pipeline still runs, PD-3); the offline harness prints PASS for C1–C7; the live run prints PASS for C1, C2, C5, C6 and C7. That is spec §9 step 3's proof: the summary carries the 2024 actual and at least two 2025 forecasts with organisation and release; no duplicate figure line; no verdict wording. Do not start Phase 4 until G3 passes.
+
+---
+
+## Phase 4 — Cutover: Report Reviewer, gates, extra pass, graph, API and evaluation (spec step 4)
+
+Phase goal: the graph runs planner → researcher → source evaluator → Evidence Verifier → Report Writer → Report Reviewer → (one targeted extra pass) → publish; the fact checker, claim clusters and critic are gone with every caller; the e2e matrices are reworked in the same step, so the safety net never drops (§11). PD-21 governs deletions: parallel tasks stop calling names; Task 4.10 deletes them. The suite is red between Task 4.1 and Gate G4 (PD-3); each task proves itself with its scoped tests.
+
+### Task 4.1: Step-4 contract and mechanical renames
+
+**Role:** sp-hard-implementer. **Wave:** 4A, alone. **Depends on:** Gate G3.
+
+**Owns:** `utils/types.py`, `utils/__init__.py`, `utils/config.py`, `config.yaml`, `tests/test_config.py`, `tests/test_types.py`, `tests/test_state.py`, `tests/evidence_fakes.py`, `agents/report_writer.py`, `agents/synthesizer.py`, `tests/test_agents/test_report_writer.py`, `tests/test_agents/test_synthesizer.py`, the renamed `agents/report_reviewer.py` and `tests/test_agents/test_report_reviewer.py`, and **import lines only** in the files the Step 1 greps list.
+
+**Interfaces:** Produces the step-4 blocks of "Shared interfaces" for `utils/types.py`, the config below, the module `agents/report_reviewer.py` (same contents as `report_review.py`; Task 4.2 rewrites it), `REPORT_REVIEWER_ROLE = "report_reviewer"`, and the three filename helpers in `report_writer.py`. Removes no importable name (PD-21).
+
+- [ ] **Step 1: Inventory.** Run and keep the output for the commit message body:
+
+```bash
+grep -rln "deep_research.agents.report_review\b\|agents import report_review\b" src tests
+grep -rn "REPORT_JUDGE_ROLE\|\"report_judge\"\|'report_judge'\|report_judge" src tests config.yaml
+grep -rn "report_filename\|evidence_report_filename\|quality_report_filename" src tests
+grep -rn "max_iterations" src tests | grep -v "agents.max_iterations\|AgentRuntimeConfig\|config.max_iterations\|AGENTS_MAX_ITERATIONS"
+```
+
+- [ ] **Step 2: Write the failing tests.** Append to `tests/test_types.py`:
+
+```python
+from deep_research.utils.types import REVIEW_RUBRIC_VERSION, ReportReview, ReviewDefect
+
+
+def test_a_review_carries_review_defects_and_missing_targets() -> None:
+    defect = ReviewDefect(defect_id="review-01", kind="coverage", severity="major",
+                          target_ids=["topic-02-target-01"], problem="The 2025 forecast is missing.")
+    review = ReportReview(status="incomplete", defects=[defect], missing_required_target_ids=["topic-02-target-01"])
+    assert review.defects[0].material and REVIEW_RUBRIC_VERSION == 3
+
+
+def test_extra_passes_default_to_one_and_their_targets_are_replaced() -> None:
+    state = ResearchState(session_id="s", original_question="q")
+    assert state.max_extra_passes == 1 and state.extra_pass_target_ids == []
+    state = merge_research_state(state, {"extra_pass_target_ids": ["a"]})
+    state = merge_research_state(state, {"extra_pass_target_ids": ["b"]})
+    assert state.extra_pass_target_ids == ["b"]
+    assert advance_research_iteration(state).iteration == 1
+    with pytest.raises(ValueError):
+        advance_research_iteration(advance_research_iteration(state))
+```
+
+Append to `tests/test_config.py`:
+
+```python
+def test_the_evidence_verifier_pipeline_config() -> None:
+    settings = load_settings("config.yaml")
+    assert settings.graph.max_extra_passes == 1
+    assert settings.agents.tool_budget_overrides["researcher"] == 20
+    assert settings.llm.resolve_for("evidence_verifier").reasoning_effort == "high"
+    assert settings.llm.resolve_for("report_reviewer").timeout == 360.0
+    assert set(settings.agents.tool_budget_overrides) <= set(PRODUCTION_AGENT_NAMES)
+    assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
+    assert SERVICE_ROLE_NAMES == ("report_reviewer",)
+```
+
+(Use the existing imports of `tests/test_config.py`; add `load_settings`, `PRODUCTION_AGENT_NAMES`, `SERVICE_ROLE_NAMES` if absent.)
+
+- [ ] **Step 3: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_types.py tests/test_config.py -k "review_defects or extra_passes or evidence_verifier_pipeline"`. Expected: FAIL.
+
+- [ ] **Step 4: Types** (`utils/types.py`), exactly as the step-4 block of "Shared interfaces": add `ReviewDefect`; set `StatementReviewDisposition` to `"supported" | "unsupported" | "not_reviewed"`; set `REVIEW_RUBRIC_VERSION = 3`; give `ReportReview` the final field list (defects typed `list[ReviewDefect]`, `missing_required_target_ids` added, the evidence-batch fields `reviewed_evidence_ids`, `omitted_evidence_ids`, `reviewed_batch_ids`, `expected_batch_ids`, `reviewed_target_ids` removed; keep `mean_score` and `material_defects` properties and adapt `validate_scored_review` so a scored review needs the seven dimensions and a disposition for every reviewed statement); add the new `ReportQualitySnapshot` fields (old ones stay until Task 4.10); rename `ResearchState.max_iterations` → `max_extra_passes` (`Field(default=1, ge=0)`) and add `extra_pass_target_ids: list[str]` (replaced on write, not appended) in `ResearchState` and `ResearchStateUpdate`; `advance_research_iteration` refuses `iteration >= max_extra_passes`; rename `ReportComposition.max_iterations` → `max_extra_passes`; remove `EvidenceTarget.support_policy` and the validators that read it (PD-16; the `SupportPolicy` alias stays until Task 4.10). Re-export `ReviewDefect` from `utils/__init__.py`. In `tests/evidence_fakes.py`, drop `support_policy` from `make_target`'s legacy branch.
+
+- [ ] **Step 5: Config.** In `utils/config.py`: `PRODUCTION_AGENT_NAMES = ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")`; `SERVICE_ROLE_NAMES = ("report_reviewer",)`; in `GraphConfig` replace `max_iterations` with `max_extra_passes: int = Field(default=1, ge=0)` and its env key `GRAPH_MAX_ITERATIONS` with `GRAPH_MAX_EXTRA_PASSES`; delete `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens`, `claim_verification_max_tokens` and their env keys. `config.yaml`, replacing the matching blocks (keep every comment that still describes something that exists; rewrite the per-agent effort comment to name the new agents):
+
+```yaml
+  model_overrides:
+    planner:
+      reasoning_effort: max
+    researcher:
+      reasoning_effort: high
+    source_evaluator:
+      reasoning_effort: high
+    # The Context Check (spec 5.2): one batched, tool-free call per 15 findings.
+    evidence_verifier:
+      reasoning_effort: high
+    report_writer:
+      reasoning_effort: max
+    # The Report Reviewer is a service role, not an agent (was report_judge).
+    report_reviewer:
+      reasoning_effort: max
+      timeout: 360.0
+      retry_count: 1
+...
+  tool_budget_overrides:
+    planner: 1
+    researcher: 20
+    source_evaluator: 0
+    evidence_verifier: 0
+    report_writer: 0
+...
+graph:
+  max_extra_passes: 1
+  checkpointing_enabled: false
+```
+
+and delete the `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens` and `claim_verification_max_tokens` keys with their comments.
+
+- [ ] **Step 6: Mechanical renames.** `git mv src/deep_research/agents/report_review.py src/deep_research/agents/report_reviewer.py` and `git mv tests/test_agents/test_report_review.py tests/test_agents/test_report_reviewer.py`; update every import line Step 1 listed. Rename `REPORT_JUDGE_ROLE = "report_judge"` to `REPORT_REVIEWER_ROLE = "report_reviewer"` and every use. Move `report_filename`, `evidence_report_filename`, `quality_report_filename` (synthesizer.py 778–815) with their tests into `report_writer.py` / `tests/test_agents/test_report_writer.py`; `synthesizer.py` imports them from `report_writer`; update the other importers Step 1 listed. In `report_writer.py`, rename `ReportWriterTask.max_iterations` to `max_extra_passes` and read `state.max_extra_passes`.
+
+- [ ] **Step 7: Keep every package importable.** Run the IMPORT SMOKE for `deep_research.agents, deep_research.graph, deep_research.runtime, deep_research.api, deep_research.cli, deep_research.main`. A module that now fails **at import time** (a module-level construction or annotation using a removed field) gets the smallest edit that restores import; runtime failures are left to the Phase-4 task that owns the module. `deep_research.evaluation` and `deep_research.e2e_evaluation` may fail to import until Tasks 4.7 and 4.11; record it in the report.
+
+- [ ] **Step 8: Run the tests.** Run: `"$PY" -m pytest -q tests/test_types.py tests/test_config.py tests/test_agents/test_report_writer.py` and, alone, `"$PY" -m pytest -q tests/test_state.py`. Expected: PASS, except `test_types.py`/`test_state.py` tests that exercise claim or critique behaviour and fail only because of this contract: list their ids in the report (Task 4.10 deletes them with the types they test).
+
+- [ ] **Step 9: Commit** every file this task changed, by path, with "refactor: step-4 contract (review defects, extra passes, config) and mechanical renames".
+
+**Acceptance:** the IMPORT SMOKE passes for the six packages; the config test passes; `report_reviewer.py` exists and nothing imports `report_review`.
+
+### Task 4.2: The Report Reviewer
+
+**Role:** sp-hard-implementer. **Wave:** 4B, parallel with Tasks 4.3–4.7. **Depends on:** Task 4.1 merged.
+
+**Owns:** `src/deep_research/agents/report_reviewer.py`, `tests/test_agents/test_report_reviewer.py`.
+
+**Interfaces:**
+- Keeps the names the graph uses: `ReportReviewer` (with `review(packet, *, previous) -> ReportReview` and `review_records`), `build_report_review_input(state, composition) -> ReportReviewInput` (the `terminal` parameter goes), `ReportReviewInput` (with `fingerprint`, `composition_fingerprint`, `expected_statement_ids`, `rubric_version`, `reader_content`), `semantic_review_passes`, `composition_semantic_fingerprint`, `REPORT_REVIEWER_ROLE`.
+- The packet: `question`; `answer_contract`; `reader_content` (the rendered report); `statements` (id, text, the labels of the findings each cites); `findings` (label → source title, host, snippet, figure labels); `fact_rows` (the key facts lines); `not_found` (target questions); `deterministic` (the snapshot's `hard_failures`, `untraced_figures`, `duplicate_fact_rows`, `unresolved_citations`, `uncited_settled_points`). No claim, verdict, cluster or evidence-batch field.
+- The reply schema: `ReportReviewDraft(dimensions: ReviewDimensionScores, statement_dispositions: list[StatementDispositionDraft], defects: list[ReviewDefectDraft], rationale: str)` with `ReviewDefectDraft(kind: str, severity: str, statement_ids: list[str], target_ids: list[str], problem: str)`.
+
+- [ ] **Step 1: Write the failing tests** in `tests/test_agents/test_report_reviewer.py`: keep the file's tests of dimension scoring, `semantic_review_passes` thresholds and packet fingerprinting after porting their fixtures to the new packet; delete every test of claims, verdict badges, critic gap normalisation, evidence batches and batch follow-ups (their behaviour is gone); and add:
+
+```python
+async def test_one_call_judges_every_statement(reviewer_with_reply) -> None:
+    reviewer, completer = reviewer_with_reply(all_supported=True)
+    review = await reviewer.review(packet(), previous=None)
+    assert review.status == "scored" and [n for n, _, _ in completer.calls] == ["ReportReviewDraft"]
+    assert set(review.per_statement_dispositions.values()) == {"supported"}
+
+
+async def test_an_unsupported_statement_is_a_material_defect(reviewer_with_reply) -> None:
+    reviewer, _ = reviewer_with_reply(unsupported=["S002"])
+    review = await reviewer.review(packet(), previous=None)
+    assert "S002" in review.derived_defect_statement_ids and not semantic_review_passes(review)
+
+
+async def test_a_missing_disposition_leaves_the_review_incomplete(reviewer_with_reply) -> None:
+    reviewer, _ = reviewer_with_reply(skip=["S003"])
+    assert (await reviewer.review(packet(), previous=None)).status == "incomplete"
+
+
+async def test_a_truncated_reply_is_asked_once_more_then_a_failure_is_recorded(reviewer_truncating) -> None:
+    review = await reviewer_truncating.review(packet(), previous=None)
+    assert review.status == "provider_failed" and len(reviewer_truncating.provider.calls) == 2
+
+
+def test_the_packet_holds_statements_findings_and_facts_but_no_claims() -> None:
+    built = build_report_review_input(state_with_written_report(), state_with_written_report().composition)
+    assert built.expected_statement_ids == ["S001", "S002", "S003"]
+    assert "Generators added 10.4 gigawatts" in built.reader_content or built.findings
+    assert not hasattr(built, "claims")
+```
+
+(`packet()`, `state_with_written_report()` and the reviewer fixtures are built in the file from `tests/evidence_fakes.py` and a composition produced by Task 3.4's `compose_written_report`; the reviewer uses a `ScriptedCompleter` like the file's existing fixtures do.)
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_report_reviewer.py`. Expected: FAIL.
+
+- [ ] **Step 3: Implement.** In `report_reviewer.py`: drop the imports from `critic`; replace `CritiqueGapDraft`/`normalize_gaps` with `ReviewDefectDraft` and a local `_defects(drafts, packet) -> list[ReviewDefect]` (ids `review-01`…; an unknown `kind` or `severity` drops that defect with a recorded problem; unknown statement or target ids are removed from the defect, which stays if its problem stays); rebuild `build_report_review_input` from `state.composition` (statements from `composition.statements`, labels from `composition.finding_labels`, findings from `composition.findings`, fact rows from `composition.fact_rows`, Not found from `composition.not_found`, deterministic from `state.quality`); one request per review (`review_messages(packet)`), one re-ask at `OUTPUT_LIMIT_RETRY_EFFORT` after `ProviderOutputLimitError`; `ProviderError` → `provider_failed`; a reply missing a statement's disposition → that statement `not_reviewed` and status `incomplete`; `_derived_defects`: each `unsupported` statement becomes a `major` defect of kind `missing_support` naming it. Rewrite the prompt constants: judge the report against the question and the cited findings' snippets and labels; check that relays read as relays, actuals and forecasts are labelled, forecasts carry issuer and release, and no scope, period or kind is wrong; score the seven existing dimensions; give a disposition for every statement id. Delete the evidence-batch machinery and `review_defects_as_refinement_jobs` only where no doomed module imports them (PD-21; otherwise stop calling them). `composition_semantic_fingerprint` hashes the statements, finding ids, fact rows and Not found.
+
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_report_reviewer.py`. Expected: PASS.
+
+- [ ] **Step 5: Commit** `src/deep_research/agents/report_reviewer.py` and `tests/test_agents/test_report_reviewer.py` with "feat(report_reviewer): one call merges the critic and the report review (spec 6.3)".
+
+**Acceptance:** one provider call per review (two after a truncation); every statement dispositioned or the review is `incomplete`; no claim or critic dependency.
+
+### Task 4.3: Quality gates
+
+**Role:** sp-hard-implementer. **Wave:** 4B. **Depends on:** Task 4.1 merged.
+
+**Owns:** `src/deep_research/agents/quality.py`, `tests/test_agents/test_quality.py`.
+
+- [ ] **Step 1: Write the failing tests** (new section of `tests/test_agents/test_quality.py`; delete the file's tests of claim coverage, broad-plan coverage, critical targets, duplicate claims, contradicted claims and pursued-unmet accounting). Build states with Task 3.4's `compose_written_report` over `tests/evidence_fakes.py` findings:
+
+```python
+def test_a_clean_written_report_has_no_hard_failure() -> None:
+    snapshot = compute_report_quality(clean_state(), clean_state().composition)
+    assert snapshot.hard_failures == [] and snapshot.missing_required_target_ids == []
+
+
+def test_each_gate_fires_on_its_own_defect() -> None:
+    assert "untraced_figures" in compute_report_quality(*with_point_text("Generators added 12 GW in 2024.")).hard_failures
+    assert "uncited_settled_points" in compute_report_quality(*with_uncited_point()).hard_failures
+    assert "unresolved_citations" in compute_report_quality(*with_unknown_finding_id()).hard_failures
+    assert "duplicate_fact_rows" in compute_report_quality(*with_duplicate_row()).hard_failures
+    assert "missing_as_of" in compute_report_quality(*with_composition(as_of="")).hard_failures
+    assert "missing_scope" in compute_report_quality(*with_composition(scope="")).hard_failures
+
+
+def test_a_missing_required_target_is_missing_but_accounted_when_listed_not_found() -> None:
+    snapshot = compute_report_quality(*missing_forecast_state(listed_not_found=True))
+    assert snapshot.missing_required_target_ids == ["topic-02-target-01"]
+    assert "unaccounted_required_targets" not in snapshot.hard_failures
+    unlisted = compute_report_quality(*missing_forecast_state(listed_not_found=False))
+    assert "unaccounted_required_targets" in unlisted.hard_failures
+```
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_quality.py`. Expected: FAIL.
+
+- [ ] **Step 3: Implement** `compute_report_quality(state, composition)` (drop `terminal`):
+
+```python
+def compute_report_quality(state: ResearchState, composition: ReportComposition) -> ReportQualitySnapshot:
+    """§6.4 and PD-10: deterministic gates over the written report and its findings."""
+    targets = [t for topic in state.sub_topics for t in topic.evidence_targets]
+    required = [t.target_id for t in targets if t.required]
+    answered = answered_target_ids(state.verified_findings, targets)
+    missing = [t for t in required if t not in answered]
+    listed = {row.target_id for row in composition.not_found}
+    unaccounted = [t for t in missing if t not in listed]
+    by_id = {finding_fingerprint(f): f for f in composition.findings}
+    points = [*composition.summary, *(p for s in composition.sections for p in s.points)]
+    uncited = sum(1 for p in points if p.statement is None or not p.statement.finding_ids)
+    unresolved = sum(1 for p in points if p.statement is not None and (
+        any(i not in by_id for i in p.statement.finding_ids) or not p.source_urls))
+    untraced = [
+        f"{p.statement.statement_id}: {n}" for p in points if p.statement is not None
+        for n in untraced_numbers(p.text, [by_id[i] for i in p.statement.finding_ids if i in by_id])
+    ]
+    rows = composition.fact_rows
+    duplicates = sum(1 for n, a in enumerate(rows) for b in rows[n + 1:]
+                     if a.kind == b.kind and a.value == b.value and same_period(a.period, b.period)
+                     and same_organisation(a.organisation, b.organisation))
+    statuses = [f.verification for f in state.verified_findings if f.verification is not None]
+    failures = [name for name, failed in (
+        ("unresolved_citations", unresolved > 0), ("uncited_settled_points", uncited > 0),
+        ("duplicate_fact_rows", duplicates > 0), ("missing_as_of", not composition.as_of),
+        ("missing_scope", not composition.scope), ("untraced_figures", bool(untraced)),
+        ("unaccounted_required_targets", bool(unaccounted)),
+        ("missing_reader_report", not state.report), ("missing_evidence_ledger", not state.report_evidence),
+    ) if failed]
+    return ReportQualitySnapshot(
+        required_target_ids=required, answered_target_ids=sorted(answered),
+        missing_required_target_ids=missing, unaccounted_target_ids=unaccounted,
+        verified_findings=sum(1 for v in statuses if v.status == "verified"),
+        corrected_findings=sum(1 for v in statuses if v.status == "verified_corrected"),
+        dropped_findings=sum(1 for v in statuses if v.status == "dropped"),
+        context_unchecked_findings=sum(1 for v in statuses if v.context_unchecked),
+        dropped_figures=sum(1 for v in statuses for r in v.figure_results if not r.kept),
+        cited_findings=len({i for p in points if p.statement for i in p.statement.finding_ids}),
+        cited_sources=len({u for p in points for u in p.source_urls}),
+        duplicate_fact_rows=duplicates, uncited_settled_points=uncited,
+        unresolved_citations=unresolved, untraced_figures=untraced,
+        refused_sentences=len(composition.rejected_points), hard_failures=failures,
+    )
+```
+
+Keep `review_status_fields`. Leave the claim-era functions in place when anything outside `quality.py` imports them (PD-21); otherwise delete them.
+
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_quality.py`. Expected: PASS.
+- [ ] **Step 5: Commit** both owned files with "feat(quality): the evidence-verifier gate set (spec 6.4, PD-10)".
+
+**Acceptance:** exactly the PD-10 gates fire, each on its own defect; a missing required target is reported, and fails a gate only when Not found does not list it.
+
+### Task 4.4: Researcher and planner: the targeted extra pass; support policy out
+
+**Role:** sp-hard-implementer. **Wave:** 4B. **Depends on:** Task 4.1 merged.
+
+**Owns:** `agents/researcher.py`, `agents/planner.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_planner.py`, `tests/test_agents/test_planner_researcher_seam.py`.
+
+- [ ] **Step 1: Write the failing tests** (append to `tests/test_agents/test_researcher.py`; delete the critic-driven tests `test_selection_puts_critic_flagged_gaps_first`, `test_refinement_selection_uses_one_slot_for_unsatisfied_topic`, `test_a_presentation_gap_does_not_send_an_answered_topic_to_acquisition`, `test_an_acquisition_gap_sends_an_answered_topic_back_to_research`, `test_refinement_gap_target_is_selected_even_when_prior_findings_exist`, `test_session_guidance_reports_every_gap_problem` and any other test that sets `state.critique` or `state.refinement_targets`):
+
+```python
+def _planned_state(**updates):
+    topics = [SubTopic(coverage_id=f"topic-0{n}", title=f"T{n}", rationale="r", search_queries=[f"q{n}"],
+                       success_criteria=["c"], priority=n,
+                       evidence_targets=[make_target(f"topic-0{n}-target-01")]) for n in (1, 2, 3)]
+    return ResearchState(session_id="s", original_question="q", sub_topics=topics).model_copy(update=updates)
+
+
+def test_the_first_pass_runs_every_planned_sub_topic_in_priority_order() -> None:
+    assert [t.coverage_id for t in select_sub_topics(_planned_state())] == ["topic-01", "topic-02", "topic-03"]
+
+
+def test_an_extra_pass_runs_only_the_sub_topics_that_own_missing_targets() -> None:
+    state = _planned_state(extra_pass_target_ids=["topic-02-target-01"])
+    assert [t.coverage_id for t in select_sub_topics(state)] == ["topic-02"]
+```
+
+and in `tests/test_agents/test_planner.py` a test that a plan draft carrying `support_policy` still validates (the key is ignored, as `EvidenceTargetDraft` no longer has it) only if the draft model allows extra keys; otherwise delete the support-policy tests and assert `"support_policy" not in PLAN_INSTRUCTION`.
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_researcher.py -k "first_pass or extra_pass"`. Expected: FAIL.
+
+- [ ] **Step 3: Researcher.** Replace `_ordered_sub_topics`/`select_sub_topics` (lines 206–343) with:
+
+```python
+def select_sub_topics(state: ResearchState, max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS) -> list[SubTopic]:
+    """The first pass researches every planned sub-topic; an extra pass only the
+    sub-topics that own a missing required target (spec §6.5, §7.2)."""
+    ordered = sorted(state.sub_topics, key=lambda topic: topic.priority)
+    wanted = set(state.extra_pass_target_ids)
+    if wanted:
+        ordered = [t for t in ordered if any(target.target_id in wanted for target in t.evidence_targets)]
+    return ordered[:max_sub_topics]
+```
+
+On an extra pass, `_planned_targets` returns only the targets in `state.extra_pass_target_ids`, so the extraction contract lists only the missing targets and their structured fields. Delete `_critic_gaps_by_target`, `_is_critic_gap_target`, `_cited_read_incidence`, `_refinement_satisfied_sub_topics`, `_critic_queries_for`, the critique paragraphs of `render_sub_topic_guidance`, and the `CritiqueGap` import; a sub-topic's queries are its planned `search_queries`.
+
+- [ ] **Step 4: Planner.** Remove the `claim_clusters` import and the three blocks that use it (the support-policy eligibility test around lines 1323–1343, `_unanswerable_requirements` around 2283–2291, the metadata-dimension filter in `apply_answer_contract` around 2915–2922); remove `EvidenceTargetDraft.support_policy`, its prompt paragraph in `PLAN_INSTRUCTION` and the `"support_policy"` keys in `_PLAN_REPLY_EXAMPLES`; stop calling `support_policy_for_target`, `earned_support_policy`, `extend_plan` and `targets_requiring_replanning` (the agent's `extend_plan` method and `_recorded_omission_extension` go; the module-level names stay for Task 4.10 if exported, PD-21). Delete the tests of those paths.
+
+- [ ] **Step 5: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_researcher.py tests/test_agents/test_planner.py tests/test_agents/test_planner_researcher_seam.py`. Expected: PASS.
+- [ ] **Step 6: Commit** the five owned files with "feat(researcher): targeted extra pass; planner drops support policy and plan extension".
+
+**Acceptance:** an extra pass runs only the sub-topics owning missing targets and shows only those targets; no critic, claim-cluster or support-policy reference remains in either module's live code.
+
+### Task 4.5: The quality record
+
+**Role:** sp-implementer. **Wave:** 4B. **Depends on:** Task 4.1 merged.
+
+**Owns:** `src/deep_research/agents/report.py`, `tests/test_agents/test_report.py`.
+
+- [ ] **Step 1: Write the failing test** (append to `tests/test_agents/test_report.py`):
+
+```python
+def test_the_quality_record_carries_the_verified_findings_and_refusals() -> None:
+    state = written_state()      # a ResearchState whose composition comes from compose_written_report
+    record = json.loads(render_quality_json(state, state.composition, None, quality_status="partial"))
+    assert {"quality", "review", "findings", "fact_rows", "not_found", "statements", "refused_sentences"} <= set(record)
+    assert record["refused_sentences"][0]["text"] and record["refused_sentences"][0]["finding_labels"]
+    assert all("verification" in f for f in record["findings"])
+    assert "claims" not in record and "claim_clusters" not in record
+```
+
+- [ ] **Step 2: Run to see it fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_report.py -k quality_record_carries`. Expected: FAIL.
+- [ ] **Step 3: Implement.** Rewrite `render_quality_record` so the record holds: `question`, `session_id`, `iteration`, `generated_on`, `as_of`, `scope`, `quality_status`, `session_status`, `artifacts`, `quality` (the snapshot dump), `review` (status, mean score, dimensions, defects, dispositions, `missing_required_target_ids`, or `None`), `findings` (id, label, source URL, snippet, `verification` dump), `fact_rows`, `not_found`, `statements` (id, text, finding ids, target ids), `refused_sentences` (where, full text, finding labels, reason) and `configuration` as today; bump the quality contract version constant `render_quality_record` stamps. Leave the claim-era renderers in place (PD-21; Task 4.10 deletes them).
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_report.py tests/test_agents/test_report_layout.py`. Expected: PASS apart from claim-renderer tests that fail only because Task 4.1 changed a type; list their ids (Task 4.10 deletes them).
+- [ ] **Step 5: Commit** both owned files with "feat(report): the quality record carries verified findings and refused sentences (spec 6.2)".
+
+### Task 4.6: Outcome, API, CLI and README
+
+**Role:** sp-hard-implementer. **Wave:** 4B. **Depends on:** Task 4.1 merged.
+
+**Owns:** `runtime/outcome.py`, `api/models.py`, `api/sessions.py`, `api/app.py`, `api/events.py`, `cli.py`, `README.md`, `tests/test_api/*`, `tests/test_cli/*`, `tests/test_runtime/test_outcome.py`.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_runtime/test_outcome.py`, `tests/test_cli/test_render.py`, `tests/test_api/test_sessions.py` and `tests/test_cli/test_arguments.py`, rework the fixtures to a state with `verified_findings` and a new-style snapshot, and add:
+
+```python
+def test_coverage_and_evidence_counts_come_from_verified_findings() -> None:
+    outcome = outcome_for(verified_state())
+    assert (outcome.coverage.required_targets, outcome.coverage.answered_targets) == (3, 2)
+    assert outcome.coverage.missing_required_target_ids == ("topic-02-target-01",)
+    assert (outcome.evidence_counts.verified_findings, outcome.evidence_counts.dropped_findings) == (2, 1)
+
+
+def test_the_summary_prints_findings_review_and_integrity_lines() -> None:
+    lines = render_summary(outcome_for(verified_state()))
+    assert any(l.startswith("Findings: 2 checked") for l in lines)
+    assert any(l.startswith("Integrity: 0 duplicate fact rows; 0 uncited statements; 0 untraced figures") for l in lines)
+    assert not any("critic" in l.casefold() or "claims:" in l.casefold() for l in lines)
+
+
+def test_max_iterations_sets_the_extra_passes_and_accepts_zero() -> None:
+    assert parse_arguments(["q", "--max-iterations", "0"]).max_iterations == 0
+```
+
+(`outcome_for`, `verified_state`, `render_summary` and `parse_arguments` are the names these test files already use or build; match them.)
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_runtime/test_outcome.py tests/test_cli tests/test_api`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+  - `runtime/outcome.py`: `CoverageProgress(required_targets, answered_targets, missing_required_target_ids: tuple[str, ...], not_found_target_ids: tuple[str, ...])` read from `state.quality` and `state.composition.not_found`; `EvidenceCounts` keeps `read_records`, `network_reads`, `cache_reads`, `unique_works`, `publishers`, `source_urls`, `findings`, `assessed_sources`, `cited_assessed_sources` and replaces the claim counts with `verified_findings`, `corrected_findings`, `dropped_findings`, `context_unchecked_findings`, `cited_findings` (from `state.quality`).
+  - `api/models.py` and `api/sessions.py`: `CoverageProgressResponse` and `EvidenceCountsResponse` mirror the new dataclasses; `ResearchRequest.max_iterations` keeps its name (PD-15), allows 0, and is passed as `max_extra_passes=`.
+  - `cli.py`: `--max-iterations` becomes a non-negative int with help "extra research passes for missing required targets (default: graph.max_extra_passes, 1)" and is passed as `run_research(..., max_extra_passes=...)`; `STATUS_NOTES["max_iterations"]` = "extra passes exhausted with required targets still missing"; delete `_claim_lines` and the critic score in `_verdict_lines` (print the review status and mean instead); `_evidence_lines` prints `Findings: {checked} checked ({corrected} with corrected context, {unchecked} unchecked context), {dropped} dropped; {cited} cited` and `Integrity: {duplicate_fact_rows} duplicate fact rows; {uncited_settled_points} uncited statements; {len(untraced_figures)} untraced figures`; `_coverage_line` prints `Required targets: {answered}/{required} answered` plus the not-found ids; `_unresolved_lines` lists the review's material defects and the missing targets; `PROGRESS_EVENT_TYPES` / `is_streamed_event` name the new nodes and the `evidence_verifier.verification.completed` and `report_writer.report.written` events.
+  - `README.md`: rewrite "Source Evaluator And Fact Checker" as "Source Evaluator And Evidence Verifier" (Figure Match, Context Check, labels, drop reasons), "Synthesizer And Critic" as "Report Writer And Report Reviewer", "LangGraph Orchestration" (the node list, the routes and statuses of Task 4.8, `graph.max_extra_passes`), the CLI flags and summary lines, "Quality Semantics" (the PD-10 gates and acceptance), "Individual Agent Evaluation" (the new agent list) and "Whole-Report Quality Evaluation" (the case ids of Task 4.9; the graph-historical harness per the open item 8 decision).
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_runtime/test_outcome.py tests/test_cli tests/test_api`. Expected: PASS. `tests/test_cli/test_report_quality_acceptance.py` keeps its structural pathology checks, ported to the writer and reviewer; its critic- and fact-checker-only tests are deleted.
+- [ ] **Step 5: Commit** every owned file changed with "feat(cli,api): verified-finding coverage and counts; extra passes; README".
+
+**Acceptance:** a user's `python -m deep_research "<question>" --max-iterations 1` still parses; no summary line mentions the critic or claims; the API returns the new counts.
+
+### Task 4.7: Per-agent evaluation
+
+**Role:** sp-hard-implementer. **Wave:** 4B. **Depends on:** Task 4.1 merged.
+
+**Owns:** everything under `src/deep_research/evaluation/` and `tests/test_evaluation/`.
+
+- [ ] **Step 1: Inventory.** `grep -rn "fact_checker\|critic\|synthesizer\|Claim\b\|Critique\|verified_claims\|support_policy\|report_judge" src/deep_research/evaluation tests/test_evaluation` — every hit is migrated or deleted by this task.
+- [ ] **Step 2: Write the failing tests.** `tests/test_evaluation/test_cases_evidence_verifier.py` (new): the three controlled cases and the live case below exist with `agent_name="evidence_verifier"`; each controlled case's reference fixture drives `EvidenceVerifierAgent` (with a `ScriptedCompleter` replying the case's Context Check) to its expected statuses; the gates `verification_recorded`, `no_invented_evidence`, `drop_reasons_named` pass on the reference output and fail on a mutated one (a finding without verification; a kept figure whose evidence words are not on its read; a dropped figure without a reason). `git mv tests/test_evaluation/test_cases_synthesizer.py tests/test_evaluation/test_cases_report_writer.py` and port it to the writer. Update `test_cases_registry.py` (case counts and names), `test_evaluators_agents.py` (delete the fact-checker and critic gate tests; add the three new gates), `test_dependencies_controlled.py`, `test_judging.py` (its `critic_live_case` fixture becomes `evidence_verifier_live_case`), `conftest.py` (delete `FactCheckerOutput` and `CriticOutput`; add `EvidenceVerifierOutput`), and `test_config.py` (the `AGENT_NAMES` pins and the fingerprint dict's keys: planner, researcher, source_evaluator, evidence_verifier, report_writer; compute the values on this branch with the Task 1.5 command; Task 4.10 re-pins them at the end). Delete `test_cases_fact_checker.py` and `test_cases_critic.py`.
+- [ ] **Step 3: Implement.** `models.py`: `AgentName` and `AGENT_NAMES` = planner, researcher, source_evaluator, evidence_verifier, report_writer (and the kebab-case CLI names). `dependencies.py`: `_AGENT_CLASSES` maps `evidence_verifier` → `EvidenceVerifierAgent` and `report_writer` → `ReportWriterAgent`; delete the fact-checker and critic scenarios; add `_evidence_verifier_scenarios()` (tool-free: no service scripted) and rename the synthesizer scenarios to `report_writer`. `cases/__init__.py`: `_MODULES` as the agent list; delete the `claim()` builder. `git rm cases/fact_checker.py cases/critic.py`; `git mv cases/synthesizer.py cases/report_writer.py` and rebuild its cases on verified findings (states with `verified_findings`, compositions from `compose_written_report`). New `cases/evidence_verifier.py`, with exactly the case count `cases/__init__.py` validates per agent: `scope-corrected-to-all-segments` (a page stating "18.9 GW ... across all segments", the finding's scope "grid-scale", expected `verified_corrected` with scope "all segments"), `relay-labelled-as-relay` (a relay page "according to Wood Mackenzie, 16 GW", expected `relayed` / "Wood Mackenzie"), `invented-evidence-words-rejected` (expected `dropped` / `evidence_not_on_page`), and the live case `evidence-verifier-live-benchmark` (the benchmark's EIA and Wood Mackenzie pages, rubric: correct scope, period, kind and attribution). `evaluators.py`: delete the fact-checker and critic gate tuples and functions and the planner's support-policy gate; add the three Evidence Verifier gates; rename the synthesizer gates to `report_writer` (`valid_report`, `citations_known_only` over the cited findings' URLs, `refusals_logged`, `no_persistence_calls`, `no_false_publication_claim`). Update `targets.py`, `runner.py`, `judging.py`, `reporting.py`, `datasets.py`, `failure_taxonomy.py` and `cli.py` wherever the inventory showed an agent-specific branch.
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_evaluation` and `"$PY" -c "import deep_research.evaluation"`. Expected: PASS, except the two fingerprint-pin tests if a sibling task later changes a pinned module (Task 4.10 re-pins).
+- [ ] **Step 5: Commit** every owned file changed, by path, with "feat(evaluation): evidence_verifier and report_writer cases; fact_checker and critic removed".
+
+**Acceptance:** `AGENT_NAMES` has the five agents; `python -m deep_research.evaluation` lists evidence_verifier and report_writer cases and no fact_checker or critic case.
+
+### Task 4.8: Graph and runtime cutover
+
+**Role:** sp-hard-implementer. **Wave:** 4C, parallel with Task 4.9. **Depends on:** Tasks 4.2, 4.3 and 4.4 merged.
+
+**Owns:** `graph/*.py` (with `graph/__init__.py`), `runtime/assembly.py`, `runtime/__init__.py`, `runtime/recall.py`, `runtime/memory_bridge.py`, `runtime/errors.py`, `main.py`, `tests/graph_fakes.py`, `tests/research_fakes.py`, `tests/test_graph/*`, `tests/test_runtime/*` except `test_outcome.py`.
+
+**Interfaces:** the "Graph, runtime and entry points" block of "Shared interfaces"; `EvidenceVerifierAgent` (Task 2.1); `ReportWriterAgent`, `finding_memory_payload` (Task 3.4); `render_written_report`, `render_finding_log` (Task 3.2); `render_quality_json` (Task 4.5); `ReportReviewer`, `build_report_review_input` (Task 4.2); `compute_report_quality` (Task 4.3); `select_sub_topics` reading `extra_pass_target_ids` (Task 4.4).
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_graph/test_state.py`, replace the critique routing tests with:
+
+```python
+def _routed(**fields):
+    review = fields.pop("review", ReportReview(status="scored", dimensions={d: 0.9 for d in REVIEW_DIMENSIONS}))
+    quality = fields.pop("quality", ReportQualitySnapshot())
+    return graph_route(ResearchState(session_id="s", original_question="q", report_review=review, quality=quality, **fields))
+
+
+def test_missing_targets_buy_one_extra_pass_then_publish() -> None:
+    missing = ReportReview(status="scored", missing_required_target_ids=["t2"], dimensions={d: 0.9 for d in REVIEW_DIMENSIONS})
+    assert _routed(review=missing) == ("extra_pass", "extra_pass_requested")
+    assert _routed(review=missing, iteration=1) == ("finalize", "extra_passes_exhausted")
+    assert _routed(review=missing, max_extra_passes=0) == ("finalize", "extra_passes_exhausted")
+
+
+def test_the_final_routes_and_their_statuses() -> None:
+    assert _routed() == ("finalize", "report_accepted")
+    assert _routed(quality=ReportQualitySnapshot(hard_failures=["untraced_figures"])) == ("finalize", "report_not_accepted")
+    assert _routed(review=ReportReview(status="provider_failed")) == ("finalize", "review_unavailable")
+    assert graph_status(ResearchState(session_id="s", original_question="q", report_review=ReportReview(status="provider_failed"),
+                                      quality=ReportQualitySnapshot())) == "incomplete"
+```
+
+and in `tests/test_graph/test_orchestrator.py`, with agents from `tests/graph_fakes.py` reworked to the new set (a scripted researcher, a verifier fake whose Context Check call raises `ProviderError`, the real `ReportWriterAgent` with a `ScriptedCompleter`, a `FakeReviewer`, a `FakePublisher`):
+
+```python
+async def test_run_publishes_when_the_context_check_fails(...) -> None:
+    # the verifier's only batch raises ProviderError -> its findings are cited with
+    # "unchecked context"; the run ends status completed or incomplete, never failed;
+    # the publisher received the report, the evidence log and the quality JSON, and
+    # the report text contains "unchecked context".
+
+
+async def test_extra_pass_that_finds_nothing_publishes_with_not_found(...) -> None:
+    # a required target no finding answers; the reviewer node stamps it missing;
+    # the graph runs one extra pass (the researcher is called with
+    # extra_pass_target_ids == [that target]); the second review still names it;
+    # the run finalizes once with status max_iterations, the report's "## Not found"
+    # lists the target, and the researcher was called exactly twice.
+```
+
+Write both bodies in full with the reworked fakes. `tests/test_graph/test_nodes.py`: delete the synthesizer, critic and refine node tests; add tests that the writer node stamps `compute_report_quality`'s snapshot, that the reviewer node stamps `missing_required_target_ids` from the snapshot whatever the review status, and that the extra-pass node sets `extra_pass_target_ids` and advances the iteration. `tests/test_runtime/test_assembly.py`: the agents built are the five new names, and `build_report_reviewer` resolves the `report_reviewer` role.
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_graph tests/test_runtime --ignore=tests/test_runtime/test_outcome.py`. Expected: FAIL.
+- [ ] **Step 3: Implement `graph/state.py`.** Node constants and `NODE_NAMES` per "Shared interfaces"; delete `FACT_CHECKER_NODE`, `SYNTHESIZER_NODE`, `CRITIC_NODE`, `REFINE_NODE`, `ROUTE_REFINE`; then:
+
+```python
+GRAPH_ROUTES = {
+    "report_accepted": "The Report Reviewer accepted the report and no gate failed.",
+    "report_not_accepted": "The report was scored but not accepted (a gate failed, a material defect, or a mean below 0.80), and no required target is missing.",
+    "review_unavailable": "The Report Reviewer did not score the report (provider failure or an invalid reply); it is published as partial.",
+    "extra_pass_requested": "Required targets have no verified finding and an extra pass remains; the researcher runs for those targets only.",
+    "extra_passes_exhausted": "Required targets still have no verified finding and no extra pass remains; they are listed under Not found.",
+    "halted": "The run stopped on a non-recoverable error.",
+}
+GRAPH_STATUSES = ("completed", "max_iterations", "incomplete", "failed")
+_STATUS_BY_ROUTE_REASON = {
+    "report_accepted": "completed",
+    "report_not_accepted": "incomplete",
+    "review_unavailable": "incomplete",
+    "extra_pass_requested": "incomplete",
+    "extra_passes_exhausted": "max_iterations",
+    "halted": "failed",
+}
+
+
+def graph_route(state: ResearchState) -> tuple[str, str]:
+    """Where the graph goes after the Report Reviewer, and why (spec §6.3-6.5)."""
+    if is_halted(state):
+        return ROUTE_END, "halted"
+    review = state.report_review
+    if review is not None and review.missing_required_target_ids:
+        if state.iteration < state.max_extra_passes:
+            return ROUTE_EXTRA_PASS, "extra_pass_requested"
+        return ROUTE_FINALIZE, "extra_passes_exhausted"
+    if review is None or review.status != "scored":
+        return ROUTE_FINALIZE, "review_unavailable"
+    if state.quality is not None and not state.quality.hard_failures and semantic_review_passes(review):
+        return ROUTE_FINALIZE, "report_accepted"
+    return ROUTE_FINALIZE, "report_not_accepted"
+
+
+def graph_quality_status(state: ResearchState) -> str:
+    return QUALITY_STATUS_ACCEPTED if graph_route(state)[1] == "report_accepted" else QUALITY_STATUS_PARTIAL
+```
+
+`initial_graph_state` and `graph_recursion_limit` take `max_extra_passes`. Delete `_acceptance_satisfied`, `_wants_another_pass`, `repair_is_terminal`, the repair-progress and repair-stop machinery (`_material_gap_ids`, `open_material_gap_ids`, `pending_repair_work`, `_selectable_acquisition_keys`, `_unattempted_repair_keys`, `progress_snapshot`, `repair_capacity_spent`, `_leads_exhausted`, `evidence_exhausted`, `provider_failed`, `repair_stop_reason`) and everything only they use.
+- [ ] **Step 4: Implement `graph/nodes.py`.** `report_writer_node(agent)`: run the writer through `agent_node`'s path, then `quality = compute_report_quality(merged, merged.composition)` and stamp it, emitting the quality event the synthesizer node emitted. `report_reviewer_node(reviewer)`: `report_review_node`'s body, with the packet from `build_report_review_input(state, state.composition)`, the reviewed record then stamped `review.model_copy(update={"missing_required_target_ids": list(state.quality.missing_required_target_ids) if state.quality else []})` whatever its status (PD-5), and one `route_decided_event` per decision. `extra_pass_node`: `advance_research_iteration` and set `extra_pass_target_ids = review.missing_required_target_ids`. `route_after_review` returns `graph_route(...)[0]`. `finalize_report_node`: render `render_written_report`, `render_finding_log` and `render_quality_json` from the final composition, publish the three files with `publish_document`, and, only when `graph_quality_status` is accepted, save each cited finding with `publish_finding(*finding_memory_payload(finding, session_id=...))`. `ReportPublisher` gets `publish_finding` in place of `publish_claim`. Delete `synthesizer_node`, `critic_node`, `refine_node`, `route_after_critic`, `route_after_refine`, `route_refinement`, `refinement_targets_for`, `_merged_jobs`, `invalidation_update`, `_clusters_of_statements`, `_claim_is_invalidated`.
+- [ ] **Step 5: Implement `graph/orchestrator.py`, runtime and `main.py`.** `ResearchAgents(planner, researcher, source_evaluator, evidence_verifier, report_writer)`; `AGENT_NODE_ORDER` = those five names; edges: START → planner → researcher → source_evaluator → evidence_verifier → report_writer → report_reviewer; conditional edges from report_reviewer: `extra_pass` → extra_pass → researcher, `finalize` → finalize_report → END, `end` → END; the terminal publisher is the report writer. `_session_outputs` drops the critic score. `runtime/assembly.py`: `AGENT_NAMES` and constructors for the five agents (the verifier and the writer built like the synthesizer; `allowed_tools` from each class), `build_report_reviewer` with `REPORT_REVIEWER_ROLE`. `main.run_research(..., max_extra_passes=None)` defaults to `settings.graph.max_extra_passes`. `graph/__init__.py` and `runtime/__init__.py` export the new names and drop the deleted ones.
+- [ ] **Step 6: Run the tests.** Run: `"$PY" -m pytest -q tests/test_graph tests/test_runtime --ignore=tests/test_runtime/test_outcome.py` and the IMPORT SMOKE for `deep_research.graph, deep_research.runtime, deep_research.main`. Expected: PASS.
+- [ ] **Step 7: Commit** every owned file changed with "feat(graph): evidence verifier, report writer and report reviewer graph with one targeted extra pass".
+
+**Acceptance:** Review Focus items 2 and 3 pass as named; `graph_route` has exactly the six reasons above; nothing in `graph/` or `runtime/` names the fact checker, critic, claims or refinement.
+
+### Task 4.9: E2E replay doubles and cases
+
+**Role:** sp-hard-implementer. **Wave:** 4C, parallel with Task 4.8. **Depends on:** Task 4.2 merged.
+
+**Owns:** `src/deep_research/e2e_evaluation/replay.py`, `src/deep_research/e2e_evaluation/replay_matrix.py`, `tests/test_e2e_evaluation/test_replay_doubles.py` (new).
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_e2e_evaluation/test_replay_doubles.py`): feed each new double the real request its agent builds and assert the reply: `_reply_ContextCheckDraft` answers one `FigureCheckDraft` per `F<nn> | figure <n>` the request lists, confirming by default and applying a `ReplaySource`'s `context` override (`scope`, `attribution`, `organisation`, `kind`, `evidence_words`, `verdict`); `_reply_ReportWriterDraft` answers one summary point per registry line (`"<organisation> reports <value> <unit> for <period>."` for an actual, `"<organisation> projects <value> <unit> for <period>."` for a forecast), and `compose_written_report` keeps every one of them; `_reply_ReportReviewDraft` scores the seven dimensions at the scenario's value (0.9 by default) and disposes of every statement id the request lists as `supported`, unless the scenario lists it as unsupported.
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_e2e_evaluation/test_replay_doubles.py`. Expected: FAIL.
+- [ ] **Step 3: Implement.** In `replay.py`: delete `_reply_ClaimsDraft`, `_reply_ClaimVerdictDraft`, `_reply_ClaimEquivalenceDraft`, `_reply_CritiqueDraft`, `_reply_ReportDraft` and their imports; add the three doubles above; `ReplaySource` gains `context: dict[str, str] = field(default_factory=dict)` for the Context Check overrides. In `replay_matrix.py`, rework `REPLAY_CASE_MANIFEST`: keep `broad-constraints`, `comparative-conflict` (two organisations, two attributed rows, never a conflict), `refinement-evidence-recovery` (renamed `extra-pass-recovers-missing-target`), `blocked-html-pdf-fallback`, `stalled-refinement` (renamed `extra-pass-finds-nothing`: the missing target stays missing; one extra pass; published once with the target under Not found), `unsupported-mechanism`, `judge-failure` (renamed `review-unavailable`), `non-constraint-answer`, `empty-but-clean`, `memory-is-not-read`, `validated-cache-reuse`, `decision-context-late-candidate`; convert `same-work-mirror` (a mirror is one row, labelled by its organisation), `primary-attribution` (renamed `relay-labelled-as-relay`), `current-versus-forecast` (renamed `forecast-versus-actual-kept-apart`) and `reopen-unanswered-target` (renamed `missing-target-triggers-one-extra-pass`); retire `semantic-duplicate-claims` ("claim equivalence is gone; duplicate figures are one fact row by field key, covered by `revision-noted` and `same-work-mirror`") and `late-contradiction` ("no stage issues verdicts; two organisations' figures are two rows"); add `figure-not-on-page-dropped`, `evidence-words-not-on-page-rejected`, `scope-corrected-to-all-segments` and `revision-noted`. Each row states its sources, its `context` overrides, its declared result (accepted/partial and exit code) and its invariants over production state (for example `scope-corrected-to-all-segments`: the kept figure's scope is "all segments", the finding is `verified_corrected`, and no reader sentence says "grid-scale"). Retire the two coverage-gate rows of `GRAPH_ONLY_HISTORICAL_MANIFEST` (PD-14); the other three rows are Task 4.11's (open item 8).
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_e2e_evaluation/test_replay_doubles.py`. Expected: PASS. (The matrix runs in Task 4.11, once the graph of Task 4.8 is merged.)
+- [ ] **Step 5: Commit** the three owned files with "test(e2e): evidence-verifier replay doubles and matrix cases".
+
+### Task 4.10: Deletion sweep, exports and fingerprint pins
+
+**Role:** sp-hard-implementer. **Wave:** 4D, parallel with Task 4.11. **Depends on:** Tasks 4.2–4.8 merged, and the reviews of 4.2, 4.3, 4.4, 4.5 and 4.7 clean (rule R5: it edits their files).
+
+**Owns:** the files it deletes; `agents/__init__.py`, `utils/types.py`, `utils/__init__.py`, `utils/claims.py`, `agents/prompts.py`, `agents/evidence.py`, `agents/identity.py`; the dead names in `agents/{quality,report,report_reviewer,planner,researcher}.py`; `tests/test_imports.py`, `tests/test_types.py`, `tests/test_state.py`, `tests/test_evaluation/test_config.py`, `tests/test_agents/{test_evidence,test_identity,test_prompts,test_report,test_tool_free_prompts,test_native_react_boundary,test_source_evaluator}.py`.
+
+- [ ] **Step 1: Confirm nothing outside the doomed set still imports it.** Run `grep -rn "agents.fact_checker\|agents.claim_clusters\|agents.critic\|agents.synthesizer\|utils.claims" src tests --include=*.py | grep -v "src/deep_research/agents/\(fact_checker\|claim_clusters\|critic\|synthesizer\).py\|tests/test_agents/test_\(fact_checker\|claim_clusters\|critic\|synthesizer\|synthesis_seam\|evidence_quality_seam\).py\|e2e_evaluation"`. Expected: only `agents/__init__.py` and the test files this task owns. Anything else goes back to its Phase-4 owner (rule R6).
+- [ ] **Step 2: Delete.** `git rm` `agents/fact_checker.py`, `agents/claim_clusters.py`, `agents/critic.py`, `agents/synthesizer.py`, `utils/claims.py`, `tests/test_agents/test_fact_checker.py`, `tests/test_agents/test_claim_clusters.py`, `tests/test_agents/test_critic.py`, `tests/test_agents/test_synthesizer.py`, `tests/test_agents/test_synthesis_seam.py`, `tests/test_agents/test_evidence_quality_seam.py`.
+- [ ] **Step 3: Remove the dead names.** From `utils/types.py`, every symbol of the acceptance grep (Caller inventory) and the fields `ResearchState.{verified_claims, claim_clusters, critique, refinement_targets, progress_history, repair_stop_reason, unique_claim_count}`, the claim fields of `ReportComposition`, `ReportQualitySnapshot`, `ReportStatement`, `ReportPoint`, `RejectedDraftPoint` and `ReportTerminalState` (critic status and score, critical-target counts), with `merge_research_state`'s claim merging and its lazy `claim_clusters` import. From `agents/prompts.py`, the fact-checker and critic prompt constants. From `agents/evidence.py`, the pair-only machinery (`source_origin_id`, `shares_lineage`, `eligible_independent_pair`, `EvidenceEligibility`, and `COPIED_TRANSPORT_RELATIONS` if nothing else reads it). From `agents/identity.py`, `merge_claim_snapshot`, `atomic_fingerprint`, `claim_cluster_id`, and `claim_fingerprint` if `grep -rn claim_fingerprint src tests` shows no surviving reader. From `quality.py`, `report.py`, `report_reviewer.py`, `planner.py` and `researcher.py`, every name Phase 4 left without a caller (`grep -rn "<name>" src tests` prints only its definition). Then rewrite `agents/__init__.py`, `utils/__init__.py` and `tests/test_imports.py` to the surviving public names, and remove the claim and critique tests from the owned test files.
+- [ ] **Step 4: Re-pin the fingerprints** (PD-17) with the Task 1.5 command: all five pins move (`agents/prompts.py` changed); record one comment line "Evidence Verifier plan, Task 4.10: agent set and shared prompts changed"; delete the historical single-value tests (including every `CRITIC_PROMPT_FINGERPRINT` test and the constant).
+- [ ] **Step 5: Run the checks.** Run the acceptance grep of the Caller inventory over `src tests` excluding `src/deep_research/e2e_evaluation` and `tests/test_e2e_evaluation`: it prints nothing. Run the IMPORT SMOKE without `deep_research.e2e_evaluation`. Run `"$PY" -m pytest -q tests --ignore=tests/test_state.py --ignore=tests/test_e2e_evaluation` and, alone, `"$PY" -m pytest -q tests/test_state.py`. Expected: PASS.
+- [ ] **Step 6: Commit** with "refactor: remove the fact checker, claim clusters, critic and synthesizer; exports and pins".
+
+### Task 4.11: E2E matrix green (with open decision item 8)
+
+**Role:** sp-hard-implementer. **Wave:** 4D, parallel with Task 4.10. **Depends on:** Tasks 4.8 and 4.9 merged, and the review of 4.9 clean (rule R5).
+
+**Owns:** `e2e_evaluation/{cases,evaluators,models,runner,replay,replay_matrix}.py`, `tests/test_e2e_evaluation/*`, and, under Option B only, the README's "Graph-historical harness" subsection.
+
+- [ ] **Step 1: Models, evaluators, runner.** `models.py`: `AGENT_NAMES` as Task 4.7's; `SnapshotPass` loses `claims` and `critic_targets`; `DeterministicEvaluation` replaces the claim fields (`checked_claims`, `claims_with_provenance`, `checked_claim_provenance_ratio`, `duplicate_claims`, `contradicted_claims`, `disclosed_contradictions`, `critic_targets`, `closed_critic_targets`, `repeated_claim_snapshot_passes`) with `verified_findings`, `dropped_findings`, `context_unchecked_findings`, `duplicate_fact_rows`, `untraced_figures`, `missing_required_targets`, `extra_passes`. `evaluators.py` reads them from production state and from the new CLI summary lines (Task 4.6); `runner.py`'s acceptance checks `duplicate_fact_rows == 0` in place of `duplicate_claims == 0`.
+- [ ] **Step 2: Run the real-agent matrix and fix until green.** Run: `"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3`. Every row passes its declared result and invariants in all three repetitions. A failure caused by a double or a row is fixed here; a failure caused by product code goes to its Phase-4 owner (rule R6).
+- [ ] **Step 3: The graph-historical harness — apply the user's decision on open item 8.** If the user has not decided when this step starts, apply **Option A** and ledger the ruling (retiring scope needs approval).
+  - **Option A (keep; the plan's default):** rework the scripted agent doubles in `cases.py` (`ScriptedDependencies`) to the new agent set (a scripted evidence verifier stamping verifications; the real writer's composition shape; a scripted reviewer) and keep the three remaining rows of `GRAPH_ONLY_HISTORICAL_MANIFEST`. Run `"$PY" -m deep_research.e2e_evaluation suite --tier controlled --mode graph-historical --repetitions 3`: green.
+  - **Option B (retire):** delete `GRAPH_ONLY_HISTORICAL_MANIFEST`, the `graph-historical` mode in `runner.py` (the `--mode` choice and its dispatch), the scripted six-agent doubles in `cases.py` that only it uses, their tests, and the README's "Graph-historical harness" subsection; Gate G4 then drops its graph-historical command. Nothing else changes.
+- [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_e2e_evaluation` and the acceptance grep of the Caller inventory over `src/deep_research/e2e_evaluation tests/test_e2e_evaluation`: it prints nothing.
+- [ ] **Step 5: Commit** every owned file changed with "test(e2e): evidence-verifier matrix green" (and "; graph-historical harness retired" under Option B).
+
+### Gate G4 — end of step 4
+
+Run in `$W` once Tasks 4.1–4.11 are merged and review-clean (rule R8):
+
+```bash
+"$PY" -m pytest -q tests --ignore=tests/test_state.py
+"$PY" -m pytest -q tests/test_state.py
+"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
+"$PY" -m deep_research.e2e_evaluation suite --tier controlled --mode graph-historical --repetitions 3   # Option A only
+"$PY" -c "import deep_research.agents, deep_research.graph, deep_research.runtime, deep_research.api, deep_research.cli, deep_research.main, deep_research.evaluation, deep_research.e2e_evaluation"
+grep -rnwE "<the Caller inventory's acceptance pattern>" src tests    # prints nothing
+"$PY" -m deep_research --help
+```
+
+**Pass condition:** every command succeeds; the grep prints nothing; `--help` shows `--max-iterations` described as extra research passes. That is spec §9 step 4's proof: the full test suite green and the reworked e2e replay matrix green. Do not start Phase 5 until G4 passes.
+
+---
+
+## Phase 5 — The planner's floor (spec step 5)
+
+Phase goal: the benchmark question plans five or fewer required targets, one per organisation, measure, period and kind the question asks for, with no MWh, facility-type or definition requirement.
+
+### Task 5.1: The final target fields
+
+**Role:** sp-implementer. **Wave:** 5A, alone. **Depends on:** Gate G4.
+
+**Owns:** `utils/types.py`, `utils/__init__.py`, `tests/evidence_fakes.py`, `tests/test_types.py`.
+
+- [ ] **Step 1: Write the failing test** (append to `tests/test_types.py`):
+
+```python
+def test_a_target_is_its_structured_fields_and_needs_a_measure() -> None:
+    target = make_target()
+    assert not hasattr(target, "required_dimensions") and not hasattr(target, "critical")
+    with pytest.raises(ValidationError):
+        make_target(measure="")
+```
+
+- [ ] **Step 2: Run to see it fail.** Run: `"$PY" -m pytest -q tests/test_types.py -k needs_a_measure`. Expected: FAIL.
+- [ ] **Step 3: Implement.** `EvidenceTarget` keeps exactly the final fields of "Shared interfaces" (`measure: str = Field(min_length=1)`); remove `required_dimensions`, `critical`, their validators and `counted_evidence_targets`' legacy branch; remove the `if "required_dimensions" in EvidenceTarget.model_fields` branch from `make_target`.
+- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_types.py` and, alone, `tests/test_state.py`. Expected: PASS (tests elsewhere that build legacy targets are fixed by 5.2 and 5.3).
+- [ ] **Step 5: Commit** the four owned files with "refactor(types): targets are their structured fields (spec 7.1)".
+
+### Task 5.2: The planner asks for the question's targets only
+
+**Role:** sp-hard-implementer. **Wave:** 5B, parallel with Task 5.3. **Depends on:** Task 5.1 merged.
+
+**Owns:** `agents/planner.py`, `tests/test_agents/test_planner.py`.
+
+- [ ] **Step 1: Write the failing tests** (append; delete the tests of `required_dimensions`, `critical`, the answer-form and evidence-period boilerplate):
+
+```python
+def test_a_draft_target_without_a_measure_is_a_plan_problem() -> None:
+    draft = _structured_draft(measure="")
+    assert any("measure" in problem for problem in plan_problems_for(draft))
+
+
+def test_the_answer_contract_adds_no_boilerplate_to_targets() -> None:
+    targets = _draft_targets(_structured_draft(), "topic-01")
+    [stamped] = apply_answer_contract([_topic_with(targets)], _contract())
+    assert stamped.evidence_targets[0].model_dump() == targets[0].model_dump()
+
+
+def test_the_plan_instruction_states_the_floor() -> None:
+    for phrase in ("one target per organisation, measure, period and kind",
+                   "required only for what the question names",
+                   "optional", "paywalled"):
+        assert phrase in PLAN_INSTRUCTION
+```
+
+(`plan_problems_for` is the module's existing problem-listing entry point — `target_problems` or `_plan_problems`, whichever takes one sub-topic draft; `_topic_with` and `_contract` build the `SubTopic` and `AnswerContract` of Task 1.4's tests.)
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_planner.py -k "measure or boilerplate or floor"`. Expected: FAIL.
+- [ ] **Step 3: Implement.** `EvidenceTargetDraft` drops `required_dimensions` and `critical`; `_draft_targets` stamps only the structured fields and `required`; a target with an empty `measure` is a plan problem (so the existing review-and-repair loop, `MAX_PLAN_REVIEW_CALLS = 2`, asks for it); `apply_answer_contract` stops adding answer-form and evidence-period items. In `PLAN_INSTRUCTION`, replace every paragraph about required dimensions, answer form and evidence period with:
+
+```
+"Plan one target per organisation, measure, period and kind the question asks for, "
+"and nothing else required. A target is required only for what the question names: "
+"for 'how much grid-scale battery storage was added in 2024, and what do the latest "
+"forecasts project for 2025', that is the 2024 actual and each organisation's latest "
+"2025 forecast. Targets you add yourself (an energy figure in MWh for a capacity "
+"question, facility types, definitions) are optional, and so is any issuer whose "
+"figures are only behind a paywall. Optional targets never fail a run. Keep the "
+"temporal contract: the latest forecasts, no cutoff inferred from a year in the "
+"question, actuals labelled apart from forecasts. For the example question, about "
+"five targets are expected.\n"
+```
+
+and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `critical`.
+- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_agents/test_planner.py`. Expected: PASS.
+- [ ] **Step 5: Commit** both owned files with "feat(planner): the question's targets only (spec 7.1)".
+
+### Task 5.3: Target consumers
+
+**Role:** sp-implementer. **Wave:** 5B, parallel with Task 5.2. **Depends on:** Task 5.1 merged.
+
+**Owns:** `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_report_reviewer.py`, `tests/test_agents/test_planner_researcher_seam.py`, `tests/test_evaluation/test_cases_planner.py`, `tests/test_evaluation/test_evaluators_agents.py`, `tests/test_e2e_evaluation/test_real_agents.py`.
+
+- [ ] **Step 1: Inventory.** `grep -rn "required_dimensions\|\.critical\b\|critical=" src tests` — every hit in an owned file is migrated: the researcher's unit mentions (around researcher.py 780) come from `target.unit_dimension`; the reviewer's target view shows the structured fields; the planner evaluation gates `_dimensions_are_checkable_passes` and `_no_vague_dimensions_passes` are replaced by `targets_have_measure` (every target has a non-empty measure and a known unit dimension or none); the e2e planner double and the matrix's `_topic(critical=...)` builder stop passing the removed fields. A hit in a file not owned here goes to the controller.
+- [ ] **Step 2: Tests.** Update the owned tests to the final target shape and add `test_targets_have_measure_gate` in `test_evaluators_agents.py` (passes on a structured plan, fails on a target with an empty measure).
+- [ ] **Step 3: Run.** `"$PY" -m pytest -q tests/test_agents/test_researcher.py tests/test_agents/test_report_reviewer.py tests/test_agents/test_planner_researcher_seam.py tests/test_evaluation tests/test_e2e_evaluation`. Expected: PASS.
+- [ ] **Step 4: Commit** the owned files changed with "refactor: target consumers read the structured target fields".
+
+### Task 5.4: Phase-5 integration
+
+**Role:** sp-implementer. **Wave:** 5C, parallel with Task 5.5. **Depends on:** Tasks 5.2 and 5.3 merged.
+
+**Owns:** `agents/__init__.py`, `tests/test_evaluation/test_config.py`. Re-pin the planner and researcher fingerprints (Task 1.5 Step 2 procedure), export any new public name, run `"$PY" -m pytest -q tests/test_imports.py tests/test_evaluation/test_config.py`, commit "chore: re-pin planner and researcher fingerprints".
+
+### Task 5.5: Step-5 proof: the plan probe (Gate G5)
+
+**Role:** sp-implementer, in `$W`; the `--live` run is an operator step. **Wave:** 5C. **Depends on:** Task 5.2 merged.
+
+**Files:** Create (untracked) `scratch/ev_plan_probe.py`.
+
+- [ ] **Step 1: Write the probe.** Build the planner with `build_agent("planner", settings, tracker=tracker, provider=provider, tools=build_tools(settings, tracker=tracker, memory=..., request_budget=budget), session_id="ev-plan-probe", reputation=None)` from `runtime/assembly.py` (tracker, settings and provider as in Task 2.3's `--live`; memory: an in-memory `LongTermMemory` as `runtime/assembly.build_runtime` builds for tests, or `None` if `build_tools` accepts it), run it on `QUESTION` from `initial_graph_state(session_id="ev-plan-probe", question=QUESTION)` inside `tracker.session_span`, and print every target (id, required, measure, unit dimension, period, kind, organisation). Checks: **Q1** at most five required targets; **Q2** no required target with `unit_dimension == "energy"`; **Q3** no required target whose measure contains "facility", "type of" or "definition"; **Q4** a required target with period 2024, kind actual and organisation EIA (`same_organisation`), and required 2025 forecast targets for at least two organisations. `--offline` instead feeds the planner a `ScriptedCompleter` whose draft is the audit-3 plan (six targets, one MWh) and prints what the stamped plan keeps, to show the code path; it checks nothing about the model.
+- [ ] **Step 2: Run live (operator, off-peak).** OFF-PEAK CHECK, then `"$PY" scratch/ev_plan_probe.py`. Expected: `PASS Q1`–`PASS Q4`, about 3 minutes.
+- [ ] **Step 3: No commit** (scratch).
+
+### Gate G5 — end of step 5
+
+```bash
+"$PY" -m pytest -q tests --ignore=tests/test_state.py
+"$PY" -m pytest -q tests/test_state.py
+"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 1
+"$PY" scratch/ev_plan_probe.py      # operator, off-peak only
+```
+
+**Pass condition:** the suites are green; the probe prints PASS for Q1–Q4 (spec §9 step 5: five or fewer required targets, no MWh, facility-type or definition requirements). Do not start Phase 6 until G5 passes.
+
+---
+
+## Phase 6 — Live proof (spec step 6)
+
+### Task 6.1: Live-proof labels
+
+**Role:** sp-implementer, in `$W`. **Wave:** 6A, parallel with the final whole-branch review. **Depends on:** Gate G5.
+
+**Files:** Modify (untracked) `scratch/run_live_proof.py`.
+
+- [ ] **Step 1: Per-label arguments.** Change `RUNS` to `dict[str, tuple[str, list[str], dict[str, str]]]` (question, extra CLI arguments, extra environment); keep the old labels as `(AUDIT or SMOKE, [], {})`; add `"ev-preflight": (AUDIT, ["--max-iterations", "0", "--request-tavily-attempt-ceiling", "12"], {"AGENTS_MAX_SUB_TOPICS": "2"})` and `"ev-1": (AUDIT, [], {})`. `run()` appends the extra arguments, merges the extra environment, and writes both to `run.env` (`EXTRA_ARGS=...`, `EXTRA_ENV=...`). Keep `PROOF_MAX_ITERATIONS` as it is (it still maps to `--max-iterations`); update the docstring's "macro refinement budget the critic may spend" to "extra research passes for missing required targets".
+- [ ] **Step 2: A stage-time summary.** After the run, read `cli.log` and print each stage's duration: the time between consecutive `graph.node.completed` lines, per node name and pass, and the total; append them to `SUMMARY.tsv` as a `stages=` column.
+- [ ] **Step 3: Dry check.** `"$PY" -c "import runpy; m = runpy.run_path('scratch/run_live_proof.py'); print(sorted(m['RUNS']))"` lists `ev-1` and `ev-preflight`. No commit (scratch).
+
+### Task 6.2: Capped live pre-flight (operator)
+
+**Depends on:** Task 6.1; the final whole-branch review's fixes merged; OFF-PEAK CHECK prints `OK`.
+
+- [ ] Run `"$PY" scratch/run_live_proof.py ev-preflight`. **Pass:** exit 0 or 4; `output/live-proof/ev-preflight/` holds the report, the evidence log and the quality JSON; the report has every §6.1 section; the stage summary shows the Evidence Verifier, Report Writer and Report Reviewer each within 1.5 times their budget ("Runtime budget"); no traceback in `cli.log`. On a failure, stop: fix through the owning task's fix loop, re-run the affected gate's offline commands, then repeat 6.2.
+
+### Task 6.3: The live run `ev-1` (operator)
+
+**Depends on:** Task 6.2 passed; OFF-PEAK CHECK prints `OK`.
+
+- [ ] Run `"$PY" scratch/run_live_proof.py ev-1` with the default configuration (one extra pass at most). The run is never hard-stopped. Record the commit, exit code, wall time and stage summary from `output/live-proof/SUMMARY.tsv`.
+
+### Task 6.4: Independent audit against spec §10
+
+**Role:** a fresh read-only reviewer that has not seen the implementation. **Depends on:** Task 6.3.
+
+- [ ] Give the reviewer the spec, `output/live-proof/ev-1/` (report, evidence log, quality JSON, `cli.log`, `run.env`) and read access to the reads the evidence log names. It checks spec §10 item by item — (1) wall time ≤ 45 minutes; (2) the summary answers both halves: EIA's 2024 figure with its release, at least two organisations' latest 2025 forecasts each with its release, 2025 actuals labelled as actuals; (3) every number traces to a checked figure on its cited page and no relay is presented as its originator; (4) no wrong scope, period or kind (no all-segment figure called grid-scale; no actual presented as a forecast); (5) the Report Reviewer accepted with no gate failure; (6) its own rating — and reports each with evidence (the line of the report and the page text). **Pass:** all six hold and the rating is GREAT.
+
+**If the audit fails:** the failures are defects with owners (the task whose code produced them); fix through the normal fix loop, re-run Gates G4/G5 offline, and repeat 6.2–6.4 off-peak. Per spec §2, live runs stay at one extra pass until the report is judged great.
+
+---
+
 ## Over-engineering review: decisions for the user
 
 Each item goes beyond the spec's letter, or is a choice the spec leaves open. Each carries a recommendation. None is silently included: the plan does what the "Plan" column says until you decide otherwise.
@@ -2995,3 +5267,5 @@ Each item goes beyond the spec's letter, or is a choice the spec leaves open. Ea
 | 12 | A code cap of five required targets | not included | Do not add. §7.1 relies on the planner, and Gate G5 plus the pre-flight check it. |
 | 13 | An `evidence_verifier` timeout or retry override in `config.yaml` | not included | Add only if the pre-flight shows a batch taking more than 4 minutes. |
 | 14 | The e2e row `extra-pass-finds-nothing`, beyond the spec's six Evidence Verifier cases | included | Keep. It pins Review Focus item 3. |
+
+**Item 8 is an open decision for the user.** Task 4.11 Step 3 implements either choice as a small, self-contained step: Option A keeps and reworks the graph-historical harness; Option B retires it (its manifest, its `--mode`, its scripted doubles, their tests and one README subsection), and Gate G4 drops one command. If no decision has been made when Task 4.11 starts, the controller applies Option A and ledgers the ruling, because retiring scope needs the user's approval.
