@@ -24,7 +24,7 @@
   - Only 1-iteration live runs until the report is judged great (see PD-2).
 - `graph.max_extra_passes` defaults to 1. An extra pass runs only when required targets are missing, and only for those targets (D4, §6.5).
 - Context Check: one call per batch of 15 findings, batches run concurrently (at most 4 at once), no tools and no web search, reasoning effort `high` (§5.2).
-- Researcher tool budget per sub-topic: 20 (`agents.tool_budget_overrides.researcher`, §7.2).
+- Researcher per sub-topic: tool budget 20 (`agents.tool_budget_overrides.researcher`, §7.2) and at most 7 model turns (`agents.max_iterations: 7`, the cap that actually bounds a sub-topic's loop); at most 5 sub-topics (`agents.max_sub_topics: 5`). Both set in Task 1.3 (F1).
 - Snippet: one or two sentences copied verbatim, enforced as at most 600 characters (`MAX_SNIPPET_CHARS`).
 - Report Reviewer acceptance: mean ≥ 0.80 over the seven dimensions, no material defect, no gate failure (§6.3).
 - Out of scope (§12): UI changes (README line 747 records that the Streamlit app was removed; there is no UI code to compile), other benchmark questions (they are exercised by the e2e matrix only), and parallel researcher sub-topics.
@@ -34,7 +34,7 @@
 
 ## Review Focus
 
-1. **A forecast the writer states as fact** ("EIA's outlook adds 14 GW in 2025"): it must be rewritten once by code, re-checked, and kept. The 2026-09-24 pre-flight lost two of its three 2025 forecasts to this refusal. Pinned by Task 3.4 `test_forecast_stated_as_fact_is_rewritten_once_and_kept` (the rewrite itself: Task 3.3 `test_hedge_forecast_makes_a_forecast_read_as_one`).
+1. **A forecast the writer states as fact or hardens** ("EIA's outlook adds 14 GW in 2025"; "will grow" where the page says "could grow"): it must be rewritten once by code, re-checked, and kept. The 2026-09-24 pre-flight lost two of its three 2025 forecasts to this refusal, both for hardened modality. Pinned by Task 3.4 `test_forecast_stated_as_fact_is_rewritten_once_and_kept` and `test_a_hardened_forecast_takes_the_pages_own_modal` (the rewrite itself: Task 3.3 `test_hedge_forecast_makes_a_forecast_read_as_one` and `test_hedge_forecast_takes_the_pages_own_modal`).
 2. **The Context Check call fails for a batch** (outage, timeout, truncation twice): those findings stay citable with the "unchecked context" label, the run records the error, and the report still publishes. Pinned by Task 2.1 `test_failed_batch_marks_findings_context_unchecked` and Task 4.8 `test_run_publishes_when_the_context_check_fails`.
 3. **The extra pass finds nothing for the missing target**: the report publishes once with the target under Not found; there is no second extra pass and no crash. Pinned by Task 4.8 `test_extra_pass_that_finds_nothing_publishes_with_not_found` and e2e row `extra-pass-finds-nothing` (Task 4.9).
 4. **An all-segment figure written as grid-scale** (audit-2's 18.9 GW is "utility, C&I, and residential"): the sentence is refused and logged; it never reaches the reader. Pinned by Task 3.4 `test_grid_scale_wording_on_an_all_segment_figure_is_refused`.
@@ -62,7 +62,6 @@ Named commands used by the gates:
 
 # E2E MATRIX (network-zero, scripted boundaries)
 "$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
-"$PY" -m deep_research.e2e_evaluation suite --tier controlled --mode graph-historical --repetitions 3
 
 # OFF-PEAK CHECK (prints OK or REFUSE; required before every live call)
 "$PY" -c "import datetime as d;n=d.datetime.now(d.timezone.utc);bad=[m for m in range(51) if (t:=n+d.timedelta(minutes=m)).weekday()<5 and (1<=t.hour<4 or 6<=t.hour<10)];print('REFUSE' if bad else 'OK', n.strftime('%a %H:%MZ'))"
@@ -98,19 +97,23 @@ cd "$W/../ev-$ID" && export PYTHONPATH='src;.'
 - **PD-7 Qualitative targets.** A target with no unit dimension is answered by a verified finding that names it in `target_ids`, provided the organisation matches when the target names one. Every other §6.6 check needs a figure. (Listed in the review section.)
 - **PD-8 Attribution is resolved by code** from the Context Check's proposal and the page's own words, per the table in Task 2.1.
 - **PD-9 Duplicates and revisions.** The same value for the same organisation, unit dimension, period and kind is one fact, with or without a target. A revision needs two findings that answer the same target, both carrying a release key (`release_date`, `vintage` or `statement_date`) that differ. Anything else stays two rows and is never called a revision.
-- **PD-10 Gate set (§6.4).** `unresolved_citations`, `uncited_settled_points`, `duplicate_fact_rows`, `missing_as_of`, `missing_scope`, `untraced_figures`, `unaccounted_required_targets`, `missing_reader_report`, `missing_evidence_ledger`. Removed: `duplicate_claims`, `duplicate_source_rows`, `unscored_cited_sources`, `contradicted_settled_claims`, `broad_plan_coverage_below_0.80`, `unanswered_critical_targets`.
-- **PD-11 Names (D5).** The renames apply to what an operator or reader sees: module `agents/report_writer.py` (class `ReportWriterAgent`, node and config key `report_writer`) and module `agents/report_reviewer.py` (class `ReportReviewer`, node `report_reviewer`, service role and `model_overrides` key `report_reviewer`). Unchanged: the artifact names (`report-<session>-<n>.md`, `-evidence.md`, `-quality.json`), the code name "evidence ledger", the config key `agents.report_review_max_tokens`, and the graph status value `max_iterations` (API and CLI vocabulary, now meaning "extra passes exhausted").
+- **PD-10 Gate set (§6.4).** `unresolved_citations`, `uncited_settled_points`, `duplicate_fact_rows`, `missing_as_of`, `missing_scope`, `untraced_figures`, `unaccounted_required_targets`, `missing_reader_report`, `missing_evidence_ledger`. Removed: `duplicate_claims`, `duplicate_source_rows`, `unscored_cited_sources`, `contradicted_settled_claims`, `broad_plan_coverage_below_0.80`, `unanswered_critical_targets`. `duplicate_fact_rows` is an invariant: `fact_rows()` already merges same-fact rows, so it guards hand-built compositions and future producers, and no test fixture is spent on it (F11).
+- **PD-11 Names (D5).** The renames apply to what an operator or reader sees: module `agents/report_writer.py` (class `ReportWriterAgent`, node and config key `report_writer`) and module `agents/report_reviewer.py` (class `ReportReviewer`, node `report_reviewer`, service role and `model_overrides` key `report_reviewer`). Unchanged: the artifact names (`report-<session>-<n>.md`, `-evidence.md`, `-quality.json`), the code name "evidence ledger", the config key `agents.report_review_max_tokens`, and the graph status value `max_iterations` (API and CLI vocabulary, now meaning "extra passes spent and the report not accepted", PD-23).
 - **PD-12 Context Check constants.** Batch size 15, concurrency 4 and the 3,000-character passage window are module constants, not config.
 - **PD-13 An unscored review** (provider failure or invalid reply) routes to publication with graph status `incomplete` and quality `partial`. It never fails the run.
-- **PD-14 Graph-historical e2e harness.** It is kept and its scripted agent doubles are reworked to the new agent set. Its two coverage-gate rows are retired, because their gate is removed. (Retiring the whole harness is listed in the review section.)
+- **PD-14 Graph-historical e2e harness: retired (decided by the user, review item 8).** Its scripted six-agent doubles replay a graph that no longer exists, and the real-agent matrix covers the new graph end to end. Task 4.11 deletes its manifest, its `--mode graph-historical` and its scripted doubles with their tests; Task 4.6 deletes its README subsection; no gate runs it.
 - **PD-15 CLI and API names stay.** The CLI flag `--max-iterations` and the API request field `max_iterations` keep their names, so existing invocations keep working (priority 1); they now set `max_extra_passes`, with the same numbers as before (PD-2). The config key (`graph.max_extra_passes`, env `GRAPH_MAX_EXTRA_PASSES`) and the state field (`ResearchState.max_extra_passes`) are renamed, as D4 names them. (Renaming the flag too is listed in the review section.)
 - **PD-16 When the old target fields leave.** `support_policy` leaves in step 4, because §8 removes "pair and support-policy fields" with the fact checker and nothing reads it after that. `required_dimensions` and `critical` leave in step 5 (§7.1), with the planner rewrite. In step 4 the planner stops validating `required_dimensions` against claim checkability (the only reason it imported `claim_clusters`), and nothing reads `critical` once the `unanswered_critical_targets` gate is gone.
 - **PD-17 Fingerprint pins.** `agent_prompt_fingerprint` hashes an agent's whole module plus `agents/prompts.py` (`evaluation/config.py`), so any edit to `researcher.py`, `planner.py` or `synthesizer.py` moves a pin. Each phase's integration task re-pins `PINNED_TARGET_PROMPT_FINGERPRINTS` (and `PINNED_JUDGE_PROMPT_FINGERPRINT` if it moved) to the values the merged tree computes, and adds one comment line per re-pin naming the task. A historical test that asserts one past pin value (for example `assert PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"] == "d81af60c3103"`) and fails because of this plan's intended edit is deleted, not re-pinned: it records history, not a contract. The drift-alarm tests (`test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift`, `test_the_judge_fingerprint_is_pinned_beside_the_six_target_pins`) stay. (Listed in the review section.)
-- **PD-18 Naming a page's own organisation.** An `own` figure is credited to the organisation the Context Check names only when code confirms the page is that organisation's own: the existing `first_party_host_evidences_issuer`, or a government/education host whose registrable label spells the name (initials or the name run together, a leading "U.S." dropped) while the page names it (`eia.gov` and "U.S. Energy Information Administration"). Otherwise the figure is credited to the host (`woodmac.com`). A lookalike host (`eia.news`) is never credited with the organisation. (Listed in the review section.)
-- **PD-19 One home for the shared wording rules.** The hedge, forecast-versus-actual and attested-name rules the Report Writer keeps (§6.2) are also needed by the Evidence Verifier (the kind fallback for an unchecked figure). They move out of `synthesizer.py` into a new `agents/wording.py` in step 3, so the verifier never imports the writer and step 4 can delete `synthesizer.py` whole. (Listed in the review section.)
+- **PD-18 Naming a page's own organisation, the last fallback (after PD-25).** When the Source Evaluator recorded no validated issuer for the read, an `own` figure is credited to the organisation the Context Check names only when code confirms the page is that organisation's own: the existing `first_party_host_evidences_issuer`, or a government/education host whose registrable label spells the name (initials or the name run together, a leading "U.S." dropped) while the page names it (`eia.gov` and "U.S. Energy Information Administration"). Otherwise the figure is credited to the host (`woodmac.com`). A lookalike host (`eia.news`) is never credited with the organisation. (Listed in the review section.)
+- **PD-19 One home for the shared wording rules.** The hedge, forecast-versus-actual and attested-name rules the Report Writer keeps (§6.2) are also needed by the Evidence Verifier (the kind fallback for an unchecked figure). They move out of `synthesizer.py` into a new `agents/wording.py` by Task 3.3, which runs in wave 1B (the approved R8 exception), so the Evidence Verifier imports `stated_role` from it from the start, never imports the writer, and step 4 can delete `synthesizer.py` whole. (Listed in the review section.)
 - **PD-20 Labels are rendered, not stored.** Reader labels (§6.1) are computed by `report.py` from the fact row or figure context fields at render time, by one function (`figure_label`), which the writer's prompt uses too. No label text is stored in state.
 - **PD-21 Step 4 deletes last.** In step 4, tasks running in parallel never delete a name that `agents/__init__.py` or `utils/__init__.py` exports, or that `fact_checker.py`, `claim_clusters.py`, `critic.py` or `synthesizer.py` imports; they stop calling it. Task 4.10 deletes those modules, their tests and every name left without a caller, in one sweep. This keeps every package importable while six tasks change it at once.
 - **PD-22 The capped pre-flight is the real CLI.** Step 6's pre-flight runs `python -m deep_research` through `scratch/run_live_proof.py` with caps (two sub-topics, no extra pass, a search ceiling), not a hand-wired node chain. `scratch/preflight_downstream.py` is claim-era; it is not reworked and not copied into this worktree.
+- **PD-23 Status after the extra pass (F4; decided).** An accepted report (no gate failure, including `unaccounted_required_targets`, and `semantic_review_passes`) finishes `completed` with quality `accepted`, even when passes are spent and a required target is listed under Not found (§6.4: "or is listed under Not found"; §6.5). `graph_route` checks, in order: halted; extra pass (missing targets and a pass left); review unavailable; report accepted; then `extra_passes_exhausted` (status `max_iterations`) when targets are still missing, else `report_not_accepted`. So `max_iterations` means "passes spent and the report not accepted".
+- **PD-24 A forecast with no release says so (F5).** `figure_label` prints "forecast (release not stated on the page)" when a forecast carries no release, and `ReportQualitySnapshot.forecasts_without_release` counts such fact rows. It is printed on the CLI Integrity line and must be 0 in the pre-flight; it is not a gate (§6.4's gate list is fixed).
+- **PD-25 The page's own organisation comes from the Source Evaluator first (F13; decided).** Spec §3 keeps the Source Evaluator's owning-organisation identification. When the evaluated source for a read carries a validated `identity_anchors["issuer"]`, the Evidence Verifier uses it as the page's own organisation (before PD-18's host rule), and the Report Writer adds the evaluated source's title and issuer to its attested corpus, so "Wood Mackenzie projects …" on `woodmac.com` is attested.
+- **PD-26 An unchecked finding keeps its Figure Match status (F9).** A finding whose Context Check reply is missing or whose batch failed keeps status `verified` or `verified_corrected` from Figure Match and carries `context_unchecked`; it is never promoted by a Context Check it did not get, and its reader label says "unchecked context". The label is the reader's signal (§5.2).
 
 ## Shared interfaces
 
@@ -303,11 +306,12 @@ class ReportQualitySnapshot(ContractModel):  # new fields (Task 4.1); the review
     dropped_figures: int = Field(default=0, ge=0)
     cited_findings: int = Field(default=0, ge=0)
     cited_sources: int = Field(default=0, ge=0)
-    duplicate_fact_rows: int = Field(default=0, ge=0)
+    duplicate_fact_rows: int = Field(default=0, ge=0)      # an invariant: fact_rows() already merges (PD-10)
     uncited_settled_points: int = Field(default=0, ge=0)
     unresolved_citations: int = Field(default=0, ge=0)
     untraced_figures: list[str] = Field(default_factory=list)   # "S003: 12 GW"
     refused_sentences: int = Field(default=0, ge=0)
+    forecasts_without_release: int = Field(default=0, ge=0)   # PD-24: counted and printed, not a gate
     hard_failures: list[str] = Field(default_factory=list)
 
 
@@ -361,7 +365,9 @@ def parse_figure(value: str, unit: str) -> Quantity | None: ...
 def quantities_in(text: str) -> list[Quantity]: ...
 def same_quantity(left: Quantity, right: Quantity) -> bool: ...
 def figure_in_text(value: str, unit: str, text: str) -> bool: ...
-def bare_numbers(text: str) -> list[str]: ...
+def bare_numbers(text: str) -> list[str]: ...                 # skips ISO and day-first dates (F2)
+def dates_in(text: str) -> list[str]: ...                     # the dates a sentence states (F2)
+def without_dates(text: str) -> str: ...                      # the text with its dates blanked (F2)
 ```
 
 ### `src/deep_research/agents/evidence_verifier.py` (Tasks 1.2 and 2.1, new)
@@ -391,10 +397,13 @@ class ContextItem:
     read: ReadRecord
     passage: str
     match: FigureMatch
+    issuer: str | None = None  # evaluated_issuer(...) for the read (PD-25)
 
 def page_owner(read: ReadRecord) -> str: ...
+def evaluated_issuer(sources: Sequence[ScoredSource], read: ReadRecord) -> str | None: ...   # PD-25
 def resolve_attribution(*, proposed: FigureAttribution | None, organisation: str | None,
-                        finding: Finding, read: ReadRecord) -> tuple[FigureAttribution, str]: ...
+                        finding: Finding, read: ReadRecord, issuer: str | None) -> tuple[FigureAttribution, str]: ...
+def unchecked_context(finding: Finding, figure: FindingFigure, read: ReadRecord, issuer: str | None) -> FigureContext: ...
 def verify_finding(item: ContextItem, replies: Mapping[int, FigureCheckDraft] | None) -> FindingVerification: ...
 class VerifiedFindings(ContractModel): findings: list[Finding]
 class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]): ...
@@ -441,7 +450,8 @@ def unattested_names(text: str, corpus: str, raw_corpus: str = "") -> list[str]:
 def stated_years(text: str) -> list[str]: ...
 SCOPE_TERMS: tuple[str, ...]
 def stated_scopes(text: str) -> list[str]: ...
-def hedge_forecast(text: str, organisation: str) -> str: ...
+def page_modal(text: str) -> str: ...                                  # "could", "might", "may" or ""
+def hedge_forecast(text: str, organisation: str, *, marker: str = "") -> str: ...   # F3
 ```
 
 ### `src/deep_research/agents/report.py` additions (Task 3.2)
@@ -467,14 +477,16 @@ class ReportWriterTask(AgentTask): ...
 @dataclass(frozen=True)
 class PointCheck:
     reasons: tuple[str, ...]          # empty: the sentence may be printed
-    forecast_as_fact: bool            # the only reason is a forecast stated as fact
+    forecast_as_fact: bool            # the only reasons are a forecast stated as fact or hardened (F3)
     organisation: str | None          # the forecast's organisation, for hedge_forecast
+    marker: str                       # the page's own modal ("could") for hedge_forecast, or ""
 class WrittenReport(ContractModel):   # the agent's result; replaces SynthesizedReport
     markdown: str; evidence_markdown: str; composition: ReportComposition
     statement_count: int; citation_count: int; refused_count: int
 def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) -> list[tuple[str, Finding]]: ...
 def writer_messages(task: ReportWriterTask) -> list[ChatMessage]: ...
-def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[str]) -> PointCheck: ...
+def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[str],
+                sources: Sequence[ScoredSource] = ()) -> PointCheck: ...
 def compose_written_report(task: ReportWriterTask, draft: ReportWriterDraft | None) -> ReportComposition: ...
 def finding_memory_payload(finding: Finding, *, session_id: str) -> tuple[str, dict[str, JsonValue]]: ...
 class ReportWriterAgent(BaseAgent[WrittenReport]): ...   # also the terminal ReportPublisher
@@ -514,16 +526,16 @@ async def run_research(question: str | None = None, *, ..., max_extra_passes: in
     # and its default is read from `settings.graph.max_extra_passes`
 ```
 
-CLI and API (PD-15): the flag `--max-iterations N` and the request field `max_iterations` keep their names and pass `max_extra_passes=N`. The graph status value `max_iterations` (PD-11) means "extra passes exhausted with required targets still missing".
+CLI and API (PD-15): the flag `--max-iterations N` and the request field `max_iterations` keep their names and pass `max_extra_passes=N`. The graph status value `max_iterations` (PD-11, PD-23) means "extra passes spent, required targets still missing, and the report not accepted"; an accepted report with targets under Not found finishes `completed`.
 
 ## File map
 
 | Phase | Create | Modify | Delete |
 |---|---|---|---|
 | 0 | `scratch/run_live_proof.py` (copy, untracked), `scratch/baseline-*.txt` | — | — |
-| 1 | `agents/figures.py`, `agents/evidence_verifier.py`, `tests/evidence_fakes.py`, `tests/test_agents/test_figures.py`, `tests/test_agents/test_evidence_verifier.py`, `scratch/ev_rebuild_audit2.py` | `utils/types.py`, `utils/__init__.py`, `agents/identity.py`, `agents/evidence.py`, `agents/researcher.py`, `agents/planner.py`, `agents/__init__.py`, `e2e_evaluation/replay.py`, `config.yaml`, tests | — |
-| 2 | `scratch/ev_verify_audit2.py` | `agents/evidence.py`, `agents/researcher.py`, `agents/evidence_verifier.py`, `agents/__init__.py`, tests | — |
-| 3 | `agents/verified_facts.py`, `agents/wording.py`, `agents/report_writer.py`, `tests/test_agents/test_verified_facts.py`, `tests/test_agents/test_wording.py`, `tests/test_agents/test_report_layout.py`, `tests/test_agents/test_report_writer.py`, `scratch/ev_compose_audit2.py` | `agents/report.py`, `agents/synthesizer.py`, `agents/evidence_verifier.py`, `agents/__init__.py`, `tests/test_evaluation/test_config.py` | — |
+| 1 | `agents/figures.py`, `agents/evidence_verifier.py`, `agents/wording.py` (Task 3.3, wave 1B), `tests/evidence_fakes.py`, `tests/test_agents/test_figures.py`, `tests/test_agents/test_evidence_verifier.py`, `tests/test_agents/test_wording.py`, `scratch/ev_rebuild_audit2.py` | `utils/types.py`, `utils/__init__.py`, `agents/identity.py`, `agents/evidence.py`, `agents/researcher.py`, `agents/planner.py`, `agents/synthesizer.py`, `agents/__init__.py`, `e2e_evaluation/replay.py`, `config.yaml`, tests | — |
+| 2 | `agents/verified_facts.py` and `tests/test_agents/test_verified_facts.py` (Task 3.1), `tests/test_agents/test_report_layout.py` (Task 3.2), `scratch/ev_verify_audit2.py` | `agents/evidence.py`, `agents/researcher.py`, `agents/evidence_verifier.py`, `agents/report.py` (Task 3.2), `agents/__init__.py`, tests | — |
+| 3 | `agents/report_writer.py`, `tests/test_agents/test_report_writer.py`, `scratch/ev_compose_audit2.py` | `agents/__init__.py` | — |
 | 4 | `agents/report_reviewer.py` and `tests/test_agents/test_report_reviewer.py` (git mv), `evaluation/cases/evidence_verifier.py`, `evaluation/cases/report_writer.py` (git mv), `tests/test_evaluation/test_cases_evidence_verifier.py`, `tests/test_evaluation/test_cases_report_writer.py` (git mv), `tests/test_e2e_evaluation/test_replay_doubles.py` | `utils/*`, `config.yaml`, `agents/{quality,report,report_writer,researcher,planner,evidence,identity,prompts,__init__}.py`, `graph/*`, `runtime/*`, `main.py`, `cli.py`, `api/*`, `evaluation/*`, `e2e_evaluation/*`, `README.md`, tests | `agents/fact_checker.py`, `agents/claim_clusters.py`, `agents/critic.py`, `agents/synthesizer.py`, `utils/claims.py`, `evaluation/cases/fact_checker.py`, `evaluation/cases/critic.py`, and their tests |
 | 5 | `scratch/ev_plan_probe.py` | `utils/types.py`, `tests/evidence_fakes.py`, `agents/planner.py`, `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/{replay,replay_matrix}.py`, `agents/__init__.py`, tests | — |
 | 6 | — | `scratch/run_live_proof.py` | — |
@@ -558,14 +570,14 @@ The user asked for maximum parallel dispatch of implementation and review. Run t
 
 ### Rules
 
-- **R1 One worktree per implementation task.** The controller records `BASE=$(git -C "$W" rev-parse HEAD)` and creates `../ev-<id>` on branch `ev/<id>` (see "How to run things"). The implementer works and commits only there. Harness tasks and gates run in `$W` itself, because `scratch/` is untracked and exists only there.
+- **R1 One worktree per implementation task, named absolutely in every brief (F12).** The controller records `BASE=$(git -C "$W" rev-parse HEAD)` and creates `../ev-<id>` on branch `ev/<id>` (see "How to run things"). The implementer works and commits only there. Harness tasks and gates run in `$W` itself, because `scratch/` is untracked and exists only there. Every brief (implementer, reviewer and fix round) opens with the absolute path of its tree (`C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.worktrees/ev-<id>` for a task, `$W` for a harness or gate) and says that every read, grep, glob and edit takes an absolute path under it: a relative path resolves against the session's directory, which is the main checkout, where `src/deep_research/utils/types.py` has 510 lines and none of this plan's modules exist. The brief's first action is a tree check: `git -C <tree> rev-parse --abbrev-ref HEAD` prints `ev/<id>` (or `codex/evidence-verifier-pipeline` for `$W`), `<tree>/docs/superpowers/plans/2026-09-24-evidence-verifier-pipeline.md` exists, and, before Task 4.10, `wc -l <tree>/src/deep_research/utils/types.py` prints at least 4158. A brief whose check fails stops and reports; it edits nothing.
 - **R2 Owned files.** Each task lists the files it owns and edits nothing else. A failure it meets in a file it does not own is reported to the controller (test id and the first lines of the traceback), not fixed.
 - **R3 Shared files have one owner per phase** (table below). Parallel tasks import new code from its module (`from deep_research.agents.figures import ...`), never from the `deep_research.agents` package, and do not run `tests/test_imports.py` or `tests/test_evaluation/test_config.py`; the phase's integration task does.
 - **R4 Merge on DONE, review in parallel.** When an implementer reports DONE, the controller merges its branch at once (`git -C "$W" merge --no-ff ev/<id> -m "merge: Task N.M"`) so dependent tasks can start, and dispatches the task review on `BASE..ev/<id>` (the skill's `scripts/review-package PLAN_FILE BASE ev/<id>`, run in `$W`). Reviews of wave N run while wave N+1 implements.
 - **R5 File lock.** A task's owned files stay locked from its dispatch until its review is clean (or parked at the fix-round cap). A task is dispatched only when every task it depends on is merged and none of its owned files is locked. The wave tables name the few places where this makes a task wait for a review.
 - **R6 Fix rounds** run in the task's own worktree (resume the implementer), are committed on its branch, merged again, and re-reviewed on the fix range only. A finding that needs a change in a file another running task owns goes to that owner through `hub`; a finding in a file nobody owns goes to the phase's integration task.
 - **R7 No merge during a harness or a gate.** The controller does not merge into `$W` while a harness task or gate command runs there; merges wait for it.
-- **R8 Gates are barriers.** A gate runs when every task of its phase is merged and review-clean. No task of the next phase is dispatched before the gate passes (spec §9: "Each step's proof must pass before the next step starts"). A fix merged after a gate passed re-runs that gate's offline commands.
+- **R8 Gates are barriers.** A gate runs when every task of its phase is merged and review-clean. No task of the next phase is dispatched before the gate passes (spec §9: "Each step's proof must pass before the next step starts"), with one approved exception: Task 3.3 runs in wave 1B (it only moves `synthesizer.py` helpers into `wording.py`), and Tasks 3.1 and 3.2 run in wave 2A beside Task 2.1 (they need only Task 1.1's types and Task 1.2's `figures.py`). The controller merges 3.1 and 3.2 into the plan branch only after Gate G2 passes, so G2 tests the Phase-2 tree alone and `tests/test_imports.py` stays green; their proof is Gate G3, and Task 3.4 still waits for G2. A fix merged after a gate passed re-runs that gate's offline commands.
 - **R9 Dispatch by readiness.** Waves are the planning view. A task is dispatched as soon as R5 allows, even while other tasks of its wave run.
 - **R10 Cleanup.** After a clean review: `git -C "$W" worktree remove "../ev-<id>" && git -C "$W" branch -d "ev/<id>"`.
 
@@ -576,11 +588,13 @@ The user asked for maximum parallel dispatch of implementation and review. Run t
 | `src/deep_research/utils/types.py`, `src/deep_research/utils/__init__.py` | 1.1; 4.1 (additions and renames), then 4.10 (removals); 5.1 | "Shared interfaces", `utils/types.py` blocks |
 | `tests/evidence_fakes.py` | 1.1; 4.1; 5.1 | the builders in Task 1.1 |
 | `src/deep_research/agents/__init__.py` (re-exports) | 1.5; 2.2; 3.5; 4.10; 5.4 | none needed: names are exported after the wave that creates them |
-| `tests/test_evaluation/test_config.py` (fingerprint pins) | 1.5; 2.2; 3.5; 4.7 (agent names), then 4.10 (pins); 5.4 | PD-17 |
+| `tests/test_evaluation/test_config.py` (fingerprint pins) | 1.5 (researcher, planner, synthesizer); 2.2; 4.7 (agent names), then 4.10 (pins); 5.4 | PD-17 |
 | `config.yaml`, `src/deep_research/utils/config.py`, `tests/test_config.py` | 1.3; 4.1 | the config block in Task 4.1 |
 | Graph wiring: `graph/*.py`, `runtime/assembly.py`, `runtime/__init__.py`, `main.py` | 4.8 | node names, routes, `ReportPublisher`, `run_research` in "Shared interfaces" |
 | `src/deep_research/e2e_evaluation/replay.py`, `replay_matrix.py` | 1.3; 4.9, then 4.11; 5.3 | request formats: Task 2.1 (Context Check), Task 3.4 (writer registry lines), Task 4.2 (reviewer) |
-| `src/deep_research/agents/report.py` | 3.2; 4.5, then 4.10 | |
+| `src/deep_research/agents/report.py` | 3.2 (wave 2A); 4.5, then 4.10 | |
+| `src/deep_research/agents/synthesizer.py` | 3.3 (wave 1B); 4.1 (filename helpers out); 4.10 (deletes it) | the `wording.py` block of "Shared interfaces" |
+| `src/deep_research/agents/evidence_verifier.py` | 1.2; 2.1 | the `evidence_verifier.py` block of "Shared interfaces" |
 | `src/deep_research/agents/researcher.py` | 1.3; 2.1; 4.4, then 4.10; 5.3 | |
 | `README.md` | 4.6 | the node, route, flag and case names in "Shared interfaces" and Task 4.9 |
 
@@ -595,16 +609,16 @@ Sizes: S about 20 minutes of implementation, M 45, L 75, XL 120.
 | 1B | 1.2 Cosmetic matching, figure normalisation, Figure Match | sp-implementer | 1.1 merged | `agents/evidence.py`, `agents/figures.py`, `agents/evidence_verifier.py`, `tests/test_agents/test_evidence.py`, `tests/test_agents/test_figures.py`, `tests/test_agents/test_evidence_verifier.py` | L |
 | 1B | 1.3 Researcher persists evidence; budget 20; own page first | sp-implementer | 1.1 merged | `agents/researcher.py`, `e2e_evaluation/replay.py`, `config.yaml`, `tests/test_config.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_planner_researcher_seam.py`, `tests/test_agents/test_evidence_quality_seam.py`, `tests/test_agents/test_acquisition.py`, `tests/test_evaluation/conftest.py` | L |
 | 1B | 1.4 Planner emits structured target fields | sp-implementer | 1.1 merged | `agents/planner.py`, `tests/test_agents/test_planner.py` | M |
-| 1C | 1.5 Phase-1 integration: exports and pins | sp-implementer | 1.2, 1.3, 1.4 merged | `agents/__init__.py`, `tests/test_evaluation/test_config.py`, and any test file routed to it under R6 | S |
-| 1C | 1.6 Step-1 proof harness | sp-implementer | 1.2, 1.3 merged | `scratch/ev_rebuild_audit2.py` | M |
+| 1B | 3.3 Shared wording rules (R8 exception) | sp-hard-implementer | 1.1 merged | `agents/wording.py`, `agents/synthesizer.py`, `tests/test_agents/test_wording.py` | L |
+| 1C | 1.5 Phase-1 integration: exports and pins | sp-implementer | 1.2, 1.3, 1.4, 3.3 merged | `agents/__init__.py`, `tests/test_evaluation/test_config.py`, and any test file routed to it under R6 | S |
+| 1C | 1.6 Step-1 proof harness and live extraction probe | sp-implementer; `--live` by the operator | 1.2, 1.3 merged | `scratch/ev_rebuild_audit2.py` | M |
 | 2A | 2.1 Context Check and the Evidence Verifier agent | sp-hard-implementer | G1 | `agents/evidence.py`, `agents/researcher.py`, `agents/evidence_verifier.py`, `tests/test_agents/test_evidence_verifier.py`, `tests/test_agents/test_evidence.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_tool_free_prompts.py` | XL |
+| 2A | 3.1 Verified facts (R8 exception) | sp-hard-implementer | G1; merged only after G2 passes | `agents/verified_facts.py`, `tests/test_agents/test_verified_facts.py` | L |
+| 2A | 3.2 Reader report and evidence log layout (R8 exception) | sp-implementer | G1; merged only after G2 passes | `agents/report.py`, `tests/test_agents/test_report_layout.py` | L |
 | 2B | 2.2 Phase-2 integration | sp-implementer | 2.1 merged | `agents/__init__.py`, `tests/test_evaluation/test_config.py` | S |
 | 2B | 2.3 Step-2 proof harness | sp-implementer; `--live` by the operator | 2.1 merged | `scratch/ev_verify_audit2.py` | M |
-| 3A | 3.1 Verified facts | sp-hard-implementer | G2 | `agents/verified_facts.py`, `tests/test_agents/test_verified_facts.py` | L |
-| 3A | 3.2 Reader report and evidence log layout | sp-implementer | G2 | `agents/report.py`, `tests/test_agents/test_report_layout.py` | L |
-| 3A | 3.3 Shared wording rules | sp-hard-implementer | G2 | `agents/wording.py`, `agents/synthesizer.py`, `agents/evidence_verifier.py`, `tests/test_agents/test_wording.py` | L |
-| 3B | 3.4 The Report Writer agent | sp-hard-implementer | 3.1, 3.2, 3.3 merged | `agents/report_writer.py`, `tests/test_agents/test_report_writer.py` | XL |
-| 3C | 3.5 Phase-3 integration | sp-implementer | 3.4 merged | `agents/__init__.py`, `tests/test_evaluation/test_config.py` | S |
+| 3B | 3.4 The Report Writer agent | sp-hard-implementer | G2 passed and 3.1, 3.2 merged (3.3 merged in 1B) | `agents/report_writer.py`, `tests/test_agents/test_report_writer.py` | XL |
+| 3C | 3.5 Phase-3 integration | sp-implementer | 3.4 merged | `agents/__init__.py` | S |
 | 3C | 3.6 Step-3 proof harness | sp-implementer; `--live` by the operator | 3.4 merged | `scratch/ev_compose_audit2.py` | L |
 | 4A | 4.1 Contract and mechanical renames | sp-hard-implementer | G3 | `utils/types.py`, `utils/__init__.py`, `utils/config.py`, `config.yaml`, `tests/test_config.py`, `tests/test_types.py`, `tests/test_state.py`, `tests/evidence_fakes.py`, `agents/report_writer.py`, `agents/synthesizer.py`, `tests/test_agents/test_report_writer.py`, `tests/test_agents/test_synthesizer.py`, the renamed `agents/report_reviewer.py` and `tests/test_agents/test_report_reviewer.py`, and import lines only in the files its Step 1 grep lists | L |
 | 4B | 4.2 Report Reviewer | sp-hard-implementer | 4.1 merged | `agents/report_reviewer.py`, `tests/test_agents/test_report_reviewer.py` | XL |
@@ -616,7 +630,8 @@ Sizes: S about 20 minutes of implementation, M 45, L 75, XL 120.
 | 4C | 4.8 Graph and runtime cutover | sp-hard-implementer | 4.2, 4.3, 4.4 merged | `graph/*.py`, `runtime/assembly.py`, `runtime/__init__.py`, `runtime/recall.py`, `runtime/memory_bridge.py`, `runtime/errors.py`, `main.py`, `tests/graph_fakes.py`, `tests/research_fakes.py`, `tests/test_graph/*`, `tests/test_runtime/*` except `test_outcome.py` | XL |
 | 4C | 4.9 E2E replay doubles and cases | sp-hard-implementer | 4.2 merged | `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_e2e_evaluation/test_replay_doubles.py` | L |
 | 4D | 4.10 Deletion sweep, exports and pins | sp-hard-implementer | 4.2–4.8 merged; waits (R5) for the reviews of 4.2–4.5 and 4.7 | deleted files; `agents/__init__.py`, `utils/types.py`, `utils/__init__.py`, `utils/claims.py`, `agents/prompts.py`, `agents/evidence.py`, `agents/identity.py`; dead names in `agents/{quality,report,report_reviewer,planner,researcher}.py`; `tests/test_imports.py`, `tests/test_types.py`, `tests/test_state.py`, `tests/test_evaluation/test_config.py`, `tests/test_agents/{test_evidence,test_identity,test_prompts,test_report,test_tool_free_prompts,test_native_react_boundary,test_source_evaluator}.py` | L |
-| 4D | 4.11 E2E matrix green | sp-hard-implementer | 4.8 and 4.9 merged; waits (R5) for the review of 4.9 | `e2e_evaluation/{cases,evaluators,models,runner,replay,replay_matrix}.py`, `tests/test_e2e_evaluation/*` | L |
+| 4D | 4.11 E2E matrix green; graph-historical harness retired | sp-hard-implementer | 4.8 and 4.9 merged; waits (R5) for the review of 4.9 | `e2e_evaluation/{cases,evaluators,models,runner,replay,replay_matrix}.py`, `tests/test_e2e_evaluation/*` | L |
+| 4D | 4.12 Reviewer acceptance probe | sp-implementer; `--live` by the operator | 4.2, 4.3 and 4.8 merged | `scratch/ev_review_audit2.py` | M |
 | 5A | 5.1 Contract: the final target fields | sp-implementer | G4 | `utils/types.py`, `utils/__init__.py`, `tests/evidence_fakes.py`, `tests/test_types.py` | M |
 | 5B | 5.2 Planner: the question's targets only | sp-hard-implementer | 5.1 merged | `agents/planner.py`, `tests/test_agents/test_planner.py` | L |
 | 5B | 5.3 Target consumers | sp-implementer | 5.1 merged | `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_report_reviewer.py`, `tests/test_agents/test_planner_researcher_seam.py`, `tests/test_evaluation/test_cases_planner.py`, `tests/test_evaluation/test_evaluators_agents.py`, `tests/test_e2e_evaluation/test_real_agents.py` | M |
@@ -632,20 +647,20 @@ Parallel slots at the peak: wave 4B runs six implementers beside the review of 4
 
 ### Critical path and wall-clock estimate
 
-Assumptions: the sizes above; a task review takes 15 minutes (S, M) or 25 (L, XL); one fix round (fix plus scoped re-review, 25 minutes) lands on each phase's critical path; the full suite takes about 10 minutes (Task 0.1 measures it) and each e2e mode about 15 minutes at three repetitions; off-peak waits are not included.
+Assumptions: the sizes above; a task review takes 15 minutes (S, M) or 25 (L, XL); a fix round (fix plus scoped re-review) takes 25–40 minutes; the full suite takes about 10 minutes (Task 0.1 measures it) and the e2e matrix about 15 minutes at three repetitions. "Planned" assumes one fix round per phase. "Realistic" follows the plan audit (`agent://FablePlanAudit`): two to three extra fix rounds on each XL critical-path task and on Task 4.11, one more round elsewhere, and a gate re-run per phase. Off-peak waits are not counted in either column.
 
-| Phase | Critical path | Minutes |
-|---|---|---|
-| 0 | 0.1 | 45 |
-| 1 | 1.1 (75) → 1.3 (75; 1.2 and 1.4 beside it) → 1.6 (45; 1.5 beside it) → last review 15 → fix round 25 → G1 25 | 260 |
-| 2 | 2.1 (120) → 2.3 (45; 2.2 beside it) → last review 15 → fix round 25 → G2 30 | 235 |
-| 3 | 3.1 or 3.3 (75; 3.2 beside them) → 3.4 (120) → 3.6 (75; 3.5 beside it) → last review 25 → fix round 25 → G3 25 | 345 |
-| 4 | 4.1 (75) → 4.2 (120; 4.3–4.7 beside it) → 4.8 (120; 4.9 beside it) → 4.11 (75; 4.10 beside it) → last review 25 → fix round 25 → G4 45 | 485 |
-| 5 | 5.1 (45) → 5.2 (75; 5.3 beside it) → 5.5 (45; 5.4 beside it) → last review 15 → fix round 25 → G5 25 | 230 |
-| 6 | the final review and its fixes (90; 6.1 and 6.2 beside them) → 6.3 (45) → 6.4 (40) | 175 |
-| **Total** | | **1,775 ≈ 29.6 hours** |
+| Phase | Critical path | Planned (min) | Realistic (min) |
+|---|---|---|---|
+| 0 | 0.1 | 45 | 45 |
+| 1 | 1.1 (75) → 1.3 (75; 1.2, 1.4 and 3.3 beside it) → 1.6 with its `--live` probe (60; 1.5 beside it) → last review 15 → fix round 25 → G1 25 | 275 | 315 |
+| 2 | 2.1 (120; 3.1 and 3.2 beside it, the R8 exception) → 2.3 (45; 2.2 beside it) → last review 15 → fix round 25 → G2 30 | 235 | 305 |
+| 3 | 3.4 (120; 3.1 and 3.2 merged just after G2) → 3.6 (75; 3.5 beside it) → last review 25 → fix round 25 → G3 25 | 270 | 340 |
+| 4 | 4.1 (75) → 4.2 (120; 4.3–4.7 beside it) → 4.8 (120; 4.9 beside it) → 4.11 (75; 4.10 and 4.12 beside it) → last review 25 → fix round 25 → G4 (the matrix once, and the reviewer probe) 42 | 482 | 732 |
+| 5 | 5.1 (45) → 5.2 (75; 5.3 beside it) → 5.5 (45; 5.4 beside it) → last review 15 → fix round 25 → G5 25 | 230 | 270 |
+| 6 | the final review and its fixes (90; 6.1 beside them) → 6.2 (25) → 6.3 (45) → 6.4 (40) | 200 | 260 |
+| **Total** | | **1,737 ≈ 29 hours** | **2,267 ≈ 38 hours** |
 
-The same estimates run one task at a time, with no review overlapping any implementation, come to about 3,300 minutes (55 hours). The waves save about 46%. Where time can still go: each extra fix round on a critical-path task adds 25–40 minutes, and a live step that meets a peak window (Mon–Fri 01:00–04:00 and 06:00–10:00 UTC) waits up to 3 hours, so G2, G5, 6.2 and 6.3 should be scheduled off-peak in advance.
+Plan with the realistic figure: **36–40 hours of agent wall time** (two extra rounds instead of three on 4.8 and 4.11 give about 36 hours; one more round on each XL task, about 40), **plus off-peak waits**: the live steps of G1 (researcher probe), G2, G3, G4 (reviewer probe), G5, 6.2 and 6.3 each wait up to 3 hours if they meet a peak window (Mon–Fri 01:00–04:00 and 06:00–10:00 UTC), so schedule them off-peak in advance. The approved R8 exception (Task 3.3 in wave 1B; Tasks 3.1 and 3.2 in wave 2A) takes about 75 minutes off Phase 3. Run one task at a time with no review overlapping any implementation, the planned figures come to about 3,300 minutes (55 hours); the waves save about half.
 
 ## Runtime budget: how one report takes about 30 minutes (45 at most)
 
@@ -654,17 +669,17 @@ Measured baseline (audit-3, `output/live-proof/audit-3/cli.log`, first pass): pl
 | Stage | Pass-0 work | Budget | What bounds it |
 |---|---|---|---|
 | Planner | 1 plan request plus at most 2 plan-review calls | 3 min | `MAX_PLAN_REVIEW_CALLS = 2`; `planner_final_max_tokens` 65,536; five or fewer required targets (step 5) |
-| Researcher | the planned sub-topics in priority order, one after another (§12), each ≤ 20 tool calls | 10 min | `agents.tool_budget_overrides.researcher: 20`; a sub-topic stops once its targets have findings; the organisation's own page first means fewer relay reads |
+| Researcher | at most 5 planned sub-topics in priority order, one after another (§12), each ≤ 7 model turns and ≤ 20 tool calls | 12 min | `agents.max_iterations: 7`, the ReAct turn cap that actually bounds a sub-topic (audit-3 measured ≈ 18.6 s per turn, so 35 turns ≈ 11–13 min); `agents.max_sub_topics: 5`; `agents.tool_budget_overrides.researcher: 20` (F1); the organisation's own page first means fewer relay reads |
 | Source Evaluator | 1–3 batched calls (batch 12, at most 36 sources) | 1.5 min | unchanged |
 | Evidence Verifier | Figure Match (milliseconds), then about 30 findings in 2 Context Check batches of 15, run at once | 3 min | batch 15, at most 4 batches at once (PD-12); a truncated batch is asked once more in two halves; a failed batch marks its findings `context_unchecked` and the run goes on |
-| Report Writer | 1 draft request; a second only after a truncated one | 4 min | two attempts (the synthesizer's measured ladder); code builds the key facts table, Not found and the labels, so the model writes only prose |
+| Report Writer | 1 draft request; a second only after a truncated one | 4 min | two attempts (the profile's effort, then high after a truncation, F10); code builds the key facts table, Not found and the labels, so the model writes only prose |
 | Report Reviewer | 1 request; a second only after a truncated one | 4 min | `report_review_max_tokens` 65,536; `report_reviewer` timeout 360 s, `retry_count` 1; the evidence-batch follow-up calls are gone (§6.3: one call) |
 | Publish | three file writes | seconds | |
-| **First pass** | | **≈ 25.5 min** | |
-| Extra pass, only when a required target has no verified finding | researcher on the sub-topics that own the missing targets only (usually 1–2), then source evaluator, Evidence Verifier on the new findings only, writer, reviewer | ≈ 13 min | `graph.max_extra_passes: 1`; targeted to the missing target ids (§6.5, §7.2) |
-| **With the extra pass** | | **≈ 38.5 min** | ≤ 45 |
+| **First pass** | | **≈ 27.5 min** (≈ 30 at the researcher's upper bound) | |
+| Extra pass, only when a required target has no verified finding | researcher on the sub-topics that own the missing targets only (usually 1–2, ≈ 2.2 min each), then source evaluator, Evidence Verifier on the new findings only, writer, reviewer | ≈ 14 min | `graph.max_extra_passes: 1`; targeted to the missing target ids (§6.5, §7.2) |
+| **With the extra pass** | | **≈ 41.5 min** | ≤ 45; if Task 6.2 projects a first pass over 30 minutes, `agents.max_iterations: 6` (review item 15) takes about 2 minutes off it |
 
-Failures never add a pass and never stop a run: a failed Context Check batch leaves its findings citable as "unchecked context"; a failed writer draft still publishes the code-built key facts table, Not found and sources; an unscored review publishes as `partial` with status `incomplete` (PD-13). Task 6.2 prints every stage's duration from the timestamped `cli.log`; the live run starts only if the capped pre-flight's Evidence Verifier, Report Writer and Report Reviewer stages each stayed within 1.5 times their budget above.
+Failures never add a pass and never stop a run: a failed Context Check batch leaves its findings citable as "unchecked context"; a failed writer draft still publishes the code-built key facts table, Not found and sources; an unscored review publishes as `partial` with status `incomplete` (PD-13). Task 6.1 prints every stage's duration and the researcher's seconds per sub-topic from the timestamped `cli.log`; the live run starts only if the capped pre-flight passes Task 6.2's criteria: quality accepted, a projected first pass of at most 30 minutes, the Evidence Verifier, Report Writer and Report Reviewer each within 1.5 times their budget above, no failed Context Check batch, and no forecast without release. What can still break the budget: a reviewer timeout (360 s, `retry_count` 1: up to 12 minutes, then published as partial), a truncated writer draft (+5 minutes) or a truncated Context Check batch (+1–2 minutes for the halves).
 
 ---
 
@@ -1088,11 +1103,13 @@ import pytest
 
 from deep_research.agents.figures import (
     bare_numbers,
+    dates_in,
     figure_in_text,
     parse_figure,
     quantities_in,
     same_quantity,
     unit_dimension,
+    without_dates,
 )
 
 PAGE = (
@@ -1175,6 +1192,10 @@ def test_same_quantity_compares_across_scales() -> None:
 def test_bare_numbers_skip_years_dates_labels_and_quantities() -> None:
     text = "On March 12, 2025, 3 states in Q3 reported 1,250 systems and 10.4 GW."
     assert bare_numbers(text) == ["1250"]
+    assert bare_numbers("released 2025-03-12; 12 March 2025; Q1 2025") == []     # F2
+    assert "2025-03-12" in dates_in("released 2025-03-12 and 12 March 2025")
+    assert len(dates_in("released 2025-03-12 and 12 March 2025")) == 2
+    assert "03" not in without_dates("released 2025-03-12") and "2025" not in without_dates("released 2025-03-12")
 ```
 
 Create `tests/test_agents/test_evidence_verifier.py`:
@@ -1345,6 +1366,8 @@ _ANY_NUMBER = re.compile(rf"(?<![\w.,])(?:{_NUMBER})(?!\w)")
 _YEAR = re.compile(r"(?:19|20)\d{2}")
 _DATE_DAY = re.compile(rf"\b(?:{_MONTHS})\.?\s+$")
 _ORDINAL = re.compile(r"(?:st|nd|rd|th)\b")
+_ISO_DATE = re.compile(r"\b(?:19|20)\d{2}-\d{1,2}(?:-\d{1,2})?\b")
+_DAY_FIRST_DATE = re.compile(rf"\b\d{{1,2}}\s+(?:{_MONTHS})\.?\s+(?:19|20)\d{{2}}\b")
 
 
 @dataclass(frozen=True)
@@ -1453,11 +1476,13 @@ def figure_in_text(value: str, unit: str, text: str) -> bool:
 def bare_numbers(text: str) -> list[str]:
     """Numbers ``text`` states with no known unit, grouping removed.
 
-    Skipped: every known-unit quantity, four-digit years, a day beside a
-    month name, single-digit labels ("3 states", "Q3"), and ordinals.
+    Skipped: every known-unit quantity, four-digit years, ISO and day-first
+    dates, a day beside a month name, single-digit labels ("3 states", "Q3"),
+    and ordinals.
     """
     normalised = cosmetic_text(text)
-    taken = [(found.start, found.end) for found in quantities_in(text)]
+    # F2: a date's parts are not numbers ("released 2025-03-12" states no 03 or 12)
+    taken = [(found.start, found.end) for found in quantities_in(text)] + _date_spans(normalised)
     numbers: list[str] = []
     for match in _ANY_NUMBER.finditer(normalised):
         if any(start <= match.start() < end for start, end in taken):
@@ -1474,6 +1499,24 @@ def bare_numbers(text: str) -> list[str]:
             continue
         numbers.append(digits)
     return numbers
+
+
+def _date_spans(normalised: str) -> list[tuple[int, int]]:
+    return [found.span() for pattern in (_ISO_DATE, _DAY_FIRST_DATE) for found in pattern.finditer(normalised)]
+
+
+def dates_in(text: str) -> list[str]:
+    """The ISO ("2025-03-12") and day-first ("12 March 2025") dates ``text`` states (F2)."""
+    normalised = cosmetic_text(text)
+    return [normalised[start:end] for start, end in sorted(_date_spans(normalised))]
+
+
+def without_dates(text: str) -> str:
+    """``text`` in cosmetic form with its ISO and day-first dates blanked (same length)."""
+    normalised = cosmetic_text(text)
+    for start, end in _date_spans(normalised):
+        normalised = normalised[:start] + " " * (end - start) + normalised[end:]
+    return normalised
 ```
 
 - [ ] **Step 5: Create `src/deep_research/agents/evidence_verifier.py` with Figure Match only** (the Context Check is Task 2.1):
@@ -1720,7 +1763,7 @@ f"{MAX_SNIPPET_CHARS} characters). List every figure the snippet states for "
 "its own organisation publishes.\n"
 ```
 
-- [ ] **Step 8: Budget 20.** In `config.yaml` set `agents.tool_budget_overrides.researcher: 20` and change the comment above it from "…the fact checker keeps the researcher's ten…" to state that the researcher's per-sub-topic budget is 20 (spec §7.2). Leave the other keys for Task 4.1.
+- [ ] **Step 8: Budget 20, seven turns, five sub-topics (F1).** In `config.yaml` set `agents.tool_budget_overrides.researcher: 20` and change the comment above it from "…the fact checker keeps the researcher's ten…" to state that the researcher's per-sub-topic budget is 20 (spec §7.2). Also set `agents.max_iterations: 7` (was 5: the ReAct loop stops after this many model turns whatever the tool budget, `react.py` line 327, so without it the budget of 20 changes nothing) and `agents.max_sub_topics: 5` (was 7), each with a one-line comment naming spec §7.2. Until the cutover the old pipeline's other loops also get seven turns; Gate G1's e2e run shows whether a scripted double depended on five. Add to `tests/test_config.py`: `settings = load_settings("config.yaml")`, then `assert settings.agents.max_iterations == 7 and settings.agents.max_sub_topics == 5 and settings.agents.tool_budget_overrides["researcher"] == 20` (import `load_settings` as the file already does, or from `deep_research.main`). Leave the other keys for Task 4.1.
 
 - [ ] **Step 9: Replay double.** In `e2e_evaluation/replay.py` add `figures: tuple[tuple[str, str, str | None, str | None], ...] = ()` to the `ReplaySource` dataclass (value, unit, period, kind), and in `_reply_SubTopicFindingsDraft` build the draft with `snippet=source.excerpt` (the scripted excerpt, which the assertion just above proves the evidence excerpt contains) and `figures=[FindingFigureDraft(value=v, unit=u, period=p, kind=k) for v, u, p, k in source.figures]` instead of `excerpt=excerpt`. Import `FindingFigureDraft`.
 
@@ -1907,18 +1950,18 @@ git commit -m "feat(planner): targets carry measure, unit dimension, period, kin
 
 ### Task 1.5: Phase-1 integration: exports, pins and routed test fixes
 
-**Role:** sp-implementer. **Wave:** 1C, parallel with Task 1.6. **Depends on:** Tasks 1.2, 1.3 and 1.4 merged.
+**Role:** sp-implementer. **Wave:** 1C, parallel with Task 1.6. **Depends on:** Tasks 1.2, 1.3, 1.4 and 3.3 merged.
 
 **Owns:** `src/deep_research/agents/__init__.py`, `tests/test_evaluation/test_config.py`, and any test file the controller routes here under rule R6 (for example a `test_researcher.py` assertion that pinned case-sensitive excerpt matching).
 
-- [ ] **Step 1: Re-export the phase's public names.** In `agents/__init__.py` add `cosmetic_text` to the `from deep_research.agents.evidence import (...)` block; a new block `from deep_research.agents.figures import (Quantity, bare_numbers, figure_in_text, parse_figure, quantities_in, same_quantity, unit_dimension)`; a new block `from deep_research.agents.evidence_verifier import (EVIDENCE_VERIFIER_NAME, FigureMatch, figure_match, read_text)`; `FindingFigureDraft` in the researcher block; every name in `__all__`.
+- [ ] **Step 1: Re-export the phase's public names.** In `agents/__init__.py` add `cosmetic_text` to the `from deep_research.agents.evidence import (...)` block; a new block `from deep_research.agents.figures import (Quantity, bare_numbers, dates_in, figure_in_text, parse_figure, quantities_in, same_quantity, unit_dimension, without_dates)`; a new block `from deep_research.agents.evidence_verifier import (EVIDENCE_VERIFIER_NAME, FigureMatch, figure_match, read_text)`; a new block importing every public name of `agents/wording.py` (Task 3.3), and where `agents/__init__.py` imported a moved wording name (`hedge_marker` and others) from `synthesizer`, import it from `wording` instead; `FindingFigureDraft` in the researcher block; every name in `__all__`.
 
 - [ ] **Step 2: Re-pin the prompt fingerprints (PD-17).** Print the values the merged tree computes:
 
 ```bash
 "$PY" -c "from deep_research.evaluation.config import agent_prompt_fingerprint as f; from deep_research.evaluation.models import AGENT_NAMES as n; print({a: f(a) for a in n})"
 ```
-Set `PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"]` and `["planner"]` in `tests/test_evaluation/test_config.py` to the printed values (the other four must print unchanged; if one moved, stop and report it), with one comment line: "Evidence Verifier plan, Tasks 1.3 and 1.4: researcher and planner module edits." Delete each historical single-value test that now fails only because the researcher or planner pin moved (PD-17).
+Set `PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"]`, `["planner"]` and `["synthesizer"]` in `tests/test_evaluation/test_config.py` to the printed values (the other three must print unchanged; if one moved, stop and report it), with one comment line: "Evidence Verifier plan, Tasks 1.3, 1.4 and 3.3: researcher and planner module edits; wording rules moved to agents/wording.py." Delete each historical single-value test that now fails only because one of those three pins moved (PD-17).
 
 - [ ] **Step 3: Apply the routed fixes**, one assertion at a time, each to the §5.1 contract.
 
@@ -1928,7 +1971,7 @@ Set `PINNED_TARGET_PROMPT_FINGERPRINTS["researcher"]` and `["planner"]` in `test
 
 ```bash
 git add src/deep_research/agents/__init__.py tests/test_evaluation/test_config.py
-git commit -m "chore(agents): export phase-1 names; re-pin researcher and planner fingerprints"
+git commit -m "chore(agents): export phase-1 names; re-pin researcher, planner and synthesizer fingerprints"
 ```
 (Add, by path, any routed test file you changed.)
 
@@ -1936,13 +1979,13 @@ git commit -m "chore(agents): export phase-1 names; re-pin researcher and planne
 
 ### Task 1.6: Step-1 proof on the audit-2 reads (Gate G1)
 
-**Role:** sp-implementer; runs in `$W` (rule R1). **Wave:** 1C, parallel with Task 1.5. **Depends on:** Tasks 1.2 and 1.3 merged.
+**Role:** sp-implementer; runs in `$W` (rule R1); the `--live` probe is an operator step. **Wave:** 1C, parallel with Task 1.5. **Depends on:** Tasks 1.2 and 1.3 merged.
 
 **Files:**
 - Create (untracked): `scratch/ev_rebuild_audit2.py`
 
 **Interfaces:**
-- Produces: `rebuild(state_path: Path = STATE) -> Rebuilt` with `Rebuilt` fields `findings: list[Finding]`, `reads: dict[str, ReadRecord]`, `sources: list[ScoredSource]`, `sub_topics: list[SubTopic]`, `rejected: list[str]`, `rows: list[str]`. Later harnesses (Tasks 2.3, 3.5, 6.1) import it as `from scratch.ev_rebuild_audit2 import rebuild`.
+- Produces: `rebuild(state_path: Path = STATE) -> Rebuilt` with `Rebuilt` fields `findings: list[Finding]`, `reads: dict[str, ReadRecord]`, `sources: list[ScoredSource]`, `sub_topics: list[SubTopic]`, `rejected: list[str]`, `rows: list[str]`. Later harnesses (Tasks 2.3 and 3.6, and Task 4.12 through 3.6) import it as `from scratch.ev_rebuild_audit2 import rebuild`.
 
 - [ ] **Step 1: Write the harness.**
 
@@ -2180,19 +2223,30 @@ if __name__ == "__main__":
 
 - [ ] **Step 3: No commit** (the harness is scratch).
 
+- [ ] **Step 4: Add the live extraction probe (F6).** Add `--live` to the harness (operator, off-peak, about 2 minutes, one provider call). It proves the real researcher model honours the new extraction contract (a verbatim snippet of at most 600 characters that contains the figures, plus structured figures) before any later phase builds on it:
+  - take two audit-2 reads from `rebuilt.reads`: the EIA page stating 10.4 GW (`eia.gov`) and the ent.news STEO mirror stating 14 GW;
+  - build `evidence` for them with the production `build_evidence_unit` (`agents/evidence.py` line 2493; read its signature), one unit per passage, keyed by `evidence_id`;
+  - build the request exactly as `ResearcherAgent` does (`researcher.py` lines 1879–1895): `extraction_messages(task, ReActRun(agent_name="researcher"), evidence_chars=settings.agents.evidence_chars, acquisition_context=build_acquisition_context(AcquisitionState(), reads, evidence, limit=settings.agents.evidence_packet_chars), planned_targets=targets)` (use the settings fields the researcher reads for `_evidence_chars` and `_evidence_packet_chars`), where `task` is a `SubTopicTask` for a fixture sub-topic from `fixture_plan()` and `targets` its evidence targets;
+  - call `provider.complete_structured(messages, SubTopicFindingsDraft, agent_name="researcher")` once, with the provider built as Task 2.3's `--live` builds it and `model_profile=settings.llm.resolve_for("researcher")`;
+  - run the production `build_findings(draft, sub_topic=..., extracted_at=..., known_urls=[read.requested_url for read in reads.values()], known_reads=reads, valid_target_ids=[t.target_id for t in targets])`, then `figure_match(finding, reads)` for each admitted finding;
+  - print every admitted finding (read, snippet, figures, match) and every rejection reason, then **P4**: each of the two reads has at least one admitted finding with figures whose snippet is on its page and whose every figure matched. Exit 0 only on `PASS P4`.
+
+  Run the OFF-PEAK CHECK; if `OK`, run `"$PY" scratch/ev_rebuild_audit2.py --live`. Expected: `PASS P4`. A failure (paraphrased snippets, no figures, snippets over 600 characters) goes back to Task 1.3's extraction contract and prompt (rule R6) before Gate G1 passes.
+
 ### Gate G1 — end of step 1
 
 Run, in `$W`, once every Phase-1 task is merged and review-clean (rule R8):
 
 ```bash
 "$PY" scratch/ev_rebuild_audit2.py
+"$PY" scratch/ev_rebuild_audit2.py --live      # operator, off-peak only (F6)
 "$PY" -m pytest -q tests --ignore=tests/test_state.py
 "$PY" -m pytest -q tests/test_state.py
 "$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 1
 "$PY" -c "import deep_research.agents, deep_research.graph, deep_research.runtime, deep_research.api, deep_research.cli, deep_research.main, deep_research.evaluation, deep_research.e2e_evaluation"
 ```
 
-**Pass condition:** the harness prints `PASS` for P1, P2 and P3 (25/25) and exits 0; both suite invocations are green, or show only the failures recorded in `scratch/baseline-*.txt`; the e2e real-agent suite is accepted (the old pipeline still runs, PD-3). Do not start Phase 2 until G1 passes.
+**Pass condition:** the harness prints `PASS` for P1, P2 and P3 (25/25) and exits 0; the `--live` probe prints `PASS P4` (the real researcher's extraction contract holds on real pages, F6); both suite invocations are green, or show only the failures recorded in `scratch/baseline-*.txt`; the e2e real-agent suite is accepted (the old pipeline still runs, PD-3). Do not start Phase 2 until G1 passes.
 
 ---
 
@@ -2202,26 +2256,26 @@ Phase goal: a finding's figures come out of the Evidence Verifier with a verifie
 
 ### Task 2.1: The Context Check and the Evidence Verifier agent
 
-**Role:** sp-hard-implementer. **Wave:** 2A, alone. **Depends on:** Gate G1.
+**Role:** sp-hard-implementer. **Wave:** 2A, parallel with Tasks 3.1 and 3.2 (the approved R8 exception; no shared file). **Depends on:** Gate G1 (Task 3.3 is merged in wave 1B).
 
 **Owns:** `src/deep_research/agents/evidence.py` (move three attribution helpers in; add `relay_attribution_on_page` and `own_organisation_on_page`), `src/deep_research/agents/researcher.py` (delete the moved helpers, lines 928–984; import them from `evidence.py`), `src/deep_research/agents/evidence_verifier.py`, `tests/test_agents/test_evidence_verifier.py`, `tests/test_agents/test_evidence.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_tool_free_prompts.py`.
 
 **Interfaces:**
-- Consumes: `figure_match`, `read_text`, `figure_in_text` (Task 1.2); the verification types (Task 1.1); `first_party_host_evidences_issuer`, `_issuer_name_pattern`, `_institutional_domain_label`, `_identity_words`, `_document_text` (existing, `evidence.py` lines 1031, 896, 927); `publisher_identity` (`agents/sources.py`); `finding_fingerprint`, `deduplicate_findings` (`agents/identity.py`); `_stated_role` (`agents/synthesizer.py` line 3356; Task 3.3 moves it to `agents/wording.py` as `stated_role` and updates this import); `render_structured_reply_format` (`agents/prompts.py` line 73); `agent_error` (`agents/errors.py`); `agent_event` (`agents/events.py`).
+- Consumes: `figure_match`, `read_text`, `figure_in_text` (Task 1.2); the verification types (Task 1.1); `ScoredSource` and its `identity_anchors` (existing, `utils/types.py` lines 496–535); `first_party_host_evidences_issuer`, `_issuer_name_pattern`, `_institutional_domain_label`, `_identity_words`, `_document_text` (existing, `evidence.py` lines 1031, 896, 927, 740); `publisher_identity` (`agents/sources.py`); `finding_fingerprint`, `deduplicate_findings` (`agents/identity.py`); `stated_role` (`agents/wording.py`, Task 3.3, merged in wave 1B); `render_structured_reply_format` (`agents/prompts.py` line 73); `agent_error` (`agents/errors.py`); `agent_event` (`agents/events.py`).
 - Produces: everything listed for `evidence_verifier.py` and the Task 2.1 lines of `evidence.py` in "Shared interfaces". Nothing is re-exported here (Task 2.2 does it).
 
 **Attribution resolution (PD-8)** — `resolve_attribution` returns the first row that applies:
 
 | Context Check proposed | Code checks | Result |
 |---|---|---|
-| `relayed`, organisation X | X is the page's own publisher (`first_party_host_evidences_issuer(read, X)`) | `own`, X |
+| `relayed`, organisation X | X is the page's own publisher | `own`, X |
 | `relayed`, organisation X | X is named in the snippet's passage beside an attribution cue (`relay_attribution_on_page`) | `relayed`, X |
 | anything | the researcher admitted `attributed_issuer` Y (its quote is on the page) | `own` Y if Y is the page's own publisher, else `relayed` Y |
 | `own`, organisation X | X is the page's own publisher | `own`, X |
-| `own` with X unverified, or no reply at all | — | `own`, the page owner (`publisher_identity(read.resolved_url)`, e.g. `eia.gov`) |
-| `unattributed`, or `relayed` with X unverified | — | `unattributed`, the page owner |
+| `own` with X unverified, or no reply at all | — | `own`, the page owner: the Source Evaluator's validated issuer for the read (`evaluated_issuer`, PD-25), else the host (`page_owner(read)`, e.g. `eia.gov`) |
+| `unattributed`, or `relayed` with X unverified | — | `unattributed`, the page owner as in the row above |
 
-Wherever this table says "the page's own publisher", the check is `own_organisation_on_page(read, X)` (PD-18), which Step 3 adds to `evidence.py`; in the `resolve_attribution` code below, call it wherever the code shows `first_party_host_evidences_issuer`:
+"The page's own publisher" is `_owns_page(read, X, issuer)`: the Source Evaluator's validated issuer for the read names X (PD-25), or else `own_organisation_on_page(read, X)` (PD-18), which Step 3 adds to `evidence.py`. The code below calls exactly that; nothing in `evidence_verifier.py` calls `first_party_host_evidences_issuer` directly.
 
 ```python
 def own_organisation_on_page(read: ReadRecord, organisation: str) -> bool:
@@ -2260,10 +2314,12 @@ from deep_research.agents.evidence_verifier import (
     ContextItem,
     FigureCheckDraft,
     context_passage,
+    evaluated_issuer,
     figure_match,
     resolve_attribution,
     verify_finding,
 )
+from deep_research.utils.types import ScoredSource   # fill any other field it requires
 
 WOODMAC_URL = "https://www.woodmac.com/press-releases/2025-us-energy-storage"
 WOODMAC_PAGE = (
@@ -2366,9 +2422,9 @@ def test_a_relay_needs_its_originator_named_on_the_page() -> None:
     read = make_read(RELAY_PAGE, url=RELAY_URL, title="Storage in 2025 | Utility Dive")
     finding = make_finding(read, "According to Wood Mackenzie, utility-scale installations reached 16 GW in 2025.")
     assert resolve_attribution(proposed="relayed", organisation="Wood Mackenzie",
-                               finding=finding, read=read) == ("relayed", "Wood Mackenzie")
+                               finding=finding, read=read, issuer=None) == ("relayed", "Wood Mackenzie")
     assert resolve_attribution(proposed="relayed", organisation="BloombergNEF",
-                               finding=finding, read=read) == ("unattributed", "utilitydive.com")
+                               finding=finding, read=read, issuer=None) == ("unattributed", "utilitydive.com")
 
 
 def test_an_admitted_attribution_makes_a_relay() -> None:
@@ -2377,7 +2433,24 @@ def test_an_admitted_attribution_makes_a_relay() -> None:
                            attributed_issuer="Wood Mackenzie",
                            attribution_quote="According to Wood Mackenzie")
     assert resolve_attribution(proposed="unattributed", organisation=None,
-                               finding=finding, read=read) == ("relayed", "Wood Mackenzie")
+                               finding=finding, read=read, issuer=None) == ("relayed", "Wood Mackenzie")
+
+
+def test_the_source_evaluators_issuer_names_the_pages_own_organisation() -> None:
+    # PD-25: a .com page with no copyright line is Wood Mackenzie's own when the
+    # Source Evaluator validated that issuer for the read; without it, the host.
+    read = make_read("The U.S. storage market will install 15 GW in 2025, a record year.",
+                     url="https://www.woodmac.com/press-releases/q1-2025", title="US storage outlook")
+    finding = make_finding(read, "The U.S. storage market will install 15 GW in 2025, a record year.")
+    source = ScoredSource(url=read.resolved_url, title=read.title, identity_anchors={"issuer": "Wood Mackenzie"})
+    issuer = evaluated_issuer([source], read)
+    assert issuer == "Wood Mackenzie"
+    assert resolve_attribution(proposed="own", organisation="Wood Mackenzie",
+                               finding=finding, read=read, issuer=issuer) == ("own", "Wood Mackenzie")
+    assert resolve_attribution(proposed=None, organisation=None,
+                               finding=finding, read=read, issuer=issuer) == ("own", "Wood Mackenzie")
+    assert resolve_attribution(proposed="own", organisation="Wood Mackenzie",
+                               finding=finding, read=read, issuer=None) == ("own", "woodmac.com")
 ```
 
 Also add agent-level tests (async; build the agent like `_synthesizer` in `tests/test_agents/test_synthesizer.py` lines 314–331, with `ScriptedCompleter` from `tests/agent_fakes.py`, and run it inside the same tracker/session scope that file's `run` tests use):
@@ -2427,7 +2500,7 @@ def test_a_relay_is_read_from_the_cue_beside_the_name() -> None:
 
 - [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_evidence_verifier.py tests/test_agents/test_evidence.py -k "relay or context or correction or evidence_words or rejected or reply or fifteen or failed_batch or truncated or new_findings"`. Expected: FAIL (`ImportError`).
 
-- [ ] **Step 3: Move the attribution helpers.** Move `_neighbouring_passage_text`, `_ATTRIBUTION_CUE_PATTERN`, `_POSSESSIVE_MARK`, `_ATTRIBUTION_CUE_REACH` and `_attribution_cue_adjacent` (with their comments) from `researcher.py` to `evidence.py`, renaming the public three to `neighbouring_passage_text`, `ATTRIBUTION_CUE_PATTERN` and `attribution_cue_adjacent`. In `researcher.py` import those three from `deep_research.agents.evidence` and update the two call sites in `_admitted_attribution`. Then add to `evidence.py`:
+- [ ] **Step 3: Move the attribution helpers.** Move `_neighbouring_passage_text`, `_ATTRIBUTION_CUE_PATTERN`, `_POSSESSIVE_MARK`, `_ATTRIBUTION_CUE_REACH` and `_attribution_cue_adjacent` (with their comments) from `researcher.py` to `evidence.py`, renaming the public three to `neighbouring_passage_text`, `ATTRIBUTION_CUE_PATTERN` and `attribution_cue_adjacent`. Keep `neighbouring_passage_text`'s existing guard (`if locator not in keys: return ""`, `researcher.py` lines 941–942): a stale or missing locator never reaches `keys.index`, so it cannot raise (F9). In `researcher.py` import those three from `deep_research.agents.evidence` and update the two call sites in `_admitted_attribution`. Then add to `evidence.py`:
 
 ```python
 def relay_attribution_on_page(read: ReadRecord, locator: str, organisation: str) -> bool:
@@ -2437,7 +2510,10 @@ def relay_attribution_on_page(read: ReadRecord, locator: str, organisation: str)
     in the snippet's own passage or its immediate neighbour, with an attribution
     cue ("according to", "reported by", a possessive, ...) beside it.
     """
-    passage = neighbouring_passage_text(read, locator)
+    # F9: Figure Match admits a snippet found anywhere on the page, so its locator
+    # may be stale; then the whole page is the passage (the researcher's own use
+    # of neighbouring_passage_text keeps its "" for an unknown locator).
+    passage = neighbouring_passage_text(read, locator) or _document_text(read)
     name = organisation.strip()
     if not passage or not name:
         return False
@@ -2445,7 +2521,17 @@ def relay_attribution_on_page(read: ReadRecord, locator: str, organisation: str)
     return any(attribution_cue_adjacent(passage, match) for match in pattern.finditer(passage))
 ```
 
-- [ ] **Step 4: Implement the Context Check** in `evidence_verifier.py` (append below `figure_match`). Imports: `asyncio`, `dataclasses.replace`, `Literal`, `Sequence`, `ValidationError` (pydantic), `ProviderError`, `ProviderOutputLimitError`, `StructuredOutputError` (from `deep_research.providers`), `ChatMessage`, `render_structured_reply_format`, `BaseAgent`, `AgentRun`, `AgentTask`, `ReActRun`, `agent_error`, `agent_event`, the types, `finding_fingerprint`, `deduplicate_findings`, `publisher_identity`, `cosmetic_text`, `neighbouring_passage_text`, `first_party_host_evidences_issuer`, `relay_attribution_on_page`, and `_stated_role` from `deep_research.agents.synthesizer`.
+Add to `tests/test_agents/test_evidence.py`:
+
+```python
+def test_a_stale_locator_neither_raises_nor_hides_a_relay() -> None:
+    read = make_read("According to Wood Mackenzie, utility-scale installations reached 16 GW in 2025.")
+    assert neighbouring_passage_text(read, "no-such-locator") == ""
+    assert relay_attribution_on_page(read, "no-such-locator", "Wood Mackenzie")
+    assert not relay_attribution_on_page(read, "no-such-locator", "BloombergNEF")
+```
+
+- [ ] **Step 4: Implement the Context Check** in `evidence_verifier.py` (append below `figure_match`). Imports: `asyncio`, `dataclasses.replace`, `Literal`, `Sequence`, `ValidationError` (pydantic), `ProviderError`, `ProviderOutputLimitError`, `StructuredOutputError` (from `deep_research.providers`), `ChatMessage`, `render_structured_reply_format`, `BaseAgent`, `AgentRun`, `AgentTask`, `ReActRun`, `agent_error`, `agent_event`, the types (with `ScoredSource`), `finding_fingerprint`, `deduplicate_findings`, `publisher_identity`, `cosmetic_text`, `neighbouring_passage_text`, `own_organisation_on_page`, `relay_attribution_on_page` and `_identity_words` from `deep_research.agents.evidence`, and `stated_role` from `deep_research.agents.wording` (Task 3.3, merged in wave 1B). The code below calls `own_organisation_on_page` through `_owns_page` everywhere; it never calls `first_party_host_evidences_issuer` directly (F9).
 
 ```python
 CONTEXT_CHECK_BATCH_SIZE = 15
@@ -2534,6 +2620,7 @@ class ContextItem:
     read: ReadRecord
     passage: str
     match: FigureMatch
+    issuer: str | None = None   # evaluated_issuer(...) for the read (PD-25)
 
 
 class VerifiedFindings(ContractModel):
@@ -2557,39 +2644,74 @@ def context_passage(read: ReadRecord, locator: str | None, snippet: str | None) 
     return text[start : start + CONTEXT_PASSAGE_CHARS]
 
 
+def evaluated_issuer(sources: Sequence[ScoredSource], read: ReadRecord) -> str | None:
+    """PD-25: the issuer the Source Evaluator validated for this read, if any.
+
+    ``identity_anchors`` holds only the anchors the read was shown to evidence,
+    so this name is the page's own organisation, not a guess from its host.
+    """
+    urls = {read.requested_url, read.resolved_url}
+    for source in sources:
+        if source.url in urls:
+            anchor = source.identity_anchors.get("issuer")
+            if isinstance(anchor, list):
+                anchor = next(iter(anchor), None)
+            if isinstance(anchor, str) and anchor.strip():
+                return anchor.strip()
+            return None
+    return None
+
+
+def _owns_page(read: ReadRecord, organisation: str, issuer: str | None) -> bool:
+    """PD-25 first (the validated issuer names it), then PD-18 (code confirms it)."""
+    if issuer and _identity_words(issuer) == _identity_words(organisation):
+        return True
+    return own_organisation_on_page(read, organisation)
+
+
 def resolve_attribution(
     *,
     proposed: FigureAttribution | None,
     organisation: str | None,
     finding: Finding,
     read: ReadRecord,
+    issuer: str | None,
 ) -> tuple[FigureAttribution, str]:
-    """PD-8: the Context Check proposes, the page's own words decide."""
+    """PD-8: the Context Check proposes, the page's own words decide.
+
+    ``issuer`` is ``evaluated_issuer(...)`` for the read (PD-25), or ``None``.
+    """
     name = (organisation or "").strip()
     if proposed == "relayed" and name:
-        if first_party_host_evidences_issuer(read, name):
+        if _owns_page(read, name, issuer):
             return "own", name
         if relay_attribution_on_page(read, finding.locator or "", name):
             return "relayed", name
-    issuer = finding.attributed_issuer
-    if issuer:
-        if first_party_host_evidences_issuer(read, issuer):
-            return "own", issuer
-        return "relayed", issuer
-    if proposed == "own" and name and first_party_host_evidences_issuer(read, name):
+    admitted = finding.attributed_issuer
+    if admitted:
+        if _owns_page(read, admitted, issuer):
+            return "own", admitted
+        return "relayed", admitted
+    if proposed == "own" and name and _owns_page(read, name, issuer):
         return "own", name
+    owner = issuer or page_owner(read)
     if proposed in (None, "own"):
-        return "own", page_owner(read)
-    return "unattributed", page_owner(read)
+        return "own", owner
+    return "unattributed", owner
 
 
-def unchecked_context(finding: Finding, figure: FindingFigure, read: ReadRecord) -> FigureContext:
-    """The recorded fields, used when no Context Check reply exists for a figure."""
+def unchecked_context(finding: Finding, figure: FindingFigure, read: ReadRecord,
+                      issuer: str | None) -> FigureContext:
+    """The recorded fields, used when no Context Check reply exists for a figure.
+
+    The finding keeps its Figure Match status (verified or verified_corrected) and
+    carries ``context_unchecked``; its label says "unchecked context" (PD-26).
+    """
     attribution, organisation = resolve_attribution(
-        proposed=None, organisation=None, finding=finding, read=read
+        proposed=None, organisation=None, finding=finding, read=read, issuer=issuer
     )
     kind = figure.kind or (
-        "forecast" if _stated_role(finding.snippet or "") == "forecast" else "actual"
+        "forecast" if stated_role(finding.snippet or "") == "forecast" else "actual"
     )
     return FigureContext(
         period=figure.period or finding.data_period,
@@ -2634,7 +2756,7 @@ def _checked(item: ContextItem, figure: FindingFigure, matched: bool,
             scope = proposed
     attribution, organisation = resolve_attribution(
         proposed=reply.attribution, organisation=reply.organisation,
-        finding=finding, read=item.read,
+        finding=finding, read=item.read, issuer=item.issuer,
     )
     corrected = corrected or (figure.kind is not None and figure.kind != reply.kind)
     return FigureResult(
@@ -2666,7 +2788,7 @@ def verify_finding(
         unchecked = True
         results.append(
             FigureResult(figure=figure, matched=True,
-                         context=unchecked_context(item.finding, figure, item.read))
+                         context=unchecked_context(item.finding, figure, item.read, item.issuer))
             if matched
             else FigureResult(figure=figure, matched=False, dropped_reason="context_unavailable")
         )
@@ -2744,7 +2866,7 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         ]
         errors: list[ResearchError] = []
         async with self.tracker.agent_span(self.name) as span:
-            judged = await self.verify(pending, state.read_records, errors)
+            judged = await self.verify(pending, state.read_records, errors, state.evaluated_sources)
             span.set_outputs({"agent_name": self.name, "findings": len(judged)})
         snapshot = [*state.verified_findings, *judged]
         react = ReActRun(agent_name=self.name, stop_reason="finished", errors=errors)
@@ -2757,7 +2879,7 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         )
 
     async def verify(self, findings: Sequence[Finding], reads: Mapping[str, ReadRecord],
-                     errors: list[ResearchError]) -> list[Finding]:
+                     errors: list[ResearchError], sources: Sequence[ScoredSource] = ()) -> list[Finding]:
         results: dict[str, FindingVerification] = {}
         items: list[ContextItem] = []
         for finding in findings:
@@ -2772,7 +2894,7 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
                 read = reads[finding.read_id or ""]
                 items.append(ContextItem(label="", finding=finding, read=read,
                                          passage=context_passage(read, finding.locator, finding.snippet),
-                                         match=match))
+                                         match=match, issuer=evaluated_issuer(sources, read)))
         batches = [items[i : i + CONTEXT_CHECK_BATCH_SIZE]
                    for i in range(0, len(items), CONTEXT_CHECK_BATCH_SIZE)]
         gate = asyncio.Semaphore(CONTEXT_CHECK_CONCURRENCY)
@@ -2879,7 +3001,7 @@ git commit -m "feat(evidence_verifier): batched Context Check with code enforcem
 
 **Owns:** `src/deep_research/agents/__init__.py`, `tests/test_evaluation/test_config.py`.
 
-- [ ] **Step 1: Re-export** every new public name of `evidence_verifier.py` (`CONTEXT_CHECK_BATCH_SIZE`, `CONTEXT_CHECK_CONCURRENCY`, `CONTEXT_PASSAGE_CHARS`, `CONTEXT_CHECK_SYSTEM_PROMPT`, `CONTEXT_CHECK_INSTRUCTION`, `FigureCheckDraft`, `ContextCheckDraft`, `ContextItem`, `VerifiedFindings`, `EvidenceVerifierAgent`, `page_owner`, `context_passage`, `resolve_attribution`, `unchecked_context`, `verify_finding`, `context_check_messages`, `context_check_failed_error`, `evidence_verified_event`) and of `evidence.py` (`neighbouring_passage_text`, `ATTRIBUTION_CUE_PATTERN`, `attribution_cue_adjacent`, `relay_attribution_on_page`, `own_organisation_on_page`) from `agents/__init__.py` and `__all__`.
+- [ ] **Step 1: Re-export** every new public name of `evidence_verifier.py` (`CONTEXT_CHECK_BATCH_SIZE`, `CONTEXT_CHECK_CONCURRENCY`, `CONTEXT_PASSAGE_CHARS`, `CONTEXT_CHECK_SYSTEM_PROMPT`, `CONTEXT_CHECK_INSTRUCTION`, `FigureCheckDraft`, `ContextCheckDraft`, `ContextItem`, `VerifiedFindings`, `EvidenceVerifierAgent`, `page_owner`, `evaluated_issuer`, `context_passage`, `resolve_attribution`, `unchecked_context`, `verify_finding`, `context_check_messages`, `context_check_failed_error`, `evidence_verified_event`) and of `evidence.py` (`neighbouring_passage_text`, `ATTRIBUTION_CUE_PATTERN`, `attribution_cue_adjacent`, `relay_attribution_on_page`, `own_organisation_on_page`) from `agents/__init__.py` and `__all__`.
 - [ ] **Step 2: Re-pin the researcher fingerprint** exactly as Task 1.5 Step 2 does (only the researcher's value may move: Task 2.1 edited `researcher.py`); comment "Evidence Verifier plan, Task 2.1: attribution helpers moved to evidence.py".
 - [ ] **Step 3: Run the tests.** Run: `"$PY" -m pytest -q tests/test_imports.py tests/test_evaluation/test_config.py tests/test_agents`. Expected: PASS.
 - [ ] **Step 4: Commit** `src/deep_research/agents/__init__.py` and `tests/test_evaluation/test_config.py` with "chore(agents): export phase-2 names; re-pin the researcher fingerprint".
@@ -2896,12 +3018,12 @@ git commit -m "feat(evidence_verifier): batched Context Check with code enforcem
 - Produces: `scripted_replies(item: ContextItem, overrides: Mapping[str, dict]) -> dict[int, FigureCheckDraft]` and `verify_scripted(rebuilt) -> list[Finding]`, imported by Task 3.6.
 
 - [ ] **Step 1: Write the harness.** Behaviour:
-  - `--scripted` (default, offline): for every figure-bearing rebuilt finding, build a `ContextItem` with the production `figure_match` and `context_passage`, and a scripted reply per figure that confirms the recorded fields (period = recorded, scope = recorded, attribution `relayed` with the recorded `attributed_issuer` when there is one, else `own` with no organisation, kind = recorded, `evidence_words` = the snippet, verdict `confirm`). Three overrides exercise enforcement on real pages:
+  - `--scripted` (default, offline): for every figure-bearing rebuilt finding, build a `ContextItem` with the production `figure_match`, `context_passage` and `evaluated_issuer(rebuilt.sources, read)`, and a scripted reply per figure that confirms the recorded fields (period = recorded, scope = recorded, attribution `relayed` with the recorded `attributed_issuer` when there is one, else `own` with no organisation, kind = recorded, `evidence_words` = the snippet, verdict `confirm`). Three overrides exercise enforcement on real pages:
     1. every figure whose value is `18.9`: `scope` set to the first of `"utility, C&I, and residential"` or `"all segments"` that the finding's own passage contains (search `item.passage` with `excerpt_matches`), verdict `correct`, `evidence_words` = the snippet;
     2. the first finding from `enerknol.com`: `evidence_words` replaced by `"EnerKnol confirms 10.4 GW of grid-scale storage"` (not on the page);
     3. the first `forecast` figure from `eia.gov`: `period` set to `"2026"`, verdict `correct` (the page does not say 2026 for it).
     Run the production `verify_finding` over each item and attach the verification to its finding.
-  - `--live` (operator, off-peak): build `state = ResearchState(session_id="ev-proof-audit2", original_question=QUESTION, raw_findings=rebuilt.findings, read_records=rebuilt.reads)`; build the agent directly (it is not in the runtime assembly until Task 4.8): `tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False, project="ev-proof", api_key=None))`, `settings = load_settings("config.yaml")`, `provider = build_chat_provider(settings.llm, tracker, request_budget=RequestBudget(settings.request_budget))`, `agent = EvidenceVerifierAgent(provider=provider, tracker=tracker, scratchpad=ScratchpadMemory(session_id=state.session_id, agent_name="evidence_verifier", max_entries=20), tools=[], config=settings.agents, model_profile=settings.llm.resolve_for("evidence_verifier"))` (imports: `deep_research.main.load_settings`, `deep_research.observability.{LangSmithRuntimeConfig, Tracker}`, `deep_research.providers.build_chat_provider`, `deep_research.request_budget.RequestBudget`, `deep_research.memory.scratchpad.ScratchpadMemory`); run `run = await agent.run(state)` inside `async with tracker.session_span(state.session_id, state.original_question):` and take `run.state_update["verified_findings"]`.
+  - `--live` (operator, off-peak): build `state = ResearchState(session_id="ev-proof-audit2", original_question=QUESTION, raw_findings=rebuilt.findings, read_records=rebuilt.reads, evaluated_sources=rebuilt.sources)`; build the agent directly (it is not in the runtime assembly until Task 4.8): `tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False, project="ev-proof", api_key=None))`, `settings = load_settings("config.yaml")`, `provider = build_chat_provider(settings.llm, tracker, request_budget=RequestBudget(settings.request_budget))`, `agent = EvidenceVerifierAgent(provider=provider, tracker=tracker, scratchpad=ScratchpadMemory(session_id=state.session_id, agent_name="evidence_verifier", max_entries=20), tools=[], config=settings.agents, model_profile=settings.llm.resolve_for("evidence_verifier"))` (imports: `deep_research.main.load_settings`, `deep_research.observability.{LangSmithRuntimeConfig, Tracker}`, `deep_research.providers.build_chat_provider`, `deep_research.request_budget.RequestBudget`, `deep_research.memory.scratchpad.ScratchpadMemory`); run `run = await agent.run(state)` inside `async with tracker.session_span(state.session_id, state.original_question):` and take `run.state_update["verified_findings"]`.
   - Print one line per 18.9 GW figure (status, kept, scope, attribution, organisation) and the counts by status and by drop reason. Then the checks:
     - **V1** every kept figure with value `18.9` has a scope whose `_measure_scale(scope)` contains `"all"`, or contains both `"residential"` and `"commercial"`; and at least one such figure is kept;
     - **V2** for every kept figure, `excerpt_matches(read_text(read), evidence_words)` is true (re-checked here, independent of the verifier) or `evidence_words` is `None` and the finding is `context_unchecked`;
@@ -2910,7 +3032,7 @@ git commit -m "feat(evidence_verifier): batched Context Check with code enforcem
 
 - [ ] **Step 2: Run offline.** Run: `"$PY" scratch/ev_verify_audit2.py --scripted`. Expected: `PASS V1`, `PASS V2`, `PASS V3`, exit 0.
 
-- [ ] **Step 3: Run live (operator, off-peak).** Run the OFF-PEAK CHECK; if it prints `OK`, run `"$PY" scratch/ev_verify_audit2.py --live`. Expected: `PASS V1`, `PASS V2`, at most two `ContextCheckDraft` calls plus at most two half-batch re-asks, under 5 minutes. If V1 fails (the model kept grid-scale), stop: the Context Check prompt or enforcement needs work before Phase 3. Report the printed 18.9 GW lines to the controller.
+- [ ] **Step 3: Run live (operator, off-peak).** Run the OFF-PEAK CHECK; if it prints `OK`, run `"$PY" scratch/ev_verify_audit2.py --live`. Expected: `PASS V1`, `PASS V2`, at most two `ContextCheckDraft` calls plus at most two half-batch re-asks, under 5 minutes. The harness wraps `provider.complete_structured` in a timing wrapper (harness-only) and prints each call's seconds, then every `evidence_verifier_context_check_failed` error the run recorded. If V1 fails (the model kept grid-scale), stop: the Context Check prompt or enforcement needs work before Phase 3. Report the printed 18.9 GW lines, the call seconds and any failed batch to the controller.
 
 - [ ] **Step 4: No commit** (scratch).
 
@@ -2924,7 +3046,7 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 "$PY" scratch/ev_verify_audit2.py --live      # operator, off-peak only
 ```
 
-**Pass condition:** the tests pass (they include a unit test for every normalisation case of §5.1 and every enforcement rule of §5.2, including invented `evidence_words` rejected and an unsupported correction dropped); the scripted run prints PASS for V1–V3; the live run prints PASS for V1 and V2 (audit-2's 18.9 GW labelled all-segment by the real Context Check). Do not start Phase 3 until G2 passes.
+**Pass condition:** the tests pass (they include a unit test for every normalisation case of §5.1 and every enforcement rule of §5.2, including invented `evidence_words` rejected and an unsupported correction dropped); the scripted run prints PASS for V1–V3; the live run prints PASS for V1 and V2 (audit-2's 18.9 GW labelled all-segment by the real Context Check). Record the live run's per-call seconds and failed batches: a failed batch or a call over about 60 s makes Task 4.1 add the `evidence_verifier` timeout line (review item 13, F8). Do not start Phase 3's wave 3B until G2 passes.
 
 ---
 
@@ -2936,26 +3058,27 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 
 - **3.1 Verified facts** (`agents/verified_facts.py`, signatures in "Shared interfaces"). Citable means status is not `dropped`. `same_organisation`: identical identity words once a leading "U.S."/country word is dropped; or one side is a single token (a host label on a government, education, `.com` or `.org` host, or an acronym) equal to the other side's initials (country word and a trailing legal-form word dropped; an all-capitals word contributes itself whole), to its words run together, or (four letters or more) to their prefix. So EIA, "U.S. Energy Information Administration" and eia.gov are one organisation, Wood Mackenzie and woodmac.com are one, BloombergNEF and bnef.com are one, and eia.news is never EIA. `same_period`: equal after `cosmetic_text`, or both reduce to one bare year. `finding_answers`: §6.6 plus PD-7. `fact_rows`: §5.3 and PD-9 (same organisation, unit dimension, period, kind and value is one row; the own page cites ahead of a relay; a revision folds two rows answering the same target with differing release keys, the latest kept and the earlier listed). `not_found_targets`: required targets with no answer, with the owning sub-topic's queries and the acquisition state's attempted and read URLs (keyed by `coverage_id`). `untraced_numbers`: every quantity and bare number in a sentence must equal a kept figure of a cited finding. Tests cover each organisation pair above, the 10.4 GW / 10.3 GW revision, own-plus-relay folding into one row, forecast and actual never merging, two organisations staying two rows, and "12 GW" untraced while "10,400 MW" traces to 10.4 GW.
 - **3.2 Layout** (`agents/report.py`): `figure_label` per §6.1; `render_written_report` with the header (question, as-of, scope, counts), executive summary, key facts table (Organisation, Measure, Period, Value, Kind, Scope, Release or edition, Source), findings sections, Not found (question, queries, pages read), and sources (only those cited, in first-use order), each statement ending with its figures' labels; `render_finding_log` with every finding's snippet, read, locator and status, every figure kept or dropped with its reason and evidence words, and every refused sentence in full. A test asserts that no verdict or corroboration word appears.
-- **3.3 Wording rules** (`agents/wording.py`, PD-19): move the helpers named in "Shared interfaces" out of `synthesizer.py` unchanged (`synthesizer.py` imports them back until Task 4.10 deletes it; `evidence_verifier.py` switches to `stated_role`). Add `unattested_names`, `stated_years`, `SCOPE_TERMS` (grid-scale, utility-scale, front-of-the-meter, behind-the-meter, residential, commercial, industrial, C&I, commercial and industrial, distributed, community, all segments, all sectors) with `stated_scopes`, and `hedge_forecast` (a past-tense outcome verb becomes "is/are expected to be …"; ", according to <organisation>'s forecast" is appended when no forecast marker remains). `_realized_outcome` stops counting a verb after "to be". Pinned by `test_hedge_forecast_makes_a_forecast_read_as_one` ("EIA's outlook adds 14 GW in 2025." and "In 2025, 18.2 GW was added.").
-- **3.4 Report Writer** (`agents/report_writer.py`): the draft schemas; `finding_registry` (labels F01… over citable findings, answers to required targets first); `writer_messages`, whose registry lines have the fixed form `F01 | figure 1: 10.4 GW | period 2024 | kind actual | organisation <name> | label: <figure_label>` (Task 4.9's replay double parses it). The writing rules: cite labels only; use only numbers from the cited figures; state forecasts with organisation and release; name both parties of a relay; summary order is the 2024 actual, then each organisation's latest 2025 forecast, then 2025 actuals; no verdict words. `check_point` checks numbers (`untraced_numbers`); names (`unattested_names` over the cited snippets, evidence words, verified organisations, periods, scopes, releases, titles and plan geographies); years; scope (a scope term must appear in the verified scope or the evidence words of a figure the sentence states); kind, clause by clause (`stated_role` against the figure's verified kind); and `hardened_modality`. In `compose_written_report`, a refused sentence becomes a `RejectedDraftPoint` with its full text, labels and reason. A sentence refused only for stating a forecast as fact is rewritten once with `hedge_forecast` and checked again. A summary point that restates only facts already stated is dropped as a duplicate. The agent also builds the statements, fact rows, Not found list and labels. `ReportWriterAgent` has the two-attempt ladder, `WrittenReport`, `publish_document`, `publish_finding` and `finding_memory_payload`. Pinned by `test_forecast_stated_as_fact_is_rewritten_once_and_kept`, `test_grid_scale_wording_on_an_all_segment_figure_is_refused` and `test_a_failed_draft_still_composes_the_key_facts`.
-- **3.5 Integration:** exports; re-pin the synthesizer fingerprint (PD-17).
+- **3.3 Wording rules** (`agents/wording.py`, PD-19; runs in wave 1B, so `evidence_verifier.py` imports `stated_role` from it from the start): move the helpers named in "Shared interfaces" out of `synthesizer.py` unchanged (`synthesizer.py` imports them back until Task 4.10 deletes it). Add `unattested_names`, `stated_years`, `SCOPE_TERMS` (grid-scale, utility-scale, front-of-the-meter, behind-the-meter, residential, commercial, industrial, C&I, commercial and industrial, distributed, community, all segments, all sectors) with `stated_scopes`, `page_modal`, and `hedge_forecast` (F3: `will`/`would` become the page's own modal, "could", "might" or "may", passed as `marker`, else "is expected to"; a past-tense outcome verb becomes "is/are expected to be …"; ", according to <organisation>'s forecast" is appended when no forecast marker remains). `_realized_outcome` stops counting a verb after "to be". Pinned by `test_hedge_forecast_makes_a_forecast_read_as_one` and `test_hedge_forecast_takes_the_pages_own_modal`.
+- **3.4 Report Writer** (`agents/report_writer.py`): the draft schemas; `finding_registry` (labels F01… over citable findings, answers to required targets first); `writer_messages`, whose registry lines have the fixed form `F01 | figure 1: 10.4 GW | period 2024 | kind actual | organisation <name> | label: <figure_label>` (Task 4.9's replay double parses it). The writing rules: cite labels only; use only numbers from the cited figures; state forecasts with organisation and release; name both parties of a relay; use the scope words the finding states, never the question's; summary order is the 2024 actual, then each organisation's latest 2025 forecast, then 2025 actuals; no verdict words. `check_point` checks numbers (`untraced_numbers`, dates skipped, F2); names (`unattested_names` over the cited snippets, evidence words, verified organisations, periods, scopes, releases, titles, the Source Evaluator's validated issuers (PD-25) and plan geographies); dates (each must appear in the cited findings); years; scope (a scope term must appear in the verified scope or the evidence words of a figure the sentence states); kind, clause by clause (`stated_role` against the figure's verified kind); and `hardened_modality`. In `compose_written_report`, a refused sentence becomes a `RejectedDraftPoint` with its full text, labels and reason. A sentence refused only for stating a forecast as fact or for hardening its modality is rewritten once with `hedge_forecast` and checked again (F3). A summary point that restates only facts already stated is dropped as a duplicate. The agent also builds the statements, fact rows, Not found list and labels. `ReportWriterAgent` has the two-attempt ladder (the profile's effort, then high after a truncation; F10), `WrittenReport`, `publish_document`, `publish_finding` and `finding_memory_payload`. Pinned by `test_forecast_stated_as_fact_is_rewritten_once_and_kept`, `test_a_hardened_forecast_takes_the_pages_own_modal`, `test_grid_scale_wording_on_an_all_segment_figure_is_refused` and `test_a_failed_draft_still_composes_the_key_facts`.
+- **3.5 Integration:** exports; confirms no fingerprint pin moved (the synthesizer pin moved in Task 1.5, when Task 3.3 ran).
 - **3.6 Harness** `scratch/ev_compose_audit2.py`: `rebuild()` → `verify_scripted()` → a scripted draft built from real audit-2 findings (EIA's 10.4 GW 2024 actual; the January 2025 STEO's 14 GW forecast relayed by ent.news; Wood Mackenzie's Q1 2025 forecast of 15 GW / 49 GWh; "EIA's outlook adds 14 GW in 2025"; one "18.9 GW of grid-scale storage" sentence; one duplicate restatement) → compose → render. `--live` asks the real writer (off-peak). Checks: C1, the summary states 10.4 GW labelled actual with an EIA organisation and a release. C2, at least two summary lines state 2025 forecasts from two organisations, each labelled "forecast (<release>)". C3, the "adds 14 GW" sentence is rewritten and kept. C4, the grid-scale sentence is refused with a scope reason. C5, no duplicate figure line (in the summary or the key facts). C6, no verdict wording. C7, nothing untraced. `--live` must pass C1, C2, C5, C6 and C7.
 - **Gate G3:** the four new test files, the full suite (the old pipeline is still green, PD-3), and the harness: `--scripted` passes C1–C7, `--live` passes C1, C2, C5, C6 and C7. Spec §9 step 3's proof: the summary carries the 2024 actual and at least two 2025 forecasts with organisation and release; there is no duplicate figure line and no verdict wording.
 
-### Phase 4 (spec step 4): the cutover (tasks 4.1–4.11 as in the wave table)
+### Phase 4 (spec step 4): the cutover (tasks 4.1–4.12 as in the wave table)
 
-- **4.1** Adds and renames the step-4 types. `utils/config.py`: `PRODUCTION_AGENT_NAMES` = planner, researcher, source_evaluator, evidence_verifier, report_writer; `SERVICE_ROLE_NAMES = ("report_reviewer",)`; `GraphConfig.max_extra_passes = 1` (env `GRAPH_MAX_EXTRA_PASSES`); `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens`, `claim_verification_max_tokens` and their env keys are removed. `config.yaml`: overrides planner `max`, researcher `high`, source_evaluator `high`, evidence_verifier `high` (§5.2), report_writer `max`, report_reviewer `max` with timeout 360 and retry_count 1; `tool_budget_overrides` for planner 1, researcher 20, source_evaluator 0, evidence_verifier 0, report_writer 0; `graph.max_extra_passes: 1`. Also: `git mv` of `report_review.py` to `report_reviewer.py` with every import line updated, `REPORT_JUDGE_ROLE` renamed to `REPORT_REVIEWER_ROLE = "report_reviewer"`, and the three filename helpers moved into `report_writer.py`. Acceptance: IMPORT SMOKE for agents, graph, runtime, api, cli and main.
+- **4.1** Adds and renames the step-4 types. `utils/config.py`: `PRODUCTION_AGENT_NAMES` = planner, researcher, source_evaluator, evidence_verifier, report_writer; `SERVICE_ROLE_NAMES = ("report_reviewer",)`; `GraphConfig.max_extra_passes = 1` (env `GRAPH_MAX_EXTRA_PASSES`); `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens`, `claim_verification_max_tokens` and their env keys (and their tests in `tests/test_config.py`) are removed. `config.yaml`: overrides planner `max`, researcher `high`, source_evaluator `high`, evidence_verifier `high` (§5.2), report_writer `high` (the writer's one effort source, F10), report_reviewer `max` with timeout 360 and retry_count 1; `tool_budget_overrides` for planner 1, researcher 20, source_evaluator 0, evidence_verifier 0, report_writer 0; `graph.max_extra_passes: 1`. Also: `git mv` of `report_review.py` to `report_reviewer.py` with every import line updated, `REPORT_JUDGE_ROLE` renamed to `REPORT_REVIEWER_ROLE = "report_reviewer"`, and the three filename helpers moved into `report_writer.py`. Acceptance: IMPORT SMOKE for agents, graph, runtime, api, cli and main.
 - **4.2 Report Reviewer.** One call. The packet holds the statements with their cited findings' snippets and labels, the key facts, Not found, and the gate results. Dispositions are supported, unsupported or not_reviewed; an unsupported statement becomes a material derived defect. A truncated reply is asked once more at high effort; a provider failure gives `provider_failed`; missing dispositions give `incomplete`. No critic imports. The node, not the model, stamps `missing_required_target_ids` (PD-5).
 - **4.3 Quality.** `compute_report_quality(state, composition)` with the PD-10 gates and the new snapshot fields. Missing targets are the required targets no finding answers (`verified_facts`); unaccounted targets are the missing ones absent from Not found.
 - **4.4 Researcher and planner.** The first pass runs every planned sub-topic in priority order. An extra pass runs only the sub-topics that own `state.extra_pass_target_ids`, and shows only those targets. The critic-driven selection helpers are deleted. The planner drops its `claim_clusters` import, the three dimension-validation blocks, `support_policy` (draft field, prompt paragraph and examples) and the `extend_plan` path.
 - **4.5 Quality record.** `render_quality_json` carries the new snapshot, the review, the findings with their verification, the fact rows, Not found, the statements, and the refused sentences in full. The quality contract version is bumped.
-- **4.6 Outcome, API, CLI, README.** Coverage becomes required, answered, missing and not found. Evidence counts cover reads, sources, and findings verified, corrected, dropped, unchecked and cited. The summary lines are rewritten: no critic score and no claim lines; the review mean is shown; the integrity line counts duplicate fact rows, uncited statements and untraced figures. `--max-iterations` accepts 0 and its help says "extra research passes for missing required targets". Progress events cover the new nodes, and the README sections are rewritten.
+- **4.6 Outcome, API, CLI, README.** Coverage becomes required, answered, missing and not found. Evidence counts cover reads, sources, and findings verified, corrected, dropped, unchecked and cited. The summary lines are rewritten: no critic score and no claim lines; the review mean is shown; the integrity line counts duplicate fact rows, uncited statements, untraced figures and forecasts without release. `--max-iterations` accepts 0 and its help says "extra research passes for missing required targets". Progress events cover the new nodes; the README sections are rewritten, the graph-historical subsection is deleted, and a short "Upgrading" note lists the renamed env key, the removed config keys and the unresumable old checkpoints (F15).
 - **4.7 Evaluation.** `AGENT_NAMES` becomes planner, researcher, source_evaluator, evidence_verifier, report_writer. The fact_checker and critic cases, gates, scenarios, conftest outputs and tests are deleted. `cases/report_writer.py` is the `git mv` of the synthesizer cases, reworked to verified findings. A new `cases/evidence_verifier.py` holds the case count that `cases/__init__.py` enforces (scope correction, relay, invented evidence words; the live case uses the benchmark's EIA and Wood Mackenzie pages), with the gates `verification_recorded`, `no_invented_evidence` and `drop_reasons_named`.
-- **4.8 Graph and runtime,** with the contract in "Shared interfaces". `graph_route`: halted → end. A missing required target with `iteration < max_extra_passes` → extra_pass (`extra_pass_requested`). A missing target with no pass left → finalize (`extra_passes_exhausted`, status `max_iterations`). An unscored review → finalize (`review_unavailable`, `incomplete`). Clear gates and a passing review → finalize (`report_accepted`, `completed`). Otherwise → finalize (`report_not_accepted`, `incomplete`). Quality is `accepted` only on `report_accepted`. The writer node runs `compute_report_quality`; the reviewer node stamps `missing_required_target_ids`; the extra-pass node sets `extra_pass_target_ids` and advances the iteration. Finalize renders `render_written_report`, `render_finding_log` and `render_quality_json`, and saves cited findings to memory only when the report is accepted. The critic, fact-checker, refine and repair machinery is deleted. Pinned by `test_run_publishes_when_the_context_check_fails` and `test_extra_pass_that_finds_nothing_publishes_with_not_found`.
-- **4.9 E2E doubles and cases.** The `ClaimsDraft`, `ClaimVerdictDraft`, `ClaimEquivalenceDraft`, `CritiqueDraft` and `ReportDraft` doubles are deleted. New doubles: `ContextCheckDraft` (confirms by default, with per-source overrides), `ReportWriterDraft` (one point per registry figure, from the fixed line format) and the reviewer draft. `REPLAY_CASE_MANIFEST` is reworked. same-work-mirror, primary-attribution, current-versus-forecast and reopen-unanswered-target become Evidence Verifier cases; semantic-duplicate-claims and late-contradiction are retired with stated reasons. New rows: relay-labelled-as-relay, figure-not-on-page-dropped, evidence-words-not-on-page-rejected, scope-corrected-to-all-segments, revision-noted, forecast-versus-actual-kept-apart and extra-pass-finds-nothing. The two coverage-gate graph-only rows are retired (PD-14).
+- **4.8 Graph and runtime,** with the contract in "Shared interfaces". `graph_route` (PD-23): halted → end. A missing required target with `iteration < max_extra_passes` → extra_pass (`extra_pass_requested`). An unscored review → finalize (`review_unavailable`, `incomplete`). Clear gates and a passing review → finalize (`report_accepted`, `completed`), with any still-missing target under Not found. Otherwise, a missing target with no pass left → finalize (`extra_passes_exhausted`, status `max_iterations`), else finalize (`report_not_accepted`, `incomplete`). Quality is `accepted` only on `report_accepted`. The writer node runs `compute_report_quality`; the reviewer node stamps `missing_required_target_ids`; the extra-pass node sets `extra_pass_target_ids` and advances the iteration. Finalize renders `render_written_report`, `render_finding_log` and `render_quality_json`, and saves cited findings to memory only when the report is accepted. The critic, fact-checker, refine and repair machinery is deleted. Pinned by `test_run_publishes_when_the_context_check_fails` and `test_extra_pass_that_finds_nothing_publishes_with_not_found`.
+- **4.9 E2E doubles and cases.** The `ClaimsDraft`, `ClaimVerdictDraft`, `ClaimEquivalenceDraft`, `CritiqueDraft` and `ReportDraft` doubles are deleted. New doubles: `ContextCheckDraft` (confirms by default, with per-source overrides), `ReportWriterDraft` (one point per registry figure, from the fixed line format) and the reviewer draft. `REPLAY_CASE_MANIFEST` is reworked. same-work-mirror, primary-attribution, current-versus-forecast and reopen-unanswered-target become Evidence Verifier cases; semantic-duplicate-claims and late-contradiction are retired with stated reasons. New rows: relay-labelled-as-relay, figure-not-on-page-dropped, evidence-words-not-on-page-rejected, scope-corrected-to-all-segments, revision-noted, forecast-versus-actual-kept-apart and extra-pass-finds-nothing. The graph-only rows go with the graph-historical harness (PD-14, Task 4.11).
 - **4.10 Deletion sweep.** Deletes the four modules, `utils/claims.py`, their tests and every dead name, and cleans up the types. Updates the exports and `test_imports.py`, re-pins the fingerprints (PD-17), and runs the acceptance grep outside e2e.
-- **4.11 E2E matrix.** Reworks the models, evaluators, runner and graph-historical cases. Both matrix modes are green at three repetitions, and the acceptance grep passes over e2e.
-- **Gate G4:** both full-suite invocations, both e2e modes at three repetitions, IMPORT SMOKE and the acceptance grep over everything, all green (spec §9 step 4).
+- **4.11 E2E matrix.** Reworks the models, evaluators and runner, and retires the graph-historical harness (PD-14). The real-agent matrix is green at three repetitions, and the acceptance grep passes over e2e.
+- **4.12 Reviewer probe** `scratch/ev_review_audit2.py`: the real writer and the real Report Reviewer on the audit-2 state (off-peak, about 10 minutes); the review must be scored and accepting (F7).
+- **Gate G4:** both full-suite invocations, the real-agent e2e matrix at three repetitions, IMPORT SMOKE, the acceptance grep over everything, and the reviewer probe, all green (spec §9 step 4).
 
 ### Phase 5 (spec step 5): the planner's floor
 
@@ -2969,7 +3092,7 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 ### Phase 6 (spec step 6): the live proof
 
 - **6.1** `scratch/run_live_proof.py` gains two labels, with per-label arguments and environment recorded in `run.env`. `ev-preflight`: the benchmark question, `--max-iterations 0`, `AGENTS_MAX_SUB_TOPICS=2` and `--request-tavily-attempt-ceiling 12`. `ev-1`: the benchmark question on the default config.
-- **6.2** The operator runs `ev-preflight` off-peak. Pass: exit 0 or 4; report, evidence log and quality JSON written; every stage within 1.5 times its budget.
+- **6.2** The operator runs `ev-preflight` off-peak. Pass: exit 0 (quality accepted; exit 4 fails); report, evidence log and quality JSON written; the projected first pass within 30 minutes; no failed Context Check batch and no unchecked context; no forecast without release (F7, F8, PD-24).
 - **6.3** The operator runs `ev-1` off-peak, never hard-stopped.
 - **6.4** A fresh read-only reviewer audits `output/live-proof/ev-1/` against spec §10: wall time at most 45 minutes; the summary answers both halves with releases; every number is traced; relays are labelled; no wrong scope, period or kind; the reviewer accepted with no gate failure; rated GREAT.
 
@@ -2977,11 +3100,11 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 
 ## Phase 3 — Report Writer on verified findings (spec step 3)
 
-Phase goal: a report is composed from verified findings only, cited by label, with the reader labels of §6.1, a code-built key facts table (duplicates folded, revisions noted), a Not found list, and the §6.2 guards. The writer agent exists and is unit-tested; the graph does not run it yet (PD-3). Wave 3A (Tasks 3.1, 3.2, 3.3) runs in parallel; 3.4 needs all three; 3.5 and 3.6 run in parallel after 3.4.
+Phase goal: a report is composed from verified findings only, cited by label, with the reader labels of §6.1, a code-built key facts table (duplicates folded, revisions noted), a Not found list, and the §6.2 guards. The writer agent exists and is unit-tested; the graph does not run it yet (PD-3). Task 3.3 already ran in wave 1B, and Tasks 3.1 and 3.2 in wave 2A beside Task 2.1 (the approved R8 exception); Task 3.4 needs Gate G2 and all three; 3.5 and 3.6 run in parallel after 3.4.
 
 ### Task 3.1: Verified facts: answering, duplicates, revisions, Not found, number tracing
 
-**Role:** sp-hard-implementer. **Wave:** 3A, parallel with Tasks 3.2 and 3.3. **Depends on:** Gate G2.
+**Role:** sp-hard-implementer. **Wave:** 2A, parallel with Tasks 2.1 and 3.2 (the approved R8 exception: it needs only Task 1.1's types and Task 1.2's `figures.py`). **Depends on:** Gate G1. The controller merges it into the plan branch only after Gate G2 passes (rule R8); its proof is Gate G3.
 
 **Owns:** `src/deep_research/agents/verified_facts.py` (new), `tests/test_agents/test_verified_facts.py` (new).
 
@@ -3537,7 +3660,7 @@ git commit -m "feat(verified_facts): target answering, fact rows, revisions, Not
 
 ### Task 3.2: Reader report and evidence log layout
 
-**Role:** sp-implementer. **Wave:** 3A, parallel with Tasks 3.1 and 3.3. **Depends on:** Gate G2.
+**Role:** sp-implementer. **Wave:** 2A, parallel with Tasks 2.1 and 3.1 (the approved R8 exception: it needs only Task 1.1's types and Task 1.2's `figures.py`). **Depends on:** Gate G1. The controller merges it into the plan branch only after Gate G2 passes (rule R8); its proof is Gate G3.
 
 **Owns:** `src/deep_research/agents/report.py` (additions only; nothing existing changes in this phase, PD-3), `tests/test_agents/test_report_layout.py` (new).
 
@@ -3635,7 +3758,7 @@ def test_figure_label_follows_the_spec_labels() -> None:
     assert figure_label(organisation="EIA", attribution="relayed", relay_host="ent.news", kind="forecast",
                         release="January 2025 STEO", unchecked=True) == "relayed by ent.news from EIA; forecast (January 2025 STEO); unchecked context"
     assert figure_label(organisation="ent.news", attribution="unattributed", relay_host=None, kind="forecast",
-                        release=None, unchecked=False) == "source does not attribute it; forecast"
+                        release=None, unchecked=False) == "source does not attribute it; forecast (release not stated on the page)"
 
 
 def test_the_report_has_the_spec_shape_in_order() -> None:
@@ -3644,7 +3767,7 @@ def test_the_report_has_the_spec_shape_in_order() -> None:
     assert headings[1:] == ["## Executive summary", "## Key facts", "## Basis", "## Not found", "## Sources"]
     assert "| Organisation | Measure | Period | Value | Kind | Scope | Release or edition | Source |" in report
     assert "U.S. Energy Information Administration (relayed by ent.news)" in report
-    assert "— *U.S. Energy Information Administration's own figure; actual; released 2025-03-12*" in report
+    assert "U.S. Energy Information Administration's own figure; actual; released 2025-03-12" in report
     assert "relayed by ent.news from U.S. Energy Information Administration; forecast (January 2025 STEO)" in report
     assert '"BloombergNEF 2025 US storage forecast"' in report and "Pages read: 1" in report
     assert not VERDICT_WORDS.search(report)
@@ -3659,8 +3782,9 @@ def test_sources_are_only_the_cited_ones_in_first_use_order() -> None:
 def test_the_evidence_log_keeps_snippets_drop_reasons_and_refusals() -> None:
     log = render_finding_log(_composition())
     assert "### F01" in log and "Generators added 10.4 gigawatts" in log
-    assert "66 %: dropped (context_rejected): A growth rate, not a capacity." in log
-    assert '"Wood Mackenzie reports 18.9 GW of grid-scale storage." (cited F03): scope not carried' in log
+    assert "context_rejected" in log and "A growth rate, not a capacity." in log
+    assert "Wood Mackenzie reports 18.9 GW of grid-scale storage." in log
+    assert "F03" in log and "scope not carried" in log
 ```
 
 - [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_report_layout.py`. Expected: FAIL (`ImportError: figure_label`).
@@ -3687,7 +3811,11 @@ def figure_label(
         who = f"relayed by {relay_host or 'another site'} from {organisation}"
     else:
         who = "source does not attribute it"
-    parts = [who, f"forecast ({release})" if kind == "forecast" and release else kind]
+    if kind == "forecast":
+        # PD-24 (F5): a forecast with no release says so, never silently "forecast"
+        parts = [who, f"forecast ({release})" if release else "forecast (release not stated on the page)"]
+    else:
+        parts = [who, kind]
     if kind == "actual" and release:
         parts.append(release)
     if unchecked:
@@ -3876,12 +4004,12 @@ git commit -m "feat(report): the evidence-verifier report layout, reader labels 
 
 ### Task 3.3: Shared wording rules
 
-**Role:** sp-hard-implementer. **Wave:** 3A, parallel with Tasks 3.1 and 3.2. **Depends on:** Gate G2.
+**Role:** sp-hard-implementer. **Wave:** 1B, parallel with Tasks 1.2, 1.3 and 1.4 (the approved R8 exception: it only moves `synthesizer.py` helpers into a new module and adds pure functions, so it needs no Phase-1 or Phase-2 output). **Depends on:** Task 1.1 merged.
 
-**Owns:** `src/deep_research/agents/wording.py` (new), `src/deep_research/agents/synthesizer.py`, `src/deep_research/agents/evidence_verifier.py` (one import), `tests/test_agents/test_wording.py` (new).
+**Owns:** `src/deep_research/agents/wording.py` (new), `src/deep_research/agents/synthesizer.py`, `tests/test_agents/test_wording.py` (new).
 
 **Interfaces:**
-- Produces: the `wording.py` block of "Shared interfaces". `synthesizer.py` keeps working unchanged (it imports what moved); `evidence_verifier.py` calls `stated_role` instead of `_stated_role`.
+- Produces: the `wording.py` block of "Shared interfaces". `synthesizer.py` keeps working unchanged (it imports what moved). Task 2.1 imports `stated_role` from `wording.py`; Task 3.4 imports the rest.
 
 - [ ] **Step 1: Write the failing tests** (`tests/test_agents/test_wording.py`):
 
@@ -3894,6 +4022,7 @@ from deep_research.agents.wording import (
     hardened_modality,
     hedge_forecast,
     hedge_marker,
+    page_modal,
     stated_role,
     stated_scopes,
     stated_years,
@@ -3938,9 +4067,21 @@ def test_hedge_forecast_makes_a_forecast_read_as_one() -> None:
     assert stated_role(active) == "forecast"
 ```
 
+Add, pinning F3's hardened-modality repair:
+
+```python
+def test_hedge_forecast_takes_the_pages_own_modal() -> None:
+    eia = "U.S. Energy Information Administration"
+    assert hedge_forecast("Storage will grow 47% in 2025.", eia, marker="could") == "Storage could grow 47% in 2025."
+    assert hedge_forecast("Storage would reach 14 GW in 2025.", eia) == "Storage is expected to reach 14 GW in 2025."
+    assert hardened_modality("Storage could grow 47% in 2025.", "capacity could grow") == ""
+    assert page_modal("Battery storage capacity could grow by 47% (14 GW) in 2025.") == "could"
+    assert page_modal("The outlook was released in May 2025.") == ""
+```
+
 - [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_wording.py`. Expected: FAIL (`ModuleNotFoundError`).
 
-- [ ] **Step 3: Move the rules.** Create `agents/wording.py` with a module docstring ("The wording rules the Evidence Verifier and the Report Writer share: hedges, forecast versus outcome, attested names, years and scopes (PD-19)."). Move these definitions out of `synthesizer.py` **unchanged**, with their comments: `_FIGURE_PATTERN` (line 174), `_PROPER_NOUN_PATTERN` (182), `_ACRONYM_PATTERN` (187), `_SENTENCE_INITIAL` (193), `_is_significant_figure` (221), `_figure_number` (241), `_significant_figures` (247), `_HEDGE_PATTERN` (367), `_HEDGE_REPORTING_PATTERN` (380), `_HEDGE_MAY_PATTERN` (386), `_STRONG_MODALS` (392), the clause-split pattern above `_clause_around` and `_clause_around` itself (410), `_content_tokens` (1669), `_corpus_tokens` (1678), `unattested_atoms` (1697), `_INITIAL_SKIP`, `_COUNTRY_PREFIXES`, `_NAME_PUNCT`, `_is_title_word`, `_run_initial`, `_name_runs`, `_run_words`, `_spelled_out`, `_name_attested` (1750–1875), `unattested_words` (1877), `hedge_marker` (1889), `hardened_modality` (1943), `_UNIT_WORDS` (2963), `_COMMON_ABBREVIATIONS` (2988), `_FORECAST_MARKER_PATTERN` (3303), `_forecast_role` (3311), `_REALIZED_OUTCOME_PATTERN` (3326), `_FUTURE_MODAL_PATTERN` (3331), `_realized_outcome` (3336) and `_stated_role` (3356), plus any private helper one of them calls that nothing else in `synthesizer.py` needs. Rename two on the way: `_clause_around` → `clause_around` and `_stated_role` → `stated_role`, updating every call site in `synthesizer.py` to the new names. In `synthesizer.py` add one `from deep_research.agents.wording import (...)` block naming every moved name it still uses (it is deleted whole in Task 4.10). In `evidence_verifier.py` replace the `_stated_role` import from `synthesizer` with `stated_role` from `wording` and update its one call.
+- [ ] **Step 3: Move the rules.** Create `agents/wording.py` with a module docstring ("The wording rules the Evidence Verifier and the Report Writer share: hedges, forecast versus outcome, attested names, years and scopes (PD-19)."). Move these definitions out of `synthesizer.py` **unchanged**, with their comments: `_FIGURE_PATTERN` (line 174), `_PROPER_NOUN_PATTERN` (182), `_ACRONYM_PATTERN` (187), `_SENTENCE_INITIAL` (193), `_is_significant_figure` (221), `_figure_number` (241), `_significant_figures` (247), `_HEDGE_PATTERN` (367), `_HEDGE_REPORTING_PATTERN` (380), `_HEDGE_MAY_PATTERN` (386), `_STRONG_MODALS` (392), the clause-split pattern above `_clause_around` and `_clause_around` itself (410), `_content_tokens` (1669), `_corpus_tokens` (1678), `unattested_atoms` (1697), `_INITIAL_SKIP`, `_COUNTRY_PREFIXES`, `_NAME_PUNCT`, `_is_title_word`, `_run_initial`, `_name_runs`, `_run_words`, `_spelled_out`, `_name_attested` (1750–1875), `unattested_words` (1877), `hedge_marker` (1889), `hardened_modality` (1943), `_UNIT_WORDS` (2963), `_COMMON_ABBREVIATIONS` (2988), `_FORECAST_MARKER_PATTERN` (3303), `_forecast_role` (3311), `_REALIZED_OUTCOME_PATTERN` (3326), `_FUTURE_MODAL_PATTERN` (3331), `_realized_outcome` (3336) and `_stated_role` (3356), plus any private helper one of them calls that nothing else in `synthesizer.py` needs. Rename two on the way: `_clause_around` → `clause_around` and `_stated_role` → `stated_role`, updating every call site in `synthesizer.py` to the new names. In `synthesizer.py` add one `from deep_research.agents.wording import (...)` block naming every moved name it still uses (it is deleted whole in Task 4.10). Do not touch `evidence_verifier.py` (Task 1.2 owns it in this wave; Task 2.1 imports `stated_role` from `wording.py`).
 
 - [ ] **Step 4: Add the new rules** to `wording.py`:
 
@@ -3988,8 +4129,28 @@ _BASE_FORM = {"added": "add", "installed": "install", "deployed": "deploy", "com
               "built": "build", "reached": "reach", "hit": "hit", "exceeded": "exceed", "surpassed": "surpass"}
 
 
-def hedge_forecast(text: str, organisation: str) -> str:
-    """Spec §6.2: re-attach the verified hedge to a forecast stated as fact, once."""
+_WILL_WOULD = re.compile(r"\b(will|would)\b", re.I)
+# Lower case only: "May" in "May 2025" is a month, not a hedge.
+_PAGE_MODAL = re.compile(r"\b(could|might|may)\b")
+
+
+def page_modal(text: str) -> str:
+    """The first hedging modal the page's own words use ("could"), or ""."""
+    match = _PAGE_MODAL.search(text)
+    return match.group(1) if match else ""
+
+
+def hedge_forecast(text: str, organisation: str, *, marker: str = "") -> str:
+    """Spec §6.2: re-attach the verified hedge to a forecast stated as fact, once.
+
+    ``marker`` is the page's own modal for the figure (``page_modal`` of its
+    evidence words). A hardened "will"/"would" takes that modal, else "is
+    expected to" (F3); a past-tense outcome verb becomes an expectation.
+    """
+    if _WILL_WOULD.search(text):
+        modal = marker if marker in {"could", "might", "may"} else "is expected to"
+        return _WILL_WOULD.sub(modal, text)
+
     def passive(match: re.Match[str]) -> str:
         plural = match.group(1).casefold() in {"were", "have been"}
         return f"{'are' if plural else 'is'} expected to be {match.group(2)}"
@@ -4007,25 +4168,25 @@ def hedge_forecast(text: str, organisation: str) -> str:
 
 and change `_realized_outcome`'s infinitive guard from `r"\bto\s+\Z"` to `r"\bto\s+(?:be\s+|have\s+been\s+)?\Z"` ("expected to be added" is a plan, not an outcome).
 
-- [ ] **Step 5: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_wording.py tests/test_agents/test_synthesizer.py tests/test_agents/test_evidence_verifier.py`. Expected: PASS. A `test_synthesizer.py` failure means a moved rule changed behaviour: restore it (only `_realized_outcome`'s guard may change; if a synthesizer test pinned the old "to be <verb>" reading, report its id to the controller).
+- [ ] **Step 5: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_wording.py tests/test_agents/test_synthesizer.py`. Expected: PASS. A `test_synthesizer.py` failure means a moved rule changed behaviour: restore it (only `_realized_outcome`'s guard may change; if a synthesizer test pinned the old "to be <verb>" reading, report its id to the controller).
 
 - [ ] **Step 6: Commit.**
 
 ```bash
-git add src/deep_research/agents/wording.py src/deep_research/agents/synthesizer.py src/deep_research/agents/evidence_verifier.py tests/test_agents/test_wording.py
+git add src/deep_research/agents/wording.py src/deep_research/agents/synthesizer.py tests/test_agents/test_wording.py
 git commit -m "refactor(wording): shared hedge, forecast and attested-name rules move out of the synthesizer"
 ```
 
-**Acceptance:** the moved rules behave as before (the synthesizer's tests pass); the new rules pass their tests; `evidence_verifier.py` no longer imports `synthesizer.py`.
+**Acceptance:** the moved rules behave as before (the synthesizer's tests pass); the new rules pass their tests, including both hedge-rewrite paths (a past-tense outcome and a hardened "will"/"would", F3); nothing outside `synthesizer.py` imports a moved private name, and Task 2.1 imports `stated_role` from `wording.py`.
 
 ### Task 3.4: The Report Writer agent
 
-**Role:** sp-hard-implementer. **Wave:** 3B, alone. **Depends on:** Tasks 3.1, 3.2 and 3.3 merged.
+**Role:** sp-hard-implementer. **Wave:** 3B, alone. **Depends on:** Gate G2, then Tasks 3.1 and 3.2 merged (the controller merges them after G2, rule R8); Task 3.3 was merged in wave 1B.
 
 **Owns:** `src/deep_research/agents/report_writer.py` (new), `tests/test_agents/test_report_writer.py` (new).
 
 **Interfaces:**
-- Consumes: `verified_facts` (Task 3.1); `figure_label`, `render_written_report`, `render_finding_log`, `written_citations`, `report_as_of`, `report_scope` (`report.py`, Task 3.2 and existing); `hedge_forecast`, `hardened_modality`, `stated_role`, `clause_around`, `stated_scopes`, `stated_years`, `unattested_names` (Task 3.3); `quantities_in`, `same_quantity` (`figures.py`); `cosmetic_text`; `finding_fingerprint`; `publisher_identity`; `render_structured_reply_format`; `OUTPUT_LIMIT_RETRY_EFFORT`, `BaseAgent`, `AgentRun`, `AgentTask` (`agents/base.py`); `ReActRun`; `agent_error`; `agent_event`; the provider errors.
+- Consumes: `verified_facts` (Task 3.1); `figure_label`, `render_written_report`, `render_finding_log`, `written_citations`, `report_as_of`, `report_scope` (`report.py`, Task 3.2 and existing); `hedge_forecast`, `page_modal`, `hardened_modality`, `stated_role`, `clause_around`, `stated_scopes`, `stated_years`, `unattested_names` (Task 3.3); `quantities_in`, `same_quantity`, `dates_in`, `without_dates` (`figures.py`, Task 1.2); `ScoredSource` and its `identity_anchors` (PD-25); `cosmetic_text`; `finding_fingerprint`; `publisher_identity`; `render_structured_reply_format`; `OUTPUT_LIMIT_RETRY_EFFORT`, `BaseAgent`, `AgentRun`, `AgentTask` (`agents/base.py`); `ReActRun`; `agent_error`; `agent_event`; the provider errors.
 - Produces: the `report_writer.py` block of "Shared interfaces" (the filename helpers arrive in Task 4.1). The registry line format `F01 | figure 1: <value> <unit> | period <period> | kind <kind> | organisation <name> | label: <label>` is a contract: Task 4.9's replay double parses it.
 
 - [ ] **Step 1: Write the failing tests** (`tests/test_agents/test_report_writer.py`). Build the agent like `_synthesizer` in `tests/test_agents/test_synthesizer.py` lines 314–331 (a `ScriptedCompleter` from `tests/agent_fakes.py`, a `ScratchpadMemory`, `AgentRuntimeConfig(max_iterations=2, tool_budget=0)`), and run it in the same tracker/session scope that file's async `run` tests use; construct `ProviderOutputLimitError` and `ProviderError` the way that file does.
@@ -4134,6 +4295,37 @@ def test_forecast_stated_as_fact_is_rewritten_once_and_kept(writer) -> None:
     assert composition.rejected_points == []
 
 
+def test_a_hardened_forecast_takes_the_pages_own_modal(writer) -> None:
+    # F3: the 2026-09-24 pre-flight lost its forecasts to "will" where the page says "could"
+    could = _checked("https://ent.news/2025/1/941.pdf",
+                     "Data source: U.S. Energy Information Administration, Short-Term Energy Outlook, January 2025. "
+                     "Battery storage capacity could grow by 14 GW in 2025.",
+                     "14", "GW", organisation=EIA, attribution="relayed", kind="forecast", period="2025",
+                     target="topic-02-target-01", vintage="January 2025 STEO")
+    task = writer.build_task(_task_state().model_copy(update={"verified_findings": [EIA_2024, could]}))
+    label = _labels(task.registry)["ent.news"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="EIA's STEO says battery capacity will grow by 14 GW in 2025.", finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    [point] = composition.summary
+    assert point.text == "EIA's STEO says battery capacity could grow by 14 GW in 2025."
+    assert composition.rejected_points == []
+
+
+def test_a_release_date_is_a_date_not_an_untraced_number(writer) -> None:
+    # F2: "2025-03-12" is checked whole against the findings, never as the numbers 03 and 12
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["www.eia.gov"]
+    kept = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="EIA reports that 10.4 GW was added in 2024 (released 2025-03-12).", finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, kept)
+    assert len(composition.summary) == 1 and composition.rejected_points == []
+    invented = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="EIA reports that 10.4 GW was added in 2024 (released 2025-04-30).", finding_labels=[label])], sections=[])
+    [refused] = compose_written_report(task, invented).rejected_points
+    assert "dates the cited findings do not carry: 2025-04-30" in refused.reason
+
+
 def test_an_actual_stated_as_a_forecast_is_refused(writer) -> None:
     task = writer.build_task(_task_state())
     label = _labels(task.registry)["www.eia.gov"]
@@ -4165,7 +4357,7 @@ async def test_a_truncated_draft_is_asked_once_more_at_high_effort(writer_trunca
     agent, completer = writer_truncated_then_ok
     run = await agent.run(_task_state())
     assert [name for name, _, _ in completer.calls] == ["ReportWriterDraft", "ReportWriterDraft"]
-    assert completer.efforts == ["high", "high"] and run.result.statement_count >= 1
+    assert completer.efforts == [None, "high"] and run.result.statement_count >= 1   # profile effort, then high (F10)
 ```
 
 Write the three fixtures (`writer`: a scripted completer with no queued output; `writer_failing`: one queued `ProviderError`; `writer_truncated_then_ok`: a queued `ProviderOutputLimitError` then a `ReportWriterDraft` with one valid point citing the EIA label) in the same file, following `_synthesizer`. Mark the async tests with `pytest.mark.asyncio` if the repo's config does not do it automatically (check `tests/test_agents/test_synthesizer.py`).
@@ -4188,9 +4380,10 @@ REPORT_WRITER_NAME = "report_writer"
 DEFAULT_MAX_SECTIONS = 4
 MAX_POINT_CHARS = 600
 _SECTION_TITLE_CHARS = 120
-# The synthesizer's measured ladder (two attempts, both at high effort): a
-# default-effort draft truncated before any point was written in a live pass.
-_WRITER_ATTEMPT_EFFORTS = (OUTPUT_LIMIT_RETRY_EFFORT, OUTPUT_LIMIT_RETRY_EFFORT)
+# F10: the first attempt runs at the resolved profile's effort (config.yaml
+# model_overrides.report_writer, the one effort source); a truncated draft is
+# asked once more at high, the synthesizer's measured retry.
+_WRITER_ATTEMPT_EFFORTS: tuple[str | None, ...] = (None, OUTPUT_LIMIT_RETRY_EFFORT)
 
 REPORT_WRITER_SYSTEM_PROMPT = (
     "You write the reader-facing prose of a research report from verified findings. "
@@ -4209,6 +4402,8 @@ REPORT_WRITER_INSTRUCTION = (
     "as listed (\"10.4 GW\"). Do not add, subtract, convert or round figures.\n"
     "- Name only organisations, dates and scopes that the cited findings' figures, labels or "
     "snippets state.\n"
+    "- Use the scope words the finding states (\"utility-scale\", \"all segments\"), never "
+    "the question's.\n"
     "- State an actual as what happened (\"added\", \"installed\"). State a forecast as a "
     "forecast of its organisation (\"EIA expects\", \"Wood Mackenzie projects\") and give its "
     "release when the label shows one.\n"
@@ -4274,8 +4469,9 @@ class ReportWriterTask(AgentTask):
 @dataclass(frozen=True)
 class PointCheck:
     reasons: tuple[str, ...]
-    forecast_as_fact: bool
+    forecast_as_fact: bool      # True: the one hedge rewrite may repair it (F3)
     organisation: str | None
+    marker: str                 # the page's own modal for the rewrite, or ""
 
 
 class WrittenReport(ContractModel):
@@ -4343,8 +4539,14 @@ def writer_messages(task: ReportWriterTask) -> list[ChatMessage]:
             ChatMessage(role="user", content=user)]
 
 
-def _attested_corpus(cited: Sequence[Finding], geographies: Sequence[str]) -> str:
+def _attested_corpus(cited: Sequence[Finding], geographies: Sequence[str],
+                     sources: Sequence[ScoredSource] = ()) -> str:
     parts = list(geographies)
+    urls = {finding.source_url for finding in cited}
+    for source in sources:   # PD-25: the Source Evaluator's validated title and issuer
+        if source.url in urls:
+            issuer = source.identity_anchors.get("issuer")
+            parts += [source.title, *(issuer if isinstance(issuer, list) else [issuer or ""])]
     for finding in cited:
         parts += [finding.snippet or "", finding.source_title, publisher_identity(finding.source_url),
                   release_text(finding) or "", finding.attributed_issuer or ""]
@@ -4355,19 +4557,26 @@ def _attested_corpus(cited: Sequence[Finding], geographies: Sequence[str]) -> st
     return "\n".join(part for part in parts if part)
 
 
-def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[str]) -> PointCheck:
+def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[str],
+                sources: Sequence[ScoredSource] = ()) -> PointCheck:
     """§6.2's guards for one sentence against the findings it cites."""
     if not cited:
-        return PointCheck(("cites no checked finding",), False, None)
+        return PointCheck(("cites no checked finding",), False, None, "")
     reasons: list[str] = []
-    untraced = untraced_numbers(text, cited)
+    untraced = untraced_numbers(text, cited)       # dates are not numbers (F2)
     if untraced:
         reasons.append("numbers not among the cited figures: " + ", ".join(untraced))
-    corpus = _attested_corpus(cited, geographies)
+    corpus = _attested_corpus(cited, geographies, sources)
     names = unattested_names(text, corpus.casefold(), corpus)
     if names:
         reasons.append("names the cited findings do not carry: " + ", ".join(names))
-    years = [year for year in stated_years(text) if year not in corpus]
+    # F2: a date is checked whole against the findings (a release the writer
+    # copies from a label is there); the years rule reads the rest of the text.
+    folded = cosmetic_text(corpus)
+    dates = [date for date in dates_in(text) if cosmetic_text(date) not in folded]
+    if dates:
+        reasons.append("dates the cited findings do not carry: " + ", ".join(dates))
+    years = [year for year in stated_years(without_dates(text)) if year not in corpus]
     if years:
         reasons.append("years the cited findings do not carry: " + ", ".join(years))
     normalised = cosmetic_text(text)
@@ -4379,23 +4588,29 @@ def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[st
     unsupported = [s for s in stated_scopes(text) if s not in attested_scopes]
     if unsupported:
         reasons.append("scope not carried by the cited figures: " + ", ".join(unsupported))
-    forecast_as_fact: list[str] = []
+    as_fact: list[str] = []
     for quantity, figure in stated_figures:
         role = stated_role(clause_around(normalised, quantity.start))
         if figure.context.kind == "forecast" and role == "actual":
-            forecast_as_fact.append(figure.context.organisation)
+            as_fact.append(figure.context.organisation)
         elif figure.context.kind == "actual" and role == "forecast":
             reasons.append("an actual stated as a forecast")
         elif role == "mixed":
             reasons.append("one clause reads as both forecast and outcome")
     hardened = hardened_modality(text, corpus)
+    forecasts = [f for _, f in stated_figures if f.context.kind == "forecast"]
+    # F3: the one rewrite repairs a forecast stated as fact or with hardened
+    # modality, and only when nothing else is wrong with the sentence.
+    repairable = bool(forecasts) and bool(as_fact or hardened) and not reasons
+    if as_fact:
+        reasons.append("a forecast stated as fact")
     if hardened:
         reasons.append(f"asserts with '{hardened}' what the page hedges")
-    if forecast_as_fact:
-        only = not reasons
-        reasons.append("a forecast stated as fact")
-        return PointCheck(tuple(reasons), only, forecast_as_fact[0])
-    return PointCheck(tuple(reasons), False, None)
+    if repairable:
+        organisation = as_fact[0] if as_fact else forecasts[0].context.organisation
+        marker = page_modal(" ".join(_evidence_words(f) for f in forecasts))
+        return PointCheck(tuple(reasons), True, organisation, marker)
+    return PointCheck(tuple(reasons), False, None, "")
 
 
 def _evidence_words(figure: VerifiedFigure) -> str:
@@ -4425,10 +4640,10 @@ def compose_written_report(task: ReportWriterTask, draft: ReportWriterDraft | No
         if unknown:
             return refuse("unknown labels: " + ", ".join(unknown))
         cited = [by_label[label] for label in wanted]
-        check = check_point(text, cited, geographies=task.geographies)
+        check = check_point(text, cited, geographies=task.geographies, sources=task.sources)
         if check.forecast_as_fact and check.organisation:
-            text = hedge_forecast(text, check.organisation)
-            check = check_point(text, cited, geographies=task.geographies)
+            text = hedge_forecast(text, check.organisation, marker=check.marker)
+            check = check_point(text, cited, geographies=task.geographies, sources=task.sources)
         if check.reasons:
             return refuse("; ".join(check.reasons))
         cited_ids = {ids[label] for label in wanted}
@@ -4488,7 +4703,7 @@ def finding_memory_payload(finding: Finding, *, session_id: str) -> tuple[str, d
 
 The agent's own logic:
 - `build_task(state)`: `targets` = every target of every sub-topic; `findings = list(state.verified_findings)`; `registry = finding_registry(findings, targets)`; `answered = answered_target_ids(citable_findings(findings), targets)`; `facts = fact_rows(findings, targets)`; `not_found = not_found_targets(state.sub_topics, answered, state.acquisition_state_by_target)`; `as_of = report_as_of(findings=findings, reads=list(state.read_records.values()))`; `scope = report_scope(state.sub_topics)`; `generated_on = self._clock().date().isoformat()`; `geographies` = the targets' distinct non-empty `geography`; `sources = list(state.evaluated_sources)`; `instruction = state.original_question`.
-- `draft(task)`: no provider call when `task.registry` is empty (record `report_writer_no_verified_findings`). Otherwise try `_WRITER_ATTEMPT_EFFORTS` in order with `self.provider.complete_structured(writer_messages(task), ReportWriterDraft, agent_name=self.name, reasoning_effort=effort)`: a `ProviderOutputLimitError` records `report_writer_output_limit` and tries the next effort; `ProviderError`, `StructuredOutputError` or `ValidationError` records `report_writer_provider_error` and stops; exhausting the ladder records `report_writer_provider_error` too. Every error is `agent_error(agent_name=REPORT_WRITER_NAME, ..., details={"exception_type": type(error).__name__, "attempt": n})`.
+- `draft(task)`: no provider call when `task.registry` is empty (record `report_writer_no_verified_findings`). Otherwise try `_WRITER_ATTEMPT_EFFORTS` in order: for `None`, call `self.provider.complete_structured(writer_messages(task), ReportWriterDraft, agent_name=self.name)` without `reasoning_effort`, so the resolved profile's effort applies (`model_overrides.report_writer`, the one effort source, F10); for a named effort, pass `reasoning_effort=effort`. A `ProviderOutputLimitError` records `report_writer_output_limit` and tries the next attempt; `ProviderError`, `StructuredOutputError` or `ValidationError` records `report_writer_provider_error` and stops; exhausting the ladder records `report_writer_provider_error` too. Every error is `agent_error(agent_name=REPORT_WRITER_NAME, ..., details={"exception_type": type(error).__name__, "attempt": n})`.
 - `run(state)`: inside `self.tracker.agent_span(self.name)`, `task = self.build_task(state)`, `draft, errors = await self.draft(task)`, `composition = compose_written_report(task, draft)`, `result = WrittenReport(markdown=render_written_report(composition), evidence_markdown=render_finding_log(composition), composition=composition, statement_count=len(composition.statements), citation_count=len(written_citations(composition)), refused_count=len(composition.rejected_points))`; return `AgentRun(agent_name=self.name, result=result, react=ReActRun(agent_name=self.name, stop_reason="provider_error" if draft is None and task.registry else "finished", errors=errors), errors=errors, state_update=..., call_fingerprints=dict(self._call_fingerprints))`, like Task 2.1's agent.
 - `state_update`: `{"report": result.markdown, "report_evidence": result.evidence_markdown, "composition": result.composition, "unique_source_count": result.citation_count, "errors": list(errors), "events": [report_written_event(result)]}` where `report_written_event` is `agent_event(agent_name=REPORT_WRITER_NAME, event_type="report_writer.report.written", message=..., metadata={"statements": ..., "citations": ..., "refused": ..., "fact_rows": len(composition.fact_rows), "not_found": len(composition.not_found)})` (check `agent_event`'s keyword names in `agents/events.py` line 18).
 - `allowed_tools = ("write_document", "save_to_memory")`, as the synthesizer's.
@@ -4502,18 +4717,18 @@ git add src/deep_research/agents/report_writer.py tests/test_agents/test_report_
 git commit -m "feat(report_writer): the Report Writer cites verified findings by label with the 6.2 guards"
 ```
 
-**Acceptance:** the named Review Focus tests pass (forecast-as-fact rewritten once and kept; grid-scale on an all-segment figure refused); a failed or truncated draft still publishes the code-built facts; no path cites a URL the findings do not carry.
+**Acceptance:** the named Review Focus tests pass (a forecast stated as fact, and one stated with hardened modality, each rewritten once and kept; a release date kept as a date and an invented one refused; grid-scale on an all-segment figure refused); a failed or truncated draft still publishes the code-built facts; no path cites a URL the findings do not carry.
 
 ### Task 3.5: Phase-3 integration: exports and pins
 
 **Role:** sp-implementer. **Wave:** 3C, parallel with Task 3.6. **Depends on:** Task 3.4 merged.
 
-**Owns:** `src/deep_research/agents/__init__.py`, `tests/test_evaluation/test_config.py`.
+**Owns:** `src/deep_research/agents/__init__.py`.
 
-- [ ] **Step 1: Re-export** every public name of `wording.py`, `verified_facts.py`, `report_writer.py` and the four new `report.py` functions from `agents/__init__.py` and `__all__`. Where `agents/__init__.py` imported a moved wording name (`hedge_marker` and others) from `synthesizer`, import it from `wording` instead.
-- [ ] **Step 2: Re-pin the synthesizer fingerprint** as Task 1.5 Step 2 does (only the synthesizer may move: Task 3.3 edited `synthesizer.py`); comment "Evidence Verifier plan, Task 3.3: wording rules moved to agents/wording.py".
+- [ ] **Step 1: Re-export** every public name of `verified_facts.py`, `report_writer.py` and the four new `report.py` functions from `agents/__init__.py` and `__all__` (`wording.py`'s names were exported by Task 1.5).
+- [ ] **Step 2: Confirm no pin moved.** Run the Task 1.5 Step 2 print command: every value must equal its pin, because Phase 3 edits no agent module and not `agents/prompts.py` (Task 3.3's `synthesizer.py` edit was re-pinned in Task 1.5). If one moved, stop and report it.
 - [ ] **Step 3: Run the tests.** Run: `"$PY" -m pytest -q tests/test_imports.py tests/test_evaluation/test_config.py tests/test_agents`. Expected: PASS.
-- [ ] **Step 4: Commit** `src/deep_research/agents/__init__.py` and `tests/test_evaluation/test_config.py` with "chore(agents): export phase-3 names; re-pin the synthesizer fingerprint".
+- [ ] **Step 4: Commit** `src/deep_research/agents/__init__.py` with "chore(agents): export phase-3 names".
 
 ### Task 3.6: Step-3 proof on the audit-2 findings (Gate G3)
 
@@ -4526,7 +4741,7 @@ git commit -m "feat(report_writer): the Report Writer cites verified findings by
 - [ ] **Step 1: Write the harness.** Behaviour:
   - Offline (default): `rebuilt = rebuild()`; `findings = verify_scripted(rebuilt)`, with two extra scripted overrides: every figure from `ent.news` gets `attribution="relayed"`, `organisation="U.S. Energy Information Administration"` (the STEO PDF's "Data source" line; Task 2.1's `source:` cue must admit it), and every figure from `woodmac.com` keeps `own`. Build `state = ResearchState(session_id="ev-proof-audit2", original_question=QUESTION, sub_topics=rebuilt.sub_topics, verified_findings=findings, read_records=rebuilt.reads, evaluated_sources=rebuilt.sources)`, build a `ReportWriterAgent` with a `ScriptedCompleter` whose one queued output is the scripted draft below, and run it.
   - The scripted draft, labels looked up in `task.registry` by host and figure value: (1) "Generators added 10.4 GW of new battery storage capacity in the United States in 2024." citing the eia.gov 10.4 GW finding; (2) "EIA's outlook adds 14 GW in 2025." citing the ent.news 14 GW finding (a forecast stated as fact: must be rewritten and kept); (3) "Wood Mackenzie projects 15 GW of energy storage installations in 2025." citing the woodmac.com Q1-2025 15 GW finding; (4) "Wood Mackenzie reports 18.9 GW of grid-scale storage installed in 2025." citing a woodmac.com 18.9 GW finding (must be refused for scope); (5) "In 2024, 10.4 GW of battery storage was added." citing the eia.gov finding again (a restatement: must be dropped).
-  - `--live` (operator, off-peak): the same state, the writer built with the real provider exactly as Task 2.3's `--live` builds the verifier (`model_profile=settings.llm.resolve_for("report_writer")`; before Task 4.1 renames it, `resolve_for` falls back to the global profile for an unknown name, so pass `settings.llm.resolve_for("synthesizer")` to keep the measured effort).
+  - `--live` (operator, off-peak): the same state, the writer built with the real provider exactly as Task 2.3's `--live` builds the verifier, with `model_profile=settings.llm.resolve_for("report_writer")`: until Task 4.1 adds that `model_overrides` entry, `resolve_for` falls back to the global profile (`reasoning_effort: high`), which is the measured writer effort (F10).
   - Write `scratch/ev-compose-report.md` and `scratch/ev-compose-evidence.md`, print the summary lines with their labels, then the checks:
     - **C1** a summary line states 10.4 GW and its label contains "actual", and its fact row's organisation is EIA (`same_organisation(row.organisation, "EIA")`);
     - **C2** at least two summary lines state 2025 forecasts whose labels start with different organisations and contain "forecast"; each carries a release when its finding does (print any forecast finding without a release field, and fail C2 in `--live` mode if one lacks it);
@@ -4612,6 +4827,7 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     assert settings.graph.max_extra_passes == 1
     assert settings.agents.tool_budget_overrides["researcher"] == 20
     assert settings.llm.resolve_for("evidence_verifier").reasoning_effort == "high"
+    assert settings.llm.resolve_for("report_writer").reasoning_effort == "high"   # F10: the one effort source
     assert settings.llm.resolve_for("report_reviewer").timeout == 360.0
     assert set(settings.agents.tool_budget_overrides) <= set(PRODUCTION_AGENT_NAMES)
     assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
@@ -4637,8 +4853,10 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     # The Context Check (spec 5.2): one batched, tool-free call per 15 findings.
     evidence_verifier:
       reasoning_effort: high
+    # The writer's first attempt runs at this effort; a truncated draft is asked
+    # once more at high (Task 3.4). This entry is the only effort source (F10).
     report_writer:
-      reasoning_effort: max
+      reasoning_effort: high
     # The Report Reviewer is a service role, not an agent (was report_judge).
     report_reviewer:
       reasoning_effort: max
@@ -4657,7 +4875,9 @@ graph:
   checkpointing_enabled: false
 ```
 
-and delete the `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens` and `claim_verification_max_tokens` keys with their comments.
+and delete the `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens` and `claim_verification_max_tokens` keys with their comments. In `tests/test_config.py`, delete the claim-batch config tests (lines 770–793 at the plan's base commit: the tests that import `fact_checker.DEFAULT_MAX_CLAIMS` or assert those four keys), because their keys and their import are gone.
+
+Only if Gate G2's live run recorded a failed Context Check batch (`evidence_verifier_context_check_failed`) or a batch over about 60 s, also add `timeout: 240.0` under `evidence_verifier` in `model_overrides` (review item 13, F8), with a comment naming the measurement. Otherwise add nothing.
 
 - [ ] **Step 6: Mechanical renames.** `git mv src/deep_research/agents/report_review.py src/deep_research/agents/report_reviewer.py` and `git mv tests/test_agents/test_report_review.py tests/test_agents/test_report_reviewer.py`; update every import line Step 1 listed. Rename `REPORT_JUDGE_ROLE = "report_judge"` to `REPORT_REVIEWER_ROLE = "report_reviewer"` and every use. Move `report_filename`, `evidence_report_filename`, `quality_report_filename` (synthesizer.py 778–815) with their tests into `report_writer.py` / `tests/test_agents/test_report_writer.py`; `synthesizer.py` imports them from `report_writer`; update the other importers Step 1 listed. In `report_writer.py`, rename `ReportWriterTask.max_iterations` to `max_extra_passes` and read `state.max_extra_passes`.
 
@@ -4743,7 +4963,6 @@ def test_each_gate_fires_on_its_own_defect() -> None:
     assert "untraced_figures" in compute_report_quality(*with_point_text("Generators added 12 GW in 2024.")).hard_failures
     assert "uncited_settled_points" in compute_report_quality(*with_uncited_point()).hard_failures
     assert "unresolved_citations" in compute_report_quality(*with_unknown_finding_id()).hard_failures
-    assert "duplicate_fact_rows" in compute_report_quality(*with_duplicate_row()).hard_failures
     assert "missing_as_of" in compute_report_quality(*with_composition(as_of="")).hard_failures
     assert "missing_scope" in compute_report_quality(*with_composition(scope="")).hard_failures
 
@@ -4755,6 +4974,20 @@ def test_a_missing_required_target_is_missing_but_accounted_when_listed_not_foun
     unlisted = compute_report_quality(*missing_forecast_state(listed_not_found=False))
     assert "unaccounted_required_targets" in unlisted.hard_failures
 ```
+
+Also add (the clean state's composition must hold at least one forecast row with a release; build `clean_state()` so it does):
+
+```python
+def test_a_forecast_row_without_a_release_is_counted_not_failed() -> None:
+    state, composition = with_composition()
+    rows = list(composition.fact_rows)
+    first = next(n for n, row in enumerate(rows) if row.kind == "forecast")
+    rows[first] = rows[first].model_copy(update={"release": None})
+    snapshot = compute_report_quality(*with_composition(fact_rows=rows))
+    assert snapshot.forecasts_without_release == 1 and snapshot.hard_failures == []
+```
+
+No test builds a duplicate fact row: `fact_rows()` merges same-fact rows, so the `duplicate_fact_rows` gate only guards hand-built compositions and future producers (PD-10, F11).
 
 - [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_quality.py`. Expected: FAIL.
 
@@ -4779,6 +5012,8 @@ def compute_report_quality(state: ResearchState, composition: ReportComposition)
         for n in untraced_numbers(p.text, [by_id[i] for i in p.statement.finding_ids if i in by_id])
     ]
     rows = composition.fact_rows
+    # Invariant (F11): fact_rows() already merges same-fact rows, so this guards
+    # hand-built compositions and future producers; no test fixture is spent on it.
     duplicates = sum(1 for n, a in enumerate(rows) for b in rows[n + 1:]
                      if a.kind == b.kind and a.value == b.value and same_period(a.period, b.period)
                      and same_organisation(a.organisation, b.organisation))
@@ -4803,6 +5038,7 @@ def compute_report_quality(state: ResearchState, composition: ReportComposition)
         duplicate_fact_rows=duplicates, uncited_settled_points=uncited,
         unresolved_citations=unresolved, untraced_figures=untraced,
         refused_sentences=len(composition.rejected_points), hard_failures=failures,
+        forecasts_without_release=sum(1 for row in rows if row.kind == "forecast" and not row.release),
     )
 ```
 
@@ -4906,7 +5142,7 @@ def test_coverage_and_evidence_counts_come_from_verified_findings() -> None:
 def test_the_summary_prints_findings_review_and_integrity_lines() -> None:
     lines = render_summary(outcome_for(verified_state()))
     assert any(l.startswith("Findings: 2 checked") for l in lines)
-    assert any(l.startswith("Integrity: 0 duplicate fact rows; 0 uncited statements; 0 untraced figures") for l in lines)
+    assert any(l.startswith("Integrity: 0 duplicate fact rows; 0 uncited statements; 0 untraced figures; 0 forecasts without release") for l in lines)
     assert not any("critic" in l.casefold() or "claims:" in l.casefold() for l in lines)
 
 
@@ -4920,8 +5156,9 @@ def test_max_iterations_sets_the_extra_passes_and_accepts_zero() -> None:
 - [ ] **Step 3: Implement.**
   - `runtime/outcome.py`: `CoverageProgress(required_targets, answered_targets, missing_required_target_ids: tuple[str, ...], not_found_target_ids: tuple[str, ...])` read from `state.quality` and `state.composition.not_found`; `EvidenceCounts` keeps `read_records`, `network_reads`, `cache_reads`, `unique_works`, `publishers`, `source_urls`, `findings`, `assessed_sources`, `cited_assessed_sources` and replaces the claim counts with `verified_findings`, `corrected_findings`, `dropped_findings`, `context_unchecked_findings`, `cited_findings` (from `state.quality`).
   - `api/models.py` and `api/sessions.py`: `CoverageProgressResponse` and `EvidenceCountsResponse` mirror the new dataclasses; `ResearchRequest.max_iterations` keeps its name (PD-15), allows 0, and is passed as `max_extra_passes=`.
-  - `cli.py`: `--max-iterations` becomes a non-negative int with help "extra research passes for missing required targets (default: graph.max_extra_passes, 1)" and is passed as `run_research(..., max_extra_passes=...)`; `STATUS_NOTES["max_iterations"]` = "extra passes exhausted with required targets still missing"; delete `_claim_lines` and the critic score in `_verdict_lines` (print the review status and mean instead); `_evidence_lines` prints `Findings: {checked} checked ({corrected} with corrected context, {unchecked} unchecked context), {dropped} dropped; {cited} cited` and `Integrity: {duplicate_fact_rows} duplicate fact rows; {uncited_settled_points} uncited statements; {len(untraced_figures)} untraced figures`; `_coverage_line` prints `Required targets: {answered}/{required} answered` plus the not-found ids; `_unresolved_lines` lists the review's material defects and the missing targets; `PROGRESS_EVENT_TYPES` / `is_streamed_event` name the new nodes and the `evidence_verifier.verification.completed` and `report_writer.report.written` events.
-  - `README.md`: rewrite "Source Evaluator And Fact Checker" as "Source Evaluator And Evidence Verifier" (Figure Match, Context Check, labels, drop reasons), "Synthesizer And Critic" as "Report Writer And Report Reviewer", "LangGraph Orchestration" (the node list, the routes and statuses of Task 4.8, `graph.max_extra_passes`), the CLI flags and summary lines, "Quality Semantics" (the PD-10 gates and acceptance), "Individual Agent Evaluation" (the new agent list) and "Whole-Report Quality Evaluation" (the case ids of Task 4.9; the graph-historical harness per the open item 8 decision).
+  - `cli.py`: `--max-iterations` becomes a non-negative int with help "extra research passes for missing required targets (default: graph.max_extra_passes, 1)" and is passed as `run_research(..., max_extra_passes=...)`; `STATUS_NOTES["max_iterations"]` = "extra passes exhausted with required targets still missing, and the report not accepted" (PD-23; an accepted report with targets under Not found finishes `completed`); delete `_claim_lines` and the critic score in `_verdict_lines` (print the review status and mean instead); `_evidence_lines` prints `Findings: {checked} checked ({corrected} with corrected context, {unchecked} unchecked context), {dropped} dropped; {cited} cited` and `Integrity: {duplicate_fact_rows} duplicate fact rows; {uncited_settled_points} uncited statements; {len(untraced_figures)} untraced figures; {forecasts_without_release} forecasts without release` (PD-24); `_coverage_line` prints `Required targets: {answered}/{required} answered` plus the not-found ids; `_unresolved_lines` lists the review's material defects and the missing targets; `PROGRESS_EVENT_TYPES` / `is_streamed_event` name the new nodes and the `evidence_verifier.verification.completed` and `report_writer.report.written` events.
+  - `README.md`: rewrite "Source Evaluator And Fact Checker" as "Source Evaluator And Evidence Verifier" (Figure Match, Context Check, labels, drop reasons), "Synthesizer And Critic" as "Report Writer And Report Reviewer", "LangGraph Orchestration" (the node list, the routes and statuses of Task 4.8 with PD-23's meaning of `completed` and `max_iterations`, `graph.max_extra_passes`), the CLI flags and summary lines, "Quality Semantics" (the PD-10 gates and acceptance), "Individual Agent Evaluation" (the new agent list) and "Whole-Report Quality Evaluation" (the case ids of Task 4.9). Delete the "Graph-historical harness" subsection and every `--mode graph-historical` example (PD-14, retired).
+  - `README.md`, a new short "Upgrading" subsection (F15; no code): the env key `GRAPH_MAX_ITERATIONS` is now `GRAPH_MAX_EXTRA_PASSES`, and an old export is ignored without a warning; `graph.max_iterations` is now `graph.max_extra_passes`; a custom config must drop `agents.claim_batch_size`, `agents.claim_batches_per_pass`, `agents.critic_review_max_tokens`, `agents.claim_verification_max_tokens`, the `fact_checker`, `synthesizer`, `critic` and `report_judge` entries of `llm.model_overrides` (the reviewer's entry is now `report_reviewer`) and any `agents.tool_budget_overrides` entry for a removed agent (that one fails validation with a message naming the key; state in the README which of the others fail and which are ignored, after checking `utils/config.py`); checkpoints written before the cutover cannot be resumed (`ResearchState` rejects their fields).
 - [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_runtime/test_outcome.py tests/test_cli tests/test_api`. Expected: PASS. `tests/test_cli/test_report_quality_acceptance.py` keeps its structural pathology checks, ported to the writer and reviewer; its critic- and fact-checker-only tests are deleted.
 - [ ] **Step 5: Commit** every owned file changed with "feat(cli,api): verified-finding coverage and counts; extra passes; README".
 
@@ -4961,8 +5198,13 @@ def _routed(**fields):
 def test_missing_targets_buy_one_extra_pass_then_publish() -> None:
     missing = ReportReview(status="scored", missing_required_target_ids=["t2"], dimensions={d: 0.9 for d in REVIEW_DIMENSIONS})
     assert _routed(review=missing) == ("extra_pass", "extra_pass_requested")
-    assert _routed(review=missing, iteration=1) == ("finalize", "extra_passes_exhausted")
-    assert _routed(review=missing, max_extra_passes=0) == ("finalize", "extra_passes_exhausted")
+    # PD-23: passes spent, gates clear, reviewer accepts -> completed, the target under Not found
+    assert _routed(review=missing, iteration=1) == ("finalize", "report_accepted")
+    assert _routed(review=missing, max_extra_passes=0) == ("finalize", "report_accepted")
+    rejected = missing.model_copy(update={"dimensions": {d: 0.5 for d in REVIEW_DIMENSIONS}})
+    assert _routed(review=rejected, iteration=1) == ("finalize", "extra_passes_exhausted")
+    unlisted = ReportQualitySnapshot(hard_failures=["unaccounted_required_targets"])
+    assert _routed(review=missing, iteration=1, quality=unlisted) == ("finalize", "extra_passes_exhausted")
 
 
 def test_the_final_routes_and_their_statuses() -> None:
@@ -4971,6 +5213,12 @@ def test_the_final_routes_and_their_statuses() -> None:
     assert _routed(review=ReportReview(status="provider_failed")) == ("finalize", "review_unavailable")
     assert graph_status(ResearchState(session_id="s", original_question="q", report_review=ReportReview(status="provider_failed"),
                                       quality=ReportQualitySnapshot())) == "incomplete"
+    spent = ReportReview(status="scored", missing_required_target_ids=["t2"], dimensions={d: 0.9 for d in REVIEW_DIMENSIONS})
+    assert graph_status(ResearchState(session_id="s", original_question="q", iteration=1, report_review=spent,
+                                      quality=ReportQualitySnapshot())) == "completed"
+    failing = spent.model_copy(update={"dimensions": {d: 0.5 for d in REVIEW_DIMENSIONS}})
+    assert graph_status(ResearchState(session_id="s", original_question="q", iteration=1, report_review=failing,
+                                      quality=ReportQualitySnapshot())) == "max_iterations"
 ```
 
 and in `tests/test_graph/test_orchestrator.py`, with agents from `tests/graph_fakes.py` reworked to the new set (a scripted researcher, a verifier fake whose Context Check call raises `ProviderError`, the real `ReportWriterAgent` with a `ScriptedCompleter`, a `FakeReviewer`, a `FakePublisher`):
@@ -4987,8 +5235,10 @@ async def test_extra_pass_that_finds_nothing_publishes_with_not_found(...) -> No
     # a required target no finding answers; the reviewer node stamps it missing;
     # the graph runs one extra pass (the researcher is called with
     # extra_pass_target_ids == [that target]); the second review still names it;
-    # the run finalizes once with status max_iterations, the report's "## Not found"
-    # lists the target, and the researcher was called exactly twice.
+    # the FakeReviewer accepts (0.9 on every dimension, no defect) and no gate fails
+    # (Not found lists the target), so the run finalizes once with status completed
+    # and quality accepted (PD-23); the report's "## Not found" lists the target,
+    # and the researcher was called exactly twice.
 ```
 
 Write both bodies in full with the reworked fakes. `tests/test_graph/test_nodes.py`: delete the synthesizer, critic and refine node tests; add tests that the writer node stamps `compute_report_quality`'s snapshot, that the reviewer node stamps `missing_required_target_ids` from the snapshot whatever the review status, and that the extra-pass node sets `extra_pass_target_ids` and advances the iteration. `tests/test_runtime/test_assembly.py`: the agents built are the five new names, and `build_report_reviewer` resolves the `report_reviewer` role.
@@ -4997,11 +5247,11 @@ Write both bodies in full with the reworked fakes. `tests/test_graph/test_nodes.
 
 ```python
 GRAPH_ROUTES = {
-    "report_accepted": "The Report Reviewer accepted the report and no gate failed.",
+    "report_accepted": "The Report Reviewer accepted the report and no gate failed; any required target with no verified finding is listed under Not found.",
     "report_not_accepted": "The report was scored but not accepted (a gate failed, a material defect, or a mean below 0.80), and no required target is missing.",
     "review_unavailable": "The Report Reviewer did not score the report (provider failure or an invalid reply); it is published as partial.",
     "extra_pass_requested": "Required targets have no verified finding and an extra pass remains; the researcher runs for those targets only.",
-    "extra_passes_exhausted": "Required targets still have no verified finding and no extra pass remains; they are listed under Not found.",
+    "extra_passes_exhausted": "Required targets still have no verified finding, no extra pass remains, and the report was not accepted; the targets are listed under Not found.",
     "halted": "The run stopped on a non-recoverable error.",
 }
 GRAPH_STATUSES = ("completed", "max_iterations", "incomplete", "failed")
@@ -5016,18 +5266,19 @@ _STATUS_BY_ROUTE_REASON = {
 
 
 def graph_route(state: ResearchState) -> tuple[str, str]:
-    """Where the graph goes after the Report Reviewer, and why (spec §6.3-6.5)."""
+    """Where the graph goes after the Report Reviewer, and why (spec §6.3-6.5, PD-23)."""
     if is_halted(state):
         return ROUTE_END, "halted"
     review = state.report_review
-    if review is not None and review.missing_required_target_ids:
-        if state.iteration < state.max_extra_passes:
-            return ROUTE_EXTRA_PASS, "extra_pass_requested"
-        return ROUTE_FINALIZE, "extra_passes_exhausted"
+    missing = review is not None and bool(review.missing_required_target_ids)
+    if missing and state.iteration < state.max_extra_passes:
+        return ROUTE_EXTRA_PASS, "extra_pass_requested"
     if review is None or review.status != "scored":
         return ROUTE_FINALIZE, "review_unavailable"
     if state.quality is not None and not state.quality.hard_failures and semantic_review_passes(review):
         return ROUTE_FINALIZE, "report_accepted"
+    if missing:
+        return ROUTE_FINALIZE, "extra_passes_exhausted"
     return ROUTE_FINALIZE, "report_not_accepted"
 
 
@@ -5051,7 +5302,7 @@ def graph_quality_status(state: ResearchState) -> str:
 
 - [ ] **Step 1: Write the failing tests** (`tests/test_e2e_evaluation/test_replay_doubles.py`): feed each new double the real request its agent builds and assert the reply: `_reply_ContextCheckDraft` answers one `FigureCheckDraft` per `F<nn> | figure <n>` the request lists, confirming by default and applying a `ReplaySource`'s `context` override (`scope`, `attribution`, `organisation`, `kind`, `evidence_words`, `verdict`); `_reply_ReportWriterDraft` answers one summary point per registry line (`"<organisation> reports <value> <unit> for <period>."` for an actual, `"<organisation> projects <value> <unit> for <period>."` for a forecast), and `compose_written_report` keeps every one of them; `_reply_ReportReviewDraft` scores the seven dimensions at the scenario's value (0.9 by default) and disposes of every statement id the request lists as `supported`, unless the scenario lists it as unsupported.
 - [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_e2e_evaluation/test_replay_doubles.py`. Expected: FAIL.
-- [ ] **Step 3: Implement.** In `replay.py`: delete `_reply_ClaimsDraft`, `_reply_ClaimVerdictDraft`, `_reply_ClaimEquivalenceDraft`, `_reply_CritiqueDraft`, `_reply_ReportDraft` and their imports; add the three doubles above; `ReplaySource` gains `context: dict[str, str] = field(default_factory=dict)` for the Context Check overrides. In `replay_matrix.py`, rework `REPLAY_CASE_MANIFEST`: keep `broad-constraints`, `comparative-conflict` (two organisations, two attributed rows, never a conflict), `refinement-evidence-recovery` (renamed `extra-pass-recovers-missing-target`), `blocked-html-pdf-fallback`, `stalled-refinement` (renamed `extra-pass-finds-nothing`: the missing target stays missing; one extra pass; published once with the target under Not found), `unsupported-mechanism`, `judge-failure` (renamed `review-unavailable`), `non-constraint-answer`, `empty-but-clean`, `memory-is-not-read`, `validated-cache-reuse`, `decision-context-late-candidate`; convert `same-work-mirror` (a mirror is one row, labelled by its organisation), `primary-attribution` (renamed `relay-labelled-as-relay`), `current-versus-forecast` (renamed `forecast-versus-actual-kept-apart`) and `reopen-unanswered-target` (renamed `missing-target-triggers-one-extra-pass`); retire `semantic-duplicate-claims` ("claim equivalence is gone; duplicate figures are one fact row by field key, covered by `revision-noted` and `same-work-mirror`") and `late-contradiction` ("no stage issues verdicts; two organisations' figures are two rows"); add `figure-not-on-page-dropped`, `evidence-words-not-on-page-rejected`, `scope-corrected-to-all-segments` and `revision-noted`. Each row states its sources, its `context` overrides, its declared result (accepted/partial and exit code) and its invariants over production state (for example `scope-corrected-to-all-segments`: the kept figure's scope is "all segments", the finding is `verified_corrected`, and no reader sentence says "grid-scale"). Retire the two coverage-gate rows of `GRAPH_ONLY_HISTORICAL_MANIFEST` (PD-14); the other three rows are Task 4.11's (open item 8).
+- [ ] **Step 3: Implement.** In `replay.py`: delete `_reply_ClaimsDraft`, `_reply_ClaimVerdictDraft`, `_reply_ClaimEquivalenceDraft`, `_reply_CritiqueDraft`, `_reply_ReportDraft` and their imports; add the three doubles above; `ReplaySource` gains `context: dict[str, str] = field(default_factory=dict)` for the Context Check overrides. In `replay_matrix.py`, rework `REPLAY_CASE_MANIFEST`: keep `broad-constraints`, `comparative-conflict` (two organisations, two attributed rows, never a conflict), `refinement-evidence-recovery` (renamed `extra-pass-recovers-missing-target`), `blocked-html-pdf-fallback`, `stalled-refinement` (renamed `extra-pass-finds-nothing`: the missing target stays missing; one extra pass; published once with the target under Not found), `unsupported-mechanism`, `judge-failure` (renamed `review-unavailable`), `non-constraint-answer`, `empty-but-clean`, `memory-is-not-read`, `validated-cache-reuse`, `decision-context-late-candidate`; convert `same-work-mirror` (a mirror is one row, labelled by its organisation), `primary-attribution` (renamed `relay-labelled-as-relay`), `current-versus-forecast` (renamed `forecast-versus-actual-kept-apart`) and `reopen-unanswered-target` (renamed `missing-target-triggers-one-extra-pass`); retire `semantic-duplicate-claims` ("claim equivalence is gone; duplicate figures are one fact row by field key, covered by `revision-noted` and `same-work-mirror`") and `late-contradiction` ("no stage issues verdicts; two organisations' figures are two rows"); add `figure-not-on-page-dropped`, `evidence-words-not-on-page-rejected`, `scope-corrected-to-all-segments` and `revision-noted`. Each row states its sources, its `context` overrides, its declared result (accepted/partial and exit code) and its invariants over production state (for example `scope-corrected-to-all-segments`: the kept figure's scope is "all segments", the finding is `verified_corrected`, and no reader sentence says "grid-scale"). Leave `GRAPH_ONLY_HISTORICAL_MANIFEST` alone: Task 4.11 deletes the whole graph-historical harness (PD-14).
 - [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_e2e_evaluation/test_replay_doubles.py`. Expected: PASS. (The matrix runs in Task 4.11, once the graph of Task 4.8 is merged.)
 - [ ] **Step 5: Commit** the three owned files with "test(e2e): evidence-verifier replay doubles and matrix cases".
 
@@ -5068,35 +5319,50 @@ def graph_quality_status(state: ResearchState) -> str:
 - [ ] **Step 5: Run the checks.** Run the acceptance grep of the Caller inventory over `src tests` excluding `src/deep_research/e2e_evaluation` and `tests/test_e2e_evaluation`: it prints nothing. Run the IMPORT SMOKE without `deep_research.e2e_evaluation`. Run `"$PY" -m pytest -q tests --ignore=tests/test_state.py --ignore=tests/test_e2e_evaluation` and, alone, `"$PY" -m pytest -q tests/test_state.py`. Expected: PASS.
 - [ ] **Step 6: Commit** with "refactor: remove the fact checker, claim clusters, critic and synthesizer; exports and pins".
 
-### Task 4.11: E2E matrix green (with open decision item 8)
+### Task 4.11: E2E matrix green; the graph-historical harness retired
 
 **Role:** sp-hard-implementer. **Wave:** 4D, parallel with Task 4.10. **Depends on:** Tasks 4.8 and 4.9 merged, and the review of 4.9 clean (rule R5).
 
-**Owns:** `e2e_evaluation/{cases,evaluators,models,runner,replay,replay_matrix}.py`, `tests/test_e2e_evaluation/*`, and, under Option B only, the README's "Graph-historical harness" subsection.
+**Owns:** `e2e_evaluation/{cases,evaluators,models,runner,replay,replay_matrix}.py`, `tests/test_e2e_evaluation/*`. (The README's "Graph-historical harness" subsection is deleted by Task 4.6, which owns `README.md`.)
 
 - [ ] **Step 1: Models, evaluators, runner.** `models.py`: `AGENT_NAMES` as Task 4.7's; `SnapshotPass` loses `claims` and `critic_targets`; `DeterministicEvaluation` replaces the claim fields (`checked_claims`, `claims_with_provenance`, `checked_claim_provenance_ratio`, `duplicate_claims`, `contradicted_claims`, `disclosed_contradictions`, `critic_targets`, `closed_critic_targets`, `repeated_claim_snapshot_passes`) with `verified_findings`, `dropped_findings`, `context_unchecked_findings`, `duplicate_fact_rows`, `untraced_figures`, `missing_required_targets`, `extra_passes`. `evaluators.py` reads them from production state and from the new CLI summary lines (Task 4.6); `runner.py`'s acceptance checks `duplicate_fact_rows == 0` in place of `duplicate_claims == 0`.
 - [ ] **Step 2: Run the real-agent matrix and fix until green.** Run: `"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3`. Every row passes its declared result and invariants in all three repetitions. A failure caused by a double or a row is fixed here; a failure caused by product code goes to its Phase-4 owner (rule R6).
-- [ ] **Step 3: The graph-historical harness — apply the user's decision on open item 8.** If the user has not decided when this step starts, apply **Option A** and ledger the ruling (retiring scope needs approval).
-  - **Option A (keep; the plan's default):** rework the scripted agent doubles in `cases.py` (`ScriptedDependencies`) to the new agent set (a scripted evidence verifier stamping verifications; the real writer's composition shape; a scripted reviewer) and keep the three remaining rows of `GRAPH_ONLY_HISTORICAL_MANIFEST`. Run `"$PY" -m deep_research.e2e_evaluation suite --tier controlled --mode graph-historical --repetitions 3`: green.
-  - **Option B (retire):** delete `GRAPH_ONLY_HISTORICAL_MANIFEST`, the `graph-historical` mode in `runner.py` (the `--mode` choice and its dispatch), the scripted six-agent doubles in `cases.py` that only it uses, their tests, and the README's "Graph-historical harness" subsection; Gate G4 then drops its graph-historical command. Nothing else changes.
+- [ ] **Step 3: Retire the graph-historical harness (PD-14; decided by the user).** Delete `GRAPH_ONLY_HISTORICAL_MANIFEST`; the `graph-historical` mode in `runner.py` (its `--mode` choice and its dispatch; if the remaining mode is then the only choice, delete the `--mode` argument and its dispatch too, since a one-choice flag is dead code); the scripted six-agent doubles in `cases.py` that only that mode uses (`ScriptedDependencies` and its helpers: first run `grep -rn "ScriptedDependencies" src tests` and keep anything the real-agent matrix still imports); and their tests. Then `grep -rn "graph-historical\|graph_historical\|GRAPH_ONLY_HISTORICAL" src tests README.md` prints nothing.
 - [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_e2e_evaluation` and the acceptance grep of the Caller inventory over `src/deep_research/e2e_evaluation tests/test_e2e_evaluation`: it prints nothing.
-- [ ] **Step 5: Commit** every owned file changed with "test(e2e): evidence-verifier matrix green" (and "; graph-historical harness retired" under Option B).
+- [ ] **Step 5: Commit** every owned file changed with "test(e2e): evidence-verifier matrix green; graph-historical harness retired".
+
+### Task 4.12: Reviewer acceptance probe on the audit-2 report (part of Gate G4)
+
+**Role:** sp-implementer, in `$W` (rule R1); the `--live` run is an operator step. **Wave:** 4D, parallel with Tasks 4.10 and 4.11. **Depends on:** Tasks 4.2, 4.3 and 4.8 merged.
+
+**Files:** Create (untracked) `scratch/ev_review_audit2.py`.
+
+**Interfaces:** Consumes the state and the scripted draft of `scratch/ev_compose_audit2.py` (Task 3.6: import its builder functions; do not copy them); `ReportWriterAgent` (Task 3.4); `compute_report_quality` (Task 4.3); `ReportReviewer`, `build_report_review_input`, `semantic_review_passes` (Task 4.2); `build_report_reviewer` (`runtime/assembly.py`, Task 4.8; read its signature first).
+
+- [ ] **Step 1: Write the harness.** Behaviour:
+  - Default (no model call): build Task 3.6's audit-2 state and run the writer on its scripted draft; stamp `quality = compute_report_quality(state, composition)`; build `packet = build_report_review_input(state, composition)`; print the packet's statement ids, fact rows and `deterministic` block; exit 0 when `quality.hard_failures == []` and every summary statement id is in `packet.expected_statement_ids`.
+  - `--live` (operator, off-peak): the same state; the writer built with the real provider (`model_profile=settings.llm.resolve_for("report_writer")`) writes the report; then the real reviewer, built exactly as a CLI run builds it (`build_report_reviewer`), reviews it with `await reviewer.review(packet, previous=None)`. Write `scratch/ev-review-report.md` and print the review's status, the seven dimension scores, the mean and every defect with its statement ids.
+  - `--live` checks: **RV1** `review.status == "scored"`; **RV2** `semantic_review_passes(review)` (mean ≥ 0.80, no material defect); **RV3** `quality.hard_failures == []` for the live-written report. Exit 0 only when all three print `PASS`.
+- [ ] **Step 2: Run the default mode.** Run: `"$PY" scratch/ev_review_audit2.py`. Expected: exit 0, no model call.
+- [ ] **Step 3: Run live (operator, off-peak).** Run the OFF-PEAK CHECK; if `OK`, run `"$PY" scratch/ev_review_audit2.py --live`. Expected: `PASS RV1`–`PASS RV3`, one or two writer calls and one reviewer call, under 12 minutes. On a failure, each printed defect goes to its owner (rule R6): a writing defect to Task 3.4's writer prompt, a packet defect (the reviewer could not see a label, a release or the Not found list) to Task 4.2. Then re-run this step.
+- [ ] **Step 4: No commit** (scratch).
 
 ### Gate G4 — end of step 4
 
-Run in `$W` once Tasks 4.1–4.11 are merged and review-clean (rule R8):
+Run in `$W` once Tasks 4.1–4.12 are merged and review-clean (rule R8):
 
 ```bash
 "$PY" -m pytest -q tests --ignore=tests/test_state.py
 "$PY" -m pytest -q tests/test_state.py
 "$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
-"$PY" -m deep_research.e2e_evaluation suite --tier controlled --mode graph-historical --repetitions 3   # Option A only
 "$PY" -c "import deep_research.agents, deep_research.graph, deep_research.runtime, deep_research.api, deep_research.cli, deep_research.main, deep_research.evaluation, deep_research.e2e_evaluation"
 grep -rnwE "<the Caller inventory's acceptance pattern>" src tests    # prints nothing
+"$PY" scratch/ev_review_audit2.py
+"$PY" scratch/ev_review_audit2.py --live      # operator, off-peak only
 "$PY" -m deep_research --help
 ```
 
-**Pass condition:** every command succeeds; the grep prints nothing; `--help` shows `--max-iterations` described as extra research passes. That is spec §9 step 4's proof: the full test suite green and the reworked e2e replay matrix green. Do not start Phase 5 until G4 passes.
+**Pass condition:** every command succeeds; the grep prints nothing; `--help` shows `--max-iterations` described as extra research passes; the reviewer probe exits 0 in its default mode and prints `PASS RV1`–`PASS RV3` live. That is spec §9 step 4's proof: the full test suite green and the reworked e2e replay matrix green, plus the proof that the real Report Reviewer accepts a report built to §6 (F7). Do not start Phase 5 until G4 passes.
 
 ---
 
@@ -5222,14 +5488,21 @@ and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `c
 **Files:** Modify (untracked) `scratch/run_live_proof.py`.
 
 - [ ] **Step 1: Per-label arguments.** Change `RUNS` to `dict[str, tuple[str, list[str], dict[str, str]]]` (question, extra CLI arguments, extra environment); keep the old labels as `(AUDIT or SMOKE, [], {})`; add `"ev-preflight": (AUDIT, ["--max-iterations", "0", "--request-tavily-attempt-ceiling", "12"], {"AGENTS_MAX_SUB_TOPICS": "2"})` and `"ev-1": (AUDIT, [], {})`. `run()` appends the extra arguments, merges the extra environment, and writes both to `run.env` (`EXTRA_ARGS=...`, `EXTRA_ENV=...`). Keep `PROOF_MAX_ITERATIONS` as it is (it still maps to `--max-iterations`); update the docstring's "macro refinement budget the critic may spend" to "extra research passes for missing required targets".
-- [ ] **Step 2: A stage-time summary.** After the run, read `cli.log` and print each stage's duration: the time between consecutive `graph.node.completed` lines, per node name and pass, and the total; append them to `SUMMARY.tsv` as a `stages=` column.
+- [ ] **Step 2: A stage-time summary.** After the run, read `cli.log` and print each stage's duration: the time between consecutive `graph.node.completed` lines, per node name and pass, and the total; also print the researcher's seconds per sub-topic, from its per-sub-topic turn lines (their format: `output/live-proof/audit-3/cli.log` lines 86–157 in the `agent-cli-quality-trace-plan` checkout), and the mean. Append them to `SUMMARY.tsv` as a `stages=` column and a `researcher_per_subtopic=` column.
 - [ ] **Step 3: Dry check.** `"$PY" -c "import runpy; m = runpy.run_path('scratch/run_live_proof.py'); print(sorted(m['RUNS']))"` lists `ev-1` and `ev-preflight`. No commit (scratch).
 
 ### Task 6.2: Capped live pre-flight (operator)
 
 **Depends on:** Task 6.1; the final whole-branch review's fixes merged; OFF-PEAK CHECK prints `OK`.
 
-- [ ] Run `"$PY" scratch/run_live_proof.py ev-preflight`. **Pass:** exit 0 or 4; `output/live-proof/ev-preflight/` holds the report, the evidence log and the quality JSON; the report has every §6.1 section; the stage summary shows the Evidence Verifier, Report Writer and Report Reviewer each within 1.5 times their budget ("Runtime budget"); no traceback in `cli.log`. On a failure, stop: fix through the owning task's fix loop, re-run the affected gate's offline commands, then repeat 6.2.
+- [ ] Run `"$PY" scratch/run_live_proof.py ev-preflight`. **Pass**, every item:
+  - exit 0. The runner passes `--require-quality`, so 0 means quality `accepted`; exit 4 (the report was not accepted) fails the pre-flight;
+  - `output/live-proof/ev-preflight/` holds the report, the evidence log and the quality JSON, and the report has every §6.1 section; no traceback in `cli.log`;
+  - timing: (the researcher's mean seconds per sub-topic × the sub-topics Gate G5's live plan probe planned) + every other stage's seconds ≤ 30 minutes; the Evidence Verifier, Report Writer and Report Reviewer are each within 1.5 times their "Runtime budget" row;
+  - zero `evidence_verifier_context_check_failed` errors in the quality JSON, and the Findings line shows 0 unchecked context;
+  - the Integrity line shows `0 forecasts without release` (PD-24).
+
+  On a failure, stop: fix through the owning task's fix loop, re-run the affected gate's offline commands, then repeat 6.2. A failed or slow Context Check batch is fixed by review item 13's one config line; a projected first pass over 30 minutes by item 15's fallback (`agents.max_iterations: 6`).
 
 ### Task 6.3: The live run `ev-1` (operator)
 
@@ -5249,23 +5522,30 @@ and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `c
 
 ## Over-engineering review: decisions for the user
 
-Each item goes beyond the spec's letter, or is a choice the spec leaves open. Each carries a recommendation. None is silently included: the plan does what the "Plan" column says until you decide otherwise.
+Each item goes beyond the spec's letter, or is a choice the spec leaves open. Each carries a recommendation. None is silently included: the plan does what the "Plan" column says. Items marked **decided** were ruled on by the user after the plan audit (`agent://FablePlanAudit`); the rest stand as recommended unless the user rules otherwise.
 
 | # | Item | Plan | Recommendation and trade-off |
 |---|---|---|---|
 | 1 | Per-task git worktrees and merge-on-DONE (R1, R4) | included | Keep. This is what makes the parallel waves safe. The alternative, one shared tree, saves the merges but gives phantom test failures from siblings' half-edits and review diffs polluted by other tasks' commits. |
-| 2 | New module `agents/wording.py` (PD-19) | included | Keep. The verifier and the writer both need `stated_role`. The alternative, the verifier importing from the writer, couples two stages. |
-| 3 | Naming an agency's own page from its host (PD-18) | included | Keep. Without it, EIA's own 10.4 GW is labelled "eia.gov's own figure", and §10's "EIA's 2024 figure" reads worse. The risk is small: only government and education hosts qualify, and the page must name the organisation. |
+| 2 | New module `agents/wording.py` (PD-19) | included; **decided**: Task 3.3 runs in wave 1B | Keep. The verifier and the writer both need `stated_role`. Moving 3.3 to wave 1B lets Task 2.1 import `stated_role` from `wording.py` from the start, so no task edits `evidence_verifier.py` across phases. |
+| 3 | Naming an agency's own page from its host (PD-18) | included, as the last fallback after the Source Evaluator's validated issuer (PD-25) | Keep (about 15 lines). PD-25 is the mechanism; PD-18 only covers a page the Source Evaluator recorded no issuer for. Only government and education hosts qualify, and the page must name the organisation. |
 | 4 | "source:" as an attribution cue (Task 2.1) | included | Keep. The EIA STEO read is a mirror on ent.news that credits EIA in a source line. Without the cue, that forecast loses its EIA attribution and cannot answer the "EIA forecast" target. |
 | 5 | A truncated Context Check batch is asked once more in two halves | included | Keep. It is bounded (two extra calls at most), and truncation is the likely failure. The alternative, going straight to `context_unchecked`, is simpler but labels up to 15 findings "unchecked context". |
 | 6 | Missing required targets computed by code, not by the reviewer (PD-5) | included | Keep. The spec lists them as reviewer output; computing them from fields (§6.6) makes the extra pass deterministic and immune to a reviewer outage. |
 | 7 | The writer cites labels only, so there is no URL guard (PD-6) | included | Keep. A URL the findings do not carry cannot occur. |
-| 8 | Keep and rework the graph-historical e2e harness (PD-14) | included | Retire it, if you agree. It is a regression guard for scripted six-agent doubles; the real-agent matrix covers the new pipeline. Retiring it saves about an hour in Task 4.11 and all future upkeep. |
+| 8 | The graph-historical e2e harness (PD-14) | **RETIRED — decided** | Task 4.11 deletes it; Task 4.6 deletes its README subsection; Gate G4 has no graph-historical command. The real-agent matrix covers the new graph end to end. Saves about an hour in Task 4.11 and all future upkeep of doubles for a graph that no longer exists. |
 | 9 | Keep the names `--max-iterations` and API `max_iterations` (PD-15) | included | Keep. Existing invocations keep working. Renaming to `--max-extra-passes` would be cleaner but breaks callers, and D6 allows no alias. |
 | 10 | Delete historical single-value fingerprint tests when they break (PD-17) | included | Delete. They pin history, not behaviour; the drift-alarm pins stay. |
-| 11 | A wall-clock guard that skips the extra pass after a slow first pass | not included | Do not add, unless the pre-flight shows the first pass over 30 minutes. |
-| 12 | A code cap of five required targets | not included | Do not add. §7.1 relies on the planner, and Gate G5 plus the pre-flight check it. |
-| 13 | An `evidence_verifier` timeout or retry override in `config.yaml` | not included | Add only if the pre-flight shows a batch taking more than 4 minutes. |
+| 11 | A wall-clock guard that skips the extra pass after a slow first pass | not included | Do not add. Task 6.2's timing criteria measure what the guard would protect; add it only if the pre-flight projects a first pass over 30 minutes after item 15's fallback (6 turns). |
+| 12 | A code cap of five required targets | not included; **decided**: `agents.max_sub_topics: 5` in `config.yaml` (Task 1.3) | A config value, not code. §7.1 relies on the planner; Gate G5 and the pre-flight check it. |
+| 13 | An `evidence_verifier` timeout override in `config.yaml` | not included; **decided** trigger | Add `timeout: 240.0` under `model_overrides.evidence_verifier` (one line, Task 4.1 Step 5) only if Gate G2's live run or the pre-flight records a failed Context Check batch (`evidence_verifier_context_check_failed`) or a batch over about 60 s. A timed-out batch shows as "unchecked context", not as slowness, so a slow-batch trigger would miss it. |
 | 14 | The e2e row `extra-pass-finds-nothing`, beyond the spec's six Evidence Verifier cases | included | Keep. It pins Review Focus item 3. |
-
-**Item 8 is an open decision for the user.** Task 4.11 Step 3 implements either choice as a small, self-contained step: Option A keeps and reworks the graph-historical harness; Option B retires it (its manifest, its `--mode`, its scripted doubles, their tests and one README subsection), and Gate G4 drops one command. If no decision has been made when Task 4.11 starts, the controller applies Option A and ledgers the ruling, because retiring scope needs the user's approval.
+| 15 | The researcher's turn cap 5 → 7 (`agents.max_iterations: 7`, Task 1.3) | included; **decided** | Without it the tool budget of 20 changes nothing: the ReAct loop stops at 5 model turns. Costs about 5 minutes of first pass (35 turns at about 18.6 s). If the pre-flight projects a first pass over 30 minutes, use 6. |
+| 16 | An accepted report with passes spent finishes `completed` (PD-23) | included; **decided** | Matches §6.4 ("or is listed under Not found") and §6.5. `max_iterations` now means passes spent and the report not accepted, so the CLI never prints `max_iterations`/`partial` beside an accepted report. |
+| 17 | R8 exception: Tasks 3.1 and 3.2 start in wave 2A beside Task 2.1; Task 3.3 in wave 1B | included; **decided** | Saves about 75 minutes on the critical path; no file overlap. Their proof stays Gate G3, and Task 3.4 still waits for Gate G2. |
+| 18 | Three small live probes: researcher extraction (Task 1.6 `--live`), reviewer acceptance (Task 4.12), stricter pre-flight criteria (Task 6.2) | included; **decided** | About 10 minutes of off-peak model time in total. Each turns a "discovered in the 45-minute live run" risk into a gate check. |
+| 19 | The Source Evaluator's validated issuer as the page owner, and in the writer's attested corpus (PD-25) | included; **decided** | A few lines. Removes the refusal of "Wood Mackenzie projects …" when only `woodmac.com` was attested, and makes PD-18 a last resort. |
+| 20 | `duplicate_fact_rows` kept as an invariant (PD-10) | included | Keep the one-line gate; no test fixture is spent on it, because `fact_rows()` already merges same-fact rows. The alternative, dropping the gate and its snapshot field, departs from §6.4's list for no runtime gain. |
+| 21 | Four integration tasks (1.5, 2.2, 3.5, 5.4) exist only for re-exports and fingerprint pins | included | Keep: they are off the critical path and keep `agents/__init__.py` and `test_config.py` single-owner per wave. The alternative folds each into its phase's last implementation task (fewer dispatches, one more shared file per wave). |
+| 22 | `same_organisation`'s token heuristics (initials, prefix of 4 or more, legal suffixes), Task 3.1 | included | Keep for now; it is tested. With PD-25 supplying validated publisher names, it could shrink later. |
+| 23 | A `release` field (with evidence words) on `FigureCheckDraft`, so the Context Check can point at the page's edition line | not included | Add only if the pre-flight's `forecasts_without_release` is above 0. PD-24's label keeps the reader informed meanwhile. |
