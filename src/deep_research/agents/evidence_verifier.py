@@ -17,6 +17,7 @@ figure the reply never names, keeps its Figure Match result and is marked
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
@@ -27,7 +28,10 @@ from deep_research.agents.base import AgentRun, AgentTask, BaseAgent
 from deep_research.agents.errors import agent_error
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence import (
+    _ATTRIBUTION_PHRASES,
+    _document_text,
     _identity_words,
+    _opening_credits,
     cosmetic_text,
     excerpt_matches,
     neighbouring_passage_text,
@@ -39,6 +43,7 @@ from deep_research.agents.identity import deduplicate_findings, finding_fingerpr
 from deep_research.agents.prompts import render_structured_reply_format
 from deep_research.agents.sources import publisher_identity
 from deep_research.agents.steps import ReActRun
+from deep_research.agents.verified_facts import same_organisation
 from deep_research.agents.wording import stated_role
 from deep_research.providers import (
     ChatMessage,
@@ -195,9 +200,62 @@ class VerifiedFindings(ContractModel):
     findings: list[Finding] = Field(default_factory=list)
 
 
+# Separators a page's own title uses between its headline and its site or
+# publisher name ("Article Title | Site Name", "Article Title - Publisher").
+_TITLE_CREDIT_SEPARATOR = re.compile(r"\s*[|\u2013\u2014]\s*|\s+-\s+")
+
+# A short run of consecutive capitalised words immediately after a naming
+# cue, bounded so it can never run on into an unrelated sentence a scraped
+# page joins with no punctuation ("Wood Mackenzie Limited Terms of use" --
+# the fifth word onward is never capitalised, so the run stops there).
+_CAPITALIZED_RUN = re.compile(r"(?:[A-Z][\w.&'-]*\s+){0,4}[A-Z][\w.&'-]*")
+_LEADING_YEAR = re.compile(r"^(?:19|20)\d{2}\s*")
+
+
+def _title_credit_candidates(title: str) -> list[str]:
+    """The read's own title, split on its own separators.
+
+    "2025 ... | Wood Mackenzie" credits "Wood Mackenzie" without guessing at
+    anything the title does not itself spell; every segment is offered as a
+    candidate because a title can name its publisher either first or last.
+    """
+    return [part.strip() for part in _TITLE_CREDIT_SEPARATOR.split(title) if part.strip()]
+
+
+def _cued_name_candidates(text: str, cues: Sequence[str]) -> list[str]:
+    """A short run of capitalised words immediately after any of ``cues``."""
+    candidates: list[str] = []
+    pattern = re.compile(rf"(?:{'|'.join(cues)})\s*", re.IGNORECASE)
+    for cue in pattern.finditer(text):
+        tail = _LEADING_YEAR.sub("", text[cue.end() : cue.end() + 100].lstrip())
+        match = _CAPITALIZED_RUN.match(tail)
+        if match:
+            candidates.append(match.group().strip())
+    return candidates
+
+
 def page_owner(read: ReadRecord) -> str:
-    """The registrable host that served the page (``eia.gov``)."""
-    return publisher_identity(read.resolved_url)
+    """The page's own organisation, when the page's own words name it.
+
+    PD-18's sibling for the byline itself: a title, opening (the same
+    bounded first-3-passages/2000-char window authorship reads), or
+    copyright line naming an organisation is used only when
+    ``verified_facts.same_organisation`` confirms that name is the same
+    organisation as the serving host -- never a name the page merely
+    resembles ("energy.gov" is never credited as "EIA"), and never a name
+    the page does not itself state. Falls back to the registrable host
+    (``eia.gov``) when nothing on the page names it.
+    """
+    host = publisher_identity(read.resolved_url)
+    candidates = [
+        *_title_credit_candidates(read.title),
+        *_cued_name_candidates(_opening_credits(read), _ATTRIBUTION_PHRASES),
+        *_cued_name_candidates(_document_text(read), (r"©", r"copyright")),
+    ]
+    for candidate in candidates:
+        if same_organisation(candidate, host):
+            return candidate
+    return host
 
 
 def context_passage(read: ReadRecord, locator: str | None, snippet: str | None) -> str:

@@ -20,6 +20,7 @@ from deep_research.agents.evidence_verifier import (
     context_passage,
     evaluated_issuer,
     figure_match,
+    page_owner,
     resolve_attribution,
     verify_finding,
 )
@@ -209,8 +210,11 @@ def test_a_relay_needs_its_originator_named_on_the_page() -> None:
     finding = make_finding(read, "According to Wood Mackenzie, utility-scale installations reached 16 GW in 2025.")
     assert resolve_attribution(proposed="relayed", organisation="Wood Mackenzie",
                                finding=finding, read=read, issuer=None) == ("relayed", "Wood Mackenzie")
+    # The page's own title names it "Utility Dive", matching its host
+    # (verified_facts.same_organisation): page_owner now reports that name
+    # rather than the bare "utilitydive.com" label (this round's own fix).
     assert resolve_attribution(proposed="relayed", organisation="BloombergNEF",
-                               finding=finding, read=read, issuer=None) == ("unattributed", "utilitydive.com")
+                               finding=finding, read=read, issuer=None) == ("unattributed", "Utility Dive")
 
 
 def test_an_admitted_attribution_makes_a_relay() -> None:
@@ -651,3 +655,38 @@ def test_an_opening_mention_with_no_authorship_cue_stays_unattributed() -> None:
         proposed="relayed", organisation="BloombergNEF",
         finding=finding, read=read, issuer=None,
     ) == ("unattributed", "ent.news")
+
+
+def test_page_owner_uses_the_pages_own_name_when_it_matches_the_host() -> None:
+    """A woodmac.com page whose own title states 'Wood Mackenzie' is shown
+    to the reader as Wood Mackenzie's own page, not the bare host label."""
+    read = make_read(
+        "The U.S. energy storage market hit a record 18.9 GW in 2025.",
+        url="https://www.woodmac.com/press-releases/2025-us-energy-storage",
+        title="2025 U.S. Energy Storage Installations Set New Record | Wood Mackenzie",
+    )
+    assert page_owner(read) == "Wood Mackenzie"
+
+
+def test_page_owner_keeps_the_host_label_when_nothing_matches() -> None:
+    """A generic title and body naming no organisation that matches the
+    host: the bare registrable host label is kept, never invented."""
+    read = make_read(
+        "Storage market update: installations continue to grow.",
+        url="https://www.utilitydive.com/news/storage-update",
+        title="Storage market update",
+    )
+    assert page_owner(read) == "utilitydive.com"
+
+
+def test_page_owner_never_credits_a_merely_similar_name_on_a_gov_host() -> None:
+    """verified_facts.same_organisation is strict: energy.gov (the
+    Department of Energy's own host) is never credited as "EIA" merely
+    because the page's own title names EIA -- the two are not the same
+    organisation, however similar the first word of each looks."""
+    read = make_read(
+        "The Department of Energy oversees EIA, an independent statistical agency.",
+        url="https://www.energy.gov/articles/eia-overview",
+        title="DOE Newsroom | EIA",
+    )
+    assert page_owner(read) == "energy.gov"
