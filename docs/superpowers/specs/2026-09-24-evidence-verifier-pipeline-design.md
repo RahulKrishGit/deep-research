@@ -42,6 +42,7 @@ were each judged NOT GREAT by an independent audit. The architecture audit of
 | D4 | Extra research passes are configurable through `max_extra_passes`, **default 1**. A pass runs only when the Report Reviewer names a missing required target, and it is targeted to those targets only. |
 | D5 | Rename the synthesizer to **Report Writer** and the report review to **Report Reviewer**. |
 | D6 | Clean cutover on a new branch. No feature flag, no retained old path. |
+| D7 | The Report Writer's code guards are minimal: numbers, dates and scope only (§6.2). Organisation and forecast/actual provenance comes from the Context Check and reaches the reader as the code-built label. The Report Reviewer flags prose that contradicts its label. |
 
 Honesty rules that stay binding:
 
@@ -222,26 +223,28 @@ Reader labels, attached to each figure:
 
 The report uses no verdict, corroboration or "insufficient evidence" wording.
 
-### 6.2 Report Writer guards (kept, retargeted)
+### 6.2 Report Writer guards (minimal, deterministic)
 
-The Report Writer now cites findings by one label per finding, stamped by one
-registry. It keeps these guards:
+The Report Writer cites findings by one label per finding, stamped by one
+registry. The Context Check (§5.2) has already verified each figure's
+organisation, kind, period and scope. Code attaches those as the reader label
+on every figure, so the label, not the prose, carries the verified
+provenance. The writer's code guards are therefore minimal (user decision,
+2026-09-24, D7):
 
 - every number in a sentence equals a structured figure of a finding the
-  sentence cites (after the 5.1 normalisation); wording is free;
-- no organisation name, date or scope that the cited findings' verified
-  fields do not carry;
-- an actual is never stated as a forecast, and a forecast never as an actual
-  (the finding's verified `kind`);
-- the writer's prompt gives each figure's verified `kind`, and a forecast is
-  phrased as a forecast ("EIA expects", "projects"). A sentence that is
-  refused only because it states a forecast as fact is rewritten once by
-  code, re-attaching the verified hedge ("is expected to"), and then checked
-  again. The pre-flight of 2026-09-24 lost two of its three 2025 forecasts
-  to that refusal;
-- a citation URL not carried by the cited findings is dropped;
+  sentence cites (after the 5.1 normalisation); dates are not numbers;
+- every date the sentence states is carried by the cited findings;
+- no scope term the cited findings' verified scopes do not carry (no
+  narrowing, widening or changing of scope);
+- a sentence cites at least one known label;
 - a refused sentence is dropped and published in the evidence log and the
   quality JSON with its full text, cited labels and reason.
+
+The writer's prompt asks it to state a forecast with a forecast verb, and to
+name only organisations and publications the cited findings name. Prose
+wording of names and of forecast/actual is not policed by code. The Report
+Reviewer (§6.3) flags a sentence whose wording contradicts its label.
 
 Removed with the fact checker: the two-label packet, the "left out" renderer,
 sentinel table cells, and the verdict notes.
@@ -250,6 +253,9 @@ sentinel table cells, and the verdict notes.
 
 - One AI call, which merges today's critic and report review. It scores the
   existing seven dimensions and gives per-statement dispositions.
+- It flags, as a material defect, a sentence whose wording contradicts its
+  code-built label: a forecast worded as a completed outcome, an actual worded
+  as a forecast, or an organisation named that differs from the label's.
 - Acceptance: mean ≥ 0.80, no material defect, and no gate failure (6.4).
 - Output: `missing_required_target_ids`, used by 6.5.
 
