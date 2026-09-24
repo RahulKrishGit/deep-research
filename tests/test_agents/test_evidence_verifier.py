@@ -198,6 +198,26 @@ def test_a_missing_reply_leaves_a_matched_figure_unchecked() -> None:
     assert result.figure_results[0].context.attribution == "own"
 
 
+def test_a_reply_that_omits_a_figure_drops_it_when_the_snippet_lacks_it() -> None:
+    """P1-2: a reply that answers its batch but leaves a figure out is no
+    evidence about that figure -- the model may have left it out exactly
+    because it cannot find it stated. Deterministic code keeps an unjudged
+    figure only when the snippet itself states it (``figure_in_text``):
+    the omitted 52% is not in the snippet, so it is dropped with
+    ``context_unavailable``, while the confirmed 18.9 GW stays checked.
+    """
+    read, finding = _woodmac_finding()
+    finding = finding.model_copy(update={"figures": [
+        figure("18.9", "gigawatts", "2025", "actual"),
+        figure("52", "%", "2025", "actual"),
+    ]})
+    result = verify_finding(_item(read, finding), {1: _reply()})
+    assert [r.kept for r in result.figure_results] == [True, False]
+    assert result.figure_results[1].dropped_reason == "context_unavailable"
+    assert result.figure_results[0].context.scope is None
+    assert result.status == "verified_corrected" and not result.context_unchecked
+
+
 def test_a_relay_needs_its_originator_named_on_the_page() -> None:
     read = make_read(RELAY_PAGE, url=RELAY_URL, title="Storage in 2025 | Utility Dive")
     finding = make_finding(read, "According to Wood Mackenzie, utility-scale installations reached 16 GW in 2025.")
@@ -380,6 +400,34 @@ async def test_failed_batch_marks_findings_context_unchecked(tracker: Tracker) -
         assert finding.verification.context_unchecked is True
         [result] = finding.verification.figure_results
         assert result.kept
+    error_types = [error.error_type for error in outcome.state_update["errors"]]
+    assert error_types.count("evidence_verifier_context_check_failed") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_figure_the_snippet_lacks_is_dropped_when_the_batch_fails(
+    tracker: Tracker,
+) -> None:
+    """P1-2: a failed batch keeps a figure only when the snippet itself
+    states it. 19.6 GW is on the page but not in this finding's snippet, so
+    deterministic code cannot confirm it: the figure is dropped with
+    ``context_unavailable`` and the finding with it.
+    """
+    read = make_read()
+    finding = make_finding(read, SNIPPET, figures=[figure("19.6", "GW", "2025", "forecast")])
+    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=[finding], read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    [judged] = outcome.state_update["verified_findings"]
+    assert judged.verification.status == "dropped"
+    assert judged.verification.dropped_reason == "all_figures_dropped"
+    assert judged.verification.context_unchecked is False
+    [result] = judged.verification.figure_results
+    assert not result.kept and result.dropped_reason == "context_unavailable"
     error_types = [error.error_type for error in outcome.state_update["errors"]]
     assert error_types.count("evidence_verifier_context_check_failed") == 1
 
@@ -662,6 +710,56 @@ def test_page_owner_never_credits_a_merely_similar_name_on_a_gov_host() -> None:
     assert page_owner(read) == "energy.gov"
 
 
+def test_page_owner_stops_a_cued_run_at_the_sentence_end() -> None:
+    """P1-1: a footer's own full stop ends the name it states -- "Utility
+    Dive. All rights reserved" credits Utility Dive, never "Utility Dive.
+    All"."""
+    read = make_read(
+        "(c) 2025 Utility Dive. All rights reserved.",
+        url="https://www.utilitydive.com/news/storage-update",
+        title="Storage market update",
+    )
+    assert page_owner(read) == "Utility Dive"
+
+
+def test_page_owner_returns_the_shortest_name_prefix_the_host_matches() -> None:
+    """P1-1: a colon headline is not a title-credit separator, so the whole
+    headline is one candidate; the name is the shortest word prefix that
+    ``same_organisation`` confirms against the host, not the headline."""
+    read = make_read(
+        "The US energy storage market hit a record in 2025.",
+        url="https://www.woodmac.com/press-releases/2025-us-energy-storage",
+        title="Wood Mackenzie: US energy storage market hits record",
+    )
+    assert page_owner(read) == "Wood Mackenzie"
+
+
+def test_page_owner_trims_a_cued_name_to_the_organisation_the_host_matches() -> None:
+    """P1-1: a cue can introduce a longer run than the name ("Published by X
+    Research Team"); the shortest matching prefix is what the page states as
+    the organisation."""
+    read = make_read(
+        "Published by Wood Mackenzie Research Team. Storage capacity hit a record.",
+        url="https://www.woodmac.com/press-releases/2025-us-energy-storage",
+        title="US energy storage market hits record",
+    )
+    assert page_owner(read) == "Wood Mackenzie"
+
+
+def test_page_owner_never_shortens_a_name_to_the_bare_host_label() -> None:
+    """P1-1's prefix search must not turn a page's own word into a name:
+    "Energy" is one word of the Department of Energy's name, not a
+    stand-in for it (the same reading ``_single_token`` records), so an
+    energy.gov page whose headline starts with it keeps the host label it
+    is served under."""
+    read = make_read(
+        "Reports on storage.",
+        url="https://www.energy.gov/topics/energy-storage",
+        title="Energy storage reports | Department of Energy",
+    )
+    assert page_owner(read) == "energy.gov"
+
+
 # ---------------------------------------------------------------------------
 # check_statements (spec §6.2, D8): the Report Writer's sibling check
 # ---------------------------------------------------------------------------
@@ -833,23 +931,31 @@ async def test_a_failed_statement_batch_gives_none_and_an_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_missing_label_in_the_reply_gives_none() -> None:
+async def test_a_missing_label_in_the_reply_gives_none_and_records_an_error() -> None:
+    """A reply that answers some of its batch's labels leaves the rest
+    unjudged; the caller keeps those sentences as drafted, so the omission
+    is recorded exactly as a failed batch is."""
     finding = _statement_finding("18.9", "GW")
 
     def reply(messages: list, schema: type) -> StatementCheckDraft:
         del messages, schema
         return StatementCheckDraft(statements=[
             StatementVerdictDraft(label="S01", verdict="consistent", reason="Matches."),
+            StatementVerdictDraft(label="S02", verdict="consistent", reason="Matches."),
         ])
 
     items = [
         _statement_item("S01", "Wood Mackenzie states 18.9 GW.", finding),
         _statement_item("S02", "Wood Mackenzie states 18.9 GW too.", finding),
+        _statement_item("S03", "Wood Mackenzie states 18.9 GW as well.", finding),
     ]
     completer = ScriptedCompleter(outputs=[reply])
 
     results, errors = await check_statements(completer, items, question="How much storage?")
 
-    assert errors == []
     assert results["S01"].verdict == "consistent"
-    assert results["S02"] is None
+    assert results["S02"].verdict == "consistent"
+    assert results["S03"] is None
+    assert len(errors) == 1
+    assert errors[0].error_type == "evidence_verifier_statement_check_failed"
+    assert errors[0].details["reason"] == "label omitted from the reply"

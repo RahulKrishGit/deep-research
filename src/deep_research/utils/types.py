@@ -351,10 +351,9 @@ FigureAttribution: TypeAlias = Literal["own", "relayed", "unattributed"]
 FindingStatus: TypeAlias = Literal["verified", "verified_corrected", "dropped"]
 FigureDropReason: TypeAlias = Literal[
     "evidence_not_on_page",     # §5.2: evidence_words are not in the read
-    "figure_not_in_evidence",   # §5.2: a not_matched figure the evidence_words do not carry
     "correction_not_on_page",   # §5.2: corrected period or scope not in evidence_words or passage
     "context_rejected",         # §5.2: the Context Check said reject
-    "context_unavailable",      # §5.2: a not_matched figure whose Context Check failed
+    "context_unavailable",      # §5.2: no reply for the figure, and its snippet does not state it
 ]
 FindingDropReason: TypeAlias = Literal[
     "read_not_found", "snippet_not_on_page", "all_figures_dropped"

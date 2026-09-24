@@ -868,7 +868,7 @@ def test_verified_means_every_figure_confirmed() -> None:
 
 def test_a_verified_finding_keeps_at_least_one_figure() -> None:
     dropped = FigureResult(figure=figure("10.4", "GW"), matched=False,
-                           dropped_reason="figure_not_in_evidence")
+                           dropped_reason="context_unavailable")
     with pytest.raises(ValidationError):
         FindingVerification(status="verified_corrected", figure_results=[dropped])
 
