@@ -238,8 +238,10 @@ def writer_messages(task: ReportWriterTask) -> list[ChatMessage]:
 class _Verdict(Protocol):
     """Structural shape of ``evidence_verifier.StatementVerdictDraft`` (D8).
 
-    Read by attribute only, never imported: this module must keep importing
-    whether or not ``evidence_verifier.py`` has landed the real type yet.
+    Read by attribute only, never imported: the verdict is applied by code
+    without re-judging the wording (spec §5.4), so this module depends on the
+    shape of the checker's reply rather than on the checker's own type -- and
+    the tests' fake verdicts satisfy it without importing anything.
     """
 
     verdict: str
@@ -334,11 +336,12 @@ async def compose_written_report(
     verdicts: Mapping[str, _Verdict | None] = {}
     check_errors: list[ResearchError] = []
     if all_candidates:
-        # Deferred: T2_1 is landing evidence_verifier.check_statements in
-        # parallel (D8). A module-level import would make this module
-        # unimportable -- and every test that imports deep_research.agents
-        # with it -- until that merge lands. Tests inject a fake by
-        # monkeypatching these two names on the evidence_verifier module.
+        # Imported at call time, not at module scope: the unit tests and the
+        # offline audit harness both substitute the checker by assigning
+        # ``evidence_verifier.check_statements``, and a module-level ``from``
+        # would bind the real function before that assignment could be seen.
+        # There is no import cycle either way -- ``evidence_verifier`` imports
+        # this module's siblings, never this module.
         from deep_research.agents.evidence_verifier import StatementCheckItem, check_statements
         items = [
             StatementCheckItem(label=c.key, text=c.text, findings=c.findings,
@@ -365,29 +368,40 @@ async def compose_written_report(
     stated_rows: set[str] = set()
 
     def finalize(candidate: _Candidate, *, dedup: bool) -> ReportPoint | None:
+        def reject(reason: str) -> None:
+            """Refuse the point, publishing the drafted text and the reason:
+            a refused point never shows the reader text this run did not
+            clear the mechanical rules on."""
+            rejected.append(RejectedDraftPoint(
+                where=candidate.where, text=candidate.text,
+                finding_labels=list(candidate.finding_labels), reason=reason,
+            ))
+
         verdict = verdicts.get(candidate.key)
         text = candidate.text
         if verdict is not None:
-            blank_correction = verdict.verdict == "corrected" and not verdict.corrected_text.strip()
-            if verdict.verdict == "inconsistent" or blank_correction:
-                rejected.append(RejectedDraftPoint(
-                    where=candidate.where, text=candidate.text,
-                    finding_labels=list(candidate.finding_labels), reason=verdict.reason,
-                ))
-                return None
+            correction = " ".join(verdict.corrected_text.split())
             if verdict.verdict == "corrected":
-                text = " ".join(verdict.corrected_text.split())
+                # §6.2's length limit is one of the two mechanical rules code
+                # keeps, and the correction is the text that would reach the
+                # reader, so it is bounded exactly as a drafted point is.
+                if len(correction) > MAX_POINT_CHARS:
+                    reject(f"corrected text longer than {MAX_POINT_CHARS} characters")
+                    return None
+                if not correction:
+                    reject(verdict.reason)
+                    return None
+                text = correction
+            elif verdict.verdict == "inconsistent":
+                reject(verdict.reason)
+                return None
         cited_ids = {ids[label] for label in candidate.finding_labels}
         stated = quantities_in(text)
         rows = {row.row_id for row in task.facts
                 if (row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids))
                 and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)}
         if dedup and rows and rows <= stated_rows:
-            rejected.append(RejectedDraftPoint(
-                where=candidate.where, text=candidate.text,
-                finding_labels=list(candidate.finding_labels),
-                reason="restates " + ", ".join(sorted(rows)),
-            ))
+            reject("restates " + ", ".join(sorted(rows)))
             return None
         stated_rows.update(rows)
         own_first = sorted(candidate.findings, key=lambda f: 0 if any(
