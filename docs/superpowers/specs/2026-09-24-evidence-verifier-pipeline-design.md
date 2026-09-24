@@ -42,7 +42,7 @@ were each judged NOT GREAT by an independent audit. The architecture audit of
 | D4 | Extra research passes are configurable through `max_extra_passes`, **default 1**. A pass runs only when the Report Reviewer names a missing required target, and it is targeted to those targets only. |
 | D5 | Rename the synthesizer to **Report Writer** and the report review to **Report Reviewer**. |
 | D6 | Clean cutover on a new branch. No feature flag, no retained old path. |
-| D7 | The Report Writer's code guards are minimal: numbers, dates and scope only (§6.2). Organisation and forecast/actual provenance comes from the Context Check and reaches the reader as the code-built label. The Report Reviewer flags prose that contradicts its label. |
+| D7 | The Report Writer's code guards are minimal: numbers, dates and scope only (§6.2). The wording of each drafted sentence (organisation, forecast vs actual, consistency with its cited findings) is checked by the Evidence Verifier's **Statement Check**: parallel AI calls (§5.4). Provenance also reaches the reader as the code-built label. |
 
 Honesty rules that stay binding:
 
@@ -195,6 +195,37 @@ otherwise.
 The measure family is derived from the unit dimension (power, energy or
 percent) plus the target the finding answers. It is never parsed from prose.
 
+### 5.4 Statement Check (AI, parallel batches)
+
+After the Report Writer drafts, every sentence that passed the code guards
+(§6.2) is checked against the findings it cites. This uses the same machinery
+as the Context Check: batches of 15, at most 4 concurrent calls, reasoning
+effort high, no tools and no web search.
+
+Input, per sentence: its text, and for each cited finding its verified
+figures (value, unit, period, kind, scope), organisation, attribution, reader
+label and evidence words.
+
+Output, per sentence, schema-validated:
+
+- `verdict`: `consistent`, `corrected` or `inconsistent`;
+- `corrected_text`, when corrected: the minimal rewording that makes the
+  sentence agree with its findings (for example "was added" becomes "is
+  expected to be added" for a forecast, or a wrong organisation name is
+  fixed);
+- `reason`.
+
+Code enforces the reply:
+
+- `consistent`: the sentence is kept;
+- `corrected`: `corrected_text` is re-run through the §6.2 code guards, and
+  kept only if it passes them; otherwise it is refused;
+- `inconsistent`: the sentence is refused, with the reason.
+
+A failed batch keeps its sentences, which have already passed the code
+guards and carry code-built labels. The error is recorded. It never stops the
+run.
+
 ## 6. Report Writer and Report Reviewer
 
 ### 6.1 Report shape
@@ -242,9 +273,9 @@ provenance. The writer's code guards are therefore minimal (user decision,
   quality JSON with its full text, cited labels and reason.
 
 The writer's prompt asks it to state a forecast with a forecast verb, and to
-name only organisations and publications the cited findings name. Prose
-wording of names and of forecast/actual is not policed by code. The Report
-Reviewer (§6.3) flags a sentence whose wording contradicts its label.
+name only organisations and publications the cited findings name. The
+wording of names and of forecast/actual is checked by the Statement Check
+(§5.4), not by code patterns.
 
 Removed with the fact checker: the two-label packet, the "left out" renderer,
 sentinel table cells, and the verdict notes.
@@ -253,9 +284,8 @@ sentinel table cells, and the verdict notes.
 
 - One AI call, which merges today's critic and report review. It scores the
   existing seven dimensions and gives per-statement dispositions.
-- It flags, as a material defect, a sentence whose wording contradicts its
-  code-built label: a forecast worded as a completed outcome, an actual worded
-  as a forecast, or an organisation named that differs from the label's.
+- It may still record a defect for a sentence whose wording contradicts its
+  label; the Statement Check (§5.4) is the primary guard.
 - Acceptance: mean ≥ 0.80, no material defect, and no gate failure (6.4).
 - Output: `missing_required_target_ids`, used by 6.5.
 
