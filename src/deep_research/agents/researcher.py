@@ -33,7 +33,6 @@ from deep_research.agents.errors import (
 )
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence import (
-    ATTRIBUTION_CUE_PATTERN,
     _issuer_name_pattern,
     _quote_states,
     attribution_cue_adjacent,
@@ -64,6 +63,8 @@ from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    _ENERGY_UNIT,
+    _POWER_UNIT,
     MAX_SNIPPET_CHARS,
     QUALITY_CONTRACT_VERSION,
     AcquisitionState,
@@ -80,8 +81,6 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     SubTopic,
-    _ENERGY_UNIT,
-    _POWER_UNIT,
     _canonical_acquisition_url,
     counted_evidence_targets,
     sub_topic_owes_evidence,

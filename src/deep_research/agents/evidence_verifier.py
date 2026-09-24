@@ -25,6 +25,7 @@ from pydantic import Field, ValidationError
 
 from deep_research.agents.base import AgentRun, AgentTask, BaseAgent
 from deep_research.agents.errors import agent_error
+from deep_research.agents.events import agent_event
 from deep_research.agents.evidence import (
     _identity_words,
     cosmetic_text,
@@ -33,7 +34,6 @@ from deep_research.agents.evidence import (
     own_organisation_on_page,
     relay_attribution_on_page,
 )
-from deep_research.agents.events import agent_event
 from deep_research.agents.figures import figure_in_text
 from deep_research.agents.identity import deduplicate_findings, finding_fingerprint
 from deep_research.agents.prompts import render_structured_reply_format
@@ -149,7 +149,8 @@ _CONTEXT_CHECK_REPLY_EXAMPLES = (
         '{"figures":[{"finding":"F01","figure":1,"period":"2024","scope":"all '
         'classes","attribution":"relayed","organisation":"Example Statistical '
         'Agency","kind":"actual","evidence_words":"The measured reduction was 12 '
-        'percent in 2024","verdict":"correct","reason":"The page states the '
+        'percent in 2024, according to the Example Statistical Agency, across all '
+        'classes","verdict":"correct","reason":"The page states the '
         'scope and credits the agency."}]}',
     ),
 )
@@ -250,7 +251,7 @@ def resolve_attribution(
     if proposed == "relayed" and name:
         if _owns_page(read, name, issuer):
             return "own", name
-        if relay_attribution_on_page(read, finding.locator or "", name):
+        if relay_attribution_on_page(read, finding.locator or "", finding.snippet or "", name):
             return "relayed", name
     admitted = finding.attributed_issuer
     if admitted:
@@ -312,7 +313,7 @@ def _checked(item: ContextItem, figure: FindingFigure, matched: bool,
     for proposed, current, field in ((reply.period, period, "period"), (reply.scope, scope, "scope")):
         if not _differs(proposed, current):
             continue
-        if not (excerpt_matches(words, proposed) or excerpt_matches(item.passage, proposed)):
+        if not excerpt_matches(words, proposed):
             return drop("correction_not_on_page")
         corrected = True
         if field == "period":
@@ -438,6 +439,18 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
     def state_update(
         self, result: VerifiedFindings | None, run: ReActRun
     ) -> ResearchStateUpdate:
+        """The ``BaseAgent`` hook's own answer; ``run`` never calls this.
+
+        ``run`` is overridden below and builds its own ``state_update`` dict
+        directly, the same way ``SynthesizerAgent.run`` does, because it
+        merges ``judged`` onto the *existing* ``verified_findings`` snapshot
+        (``[*state.verified_findings, *judged]``) rather than replacing it
+        with ``result.findings`` alone, and it adds the completion event this
+        hook's signature has nowhere to return. This override exists only so
+        a caller that invokes the hook directly (as the shared ``BaseAgent``
+        contract allows) gets a real answer instead of the ``errors``-only
+        default.
+        """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
             update["verified_findings"] = result.findings
@@ -501,6 +514,7 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         """One call; on truncation or an invalid reply, one re-ask in two halves."""
         labelled = [replace(item, label=f"F{number:02d}") for number, item in enumerate(batch, 1)]
         try:
+            self.fingerprint_call(ContextCheckDraft.__name__)
             reply = await self.provider.complete_structured(
                 context_check_messages(labelled), ContextCheckDraft, agent_name=self.name
             )
