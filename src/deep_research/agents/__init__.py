@@ -1495,10 +1495,10 @@ __all__ = [
     # the Report Writer agent. Appended as one block, the way earlier tasks
     # appended theirs, because ``tests/test_imports.py`` walks each
     # submodule's AST and requires every public top-level name to be
-    # reachable here. ``report_writer.DEFAULT_MAX_SECTIONS`` is not
-    # re-imported here: the name is already reachable via ``agents.__all__``
-    # (bound to ``synthesizer.DEFAULT_MAX_SECTIONS``, an identical literal
-    # value, 4), so nothing further is missing from the package's surface.
+    # reachable here. ``report_writer.DEFAULT_MAX_SECTIONS`` (4) is
+    # deliberately not exported: ``synthesizer.DEFAULT_MAX_SECTIONS`` (8)
+    # already owns that package name. Task 4.10 exports the writer's value
+    # when ``synthesizer.py`` is deleted.
     "VerifiedFigure",
     "citable_findings",
     "verified_figures",

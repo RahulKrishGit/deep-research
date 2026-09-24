@@ -42,6 +42,8 @@ were each judged NOT GREAT by an independent audit. The architecture audit of
 | D4 | Extra research passes are configurable through `max_extra_passes`, **default 1**. A pass runs only when the Report Reviewer names a missing required target, and it is targeted to those targets only. |
 | D5 | Rename the synthesizer to **Report Writer** and the report review to **Report Reviewer**. |
 | D6 | Clean cutover on a new branch. No feature flag, no retained old path. |
+| D7 | Provenance reaches the reader as the code-built label on every figure (organisation, kind, release), from the Context Check's verified fields. |
+| D8 | The LLM replaces the code figure checks: the Context Check judges whether each figure is stated by its snippet, and the Statement Check (§5.4) judges each drafted sentence against its cited findings. Code keeps only "the quoted words are on the page" (snippet and evidence words) and mechanical rules. LLM calls are parallelised for latency: 5 items per call, at most 8 calls in flight. |
 
 Honesty rules that stay binding:
 
@@ -56,7 +58,8 @@ Honesty rules that stay binding:
 
 ```
 Planner -> Researcher -> Source Evaluator -> Evidence Verifier
-        (Figure Match, then Context Check) -> Report Writer -> Report Reviewer
+        (snippet on page, then Context Check) -> Report Writer (then
+        Statement Check) -> Report Reviewer
         -> [missing required target and extra passes left: targeted Researcher
             pass -> Source Evaluator -> Evidence Verifier -> Report Writer ->
             Report Reviewer] -> Publish
@@ -67,8 +70,9 @@ Planner -> Researcher -> Source Evaluator -> Evidence Verifier
 | Planner | yes | Produces targets for what the question asks, and nothing else required (section 7). |
 | Researcher | yes, with tools | Searches and reads, the organisation's own page first. Emits findings with a verbatim snippet and structured figures (section 4). |
 | Source Evaluator | yes | Scores credibility and identifies the owning organisation. Unchanged. |
-| Evidence Verifier: Figure Match | no | Checks that the snippet is on the page and each structured figure is in the snippet (section 5). |
-| Evidence Verifier: Context Check | yes, one batched call | Confirms each figure's year, scope, attribution and kind. The AI points to the evidence and code confirms it is there (section 5). |
+| Evidence Verifier: snippet on page | no | Checks that the snippet is on the page (section 5.1). |
+| Evidence Verifier: Context Check | yes, parallel batches | Confirms each figure is stated by its snippet and its year, scope, attribution and kind. The AI points to the evidence words and code confirms they are on the page (section 5.2). |
+| Evidence Verifier: Statement Check | yes, parallel batches | Checks each drafted sentence against its cited findings, and keeps, corrects or refuses it (section 5.4). |
 | Report Writer | yes, plus code guards | Writes from verified findings only, with the reader labels in section 6. |
 | Report Reviewer | yes | The single quality judgement, plus the list of missing required targets (section 6). |
 | Publish | no | Writes the report, the evidence log and the quality JSON. |
@@ -110,35 +114,22 @@ reason.
 
 ## 5. Evidence Verifier
 
-### 5.1 Figure Match (deterministic)
+### 5.1 Snippet on page (deterministic)
 
-For each finding:
-
-1. **Snippet on the page.** `snippet` must be contained in the read's stored
-   text after cosmetic normalisation only: whitespace and line breaks, curly
-   and straight quotes, soft hyphens and line-break hyphenation, and case. If
-   it is not, the whole finding is dropped with `snippet_not_on_page`. This
-   reuses `excerpt_matches`.
-2. **Figure in the snippet.** Each `figures[i]` must occur in the snippet
-   under a fixed normalisation that is independent of the question:
-   - digit grouping and spacing: `10,400` equals `10400`;
-   - unit spelling: `GW` equals `gigawatt(s)`, `MW` equals `megawatt(s)`,
-     `MWh` equals `megawatt-hour(s)`, `%` equals `percent`;
-   - unit scale within one dimension: kW, MW and GW; kWh, MWh and GWh.
-
-   The value and unit must be adjacent, or separated only by a parenthetical
-   restatement (`10.4 gigawatts (GW)`). A figure that does not match is marked
-   `not_matched`, not dropped.
-
-Figure Match never parses `content`, and never searches the whole page for a
-number. It only looks for a known value inside one or two known sentences.
+For each finding, `snippet` must be contained in the read's stored text after
+cosmetic normalisation only: whitespace and line breaks, curly and straight
+quotes, soft hyphens and line-break hyphenation, and case. If it is not, the
+whole finding is dropped with `snippet_not_on_page`. This reuses
+`excerpt_matches`. It is the only code check on a finding before the Context
+Check (D8): whether each figure is stated by the snippet is judged by the AI
+(§5.2).
 
 ### 5.2 Context Check (one batched AI call)
 
 Input, per finding: the snippet, the read's surrounding passage (bounded, for
 example ±1 paragraph), the finding's recorded fields and its figures.
-Findings are batched, for example 15 per call; batches run concurrently. There
-is no tool access and no web search.
+Findings are batched, 5 per call, with at most 8 calls in flight, to keep
+latency low (D8). There is no tool access and no web search.
 
 Output, per figure, as a schema-validated reply:
 
@@ -155,11 +146,9 @@ Code enforces the reply:
 
 - `evidence_words` must be contained in the read text under the same cosmetic
   normalisation as 5.1. Otherwise the figure is dropped with
-  `evidence_not_on_page`.
-- A `not_matched` figure from 5.1 is verified only if its `evidence_words`
-  contain the figure under the 5.1 normalisation. This covers numbers written
-  as words and units carried in a table header; the AI points and code
-  confirms.
+  `evidence_not_on_page`. This is the one check code makes on the AI's
+  reply: the AI judges that the words state the figure, and code confirms
+  that the words are on the page.
 - A correction to period or scope is applied only when the corrected wording
   is itself contained in `evidence_words` or the passage. Otherwise the figure
   is dropped with `correction_not_on_page`. A correction is never guessed.
@@ -167,8 +156,8 @@ Code enforces the reply:
   passage. The existing `attribution_quote` admission cues apply ("according
   to", "reported by", a possessive, and similar).
 - If the AI call fails after its retry ladder, the affected findings keep
-  their Figure Match result. They are marked `context_unchecked` and cited
-  only with an "unchecked context" note, and the run records the error. They
+  their snippet-on-page result. They are marked `context_unchecked` and cited
+  only with an "unchecked context" label, and the run records the error. They
   are never silently promoted to verified.
 
 A finding is `verified` when all its figures are confirmed, and
@@ -193,6 +182,34 @@ otherwise.
 
 The measure family is derived from the unit dimension (power, energy or
 percent) plus the target the finding answers. It is never parsed from prose.
+
+### 5.4 Statement Check (AI, parallel batches)
+
+After the Report Writer drafts, every sentence is checked by the AI against
+the findings it cites. This replaces the code checks on sentence wording
+(D8). It uses the Context Check's batching (5 sentences per call, at most 8
+in flight), reasoning effort high, no tools and no web search.
+
+Input, per sentence: its text, and for each cited finding its verified
+figures (value, unit, period, kind, scope), organisation, attribution, reader
+label and evidence words.
+
+Output, per sentence, schema-validated:
+
+- `verdict`: `consistent`, `corrected` or `inconsistent`;
+- `corrected_text`, when corrected: the minimal rewording that makes the
+  sentence agree with its findings (numbers, dates, scope, organisation,
+  forecast or actual);
+- `reason`.
+
+Applied by code, without re-judging the wording:
+
+- `consistent`: the sentence is kept;
+- `corrected`: `corrected_text` replaces the sentence;
+- `inconsistent`: the sentence is refused and published with its reason.
+
+A failed batch keeps its sentences. They carry code-built labels with the
+verified provenance, and the error is recorded. It never stops the run.
 
 ## 6. Report Writer and Report Reviewer
 
@@ -222,26 +239,27 @@ Reader labels, attached to each figure:
 
 The report uses no verdict, corroboration or "insufficient evidence" wording.
 
-### 6.2 Report Writer guards (kept, retargeted)
+### 6.2 Report Writer checks (D7, D8)
 
-The Report Writer now cites findings by one label per finding, stamped by one
-registry. It keeps these guards:
+The Report Writer cites findings by one label per finding, stamped by one
+registry. The Context Check (§5.2) has already verified each figure's
+organisation, kind, period and scope. Code attaches those as the reader label
+on every figure, so the label carries the verified provenance whatever the
+prose says.
 
-- every number in a sentence equals a structured figure of a finding the
-  sentence cites (after the 5.1 normalisation); wording is free;
-- no organisation name, date or scope that the cited findings' verified
-  fields do not carry;
-- an actual is never stated as a forecast, and a forecast never as an actual
-  (the finding's verified `kind`);
-- the writer's prompt gives each figure's verified `kind`, and a forecast is
-  phrased as a forecast ("EIA expects", "projects"). A sentence that is
-  refused only because it states a forecast as fact is rewritten once by
-  code, re-attaching the verified hedge ("is expected to"), and then checked
-  again. The pre-flight of 2026-09-24 lost two of its three 2025 forecasts
-  to that refusal;
-- a citation URL not carried by the cited findings is dropped;
-- a refused sentence is dropped and published in the evidence log and the
-  quality JSON with its full text, cited labels and reason.
+The wording of each sentence (numbers, dates, scope, organisation, forecast
+or actual) is checked by the Statement Check (§5.4), not by code patterns.
+Code keeps only the mechanical rules:
+
+- a sentence cites at least one known label;
+- the length limit;
+- a refused sentence is published in the evidence log and the quality JSON
+  with its full text, cited labels and reason.
+
+The writer's prompt asks it to state a forecast with a forecast verb, to use
+only the numbers and dates of the cited findings, to use the scope words the
+findings state (never the question's), and to name only organisations and
+publications the cited findings name.
 
 Removed with the fact checker: the two-label packet, the "left out" renderer,
 sentinel table cells, and the verdict notes.
@@ -250,6 +268,8 @@ sentinel table cells, and the verdict notes.
 
 - One AI call, which merges today's critic and report review. It scores the
   existing seven dimensions and gives per-statement dispositions.
+- It may still record a defect for a sentence whose wording contradicts its
+  label; the Statement Check (§5.4) is the primary guard.
 - Acceptance: mean ≥ 0.80, no material defect, and no gate failure (6.4).
 - Output: `missing_required_target_ids`, used by 6.5.
 
@@ -260,7 +280,8 @@ rows; as-of and scope present.
 
 New:
 
-- every number in the report traces to a verified figure;
+- every kept sentence was judged by the Statement Check, or its batch failure
+  is recorded;
 - every required target is answered by a verified finding (6.6), or is listed
   under "Not found" with its search trail.
 
