@@ -112,3 +112,36 @@ def test_the_evidence_log_keeps_snippets_drop_reasons_and_refusals() -> None:
     assert "context_rejected" in log and "A growth rate, not a capacity." in log
     assert "Wood Mackenzie reports 18.9 GW of grid-scale storage." in log
     assert "F03" in log and "scope not carried" in log
+    # The log's release must agree with the report's: it comes from the same
+    # fact_rows the report renders from, not a hard-coded "not stated".
+    assert "forecast (January 2025 STEO)" in log
+
+
+def test_the_evidence_log_shows_a_dropped_finding_with_its_reason() -> None:
+    read = make_read("BloombergNEF projects 20 GW of storage by 2026.",
+                     url="https://about.bnef.com/x", title="BNEF forecast")
+    dropped = make_finding(read, "BloombergNEF projects 20 GW of storage by 2026.",
+                           target_ids=["topic-03-target-01"])
+    dropped = dropped.model_copy(update={
+        "verification": FindingVerification(status="dropped", dropped_reason="snippet_not_on_page"),
+    })
+    base = _composition()
+    composition = base.model_copy(update={"findings": [*base.findings, dropped]})
+    log = render_finding_log(composition)
+    assert "dropped (snippet_not_on_page)" in log
+
+
+def test_the_report_shows_unchecked_context_on_a_fact_row() -> None:
+    base = _composition()
+    unchecked_row = base.fact_rows[0].model_copy(update={"context_unchecked": True})
+    composition = base.model_copy(update={"fact_rows": [unchecked_row, base.fact_rows[1]]})
+    report = render_written_report(composition)
+    assert "actual (unchecked context)" in report
+
+
+def test_the_report_shows_an_unattributed_row_reading() -> None:
+    base = _composition()
+    unattributed_row = base.fact_rows[1].model_copy(update={"attribution": "unattributed", "relay_host": None})
+    composition = base.model_copy(update={"fact_rows": [base.fact_rows[0], unattributed_row]})
+    report = render_written_report(composition)
+    assert "U.S. Energy Information Administration (source does not attribute it)" in report

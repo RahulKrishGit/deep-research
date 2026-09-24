@@ -57,12 +57,8 @@ from deep_research.utils.types import (
     EvidenceUnit,
     FactRow,
     FigureAttribution,
-    FigureContext,
     FigureKind,
-    FigureResult,
     Finding,
-    FindingVerification,
-    NotFoundTarget,
     ReadRecord,
     ReportAnswerRow,
     RejectedDraftPoint,
@@ -4195,12 +4191,15 @@ def render_written_report(composition: ReportComposition) -> str:
 def render_finding_log(composition: ReportComposition) -> str:
     """§6.1 item 7: every finding with its snippet and verification, every drop and refusal."""
     labels = {finding_id: label for label, finding_id in composition.finding_labels.items()}
+    row_release = {fid: row.release for row in composition.fact_rows
+                    for fid in (row.finding_id, *row.duplicate_finding_ids)}
     lines = [f"# Evidence log: {composition.question}", "",
              f"Session {composition.session_id}, pass {composition.iteration}. Every finding the "
              "researcher recorded, with its snippet and its verification result.", "", "## Findings", ""]
     unlabelled = 0
     for finding in composition.findings:
-        label = labels.get(finding_fingerprint(finding))
+        finding_id = finding_fingerprint(finding)
+        label = labels.get(finding_id)
         if label is None:
             unlabelled += 1
             label = f"X{unlabelled:02d}"
@@ -4223,7 +4222,7 @@ def render_finding_log(composition: ReportComposition) -> str:
                         f"{context.scope or 'not stated'}; "
                         + figure_label(organisation=context.organisation, attribution=context.attribution,
                                        relay_host=publisher_identity(finding.source_url), kind=context.kind,
-                                       release=None, unchecked=verification.context_unchecked))
+                                       release=row_release.get(finding_id), unchecked=verification.context_unchecked))
                 if result.evidence_words:
                     line += f'; evidence words: "{result.evidence_words}"'
                 if result.corrected:
