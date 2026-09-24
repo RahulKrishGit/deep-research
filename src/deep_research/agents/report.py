@@ -4189,18 +4189,42 @@ def render_written_report(composition: ReportComposition) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _finding_registry_pairs(composition: ReportComposition) -> list[tuple[str | None, Finding]]:
+    """Pair each recorded finding with its own registered label, in order.
+
+    R2: ``composition.finding_labels`` maps label -> finding id, and two
+    distinct revision editions of one page (an unchanged URL, sub-topic and
+    content; only the structured figure or its release differ) share a
+    ``finding_fingerprint``. Inverting the dict to id -> label collapses
+    that collision: one label overwrites the other, and the log prints one
+    label twice while the other never appears. ``finding_registry``'s
+    stable sort always gives two same-fingerprint findings the identical
+    sort key, so their labels are inserted into ``finding_labels`` in the
+    same relative order their ``Finding`` objects already have in
+    ``composition.findings`` (the unfiltered snapshot ``citable_findings``
+    filters from) -- walking a label queue per id against the findings
+    sharing that id, both in list order, always recovers the right pairing.
+    """
+    queues: dict[str, list[str]] = {}
+    for label, finding_id in composition.finding_labels.items():
+        queues.setdefault(finding_id, []).append(label)
+    pairs: list[tuple[str | None, Finding]] = []
+    for finding in composition.findings:
+        queue = queues.get(finding_fingerprint(finding))
+        pairs.append((queue.pop(0) if queue else None, finding))
+    return pairs
+
+
 def render_finding_log(composition: ReportComposition) -> str:
     """§6.1 item 7: every finding with its snippet and verification, every drop and refusal."""
-    labels = {finding_id: label for label, finding_id in composition.finding_labels.items()}
     row_release = {fid: row.release for row in composition.fact_rows
                     for fid in (row.finding_id, *row.duplicate_finding_ids)}
     lines = [f"# Evidence log: {composition.question}", "",
              f"Session {composition.session_id}, pass {composition.iteration}. Every finding the "
              "researcher recorded, with its snippet and its verification result.", "", "## Findings", ""]
     unlabelled = 0
-    for finding in composition.findings:
+    for label, finding in _finding_registry_pairs(composition):
         finding_id = finding_fingerprint(finding)
-        label = labels.get(finding_id)
         if label is None:
             unlabelled += 1
             label = f"X{unlabelled:02d}"
@@ -4223,7 +4247,7 @@ def render_finding_log(composition: ReportComposition) -> str:
                         f"{context.scope or 'not stated'}; "
                         + figure_label(organisation=context.organisation, attribution=context.attribution,
                                        relay_host=publisher_identity(finding.source_url), kind=context.kind,
-                                       release=row_release.get(finding_id) or release_text(finding),
+                                       release=release_text(finding) or row_release.get(finding_id),
                                        unchecked=verification.context_unchecked))
                 if result.evidence_words:
                     line += f'; evidence words: "{result.evidence_words}"'

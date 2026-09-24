@@ -227,7 +227,7 @@ def same_period(left: str | None, right: str | None) -> bool:
     return key is not None and key == _period_key(right)
 
 
-def _canonical_scopes(text: str | None) -> set[str]:
+def canonical_scopes(text: str | None) -> set[str]:
     """The scope terms ``text`` states, with grid-scale/utility-scale folded
     into one term; empty for no stated scope."""
     if not text:
@@ -236,8 +236,8 @@ def _canonical_scopes(text: str | None) -> set[str]:
 
 
 def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget) -> bool:
-    target_scopes = _canonical_scopes(target.measure)
-    figure_scopes = _canonical_scopes(figure.context.scope)
+    target_scopes = canonical_scopes(target.measure)
+    figure_scopes = canonical_scopes(figure.context.scope)
     if target_scopes and figure_scopes and target_scopes.isdisjoint(figure_scopes):
         # A target whose measure names a scope ("grid-scale additions") is
         # refused by a figure stating a *different* one ("all segments");

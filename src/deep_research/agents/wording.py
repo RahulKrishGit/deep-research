@@ -508,7 +508,7 @@ _FUTURE_MODAL_PATTERN = re.compile(
 )
 
 
-def _realized_outcome(text: str) -> bool:
+def realized_outcome(text: str) -> bool:
     """True when the text reports something that already happened.
 
     A matched verb inside a clause a future or conditional modal governs is
@@ -543,7 +543,7 @@ def stated_role(text: str) -> Literal["forecast", "actual", "mixed"]:
     other one still has open.
     """
     forecast = _forecast_role(text)
-    outcome = _realized_outcome(text)
+    outcome = realized_outcome(text)
     if forecast and outcome:
         return "mixed"
     return "forecast" if forecast else "actual"
