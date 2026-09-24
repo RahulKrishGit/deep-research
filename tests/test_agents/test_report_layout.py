@@ -131,6 +131,22 @@ def test_the_evidence_log_shows_a_dropped_finding_with_its_reason() -> None:
     assert "dropped (snippet_not_on_page)" in log
 
 
+def test_a_kept_forecast_finding_with_no_fact_row_falls_back_to_its_own_release() -> None:
+    """R3: a kept forecast finding no fact row covers must still show the
+    release its own page carries, not "release not stated on the page".
+    """
+    finding = _finding("https://ent.news/2025/1/941.pdf",
+                       "battery storage capacity growing by 40% (13 GW) in 2025",
+                       "13", "GW", organisation="U.S. Energy Information Administration",
+                       attribution="relayed", kind="forecast", period="2025")
+    finding = finding.model_copy(update={"release_date": "2025-01-14"})
+    base = _composition()
+    composition = base.model_copy(update={"findings": [*base.findings, finding]})
+    log = render_finding_log(composition)
+    assert "forecast (released 2025-01-14)" in log
+    assert "release not stated on the page" not in log
+
+
 def test_the_report_shows_unchecked_context_on_a_fact_row() -> None:
     base = _composition()
     unchecked_row = base.fact_rows[0].model_copy(update={"context_unchecked": True})

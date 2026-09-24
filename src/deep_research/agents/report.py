@@ -46,6 +46,7 @@ from deep_research.agents.identity import (
 )
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import summarize_text
+from deep_research.agents.verified_facts import release_text
 from deep_research.utils.types import (
     ANSWERING_STATEMENT_MODES,
     EVIDENCE_BADGE_LABELS,
@@ -4222,7 +4223,8 @@ def render_finding_log(composition: ReportComposition) -> str:
                         f"{context.scope or 'not stated'}; "
                         + figure_label(organisation=context.organisation, attribution=context.attribution,
                                        relay_host=publisher_identity(finding.source_url), kind=context.kind,
-                                       release=row_release.get(finding_id), unchecked=verification.context_unchecked))
+                                       release=row_release.get(finding_id) or release_text(finding),
+                                       unchecked=verification.context_unchecked))
                 if result.evidence_words:
                     line += f'; evidence words: "{result.evidence_words}"'
                 if result.corrected:
