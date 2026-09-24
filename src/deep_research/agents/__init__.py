@@ -491,6 +491,7 @@ from deep_research.agents.report import (
     evidence_badge_label,
     evidence_status_bucket,
     evidence_status_counts,
+    figure_label,
     fit_report_composition,
     is_prior_completion,
     most_consequential_limitation,
@@ -502,12 +503,14 @@ from deep_research.agents.report import (
     reader_word_limit,
     render_citations,
     render_evidence_ledger,
+    render_finding_log,
     render_limitations,
     render_quality_json,
     render_quality_record,
     render_reader_report,
     render_statement_map,
     render_terminal_status,
+    render_written_report,
     report_as_of,
     report_scope,
     statement_citation_urls,
@@ -515,6 +518,7 @@ from deep_research.agents.report import (
     statement_source_urls,
     terminal_report_state,
     validate_report_statements,
+    written_citations,
 )
 from deep_research.agents.report_review import (
     DIMENSION_GUIDANCE,
@@ -555,6 +559,26 @@ from deep_research.agents.report_review import (
     review_report,
     review_source_view,
     semantic_review_passes,
+)
+from deep_research.agents.report_writer import (
+    MAX_POINT_CHARS,
+    REPORT_WRITER_INSTRUCTION,
+    REPORT_WRITER_NAME,
+    REPORT_WRITER_SYSTEM_PROMPT,
+    PointCheck,
+    ReportWriterAgent,
+    ReportWriterDraft,
+    ReportWriterTask,
+    WriterPointDraft,
+    WriterSectionDraft,
+    WrittenReport,
+    check_point,
+    compose_written_report,
+    finding_memory_payload,
+    finding_registry,
+    registry_lines,
+    report_written_event,
+    writer_messages,
 )
 from deep_research.agents.researcher import (
     DEFAULT_EVIDENCE_CHARS,
@@ -711,6 +735,20 @@ from deep_research.agents.synthesizer import (
     unattached_qualifiers,
 )
 from deep_research.agents.toolset import AgentToolset, ToolDescriptor
+from deep_research.agents.verified_facts import (
+    VerifiedFigure,
+    answered_target_ids,
+    citable_findings,
+    fact_rows,
+    finding_answers,
+    not_found_targets,
+    release_key,
+    release_text,
+    same_organisation,
+    same_period,
+    untraced_numbers,
+    verified_figures,
+)
 from deep_research.agents.wording import (
     SCOPE_TERMS,
     clause_around,
@@ -1451,4 +1489,48 @@ __all__ = [
     "attribution_cue_adjacent",
     "relay_attribution_on_page",
     "own_organisation_on_page",
+    # Evidence Verifier plan, Tasks 3.1, 3.2 and 3.4: verified facts (target
+    # answering, fact rows, revisions, Not found and number tracing), the
+    # reader report's figure labels, written citations and evidence log, and
+    # the Report Writer agent. Appended as one block, the way earlier tasks
+    # appended theirs, because ``tests/test_imports.py`` walks each
+    # submodule's AST and requires every public top-level name to be
+    # reachable here. ``report_writer.DEFAULT_MAX_SECTIONS`` is not
+    # re-imported here: the name is already reachable via ``agents.__all__``
+    # (bound to ``synthesizer.DEFAULT_MAX_SECTIONS``, an identical literal
+    # value, 4), so nothing further is missing from the package's surface.
+    "VerifiedFigure",
+    "citable_findings",
+    "verified_figures",
+    "same_organisation",
+    "same_period",
+    "finding_answers",
+    "answered_target_ids",
+    "release_text",
+    "release_key",
+    "fact_rows",
+    "not_found_targets",
+    "untraced_numbers",
+    "figure_label",
+    "written_citations",
+    "render_written_report",
+    "render_finding_log",
+    "REPORT_WRITER_NAME",
+    "MAX_POINT_CHARS",
+    "REPORT_WRITER_SYSTEM_PROMPT",
+    "REPORT_WRITER_INSTRUCTION",
+    "WriterPointDraft",
+    "WriterSectionDraft",
+    "ReportWriterDraft",
+    "ReportWriterTask",
+    "PointCheck",
+    "WrittenReport",
+    "finding_registry",
+    "registry_lines",
+    "writer_messages",
+    "check_point",
+    "compose_written_report",
+    "finding_memory_payload",
+    "report_written_event",
+    "ReportWriterAgent",
 ]
