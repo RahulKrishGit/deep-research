@@ -9,6 +9,7 @@ fields before it can reach the reader (§6.2).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -23,7 +24,7 @@ from deep_research.agents.base import (
 from deep_research.agents.errors import AgentConfigurationError, agent_error
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence import cosmetic_text
-from deep_research.agents.figures import dates_in, quantities_in, same_quantity, without_dates
+from deep_research.agents.figures import Quantity, dates_in, quantities_in, same_quantity, without_dates
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.planner import Clock, utc_now
 from deep_research.agents.prompts import AgentTask, render_structured_reply_format
@@ -278,6 +279,58 @@ def _attested_corpus(cited: Sequence[Finding], geographies: Sequence[str],
     return "\n".join(part for part in parts if part)
 
 
+def _governing_position(normalised: str, quantities: Sequence[Quantity], quantity: Quantity) -> int:
+    """Where ``clause_around`` should read ``quantity``'s clause from.
+
+    A parenthetical restatement ("growing by 47% (14 GW) in 2025") or a
+    compound unit pair ("15 GW/49 GWh") separates two figures by
+    punctuation alone -- no word between them -- so the later figure is
+    not a new assertion; it reads from the same clause as the one before
+    it, the clause that actually carries the sentence's own hedge or
+    forecast marker. Walking back stops at the first gap that contains a
+    real word: that is a genuine new clause, not a restatement.
+    """
+    ordered = sorted(quantities, key=lambda q: q.start)
+    index = ordered.index(quantity)
+    position = quantity.start
+    for earlier in reversed(ordered[:index]):
+        gap = normalised[earlier.end:position]
+        if any(char.isalpha() for char in gap):
+            break
+        position = earlier.start
+    return position
+
+
+_MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
+                "August", "September", "October", "November", "December")
+_MONTH_YEAR_PATTERN = re.compile(r"\b(" + "|".join(_MONTH_NAMES) + r")\s+((?:19|20)\d{2})\b")
+_CORPUS_YEAR_MONTH_PATTERN = re.compile(r"\b((?:19|20)\d{2})-(0[1-9]|1[0-2])\b")
+
+
+def _blank_attested_month_years(text: str, corpus: str) -> str:
+    """``text`` with a bare "Month YYYY" token blanked when a date the
+    corpus carries at day precision ("2025-02-24") already names that
+    year and month.
+
+    "Utility Dive reported in February 2025" restates the page's own
+    statement date at a coarser grain, not a date the page never carried;
+    ``dates_in`` does not catch a bare month name (it requires a day, ISO
+    or day-first), so without this the month reads as an ordinary
+    unattested proper noun.
+    """
+    attested = {(year, month) for year, month in _CORPUS_YEAR_MONTH_PATTERN.findall(corpus)}
+    if not attested:
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        month_number = f"{_MONTH_NAMES.index(match.group(1)) + 1:02d}"
+        if (match.group(2), month_number) in attested:
+            return " " * len(match.group(0))
+        return match.group(0)
+
+    return _MONTH_YEAR_PATTERN.sub(replace, text)
+
+
 def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[str],
                 sources: Sequence[ScoredSource] = ()) -> PointCheck:
     """§6.2's guards for one sentence against the findings it cites."""
@@ -288,7 +341,7 @@ def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[st
     if untraced:
         reasons.append("numbers not among the cited figures: " + ", ".join(untraced))
     corpus = _attested_corpus(cited, geographies, sources)
-    names = unattested_names(text, corpus.casefold(), corpus)
+    names = unattested_names(_blank_attested_month_years(text, corpus), corpus.casefold(), corpus)
     if names:
         reasons.append("names the cited findings do not carry: " + ", ".join(names))
     # F2: a date is checked whole against the findings (a release the writer
@@ -314,7 +367,7 @@ def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[st
         reasons.append("scope not carried by the cited figures: " + ", ".join(unsupported))
     as_fact: list[str] = []
     for quantity, figure in stated_figures:
-        role = stated_role(clause_around(normalised, quantity.start))
+        role = stated_role(clause_around(normalised, _governing_position(normalised, stated, quantity)))
         if figure.context.kind == "forecast" and role == "actual":
             as_fact.append(figure.context.organisation)
         elif figure.context.kind == "actual" and role == "forecast":
@@ -366,11 +419,12 @@ def _forecast_rewrite_holds(
         return False
     used_append = rewritten.endswith(f", according to {organisation}'s forecast.")
     normalised = cosmetic_text(rewritten)
-    matched = [(q, f) for q in quantities_in(rewritten) for f in forecasts if same_quantity(q, f.quantity)]
+    stated = quantities_in(rewritten)
+    matched = [(q, f) for q in stated for f in forecasts if same_quantity(q, f.quantity)]
     if not matched:
         return False
     for quantity, _figure in matched:
-        clause = clause_around(normalised, quantity.start)
+        clause = clause_around(normalised, _governing_position(normalised, stated, quantity))
         if realized_outcome(clause):
             return False
         if not (used_append or hedge_marker(clause) or stated_role(clause) == "forecast"):

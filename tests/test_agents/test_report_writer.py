@@ -53,6 +53,21 @@ def _checked(url, text, value, unit, *, organisation, attribution="own", kind="a
     return finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[result])})
 
 
+def _checked_multi(url, text, specs, *, organisation, attribution="own", period="2025",
+                   scope=None, target="topic-01-target-01", **fields):
+    """Like ``_checked``, but with several figures: ``specs`` is a sequence
+    of ``(value, unit, kind)``, one per figure the finding states.
+    """
+    read = make_read(text, url=url, title=f"{organisation} page")
+    figs = [figure(value, unit, period, kind) for value, unit, kind in specs]
+    finding = make_finding(read, text, figures=figs, target_ids=[target], **fields)
+    results = [FigureResult(figure=figs[i], matched=True, evidence_words=text,
+                            context=FigureContext(period=period, scope=scope, attribution=attribution,
+                                                  organisation=organisation, kind=kind))
+              for i, (_, _, kind) in enumerate(specs)]
+    return finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=results)})
+
+
 EIA_2024 = _checked("https://www.eia.gov/todayinenergy/detail.php?id=64705",
                     "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,",
                     "10.4", "GW", organisation=EIA, release_date="2025-03-12")
@@ -381,6 +396,165 @@ def test_an_issuer_named_only_in_a_sources_identity_anchors_is_attested(writer) 
     assert with_source.rejected_points == []
     [point] = with_source.summary
     assert "Energy Storage Association" in point.text
+
+
+# --- Gate G3 live refusals: parenthetical/compound-unit clause governance ----
+
+
+STEO_PAREN = _checked_multi(
+    "https://ent.news/2025/1/940.pdf",
+    "battery storage capacity growing by 47% (14 GW) in 2025",
+    [("47", "%", "forecast"), ("14", "GW", "forecast")],
+    organisation=EIA, attribution="relayed", target="topic-02-target-01", vintage="January 2025 STEO",
+)
+WOODMAC_Q1 = _checked_multi(
+    "https://woodmac.com/press-releases/energy-storage-market-continues-strong-growth-in-q1-2025",
+    "the report projects that 15 GW/49 GWh of energy storage capacity will be installed across all segments in 2025",
+    [("15", "GW", "forecast"), ("49", "GWh", "forecast")],
+    organisation="Wood Mackenzie", target="topic-04-target-01", scope="all segments", vintage="Q1 2025",
+)
+
+
+def test_a_parenthetical_restatement_of_the_governing_figure_is_accepted(writer) -> None:
+    """Live G3 refusal 1: '(14 GW)' restates '47%', whose own clause reads
+    as a forecast ('EIA projected ... growing by 47%'); ``clause_around``
+    splits at the parenthesis, and the figure inside it must not lose the
+    hedge that governs the figure it restates.
+    """
+    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, STEO_PAREN]})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["ent.news"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="In its January 2025 forecast, as reported by ent.news, EIA projected battery storage "
+             "capacity growing by 47% (14 GW) in 2025.",
+        finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.rejected_points == []
+    assert len(composition.summary) == 1
+
+
+def test_a_compound_units_second_half_shares_the_first_halfs_clause(writer) -> None:
+    """Live G3 refusal 2's forecast-as-fact half: '15 GW/49 GWh' is one
+    compound figure; the '/' must not clause-split '49 GWh' away from the
+    'projects' that governs both halves.
+    """
+    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, WOODMAC_Q1]})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["woodmac.com"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="Wood Mackenzie's Q1 2025 forecast projects 15 GW/49 GWh of energy storage capacity "
+             "installed across all segments in 2025.",
+        finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.rejected_points == []
+    assert len(composition.summary) == 1
+
+
+def test_an_unattested_report_name_stays_refused_after_the_clause_fix(writer) -> None:
+    """The clause-governance fix must not launder a name the cited finding
+    genuinely does not carry: 'Monitor' is not in WOODMAC_Q1's own text
+    (live G3 refusal 2's other half, confirmed honest against the real
+    finding: the woodmac.com press release's own snippet never says
+    "Monitor", and its evaluated source carries no issuer anchor for it).
+    """
+    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, WOODMAC_Q1]})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["woodmac.com"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="Wood Mackenzie's Q1 2025 U.S. Energy Storage Monitor forecast projects 15 GW/49 GWh of "
+             "energy storage capacity installed across all segments in 2025.",
+        finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert "Monitor" in refused.reason
+    assert "a forecast stated as fact" not in refused.reason
+
+
+# --- Gate G3 live refusals: a bare month name restating the page's own date -
+
+
+def test_a_bare_month_and_year_restating_the_pages_own_date_is_accepted(writer) -> None:
+    """Live G3 refusal 4: 'February 2025' restates the page's own
+    'stated 2025-02-24' at a coarser grain. ``dates_in`` requires a day (ISO
+    or day-first) so it never sees a bare month name, and it fell through to
+    an ordinary unattested-name refusal.
+    """
+    finding = _checked("https://utilitydive.com/news/x",
+                       "EIA projects this growth could almost double to an addition of 18.2 GW in 2025.",
+                       "18.2", "GW", organisation="Utility Dive", kind="forecast", period="2025",
+                       target="topic-02-target-01", statement_date="2025-02-24")
+    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, finding]})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["utilitydive.com"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="Utility Dive reported in February 2025 that EIA projected this growth could almost "
+             "double to an addition of 18.2 GW in 2025.",
+        finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.rejected_points == []
+    assert len(composition.summary) == 1
+
+
+def test_a_month_the_page_does_not_carry_is_still_refused(writer) -> None:
+    """The month fix must stay honest: a month the page's own date does not
+    name is still an invented date, not a coarser restatement of one.
+    """
+    finding = _checked("https://utilitydive.com/news/x",
+                       "EIA projects this growth could almost double to an addition of 18.2 GW in 2025.",
+                       "18.2", "GW", organisation="Utility Dive", kind="forecast", period="2025",
+                       target="topic-02-target-01", statement_date="2025-02-24")
+    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, finding]})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["utilitydive.com"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="Utility Dive reported in March 2025 that EIA projected this growth could almost "
+             "double to an addition of 18.2 GW in 2025.",
+        finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert "March" in refused.reason
+
+
+# --- Gate G3 live refusal 5: a multi-clause "expects...that...will...and ----
+# --- that...will..." sentence is hedged clause-by-clause, all at once -------
+
+
+def test_a_two_clause_expects_that_will_and_that_will_sentence_is_hedged_throughout(writer) -> None:
+    """Live G3 refusal 5: 'EIA expects, as reported by Utility Dive in June
+    2025, that domestic storage capacity will rise ..., and that battery
+    storage in the commercial and industrial sectors will rise ...' bundles
+    four figures across two 'will' clauses under one distant 'expects'.
+    ``hedge_forecast``'s will/would replacement is a single global
+    substitution (``re.sub``, not one match): it hedges every 'will' clause
+    in one rewrite, not just the first, so both clauses -- and every figure
+    in them -- pick up 'expected' at once. The positive rewrite check must
+    accept a rewrite that reaches every clause it touched, not merely the
+    first one it finds.
+    """
+    finding = _checked_multi(
+        "https://utilitydive.com/news/y",
+        "EIA said domestic storage capacity will rise from about 28 GW to 64.9 GW. Large-scale "
+        "battery storage in the commercial and industrial sectors will rise from about 100 MW to "
+        "about 300 MW.",
+        [("28", "GW", "forecast"), ("64.9", "GW", "forecast"),
+         ("100", "MW", "forecast"), ("300", "MW", "forecast")],
+        organisation="Utility Dive", target="topic-02-target-01", period="2026", statement_date="2025-06-10",
+    )
+    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, finding]})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["utilitydive.com"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="EIA expects, as reported by Utility Dive in June 2025, that domestic storage capacity "
+             "will rise from about 28 GW to 64.9 GW, and that battery storage in the commercial and "
+             "industrial sectors will rise from about 100 MW to about 300 MW over the same period.",
+        finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.rejected_points == []
+    [point] = composition.summary
+    assert "is expected to rise" in point.text and "are expected to rise" in point.text
+    assert "June 2025" in point.text   # the attribution date is kept, checked and cleared, not stripped
 
 
 # --- fixtures -------------------------------------------------------------
