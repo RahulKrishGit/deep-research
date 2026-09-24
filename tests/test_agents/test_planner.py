@@ -35,6 +35,7 @@ from deep_research.agents.planner import (
     answer_kind_for,
     apply_answer_contract,
     derive_answer_contract,
+    _draft_targets,
     earned_support_policy,
     extend_plan,
     format_plan_problems,
@@ -75,6 +76,7 @@ from deep_research.utils.config import AgentRuntimeConfig, load_config
 from deep_research.utils.types import (
     ORIGINAL_QUESTION_OMISSION_REFERENCE,
     QUESTION_TARGET_ID,
+    AnswerContract,
     Critique,
     CritiqueGap,
     EvidenceTarget,
@@ -6272,5 +6274,56 @@ def test_planner_regression_instruction_splits_differently_scoped_figures() -> N
     assert "different segments, units, or vintages" in rendered
 
 
+def _structured_draft(**overrides: str) -> SubTopicDraft:
+    fields = dict(
+        question="How much battery storage capacity did EIA report added in the U.S. in 2024?",
+        required_dimensions=["measure: battery storage capacity added"],
+        critical=True,
+        measure="battery storage power capacity added",
+        unit_dimension="power",
+        period="2024",
+        kind="actual",
+        geography="United States",
+        organisation="U.S. Energy Information Administration",
+    )
+    fields.update(overrides)
+    return SubTopicDraft(
+        title="EIA 2024 additions", rationale="r", search_queries=["q"],
+        success_criteria=["c"], priority=1,
+        evidence_targets=[EvidenceTargetDraft(**fields)],
+    )
 
 
+def test_draft_targets_carry_the_structured_fields() -> None:
+    [target] = _draft_targets(_structured_draft(), "topic-01")
+    assert (target.measure, target.unit_dimension, target.period, target.kind) == (
+        "battery storage power capacity added", "power", "2024", "actual"
+    )
+    assert target.organisation == "U.S. Energy Information Administration"
+
+
+def test_an_unknown_dimension_or_kind_is_stamped_empty() -> None:
+    [target] = _draft_targets(
+        _structured_draft(unit_dimension="volts", kind="estimate", organisation=" "),
+        "topic-01",
+    )
+    assert (target.unit_dimension, target.kind, target.organisation) == (None, None, None)
+
+
+def test_the_answer_contract_keeps_the_structured_fields() -> None:
+    targets = _draft_targets(_structured_draft(), "topic-01")
+    topic = SubTopic(
+        coverage_id="topic-01", title="EIA 2024 additions", rationale="r",
+        search_queries=["q"], success_criteria=["c"], priority=1,
+        evidence_targets=targets,
+    )
+    contract = AnswerContract(
+        question="How much battery storage was added in the U.S. in 2024?",
+        scope_statement="United States, as of 2026-09-24, a factual answer.",
+        geographic_scope="United States", as_of_date="2026-09-24",
+        evidence_period_requirement="the period the question names (2024)",
+        assumptions=[], answer_kind="factual",
+    )
+    [stamped] = apply_answer_contract([topic], contract)
+    [target] = stamped.evidence_targets
+    assert (target.unit_dimension, target.period, target.kind) == ("power", "2024", "actual")
