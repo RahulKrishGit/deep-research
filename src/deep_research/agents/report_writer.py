@@ -279,26 +279,88 @@ def _attested_corpus(cited: Sequence[Finding], geographies: Sequence[str],
     return "\n".join(part for part in parts if part)
 
 
+def _region_word_free(normalised: str, start: int, end: int, quantities: Sequence[Quantity]) -> bool:
+    """True when ``normalised[start:end]`` carries no word outside the
+    known quantities matched within it -- only their own digits/units,
+    connecting punctuation, and whitespace. A verb ("was installed") inside
+    the region fails this; a second figure ("14 GW, 11 GW") does not.
+
+    A quantity's own match span can extend past ``end`` (observed: a unit
+    match immediately before a closing parenthesis absorbs it, "14 gw)"),
+    so only the *start* is required to fall inside the region, and the
+    cursor is clipped to ``end`` rather than requiring the whole match to
+    fit within it.
+    """
+    inside = sorted((q for q in quantities if start <= q.start < end), key=lambda q: q.start)
+    cursor = start
+    for q in inside:
+        if any(char.isalpha() for char in normalised[cursor:q.start]):
+            return False
+        cursor = min(q.end, end)
+    return not any(char.isalpha() for char in normalised[cursor:end])
+
+
+def _parenthetical_restatement(
+    normalised: str, quantities: Sequence[Quantity], earlier: Quantity, quantity: Quantity,
+) -> bool:
+    """True only for "47% (14 GW)": a parenthesis immediately after
+    ``earlier`` (nothing but whitespace between), enclosing ``quantity``
+    and nothing else but figures. "47% (14 GW was installed)" does not
+    qualify -- a verb inside the parenthesis is its own assertion, not a
+    bare restatement of the figure before it.
+    """
+    gap = normalised[earlier.end:quantity.start]
+    stripped = gap.rstrip()
+    if not stripped.endswith("(") or stripped[:-1].strip():
+        return False
+    open_paren = earlier.end + len(stripped) - 1
+    # ``quantity.end`` is not a reliable search origin: a quantity match can
+    # swallow trailing context (observed: "14 gw)" -- the unit match itself
+    # absorbs the closing parenthesis), so the first ")" after the opening
+    # one is searched for directly rather than from the quantity's own end.
+    close_paren = normalised.find(")", open_paren + 1)
+    if close_paren == -1:
+        return False
+    return _region_word_free(normalised, open_paren + 1, close_paren, quantities)
+
+
+def _slash_compound(earlier: Quantity, quantity: Quantity, normalised: str) -> bool:
+    """True only for "15 GW/49 GWh": a bare "/" joining two figures of
+    DIFFERENT unit dimensions (power and energy, say) into one compound
+    measurement. Same-dimension figures either side of a "/" are not this
+    -- a ratio or a range is a different construct.
+    """
+    return (
+        normalised[earlier.end:quantity.start] == "/"
+        and earlier.dimension is not None
+        and earlier.dimension != quantity.dimension
+    )
+
+
 def _governing_position(normalised: str, quantities: Sequence[Quantity], quantity: Quantity) -> int:
     """Where ``clause_around`` should read ``quantity``'s clause from.
 
-    A parenthetical restatement ("growing by 47% (14 GW) in 2025") or a
-    compound unit pair ("15 GW/49 GWh") separates two figures by
-    punctuation alone -- no word between them -- so the later figure is
-    not a new assertion; it reads from the same clause as the one before
-    it, the clause that actually carries the sentence's own hedge or
-    forecast marker. Walking back stops at the first gap that contains a
-    real word: that is a genuine new clause, not a restatement.
+    ``quantity`` inherits the clause immediately before it ONLY for a true
+    restatement of one figure: a pure parenthetical restatement
+    (``_parenthetical_restatement``) or the second half of a slash-joined
+    compound unit (``_slash_compound``) -- and even then, only when
+    ``quantity``'s own clause carries no realised-outcome verb of its own.
+    A real report of what happened ("14 GW was installed") is never
+    excused by an earlier clause's hedge, however it is punctuated next to
+    it: 'EIA projected growth of 47% (14 GW was installed) in 2025' must
+    still read "14 GW was installed" on its own terms.
     """
+    own_clause = clause_around(normalised, quantity.start)
+    if realized_outcome(own_clause):
+        return quantity.start
     ordered = sorted(quantities, key=lambda q: q.start)
     index = ordered.index(quantity)
-    position = quantity.start
-    for earlier in reversed(ordered[:index]):
-        gap = normalised[earlier.end:position]
-        if any(char.isalpha() for char in gap):
-            break
-        position = earlier.start
-    return position
+    if index == 0:
+        return quantity.start
+    earlier = ordered[index - 1]
+    if _parenthetical_restatement(normalised, ordered, earlier, quantity) or _slash_compound(earlier, quantity, normalised):
+        return earlier.start
+    return quantity.start
 
 
 _MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",

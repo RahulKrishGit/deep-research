@@ -436,18 +436,41 @@ def test_a_parenthetical_restatement_of_the_governing_figure_is_accepted(writer)
 def test_a_compound_units_second_half_shares_the_first_halfs_clause(writer) -> None:
     """Live G3 refusal 2's forecast-as-fact half: '15 GW/49 GWh' is one
     compound figure; the '/' must not clause-split '49 GWh' away from the
-    'projects' that governs both halves.
+    'projects' that governs both halves, when '49 GWh's own clause carries
+    no realised-outcome verb of its own to read on its own terms.
     """
     state = _task_state().model_copy(update={"verified_findings": [EIA_2024, WOODMAC_Q1]})
     task = writer.build_task(state)
     label = _labels(task.registry)["woodmac.com"]
     draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
         text="Wood Mackenzie's Q1 2025 forecast projects 15 GW/49 GWh of energy storage capacity "
-             "installed across all segments in 2025.",
+             "across all segments in 2025.",
         finding_labels=[label])], sections=[])
     composition = compose_written_report(task, draft)
     assert composition.rejected_points == []
-    assert len(composition.summary) == 1
+    [point] = composition.summary
+    assert point.text == draft.executive_summary[0].text   # accepted unchanged: no rewrite was needed
+
+
+def test_a_realised_verb_inside_the_second_half_keeps_its_own_clause(writer) -> None:
+    """The inheritance guard: '49 GWh' does NOT borrow 'projects 15 GW's
+    clause when its own words ('... installed ...', no 'will be'/'to be')
+    report a realised outcome on their own terms -- the '/' adjacency alone
+    is not enough, exactly the honesty regression this round closed. The
+    point still reaches the reader, hedged by the rewrite the unresolved
+    reason enables, never as a bare unhedged actual.
+    """
+    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, WOODMAC_Q1]})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["woodmac.com"]
+    drafted = ("Wood Mackenzie's Q1 2025 forecast projects 15 GW/49 GWh of energy storage capacity "
+              "installed across all segments in 2025.")
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.rejected_points == []
+    [point] = composition.summary
+    assert point.text != drafted
+    assert "expected" in point.text
 
 
 def test_an_unattested_report_name_stays_refused_after_the_clause_fix(writer) -> None:
@@ -462,13 +485,55 @@ def test_an_unattested_report_name_stays_refused_after_the_clause_fix(writer) ->
     label = _labels(task.registry)["woodmac.com"]
     draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
         text="Wood Mackenzie's Q1 2025 U.S. Energy Storage Monitor forecast projects 15 GW/49 GWh of "
-             "energy storage capacity installed across all segments in 2025.",
+             "energy storage capacity to be installed across all segments in 2025.",
         finding_labels=[label])], sections=[])
     composition = compose_written_report(task, draft)
     assert composition.summary == []
     [refused] = composition.rejected_points
-    assert "Monitor" in refused.reason
-    assert "a forecast stated as fact" not in refused.reason
+    assert refused.reason == "names the cited findings do not carry: Monitor"
+
+
+# --- Critical honesty regression (ReRev3_4g3): a real report kept as fact ---
+
+
+def test_a_verb_inside_the_parenthesis_is_not_a_bare_restatement(writer) -> None:
+    """'EIA projected growth of 47% (14 GW was installed) in 2025.' must not
+    be kept word for word: a verb inside the parenthesis is its own
+    assertion, not a restatement of the figure before it, however clean the
+    punctuation around it looks. Caught here by the rewrite (hedged), the
+    honesty guard's other acceptable outcome besides an outright refusal.
+    """
+    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, STEO_PAREN]})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["ent.news"]
+    drafted = "EIA projected growth of 47% (14 GW was installed) in 2025."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert drafted not in [p.text for p in composition.summary]
+    if composition.summary:
+        assert "expected" in composition.summary[0].text
+    else:
+        assert composition.rejected_points and composition.rejected_points[0].text == drafted
+
+
+def test_a_realised_verb_in_a_comma_separated_clause_is_not_excused(writer) -> None:
+    """'EIA projected growth of 47%, 14 GW was installed in 2025.' must not
+    be kept word for word either: a comma is a genuine clause boundary, not
+    a punctuation-only gap, so '14 GW was installed' is never a candidate
+    for inheriting '47%'s forecast marker at all.
+    """
+    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, STEO_PAREN]})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["ent.news"]
+    drafted = "EIA projected growth of 47%, 14 GW was installed in 2025."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert drafted not in [p.text for p in composition.summary]
+    if composition.summary:
+        assert "expected" in composition.summary[0].text
+    else:
+        assert composition.rejected_points and composition.rejected_points[0].text == drafted
+
 
 
 # --- Gate G3 live refusals: a bare month name restating the page's own date -
