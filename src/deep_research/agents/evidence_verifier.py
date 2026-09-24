@@ -1,30 +1,43 @@
-"""The Evidence Verifier (spec §5): Figure Match, then the Context Check.
+"""The Evidence Verifier (spec §5, D8): Figure Match, then the Context Check.
 
-Figure Match is code: the finding's snippet must be on its read, and each
-structured figure must be in the snippet under the fixed normalisation of
-``figures``. It never parses ``content`` and never searches a whole page for
-a number.
+Figure Match is code: only the finding's snippet must be on its read (spec
+§5.1 step 1). It never parses ``content`` and never searches a whole page for
+a number, and it no longer judges any individual figure -- every figure of a
+snippet-matched finding goes to the Context Check, which now carries that
+whole judgement itself (D8, spec d34fd21): the AI rejects a figure its
+snippet or passage does not actually state, and code enforces only that a
+kept figure's ``evidence_words`` are on the page, that any correction is
+supported by ``evidence_words`` alone, and every attribution rule (PD-8,
+PD-18, PD-25).
 
-The Context Check is one batched, tool-free provider call per 15 findings
-(§5.2): the model proposes period, scope, attribution, organisation and kind
-for each figure and either confirms, corrects or rejects it; code enforces
-every correction and every attribution against the page's own words before
-either is kept (PD-8, PD-18, PD-25). A finding whose batch fails, or whose
-figure the reply never names, keeps its Figure Match result and is marked
-``context_unchecked`` rather than dropped or promoted (PD-26).
+The Context Check is one batched, tool-free provider call per
+``CONTEXT_CHECK_BATCH_SIZE`` findings, at most ``CONTEXT_CHECK_CONCURRENCY``
+batches in flight (shared with ``check_statements`` below). A finding whose
+batch fails, or whose figure the reply never names, keeps its recorded
+fields and is marked ``context_unchecked`` rather than dropped or promoted
+(PD-26).
+
+``check_statements`` (spec §6.2, D8) is the sibling check for the Report
+Writer's drafted sentences: the same batching, checking whether a sentence
+states only what the verified findings it cites actually carry.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
 
 from pydantic import Field, ValidationError
 
-from deep_research.agents.base import AgentRun, AgentTask, BaseAgent
+from deep_research.agents.base import (
+    AgentRun,
+    AgentTask,
+    BaseAgent,
+    StructuredCompleter,
+)
 from deep_research.agents.errors import agent_error
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence import (
@@ -38,7 +51,6 @@ from deep_research.agents.evidence import (
     own_organisation_on_page,
     relay_attribution_on_page,
 )
-from deep_research.agents.figures import figure_in_text
 from deep_research.agents.identity import deduplicate_findings, finding_fingerprint
 from deep_research.agents.prompts import render_structured_reply_format
 from deep_research.agents.sources import publisher_identity
@@ -74,11 +86,14 @@ EVIDENCE_VERIFIER_NAME = "evidence_verifier"
 
 @dataclass(frozen=True)
 class FigureMatch:
-    """Spec §5.1's two results for one finding."""
+    """Spec §5.1 step 1: is the finding's snippet on its page?
+
+    D8: code no longer judges any individual figure here -- the Context
+    Check's own AI verdict carries that whole judgement now.
+    """
 
     read_found: bool
     snippet_on_page: bool
-    matched: tuple[bool, ...]
 
 
 def read_text(read: ReadRecord) -> str:
@@ -87,25 +102,17 @@ def read_text(read: ReadRecord) -> str:
 
 
 def figure_match(finding: Finding, reads: Mapping[str, ReadRecord]) -> FigureMatch:
-    """Is the snippet on its page, and is each figure in the snippet?"""
-    unmatched = tuple(False for _ in finding.figures)
+    """Is the snippet on its page? Every figure then goes to the Context Check."""
     read = reads.get(finding.read_id or "")
     if read is None:
-        return FigureMatch(read_found=False, snippet_on_page=False, matched=unmatched)
+        return FigureMatch(read_found=False, snippet_on_page=False)
     if not finding.snippet or not excerpt_matches(read_text(read), finding.snippet):
-        return FigureMatch(read_found=True, snippet_on_page=False, matched=unmatched)
-    return FigureMatch(
-        read_found=True,
-        snippet_on_page=True,
-        matched=tuple(
-            figure_in_text(item.value, item.unit, finding.snippet)
-            for item in finding.figures
-        ),
-    )
+        return FigureMatch(read_found=True, snippet_on_page=False)
+    return FigureMatch(read_found=True, snippet_on_page=True)
 
 
-CONTEXT_CHECK_BATCH_SIZE = 15
-CONTEXT_CHECK_CONCURRENCY = 4
+CONTEXT_CHECK_BATCH_SIZE = 5
+CONTEXT_CHECK_CONCURRENCY = 8
 CONTEXT_PASSAGE_CHARS = 3000
 
 CONTEXT_CHECK_SYSTEM_PROMPT = (
@@ -113,7 +120,8 @@ CONTEXT_CHECK_SYSTEM_PROMPT = (
     "pages. For each figure you are shown the snippet it was copied from, the "
     "surrounding passage of the same page, and the fields the extractor recorded. "
     "You have no tools and no web access: judge only from the passage printed "
-    "for that figure."
+    "for that figure, and reject a figure whose snippet or passage does not "
+    "actually state it."
 )
 
 CONTEXT_CHECK_INSTRUCTION = (
@@ -138,12 +146,13 @@ CONTEXT_CHECK_INSTRUCTION = (
     "with this period and scope, copied character for character, one sentence "
     "or less. Words that are not on the page make the figure unusable.\n"
     "- verdict: confirm when the recorded period, scope and kind are right; "
-    "correct when you changed any of them; reject when the passage does not "
-    "state this figure, or states it for something else.\n"
+    "correct when you changed any of them; reject when the snippet or "
+    "passage does not actually state this figure, or states it for "
+    "something else.\n"
     "- reason: one short sentence.\n"
     "A correction is kept only when your corrected wording appears in "
-    "evidence_words or in the passage. Never guess a period, a scope or an "
-    "organisation the passage does not state."
+    "evidence_words. Never guess a period, a scope or an organisation the "
+    "passage does not state."
 )
 
 _CONTEXT_CHECK_REPLY_EXAMPLES = (
@@ -352,20 +361,17 @@ def _differs(proposed: str | None, recorded: str | None) -> bool:
     )
 
 
-def _checked(item: ContextItem, figure: FindingFigure, matched: bool,
-             reply: FigureCheckDraft) -> FigureResult:
+def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) -> FigureResult:
     words = reply.evidence_words.strip()
 
     def drop(reason: FigureDropReason) -> FigureResult:
-        return FigureResult(figure=figure, matched=matched, evidence_words=words or None,
+        return FigureResult(figure=figure, matched=True, evidence_words=words or None,
                             dropped_reason=reason, reason=reply.reason or None)
 
     if reply.verdict == "reject":
         return drop("context_rejected")
     if not words or not excerpt_matches(read_text(item.read), words):
         return drop("evidence_not_on_page")
-    if not matched and not figure_in_text(figure.value, figure.unit, words):
-        return drop("figure_not_in_evidence")
     finding = item.finding
     period, scope, corrected = figure.period or finding.data_period, finding.measure_scope, False
     for proposed, current, field in ((reply.period, period, "period"), (reply.scope, scope, "scope")):
@@ -384,7 +390,7 @@ def _checked(item: ContextItem, figure: FindingFigure, matched: bool,
     )
     corrected = corrected or (figure.kind is not None and figure.kind != reply.kind)
     return FigureResult(
-        figure=figure, matched=matched, evidence_words=words, corrected=corrected,
+        figure=figure, matched=True, evidence_words=words, corrected=corrected,
         reason=reply.reason or None,
         context=FigureContext(period=period, scope=scope, attribution=attribution,
                               organisation=organisation, kind=reply.kind),
@@ -397,24 +403,22 @@ def verify_finding(
     """§5.2's enforcement for one figure-bearing finding whose snippet is on its page.
 
     ``replies`` maps a 1-based figure number to its reply; ``None`` means the
-    batch's Context Check failed. A figure with no reply keeps its Figure Match
-    result and marks the finding ``context_unchecked``; it is never promoted.
+    batch's Context Check failed. A figure with no reply keeps its recorded
+    fields and marks the finding ``context_unchecked``; it is never promoted
+    or dropped by code alone (D8: only the AI's own reject verdict, applied
+    in ``_checked``, drops a figure that was actually checked).
     """
     results: list[FigureResult] = []
     unchecked = False
-    for position, (figure, matched) in enumerate(
-        zip(item.finding.figures, item.match.matched), start=1
-    ):
+    for position, figure in enumerate(item.finding.figures, start=1):
         reply = None if replies is None else replies.get(position)
         if reply is not None:
-            results.append(_checked(item, figure, matched, reply))
+            results.append(_checked(item, figure, reply))
             continue
         unchecked = True
         results.append(
             FigureResult(figure=figure, matched=True,
                          context=unchecked_context(item.finding, figure, item.read, item.issuer))
-            if matched
-            else FigureResult(figure=figure, matched=False, dropped_reason="context_unavailable")
         )
     if not any(result.kept for result in results):
         return FindingVerification(status="dropped", figure_results=results,
@@ -445,11 +449,8 @@ def context_check_messages(items: Sequence[ContextItem]) -> list[ChatMessage]:
         figures = "\n".join(
             f"  figure {number}: {figure.value} {figure.unit} | recorded period "
             f"{figure.period or finding.data_period or 'none'} | recorded kind "
-            f"{figure.kind or 'none'} | "
-            f"{'in the snippet' if matched else 'not found in the snippet'}"
-            for number, (figure, matched) in enumerate(
-                zip(finding.figures, item.match.matched), start=1
-            )
+            f"{figure.kind or 'none'}"
+            for number, figure in enumerate(finding.figures, start=1)
         )
         blocks.append(
             f"## {item.label}\npage: {item.read.title} ({page_owner(item.read)})\n"
@@ -635,3 +636,208 @@ def evidence_verified_event(findings: Sequence[Finding]) -> ResearchEvent:
             ),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# check_statements (spec §6.2, D8): the Report Writer's sibling check
+# ---------------------------------------------------------------------------
+
+STATEMENT_CHECK_SYSTEM_PROMPT = (
+    "You check whether a drafted sentence states only what the findings it "
+    "cites actually verified. You have no tools and no web access: judge "
+    "only from the figures and evidence words shown for each sentence."
+)
+
+STATEMENT_CHECK_INSTRUCTION = (
+    "Return one entry in statements for every sentence listed, naming it by "
+    "its label. For each sentence give:\n"
+    "- verdict: consistent when the sentence states only the numbers, "
+    "dates, scope, organisation and forecast-vs-actual distinction its "
+    "cited findings' figures actually state; corrected when a minimal "
+    "rewording would make it so; inconsistent when it states a number, "
+    "date, scope, organisation, or forecast/actual distinction those "
+    "figures do not support, or invents anything.\n"
+    "- corrected_text: for corrected, the minimally reworded sentence; "
+    "otherwise empty.\n"
+    "- reason: one short sentence.\n"
+    "Never invent a number, date, scope, or organisation the cited "
+    "findings do not state."
+)
+
+_STATEMENT_CHECK_REPLY_EXAMPLES = (
+    (
+        "Example input: S01: \"EIA forecasts battery storage will reach 43.6 "
+        "GW by the end of 2025.\" | F01: 43.6 GW | period none | scope none | "
+        "kind actual | own (U.S. Energy Information Administration) | "
+        "evidence: \"the U.S. power system had 43.6 gigawatts (GW) of "
+        "operational utility-scale battery storage nameplate capacity\"",
+        '{"statements":[{"label":"S01","verdict":"corrected","corrected_text":'
+        '"EIA reported that by the end of 2025 the U.S. power system had 43.6 '
+        'GW of operational utility-scale battery storage capacity.",'
+        '"reason":"The finding states an actual, not a forecast."}]}',
+    ),
+)
+
+
+class StatementCheckItem(ContractModel):
+    """One drafted sentence, with the verified findings it cites."""
+
+    label: str
+    text: str
+    findings: list[Finding]
+    labels: list[str]
+
+
+class StatementVerdictDraft(ContractModel):
+    """One sentence's verdict as the model returns it, before code enforcement."""
+
+    label: str
+    verdict: Literal["consistent", "corrected", "inconsistent"]
+    corrected_text: str = ""
+    reason: str = Field(min_length=1)
+
+
+class StatementCheckDraft(ContractModel):
+    """The provider-facing reply for one batch of statements."""
+
+    statements: list[StatementVerdictDraft]
+
+
+def _statement_cited_lines(item: StatementCheckItem) -> str:
+    """Every cited finding's kept figures, as the prompt shows them."""
+    lines: list[str] = []
+    for finding, label in zip(item.findings, item.labels):
+        verification = finding.verification
+        figures: list[str] = []
+        if verification is not None:
+            for result in verification.figure_results:
+                if result.kept and result.context is not None:
+                    ctx = result.context
+                    figures.append(
+                        f"{result.figure.value} {result.figure.unit} | period "
+                        f"{ctx.period or 'none'} | scope {ctx.scope or 'none'} | "
+                        f"kind {ctx.kind} | {ctx.attribution} ({ctx.organisation}) | "
+                        f"evidence: {result.evidence_words or ''}"
+                    )
+        body = "; ".join(figures) if figures else "(no kept figures)"
+        lines.append(f"  {label}: {body}")
+    return "\n".join(lines)
+
+
+def statement_check_messages(
+    items: Sequence[StatementCheckItem], *, question: str
+) -> list[ChatMessage]:
+    """One batch's request: every sentence, its label, and its cited findings' figures."""
+    blocks = [
+        f"## {item.label}\nsentence: {item.text}\ncited findings:\n{_statement_cited_lines(item)}"
+        for item in items
+    ]
+    return [
+        ChatMessage(role="developer", content=STATEMENT_CHECK_SYSTEM_PROMPT),
+        ChatMessage(
+            role="user",
+            content="\n\n".join(
+                (
+                    f"# Question\n{question}",
+                    "# Statements to check\n" + "\n\n".join(blocks),
+                    f"# Response contract\n{STATEMENT_CHECK_INSTRUCTION}",
+                    "# Reply format\n"
+                    + render_structured_reply_format(_STATEMENT_CHECK_REPLY_EXAMPLES),
+                )
+            ),
+        ),
+    ]
+
+
+def statement_check_failed_error(batch_size: int, error: Exception) -> ResearchError:
+    return agent_error(
+        agent_name=EVIDENCE_VERIFIER_NAME,
+        error_type="evidence_verifier_statement_check_failed",
+        message=("The Statement Check failed for one batch; its sentences are "
+                 "kept as drafted rather than checked."),
+        details={"statements": batch_size, "exception_type": type(error).__name__},
+    )
+
+
+async def _check_statement_batch(
+    provider: StructuredCompleter,
+    batch: Sequence[StatementCheckItem],
+    question: str,
+    errors: list[ResearchError],
+    fingerprint: Callable[[str], None] | None,
+    *,
+    split: bool,
+) -> dict[str, StatementVerdictDraft | None]:
+    """One call; on truncation or an invalid reply, one re-ask in two halves."""
+    if fingerprint is not None:
+        fingerprint(StatementCheckDraft.__name__)
+    try:
+        reply = await provider.complete_structured(
+            statement_check_messages(batch, question=question), StatementCheckDraft,
+            agent_name=EVIDENCE_VERIFIER_NAME,
+        )
+        reply = StatementCheckDraft.model_validate(
+            reply.model_dump() if isinstance(reply, StatementCheckDraft) else reply
+        )
+    except (ProviderOutputLimitError, StructuredOutputError, ValidationError) as error:
+        if split and len(batch) > 1:
+            half = len(batch) // 2
+            first = await _check_statement_batch(
+                provider, batch[:half], question, errors, fingerprint, split=False
+            )
+            return {
+                **first,
+                **await _check_statement_batch(
+                    provider, batch[half:], question, errors, fingerprint, split=False
+                ),
+            }
+        errors.append(statement_check_failed_error(len(batch), error))
+        return {item.label: None for item in batch}
+    except ProviderError as error:
+        errors.append(statement_check_failed_error(len(batch), error))
+        return {item.label: None for item in batch}
+    labels = {item.label for item in batch}
+    results: dict[str, StatementVerdictDraft | None] = {item.label: None for item in batch}
+    for draft in reply.statements:
+        if draft.label not in labels:
+            continue
+        if draft.verdict == "corrected" and not draft.corrected_text.strip():
+            draft = draft.model_copy(update={"verdict": "inconsistent"})
+        results[draft.label] = draft
+    return results
+
+
+async def check_statements(
+    provider: StructuredCompleter,
+    items: Sequence[StatementCheckItem],
+    *,
+    question: str,
+    fingerprint: Callable[[str], None] | None = None,
+) -> tuple[dict[str, StatementVerdictDraft | None], list[ResearchError]]:
+    """Spec §6.2's Statement Check (D8): does a drafted sentence state only
+    what the verified findings it cites actually carry?
+
+    Parallel batches of ``CONTEXT_CHECK_BATCH_SIZE`` items, at most
+    ``CONTEXT_CHECK_CONCURRENCY`` in flight -- the same bounds the Context
+    Check runs under. ``None`` means the item's own batch failed outright;
+    the caller keeps the sentence as drafted and records the returned error.
+    A reply's ``corrected`` verdict with a blank ``corrected_text`` is
+    treated as ``inconsistent``, and a reply that never names one of the
+    batch's labels leaves that label ``None`` -- nothing else is applied to
+    the reply.
+    """
+    errors: list[ResearchError] = []
+    batches = [
+        items[i : i + CONTEXT_CHECK_BATCH_SIZE]
+        for i in range(0, len(items), CONTEXT_CHECK_BATCH_SIZE)
+    ]
+    gate = asyncio.Semaphore(CONTEXT_CHECK_CONCURRENCY)
+
+    async def one(batch: Sequence[StatementCheckItem]) -> dict[str, StatementVerdictDraft | None]:
+        async with gate:
+            return await _check_statement_batch(provider, batch, question, errors, fingerprint, split=True)
+
+    results: dict[str, StatementVerdictDraft | None] = {}
+    for batch_result in await asyncio.gather(*(one(batch) for batch in batches)):
+        results.update(batch_result)
+    return results, errors
