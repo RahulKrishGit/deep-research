@@ -502,3 +502,20 @@ def test_deduplicate_findings_preserves_first_seen_order_of_survivors() -> None:
 
     assert [item.content for item in kept] == ["Adoption rose.", "Costs fell."]
     assert deduplicate_findings([]) == []
+
+
+from deep_research.agents.identity import deduplicate_findings
+from tests.evidence_fakes import figure, make_finding, make_read
+
+
+def test_a_duplicate_keeps_the_winners_evidence_and_fills_a_missing_one() -> None:
+    read = make_read()
+    snippet = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"
+    rich = make_finding(read, snippet, figures=[figure("10.4", "GW", "2024", "actual")],
+                        content="EIA: 10.4 GW added in 2024.")
+    bare = rich.model_copy(update={"snippet": None, "read_id": None, "locator": None,
+                                   "figures": [], "confidence": 0.99})
+    [kept] = deduplicate_findings([rich, bare])
+    assert kept.confidence == 0.99          # the winner is still the higher confidence
+    assert kept.snippet == snippet          # its missing evidence is filled from the duplicate
+    assert kept.figures == rich.figures

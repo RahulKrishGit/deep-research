@@ -174,6 +174,15 @@ def _merge_duplicate_findings(winner: Finding, loser: Finding) -> Finding:
                 "attribution_quote": loser.attribution_quote,
             }
         )
+    if not merged.snippet and loser.snippet:
+        merged = merged.model_copy(
+            update={
+                "snippet": loser.snippet,
+                "read_id": loser.read_id,
+                "locator": loser.locator,
+                "figures": list(loser.figures),
+            }
+        )
     if merged == winner:
         return winner
     return merged

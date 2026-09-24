@@ -329,6 +329,101 @@ class AcquisitionState(ContractModel):
         return self
 
 
+FigureKind: TypeAlias = Literal["actual", "forecast"]
+UnitDimension: TypeAlias = Literal["power", "energy", "percent"]
+MAX_SNIPPET_CHARS = 600
+
+
+class FindingFigure(ContractModel):
+    """One figure a finding states, exactly as its snippet writes it (spec §4)."""
+
+    value: str = Field(min_length=1)
+    unit: str = Field(min_length=1)
+    period: str | None = None
+    kind: FigureKind | None = None
+
+
+# The Evidence Verifier's own vocabulary (spec §5). ``FigureAttribution`` is
+# who a kept figure credits; ``FindingStatus`` is the finding's outcome; the
+# two drop-reason aliases name why a figure or a whole finding did not
+# survive, so a dropped record always carries a reason a reader can print.
+FigureAttribution: TypeAlias = Literal["own", "relayed", "unattributed"]
+FindingStatus: TypeAlias = Literal["verified", "verified_corrected", "dropped"]
+FigureDropReason: TypeAlias = Literal[
+    "evidence_not_on_page",     # §5.2: evidence_words are not in the read
+    "figure_not_in_evidence",   # §5.2: a not_matched figure the evidence_words do not carry
+    "correction_not_on_page",   # §5.2: corrected period or scope not in evidence_words or passage
+    "context_rejected",         # §5.2: the Context Check said reject
+    "context_unavailable",      # §5.2: a not_matched figure whose Context Check failed
+]
+FindingDropReason: TypeAlias = Literal[
+    "read_not_found", "snippet_not_on_page", "all_figures_dropped"
+]
+
+
+class FigureContext(ContractModel):
+    """The context a Context Check confirmed for one kept figure (spec §5.2)."""
+
+    period: str | None = None
+    scope: str | None = None
+    attribution: FigureAttribution
+    organisation: str = Field(min_length=1)
+    """``own``: the publisher; ``relayed``: the originator; ``unattributed``: the page's owner (host)."""
+    kind: FigureKind
+
+
+class FigureResult(ContractModel):
+    """The Figure Match and Context Check outcome for one finding figure."""
+
+    figure: FindingFigure
+    matched: bool
+    """Figure Match's verdict (spec §5.1 step 2)."""
+    context: FigureContext | None = None
+    """Set on every kept figure."""
+    evidence_words: str | None = None
+    corrected: bool = False
+    dropped_reason: FigureDropReason | None = None
+    reason: str | None = None
+    """The Context Check's own reason text."""
+
+    @property
+    def kept(self) -> bool:
+        return self.dropped_reason is None
+
+    @model_validator(mode="after")
+    def kept_figures_carry_context(self) -> "FigureResult":
+        if self.kept and self.context is None:
+            raise ValueError("a kept figure carries its verified context")
+        return self
+
+
+class FindingVerification(ContractModel):
+    """The Evidence Verifier's judgement of one finding, and its figures."""
+
+    status: FindingStatus
+    figure_results: list[FigureResult] = Field(default_factory=list)
+    dropped_reason: FindingDropReason | None = None
+    context_unchecked: bool = False
+
+    @model_validator(mode="after")
+    def status_is_consistent(self) -> "FindingVerification":
+        if (self.status == "dropped") != (self.dropped_reason is not None):
+            raise ValueError(
+                "a dropped finding, and only a dropped one, names its reason"
+            )
+        if self.status != "dropped" and self.figure_results and not any(
+            result.kept for result in self.figure_results
+        ):
+            raise ValueError("a verified finding keeps at least one figure")
+        if self.status == "verified" and any(
+            result.corrected or not result.kept for result in self.figure_results
+        ):
+            raise ValueError(
+                "a corrected or dropped figure makes the finding verified_corrected"
+            )
+        return self
+
+
 class Finding(ContractModel):
     content: str = Field(min_length=1)
     source_url: str = Field(min_length=1)
@@ -424,6 +519,22 @@ class Finding(ContractModel):
     states one the model's proposed value does not match, and then
     ``statement_date`` is the only date recorded.
     """
+    snippet: str | None = None
+    """The verbatim admitted passage text this finding rests on, from the researcher's admitted passage.
+
+    At most ``MAX_SNIPPET_CHARS`` characters, recorded exactly as the source
+    writes it — never paraphrased. ``None`` for a finding extracted before
+    evidence snippets were captured, or whose extraction wrote no matching
+    text.
+    """
+    read_id: str | None = None
+    """The read ``snippet`` was found on, from the researcher's admitted passage."""
+    locator: str | None = None
+    """The passage id within ``read_id`` that carries ``snippet``, from the researcher's admitted passage."""
+    figures: list[FindingFigure] = Field(default_factory=list)
+    """Every figure ``snippet`` states, from the researcher's admitted passage."""
+    verification: FindingVerification | None = None
+    """``None`` until the Evidence Verifier has judged this finding."""
 
     @model_validator(mode="after")
     def normalize_binding_and_dates(self) -> "Finding":
@@ -442,6 +553,9 @@ class Finding(ContractModel):
             "attribution_quote",
             "measure_scope",
             "release_date",
+            "snippet",
+            "read_id",
+            "locator",
         ):
             value = getattr(self, name)
             if value is not None and not value.strip():
@@ -734,6 +848,18 @@ class EvidenceTarget(ContractModel):
         "primary_attribution",
         "derivation",
     ]
+    measure: str | None = None
+    """The obligation's measured quantity, as the plan states it ("battery storage power capacity added")."""
+    unit_dimension: UnitDimension | None = None
+    """The figure's physical dimension, or ``None`` for a qualitative target."""
+    period: str | None = None
+    """The period the target asks about ("2024")."""
+    kind: FigureKind | None = None
+    """Whether the target asks for an actual or a forecast figure."""
+    geography: str | None = None
+    """The geography the target asks about ("United States")."""
+    organisation: str | None = None
+    """The organisation the target asks about, or ``None`` if any organisation may answer."""
 
 
 # The reserved ``EvidenceTarget.question`` that records an original-question
@@ -1978,6 +2104,7 @@ class ReportStatement(ContractModel):
     known" rather than as a negative fact.
     """
     basis: str | None = None
+    finding_ids: list[str] = Field(default_factory=list)
 
     @property
     def substantive(self) -> bool:
@@ -3030,6 +3157,49 @@ class RejectedDraftPoint(ContractModel):
     claim_ids: list[str] = Field(default_factory=list)
     source_urls: list[str] = Field(default_factory=list)
     reason: str = Field(min_length=1)
+    finding_labels: list[str] = Field(default_factory=list)
+
+
+class EarlierEdition(ContractModel):
+    """One earlier reported value of a series a fact row updates."""
+
+    value: str               # "10.3 GW", as written
+    release: str | None      # the earlier finding's release text
+    finding_id: str
+
+
+class FactRow(ContractModel):
+    """One verified figure as the reader's Key Facts table prints it."""
+
+    row_id: str                         # "K001"
+    organisation: str
+    attribution: FigureAttribution
+    relay_host: str | None = None       # the relaying site when attribution == "relayed"
+    measure: str                        # the answered target's measure, else the unit label
+    period: str | None = None
+    value: str                          # "10.4 GW", as written
+    kind: FigureKind
+    scope: str | None = None
+    release: str | None = None
+    finding_id: str                     # the cited finding
+    duplicate_finding_ids: list[str] = Field(default_factory=list)
+    earlier: list[EarlierEdition] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    context_unchecked: bool = False
+
+
+class NotFoundTarget(ContractModel):
+    """One required target no acquisition path answered.
+
+    Feeds the reader report's Not found section, so a missing obligation
+    is stated rather than silently absent from the Key Facts table.
+    """
+
+    target_id: str
+    question: str
+    queries: list[str] = Field(default_factory=list)      # the sub-topic's planned queries
+    pages_read: list[str] = Field(default_factory=list)   # URLs its acquisition read
+    searched: bool = False                                 # the acquisition ran at all
 
 
 class ReportComposition(ContractModel):
@@ -3075,6 +3245,12 @@ class ReportComposition(ContractModel):
     claims: list[Claim] = Field(default_factory=list)
     sources: list[ScoredSource] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
+    fact_rows: list[FactRow] = Field(default_factory=list)
+    """Every verified figure, one row per Key Facts table entry."""
+    not_found: list[NotFoundTarget] = Field(default_factory=list)
+    """Every required target no acquisition path answered."""
+    finding_labels: dict[str, str] = Field(default_factory=dict)
+    """Each printed finding label mapped to the finding id it cites."""
     limitations: list[str] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
     summary: list[ReportPoint] = Field(default_factory=list)
@@ -3399,6 +3575,13 @@ class ResearchState(ContractModel):
     is the union of both, never a smaller denominator.
     """
     raw_findings: list[Finding] = Field(default_factory=list)
+    verified_findings: list[Finding] = Field(default_factory=list)
+    """The complete verified snapshot for the run so far.
+
+    Written by the Evidence Verifier and replaced on each write, the same
+    way ``evaluated_sources`` is: this is the full current picture, never
+    an append-only log.
+    """
     evaluated_sources: list[ScoredSource] = Field(default_factory=list)
     verified_claims: list[Claim] = Field(default_factory=list)
     report: str | None = None
@@ -3536,6 +3719,7 @@ class ResearchStateUpdate(TypedDict, total=False):
     initial_target_ids: list[str]
     expanded_target_ids: list[str]
     raw_findings: list[Finding]
+    verified_findings: list[Finding]
     evaluated_sources: list[ScoredSource]
     verified_claims: list[Claim]
     report: str | None
