@@ -33,9 +33,12 @@ from deep_research.agents.errors import (
 )
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence import (
+    ATTRIBUTION_CUE_PATTERN,
     _issuer_name_pattern,
     _quote_states,
+    attribution_cue_adjacent,
     excerpt_matches,
+    neighbouring_passage_text,
     retained_work_count,
 )
 from deep_research.agents.identity import deduplicate_findings
@@ -68,6 +71,7 @@ from deep_research.utils.types import (
     CritiqueGap,
     EvidenceTarget,
     EvidenceUnit,
+    FigureKind,
     Finding,
     FindingFigure,
     ReadRecord,
@@ -961,65 +965,6 @@ def extraction_messages(
     ]
 
 
-def _neighbouring_passage_text(read: ReadRecord, locator: str) -> str:
-    """The excerpt's own passage, and the one immediately before or after it.
-
-    Passages are stored in the order the document was read in, so this is
-    the excerpt's own context: the documented case is an attribution
-    sentence sitting at the end of the passage just before the one an
-    excerpt was drawn from. Nothing further away is close enough to be read
-    as attributing THIS excerpt rather than some other part of the page —
-    the failure this restricts, a quote admitted from anywhere at all in the
-    document, is what let a contrastive or unrelated mention of a body
-    credit a figure that body never claimed.
-    """
-    keys = list(read.passages.keys())
-    if locator not in keys:
-        return ""
-    index = keys.index(locator)
-    neighbours = keys[max(0, index - 1) : index + 2]
-    return " ".join(read.passages[key] for key in neighbours)
-
-
-# The words that turn a mention of a body into a claim about who published a
-# figure. A name on its own is not one of them — "Unlike the EIA" and a bare
-# "EIA" both name the body without saying the figure is its own — and neither
-# is a body named for something else on the same page. "or similar" in the
-# specification this enforces covers the possessive, which is not a fixed
-# word: :func:`_attribution_cue_adjacent` reads "Wood Mackenzie's ... Monitor"
-# the same way.
-_ATTRIBUTION_CUE_PATTERN = re.compile(
-    r"(?<![A-Za-z0-9])(?:according\s+to|reported\s+by|released\s+by|"
-    r"data\s+from|estimates?\s+from|per|said)(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-# A possessive immediately after the matched name: "Wood Mackenzie's" names
-# an owner of what follows exactly as "according to Wood Mackenzie" does.
-_POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
-# How many characters may separate a cue from the name it attributes: the
-# connective words an attribution is written with ("the", a comma, a colon),
-# not a whole unrelated clause standing between them.
-_ATTRIBUTION_CUE_REACH = 15
-
-
-def _attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
-    """True when a recognized attribution cue sits beside the matched name.
-
-    A body the page merely mentions is not an attribution — "Unlike the EIA,
-    ... our survey found 12 GW" names the EIA without crediting it with
-    anything — so admission requires one of the words this project reads as
-    handing a figure to somebody, immediately before or after the name.
-    """
-    if _POSSESSIVE_MARK.match(phrase[name_match.end() :]):
-        return True
-    for cue in _ATTRIBUTION_CUE_PATTERN.finditer(phrase):
-        if 0 <= name_match.start() - cue.end() <= _ATTRIBUTION_CUE_REACH:
-            return True
-        if 0 <= cue.start() - name_match.end() <= _ATTRIBUTION_CUE_REACH:
-            return True
-    return False
-
-
 def _admitted_attribution(
     issuer: object,
     quote: object,
@@ -1054,11 +999,11 @@ def _admitted_attribution(
     phrase = quote.strip() if isinstance(quote, str) else ""
     if not name or not phrase:
         return None, None
-    document = _neighbouring_passage_text(read, locator or "")
+    document = neighbouring_passage_text(read, locator or "")
     if not excerpt_matches(document, phrase):
         return None, None
     name_match = re.search(_issuer_name_pattern(name), phrase, re.IGNORECASE)
-    if name_match is None or not _attribution_cue_adjacent(phrase, name_match):
+    if name_match is None or not attribution_cue_adjacent(phrase, name_match):
         return None, None
     return name, phrase
 
@@ -1279,6 +1224,31 @@ def _admitted_target_ids(
     return kept, dropped
 
 
+# The model's free-text figure kind is not constrained to the closed
+# vocabulary: a live pass reported "plan" for EIA's own "planned additions"
+# of 19.6 GW, which is a forecast in every sense but the exact spelling. A
+# recognised forecast synonym is normalised rather than silently dropped to
+# ``None`` — the honesty rule (spec §2) is "Forecasts are reported with
+# issuer and release. Actuals are labelled as actuals.", and losing the
+# verdict entirely would let a downstream reader print a plan as though it
+# were a measured outcome. Anything else unrecognised is left ``None`` for
+# the Context Check to set from the passage (§5.2); it never raises.
+_FORECAST_KIND_SYNONYMS = frozenset(
+    {
+        "plan", "plans", "planned", "planning",
+        "projected", "projection", "forecasted",
+        "expected", "target", "targeted",
+    }
+)
+
+
+def _normalized_figure_kind(kind: str) -> FigureKind | None:
+    """``kind``, already folded, mapped onto the closed vocabulary, or ``None``."""
+    if kind in ("actual", "forecast"):
+        return kind  # type: ignore[return-value]
+    return "forecast" if kind in _FORECAST_KIND_SYNONYMS else None
+
+
 def _admitted_figures(
     drafts: Sequence[FindingFigureDraft], *, index: int
 ) -> tuple[list[FindingFigure], list[str]]:
@@ -1304,7 +1274,7 @@ def _admitted_figures(
                 value=value,
                 unit=unit,
                 period=(draft.period or "").strip() or None,
-                kind=kind if kind in ("actual", "forecast") else None,
+                kind=_normalized_figure_kind(kind),
             )
         )
     return figures, dropped

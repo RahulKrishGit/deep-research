@@ -1083,6 +1083,106 @@ def first_party_host_evidences_issuer(read: ReadRecord, issuer: str) -> bool:
     ) or _commercial_copyright_issuer_evidenced(read, issuer)
 
 
+def neighbouring_passage_text(read: ReadRecord, locator: str) -> str:
+    """The excerpt's own passage, and the one immediately before or after it.
+
+    Passages are stored in the order the document was read in, so this is
+    the excerpt's own context: the documented case is an attribution
+    sentence sitting at the end of the passage just before the one an
+    excerpt was drawn from. Nothing further away is close enough to be read
+    as attributing THIS excerpt rather than some other part of the page —
+    the failure this restricts, a quote admitted from anywhere at all in the
+    document, is what let a contrastive or unrelated mention of a body
+    credit a figure that body never claimed.
+    """
+    keys = list(read.passages.keys())
+    if locator not in keys:
+        return ""
+    index = keys.index(locator)
+    neighbours = keys[max(0, index - 1) : index + 2]
+    return " ".join(read.passages[key] for key in neighbours)
+
+
+# The words that turn a mention of a body into a claim about who published a
+# figure. A name on its own is not one of them — "Unlike the EIA" and a bare
+# "EIA" both name the body without saying the figure is its own — and neither
+# is a body named for something else on the same page. "or similar" in the
+# specification this enforces covers the possessive, which is not a fixed
+# word: :func:`attribution_cue_adjacent` reads "Wood Mackenzie's ... Monitor"
+# the same way. A "Data source: ..." caption line credits its originator the
+# same way a sentence does.
+ATTRIBUTION_CUE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:according\s+to|reported\s+by|released\s+by|"
+    r"data\s+from|estimates?\s+from|sources?\s*:|per|said)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# A possessive immediately after the matched name: "Wood Mackenzie's" names
+# an owner of what follows exactly as "according to Wood Mackenzie" does.
+_POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
+# How many characters may separate a cue from the name it attributes: the
+# connective words an attribution is written with ("the", a comma, a colon),
+# not a whole unrelated clause standing between them.
+_ATTRIBUTION_CUE_REACH = 15
+
+
+def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
+    """True when a recognized attribution cue sits beside the matched name.
+
+    A body the page merely mentions is not an attribution — "Unlike the EIA,
+    ... our survey found 12 GW" names the EIA without crediting it with
+    anything — so admission requires one of the words this project reads as
+    handing a figure to somebody, immediately before or after the name.
+    """
+    if _POSSESSIVE_MARK.match(phrase[name_match.end() :]):
+        return True
+    for cue in ATTRIBUTION_CUE_PATTERN.finditer(phrase):
+        if 0 <= name_match.start() - cue.end() <= _ATTRIBUTION_CUE_REACH:
+            return True
+        if 0 <= cue.start() - name_match.end() <= _ATTRIBUTION_CUE_REACH:
+            return True
+    return False
+
+
+def own_organisation_on_page(read: ReadRecord, organisation: str) -> bool:
+    """PD-18: the read is ``organisation``'s own page.
+
+    The first-party rule, or a government/education host whose registrable
+    label spells the name (initials, or the words run together, a leading
+    "U.S." dropped) while the page itself names it: eia.gov and "U.S. Energy
+    Information Administration". A lookalike on a suffix anyone can buy
+    (eia.news) never qualifies, because _institutional_domain_label refuses it.
+    """
+    if first_party_host_evidences_issuer(read, organisation):
+        return True
+    label = _institutional_domain_label(read)
+    words = _identity_words(organisation).split()
+    core = [word for word in words if word not in {"u", "s", "us"}]
+    if not label or not core:
+        return False
+    if label not in {"".join(words), "".join(core), "".join(word[0] for word in core)}:
+        return False
+    name = re.compile(rf"(?<![A-Za-z0-9]){_issuer_name_pattern(organisation)}(?![A-Za-z0-9])", re.IGNORECASE)
+    return bool(name.search(f"{read.title} {_document_text(read)}"))
+
+
+def relay_attribution_on_page(read: ReadRecord, locator: str, organisation: str) -> bool:
+    """True when the passage around ``locator`` credits ``organisation`` for a figure.
+
+    The same rule a researcher attribution quote is admitted under: the name is
+    in the snippet's own passage or its immediate neighbour, with an attribution
+    cue ("according to", "reported by", a possessive, ...) beside it.
+    """
+    # F9: Figure Match admits a snippet found anywhere on the page, so its locator
+    # may be stale; then the whole page is the passage (the researcher's own use
+    # of neighbouring_passage_text keeps its "" for an unknown locator).
+    passage = neighbouring_passage_text(read, locator) or _document_text(read)
+    name = organisation.strip()
+    if not passage or not name:
+        return False
+    pattern = re.compile(_issuer_name_pattern(name), re.IGNORECASE)
+    return any(attribution_cue_adjacent(passage, match) for match in pattern.finditer(passage))
+
+
 def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
     """True when the read attributes the document to ``issuer``.
 

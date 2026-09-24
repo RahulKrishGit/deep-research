@@ -38,13 +38,16 @@ from deep_research.agents.evidence import (
     merge_evidence_dispositions,
     merge_evidence_units,
     merge_read_records,
+    neighbouring_passage_text,
     normalized_content_sha256,
+    own_organisation_on_page,
     passages_from_chunks,
     read_assessment_revision,
     read_dated_tokens,
     read_metadata_row,
     read_serving_host,
     rejected_anchor_names,
+    relay_attribution_on_page,
     require_boundary_manifest,
     resolve_read_works,
     resolve_work_identities,
@@ -64,6 +67,7 @@ from deep_research.utils.types import (
     EvidenceUnit,
     ReadRecord,
 )
+from tests.evidence_fakes import make_read
 
 SESSION_ID = "session-1"
 RETRIEVED_AT = "2026-09-16T10:00:00+00:00"
@@ -3185,3 +3189,57 @@ def test_excerpt_matches_is_cosmetic_only() -> None:
 
 def test_cosmetic_text_keeps_digits_units_and_dashes() -> None:
     assert cosmetic_text("10,400\u2009MW \u2013 Q1") == "10,400 mw \u2013 q1"
+
+
+# ---------------------------------------------------------------------------
+# Task 2.1: attribution helpers moved in from ``researcher.py`` (F9, PD-18)
+# ---------------------------------------------------------------------------
+
+
+def test_a_stale_locator_neither_raises_nor_hides_a_relay() -> None:
+    read = make_read("According to Wood Mackenzie, utility-scale installations reached 16 GW in 2025.")
+    assert neighbouring_passage_text(read, "no-such-locator") == ""
+    assert relay_attribution_on_page(read, "no-such-locator", "Wood Mackenzie")
+    assert not relay_attribution_on_page(read, "no-such-locator", "BloombergNEF")
+
+
+def test_a_relay_is_read_from_the_cue_beside_the_name() -> None:
+    read = make_read(
+        "Utility-scale additions reached 16 GW in 2025, according to Wood Mackenzie. "
+        "Unlike BloombergNEF, the firm counts all segments.",
+        url="https://www.utilitydive.com/news/x", title="x",
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", "Wood Mackenzie")
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", "BloombergNEF")
+
+
+def test_a_source_line_is_an_attribution_cue() -> None:
+    """``ATTRIBUTION_CUE_PATTERN`` gains ``sources?\\s*:``: a mirrored or relayed
+    document that credits its originator in a source line is labelled a relay
+    of that originator, the same as it would be for "according to"."""
+    read = make_read(
+        "Utility-scale additions reached 16 GW in 2025. Data source: Wood Mackenzie.",
+        url="https://www.utilitydive.com/news/x", title="x",
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", "Wood Mackenzie")
+
+
+def test_own_organisation_on_an_agency_host() -> None:
+    """PD-18: an institutional host whose page names its own organisation.
+
+    eia.gov's registrable label spells the agency's initials while the page
+    itself carries the full name. The identical page served from eia.news
+    never qualifies: ``_institutional_domain_label`` refuses every suffix
+    anyone can buy.
+    """
+    text = (
+        "U.S. battery capacity increased 66% in 2024. Generators added 10.4 "
+        "GW of new battery storage capacity in 2024, according to the U.S. "
+        "Energy Information Administration."
+    )
+    read = make_read(text)
+    assert own_organisation_on_page(read, "U.S. Energy Information Administration")
+    lookalike = make_read(
+        text, url="https://www.eia.news/todayinenergy/detail.php?id=64705"
+    )
+    assert not own_organisation_on_page(lookalike, "U.S. Energy Information Administration")

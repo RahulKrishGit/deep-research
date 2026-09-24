@@ -4483,6 +4483,25 @@ def test_an_unusable_figure_is_dropped_but_the_finding_is_kept() -> None:
     assert any("figure 1 has no value or unit" in reason for reason in dropped_figures)
 
 
+def test_a_model_reported_plan_kind_normalizes_to_forecast() -> None:
+    """A live researcher pass emitted kind "plan" for EIA's 19.6 GW planned
+    additions -- a forecast, not one of the closed vocabulary's two exact
+    spellings. Silently dropping it to ``None`` would let a downstream
+    reader print a plan without knowing it is one; it is normalised to
+    ``forecast`` instead, and never raises.
+    """
+    read = make_read()
+    draft = _draft(read, figures=[
+        FindingFigureDraft(value="19.6", unit="GW", period="2025", kind="plan"),
+    ])
+    findings, rejected = _build(read, draft)
+    assert rejected == []
+    [finding] = findings
+    assert finding.figures == [
+        FindingFigure(value="19.6", unit="GW", period="2025", kind="forecast")
+    ]
+
+
 def test_planned_targets_render_their_structured_fields() -> None:
     line = render_planned_targets([make_target(organisation="EIA")])
     assert line.startswith("- topic-01-target-01 [topic-01]: How much")
