@@ -13,9 +13,11 @@ PD-18, PD-25).
 The Context Check is one batched, tool-free provider call per
 ``CONTEXT_CHECK_BATCH_SIZE`` findings, at most ``CONTEXT_CHECK_CONCURRENCY``
 batches in flight (shared with ``check_statements`` below). A finding whose
-batch fails, or whose figure the reply never names, keeps its recorded
-fields and is marked ``context_unchecked`` rather than dropped or promoted
-(PD-26).
+batch fails, or whose figure the reply never names, keeps a figure only when
+deterministic code can confirm the snippet itself states it
+(``figures.figure_in_text``); that kept figure carries its recorded fields
+and the finding is marked ``context_unchecked``, and a figure the snippet
+does not state is dropped with ``context_unavailable`` (PD-26, P1-2).
 
 ``check_statements`` (spec §6.2, D8) is the sibling check for the Report
 Writer's drafted sentences: the same batching, checking whether a sentence
@@ -51,6 +53,7 @@ from deep_research.agents.evidence import (
     own_organisation_on_page,
     relay_attribution_on_page,
 )
+from deep_research.agents.figures import figure_in_text
 from deep_research.agents.identity import deduplicate_findings, finding_fingerprint
 from deep_research.agents.prompts import render_structured_reply_format
 from deep_research.agents.sources import publisher_identity
@@ -213,12 +216,28 @@ class VerifiedFindings(ContractModel):
 # publisher name ("Article Title | Site Name", "Article Title - Publisher").
 _TITLE_CREDIT_SEPARATOR = re.compile(r"\s*[|\u2013\u2014]\s*|\s+-\s+")
 
-# A short run of consecutive capitalised words immediately after a naming
-# cue, bounded so it can never run on into an unrelated sentence a scraped
-# page joins with no punctuation ("Wood Mackenzie Limited Terms of use" --
-# the fifth word onward is never capitalised, so the run stops there).
-_CAPITALIZED_RUN = re.compile(r"(?:[A-Z][\w.&'-]*\s+){0,4}[A-Z][\w.&'-]*")
+# One word of a cued run: a capitalised word carrying no full stop at all
+# ("Utility Dive" -- the stop after "Dive" ends the sentence, it does not
+# continue the name), or an initialism such as "U.S.", whose own dots sit
+# inside the name ("U.S. Energy Information Administration").
+_RUN_WORD = r"(?:(?:[A-Z]\.){2,}|[A-Z][\w&'-]*)"
+
+# A short run of consecutive such words immediately after a naming cue,
+# bounded so it can never run on into an unrelated sentence a scraped page
+# joins with no punctuation ("Wood Mackenzie Limited Terms of use" -- the
+# fifth word onward is never capitalised, so the run stops there).
+_CAPITALIZED_RUN = re.compile(rf"(?:{_RUN_WORD}\s+){{0,4}}{_RUN_WORD}")
 _LEADING_YEAR = re.compile(r"^(?:19|20)\d{2}\s*")
+
+# Cues a page's own text marks its publisher's name with: the copyright
+# symbol, the word, or the ASCII "(c)" a plain-text page carries.
+_COPYRIGHT_CUES = (r"©", r"copyright", r"\(c\)")
+
+# A candidate's trailing punctuation is the sentence's, not the name's: its
+# final "." is dropped ("Wood Mackenzie." credits Wood Mackenzie) unless it
+# is an initialism's own dot ("U.S." is not "US").
+_TRAILING_PUNCTUATION = re.compile(r"[\s.,;:!?)\]}\"'\u201d\u2019]+$")
+_INITIALS_TAIL = re.compile(r"(?:[A-Z]\.)+$")
 
 
 def _title_credit_candidates(title: str) -> list[str]:
@@ -243,6 +262,28 @@ def _cued_name_candidates(text: str, cues: Sequence[str]) -> list[str]:
     return candidates
 
 
+def _stripped_name(value: str) -> str:
+    """``value`` without the punctuation a sentence or title put after it."""
+    value = value.strip()
+    if _INITIALS_TAIL.search(value):
+        return value
+    return _TRAILING_PUNCTUATION.sub("", value)
+
+
+def _name_prefixes(candidate: str) -> list[str]:
+    """``candidate``'s word prefixes, shortest first.
+
+    A page's own words introduce a name with more than the name itself: a
+    colon headline states "Wood Mackenzie: US energy storage market hits
+    record", and a cue's run can carry a description ("Published by Wood
+    Mackenzie Research Team"). The name is the shortest prefix
+    ``same_organisation`` confirms against the host -- never a longer string
+    the page does not state as the organisation's name.
+    """
+    words = candidate.split()
+    return [" ".join(words[:count]) for count in range(1, len(words) + 1)]
+
+
 def page_owner(read: ReadRecord) -> str:
     """The page's own organisation, when the page's own words name it.
 
@@ -254,16 +295,38 @@ def page_owner(read: ReadRecord) -> str:
     resembles ("energy.gov" is never credited as "EIA"), and never a name
     the page does not itself state. Falls back to the registrable host
     (``eia.gov``) when nothing on the page names it.
+
+    The confirmed name is the shortest word prefix of whichever candidate
+    matches, without the punctuation that followed it: "Utility Dive. All
+    rights reserved" credits Utility Dive, and a headline that begins with
+    the organisation's name credits the organisation, not the headline. The
+    one prefix refused is the host's own bare label ("Energy" is one word of
+    the Department of Energy's name, never a stand-in for the whole of it),
+    which the fallback states anyway.
     """
     host = publisher_identity(read.resolved_url)
+    label = host.split(".", 1)[0].casefold()
     candidates = [
         *_title_credit_candidates(read.title),
         *_cued_name_candidates(_opening_credits(read), _ATTRIBUTION_PHRASES),
-        *_cued_name_candidates(_document_text(read), (r"©", r"copyright")),
+        *_cued_name_candidates(_document_text(read), _COPYRIGHT_CUES),
     ]
     for candidate in candidates:
-        if same_organisation(candidate, host):
-            return candidate
+        words = candidate.split()
+        for prefix in _name_prefixes(candidate):
+            name = _stripped_name(prefix)
+            if not name:
+                continue
+            # A shorter prefix that merely respells the host's own label is
+            # the fallback under another capitalisation: "Energy" is one word
+            # of the Department of Energy's name, never a stand-in for the
+            # whole of it (the reading ``verified_facts._single_token``
+            # records). A candidate that states the label alone still names
+            # the page ("Battery report | EIA" on eia.gov).
+            if len(prefix.split()) < len(words) and cosmetic_text(name) == label:
+                continue
+            if same_organisation(name, host):
+                return name
     return host
 
 
@@ -337,8 +400,10 @@ def unchecked_context(finding: Finding, figure: FindingFigure, read: ReadRecord,
                       issuer: str | None) -> FigureContext:
     """The recorded fields, used when no Context Check reply exists for a figure.
 
-    The finding keeps its Figure Match status (verified or verified_corrected) and
-    carries ``context_unchecked``; its label says "unchecked context" (PD-26).
+    Only a figure the snippet itself states reaches here (P1-2, in
+    ``verify_finding``); the finding keeps its Figure Match status (verified
+    or verified_corrected) and carries ``context_unchecked``, and its label
+    says "unchecked context" (PD-26).
     """
     attribution, organisation = resolve_attribution(
         proposed=None, organisation=None, finding=finding, read=read, issuer=issuer
@@ -403,10 +468,14 @@ def verify_finding(
     """§5.2's enforcement for one figure-bearing finding whose snippet is on its page.
 
     ``replies`` maps a 1-based figure number to its reply; ``None`` means the
-    batch's Context Check failed. A figure with no reply keeps its recorded
-    fields and marks the finding ``context_unchecked``; it is never promoted
-    or dropped by code alone (D8: only the AI's own reject verdict, applied
-    in ``_checked``, drops a figure that was actually checked).
+    batch's Context Check failed, and a figure the reply leaves out is that
+    same case for that figure. An unjudged figure is kept only when
+    deterministic code confirms the finding's own snippet states it
+    (``figures.figure_in_text``): the model may have left it out exactly
+    because it cannot find it stated, so nothing else may promote it. A
+    confirmed one keeps its recorded fields and marks the finding
+    ``context_unchecked`` (PD-26); an unconfirmed one is dropped with
+    ``context_unavailable``.
     """
     results: list[FigureResult] = []
     unchecked = False
@@ -414,6 +483,11 @@ def verify_finding(
         reply = None if replies is None else replies.get(position)
         if reply is not None:
             results.append(_checked(item, figure, reply))
+            continue
+        if not figure_in_text(figure.value, figure.unit, item.finding.snippet or ""):
+            results.append(
+                FigureResult(figure=figure, matched=True, dropped_reason="context_unavailable")
+            )
             continue
         unchecked = True
         results.append(
@@ -759,6 +833,22 @@ def statement_check_failed_error(batch_size: int, error: Exception) -> ResearchE
     )
 
 
+def statement_check_omitted_error(omitted: int) -> ResearchError:
+    """A reply that answered only part of its batch.
+
+    The labels it left out stay ``None``, so their sentences are kept as
+    drafted: the same outcome, and the same error type, as a batch that
+    failed outright -- recorded so the gate can see them.
+    """
+    return agent_error(
+        agent_name=EVIDENCE_VERIFIER_NAME,
+        error_type="evidence_verifier_statement_check_failed",
+        message=("The Statement Check's reply omitted sentences from one batch; "
+                 "they are kept as drafted rather than checked."),
+        details={"statements": omitted, "reason": "label omitted from the reply"},
+    )
+
+
 async def _check_statement_batch(
     provider: StructuredCompleter,
     batch: Sequence[StatementCheckItem],
@@ -804,6 +894,9 @@ async def _check_statement_batch(
         if draft.verdict == "corrected" and not draft.corrected_text.strip():
             draft = draft.model_copy(update={"verdict": "inconsistent"})
         results[draft.label] = draft
+    omitted = sum(1 for verdict in results.values() if verdict is None)
+    if omitted:
+        errors.append(statement_check_omitted_error(omitted))
     return results
 
 
@@ -819,12 +912,12 @@ async def check_statements(
 
     Parallel batches of ``CONTEXT_CHECK_BATCH_SIZE`` items, at most
     ``CONTEXT_CHECK_CONCURRENCY`` in flight -- the same bounds the Context
-    Check runs under. ``None`` means the item's own batch failed outright;
-    the caller keeps the sentence as drafted and records the returned error.
-    A reply's ``corrected`` verdict with a blank ``corrected_text`` is
-    treated as ``inconsistent``, and a reply that never names one of the
-    batch's labels leaves that label ``None`` -- nothing else is applied to
-    the reply.
+    Check runs under. ``None`` means the item was not judged: its own batch
+    failed outright, or the reply did not name its label. Either way the
+    caller keeps the sentence as drafted and one
+    ``evidence_verifier_statement_check_failed`` error is recorded for the
+    batch. A reply's ``corrected`` verdict with a blank ``corrected_text``
+    is treated as ``inconsistent``; nothing else is applied to the reply.
     """
     errors: list[ResearchError] = []
     batches = [
