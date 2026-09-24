@@ -798,18 +798,19 @@ def test_a_claim_batch_bound_below_one_is_rejected(
 
 
 def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:
-    """The shipped YAML attempts the whole plan, not a truncated one.
+    """Spec §7.2 caps one production pass below the Planner's own ceiling.
 
-    ``agents.max_sub_topics`` is the production half of the Planner's own
-    seven-sub-topic ceiling; a smaller value here silently drops planned
-    sub-topics from every production run.
+    ``agents.max_sub_topics`` bounds how many of a plan's sub-topics one
+    Researcher pass attempts; it no longer equals the Planner's own
+    ``MAX_SUB_TOPICS`` ceiling on how many a plan may contain, so a run may
+    now plan more sub-topics than one pass researches.
     """
     from deep_research.agents.planner import MAX_SUB_TOPICS
 
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["agents"]["max_sub_topics"] == 7
-    assert raw["agents"]["max_sub_topics"] == MAX_SUB_TOPICS
+    assert raw["agents"]["max_sub_topics"] == 5
+    assert raw["agents"]["max_sub_topics"] < MAX_SUB_TOPICS
 
 
 def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
@@ -956,12 +957,24 @@ def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
     assert raw["agents"]["tool_budget"] == 10
     assert raw["agents"]["tool_budget_overrides"] == {
         "planner": 1,
-        "researcher": 10,
+        "researcher": 20,
         "fact_checker": 10,
         "source_evaluator": 0,
         "synthesizer": 0,
         "critic": 0,
     }
+
+
+def test_the_shipped_config_sets_the_researcher_budget_and_turn_caps() -> None:
+    """Spec §7.2: the researcher's tool budget is 20 over seven model turns,
+    and one pass attempts at most five sub-topics."""
+    settings = load_config("config.yaml")
+
+    assert (
+        settings.agents.max_iterations == 7
+        and settings.agents.max_sub_topics == 5
+        and settings.agents.tool_budget_overrides["researcher"] == 20
+    )
 
 
 def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:

@@ -61,7 +61,11 @@ from deep_research.agents.report_review import (
     ReviewDimensionScores,
     StatementDispositionDraft,
 )
-from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
+from deep_research.agents.researcher import (
+    FindingDraft,
+    FindingFigureDraft,
+    SubTopicFindingsDraft,
+)
 from deep_research.agents.source_evaluator import (
     SourceScoreDraft,
     SourceScoresDraft,
@@ -178,6 +182,11 @@ class ReplaySource:
     # an artifact whose body is unstated is not an artifact at all.
     cache_artifact: Literal["", "valid", "stale", "forged"] = ""
     cached_text: str = ""
+    # The figures this source's excerpt states, each (value, unit, period,
+    # kind) exactly as ``FindingFigureDraft`` takes them. Empty is a source
+    # whose scripted claim carries no discrete figure for Figure Match to
+    # verify.
+    figures: tuple[tuple[str, str, str | None, str | None], ...] = ()
 
     def __post_init__(self) -> None:
         if self.excerpt not in self.text:
@@ -306,6 +315,12 @@ class ReplayScenario:
     # already been given: memory recalled at startup is a lead, and whether it
     # is treated as a read is the run's decision, not the fixture's.
     memory_entries: tuple[MemoryEntry, ...] = ()
+    # Production ``agents`` config fields this scenario pins instead of
+    # inheriting the shipped default (for example {"max_sub_topics": 7}), so
+    # a case whose own plan needs a different cap than whichever value
+    # config.yaml carries today stays a real test of that plan rather than
+    # silently starving when the production default changes under it.
+    agent_overrides: dict[str, object] = field(default_factory=dict)
 
     @property
     def sources(self) -> dict[str, ReplaySource]:
@@ -644,7 +659,11 @@ class ReplayCompleter(AgentCompleter):
                     confidence=source.confidence,
                     read_id=read_id,
                     locator=locator,
-                    excerpt=excerpt,
+                    snippet=source.excerpt,
+                    figures=[
+                        FindingFigureDraft(value=v, unit=u, period=p, kind=k)
+                        for v, u, p, k in source.figures
+                    ],
                     target_ids=list(planned),
                 )
             )
@@ -1372,7 +1391,10 @@ def replay_settings(
             ),
             "agents": settings.agents.model_copy(
                 deep=True,
-                update={"observation_summary_chars": observation_summary_chars},
+                update={
+                    "observation_summary_chars": observation_summary_chars,
+                    **scenario.agent_overrides,
+                },
             ),
         },
     )

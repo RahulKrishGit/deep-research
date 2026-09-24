@@ -253,6 +253,10 @@ def _broad_constraints() -> ReplayScenario:
         ),
         topics=tuple(topics),
         max_iterations=3,
+        # Six obligations need six researched sub-topics: pinned independent
+        # of the production default (spec §7.2 caps that default at 5) so
+        # this case stays a real test of a six-topic plan regardless of it.
+        agent_overrides={"max_sub_topics": 7},
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,

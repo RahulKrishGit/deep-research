@@ -94,31 +94,35 @@ agents:
     # complete explicit record for every source beyond the run cap.
     batch_size: 12
     max_total_sources: 36
-  max_iterations: 5
+  # Spec §7.2: the ReAct loop stops after this many model turns whatever the
+  # tool budget (react.py), so the researcher's 20-call budget below needs
+  # this raised from five.
+  max_iterations: 7
   tool_budget: 10
   # One agent's ReAct loop can be bounded harder than the global budget. The
   # planner's budget is 1 because the session's own startup memory recall IS
   # its procedural lookup: the planner runs no second hidden recall, and its
   # one permitted lookup happens only when startup recall returned no
-  # guidance. source_evaluator and synthesizer need no tools at all; the fact
-  # checker keeps the researcher's ten. The critic is 0 because Task 8 removed
+  # guidance. source_evaluator and synthesizer need no tools at all. Spec
+  # §7.2 sets the researcher's own per-sub-topic budget to 20; the fact
+  # checker keeps its own ten. The critic is 0 because Task 8 removed
   # its tool path entirely: it reviews the exact candidate's packet, and its
   # historical search/memory spot check could not open a page, so it could
   # never establish missing support and its snippets were never evidence.
   tool_budget_overrides:
     planner: 1
-    researcher: 10
+    researcher: 20
     fact_checker: 10
     source_evaluator: 0
     synthesizer: 0
     critic: 0
   # How many planned sub-topics one Researcher pass attempts
-  # (AGENTS_MAX_SUB_TOPICS overrides this). Seven is the Planner's own ceiling,
-  # so the default attempts the whole plan. A smaller cap silently drops the
-  # least important planned sub-topics; each dropped one is recorded as
-  # researcher_sub_topic_skipped with its coverage id, but the report is short
-  # for it regardless.
-  max_sub_topics: 7
+  # (AGENTS_MAX_SUB_TOPICS overrides this). Spec §7.2 caps the production
+  # default at 5, below the Planner's own seven-topic ceiling. A smaller cap
+  # silently drops the least important planned sub-topics; each dropped one
+  # is recorded as researcher_sub_topic_skipped with its coverage id, but the
+  # report is short for it regardless.
+  max_sub_topics: 5
   # Exact target-bearing passages retained from each successful read.
   selected_passages_per_read: 4
   # Maximum serialized acquisition/evidence context sent in one packet.

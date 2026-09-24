@@ -61,6 +61,7 @@ from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    MAX_SNIPPET_CHARS,
     QUALITY_CONTRACT_VERSION,
     AcquisitionState,
     ContractModel,
@@ -68,6 +69,7 @@ from deep_research.utils.types import (
     EvidenceTarget,
     EvidenceUnit,
     Finding,
+    FindingFigure,
     ReadRecord,
     ResearchError,
     ResearchEvent,
@@ -121,12 +123,14 @@ RESEARCHER_SYSTEM_PROMPT = (
     "data file — and keep alternating until the sub-topic's success criteria "
     "are met. If a search returned nothing worth reading, search again instead. "
     "One page you have read is worth more than several more queries.\n"
-    "Verification needs independence, so a sub-topic is not finished when its "
-    "key facts come from a single publisher. Find a second source on a "
-    "different site that states each load-bearing number or finding: a fact "
-    "only one source states is recorded as unverified no matter how "
-    "authoritative that source is. Prefer spending a remaining call on that "
-    "second source over another query for the same one.\n"
+    "Read the organisation's own page first. When a figure belongs to an "
+    "organisation - an agency's inventory, a market monitor's release, a "
+    "company's filing - read that organisation's own page or document (for "
+    "example eia.gov or woodmac.com) before any story that repeats it. Use a "
+    "relay only when the original is not reachable, and record it as a relay: "
+    "cite the page where you read it and name the organisation it credits in "
+    "attributed_issuer. Do not search for a second source to confirm a figure "
+    "its own organisation publishes.\n"
     "If a publisher refuses automated access to a page, do not try that page "
     "or that host again. Read the same material as a document instead — "
     "document_reader handles PDFs, spreadsheets and data files, and primary "
@@ -144,6 +148,15 @@ EXTRACTION_SYSTEM_PROMPT = (
 )
 
 
+class FindingFigureDraft(ContractModel):
+    """One figure the snippet states, before domain validation (no Field constraints)."""
+
+    value: str
+    unit: str
+    period: str | None = None
+    kind: str | None = None
+
+
 class FindingDraft(ContractModel):
     """One model-extracted finding, before domain validation.
 
@@ -157,7 +170,7 @@ class FindingDraft(ContractModel):
     source_url: str
     source_title: str
     confidence: float
-    # The registry identity of the passage a finding came from. ``build_findings``
+    # The read_id, locator and snippet identifying the passage a finding came from. ``build_findings``
     # REQUIRES these whenever the acquisition path is active (``known_reads is
     # not None``): an optional membership check is one the model can skip, and
     # the reply example demonstrates the required shape rather than the
@@ -165,8 +178,9 @@ class FindingDraft(ContractModel):
     # model so a snapshot written for the legacy URL/title path still loads.
     read_id: str | None = None
     locator: str | None = None
-    excerpt: str | None = None
+    snippet: str | None = None
     target_ids: list[str] = Field(default_factory=list)
+    figures: list[FindingFigureDraft] = Field(default_factory=list)
     # The figures' dates, kept apart for the same reason ``SourceTemporal``
     # keeps a source's: the period a figure applies to, the date the source
     # states it, and the vintage of the data behind it are three different
@@ -648,8 +662,9 @@ _FINDING_REPLY_EXAMPLES = (
         'inventory.","source_url":"https://evidence.example.test/report",'
         '"source_title":"Example report","confidence":0.8,'
         '"read_id":"read-111111111111111111111111","locator":"page-4-chunk-0",'
-        '"excerpt":"The measured reduction was 12 percent, according to the '
+        '"snippet":"The measured reduction was 12 percent, according to the '
         'Example Statistical Agency, across all classes.",'
+        '"figures":[{"value":"12","unit":"percent","period":"2024","kind":"actual"}],'
         '"target_ids":["topic-01-target-01"],"data_period":"2024",'
         '"statement_date":"2025-03-12",'
         '"vintage":"January 2025 preliminary inventory",'
@@ -713,15 +728,29 @@ def render_planned_targets(targets: Sequence[EvidenceTarget]) -> str:
     """One line per planned target a finding may be bound to, in plan order.
 
     The id is what the reply has to copy, so it leads the line; the question
-    is what decides the binding, so it follows in full. Nothing else is
-    rendered: the support policy and the criticality are the Fact Checker's
-    business, and an extractor that tried to satisfy them would be guessing at
-    a verdict it does not own.
+    is what decides the binding, so it follows in full, and any structured
+    fields the plan set (measure, unit, period, kind, organisation) follow it
+    so the model can bind a figure to the target it actually describes.
+    Support policy and criticality stay off the line: they are the Fact
+    Checker's business, and an extractor that tried to satisfy them would be
+    guessing at a verdict it does not own.
     """
-    return "\n".join(
-        f"- {target.target_id} [{target.coverage_id}]: {target.question}"
-        for target in targets
-    )
+    lines: list[str] = []
+    for target in targets:
+        details = "; ".join(
+            f"{name}: {value}"
+            for name, value in (
+                ("measure", target.measure),
+                ("unit", target.unit_dimension),
+                ("period", target.period),
+                ("kind", target.kind),
+                ("organisation", target.organisation),
+            )
+            if value
+        )
+        line = f"- {target.target_id} [{target.coverage_id}]: {target.question}"
+        lines.append(f"{line} ({details})" if details else line)
+    return "\n".join(lines)
 
 
 # A passage "states a figure in the target's own measure unit" when a numeral
@@ -851,17 +880,24 @@ def extraction_messages(
         f"- {criterion}" for criterion in task.sub_topic.success_criteria
     )
     registry_contract = (
-        "Return one finding per distinct, source-backed claim. Every finding "
-        "MUST copy the read_id, locator, and excerpt of the passage it came "
-        "from exactly as the acquisition context above prints them, and MUST "
-        "name in target_ids every planned target from the Planned targets "
-        "list whose question its content answers — copy those ids from that "
+        "Return one finding per distinct, source-backed figure or fact. Every finding "
+        "MUST copy read_id and locator exactly as the acquisition context above prints "
+        "them, and MUST carry a snippet: one or two sentences copied character for "
+        "character from that passage, containing the finding's figures (at most "
+        f"{MAX_SNIPPET_CHARS} characters). List every figure the snippet states for "
+        "the finding in figures: value exactly as the snippet writes it (\"10.4\", "
+        "\"12,314\"), unit as the snippet writes it (\"GW\", \"megawatts\", \"%\"), the "
+        "period it applies to, and kind: actual for a measured or reported outcome, "
+        "forecast for a projection, plan or expectation. Figures that measure "
+        "different things - a yearly addition and a cumulative total - belong in "
+        "separate findings. A finding MUST name in target_ids every planned target "
+        "from the Planned targets list whose question its content answers — copy those ids from that "
         "list, never the targets= line of a read, which names only the "
         "sub-topic that fetched it, and mine each passage for every planned "
         "target rather than only the one that fetched it. A target id that is "
         "not in that list is dropped from the finding, and a finding with no "
         "planned target left is kept but can then be attributed only through "
-        "the sub-topic that fetched its read. A finding whose excerpt the "
+        "the sub-topic that fetched its read. A finding whose snippet the "
         "locator does not contain is dropped. Copy source_url and source_title "
         "from the same read record, never from memory, a search snippet, or "
         "another finding's text; never substitute the URL or title the "
@@ -1133,15 +1169,20 @@ def build_findings(
             if source_title != read.title:
                 rejected.append(f"finding {index}: source title did not match read")
                 continue
-            if not item.locator or not item.excerpt:
+            if not item.locator or not item.snippet:
                 rejected.append(
-                    f"finding {index}: read id requires locator and excerpt"
+                    f"finding {index}: read id requires locator and snippet"
+                )
+                continue
+            if len(item.snippet) > MAX_SNIPPET_CHARS:
+                rejected.append(
+                    f"finding {index}: snippet longer than {MAX_SNIPPET_CHARS} characters"
                 )
                 continue
             passage = read.passages.get(item.locator)
-            if passage is None or not excerpt_matches(passage, item.excerpt):
+            if passage is None or not excerpt_matches(passage, item.snippet):
                 rejected.append(
-                    f"finding {index}: excerpt was not admitted at locator"
+                    f"finding {index}: snippet was not admitted at locator"
                 )
                 continue
             if valid_target_ids is not None:
@@ -1180,6 +1221,14 @@ def build_findings(
                     attribution_quote=attribution_quote,
                     measure_scope=_admitted_measure_scope(read, item.measure_scope),
                     release_date=_admitted_release_date(read, item.release_date),
+                    snippet=item.snippet if read is not None else None,
+                    read_id=item.read_id if read is not None else None,
+                    locator=item.locator if read is not None else None,
+                    figures=(
+                        _admitted_figures(item.figures, index=index, rejected=rejected)
+                        if read is not None
+                        else []
+                    ),
                 )
             )
         except ValidationError as error:
@@ -1219,6 +1268,30 @@ def _admitted_target_ids(
             "(it is not a planned target)"
         )
     return kept, dropped
+
+
+def _admitted_figures(
+    drafts: Sequence[FindingFigureDraft], *, index: int, rejected: list[str]
+) -> list[FindingFigure]:
+    """The figures a finding may carry; an unusable one is named and dropped."""
+    figures: list[FindingFigure] = []
+    for position, draft in enumerate(drafts, start=1):
+        value, unit = draft.value.strip(), draft.unit.strip()
+        if not value or not unit:
+            rejected.append(
+                f"finding {index}: figure {position} has no value or unit"
+            )
+            continue
+        kind = (draft.kind or "").strip().casefold()
+        figures.append(
+            FindingFigure(
+                value=value,
+                unit=unit,
+                period=(draft.period or "").strip() or None,
+                kind=kind if kind in ("actual", "forecast") else None,
+            )
+        )
+    return figures
 
 
 class BoundedFindings(NamedTuple):

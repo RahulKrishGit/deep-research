@@ -139,7 +139,7 @@ async def test_findings_flow_through_scoring_into_an_adjudicated_claim(
                             confidence=0.8,
                             read_id=SOURCE_READ.read_id,
                             locator="chunk-0",
-                            excerpt=SOURCE_READ.passages["chunk-0"],
+                            snippet=SOURCE_READ.passages["chunk-0"],
                             target_ids=["topic-01"],
                         )
                     ]

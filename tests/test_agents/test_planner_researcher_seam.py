@@ -182,7 +182,7 @@ def _findings_draft(title: str, *, target_id: str) -> SubTopicFindingsDraft:
                 confidence=0.8,
                 read_id=read.read_id,
                 locator="chunk-0",
-                excerpt=QEC_PASSAGE,
+                snippet=QEC_PASSAGE,
                 target_ids=[target_id],
             )
         ]
