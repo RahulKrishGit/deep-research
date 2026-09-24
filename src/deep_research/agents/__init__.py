@@ -232,6 +232,7 @@ from deep_research.agents.evidence_verifier import (
     StatementCheckDraft,
     statement_check_messages,
     statement_check_failed_error,
+    statement_check_omitted_error,
     check_statements,
 )
 from deep_research.agents.fact_checker import (
@@ -1559,5 +1560,6 @@ __all__ = [
     "StatementCheckDraft",
     "statement_check_messages",
     "statement_check_failed_error",
+    "statement_check_omitted_error",
     "check_statements",
 ]
