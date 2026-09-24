@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.report import render_finding_log
 from deep_research.agents.report_writer import (
     REPORT_WRITER_NAME,
     ReportWriterAgent,
@@ -32,6 +33,7 @@ from deep_research.utils.types import (
     FigureResult,
     FindingVerification,
     ResearchState,
+    ScoredSource,
     SubTopic,
 )
 from tests.agent_fakes import ScriptedCompleter
@@ -141,6 +143,73 @@ def test_a_hardened_forecast_takes_the_pages_own_modal(writer) -> None:
     assert composition.rejected_points == []
 
 
+def test_an_unchanged_rewrite_is_refused_not_published_as_an_actual(writer) -> None:
+    """CRITICAL 1: when ``hedge_forecast`` cannot change anything -- an
+    unrelated word ("project" in "project delays") already satisfies the
+    page's own forecast-role check on a *different* clause -- the sentence
+    must not be published unhedged.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["ent.news"]
+    drafted = "Despite project delays, battery capacity grows by 14 GW in 2025."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert refused.reason == "a forecast stated as fact"
+    assert refused.text == drafted   # the drafted text, not a partial rewrite attempt
+
+
+def test_a_hedge_on_an_unrelated_clause_still_refuses_the_quantitys_own_clause(writer) -> None:
+    """CRITICAL 1: ``hedge_forecast``'s will/would replacement can land on a
+    clause other than the forecast quantity's own ("more will follow" is a
+    different, later assertion). The quantity's own clause ("14 GW was
+    added") must still be checked on its own terms.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["ent.news"]
+    drafted = "In 2025 14 GW was added, and more will follow."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert refused.reason == "a forecast stated as fact"
+    assert refused.text == drafted
+
+
+def test_a_past_tense_verb_outside_the_shared_vocabulary_is_still_refused(writer) -> None:
+    """The same defect with 'grew', a past-tense outcome verb the shared
+    realised-outcome vocabulary does not list -- only the positive hedge
+    check (not the realised-outcome exemption) catches this one.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["ent.news"]
+    drafted = "Battery capacity grew by 14 GW in 2025, and more will follow."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert refused.reason == "a forecast stated as fact"
+    assert refused.text == drafted
+
+
+def test_a_point_over_the_character_limit_is_refused_whole_not_cut(writer) -> None:
+    """Important 2 (plan-mandated): a too-long point is refused, never cut;
+    ``RejectedDraftPoint.text`` carries the whole whitespace-collapsed draft.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = "Generators added 10.4 GW of battery storage in 2024. " * 15
+    collapsed = " ".join(drafted.split())
+    assert len(collapsed) > 600
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    composition = compose_written_report(task, draft)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert refused.reason == "longer than 600 characters"
+    assert refused.text == collapsed
+
+
 def test_a_release_date_is_a_date_not_an_untraced_number(writer) -> None:
     # F2: "2025-03-12" is checked whole against the findings, never as the numbers 03 and 12
     task = writer.build_task(_task_state())
@@ -210,6 +279,12 @@ def test_dropped_and_duplicate_findings_still_reach_the_composition(writer) -> N
     assert len(composition.findings) == 4
     # The dropped duplicate never earns a citable label of its own.
     assert all(finding is not dropped for _, finding in task.registry)
+    # m4: the evidence log must render it too, under its own label -- not
+    # collapsed onto or dropping the citable edition's "F01" (R2).
+    log = render_finding_log(composition)
+    assert "dropped (all_figures_dropped)" in log
+    assert log.count(f"### F01 — {EIA_2024.source_title}") == 1
+    assert "### X01" in log
 
 
 # --- R2: two revision editions sharing a fingerprint must not collapse --------
@@ -279,6 +354,33 @@ def test_utility_scale_wording_on_a_grid_scale_figure_is_accepted(writer) -> Non
     assert composition.rejected_points == []
     [point] = composition.summary
     assert "utility-scale" in point.text
+
+
+# --- PD-25: an evaluated source's own identity anchors attest an issuer -------
+
+
+def test_an_issuer_named_only_in_a_sources_identity_anchors_is_attested(writer) -> None:
+    """PD-25: the Source Evaluator's validated issuer attests a name the
+    drafted text carries, even when nothing on the page itself states it.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    source = ScoredSource(
+        url="https://eia.gov/todayinenergy/detail.php?id=64705",
+        title="U.S. battery capacity increased 66% in 2024",
+        rationale="scored by an earlier pass",
+        evaluation_status="unscored_missing",
+        identity_anchors={"issuer": "Energy Storage Association"},
+    )
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="Energy Storage Association reports that generators added 10.4 GW in 2024.",
+        finding_labels=[label])], sections=[])
+    without_source = compose_written_report(task, draft)
+    assert without_source.summary == []   # unattested without the source
+    with_source = compose_written_report(task.model_copy(update={"sources": [source]}), draft)
+    assert with_source.rejected_points == []
+    [point] = with_source.summary
+    assert "Energy Storage Association" in point.text
 
 
 # --- fixtures -------------------------------------------------------------
