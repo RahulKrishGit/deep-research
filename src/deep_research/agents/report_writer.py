@@ -1,17 +1,20 @@
 """The Report Writer (spec §6): prose from verified findings only, cited by label.
 
 The model writes the executive summary and a few short sections, citing
-findings by the labels one registry stamps. Code builds everything else -- the
-key facts table, duplicates and revisions, the Not found list, the labels and
-the sources -- and checks every sentence against the cited findings' verified
-fields before it can reach the reader (§6.2).
+findings by the labels one registry stamps. Code builds everything else --
+the key facts table, duplicates and revisions, the Not found list, the
+labels and the sources. Code keeps only the two mechanical checks spec §6.2
+leaves it: a point cites at least one known label, and the length limit.
+Every other question about a sentence's wording -- its numbers, dates,
+scope, organisation, forecast or actual -- is the Statement Check's job
+(§5.4, decision D8), judged once for every drafted sentence together.
 """
 
 from __future__ import annotations
 
-import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from pydantic import Field, JsonValue, ValidationError
 
@@ -23,8 +26,7 @@ from deep_research.agents.base import (
 )
 from deep_research.agents.errors import AgentConfigurationError, agent_error
 from deep_research.agents.events import agent_event
-from deep_research.agents.evidence import cosmetic_text
-from deep_research.agents.figures import Quantity, dates_in, quantities_in, same_quantity, without_dates
+from deep_research.agents.figures import quantities_in, same_quantity
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.planner import Clock, utc_now
 from deep_research.agents.prompts import AgentTask, render_structured_reply_format
@@ -39,27 +41,11 @@ from deep_research.agents.report import (
 from deep_research.agents.sources import publisher_identity
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.verified_facts import (
-    VerifiedFigure,
     answered_target_ids,
-    canonical_scopes,
     citable_findings,
     fact_rows,
     not_found_targets,
     release_text,
-    untraced_numbers,
-    verified_figures,
-)
-from deep_research.agents.wording import (
-    clause_around,
-    hardened_modality,
-    hedge_forecast,
-    hedge_marker,
-    page_modal,
-    realized_outcome,
-    stated_role,
-    stated_scopes,
-    stated_years,
-    unattested_names,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
@@ -108,15 +94,12 @@ REPORT_WRITER_INSTRUCTION = (
     "Rules:\n"
     "- Cite by label only: every point lists in finding_labels the one to three labels it "
     "rests on. Never write a URL.\n"
-    "- Every number you write must be a figure of a finding the point cites, with its unit "
-    "as listed (\"10.4 GW\"). Do not add, subtract, convert or round figures.\n"
-    "- Name only organisations, dates and scopes that the cited findings' figures, labels or "
-    "snippets state.\n"
+    "- State a forecast with a forecast verb (\"projects\", \"expects\", \"forecasts\"), never "
+    "as a completed outcome.\n"
+    "- Use only the numbers and dates of the cited findings.\n"
     "- Use the scope words the finding states (\"utility-scale\", \"all segments\"), never "
     "the question's.\n"
-    "- State an actual as what happened (\"added\", \"installed\"). State a forecast as a "
-    "forecast of its organisation (\"EIA expects\", \"Wood Mackenzie projects\") and give its "
-    "release when the label shows one.\n"
+    "- Name only organisations and publications the cited findings name.\n"
     "- For a figure one site relays from another organisation, name the organisation and "
     "the site (\"according to Wood Mackenzie, as reported by Utility Dive\").\n"
     "- The executive summary answers each part of the question directly, first: the actual "
@@ -173,15 +156,6 @@ class ReportWriterTask(AgentTask):
     facts: list[FactRow] = Field(default_factory=list)
     not_found: list[NotFoundTarget] = Field(default_factory=list)
     answered: dict[str, list[str]] = Field(default_factory=dict)
-    geographies: list[str] = Field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class PointCheck:
-    reasons: tuple[str, ...]
-    forecast_as_fact: bool      # True: the one hedge rewrite may repair it (F3)
-    organisation: str | None
-    marker: str                 # the page's own modal for the rewrite, or ""
 
 
 class WrittenReport(ContractModel):
@@ -261,315 +235,179 @@ def writer_messages(task: ReportWriterTask) -> list[ChatMessage]:
             ChatMessage(role="user", content=user)]
 
 
-def _attested_corpus(cited: Sequence[Finding], geographies: Sequence[str],
-                     sources: Sequence[ScoredSource] = ()) -> str:
-    parts = list(geographies)
-    urls = {finding.source_url for finding in cited}
-    for source in sources:   # PD-25: the Source Evaluator's validated title and issuer
-        if source.url in urls:
-            issuer = source.identity_anchors.get("issuer")
-            parts += [source.title, *(issuer if isinstance(issuer, list) else [issuer or ""])]
-    for finding in cited:
-        parts += [finding.snippet or "", finding.source_title, publisher_identity(finding.source_url),
-                  release_text(finding) or "", finding.attributed_issuer or ""]
-        for result in finding.verification.figure_results if finding.verification else []:
-            if result.kept and result.context is not None:
-                parts += [result.context.organisation, result.context.period or "",
-                          result.context.scope or "", result.evidence_words or ""]
-    return "\n".join(part for part in parts if part)
+class _Verdict(Protocol):
+    """Structural shape of ``evidence_verifier.StatementVerdictDraft`` (D8).
 
-
-def _region_word_free(normalised: str, start: int, end: int, quantities: Sequence[Quantity]) -> bool:
-    """True when ``normalised[start:end]`` carries no word outside the
-    known quantities matched within it -- only their own digits/units,
-    connecting punctuation, and whitespace. A verb ("was installed") inside
-    the region fails this; a second figure ("14 GW, 11 GW") does not.
-
-    A quantity's own match span can extend past ``end`` (observed: a unit
-    match immediately before a closing parenthesis absorbs it, "14 gw)"),
-    so only the *start* is required to fall inside the region, and the
-    cursor is clipped to ``end`` rather than requiring the whole match to
-    fit within it.
+    Read by attribute only, never imported: this module must keep importing
+    whether or not ``evidence_verifier.py`` has landed the real type yet.
     """
-    inside = sorted((q for q in quantities if start <= q.start < end), key=lambda q: q.start)
-    cursor = start
-    for q in inside:
-        if any(char.isalpha() for char in normalised[cursor:q.start]):
-            return False
-        cursor = min(q.end, end)
-    return not any(char.isalpha() for char in normalised[cursor:end])
+
+    verdict: str
+    corrected_text: str
+    reason: str
 
 
-def _parenthetical_restatement(
-    normalised: str, quantities: Sequence[Quantity], earlier: Quantity, quantity: Quantity,
-) -> bool:
-    """True only for "47% (14 GW)": a parenthesis immediately after
-    ``earlier`` (nothing but whitespace between), enclosing ``quantity``
-    and nothing else but figures. "47% (14 GW was installed)" does not
-    qualify -- a verb inside the parenthesis is its own assertion, not a
-    bare restatement of the figure before it.
+@dataclass(frozen=True)
+class _Candidate:
+    """One drafted point that cleared the two mechanical rules (§6.2) and
+    is waiting on the Statement Check's verdict."""
+
+    key: str                     # "S001"; also the final ReportStatement.statement_id
+    where: str                   # "summary[0]" or "sections[2].points[1]"
+    text: str                    # drafted, whitespace-collapsed
+    finding_labels: list[str]
+    findings: list[Finding]
+
+
+def _finding_label(finding: Finding) -> str:
+    """Every kept figure's reader label for one finding, joined into one
+    string -- the Statement Check gets one label string per cited finding,
+    not one per figure (D8)."""
+    labels: list[str] = []
+    for result in finding.verification.figure_results if finding.verification else []:
+        if result.kept and result.context is not None:
+            label = _figure_label_for(finding, result.context)
+            if label not in labels:
+                labels.append(label)
+    return "; ".join(labels)
+
+
+async def compose_written_report(
+    task: ReportWriterTask,
+    draft: ReportWriterDraft | None,
+    *,
+    provider: AgentCompleter,
+    fingerprint: Callable[[str], object] | None = None,
+) -> ReportComposition:
+    """Build every candidate point, judge its wording with one Statement
+    Check call, and compose (spec §6.1-6.2, §5.4, decision D8).
+
+    The Context Check (§5.2) has already verified each figure's
+    organisation, kind, period and scope, and code attaches those to every
+    figure's reader label, so the label carries the verified provenance
+    whatever the prose says. Code keeps only the two mechanical rules §6.2
+    leaves it: a point cites at least one known label, and the length
+    limit. Everything else about a sentence's wording -- its numbers,
+    dates, scope, organisation, forecast or actual -- is judged once for
+    every candidate sentence together by the Statement Check (§5.4), never
+    by a code pattern.
     """
-    gap = normalised[earlier.end:quantity.start]
-    stripped = gap.rstrip()
-    if not stripped.endswith("(") or stripped[:-1].strip():
-        return False
-    open_paren = earlier.end + len(stripped) - 1
-    # ``quantity.end`` is not a reliable search origin: a quantity match can
-    # swallow trailing context (observed: "14 gw)" -- the unit match itself
-    # absorbs the closing parenthesis), so the first ")" after the opening
-    # one is searched for directly rather than from the quantity's own end.
-    close_paren = normalised.find(")", open_paren + 1)
-    if close_paren == -1:
-        return False
-    return _region_word_free(normalised, open_paren + 1, close_paren, quantities)
-
-
-def _slash_compound(earlier: Quantity, quantity: Quantity, normalised: str) -> bool:
-    """True only for "15 GW/49 GWh": a bare "/" joining two figures of
-    DIFFERENT unit dimensions (power and energy, say) into one compound
-    measurement. Same-dimension figures either side of a "/" are not this
-    -- a ratio or a range is a different construct.
-    """
-    return (
-        normalised[earlier.end:quantity.start] == "/"
-        and earlier.dimension is not None
-        and earlier.dimension != quantity.dimension
-    )
-
-
-def _governing_position(normalised: str, quantities: Sequence[Quantity], quantity: Quantity) -> int:
-    """Where ``clause_around`` should read ``quantity``'s clause from.
-
-    ``quantity`` inherits the clause immediately before it ONLY for a true
-    restatement of one figure: a pure parenthetical restatement
-    (``_parenthetical_restatement``) or the second half of a slash-joined
-    compound unit (``_slash_compound``) -- and even then, only when
-    ``quantity``'s own clause carries no realised-outcome verb of its own.
-    A real report of what happened ("14 GW was installed") is never
-    excused by an earlier clause's hedge, however it is punctuated next to
-    it: 'EIA projected growth of 47% (14 GW was installed) in 2025' must
-    still read "14 GW was installed" on its own terms.
-    """
-    own_clause = clause_around(normalised, quantity.start)
-    if realized_outcome(own_clause):
-        return quantity.start
-    ordered = sorted(quantities, key=lambda q: q.start)
-    index = ordered.index(quantity)
-    if index == 0:
-        return quantity.start
-    earlier = ordered[index - 1]
-    if _parenthetical_restatement(normalised, ordered, earlier, quantity) or _slash_compound(earlier, quantity, normalised):
-        return earlier.start
-    return quantity.start
-
-
-_MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
-                "August", "September", "October", "November", "December")
-_MONTH_YEAR_PATTERN = re.compile(r"\b(" + "|".join(_MONTH_NAMES) + r")\s+((?:19|20)\d{2})\b")
-_CORPUS_YEAR_MONTH_PATTERN = re.compile(r"\b((?:19|20)\d{2})-(0[1-9]|1[0-2])\b")
-
-
-def _blank_attested_month_years(text: str, corpus: str) -> str:
-    """``text`` with a bare "Month YYYY" token blanked when a date the
-    corpus carries at day precision ("2025-02-24") already names that
-    year and month.
-
-    "Utility Dive reported in February 2025" restates the page's own
-    statement date at a coarser grain, not a date the page never carried;
-    ``dates_in`` does not catch a bare month name (it requires a day, ISO
-    or day-first), so without this the month reads as an ordinary
-    unattested proper noun.
-    """
-    attested = {(year, month) for year, month in _CORPUS_YEAR_MONTH_PATTERN.findall(corpus)}
-    if not attested:
-        return text
-
-    def replace(match: re.Match[str]) -> str:
-        month_number = f"{_MONTH_NAMES.index(match.group(1)) + 1:02d}"
-        if (match.group(2), month_number) in attested:
-            return " " * len(match.group(0))
-        return match.group(0)
-
-    return _MONTH_YEAR_PATTERN.sub(replace, text)
-
-
-def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[str],
-                sources: Sequence[ScoredSource] = ()) -> PointCheck:
-    """§6.2's guards for one sentence against the findings it cites."""
-    if not cited:
-        return PointCheck(("cites no checked finding",), False, None, "")
-    reasons: list[str] = []
-    untraced = untraced_numbers(text, cited)       # dates are not numbers (F2)
-    if untraced:
-        reasons.append("numbers not among the cited figures: " + ", ".join(untraced))
-    corpus = _attested_corpus(cited, geographies, sources)
-    names = unattested_names(_blank_attested_month_years(text, corpus), corpus.casefold(), corpus)
-    if names:
-        reasons.append("names the cited findings do not carry: " + ", ".join(names))
-    # F2: a date is checked whole against the findings (a release the writer
-    # copies from a label is there); the years rule reads the rest of the text.
-    folded = cosmetic_text(corpus)
-    dates = [date for date in dates_in(text) if cosmetic_text(date) not in folded]
-    if dates:
-        reasons.append("dates the cited findings do not carry: " + ", ".join(dates))
-    years = [year for year in stated_years(without_dates(text)) if year not in corpus]
-    if years:
-        reasons.append("years the cited findings do not carry: " + ", ".join(years))
-    normalised = cosmetic_text(text)
-    stated = quantities_in(text)
-    figures = [f for f in verified_figures(cited) if f.quantity is not None]
-    stated_figures = [(q, f) for q in stated for f in figures if same_quantity(q, f.quantity)]
-    scope_sources = [f"{f.context.scope or ''} {_evidence_words(f)}" for _, f in stated_figures] or [corpus]
-    # R4: grid-scale and utility-scale name the same segment (as verified_facts
-    # treats them for target answering); a sentence in either spelling is
-    # supported by a finding stated in the other, and neither narrows the other.
-    attested_scopes = canonical_scopes(" ".join(scope_sources))
-    unsupported = [s for s in stated_scopes(text) if not (canonical_scopes(s) & attested_scopes)]
-    if unsupported:
-        reasons.append("scope not carried by the cited figures: " + ", ".join(unsupported))
-    as_fact: list[str] = []
-    for quantity, figure in stated_figures:
-        role = stated_role(clause_around(normalised, _governing_position(normalised, stated, quantity)))
-        if figure.context.kind == "forecast" and role == "actual":
-            as_fact.append(figure.context.organisation)
-        elif figure.context.kind == "actual" and role == "forecast":
-            reasons.append("an actual stated as a forecast")
-        elif role == "mixed":
-            reasons.append("one clause reads as both forecast and outcome")
-    hardened = hardened_modality(text, corpus)
-    forecasts = [f for _, f in stated_figures if f.context.kind == "forecast"]
-    # F3: the one rewrite repairs a forecast stated as fact or with hardened
-    # modality, and only when nothing else is wrong with the sentence.
-    repairable = bool(forecasts) and bool(as_fact or hardened) and not reasons
-    if as_fact:
-        reasons.append("a forecast stated as fact")
-    if hardened:
-        reasons.append(f"asserts with '{hardened}' what the page hedges")
-    if repairable:
-        organisation = as_fact[0] if as_fact else forecasts[0].context.organisation
-        marker = page_modal(" ".join(_evidence_words(f) for f in forecasts))
-        return PointCheck(tuple(reasons), True, organisation, marker)
-    return PointCheck(tuple(reasons), False, None, "")
-
-
-def _evidence_words(figure: VerifiedFigure) -> str:
-    results = figure.finding.verification.figure_results if figure.finding.verification else []
-    words = results[figure.index].evidence_words if figure.index < len(results) else None
-    return words or (figure.finding.snippet or "")
-
-
-def _forecast_rewrite_holds(
-    original: str, rewritten: str, organisation: str, forecasts: Sequence[VerifiedFigure],
-) -> bool:
-    """F3, checked positively rather than by filtering a reason away.
-
-    A reason filter let two real defects through: an unchanged rewrite
-    (``hedge_forecast`` found nothing to change and appended nothing,
-    because an unrelated clause already satisfied ``_forecast_role``), and a
-    rewrite that hedged one clause while the quantity's own clause still
-    reported it as settled fact ("14 GW was added, and more will follow"
-    becomes "...was added, and more is expected to follow" -- "was added"
-    is untouched). This checks every forecast quantity the rewritten text
-    still states: its own clause must carry a hedge or forecast-role marker
-    and no realised-outcome verb, or -- when ``hedge_forecast`` fell all the
-    way through to appending "according to <organisation>'s forecast." to
-    the whole text (proved by that literal suffix, not by position math,
-    since the append means no clause anywhere in the text was individually
-    touched) -- every remaining clause shares that one benefit.
-    """
-    if rewritten == original:
-        return False
-    used_append = rewritten.endswith(f", according to {organisation}'s forecast.")
-    normalised = cosmetic_text(rewritten)
-    stated = quantities_in(rewritten)
-    matched = [(q, f) for q in stated for f in forecasts if same_quantity(q, f.quantity)]
-    if not matched:
-        return False
-    for quantity, _figure in matched:
-        clause = clause_around(normalised, _governing_position(normalised, stated, quantity))
-        if realized_outcome(clause):
-            return False
-        if not (used_append or hedge_marker(clause) or stated_role(clause) == "forecast"):
-            return False
-    return True
-
-
-def compose_written_report(task: ReportWriterTask, draft: ReportWriterDraft | None) -> ReportComposition:
-    """Check every drafted point, rewrite a forecast-as-fact once, and compose (§6.1-6.2)."""
     by_label = dict(task.registry)
     ids = {label: finding_fingerprint(f) for label, f in task.registry}
-    rejected: list[RejectedDraftPoint] = []
-    stated_rows: set[str] = set()
     numbers = iter(range(1, 10_000))
+    rejected: list[RejectedDraftPoint] = []
 
-    def build(point: WriterPointDraft, where: str, summary: bool) -> ReportPoint | None:
+    def consider(point: WriterPointDraft, where: str) -> _Candidate | None:
         drafted = " ".join(point.text.split())
         wanted = [label.strip() for label in point.finding_labels]
 
         def refuse(reason: str) -> None:
-            rejected.append(RejectedDraftPoint(where=where, text=drafted, finding_labels=list(point.finding_labels), reason=reason))
+            rejected.append(RejectedDraftPoint(
+                where=where, text=drafted, finding_labels=list(point.finding_labels), reason=reason,
+            ))
 
         if not drafted:
-            return refuse("empty text")
+            refuse("empty text")
+            return None
         if len(drafted) > MAX_POINT_CHARS:
-            return refuse(f"longer than {MAX_POINT_CHARS} characters")
+            refuse(f"longer than {MAX_POINT_CHARS} characters")
+            return None
         unknown = [label for label in wanted if label not in by_label]
         if unknown:
-            return refuse("unknown labels: " + ", ".join(unknown))
-        cited = [by_label[label] for label in wanted]
-        text = drafted
-        check = check_point(text, cited, geographies=task.geographies, sources=task.sources)
-        if check.forecast_as_fact and check.organisation:
-            rewritten = hedge_forecast(text, check.organisation, marker=check.marker)
-            forecasts = [f for f in verified_figures(cited)
-                        if f.quantity is not None and f.context.kind == "forecast"]
-            if not _forecast_rewrite_holds(text, rewritten, check.organisation, forecasts):
-                return refuse("a forecast stated as fact")
-            text = rewritten
-            # The positive check above already proved the rewrite sound;
-            # check_point's own clause-local stated_role still misreads the
-            # same repaired clause as "actual" ("could", or the appended
-            # "...'s forecast." suffix after a comma, is not a signal
-            # stated_role reads as a forecast), so only the one reason that
-            # check just cleared is dropped here. Any other reason the
-            # rewrite introduced -- an untraced number, an unattested name,
-            # a scope it no longer carries -- still refuses the point.
-            reasons = tuple(
-                reason for reason in check_point(text, cited, geographies=task.geographies,
-                                                 sources=task.sources).reasons
-                if reason != "a forecast stated as fact"
+            refuse("unknown labels: " + ", ".join(unknown))
+            return None
+        if not wanted:
+            refuse("cites no checked finding")
+            return None
+        return _Candidate(key=f"S{next(numbers):03d}", where=where, text=drafted,
+                          finding_labels=wanted, findings=[by_label[label] for label in wanted])
+
+    summary_candidates = [c for n, d in enumerate(draft.executive_summary if draft else [])
+                          if (c := consider(d, f"summary[{n}]")) is not None]
+    section_candidates: list[tuple[str, list[_Candidate]]] = []
+    for s, section in enumerate((draft.sections if draft else [])[:DEFAULT_MAX_SECTIONS]):
+        points = [c for n, d in enumerate(section.points)
+                  if (c := consider(d, f"sections[{s}].points[{n}]")) is not None]
+        section_candidates.append((" ".join(section.title.split())[:_SECTION_TITLE_CHARS], points))
+
+    all_candidates = summary_candidates + [c for _, points in section_candidates for c in points]
+    verdicts: Mapping[str, _Verdict | None] = {}
+    check_errors: list[ResearchError] = []
+    if all_candidates:
+        # Deferred: T2_1 is landing evidence_verifier.check_statements in
+        # parallel (D8). A module-level import would make this module
+        # unimportable -- and every test that imports deep_research.agents
+        # with it -- until that merge lands. Tests inject a fake by
+        # monkeypatching these two names on the evidence_verifier module.
+        from deep_research.agents.evidence_verifier import StatementCheckItem, check_statements
+        items = [
+            StatementCheckItem(label=c.key, text=c.text, findings=c.findings,
+                               labels=[_finding_label(f) for f in c.findings])
+            for c in all_candidates
+        ]
+        try:
+            verdicts, check_errors = await check_statements(
+                provider, items, question=task.question, fingerprint=fingerprint,
             )
-        else:
-            reasons = check.reasons
-        if reasons:
-            return refuse("; ".join(reasons))
-        cited_ids = {ids[label] for label in wanted}
+        except (ProviderError, StructuredOutputError, ValidationError) as error:
+            # §5.4: a failed batch keeps its sentences; the Statement Check
+            # must never stop the run. check_statements's own retry ladder
+            # already absorbs one batch's provider failure -- this is the
+            # outer guard against the call itself failing before it can
+            # return that per-batch accounting.
+            check_errors = [agent_error(
+                agent_name=REPORT_WRITER_NAME,
+                error_type="report_writer_statement_check_failed",
+                message="The report writer's statement check failed; every drafted point was kept unchanged.",
+                details={"exception_type": type(error).__name__},
+            )]
+
+    stated_rows: set[str] = set()
+
+    def finalize(candidate: _Candidate, *, dedup: bool) -> ReportPoint | None:
+        verdict = verdicts.get(candidate.key)
+        text = candidate.text
+        if verdict is not None:
+            blank_correction = verdict.verdict == "corrected" and not verdict.corrected_text.strip()
+            if verdict.verdict == "inconsistent" or blank_correction:
+                rejected.append(RejectedDraftPoint(
+                    where=candidate.where, text=candidate.text,
+                    finding_labels=list(candidate.finding_labels), reason=verdict.reason,
+                ))
+                return None
+            if verdict.verdict == "corrected":
+                text = " ".join(verdict.corrected_text.split())
+        cited_ids = {ids[label] for label in candidate.finding_labels}
         stated = quantities_in(text)
         rows = {row.row_id for row in task.facts
                 if (row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids))
                 and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)}
-        if summary and rows and rows <= stated_rows:
-            return refuse("restates " + ", ".join(sorted(rows)))
+        if dedup and rows and rows <= stated_rows:
+            rejected.append(RejectedDraftPoint(
+                where=candidate.where, text=candidate.text,
+                finding_labels=list(candidate.finding_labels),
+                reason="restates " + ", ".join(sorted(rows)),
+            ))
+            return None
         stated_rows.update(rows)
-        own_first = sorted(cited, key=lambda f: 0 if any(
+        own_first = sorted(candidate.findings, key=lambda f: 0 if any(
             r.context is not None and r.context.attribution == "own"
             for r in (f.verification.figure_results if f.verification else [])) else 1)
         statement = ReportStatement(
-            statement_id=f"S{next(numbers):03d}", text=text, finding_ids=[ids[label] for label in wanted],
+            statement_id=candidate.key, text=text,
+            finding_ids=[ids[label] for label in candidate.finding_labels],
             target_ids=sorted({t for t, fids in task.answered.items() if cited_ids & set(fids)}),
         )
         return ReportPoint(text=text, source_urls=list(dict.fromkeys(f.source_url for f in own_first)),
                            statement=statement)
 
-    summary = [p for n, d in enumerate(draft.executive_summary if draft else [])
-               if (p := build(d, f"summary[{n}]", True)) is not None]
+    summary = [p for c in summary_candidates if (p := finalize(c, dedup=True)) is not None]
     sections: list[ReportSection] = []
-    for s, section in enumerate((draft.sections if draft else [])[:DEFAULT_MAX_SECTIONS]):
-        points = [p for n, d in enumerate(section.points)
-                  if (p := build(d, f"sections[{s}].points[{n}]", False)) is not None]
-        title = " ".join(section.title.split())[:_SECTION_TITLE_CHARS]
-        if points and title:
-            sections.append(ReportSection(title=title, points=points))
+    for title, points in section_candidates:
+        built = [p for c in points if (p := finalize(c, dedup=False)) is not None]
+        if built and title:
+            sections.append(ReportSection(title=title, points=built))
+
     return ReportComposition(
         question=task.question, session_id=task.session_id, iteration=task.iteration,
         max_iterations=task.max_iterations, as_of=task.as_of, scope=task.scope,
@@ -577,7 +415,7 @@ def compose_written_report(task: ReportWriterTask, draft: ReportWriterDraft | No
         summary=summary, sections=sections, rejected=[r.reason for r in rejected],
         rejected_points=rejected, fact_rows=list(task.facts), not_found=list(task.not_found),
         finding_labels={label: finding_id for label, finding_id in ids.items()},
-        generated_on=task.generated_on,
+        generated_on=task.generated_on, errors=check_errors,
     )
 
 
@@ -671,7 +509,6 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         targets = [target for topic in state.sub_topics for target in topic.evidence_targets]
         findings = list(state.verified_findings)
         answered = answered_target_ids(citable_findings(findings), targets)
-        geographies = list(dict.fromkeys(target.geography for target in targets if target.geography))
         return ReportWriterTask(
             instruction=state.original_question,
             session_id=state.session_id,
@@ -689,7 +526,6 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             facts=fact_rows(findings, targets),
             not_found=not_found_targets(state.sub_topics, answered, state.acquisition_state_by_target),
             answered=answered,
-            geographies=geographies,
         )
 
     async def draft(self, task: ReportWriterTask) -> tuple[ReportWriterDraft | None, list[ResearchError]]:
@@ -745,8 +581,10 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         ))
         return None, errors
 
-    def _compose_result(self, task: ReportWriterTask, draft: ReportWriterDraft | None) -> WrittenReport:
-        composition = compose_written_report(task, draft)
+    async def _compose_result(self, task: ReportWriterTask, draft: ReportWriterDraft | None) -> WrittenReport:
+        composition = await compose_written_report(
+            task, draft, provider=self.provider, fingerprint=self.fingerprint_call,
+        )
         return WrittenReport(
             markdown=render_written_report(composition),
             evidence_markdown=render_finding_log(composition),
@@ -768,7 +606,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
                 "ReportWriterAgent.finalize requires a ReportWriterTask"
             )
         draft, _ = await self.draft(task)
-        return self._compose_result(task, draft)
+        return await self._compose_result(task, draft)
 
     def state_update(
         self,
@@ -837,7 +675,8 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         task = self.build_task(state)
         async with self.tracker.agent_span(self.name) as span:
             draft, errors = await self.draft(task)
-            result = self._compose_result(task, draft)
+            result = await self._compose_result(task, draft)
+            errors = [*errors, *result.composition.errors]
             span.set_outputs({
                 "agent_name": self.name,
                 "statement_count": result.statement_count,

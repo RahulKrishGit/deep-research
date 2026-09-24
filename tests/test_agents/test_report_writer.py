@@ -1,20 +1,22 @@
-"""Spec §6.1-6.2: the Report Writer writes from verified findings only."""
+"""Spec §6.1-6.2, §5.4: the Report Writer writes from verified findings only,
+and the wording of every sentence is judged once by the Statement Check
+(decision D8), not by code patterns."""
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-
 from deep_research.agents.identity import finding_fingerprint
-from deep_research.agents.report import render_finding_log
+from deep_research.agents.report import render_finding_log, render_written_report
 from deep_research.agents.report_writer import (
     REPORT_WRITER_NAME,
     ReportWriterAgent,
     ReportWriterDraft,
     WriterPointDraft,
-    check_point,
+    WriterSectionDraft,
     compose_written_report,
     finding_registry,
     writer_messages,
@@ -33,7 +35,6 @@ from deep_research.utils.types import (
     FigureResult,
     FindingVerification,
     ResearchState,
-    ScoredSource,
     SubTopic,
 )
 from tests.agent_fakes import ScriptedCompleter
@@ -112,105 +113,40 @@ def test_writer_messages_list_every_figure_in_the_fixed_format(writer) -> None:
     assert line.search(messages[-1].content)
 
 
-def test_check_point_refuses_untraced_numbers_and_unattested_names() -> None:
-    assert check_point("Generators added 12 GW in 2024.", [EIA_2024], geographies=["United States"]).reasons
-    assert check_point("BloombergNEF reports 10.4 GW added in 2024.", [EIA_2024], geographies=[]).reasons
-    assert check_point("Generators added 10.4 GW in the United States in 2024.", [EIA_2024],
-                       geographies=["United States"]).reasons == ()
+# --- D8: code keeps only two mechanical rules; the checker judges wording ---
 
 
-def test_grid_scale_wording_on_an_all_segment_figure_is_refused(writer) -> None:
+@pytest.mark.asyncio
+async def test_a_point_citing_no_known_label_is_refused_without_calling_the_checker(writer, checker) -> None:
     task = writer.build_task(_task_state())
-    label = _labels(task.registry)["woodmac.com"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="Wood Mackenzie reports 18.9 GW of grid-scale storage installed in 2025.", finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
+    draft = ReportWriterDraft(executive_summary=[
+        WriterPointDraft(text="Generators added 10.4 GW of battery storage in 2024.", finding_labels=[]),
+    ], sections=[])
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
     assert composition.summary == []
     [refused] = composition.rejected_points
-    assert "grid-scale" in refused.reason and refused.finding_labels == [label]
+    assert refused.reason == "cites no checked finding"
+    assert checker.calls == []   # the mechanical rule never reaches the LLM
 
 
-def test_forecast_stated_as_fact_is_rewritten_once_and_kept(writer) -> None:
+@pytest.mark.asyncio
+async def test_an_unknown_label_is_refused_without_calling_the_checker(writer, checker) -> None:
     task = writer.build_task(_task_state())
-    label = _labels(task.registry)["ent.news"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="EIA's outlook adds 14 GW in 2025.", finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    [point] = composition.summary
-    assert point.text == f"EIA's outlook adds 14 GW in 2025, according to {EIA}'s forecast."
-    assert composition.rejected_points == []
-
-
-def test_a_hardened_forecast_takes_the_pages_own_modal(writer) -> None:
-    # F3: the 2026-09-24 pre-flight lost its forecasts to "will" where the page says "could"
-    could = _checked("https://ent.news/2025/1/941.pdf",
-                     "Data source: U.S. Energy Information Administration, Short-Term Energy Outlook, January 2025. "
-                     "Battery storage capacity could grow by 14 GW in 2025.",
-                     "14", "GW", organisation=EIA, attribution="relayed", kind="forecast", period="2025",
-                     target="topic-02-target-01", vintage="January 2025 STEO")
-    task = writer.build_task(_task_state().model_copy(update={"verified_findings": [EIA_2024, could]}))
-    label = _labels(task.registry)["ent.news"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="EIA's STEO says battery capacity will grow by 14 GW in 2025.", finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    [point] = composition.summary
-    assert point.text == "EIA's STEO says battery capacity could grow by 14 GW in 2025."
-    assert composition.rejected_points == []
-
-
-def test_an_unchanged_rewrite_is_refused_not_published_as_an_actual(writer) -> None:
-    """CRITICAL 1: when ``hedge_forecast`` cannot change anything -- an
-    unrelated word ("project" in "project delays") already satisfies the
-    page's own forecast-role check on a *different* clause -- the sentence
-    must not be published unhedged.
-    """
-    task = writer.build_task(_task_state())
-    label = _labels(task.registry)["ent.news"]
-    drafted = "Despite project delays, battery capacity grows by 14 GW in 2025."
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
+    draft = ReportWriterDraft(executive_summary=[
+        WriterPointDraft(text="Generators added 10.4 GW of battery storage in 2024.", finding_labels=["F99"]),
+    ], sections=[])
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
     assert composition.summary == []
     [refused] = composition.rejected_points
-    assert refused.reason == "a forecast stated as fact"
-    assert refused.text == drafted   # the drafted text, not a partial rewrite attempt
+    assert refused.reason == "unknown labels: F99"
+    assert checker.calls == []
 
 
-def test_a_hedge_on_an_unrelated_clause_still_refuses_the_quantitys_own_clause(writer) -> None:
-    """CRITICAL 1: ``hedge_forecast``'s will/would replacement can land on a
-    clause other than the forecast quantity's own ("more will follow" is a
-    different, later assertion). The quantity's own clause ("14 GW was
-    added") must still be checked on its own terms.
-    """
-    task = writer.build_task(_task_state())
-    label = _labels(task.registry)["ent.news"]
-    drafted = "In 2025 14 GW was added, and more will follow."
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.summary == []
-    [refused] = composition.rejected_points
-    assert refused.reason == "a forecast stated as fact"
-    assert refused.text == drafted
-
-
-def test_a_past_tense_verb_outside_the_shared_vocabulary_is_still_refused(writer) -> None:
-    """The same defect with 'grew', a past-tense outcome verb the shared
-    realised-outcome vocabulary does not list -- only the positive hedge
-    check (not the realised-outcome exemption) catches this one.
-    """
-    task = writer.build_task(_task_state())
-    label = _labels(task.registry)["ent.news"]
-    drafted = "Battery capacity grew by 14 GW in 2025, and more will follow."
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.summary == []
-    [refused] = composition.rejected_points
-    assert refused.reason == "a forecast stated as fact"
-    assert refused.text == drafted
-
-
-def test_a_point_over_the_character_limit_is_refused_whole_not_cut(writer) -> None:
-    """Important 2 (plan-mandated): a too-long point is refused, never cut;
-    ``RejectedDraftPoint.text`` carries the whole whitespace-collapsed draft.
+@pytest.mark.asyncio
+async def test_a_point_over_the_character_limit_is_refused_whole_not_cut(writer, checker) -> None:
+    """A too-long point is refused, never cut; ``RejectedDraftPoint.text``
+    carries the whole whitespace-collapsed draft, and never reaches the
+    Statement Check (the length limit is still code's own job, §6.2).
     """
     task = writer.build_task(_task_state())
     label = _labels(task.registry)["eia.gov"]
@@ -218,58 +154,147 @@ def test_a_point_over_the_character_limit_is_refused_whole_not_cut(writer) -> No
     collapsed = " ".join(drafted.split())
     assert len(collapsed) > 600
     draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
     assert composition.summary == []
     [refused] = composition.rejected_points
     assert refused.reason == "longer than 600 characters"
     assert refused.text == collapsed
+    assert checker.calls == []
 
 
-def test_a_release_date_is_a_date_not_an_untraced_number(writer) -> None:
-    # F2: "2025-03-12" is checked whole against the findings, never as the numbers 03 and 12
+@pytest.mark.asyncio
+async def test_a_consistent_verdict_keeps_the_sentence_unchanged(writer, checker) -> None:
     task = writer.build_task(_task_state())
     label = _labels(task.registry)["eia.gov"]
-    kept = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="EIA reports that 10.4 GW was added in 2024 (released 2025-03-12).", finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, kept)
-    assert len(composition.summary) == 1 and composition.rejected_points == []
-    invented = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="EIA reports that 10.4 GW was added in 2024 (released 2025-04-30).", finding_labels=[label])], sections=[])
-    [refused] = compose_written_report(task, invented).rejected_points
-    assert "dates the cited findings do not carry: 2025-04-30" in refused.reason
+    drafted = "Generators added 10.4 GW of battery storage in 2024."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    checker.verdicts = {"S001": _verdict("consistent")}
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.rejected_points == []
+    [point] = composition.summary
+    assert point.text == drafted
+    assert point.statement.statement_id == "S001"
 
 
-def test_an_actual_stated_as_a_forecast_is_refused(writer) -> None:
+@pytest.mark.asyncio
+async def test_a_corrected_verdict_replaces_the_sentence_with_corrected_text(writer, checker) -> None:
     task = writer.build_task(_task_state())
     label = _labels(task.registry)["eia.gov"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="EIA expects 10.4 GW to be added in 2024.", finding_labels=[label])], sections=[])
-    assert compose_written_report(task, draft).summary == []
+    drafted = "Generators added 10 GW of battery storage in 2024."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    checker.verdicts = {"S001": _verdict(
+        "corrected", corrected_text="Generators added 10.4 GW of battery storage in 2024.",
+        reason="the finding states 10.4 GW, not 10",
+    )}
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.rejected_points == []
+    [point] = composition.summary
+    assert point.text == "Generators added 10.4 GW of battery storage in 2024."
 
 
-def test_a_summary_restatement_and_an_unknown_label_are_refused(writer) -> None:
+@pytest.mark.asyncio
+async def test_a_corrected_verdict_with_blank_corrected_text_is_treated_as_inconsistent(writer, checker) -> None:
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = "Generators added 10 GW of battery storage in 2024."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    checker.verdicts = {"S001": _verdict("corrected", corrected_text="   ", reason="no safe rewording exists")}
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert refused.reason == "no safe rewording exists"
+    assert refused.text == drafted
+
+
+@pytest.mark.asyncio
+async def test_an_inconsistent_verdict_refuses_with_its_reason(writer, checker) -> None:
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = "Generators added 12 GW of battery storage in 2024."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    checker.verdicts = {"S001": _verdict("inconsistent", reason="the finding states 10.4 GW, not 12 GW")}
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert refused.reason == "the finding states 10.4 GW, not 12 GW"
+    assert refused.text == drafted
+
+
+@pytest.mark.asyncio
+async def test_a_failed_batch_keeps_the_sentence_and_records_the_error(writer, checker) -> None:
+    """§5.4: a failed batch keeps its sentences, carrying the code-built
+    label; the run is never stopped, and the error is recorded."""
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = "Generators added 10.4 GW of battery storage in 2024."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    checker.verdicts = {}   # "S001" missing: its batch failed
+    checker.errors = [_error("evidence_verifier_statement_check_failed", "batch 1 failed")]
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.rejected_points == []
+    [point] = composition.summary
+    assert point.text == drafted
+    assert [e.error_type for e in composition.errors] == ["evidence_verifier_statement_check_failed"]
+
+
+@pytest.mark.asyncio
+async def test_a_summary_restatement_is_refused(writer, checker) -> None:
     task = writer.build_task(_task_state())
     label = _labels(task.registry)["eia.gov"]
     draft = ReportWriterDraft(executive_summary=[
         WriterPointDraft(text="Generators added 10.4 GW of battery storage in 2024.", finding_labels=[label]),
         WriterPointDraft(text="In 2024, 10.4 GW of battery storage was added.", finding_labels=[label]),
-        WriterPointDraft(text="Generators added 10.4 GW in 2024.", finding_labels=["F99"]),
     ], sections=[])
-    composition = compose_written_report(task, draft)
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
     assert [p.statement.statement_id for p in composition.summary] == ["S001"]
-    assert [r.where for r in composition.rejected_points] == ["summary[1]", "summary[2]"]
+    assert [r.where for r in composition.rejected_points] == ["summary[1]"]
+    assert composition.rejected_points[0].reason.startswith("restates ")
 
 
 @pytest.mark.asyncio
-async def test_a_failed_draft_still_composes_the_key_facts(writer_failing: ReportWriterAgent, tracker: Tracker) -> None:
+async def test_the_checker_receives_each_candidates_cited_findings_and_code_built_labels(writer, checker) -> None:
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="Generators added 10.4 GW of battery storage in 2024.", finding_labels=[label])], sections=[])
+    await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    [batch] = checker.calls
+    [item] = batch
+    assert item.label == "S001"
+    assert item.text == "Generators added 10.4 GW of battery storage in 2024."
+    assert item.findings == [EIA_2024]
+    assert item.labels == [f"{EIA}'s own figure; actual; released 2025-03-12"]
+
+
+@pytest.mark.asyncio
+async def test_every_kept_sentence_still_ends_with_its_figures_code_built_label(writer, checker) -> None:
+    """§6.2: the Context Check has already verified each figure's fields,
+    and code attaches those as the reader label on every figure -- the
+    label is rendered from the fact rows regardless of what the Statement
+    Check judged, so it carries the verified provenance whatever the
+    sentence's wording ends up being.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
+        text="Generators added 10.4 GW of battery storage in 2024.", finding_labels=[label])], sections=[])
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    rendered = render_written_report(composition)
+    line = next(l for l in rendered.splitlines() if l.startswith("- Generators added"))
+    assert line.rstrip().endswith(f"*{EIA}'s own figure; actual; released 2025-03-12*")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_draft_still_composes_the_key_facts(writer_failing: ReportWriterAgent, tracker: Tracker, checker) -> None:
     async with tracker.session_span("session-1", "question"):
         run = await writer_failing.run(_task_state())
     assert "## Key facts" in run.result.markdown and "10.4 GW" in run.result.markdown
     assert any(e.error_type == "report_writer_provider_error" for e in run.errors)
+    assert checker.calls == []   # nothing was drafted, so nothing reached the checker
 
 
 @pytest.mark.asyncio
-async def test_a_truncated_draft_is_asked_once_more_at_high_effort(writer_truncated_then_ok, tracker: Tracker) -> None:
+async def test_a_truncated_draft_is_asked_once_more_at_high_effort(writer_truncated_then_ok, tracker: Tracker, checker) -> None:
     agent, completer = writer_truncated_then_ok
     async with tracker.session_span("session-1", "question"):
         run = await agent.run(_task_state())
@@ -280,7 +305,8 @@ async def test_a_truncated_draft_is_asked_once_more_at_high_effort(writer_trunca
 # --- R1: dropped and duplicate findings still reach the evidence log ----------
 
 
-def test_dropped_and_duplicate_findings_still_reach_the_composition(writer) -> None:
+@pytest.mark.asyncio
+async def test_dropped_and_duplicate_findings_still_reach_the_composition(writer, checker) -> None:
     """R1: a dropped duplicate of a citable finding must still be in
     ``ReportComposition.findings``, so the evidence log lists it (spec 5.3).
     """
@@ -289,7 +315,7 @@ def test_dropped_and_duplicate_findings_still_reach_the_composition(writer) -> N
     })
     state = _task_state().model_copy(update={"verified_findings": [EIA_2024, STEO, WOODMAC_ALL, dropped]})
     task = writer.build_task(state)
-    composition = compose_written_report(task, None)
+    composition = await compose_written_report(task, None, provider=writer.provider, fingerprint=writer.fingerprint_call)
     assert dropped in composition.findings
     assert len(composition.findings) == 4
     # The dropped duplicate never earns a citable label of its own.
@@ -331,74 +357,7 @@ def test_two_revision_editions_sharing_a_fingerprint_both_label_the_target(write
         assert label in line
 
 
-# --- R4: grid-scale and utility-scale are the same segment --------------------
-
-
-def test_grid_scale_wording_on_a_utility_scale_figure_is_accepted(writer) -> None:
-    """R4: grid-scale and utility-scale name the same segment (as verified_facts
-    treats them for target answering); a sentence in either spelling is
-    supported by a finding stated in the other.
-    """
-    utility = _checked("https://ir.eia.gov/utility-scale-page",
-                       "EIA reports 5 GW of utility-scale battery storage added in 2025.",
-                       "5", "GW", organisation=EIA, period="2025", scope="utility-scale",
-                       target="topic-04-target-01")
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, STEO, utility]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["ir.eia.gov"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="EIA reports 5 GW of grid-scale battery storage added in 2025.", finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.rejected_points == []
-    [point] = composition.summary
-    assert "grid-scale" in point.text
-
-
-def test_utility_scale_wording_on_a_grid_scale_figure_is_accepted(writer) -> None:
-    """The equivalence holds in the other spelling direction too."""
-    grid = _checked("https://ir.eia.gov/grid-scale-page",
-                    "EIA reports 5 GW of grid-scale battery storage added in 2025.",
-                    "5", "GW", organisation=EIA, period="2025", scope="grid-scale",
-                    target="topic-04-target-01")
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, STEO, grid]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["ir.eia.gov"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="EIA reports 5 GW of utility-scale battery storage added in 2025.", finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.rejected_points == []
-    [point] = composition.summary
-    assert "utility-scale" in point.text
-
-
-# --- PD-25: an evaluated source's own identity anchors attest an issuer -------
-
-
-def test_an_issuer_named_only_in_a_sources_identity_anchors_is_attested(writer) -> None:
-    """PD-25: the Source Evaluator's validated issuer attests a name the
-    drafted text carries, even when nothing on the page itself states it.
-    """
-    task = writer.build_task(_task_state())
-    label = _labels(task.registry)["eia.gov"]
-    source = ScoredSource(
-        url="https://eia.gov/todayinenergy/detail.php?id=64705",
-        title="U.S. battery capacity increased 66% in 2024",
-        rationale="scored by an earlier pass",
-        evaluation_status="unscored_missing",
-        identity_anchors={"issuer": "Energy Storage Association"},
-    )
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="Energy Storage Association reports that generators added 10.4 GW in 2024.",
-        finding_labels=[label])], sections=[])
-    without_source = compose_written_report(task, draft)
-    assert without_source.summary == []   # unattested without the source
-    with_source = compose_written_report(task.model_copy(update={"sources": [source]}), draft)
-    assert with_source.rejected_points == []
-    [point] = with_source.summary
-    assert "Energy Storage Association" in point.text
-
-
-# --- Gate G3 live refusals: parenthetical/compound-unit clause governance ----
+# --- D8: the eight live G3/round-2 sentences the code checks used to refuse -
 
 
 STEO_PAREN = _checked_multi(
@@ -413,216 +372,163 @@ WOODMAC_Q1 = _checked_multi(
     [("15", "GW", "forecast"), ("49", "GWh", "forecast")],
     organisation="Wood Mackenzie", target="topic-04-target-01", scope="all segments", vintage="Q1 2025",
 )
+UTILITY_DIVE_FEB = _checked(
+    "https://utilitydive.com/news/x",
+    "EIA projects this growth could almost double to an addition of 18.2 GW in 2025.",
+    "18.2", "GW", organisation="Utility Dive", kind="forecast", period="2025",
+    target="topic-02-target-01", statement_date="2025-02-24",
+)
+UTILITY_DIVE_JUNE = _checked_multi(
+    "https://utilitydive.com/news/y",
+    "EIA said domestic storage capacity will rise from about 28 GW to 64.9 GW. Large-scale "
+    "battery storage in the commercial and industrial sectors will rise from about 100 MW to "
+    "about 300 MW.",
+    [("28", "GW", "forecast"), ("64.9", "GW", "forecast"),
+     ("100", "MW", "forecast"), ("300", "MW", "forecast")],
+    organisation="Utility Dive", target="topic-02-target-01", period="2026", statement_date="2025-06-10",
+)
+ENERKNOL = _checked(
+    "https://enerknol.com/news/z",
+    "EnerKnol reported that battery storage accounts for two percent of total U.S. power capacity.",
+    "2", "%", organisation="EnerKnol", period="2025", target="topic-04-target-01", statement_date="2025-03-13",
+)
 
 
-def test_a_parenthetical_restatement_of_the_governing_figure_is_accepted(writer) -> None:
-    """Live G3 refusal 1: '(14 GW)' restates '47%', whose own clause reads
-    as a forecast ('EIA projected ... growing by 47%'); ``clause_around``
-    splits at the parenthesis, and the figure inside it must not lose the
-    hedge that governs the figure it restates.
+@pytest.mark.asyncio
+async def test_the_eight_live_g3_sentences_are_kept_when_the_checker_says_consistent(writer, checker) -> None:
+    """The five Gate G3 live refusals and the three round-2 refusals were
+    all real, honest sentences the old code-pattern checks (clause
+    governance, name attestation, bare month-year attestation) wrongly
+    refused. Under D8, code no longer judges wording at all: every one of
+    them reaches the Statement Check and is kept exactly as drafted when
+    the checker says consistent.
+
+    Three of the eight (1, 5, 8) restate the same STEO 47%/14 GW figures,
+    and two (3, 7) restate the same Utility Dive 18.2 GW figure -- each was
+    a separate live incident in a separate report, never drafted together.
+    Placed in one section rather than the summary, so the unrelated (and
+    unchanged) same-figure restatement guard -- summary-only by design --
+    is not what this test is exercising.
     """
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, STEO_PAREN]})
+    state = _task_state().model_copy(update={"verified_findings": [
+        EIA_2024, STEO_PAREN, WOODMAC_Q1, UTILITY_DIVE_FEB, UTILITY_DIVE_JUNE, ENERKNOL,
+    ]})
     task = writer.build_task(state)
-    label = _labels(task.registry)["ent.news"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="In its January 2025 forecast, as reported by ent.news, EIA projected battery storage "
-             "capacity growing by 47% (14 GW) in 2025.",
-        finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.rejected_points == []
-    assert len(composition.summary) == 1
-
-
-def test_a_compound_units_second_half_shares_the_first_halfs_clause(writer) -> None:
-    """Live G3 refusal 2's forecast-as-fact half: '15 GW/49 GWh' is one
-    compound figure; the '/' must not clause-split '49 GWh' away from the
-    'projects' that governs both halves, when '49 GWh's own clause carries
-    no realised-outcome verb of its own to read on its own terms.
-    """
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, WOODMAC_Q1]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["woodmac.com"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="Wood Mackenzie's Q1 2025 forecast projects 15 GW/49 GWh of energy storage capacity "
-             "across all segments in 2025.",
-        finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.rejected_points == []
-    [point] = composition.summary
-    assert point.text == draft.executive_summary[0].text   # accepted unchanged: no rewrite was needed
-
-
-def test_a_realised_verb_inside_the_second_half_keeps_its_own_clause(writer) -> None:
-    """The inheritance guard: '49 GWh' does NOT borrow 'projects 15 GW's
-    clause when its own words ('... installed ...', no 'will be'/'to be')
-    report a realised outcome on their own terms -- the '/' adjacency alone
-    is not enough, exactly the honesty regression this round closed. The
-    point still reaches the reader, hedged by the rewrite the unresolved
-    reason enables, never as a bare unhedged actual.
-    """
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, WOODMAC_Q1]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["woodmac.com"]
-    drafted = ("Wood Mackenzie's Q1 2025 forecast projects 15 GW/49 GWh of energy storage capacity "
-              "installed across all segments in 2025.")
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.rejected_points == []
-    [point] = composition.summary
-    assert point.text != drafted
-    assert "expected" in point.text
-
-
-def test_an_unattested_report_name_stays_refused_after_the_clause_fix(writer) -> None:
-    """The clause-governance fix must not launder a name the cited finding
-    genuinely does not carry: 'Monitor' is not in WOODMAC_Q1's own text
-    (live G3 refusal 2's other half, confirmed honest against the real
-    finding: the woodmac.com press release's own snippet never says
-    "Monitor", and its evaluated source carries no issuer anchor for it).
-    """
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, WOODMAC_Q1]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["woodmac.com"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="Wood Mackenzie's Q1 2025 U.S. Energy Storage Monitor forecast projects 15 GW/49 GWh of "
-             "energy storage capacity to be installed across all segments in 2025.",
-        finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.summary == []
-    [refused] = composition.rejected_points
-    assert refused.reason == "names the cited findings do not carry: Monitor"
-
-
-# --- Critical honesty regression (ReRev3_4g3): a real report kept as fact ---
-
-
-def test_a_verb_inside_the_parenthesis_is_not_a_bare_restatement(writer) -> None:
-    """'EIA projected growth of 47% (14 GW was installed) in 2025.' must not
-    be kept word for word: a verb inside the parenthesis is its own
-    assertion, not a restatement of the figure before it, however clean the
-    punctuation around it looks. Caught here by the rewrite (hedged), the
-    honesty guard's other acceptable outcome besides an outright refusal.
-    """
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, STEO_PAREN]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["ent.news"]
-    drafted = "EIA projected growth of 47% (14 GW was installed) in 2025."
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert drafted not in [p.text for p in composition.summary]
-    if composition.summary:
-        assert "expected" in composition.summary[0].text
-    else:
-        assert composition.rejected_points and composition.rejected_points[0].text == drafted
-
-
-def test_a_realised_verb_in_a_comma_separated_clause_is_not_excused(writer) -> None:
-    """'EIA projected growth of 47%, 14 GW was installed in 2025.' must not
-    be kept word for word either: a comma is a genuine clause boundary, not
-    a punctuation-only gap, so '14 GW was installed' is never a candidate
-    for inheriting '47%'s forecast marker at all.
-    """
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, STEO_PAREN]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["ent.news"]
-    drafted = "EIA projected growth of 47%, 14 GW was installed in 2025."
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert drafted not in [p.text for p in composition.summary]
-    if composition.summary:
-        assert "expected" in composition.summary[0].text
-    else:
-        assert composition.rejected_points and composition.rejected_points[0].text == drafted
-
-
-
-# --- Gate G3 live refusals: a bare month name restating the page's own date -
-
-
-def test_a_bare_month_and_year_restating_the_pages_own_date_is_accepted(writer) -> None:
-    """Live G3 refusal 4: 'February 2025' restates the page's own
-    'stated 2025-02-24' at a coarser grain. ``dates_in`` requires a day (ISO
-    or day-first) so it never sees a bare month name, and it fell through to
-    an ordinary unattested-name refusal.
-    """
-    finding = _checked("https://utilitydive.com/news/x",
-                       "EIA projects this growth could almost double to an addition of 18.2 GW in 2025.",
-                       "18.2", "GW", organisation="Utility Dive", kind="forecast", period="2025",
-                       target="topic-02-target-01", statement_date="2025-02-24")
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, finding]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["utilitydive.com"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="Utility Dive reported in February 2025 that EIA projected this growth could almost "
-             "double to an addition of 18.2 GW in 2025.",
-        finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.rejected_points == []
-    assert len(composition.summary) == 1
-
-
-def test_a_month_the_page_does_not_carry_is_still_refused(writer) -> None:
-    """The month fix must stay honest: a month the page's own date does not
-    name is still an invented date, not a coarser restatement of one.
-    """
-    finding = _checked("https://utilitydive.com/news/x",
-                       "EIA projects this growth could almost double to an addition of 18.2 GW in 2025.",
-                       "18.2", "GW", organisation="Utility Dive", kind="forecast", period="2025",
-                       target="topic-02-target-01", statement_date="2025-02-24")
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, finding]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["utilitydive.com"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="Utility Dive reported in March 2025 that EIA projected this growth could almost "
-             "double to an addition of 18.2 GW in 2025.",
-        finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
-    assert composition.summary == []
-    [refused] = composition.rejected_points
-    assert "March" in refused.reason
-
-
-# --- Gate G3 live refusal 5: a multi-clause "expects...that...will...and ----
-# --- that...will..." sentence is hedged clause-by-clause, all at once -------
-
-
-def test_a_two_clause_expects_that_will_and_that_will_sentence_is_hedged_throughout(writer) -> None:
-    """Live G3 refusal 5: 'EIA expects, as reported by Utility Dive in June
-    2025, that domestic storage capacity will rise ..., and that battery
-    storage in the commercial and industrial sectors will rise ...' bundles
-    four figures across two 'will' clauses under one distant 'expects'.
-    ``hedge_forecast``'s will/would replacement is a single global
-    substitution (``re.sub``, not one match): it hedges every 'will' clause
-    in one rewrite, not just the first, so both clauses -- and every figure
-    in them -- pick up 'expected' at once. The positive rewrite check must
-    accept a rewrite that reaches every clause it touched, not merely the
-    first one it finds.
-    """
-    finding = _checked_multi(
-        "https://utilitydive.com/news/y",
-        "EIA said domestic storage capacity will rise from about 28 GW to 64.9 GW. Large-scale "
-        "battery storage in the commercial and industrial sectors will rise from about 100 MW to "
-        "about 300 MW.",
-        [("28", "GW", "forecast"), ("64.9", "GW", "forecast"),
-         ("100", "MW", "forecast"), ("300", "MW", "forecast")],
-        organisation="Utility Dive", target="topic-02-target-01", period="2026", statement_date="2025-06-10",
+    labels = _labels(task.registry)
+    steo_label, woodmac_label = labels["ent.news"], labels["woodmac.com"]
+    utility_label, enerknol_label = labels["utilitydive.com"], labels["enerknol.com"]
+    sentences = [
+        # Live G3 refusal 1: a parenthetical restatement of the governing figure.
+        ("In its January 2025 forecast, as reported by ent.news, EIA projected battery storage "
+         "capacity growing by 47% (14 GW) in 2025.", [steo_label]),
+        # Live G3 refusal 2: a compound-unit figure sharing one governing clause.
+        ("Wood Mackenzie's Q1 2025 forecast projects 15 GW/49 GWh of energy storage capacity "
+         "across all segments in 2025.", [woodmac_label]),
+        # Live G3 refusal 4: a bare month and year restating the page's own date.
+        ("Utility Dive reported in February 2025 that EIA projected this growth could almost "
+         "double to an addition of 18.2 GW in 2025.", [utility_label]),
+        # Live G3 refusal 5: a two-clause "will ... and ... will ..." forecast.
+        ("EIA expects, as reported by Utility Dive in June 2025, that domestic storage capacity "
+         "will rise from about 28 GW to 64.9 GW, and that battery storage in the commercial and "
+         "industrial sectors will rise from about 100 MW to about 300 MW over the same period.",
+         [utility_label]),
+        # Round 2 refusal: an appositive restatement, "47%, or 14 GW,".
+        ("For 2025, the U.S. Energy Information Administration forecast battery storage capacity "
+         "growing by 47%, or 14 GW, in its January 2025 Short-Term Energy Outlook as reported by "
+         "ent.news.", [steo_label]),
+        # Round 2 refusal: a host name the old check misread as an unattested name.
+        ("EnerKnol reported that battery storage accounts for two percent of total U.S. power "
+         "capacity.", [enerknol_label]),
+        # Round 2 refusal: the full organisation name where only "EIA" appears nearby.
+        ("Utility Dive reported that the U.S. Energy Information Administration projected this "
+         "growth could almost double to an addition of 18.2 GW in 2025.", [utility_label]),
+        # A realised-outcome verb next to a forecast figure, the honesty-regression fixture.
+        ("EIA projected growth of 47% (14 GW was installed) in 2025.", [steo_label]),
+    ]
+    draft = ReportWriterDraft(
+        executive_summary=[],
+        sections=[WriterSectionDraft(
+            title="Live refusals",
+            points=[WriterPointDraft(text=text, finding_labels=labels_) for text, labels_ in sentences],
+        )],
     )
-    state = _task_state().model_copy(update={"verified_findings": [EIA_2024, finding]})
-    task = writer.build_task(state)
-    label = _labels(task.registry)["utilitydive.com"]
-    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(
-        text="EIA expects, as reported by Utility Dive in June 2025, that domestic storage capacity "
-             "will rise from about 28 GW to 64.9 GW, and that battery storage in the commercial and "
-             "industrial sectors will rise from about 100 MW to about 300 MW over the same period.",
-        finding_labels=[label])], sections=[])
-    composition = compose_written_report(task, draft)
+    checker.verdicts = {f"S{n:03d}": _verdict("consistent") for n in range(1, len(sentences) + 1)}
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
     assert composition.rejected_points == []
-    [point] = composition.summary
-    assert "is expected to rise" in point.text and "are expected to rise" in point.text
-    assert "June 2025" in point.text   # the attribution date is kept, checked and cleared, not stripped
+    [section] = composition.sections
+    assert [p.text for p in section.points] == [text for text, _ in sentences]
+    assert len(checker.calls[0]) == len(sentences)   # one batch call, every candidate together
 
 
 # --- fixtures -------------------------------------------------------------
+
+
+@dataclass
+class _FakeStatementCheckItem:
+    """Mirrors ``evidence_verifier.StatementCheckItem`` (D8) by field name
+    only; constructed by ``compose_written_report`` and read by the fake
+    checker below, never by ``isinstance``."""
+
+    label: str
+    text: str
+    findings: list = field(default_factory=list)
+    labels: list = field(default_factory=list)
+
+
+@dataclass
+class _FakeVerdict:
+    label: str
+    verdict: str
+    corrected_text: str = ""
+    reason: str = "consistent with its findings"
+
+
+def _verdict(verdict: str, *, corrected_text: str = "", reason: str | None = None) -> _FakeVerdict:
+    return _FakeVerdict(label="", verdict=verdict, corrected_text=corrected_text,
+                        reason=reason or "consistent with its findings")
+
+
+def _error(error_type: str, message: str):
+    from deep_research.agents.errors import agent_error
+    return agent_error(agent_name="evidence_verifier", error_type=error_type, message=message)
+
+
+class _FakeChecker:
+    """Monkeypatched over ``evidence_verifier.check_statements`` (D8):
+    ``evidence_verifier.py`` does not define the real one in this tree yet
+    (T2_1 lands it separately), so this is what the contract's own guidance
+    calls for -- code against the contract with a fake, monkeypatched in
+    tests. Every candidate defaults to "consistent" unless ``verdicts``
+    names its label explicitly.
+    """
+
+    def __init__(self) -> None:
+        self.verdicts: dict[str, _FakeVerdict] = {}
+        self.errors: list = []
+        self.calls: list[list[_FakeStatementCheckItem]] = []
+
+    async def __call__(self, provider, items, *, question, fingerprint=None):
+        del provider, question
+        batch = list(items)
+        self.calls.append(batch)
+        if fingerprint is not None:
+            fingerprint("StatementCheckDraft")
+        result = {}
+        for item in batch:
+            verdict = self.verdicts.get(item.label)
+            if verdict is not None:
+                result[item.label] = _FakeVerdict(label=item.label, verdict=verdict.verdict,
+                                                   corrected_text=verdict.corrected_text, reason=verdict.reason)
+        return result, list(self.errors)
+
+
+@pytest.fixture
+def checker(monkeypatch) -> _FakeChecker:
+    fake = _FakeChecker()
+    monkeypatch.setattr("deep_research.agents.evidence_verifier.StatementCheckItem",
+                        _FakeStatementCheckItem, raising=False)
+    monkeypatch.setattr("deep_research.agents.evidence_verifier.check_statements", fake, raising=False)
+    return fake
 
 
 def _output_limit_error() -> ProviderOutputLimitError:
@@ -679,6 +585,3 @@ def writer_truncated_then_ok(tracker: Tracker, tmp_path: Path) -> tuple[ReportWr
             text="Generators added 10.4 GW of battery storage in 2024.", finding_labels=["F01"])], sections=[]),
     ])
     return _writer(tracker, completer, synthesizer_tools(tracker, output_root=tmp_path)), completer
-
-
-
