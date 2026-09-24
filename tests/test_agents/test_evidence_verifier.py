@@ -589,3 +589,65 @@ def test_a_relayed_organisation_that_owns_the_page_resolves_to_own() -> None:
         proposed="relayed", organisation="U.S. Energy Information Administration",
         finding=finding, read=read, issuer=None,
     ) == ("own", "U.S. Energy Information Administration")
+
+
+def test_a_cover_credited_organisation_resolves_to_relayed_far_from_the_figure() -> None:
+    """Task 3.6's audit-2 shape (spec §5, PD-8 row 2): a mirrored PDF credits
+    its originator only on its cover/masthead, many passages before the
+    figure itself, with no attribution cue anywhere near the figure's own
+    locator. The document's opening still identifies the whole document's
+    author, so the relay resolves correctly rather than falling through to
+    'unattributed, the relaying host'.
+    """
+    cover = "Short-Term Energy\nOutlook\nSTEO\nJanuary 2025"
+    masthead = (
+        "The U.S. Energy Information Administration (EIA), the statistical "
+        "and analytical agency within the U.S. Department of Energy (DOE), "
+        "prepared this report."
+    )
+    figure_text = "battery storage capacity growing by 47% (14 GW) in 2025"
+    passages = {
+        "page-1-chunk-0": cover,
+        "page-2-chunk-1": masthead,
+        "page-3-chunk-2": "Macroeconomic assumptions are a key driver in the forecast.",
+        "page-13-chunk-13": "Retail sales of electricity into the industrial sector increase.",
+        "page-14-chunk-14": f"integrate onto the power grid, with {figure_text} and 25% in 2026.",
+        "page-15-chunk-15": "Generation from nuclear will increase in 2025 and 2026.",
+    }
+    read = make_read(
+        " ".join(passages.values()),
+        url="https://ent.news/2025/1/940.pdf", title="Short-Term Energy Outlook - ENT News",
+        passages=passages,
+    )
+    finding = make_finding(read, figure_text, target_ids=())
+    assert resolve_attribution(
+        proposed="relayed", organisation="U.S. Energy Information Administration",
+        finding=finding, read=read, issuer=None,
+    ) == ("relayed", "U.S. Energy Information Administration")
+
+
+def test_an_opening_mention_with_no_authorship_cue_stays_unattributed() -> None:
+    """The same shape, but the opening only mentions the proposed
+    organisation ("Unlike BloombergNEF") with no authorship cue: it must not
+    be credited with the document, and the figure still has no local
+    attribution cue either, so the finding stays unattributed to the host.
+    """
+    cover = "Short-Term Energy Outlook. Unlike BloombergNEF, this report uses a different methodology."
+    figure_text = "battery storage capacity growing by 47% (14 GW) in 2025"
+    passages = {
+        "page-1-chunk-0": cover,
+        "page-3-chunk-2": "Macroeconomic assumptions are a key driver in the forecast.",
+        "page-13-chunk-13": "Retail sales of electricity into the industrial sector increase.",
+        "page-14-chunk-14": f"integrate onto the power grid, with {figure_text} and 25% in 2026.",
+        "page-15-chunk-15": "Generation from nuclear will increase in 2025 and 2026.",
+    }
+    read = make_read(
+        " ".join(passages.values()),
+        url="https://ent.news/2025/1/940.pdf", title="x",
+        passages=passages,
+    )
+    finding = make_finding(read, figure_text, target_ids=())
+    assert resolve_attribution(
+        proposed="relayed", organisation="BloombergNEF",
+        finding=finding, read=read, issuer=None,
+    ) == ("unattributed", "ent.news")

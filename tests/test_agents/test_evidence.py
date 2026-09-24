@@ -3258,3 +3258,60 @@ def test_own_organisation_on_an_agency_host() -> None:
         text, url="https://www.eia.news/todayinenergy/detail.php?id=64705"
     )
     assert not own_organisation_on_page(lookalike, "U.S. Energy Information Administration")
+
+
+def test_a_cover_credited_organisation_is_a_relay_even_far_from_the_figure() -> None:
+    """Task 3.6's audit-2 shape: ent.news's copy of EIA's Short-Term Energy
+    Outlook credits EIA only on its cover/masthead and in scattered "Data
+    source:" captions -- never within reach of the battery-storage figure
+    itself, many pages later. The document's opening still identifies its
+    author for the whole document.
+    """
+    cover = "Short-Term Energy\nOutlook\nSTEO\nJanuary 2025"
+    masthead = (
+        "The U.S. Energy Information Administration (EIA), the statistical "
+        "and analytical agency within the U.S. Department of Energy (DOE), "
+        "prepared this report."
+    )
+    figure_text = "battery storage capacity growing by 47% (14 GW) in 2025"
+    passages = {
+        "page-1-chunk-0": cover,
+        "page-2-chunk-1": masthead,
+        "page-3-chunk-2": "Macroeconomic assumptions are a key driver in the forecast.",
+        "page-13-chunk-13": "Retail sales of electricity into the industrial sector increase.",
+        "page-14-chunk-14": f"integrate onto the power grid, with {figure_text} and 25% in 2026.",
+        "page-15-chunk-15": "Generation from nuclear will increase in 2025 and 2026.",
+    }
+    read = make_read(
+        " ".join(passages.values()),
+        url="https://ent.news/2025/1/940.pdf", title="Short-Term Energy Outlook - ENT News",
+        passages=passages,
+    )
+    # The valid, non-stale locator's own neighbourhood carries no EIA mention:
+    # this is not the stale-locator case round 1 fixed.
+    assert "EIA" not in neighbouring_passage_text(read, "page-14-chunk-14")
+    assert relay_attribution_on_page(
+        read, "page-14-chunk-14", figure_text, "U.S. Energy Information Administration"
+    )
+
+
+def test_an_opening_that_merely_mentions_an_organisation_is_not_authorship() -> None:
+    """A body named in the opening with no authorship cue is not credited
+    with the whole document -- "Unlike BloombergNEF" is a mention, not
+    publication, the same distinction ``attribution_cue_adjacent`` already
+    draws beside a snippet."""
+    cover = "Short-Term Energy Outlook. Unlike BloombergNEF, this report uses a different methodology."
+    figure_text = "battery storage capacity growing by 47% (14 GW) in 2025"
+    passages = {
+        "page-1-chunk-0": cover,
+        "page-3-chunk-2": "Macroeconomic assumptions are a key driver in the forecast.",
+        "page-13-chunk-13": "Retail sales of electricity into the industrial sector increase.",
+        "page-14-chunk-14": f"integrate onto the power grid, with {figure_text} and 25% in 2026.",
+        "page-15-chunk-15": "Generation from nuclear will increase in 2025 and 2026.",
+    }
+    read = make_read(
+        " ".join(passages.values()),
+        url="https://ent.news/2025/1/940.pdf", title="x",
+        passages=passages,
+    )
+    assert not relay_attribution_on_page(read, "page-14-chunk-14", figure_text, "BloombergNEF")
