@@ -782,3 +782,118 @@ def test_a_relays_own_date_never_prints_or_orders_as_the_issuers_release() -> (
     silent = ClaimProvenance(attributed_issuer="EIA")
     assert silent.release == ""
     assert silent.as_text() == "EIA"
+
+
+import pytest
+from pydantic import ValidationError
+
+from deep_research.utils.types import FindingFigure
+from tests.evidence_fakes import figure, make_finding, make_read, make_target
+
+
+def test_a_finding_carries_its_snippet_read_locator_and_figures() -> None:
+    read = make_read()
+    finding = make_finding(
+        read,
+        "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,",
+        figures=[figure("10.4", "gigawatts", "2024", "actual")],
+    )
+    assert (finding.read_id, finding.locator) == (read.read_id, "page-1-chunk-0")
+    assert finding.figures[0] == FindingFigure(
+        value="10.4", unit="gigawatts", period="2024", kind="actual"
+    )
+
+
+def test_blank_evidence_fields_are_absent() -> None:
+    finding = make_finding(make_read(), "Generators added 10.4 gigawatts").model_copy(
+        update={"snippet": " ", "read_id": "", "locator": "  "}
+    )
+    rebuilt = type(finding).model_validate(finding.model_dump())
+    assert (rebuilt.snippet, rebuilt.read_id, rebuilt.locator) == (None, None, None)
+
+
+def test_a_figure_needs_a_value_and_a_unit() -> None:
+    with pytest.raises(ValidationError):
+        FindingFigure(value="", unit="GW")
+    with pytest.raises(ValidationError):
+        FindingFigure(value="10.4", unit="")
+
+
+def test_a_target_carries_structured_fields() -> None:
+    target = make_target(organisation="U.S. Energy Information Administration")
+    assert (target.unit_dimension, target.period, target.kind) == ("power", "2024", "actual")
+    assert target.organisation == "U.S. Energy Information Administration"
+    with pytest.raises(ValidationError):
+        make_target(unit_dimension="volts")
+
+
+from deep_research.utils.types import (
+    FigureContext,
+    FigureResult,
+    FindingVerification,
+    ResearchState,
+    merge_research_state,
+)
+
+
+def _context(**overrides: object) -> FigureContext:
+    fields = dict(period="2024", scope=None, attribution="own",
+                  organisation="U.S. Energy Information Administration", kind="actual")
+    fields.update(overrides)
+    return FigureContext(**fields)
+
+
+def test_a_kept_figure_carries_its_context() -> None:
+    with pytest.raises(ValidationError):
+        FigureResult(figure=figure("10.4", "GW"), matched=True)
+    dropped = FigureResult(figure=figure("10.4", "GW"), matched=True,
+                           dropped_reason="evidence_not_on_page")
+    assert not dropped.kept
+
+
+def test_status_and_drop_reason_agree() -> None:
+    with pytest.raises(ValidationError):
+        FindingVerification(status="dropped")
+    with pytest.raises(ValidationError):
+        FindingVerification(status="verified", dropped_reason="snippet_not_on_page")
+
+
+def test_verified_means_every_figure_confirmed() -> None:
+    corrected = FigureResult(figure=figure("18.9", "GW"), matched=True,
+                             context=_context(scope="all segments"), corrected=True)
+    with pytest.raises(ValidationError):
+        FindingVerification(status="verified", figure_results=[corrected])
+    assert FindingVerification(status="verified_corrected", figure_results=[corrected])
+
+
+def test_a_verified_finding_keeps_at_least_one_figure() -> None:
+    dropped = FigureResult(figure=figure("10.4", "GW"), matched=False,
+                           dropped_reason="figure_not_in_evidence")
+    with pytest.raises(ValidationError):
+        FindingVerification(status="verified_corrected", figure_results=[dropped])
+
+
+def test_verified_findings_are_replaced_not_appended() -> None:
+    read = make_read()
+    first = make_finding(read, "Generators added 10.4 gigawatts")
+    second = make_finding(read, "operators report plans to add 19.6 GW")
+    state = ResearchState(session_id="s", original_question="q")
+    state = merge_research_state(state, {"verified_findings": [first]})
+    state = merge_research_state(state, {"verified_findings": [first, second]})
+    assert state.verified_findings == [first, second]
+
+
+from deep_research.utils.types import FactRow, NotFoundTarget, ReportComposition
+
+
+def test_a_fact_row_and_a_not_found_target_validate() -> None:
+    row = FactRow(row_id="K001", organisation="U.S. Energy Information Administration",
+                  attribution="own", measure="battery storage power capacity added",
+                  period="2024", value="10.4 GW", kind="actual", finding_id="f1")
+    assert row.earlier == [] and row.duplicate_finding_ids == []
+    assert NotFoundTarget(target_id="topic-02-target-01", question="q").searched is False
+
+
+def test_a_composition_carries_fact_rows_not_found_and_labels() -> None:
+    composition = ReportComposition(question="q", session_id="s")
+    assert (composition.fact_rows, composition.not_found, composition.finding_labels) == ([], [], {})
