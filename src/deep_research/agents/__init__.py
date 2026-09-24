@@ -225,6 +225,14 @@ from deep_research.agents.evidence_verifier import (
     context_check_messages,
     context_check_failed_error,
     evidence_verified_event,
+    STATEMENT_CHECK_SYSTEM_PROMPT,
+    STATEMENT_CHECK_INSTRUCTION,
+    StatementCheckItem,
+    StatementVerdictDraft,
+    StatementCheckDraft,
+    statement_check_messages,
+    statement_check_failed_error,
+    check_statements,
 )
 from deep_research.agents.fact_checker import (
     ADJUDICATION_OPERATION,
@@ -1537,4 +1545,18 @@ __all__ = [
     # (F3). Appended as one block, for the same AST-coverage reason as above.
     "canonical_scopes",
     "realized_outcome",
+    # Evidence Verifier plan, D8: the Statement Check (spec §5.4) — the
+    # prompt, its item and reply types, the request builder, the failed-batch
+    # error and the batched checker. Appended as one block, the way earlier
+    # tasks appended theirs, because ``tests/test_imports.py`` walks each
+    # submodule's AST and requires every public top-level name to be
+    # reachable here.
+    "STATEMENT_CHECK_SYSTEM_PROMPT",
+    "STATEMENT_CHECK_INSTRUCTION",
+    "StatementCheckItem",
+    "StatementVerdictDraft",
+    "StatementCheckDraft",
+    "statement_check_messages",
+    "statement_check_failed_error",
+    "check_statements",
 ]
