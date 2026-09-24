@@ -2341,13 +2341,25 @@ _MEASURE_SCALES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
-# A scale word that only appears after one of these cues is not the clause's
-# own scale — it is the scale the clause is carving *out* of an otherwise
-# unscoped total: "excluding distributed systems" and "excluding residential
-# and commercial systems" state no scale of their own (review rank 2).
+# A scale word — or a technology word — that only appears after one of these
+# cues is not the clause's own claim: it is what the clause is carving *out*
+# of an otherwise unscoped total. "Excluding distributed systems" and
+# "excluding residential and commercial systems" state no scale of their own
+# (review rank 2); "excluding pumped hydro" and "not counting hydrogen" are
+# disclaiming that technology, not asserting it (re-review rank 1).
 _SCALE_EXCLUSION_CUE = re.compile(
     r"\bexclud\w*\b|\bnot counting\b|\bexcept\b|\bseparately from\b", re.I
 )
+
+
+def _before_exclusion_cue(text: str) -> str:
+    """``text`` up to its first exclusion cue, or all of it when it has none.
+
+    What comes after such a cue is disclaimed, not stated, so no scale or
+    technology word read there is the clause's own claim.
+    """
+    cue = _SCALE_EXCLUSION_CUE.search(text)
+    return text[: cue.start()] if cue else text
 
 
 def _measure_scale(text: str) -> frozenset[str]:
@@ -2360,8 +2372,7 @@ def _measure_scale(text: str) -> frozenset[str]:
     scale named after an exclusion cue is disclaimed, not stated, so only the
     text before the first such cue is read.
     """
-    cue = _SCALE_EXCLUSION_CUE.search(text)
-    scoped = text[: cue.start()] if cue else text
+    scoped = _before_exclusion_cue(text)
     return frozenset(scale for scale, pattern in _MEASURE_SCALES if pattern.search(scoped))
 
 
@@ -2461,11 +2472,18 @@ def qualifier_matches_requirement(
         # (review rank 1b), but a clause naming another storage technology,
         # or a combined renewables-and-storage total, is a different one
         # (review rank 1). A clause that spells "battery" or "BESS" itself
-        # is never refused here, whatever else it also names.
+        # is never refused here, whatever else it also names. A technology
+        # named only after an exclusion cue is disclaimed, not asserted:
+        # "excluding pumped hydro" and "not counting hydrogen" state a
+        # non-pumped, non-hydrogen figure, not the technology they exclude
+        # (re-review rank 1).
         if (
             "battery" in detail
             and _BATTERY_WORD.search(proposition.text) is None
-            and _OTHER_STORAGE_TECHNOLOGY.search(proposition.text) is not None
+            and _OTHER_STORAGE_TECHNOLOGY.search(
+                _before_exclusion_cue(proposition.text)
+            )
+            is not None
         ):
             return False
         if "add" in detail and _ADDITION.search(proposition.text) is None:

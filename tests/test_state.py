@@ -1406,6 +1406,46 @@ def test_a_battery_measure_refuses_pumped_storage_hydropower() -> None:
     )
 
 
+def test_a_battery_measure_accepts_a_clause_excluding_pumped_hydro() -> None:
+    """A clause that disclaims pumped hydro is not asserting pumped hydro.
+
+    The other-technology check read the raw clause, so a figure that
+    explicitly excludes pumped hydro was refused as if it named pumped hydro
+    itself (re-review P1). Only text stated before the exclusion cue is the
+    clause's own claim.
+    """
+    assert qualifier_matches_requirement(
+        _tracker_proposition(
+            text=(
+                "EIA reported that developers added 10,400 MW of storage "
+                "capacity in the United States in 2024, excluding pumped "
+                "hydro."
+            ),
+            value="10,400",
+            unit="MW",
+            attribution="EIA",
+        ),
+        "measure: projected battery storage capacity additions, in megawatts",
+    )
+
+
+def test_a_battery_measure_accepts_a_clause_not_counting_hydrogen() -> None:
+    """The control: the same rule for a different exclusion cue and tech."""
+    assert qualifier_matches_requirement(
+        _tracker_proposition(
+            text=(
+                "EIA reported that developers added 10,400 MW of storage "
+                "capacity in the United States in 2024, not counting "
+                "hydrogen."
+            ),
+            value="10,400",
+            unit="MW",
+            attribution="EIA",
+        ),
+        "measure: projected battery storage capacity additions, in megawatts",
+    )
+
+
 def test_a_grid_scale_measure_accepts_commercial_operation_wording() -> None:
     """"Commercial operation" is EIA's lifecycle phrase, not the C&I segment.
 
