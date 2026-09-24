@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
 
 import pytest
 
 from deep_research.agents.evidence_verifier import (
+    _CONTEXT_CHECK_REPLY_EXAMPLES,
+    CONTEXT_CHECK_BATCH_SIZE,
+    CONTEXT_CHECK_CONCURRENCY,
     EVIDENCE_VERIFIER_NAME,
     ContextCheckDraft,
     ContextItem,
@@ -72,6 +77,16 @@ def test_the_snippet_check_is_cosmetic() -> None:
 # the Context Check's enforcement (spec §5.2)
 # ---------------------------------------------------------------------------
 
+
+def test_the_reply_examples_correction_appears_in_its_own_evidence_words() -> None:
+    """The example shown to the model must obey the same rule code enforces
+    (§5.2): a correction is kept only when it appears in evidence_words
+    itself, not merely somewhere else in the passage."""
+    _, payload = _CONTEXT_CHECK_REPLY_EXAMPLES[0]
+    reply_figure = json.loads(payload)["figures"][0]
+    assert reply_figure["scope"] in reply_figure["evidence_words"]
+
+
 WOODMAC_URL = "https://www.woodmac.com/press-releases/2025-us-energy-storage"
 WOODMAC_PAGE = (
     "The U.S. energy storage market hit a record 18.9 gigawatts of battery energy "
@@ -133,6 +148,26 @@ def test_invented_evidence_words_are_rejected() -> None:
 def test_a_correction_the_page_does_not_carry_drops_the_figure() -> None:
     read, finding = _woodmac_finding()
     result = verify_finding(_item(read, finding), {1: _reply(period="2026", verdict="correct")})
+    assert result.figure_results[0].dropped_reason == "correction_not_on_page"
+
+
+def test_a_correction_found_only_elsewhere_in_the_passage_is_refused() -> None:
+    """evidence_words is where THIS figure states its period and scope; the
+    passage's other sentences may not stand in for it. SNIPPET_189 states the
+    2025 figure; the wider passage separately mentions "2024" in its very
+    next clause ("a 52% increase over 2024"), which must not license
+    correcting THIS figure's period to 2024.
+    """
+    read, finding = _woodmac_finding()
+    result = verify_finding(_item(read, finding), {1: _reply(
+        period="2024", evidence_words=SNIPPET_189, verdict="correct")})
+    assert result.figure_results[0].dropped_reason == "correction_not_on_page"
+
+
+def test_a_scope_correction_not_on_the_page_is_dropped() -> None:
+    read, finding = _woodmac_finding()
+    result = verify_finding(_item(read, finding), {1: _reply(
+        scope="residential only", verdict="correct")})
     assert result.figure_results[0].dropped_reason == "correction_not_on_page"
 
 
@@ -242,7 +277,7 @@ def _bare_finding(content: str, **fields: object) -> Finding:
 
 
 def _metric_sentence(index: int) -> str:
-    return f"Site {chr(65 + index)} added {10 + index} GW of capacity in 2025."
+    return f"Site {index:03d} added {10 + index} GW of capacity in 2025."
 
 
 def _metrics_page(count: int) -> str:
@@ -253,7 +288,7 @@ def _metric_finding(read, index: int) -> Finding:
     return make_finding(
         read, _metric_sentence(index),
         figures=[figure(str(10 + index), "GW", "2025", "actual")],
-        content=f"Site {chr(65 + index)} capacity finding",
+        content=f"Site {index:03d} capacity finding",
     )
 
 
@@ -287,6 +322,23 @@ def _output_limit_error() -> ProviderOutputLimitError:
             request_attempt=1,
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_the_context_check_call_is_fingerprinted(tracker: Tracker) -> None:
+    """A run's ``call_fingerprints`` names every kind of call it made, so a
+    caller can tell which model/effort configuration produced it -- the same
+    bookkeeping every other structured call in this codebase performs."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")])
+    completer = ScriptedCompleter(outputs=[_confirm_reply])
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=[finding], read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert "ContextCheckDraft" in outcome.call_fingerprints
 
 
 @pytest.mark.asyncio
@@ -440,3 +492,100 @@ async def test_a_not_matched_figure_in_a_failed_batch_is_dropped_as_context_unav
     [result] = judged.verification.figure_results
     assert not result.matched
     assert result.dropped_reason == "context_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_a_batch_truncated_twice_gives_context_unchecked_and_two_errors(
+    tracker: Tracker,
+) -> None:
+    """The first attempt truncates and splits in half; when both halves also
+    truncate, each half's own failure is recorded (2 errors), and every
+    finding keeps its Figure Match result as unchecked context rather than
+    being dropped or silently retried a third time."""
+    read = make_read(_metrics_page(4), url="https://example.test/twice", title="Twice")
+    findings = [_metric_finding(read, i) for i in range(4)]
+    completer = ScriptedCompleter(outputs=[
+        _output_limit_error(), _output_limit_error(), _output_limit_error(),
+    ])
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=findings, read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert len(completer.calls) == 3
+    judged = outcome.state_update["verified_findings"]
+    assert len(judged) == 4
+    assert all(
+        f.verification.status == "verified" and f.verification.context_unchecked
+        for f in judged
+    )
+    error_types = [e.error_type for e in outcome.state_update["errors"]]
+    assert error_types.count("evidence_verifier_context_check_failed") == 2
+
+
+class _ConcurrencyProbe:
+    """A completer that records the peak number of concurrent calls in flight.
+
+    Real overlap requires a genuine await point inside the call, which
+    ``ScriptedCompleter`` never yields on; this fake sleeps so several batches
+    can actually be in flight together, the only way to observe the cap.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str | None, list]] = []
+        self._in_flight = 0
+        self.max_in_flight = 0
+
+    async def complete_structured(self, messages, schema, *, agent_name=None,
+                                  max_tokens=None, reasoning_effort=None):
+        self.calls.append((schema.__name__, agent_name, list(messages)))
+        self._in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        try:
+            await asyncio.sleep(0.01)
+            return _confirm_reply(list(messages), schema)
+        finally:
+            self._in_flight -= 1
+
+    async def complete_react(self, messages, tools, *, agent_name=None, max_tokens=None):
+        raise AssertionError("the Context Check never uses complete_react")
+
+
+@pytest.mark.asyncio
+async def test_the_concurrency_cap_is_four(tracker: Tracker) -> None:
+    """§5.2: batches run concurrently, at most 4 at once. Six batches racing
+    for the same semaphore prove the cap holds rather than merely happening
+    to fit."""
+    batch_count = 6
+    total = batch_count * CONTEXT_CHECK_BATCH_SIZE
+    read = make_read(_metrics_page(total), url="https://example.test/cap", title="Cap test")
+    findings = [_metric_finding(read, i) for i in range(total)]
+    probe = _ConcurrencyProbe()
+    agent = _evidence_verifier(tracker, probe)
+    state = _state(raw_findings=findings, read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert len(probe.calls) == batch_count
+    assert probe.max_in_flight == CONTEXT_CHECK_CONCURRENCY
+    assert len(outcome.state_update["verified_findings"]) == total
+
+
+def test_a_relayed_organisation_that_owns_the_page_resolves_to_own() -> None:
+    """PD-8 row 1: when the Context Check proposes 'relayed' for the
+    organisation whose own page this actually is, code overrides it to
+    'own' rather than mislabelling an issuer's own figure as a relay of
+    itself."""
+    text = (
+        "U.S. battery capacity increased 66% in 2024. Generators added 10.4 "
+        "GW of new battery storage capacity in 2024, according to the U.S. "
+        "Energy Information Administration."
+    )
+    read = make_read(text)  # eia.gov, titled "U.S. battery capacity increased 66% in 2024"
+    finding = make_finding(read, text)
+    assert resolve_attribution(
+        proposed="relayed", organisation="U.S. Energy Information Administration",
+        finding=finding, read=read, issuer=None,
+    ) == ("own", "U.S. Energy Information Administration")

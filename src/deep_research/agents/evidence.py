@@ -1165,7 +1165,27 @@ def own_organisation_on_page(read: ReadRecord, organisation: str) -> bool:
     return bool(name.search(f"{read.title} {_document_text(read)}"))
 
 
-def relay_attribution_on_page(read: ReadRecord, locator: str, organisation: str) -> bool:
+# The same bound the Context Check windows a passage to (spec §5.2): large
+# enough for a real paragraph's worth of context, never the whole page.
+_RELAY_PASSAGE_CHARS = 3000
+
+
+def _windowed_passage(text: str, snippet: str, *, chars: int) -> str:
+    """``text`` bounded to ``chars`` characters, centred on ``snippet``.
+
+    Never the whole of a long ``text`` unbounded: that let a mention far from
+    where a snippet's own figure actually sits stand in for its context.
+    ``snippet`` not found simply windows from the start, the same degraded
+    case an unresolved locator already leaves.
+    """
+    if len(text) <= chars:
+        return text
+    anchor = text.casefold().find((snippet or "")[:40].casefold())
+    start = max(0, anchor - chars // 2)
+    return text[start : start + chars]
+
+
+def relay_attribution_on_page(read: ReadRecord, locator: str, snippet: str, organisation: str) -> bool:
     """True when the passage around ``locator`` credits ``organisation`` for a figure.
 
     The same rule a researcher attribution quote is admitted under: the name is
@@ -1173,9 +1193,13 @@ def relay_attribution_on_page(read: ReadRecord, locator: str, organisation: str)
     cue ("according to", "reported by", a possessive, ...) beside it.
     """
     # F9: Figure Match admits a snippet found anywhere on the page, so its locator
-    # may be stale; then the whole page is the passage (the researcher's own use
-    # of neighbouring_passage_text keeps its "" for an unknown locator).
-    passage = neighbouring_passage_text(read, locator) or _document_text(read)
+    # may be stale. The fallback is a bounded window centred on the snippet
+    # itself, never the whole page: an unbounded page-wide search let a distant,
+    # unrelated "According to BNEF" credit that body for a figure it never
+    # actually attributed.
+    passage = neighbouring_passage_text(read, locator) or _windowed_passage(
+        _document_text(read), snippet, chars=_RELAY_PASSAGE_CHARS
+    )
     name = organisation.strip()
     if not passage or not name:
         return False
