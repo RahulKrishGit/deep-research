@@ -760,9 +760,7 @@ from deep_research.agents.wording import (
     SCOPE_TERMS,
     clause_around,
     hardened_modality,
-    hedge_forecast,
     hedge_marker,
-    page_modal,
     realized_outcome,
     stated_role,
     stated_scopes,
@@ -1461,8 +1459,6 @@ __all__ = [
     "read_text",
     "SCOPE_TERMS",
     "clause_around",
-    "hedge_forecast",
-    "page_modal",
     "stated_role",
     "stated_scopes",
     "stated_years",
@@ -1539,10 +1535,15 @@ __all__ = [
     "finding_memory_payload",
     "report_written_event",
     "ReportWriterAgent",
-    # Fix round 1: Task 3.4's fix round made ``verified_facts.canonical_scopes``
-    # public (was ``_canonical_scopes``) and added ``wording.realized_outcome``,
-    # both consumed by the Report Writer's positive forecast-rewrite check
-    # (F3). Appended as one block, for the same AST-coverage reason as above.
+    # Task 3.4's fix round made ``verified_facts.canonical_scopes`` public (was
+    # ``_canonical_scopes``) and added ``wording.realized_outcome``, for the
+    # Report Writer's own forecast-rewrite check (F3). D8 deleted that check --
+    # the Statement Check judges a sentence's wording now, and code rewrites
+    # nothing -- so nothing outside their own modules consumes either name
+    # (``canonical_scopes`` is ``_figure_answers``' scope comparison,
+    # ``realized_outcome`` is half of ``stated_role``). Both stay exported
+    # because both are public module-level names. Appended as one block, for
+    # the same AST-coverage reason as above.
     "canonical_scopes",
     "realized_outcome",
     # Evidence Verifier plan, D8: the Statement Check (spec §5.4) — the

@@ -9,9 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from deep_research.agents.evidence_verifier import StatementCheckDraft, StatementVerdictDraft
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import render_finding_log, render_written_report
 from deep_research.agents.report_writer import (
+    MAX_POINT_CHARS,
     REPORT_WRITER_NAME,
     ReportWriterAgent,
     ReportWriterDraft,
@@ -190,6 +192,50 @@ async def test_a_corrected_verdict_replaces_the_sentence_with_corrected_text(wri
     assert composition.rejected_points == []
     [point] = composition.summary
     assert point.text == "Generators added 10.4 GW of battery storage in 2024."
+
+
+@pytest.mark.asyncio
+async def test_a_corrected_verdict_over_the_character_limit_is_refused_with_the_drafted_text(writer, checker) -> None:
+    """§6.2's length limit is one of the two mechanical rules code keeps, and
+    a model-authored correction is what reaches the reader: a collapsed
+    correction over ``MAX_POINT_CHARS`` is refused whole, publishing the
+    drafted text -- never the over-long rewrite, and never a cut-off one.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = "Generators added 10 GW of battery storage in 2024."
+    over_long = "Generators added 10.4 GW of new battery storage capacity in 2024. " * 12
+    assert len(" ".join(over_long.split())) > MAX_POINT_CHARS
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    checker.verdicts = {"S001": _verdict(
+        "corrected", corrected_text=over_long, reason="the finding states 10.4 GW, not 10")}
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.summary == []
+    [refused] = composition.rejected_points
+    assert refused.text == drafted
+    assert refused.reason == f"corrected text longer than {MAX_POINT_CHARS} characters"
+
+
+@pytest.mark.asyncio
+async def test_a_corrected_verdict_at_the_character_limit_is_still_applied(writer, checker) -> None:
+    """The other side of the same limit: a correction of exactly
+    ``MAX_POINT_CHARS`` collapsed characters is applied, because the rule
+    refuses only what exceeds it -- and it measures the collapsed text, not
+    the reply's own spacing.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = "Generators added 10 GW of battery storage in 2024."
+    base = "Generators added 10.4 GW of new battery storage capacity in 2024."
+    correction = " ".join([base] * 10)[:MAX_POINT_CHARS]
+    assert len(correction) == MAX_POINT_CHARS and correction == " ".join(correction.split())
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    checker.verdicts = {"S001": _verdict(
+        "corrected", corrected_text=f"  {correction}  ", reason="the finding states 10.4 GW, not 10")}
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.rejected_points == []
+    [point] = composition.summary
+    assert point.text == correction
 
 
 @pytest.mark.asyncio
@@ -394,8 +440,21 @@ ENERKNOL = _checked(
 )
 
 
+def _confirm_statement_reply(messages: list, schema: type) -> StatementCheckDraft:
+    """Answer every statement in the request with a plain 'consistent' verdict.
+
+    Reads the batch's own labels back out of the request body, so it answers
+    correctly whichever batch the real ``check_statements`` hands it.
+    """
+    del schema
+    return StatementCheckDraft(statements=[
+        StatementVerdictDraft(label=label, verdict="consistent", reason="Matches the findings.")
+        for label in re.findall(r"## (S\d+)", messages[1].content)
+    ])
+
+
 @pytest.mark.asyncio
-async def test_the_eight_live_g3_sentences_are_kept_when_the_checker_says_consistent(writer, checker) -> None:
+async def test_the_eight_live_g3_sentences_are_kept_when_the_checker_says_consistent(writer) -> None:
     """The five Gate G3 live refusals and the three round-2 refusals were
     all real, honest sentences the old code-pattern checks (clause
     governance, name attestation, bare month-year attestation) wrongly
@@ -452,12 +511,19 @@ async def test_the_eight_live_g3_sentences_are_kept_when_the_checker_says_consis
             points=[WriterPointDraft(text=text, finding_labels=labels_) for text, labels_ in sentences],
         )],
     )
-    checker.verdicts = {f"S{n:03d}": _verdict("consistent") for n in range(1, len(sentences) + 1)}
-    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    # The real ``check_statements`` (not a stand-in) answers these: it batches
+    # at ``CONTEXT_CHECK_BATCH_SIZE`` (5), so the eight candidates go out as
+    # two provider calls, five then three, and every candidate is checked
+    # exactly once. A single call over all eight would be a batching
+    # regression the writer's own fake could never show.
+    completer = ScriptedCompleter(outputs=[_confirm_statement_reply] * 2)
+    composition = await compose_written_report(task, draft, provider=completer, fingerprint=writer.fingerprint_call)
     assert composition.rejected_points == []
     [section] = composition.sections
     assert [p.text for p in section.points] == [text for text, _ in sentences]
-    assert len(checker.calls[0]) == len(sentences)   # one batch call, every candidate together
+    batches = [re.findall(r"## (S\d+)", messages[-1].content) for schema, _, messages in completer.calls]
+    assert [len(batch) for batch in batches] == [5, 3]
+    assert sorted(label for batch in batches for label in batch) == [f"S{n:03d}" for n in range(1, len(sentences) + 1)]
 
 
 # --- fixtures -------------------------------------------------------------
@@ -494,12 +560,14 @@ def _error(error_type: str, message: str):
 
 
 class _FakeChecker:
-    """Monkeypatched over ``evidence_verifier.check_statements`` (D8):
-    ``evidence_verifier.py`` does not define the real one in this tree yet
-    (T2_1 lands it separately), so this is what the contract's own guidance
-    calls for -- code against the contract with a fake, monkeypatched in
-    tests. Every candidate defaults to "consistent" unless ``verdicts``
-    names its label explicitly.
+    """Monkeypatched over ``evidence_verifier.check_statements`` (D8) to script
+    one verdict per candidate label: the fake reads the batch it is handed and
+    answers from ``verdicts``, so a test can drive one verdict per key without
+    a provider call. The deferred import inside ``compose_written_report`` is
+    what makes this substitution visible at all, and the real checker's own
+    batching is what the eight-sentence test above exercises instead. Every
+    candidate defaults to "consistent" unless ``verdicts`` names its label
+    explicitly.
     """
 
     def __init__(self) -> None:
@@ -508,11 +576,9 @@ class _FakeChecker:
         self.calls: list[list[_FakeStatementCheckItem]] = []
 
     async def __call__(self, provider, items, *, question, fingerprint=None):
-        del provider, question
+        del provider, question, fingerprint
         batch = list(items)
         self.calls.append(batch)
-        if fingerprint is not None:
-            fingerprint("StatementCheckDraft")
         result = {}
         for item in batch:
             verdict = self.verdicts.get(item.label)
