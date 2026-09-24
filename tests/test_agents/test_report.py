@@ -86,6 +86,7 @@ from deep_research.utils.types import (
     EvidenceUnit,
     Finding,
     ReadRecord,
+    RejectedDraftPoint,
     ReportAnswerRow,
     ReportStatement,
     ReportTerminalState,
@@ -171,6 +172,7 @@ def _claim(
     target_ids: list[str] | None = None,
     provenance: ClaimProvenance | None = None,
     cluster_id: str | None = None,
+    cluster_aliases: list[str] | None = None,
 ) -> Claim:
     """One checked claim. ``badge`` overrides the verdict-derived badge."""
     return Claim(
@@ -206,6 +208,7 @@ def _claim(
         target_ids=target_ids or [],
         provenance=provenance or ClaimProvenance(),
         cluster_id=cluster_id,
+        cluster_aliases=cluster_aliases or [],
     )
 
 
@@ -834,13 +837,12 @@ def test_uncertainty_prints_gaps_conflicts_and_limitations_once_each() -> None:
 
 
 def test_a_claim_the_findings_already_state_is_not_printed_twice() -> None:
-    """Four of the audited report's sixteen claim bullets were reprints.
+    """A source_supported claim's own note carries the reading, once.
 
-    ``_reader_uncertainty`` lists every insufficient claim by its own text, and
-    a claim a finding already states arrives there word for word — so the same
-    sentence appears in two sections and a reader cannot tell a recap from a
-    second fact about the same figure. The claim is still accounted for: the
-    section says how many restatements it did not reprint.
+    Fable change 2: ``_reader_uncertainty`` never lists a source_supported
+    claim, so a claim a finding already states is never a candidate for a
+    second listing there either — its status is read straight off the
+    bullet that states it, via ``_unestablished_notes``.
     """
     text = (
         "Clean Edge reported that 10.3 GW of utility-scale battery storage "
@@ -859,17 +861,78 @@ def test_a_claim_the_findings_already_state_is_not_printed_twice() -> None:
     )
 
     reader = render_reader_report(composition)
-    section = _section_body(
-        reader, "## Uncertainty and conflicting evidence"
-    )
+    findings = _section_body(reader, "## Findings")
+    section = _section_body(reader, "## Uncertainty and conflicting evidence")
 
     assert reader.count(text) == 1
+    assert f"- {text} (Insufficient independent evidence) [1]" in findings
+    assert "Insufficient independent evidence" not in section
+
+
+def test_an_eligible_claim_the_findings_already_state_is_not_printed_twice() -> (
+    None
+):
+    """A claim the filter still admits is counted by claim id, not reprinted.
+
+    RevF2 P3: the source_supported rewrite above proves that badge is never a
+    second entry in the uncertainty section at all, which left no coverage
+    for the ``claim.claim_id in stated_claim_ids`` dedup ``_reader_uncertainty``
+    itself still performs on a claim the eligibility filter admits
+    (evidence_status None, touching a planned target). The point's own
+    wording is deliberately different from the claim's: an exact-text match
+    would instead be caught by the section's separate already-rendered-line
+    check and prove nothing about the claim-id path.
+    """
+    target = EvidenceTarget(
+        target_id="topic-03-target-01",
+        coverage_id="topic-03",
+        question="How much was installed, by relay account?",
+        required_dimensions=["measure: annual additions"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    topic = SubTopic(
+        coverage_id="topic-03",
+        title="Relay account",
+        rationale="A relay's own account of the figure.",
+        search_queries=["battery additions relay"],
+        success_criteria=["A second independent count"],
+        priority=1,
+        evidence_targets=[target],
+    )
+    claim_text = (
+        "Clean Edge reported that 10.3 GW of utility-scale battery storage "
+        "was installed in the United States in 2024."
+    )
+    reader_text = (
+        "A relay states 10.3 GW of storage went in during 2024, per Clean "
+        "Edge."
+    )
+    claim = _claim(
+        text=claim_text, verdict="unverified", target_ids=[target.target_id]
+    )
+    composition = _composition(
+        claims=[claim],
+        sub_topics=[topic],
+        summary=[],
+        sections=[
+            ReportSection(
+                title="Reported additions",
+                points=[_point(text=reader_text, claim_ids=[claim.claim_id])],
+            )
+        ],
+    )
+
+    reader = render_reader_report(composition)
+    section = _section_body(reader, "## Uncertainty and conflicting evidence")
+
+    assert claim_text not in reader
+    assert reader.count(reader_text) == 1
     assert (
         "1 checked claim(s) for this heading are already stated above"
         in section
     )
-    # The methodology's own repetition count is measured on what it renders,
-    # so a suppressed reprint is not counted as one and not disclosed as one.
     assert "No statement above repeats another." in reader
 
 
@@ -926,7 +989,12 @@ def test_a_summary_figure_matched_to_no_planned_question_says_so() -> None:
 
 
 def test_a_paraphrased_reader_claim_is_not_reprinted_as_uncertain() -> None:
-    """The audited 10.4 GW bullet was reworded, then reprinted in the list."""
+    """The audited 10.4 GW bullet was reworded; its own note carries the reading.
+
+    Fable change 2: the claim is source_supported, so it is never a second
+    entry in the uncertainty section either way — the note on the bullet
+    that already states it is the only place its status is read.
+    """
     claim_text = (
         "The U.S. Energy Information Administration's March 12, 2025 Today in "
         "Energy analysis reported that generators added 10.4 GW of new battery "
@@ -947,9 +1015,7 @@ def test_a_paraphrased_reader_claim_is_not_reprinted_as_uncertain() -> None:
     uncertainty = _section_body(reader, "## Uncertainty and conflicting evidence")
 
     assert claim_text not in uncertainty
-    assert "1 checked claim(s) for this heading are already stated above" in (
-        uncertainty
-    )
+    assert "Insufficient independent evidence" not in uncertainty
     assert f"{reader_text} (Insufficient independent evidence)" in reader
 
 
@@ -1013,7 +1079,8 @@ def test_a_bullet_stating_an_unestablished_claim_says_so(where: str) -> None:
     own: a reader met "Clean Edge reported that 10.3 GW … in 2024" as an
     ordinary bullet and could not tell the claim was never established. The
     claim is still not reprinted — the bullet that states those words carries
-    the verdict instead.
+    the verdict instead. Fable change 2: a source_supported claim like this
+    one is never a second entry in the uncertainty section either.
     """
     composition, text = _unestablished_bullet_composition(where=where)
 
@@ -1026,9 +1093,7 @@ def test_a_bullet_stating_an_unestablished_claim_says_so(where: str) -> None:
 
     assert f"- {text} (Insufficient independent evidence) [1]" in body
     assert reader.count(text) == 1
-    assert "1 checked claim(s) for this heading are already stated above" in (
-        uncertainty
-    )
+    assert "Insufficient independent evidence" not in uncertainty
 
 
 def test_a_bullet_stating_an_established_claim_carries_no_verdict_note() -> None:
@@ -1073,8 +1138,16 @@ def test_a_long_answer_bullet_is_cut_on_a_word_boundary_and_says_it_was_cut() ->
     assert len(body) + len(" […] (cut)") <= 600
 
 
-def test_uncertainty_lists_complete_eia_claim_instead_of_cutting_its_sentence() -> None:
-    """A checked claim's own qualifier must survive the reader's uncertainty list."""
+def test_an_unused_source_supported_claim_is_absent_from_the_reader_report() -> (
+    None
+):
+    """A checked claim no point cites is not listed in the uncertainty section.
+
+    Fable change 2: ``_reader_uncertainty`` never lists a source_supported
+    claim, whether or not some point already states it — evidence is only
+    relocated, never hidden, so an unused claim like this one still shows up
+    whole in the evidence ledger's claim registry.
+    """
     text = (
         "The U.S. Energy Information Administration's March 12, 2025 Today in "
         "Energy analysis reported that generators added 10.4 GW of new battery "
@@ -1082,17 +1155,364 @@ def test_uncertainty_lists_complete_eia_claim_instead_of_cutting_its_sentence() 
         "addition after solar, based on EIA's January 2025 Preliminary Monthly "
         "Electric Generator Inventory."
     )
+    claim = _claim(text=text, verdict="insufficient_evidence")
+    composition = _composition(claims=[claim], summary=[], sections=[])
+
+    reader = render_reader_report(composition)
+    ledger = render_evidence_ledger(composition)
+    methodology = _section_body(reader, "## Methodology")
+
+    assert text not in reader
+    assert claim.claim_id in ledger
+    assert (
+        "1 checked claim(s) not used by a statement are listed in the "
+        "evidence ledger."
+        in methodology
+    )
+
+
+def test_an_eligible_uncertain_claim_keeps_its_full_sentence_uncut() -> None:
+    """A checked claim's own qualifier must survive the reader's uncertainty list."""
+    target = EvidenceTarget(
+        target_id="topic-01-target-01",
+        coverage_id="topic-01",
+        question="How much battery storage was added in 2024?",
+        required_dimensions=["measure: annual additions"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    topic = SubTopic(
+        coverage_id="topic-01",
+        title="2024 additions",
+        rationale="The 2024 baseline.",
+        search_queries=["2024 battery additions"],
+        success_criteria=["A second independent count"],
+        priority=1,
+        evidence_targets=[target],
+    )
+    text = (
+        "A trade-press relay reported that generators added 10.4 GW of new "
+        "battery storage capacity in 2024, the second-largest generating "
+        "capacity addition after solar, citing EIA's January 2025 Preliminary "
+        "Monthly Electric Generator Inventory."
+    )
+    claim = _claim(
+        text=text, verdict="unverified", target_ids=[target.target_id]
+    )
     composition = _composition(
-        claims=[_claim(text=text, verdict="insufficient_evidence")],
-        summary=[],
-        sections=[],
+        claims=[claim], sub_topics=[topic], summary=[], sections=[]
     )
 
     reader = render_reader_report(composition)
-    uncertainty = _section_body(reader, "### Insufficient independent evidence")
+    uncertainty = _section_body(
+        reader, "### Not addressed by independent sources"
+    )
 
     assert f"- {text} [1]" in uncertainty
     assert "(cut)" not in uncertainty
+
+
+def test_a_source_supported_claim_answering_primary_attribution_has_no_verdict_note() -> (
+    None
+):
+    """Fable change 2: primary attribution is the plan's own bar, already met.
+
+    A ``source_supported`` claim checked against a ``primary_attribution``
+    target has done what that target's own policy asks for; printing
+    "(Insufficient independent evidence)" beside it would contradict the very
+    heading it renders under.
+    """
+    target = EvidenceTarget(
+        target_id="topic-01-target-01",
+        coverage_id="topic-01",
+        question="How much battery storage was added in 2024?",
+        required_dimensions=["measure: annual additions"],
+        required=True,
+        critical=True,
+        support_policy="primary_attribution",
+    )
+    topic = SubTopic(
+        coverage_id="topic-01",
+        title="2024 additions",
+        rationale="The 2024 baseline.",
+        search_queries=["2024 battery additions"],
+        success_criteria=["EIA's 2024 figure"],
+        priority=1,
+        evidence_targets=[target],
+    )
+    text = "EIA reported 10.4 GW added in 2024."
+    claim = _claim(
+        text=text, verdict="insufficient_evidence", target_ids=[target.target_id]
+    )
+    composition = _evidence_composition(
+        claims=[claim],
+        sub_topics=[topic],
+        constraints=[],
+        summary=[
+            _stated(
+                text,
+                claim_ids=[claim.claim_id],
+                statement=_statement(
+                    text,
+                    statement_id="S1",
+                    mode="attributed",
+                    target_ids=[target.target_id],
+                ),
+            )
+        ],
+        sections=[],
+    )
+
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert "**The attributed answer**" in summary
+    assert text in summary
+    assert "Insufficient independent evidence" not in summary
+
+
+def test_a_source_supported_claim_answering_independent_pair_says_not_corroborated() -> (
+    None
+):
+    """A weaker badge than the plan's own bar still says so, in its own words.
+
+    Fable change 2: an ``independent_pair`` target is not met by a single
+    issuer's own account, and the bullet that states the claim says exactly
+    that — not the legacy verdict's generic "insufficient" reading.
+    """
+    target = EvidenceTarget(
+        target_id="topic-02-target-01",
+        coverage_id="topic-02",
+        question="How much was added in 2024, corroborated independently?",
+        required_dimensions=["measure: annual additions"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    topic = SubTopic(
+        coverage_id="topic-02",
+        title="2024 additions, corroborated",
+        rationale="A second independent count.",
+        search_queries=["2024 battery additions second source"],
+        success_criteria=["Two independent counts"],
+        priority=1,
+        evidence_targets=[target],
+    )
+    text = "Wood Mackenzie reported 12.3 GW added in 2024."
+    claim = _claim(
+        text=text, verdict="insufficient_evidence", target_ids=[target.target_id]
+    )
+    composition = _composition(
+        claims=[claim],
+        sub_topics=[topic],
+        summary=[_point(text=text, claim_ids=[claim.claim_id])],
+        sections=[],
+    )
+
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert f"- {text} (not independently corroborated) [1]" in summary
+    assert "Insufficient independent evidence" not in summary
+
+
+def test_the_contradicted_heading_reads_as_revised_or_disputed() -> None:
+    """Fable change 3: a live disagreement is not always independent refutation."""
+    claim = _claim(
+        text="Cost fell tenfold.",
+        verdict="contradicted",
+        contradictions=["A later edition disagrees."],
+    )
+    composition = _composition(claims=[claim], summary=[], sections=[])
+
+    uncertainty = _section_body(
+        render_reader_report(composition), "### Contradicted or revised"
+    )
+
+    assert "- Cost fell tenfold." in uncertainty
+
+
+def test_two_unresolved_claims_of_one_cluster_give_one_uncertainty_bullet() -> (
+    None
+):
+    """Fable change 2: cluster identity, not exact wording, is the dedup key."""
+    target = EvidenceTarget(
+        target_id="topic-04-target-01",
+        coverage_id="topic-04",
+        question="How much was forecast for 2025?",
+        required_dimensions=["measure: annual additions"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    topic = SubTopic(
+        coverage_id="topic-04",
+        title="2025 forecast",
+        rationale="The 2025 projection.",
+        search_queries=["2025 battery forecast"],
+        success_criteria=["A second independent forecast"],
+        priority=1,
+        evidence_targets=[target],
+    )
+    first = _claim(
+        text="A trade press relay carries the 2025 forecast, first telling.",
+        verdict="unverified",
+        target_ids=[target.target_id],
+        cluster_id="cluster-x",
+    )
+    second = _claim(
+        text="A different outlet's own words for the same 2025 forecast.",
+        verdict="unverified",
+        target_ids=[target.target_id],
+        cluster_id="cluster-y",
+        cluster_aliases=["cluster-x"],
+    )
+    composition = _composition(
+        claims=[first, second], sub_topics=[topic], summary=[], sections=[]
+    )
+
+    uncertainty = _section_body(
+        render_reader_report(composition),
+        "### Not addressed by independent sources",
+    )
+
+    assert first.text in uncertainty
+    assert second.text not in uncertainty
+    assert (
+        "1 checked claim(s) for this heading are already stated above"
+        in uncertainty
+    )
+
+
+def test_two_unresolved_claims_stating_one_figure_give_one_uncertainty_bullet() -> (
+    None
+):
+    """Fable change 2: a shared unit-bearing figure and period is a second identity."""
+    target = EvidenceTarget(
+        target_id="topic-04-target-01",
+        coverage_id="topic-04",
+        question="How much was installed in 2025?",
+        required_dimensions=["measure: annual additions"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    topic = SubTopic(
+        coverage_id="topic-04",
+        title="2025 actual",
+        rationale="The 2025 outturn.",
+        search_queries=["2025 battery installed"],
+        success_criteria=["A second independent count"],
+        priority=1,
+        evidence_targets=[target],
+    )
+    first = _claim(
+        text="A relay reported that 16 GW was installed in 2025.",
+        verdict="unverified",
+        target_ids=[target.target_id],
+    )
+    second = _claim(
+        text=(
+            "A second relay states 16 GW was installed in 2025, citing the "
+            "monitor."
+        ),
+        verdict="unverified",
+        target_ids=[target.target_id],
+    )
+    composition = _composition(
+        claims=[first, second], sub_topics=[topic], summary=[], sections=[]
+    )
+
+    uncertainty = _section_body(
+        render_reader_report(composition),
+        "### Not addressed by independent sources",
+    )
+
+    assert first.text in uncertainty
+    assert second.text not in uncertainty
+    assert (
+        "1 checked claim(s) for this heading are already stated above"
+        in uncertainty
+    )
+
+
+def test_a_shared_release_vintage_does_not_suppress_a_distinct_figure() -> None:
+    """A release vintage named in the text must not merge distinct facts.
+
+    RevF2 P2: pairing every unit-bearing figure with every year the claim's
+    text mentions let a claim that names its own vintage ("10.4 GW ... in
+    2024, per EIA's January 2025 inventory") suppress an unrelated claim for
+    a different period ("10.4 GW planned for 2025") that happens to share
+    the figure and one of those years.
+    """
+    target = EvidenceTarget(
+        target_id="topic-01-target-01",
+        coverage_id="topic-01",
+        question="How much was added in 2024, and how much is planned for 2025?",
+        required_dimensions=["measure: annual additions"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    topic = SubTopic(
+        coverage_id="topic-01",
+        title="Additions and plans",
+        rationale="Both periods matter.",
+        search_queries=["battery additions 2024 2025"],
+        success_criteria=["A second independent count"],
+        priority=1,
+        evidence_targets=[target],
+    )
+    dated = _claim(
+        text=(
+            "Developers added 10.4 GW in 2024, per EIA's January 2025 "
+            "inventory."
+        ),
+        verdict="unverified",
+        target_ids=[target.target_id],
+    )
+    planned = _claim(
+        text="Developers plan 10.4 GW of new storage for 2025.",
+        verdict="unverified",
+        target_ids=[target.target_id],
+    )
+    composition = _composition(
+        claims=[dated, planned], sub_topics=[topic], summary=[], sections=[]
+    )
+
+    uncertainty = _section_body(
+        render_reader_report(composition),
+        "### Not addressed by independent sources",
+    )
+
+    assert dated.text in uncertainty
+    assert planned.text in uncertainty
+
+
+def test_an_unresolved_claim_touching_no_planned_target_is_not_listed() -> None:
+    """Fable change 2: a relay unrelated to the plan is not printed as uncertain.
+
+    Its status still lives in the evidence ledger, and the methodology's own
+    count of unused claims names it.
+    """
+    claim = _claim(
+        text="An unrelated relay carries a figure this plan never asked for.",
+        verdict="unverified",
+    )
+    composition = _composition(claims=[claim], summary=[], sections=[])
+
+    reader = render_reader_report(composition)
+    methodology = _section_body(reader, "## Methodology")
+
+    assert claim.text not in reader
+    assert (
+        "1 checked claim(s) not used by a statement are listed in the "
+        "evidence ledger."
+        in methodology
+    )
 
 
 def test_methodology_is_a_compact_locally_generated_run_summary() -> None:
@@ -2038,17 +2458,42 @@ def test_a_mirror_pair_collapses_to_one_reader_reference() -> None:
     assert mirror not in render_reader_report(composition)
 
 
-def test_an_uncertain_claim_printed_from_a_mirror_pair_cites_one_reference() -> None:
+def test_an_uncertain_claim_printed_from_a_mirror_pair_cites_one_reference() -> (
+    None
+):
     """The uncertainty list's own bullets collapse a mirror like any statement.
 
     A checked claim no finding states is printed under its verdict heading
     and cites what it rests on; one work served from two hosts is still one
     reference there, and the bullet's marker resolves to it.
     """
+    target = EvidenceTarget(
+        target_id="topic-01-target-01",
+        coverage_id="topic-01",
+        question="How mature is quantum error correction?",
+        required_dimensions=["measure: logical error rate"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    topic = SubTopic(
+        coverage_id="topic-01",
+        title="Error correction",
+        rationale="The claimed milestone.",
+        search_queries=["logical error rate 2025"],
+        success_criteria=["A second independent account"],
+        priority=1,
+        evidence_targets=[target],
+    )
     mirror = "https://mirror.test/qec"
-    claim = _claim(verdict="insufficient_evidence", urls=[mirror, SOURCE_URL])
+    claim = _claim(
+        verdict="unverified",
+        urls=[mirror, SOURCE_URL],
+        target_ids=[target.target_id],
+    )
     composition = _composition(
         claims=[claim],
+        sub_topics=[topic],
         summary=[],
         sections=[],
         sources=[
@@ -2059,7 +2504,8 @@ def test_an_uncertain_claim_printed_from_a_mirror_pair_cites_one_reference() -> 
 
     index = reader_citations(composition)
     uncertainty = _section_body(
-        render_reader_report(composition), "### Insufficient independent evidence"
+        render_reader_report(composition),
+        "### Not addressed by independent sources",
     )
 
     assert [citation.url for citation in index] == [SOURCE_URL]
@@ -3070,11 +3516,14 @@ def test_the_reader_word_ceiling_follows_the_frozen_contract() -> None:
         )
         for index in range(12)
     ]
-    # Two words above the ceiling under test: the header's ``As of`` stamp now
-    # says which date it states, and the ceiling charges the header like every
-    # other word. What this test pins is the fitter's order, not the number.
+    # Two words above the ceiling under test: the header's ``As of`` stamp
+    # says which date it states, and the ceiling charges the header like
+    # every other word. Fourteen more: the methodology's own "N checked
+    # claim(s) not used by a statement are listed in the evidence ledger"
+    # line is unconditional fixed cost too. What this test pins is the
+    # fitter's order, not the number.
     composition = _evidence_composition(
-        requested_word_limit=252,
+        requested_word_limit=266,
         summary=points[:6],
         sections=[ReportSection(title="Error correction", points=points[6:])],
     )
@@ -3083,7 +3532,7 @@ def test_the_reader_word_ceiling_follows_the_frozen_contract() -> None:
     fitted, _ = fit_report_composition(composition)
     reader = render_reader_report(fitted)
 
-    assert reader_word_count(reader) <= 252
+    assert reader_word_count(reader) <= 266
     assert "Statement 11" not in reader
     assert "Statement 0 reports" in reader
 
@@ -3890,6 +4339,64 @@ def test_the_quality_record_publishes_each_claims_target_bindings() -> None:
     )
     assert row["target_ids"] == ["topic-01-target-01"]
 
+
+
+def test_the_ledger_shows_the_full_drafted_text_of_a_rejected_point() -> None:
+    """'Rejected draft content' carries the full drafted point, not only the
+    terse reason: text, claim_ids and source_urls, never truncated.
+    """
+    long_text = " ".join(["A refused figure that was drafted."] * 10)
+    assert len(long_text) > 240
+    ledger = render_evidence_ledger(
+        _composition(
+            rejected=["executive summary point 1: an unsupported figure"],
+            rejected_points=[
+                RejectedDraftPoint(
+                    where="executive summary point 1",
+                    text=long_text,
+                    claim_ids=["C999"],
+                    source_urls=[SOURCE_URL],
+                    reason="an unsupported figure",
+                )
+            ],
+        )
+    )
+
+    body = _section_body(ledger, "## Rejected draft content")
+    assert "executive summary point 1: an unsupported figure" in body
+    assert long_text in body
+    assert "C999" in body
+    assert SOURCE_URL in body
+
+
+def test_the_quality_record_publishes_rejected_points_in_full() -> None:
+    """The quality record's companion to the ledger section: the same full
+    text, claim_ids, source_urls and reason, keyed by where.
+    """
+    composition = _evidence_composition(
+        rejected_points=[
+            RejectedDraftPoint(
+                where="constraint 1",
+                text="A refused drafted constraint text.",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+                reason="no evidence for this cell",
+            )
+        ]
+    )
+    state = _record_state(composition)
+
+    record = render_quality_record(state, composition, None)
+
+    assert record["rejected_points"] == [
+        {
+            "where": "constraint 1",
+            "text": "A refused drafted constraint text.",
+            "claim_ids": ["C001"],
+            "source_urls": [SOURCE_URL],
+            "reason": "no evidence for this cell",
+        }
+    ]
 
 def test_the_quality_record_publishes_claim_text_uncut() -> None:
     """A 289-character claim was published cut mid-sentence at 240.

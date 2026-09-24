@@ -884,48 +884,82 @@ class ReplayCompleter(AgentCompleter):
     def packet_claims(
         self, text: str
     ) -> list[tuple[str, str, tuple[str, ...], str, str]]:
-        """Read the packet's ``C001 [badge] text (urls) coverage=…`` rows.
+        """Read the canonical evidence packet's ``C001 [badge] text`` entries.
 
-        The parenthetical is the list of pages that stated the claim, not one
-        page: a claim two independent reads support arrives as
-        ``(https://a…, https://b…)``. Reading it as a single ``\\S+`` URL made
-        every such row unparseable, so exactly the claims whose corroboration
-        the case exists to show were silently dropped from the draft.
+        The synthesizer now sends one addressable claim block — the label is
+        the checked-claim registry's own, the same one the composer's
+        validator resolves — instead of two blocks that could label one claim
+        two different ways. Each entry opens with its ``C001 [verdict
+        confidence | evidence_label] text`` header line and carries its urls
+        and sub-topic coverage on indented lines below it (``  cites: …``,
+        ``  coverage: …``), running until the next header or the end of the
+        packet.
 
-        The coverage cell is a list for the same reason: one claim stated by
-        three topics is one row reading ``coverage=topic-01, topic-02,
-        topic-03``, and reading it as a single token made that row unparseable
-        too. The row is drafted once, under the first target it covers.
+        ``cites:`` is the claim's own ``source_urls`` (never a cluster's
+        wider evidence or a passage's own url — the validator's exact
+        allow-list), read the same way the old parenthetical read
+        ``claim.source_urls``: a claim two independent reads support still
+        arrives as one comma-joined line, so it is split on ``,`` rather than
+        read as a single ``\\S+`` token.
 
-        The badge's first word is the verdict the run's own adjudication gave
-        the claim - ``verified``, ``contradicted``, ``insufficient_evidence``.
-        It is the product's finding about the row, and the writer's draft is
-        checked against it, so the row carries it out of the packet rather
-        than dropping it with the brackets.
+        ``coverage:`` is the claim's own ``consumed_coverage_ids`` — the
+        sub-topics it was extracted under — never the narrower ``targets:``
+        line (a claim's *bound* evidence target, which a contradicted claim,
+        or one no binding pass reached, may carry none of at all). Only an
+        entry with a ``coverage:`` line is returned, exactly as the old
+        parser only matched a row that carried ``coverage=…``. The first
+        named coverage id resolves to its topic through ``topic_for_target``,
+        which already accepts either a bare coverage id or a full target id,
+        so a claim listed under several sub-topics is drafted once, under
+        the first.
+
+        The badge's first word is the verdict the run's own adjudication
+        gave the claim — ``verified``, ``contradicted``,
+        ``insufficient_evidence``. It is the product's finding about the
+        row, and the writer's draft is checked against it, so the row
+        carries it out of the packet rather than dropping it with the
+        brackets.
         """
-        rows = re.findall(
-            r"^(C\d+) \[([^\]]*)\] (.*) \((.*?)\) coverage=(.+)$",
-            text,
-            re.M,
+        section = re.search(
+            r"# Canonical evidence packet\n(.*?)(?:\n# |\Z)", text, re.S
         )
+        body = section.group(1) if section else text
+        headers = list(re.finditer(r"^(C\d+) \[([^\]]*)\] (.*)$", body, re.M))
+        rows: list[tuple[str, str, tuple[str, ...], str, str]] = []
+        for position, header in enumerate(headers):
+            end = (
+                headers[position + 1].start()
+                if position + 1 < len(headers)
+                else len(body)
+            )
+            entry = body[header.end() : end]
+            coverage_line = re.search(r"^\s*coverage: (.+)$", entry, re.M)
+            if coverage_line is None:
+                continue
+            coverage = coverage_line.group(1).split(",")[0].strip()
+            cites = re.search(r"^\s*cites: (.+)$", entry, re.M)
+            urls = (
+                tuple(
+                    url.strip() for url in cites.group(1).split(",") if url.strip()
+                )
+                if cites
+                else ()
+            )
+            badge = header.group(2)
+            rows.append(
+                (
+                    header.group(1),
+                    header.group(3),
+                    urls,
+                    coverage,
+                    badge.split()[0] if badge.split() else "",
+                )
+            )
         if not rows:
             raise ReplayContractError(
                 "the synthesis packet carried no checked claims"
             )
-        return [
-            (
-                claim_id,
-                claim_text,
-                tuple(
-                    url.strip()
-                    for url in urls.split(",")
-                    if url.strip()
-                ),
-                coverage.split(",")[0].strip(),
-                badge.split()[0] if badge.split() else "",
-            )
-            for claim_id, badge, claim_text, urls, coverage in rows
-        ]
+        return rows
 
     def _reply_ReportDraft(self, text: str) -> ReportDraft:
         rows = self.packet_claims(text)

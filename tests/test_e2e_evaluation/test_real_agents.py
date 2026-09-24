@@ -838,11 +838,15 @@ def test_writer_discloses_a_claim_the_packet_badges_contradicted() -> None:
     completer = ReplayCompleter(scenario)
 
     draft = completer._reply_ReportDraft(
-        "Checked claims in this packet\n"
-        "C001 [verified 0.85] the rate was 40 percent in 2024 "
-        "(https://agency.test/report) coverage=topic-01\n"
-        "C002 [contradicted 0.85] the rate was 30 percent in 2024 "
-        "(https://rival.test/report) coverage=topic-01\n"
+        "# Canonical evidence packet\n"
+        "C001 [verified 0.85 | independently corroborated] the rate was 40 "
+        "percent in 2024\n"
+        "  cites: https://agency.test/report\n"
+        "  coverage: topic-01\n"
+        "C002 [contradicted 0.85 | contested] the rate was 30 percent in "
+        "2024\n"
+        "  cites: https://rival.test/report\n"
+        "  coverage: topic-01\n"
     )
 
     settled = [

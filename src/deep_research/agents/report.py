@@ -57,6 +57,7 @@ from deep_research.utils.types import (
     Finding,
     ReadRecord,
     ReportAnswerRow,
+    RejectedDraftPoint,
     ReportComposition,
     ReportConstraint,
     ReportPoint,
@@ -242,7 +243,7 @@ LIMITATION_REASONS = {
 # Verdict groups for the uncertainty section, in the order a reader should
 # meet them: the evidence that argues against the report comes first.
 _UNCERTAIN_VERDICTS = (
-    ("contradicted", "Contradicted by independent sources"),
+    ("contradicted", "Contradicted or revised"),
     ("unverified", "Not addressed by independent sources"),
     ("insufficient_evidence", "Insufficient independent evidence"),
 )
@@ -1536,6 +1537,67 @@ def _point_line(
     )
 
 
+def _claim_target_policy(
+    claim: Claim, composition: ReportComposition
+) -> str | None:
+    """The support policy this claim's own recorded targets declare.
+
+    ``None`` when the claim names no target, or none of its target ids
+    resolves to a target this pass's own plan recorded — the caller then
+    falls back to the verdict-derived reading, because no plan obligation
+    ever certified what this claim's evidence would need to satisfy. A claim
+    that answers targets under disagreeing policies is read by the strictest
+    one recorded: meeting a weaker obligation does not discharge a stricter
+    one the same claim also names.
+    """
+    if not claim.target_ids:
+        return None
+    policies = {
+        target.target_id: target.support_policy
+        for topic in composition.sub_topics
+        for target in topic.evidence_targets
+    }
+    matched = [
+        policies[target_id]
+        for target_id in claim.target_ids
+        if target_id in policies
+    ]
+    if not matched:
+        return None
+    if "independent_pair" in matched:
+        return "independent_pair"
+    if "derivation" in matched:
+        return "derivation"
+    return "primary_attribution"
+
+
+_NOT_CORROBORATED_NOTE = " (not independently corroborated)"
+
+
+def _unestablished_note_text(
+    claim: Claim, composition: ReportComposition, heading: str
+) -> str:
+    """The parenthetical one bullet earns for the claim already stated above.
+
+    A claim whose own badge is ``source_supported`` or ``verified_pair`` has
+    already met a ``primary_attribution`` or ``derivation`` target exactly as
+    the plan asked for it, so no parenthetical disagrees with the "attributed
+    answer" heading it renders under. The same badge answering an
+    ``independent_pair`` target has not met that stricter obligation, and
+    says so in the badge's own words rather than the legacy verdict's. A
+    claim that names no target, or none this plan recorded, keeps reading its
+    recorded verdict — no obligation ever certified what it would need to
+    satisfy, so nothing here may say it already did.
+    """
+    if claim.evidence_status in ("source_supported", "verified_pair"):
+        policy = _claim_target_policy(claim, composition)
+        if policy in ("primary_attribution", "derivation"):
+            return ""
+        if policy == "independent_pair":
+            return _NOT_CORROBORATED_NOTE
+    return f" ({heading})"
+
+
 def _unestablished_notes(
     composition: ReportComposition,
     index: Sequence[Citation],
@@ -1553,6 +1615,11 @@ def _unestablished_notes(
     lists would state the same reading twice. ``already`` is therefore the
     rendering *without* notes: the note is part of the line, and a marked
     bullet would no longer match the claim it marks.
+
+    ``_unestablished_note_text`` decides the note itself: a ``source_supported``
+    claim answering the ``primary_attribution`` or ``derivation`` target it
+    was checked for earns no parenthetical at all, since the heading it
+    renders under already states that reading.
     """
     seen = set(_bullet_lines(already))
     points = _reader_points(composition)
@@ -1561,19 +1628,26 @@ def _unestablished_notes(
         for claim in composition.claims:
             if claim.verdict != verdict:
                 continue
-            linked = [point for point in points if claim.claim_id in point.claim_ids]
+            note_text = _unestablished_note_text(claim, composition, heading)
+            linked = [
+                point for point in points if claim.claim_id in point.claim_ids
+            ]
             if linked:
                 # The reader already met this checked claim, however reworded;
                 # the uncertainty list will count it rather than reprint it.
+                if not note_text:
+                    continue
                 for point in linked:
-                    notes.setdefault(_note_key(point.text), f" ({heading})")
+                    notes.setdefault(_note_key(point.text), note_text)
+                continue
+            if not note_text:
                 continue
             markers = citation_markers(claim.source_urls, index)
             text = " ".join(claim.text.split())
             line = f"- {text}{_marker_suffix(markers)}"
             if " ".join(line.split()) not in seen:
                 continue
-            notes.setdefault(_note_key(claim.text), f" ({heading})")
+            notes.setdefault(_note_key(claim.text), note_text)
     return notes
 
 
@@ -2345,6 +2419,95 @@ def _uncertainty_group(basis: str | None) -> str:
     return ""
 
 
+def _planned_target_ids(composition: ReportComposition) -> set[str]:
+    """Every evidence target this pass's own plan recorded, by id."""
+    return {
+        target.target_id
+        for topic in composition.sub_topics
+        for target in topic.evidence_targets
+    }
+
+
+def _claim_identity_keys(
+    claim: Claim,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """A claim's dedup identity: its cluster set, and its own figure + period.
+
+    Two claims that never joined one cluster can still restate one fact —
+    consolidation is a separate pass's own job, and this section must not
+    assume it always ran — so a claim's own unit-bearing figures, each paired
+    with the one year the claim states, are a second identity: either match
+    makes two claims one bullet.
+
+    The pairing is withheld whenever the claim states more than one year: a
+    claim naming both the period it measures and a release vintage — "10.4 GW
+    ... in 2024, per EIA's January 2025 inventory" — would otherwise pair its
+    figure with the vintage too, and silently merge with an unrelated claim
+    for that other year ("10.4 GW planned for 2025"). One year is the only
+    case this text-only heuristic can attribute to the figure with any
+    confidence; cluster identity still catches everything else.
+    """
+    cluster_ids = frozenset(
+        cluster_id
+        for cluster_id in (claim.cluster_id, *claim.cluster_aliases)
+        if cluster_id
+    )
+    units = [
+        match.group(0).casefold()
+        for match in _MEASURE_UNIT.finditer(claim.text)
+        if match.group(1).casefold() in _MEASURE_UNITS
+    ]
+    years = set(_YEAR.findall(claim.text))
+    figures = (
+        frozenset(f"{unit}|{next(iter(years))}" for unit in units)
+        if units and len(years) == 1
+        else frozenset()
+    )
+    return cluster_ids, figures
+
+
+def _uncertain_claim_eligible(
+    claim: Claim, planned_targets: set[str]
+) -> bool:
+    """Whether one checked claim belongs in the uncertainty section at all.
+
+    A contradicted claim is listed unconditionally: a live disagreement is
+    never suppressed by which obligation it happens to name. Every other
+    verdict is listed only for a claim with no recorded corroboration badge
+    at all — ``evidence_status is None`` is exactly "a relay, or an identity
+    this pass never resolved" — and only when it touches a target the plan
+    actually asked for; a claim answering nothing planned would only clutter
+    the section, and a ``source_supported`` issuer figure has already met its
+    own obligation and is never printed here as if it had not.
+    """
+    if claim.verdict == "contradicted":
+        return True
+    return claim.evidence_status is None and bool(
+        planned_targets.intersection(claim.target_ids)
+    )
+
+
+def _claims_considered_in_uncertainty(
+    composition: ReportComposition,
+) -> set[str]:
+    """The checked claims the uncertainty section accounts for, by claim id.
+
+    Read by ``_reader_methodology`` to name the claims that carry no reading
+    anywhere in the reader report — not a rendered point, not an uncertainty
+    bullet. Those are exactly the claims the evidence ledger, not the reader
+    report, is the honest place to find; see the "not used by a statement"
+    methodology line.
+    """
+    planned_targets = _planned_target_ids(composition)
+    uncertain_verdicts = {verdict for verdict, _ in _UNCERTAIN_VERDICTS}
+    return {
+        claim.claim_id
+        for claim in composition.claims
+        if claim.verdict in uncertain_verdicts
+        and _uncertain_claim_eligible(claim, planned_targets)
+    }
+
+
 def _reader_uncertainty(
     composition: ReportComposition,
     index: Sequence[Citation],
@@ -2362,6 +2525,17 @@ def _reader_uncertainty(
     it did not reprint, so its heading still accounts for every claim under it.
     The same rule holds inside the section: no bullet repeats one already
     printed there either.
+
+    A claim is listed here at all only when its own recorded evidence earns
+    it a place: a live contradiction always does, and every other claim only
+    when it carries no corroboration badge (a relay, or an identity this pass
+    never resolved) *and* touches a target the plan actually asked for. A
+    ``source_supported`` issuer claim is never listed here — it has already
+    met its own obligation, and its reading is the note on the bullet that
+    states it (``_unestablished_notes``), not a second entry in this list.
+    Two claims that name one cluster, or state one unit-bearing figure for
+    one period, are one bullet: the second is counted, not reprinted, exactly
+    as an already-stated claim is.
     """
     blocks: list[str] = []
     cited = {citation.url for citation in index}
@@ -2391,11 +2565,16 @@ def _reader_uncertainty(
             seen.update(_bullet_lines(_bullets(grouped[heading])))
             blocks.append(f"### {heading}\n\n{_bullets(grouped[heading])}")
     stated_claim_ids = _stated_claim_ids(composition)
+    planned_targets = _planned_target_ids(composition)
+    seen_cluster_ids: set[str] = set()
+    seen_figure_keys: set[str] = set()
     for verdict, heading in _UNCERTAIN_VERDICTS:
         lines: list[str] = []
         repeated = 0
         for claim in composition.claims:
             if claim.verdict != verdict:
+                continue
+            if not _uncertain_claim_eligible(claim, planned_targets):
                 continue
             markers = citation_markers(claim.source_urls, index)
             note = (
@@ -2407,7 +2586,16 @@ def _reader_uncertainty(
             # Keyed the way ``_bullet_lines`` reads a rendered report, so the
             # line compared here is the line the reader would meet there.
             key = " ".join(f"- {line}".split())
-            if key in seen or claim.claim_id in stated_claim_ids:
+            cluster_ids, figure_keys = _claim_identity_keys(claim)
+            is_duplicate = (
+                key in seen
+                or claim.claim_id in stated_claim_ids
+                or bool(cluster_ids & seen_cluster_ids)
+                or bool(figure_keys & seen_figure_keys)
+            )
+            seen_cluster_ids |= cluster_ids
+            seen_figure_keys |= figure_keys
+            if is_duplicate:
                 repeated += 1
                 continue
             seen.add(key)
@@ -2501,6 +2689,10 @@ def _reader_methodology(
         if claim_ids and claim_ids <= met:
             restated += 1
         met.update(claim_ids)
+    accounted_claim_ids = cited_claims | _claims_considered_in_uncertainty(
+        composition
+    )
+    unused_claims = len(composition.claims) - len(accounted_claim_ids)
     lines = [
         f"{len(composition.sources)} reviewed source(s): {scored} scored, "
         f"{unscored} unscored.",
@@ -2511,6 +2703,8 @@ def _reader_methodology(
         "verification passage(s) recorded.",
         f"{len(composition.findings)} retrieved finding(s); "
         f"{len(cited_claims)} checked claim(s) support a statement above.",
+        f"{unused_claims} checked claim(s) not used by a statement are "
+        "listed in the evidence ledger.",
         (
             f"{len(composition.sub_topics)} planned sub-topic(s): "
             + ", ".join(topic.coverage_id for topic in composition.sub_topics)
@@ -2884,14 +3078,28 @@ def _verification_passages(composition: ReportComposition) -> str:
 
 
 def _rejected_content(composition: ReportComposition) -> str:
-    if not composition.rejected:
+    """The terse reasons, plus every refused point in full.
+
+    ``composition.rejected`` alone covers every refusal, including the ones
+    this artifact has no drafted text for (an unknown label, a narrowed
+    citation); ``rejected_points`` names the drafted points that carry one
+    — full text, claim ids and urls, never truncated — so a reader can see
+    exactly what was drafted and why it did not survive, without replaying
+    the provider call that wrote it.
+    """
+    if not composition.rejected and not composition.rejected_points:
         return "(no drafted content was refused for this pass)"
-    return _bullets(
-        [
-            _clamped(reason, limit=_ERROR_MESSAGE_CHARS)
-            for reason in composition.rejected
-        ]
+    bullets = [
+        _clamped(reason, limit=_ERROR_MESSAGE_CHARS)
+        for reason in composition.rejected
+    ]
+    bullets.extend(
+        f"{point.where}: {point.reason} "
+        f"(drafted text: {point.text!r}; claim_ids: {point.claim_ids!r}; "
+        f"source_urls: {point.source_urls!r})"
+        for point in composition.rejected_points
     )
+    return _bullets(bullets)
 
 
 def _unchecked_findings(composition: ReportComposition) -> str:
@@ -3514,6 +3722,14 @@ def render_quality_record(
         "quality_status": status,
         "statuses": _status_record(state, review, session_status=session_status),
         "artifacts": artifact_content_hashes(artifacts or {}),
+        "rejected_points": (
+            [
+                _quality_rejected_point_row(point)
+                for point in composition.rejected_points
+            ]
+            if composition is not None
+            else []
+        ),
         "configuration": {
             "quality_contract_version": state.quality_contract_version,
             "composition_fingerprint": (
@@ -3707,6 +3923,23 @@ def render_quality_record(
         "review": _review_record(review),
     }
     return record
+
+
+def _quality_rejected_point_row(
+    point: RejectedDraftPoint,
+) -> dict[str, JsonValue]:
+    """One refused drafted point, in full: the quality record's companion
+    to the evidence ledger's 'Rejected draft content' section — the exact
+    drafted text, claim ids and urls, never truncated, so a replay can tell
+    which drafted point tripped which reason.
+    """
+    return {
+        "where": point.where,
+        "text": point.text,
+        "claim_ids": list(point.claim_ids),
+        "source_urls": list(point.source_urls),
+        "reason": point.reason,
+    }
 
 
 def _quality_error_row(error: ResearchError) -> dict[str, JsonValue]:

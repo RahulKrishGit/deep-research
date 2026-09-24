@@ -3014,6 +3014,24 @@ class ReportTerminalState(ContractModel):
     """The typed names of the acceptance gates that failed this report."""
 
 
+class RejectedDraftPoint(ContractModel):
+    """One drafted point this pass could not print, kept in full.
+
+    ``ReportComposition.rejected`` carries the terse, project-generated
+    reason each refusal earned; this is its un-truncated companion — the
+    full drafted text, claim labels and source urls exactly as drafted,
+    keyed by ``where`` — so a reader of the evidence ledger or the quality
+    record can see exactly which drafted point tripped which reason,
+    without replaying the provider call that wrote it.
+    """
+
+    where: str = Field(min_length=1)
+    text: str = ""
+    claim_ids: list[str] = Field(default_factory=list)
+    source_urls: list[str] = Field(default_factory=list)
+    reason: str = Field(min_length=1)
+
+
 class ReportComposition(ContractModel):
     """Everything one synthesis pass composed, and the evidence it renders.
 
@@ -3065,6 +3083,8 @@ class ReportComposition(ContractModel):
     uncertainty_notes: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
     """Drafted content this pass refused, as project-generated reasons."""
+    rejected_points: list[RejectedDraftPoint] = Field(default_factory=list)
+    """The same refusals, in full: text, claim_ids and urls as drafted."""
     answer_kind: AnswerKind | None = None
     """The frozen answer form, or ``None`` for a legacy composition."""
     answer_rows: list[ReportAnswerRow] = Field(default_factory=list)

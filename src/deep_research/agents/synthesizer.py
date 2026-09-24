@@ -30,7 +30,6 @@ from collections.abc import Mapping, Sequence
 from pydantic import Field, JsonValue
 
 from deep_research.agents.base import (
-    OUTPUT_LIMIT_ATTEMPT_EFFORTS,
     OUTPUT_LIMIT_RETRY_READINGS,
     OUTPUT_LIMIT_RETRY_EFFORT,
     OUTPUT_LIMIT_RETRY_OUTCOMES,
@@ -98,6 +97,7 @@ from deep_research.utils.types import (
     EvidenceUnit,
     Finding,
     ReportAnswerRow,
+    RejectedDraftPoint,
     ReportStatement,
     ResearchError,
     ResearchEvent,
@@ -123,6 +123,17 @@ SYNTHESIS_CLAIM_DIGEST = 40
 # evidence ledger, while validation resolves only labels shown in this packet.
 SYNTHESIS_CLAIM_PACKET_CHARS = 12000
 SYNTHESIS_OPEN_QUESTIONS_CHARS = 2000
+
+# The draft call's own effort ladder: opened at "high", not the provider's
+# default. Both attempts at the default effort spent their whole output
+# budget on reasoning tokens and were truncated before a single point was
+# written on a measured live pass; the "high" retry that followed is what
+# produced every draft. The retry ladder stays — a truncated first attempt
+# is still re-asked once, under the same output budget.
+_DRAFT_ATTEMPT_EFFORTS: tuple[str | None, ...] = (
+    OUTPUT_LIMIT_RETRY_EFFORT,
+    OUTPUT_LIMIT_RETRY_EFFORT,
+)
 
 # A claim must be verified *and* at least this confident before the terminal
 # finalizer may keep it for future sessions. The spec says "high-confidence
@@ -338,6 +349,8 @@ STATEMENT_DISPOSITIONS = (
     "unlinked_statement",
     "returned_to_fact_checker",
     "answer_rows_derived",
+    "citation_narrowed_to_claims",
+    "omitted_bound_claim_attached",
 )
 
 # The modality markers a claim may carry and a statement may not drop. A
@@ -1205,6 +1218,7 @@ def build_canonical_packet(
     batch_size: int | None = None,
     failures: Sequence[str] = (),
     support_budget: int = PACKET_SUPPORT_CHARS,
+    labels: Mapping[str, str] | None = None,
 ) -> CanonicalPacket:
     """Assemble the compact packet the writer receives.
 
@@ -1216,6 +1230,16 @@ def build_canonical_packet(
     passage reserves a first-passage share, the depth pass spends the rest,
     and a passage over what is left is cut between sentences with its
     withheld count stated — or named, when nothing is shown for that claim.
+
+    ``labels`` is the checked-claim registry's own ``claim_id -> label`` map.
+    A claim's label here always comes from it, never from this function's own
+    ``_packet_rank`` position: the registry is the one label space a drafted
+    point's ``claim_ids`` resolve against (``DraftContext.approved``), and a
+    packet that relabelled by rank showed a claim under a label that
+    resolved to a *different* claim there — one canonical label per checked
+    claim, no matter which order this packet ranks it into. Omitted only by
+    a caller with no registry of its own to give, in which case a claim's
+    label falls back to its rank position here.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -1223,6 +1247,11 @@ def build_canonical_packet(
     source_index = {normalize_source_url(source.url): source for source in sources}
     canonical = canonical_claims(claims)
     ranked = _packet_rank(canonical, targets=target_index)
+    label_map = dict(labels) if labels is not None else {}
+
+    def label_for(position: int, claim: Claim) -> str:
+        return label_map.get(claim.claim_id) or claim_label(position)
+
     entries: list[PacketEntry] = []
     remaining = support_budget
     # Reserve a first-passage share for every claim the packet will carry
@@ -1273,35 +1302,25 @@ def build_canonical_packet(
         # What the cluster resolved, not its verified slice: a contradicted
         # member of a cluster that also holds a verified one was labelled
         # "verified pair" and given the verified member's citations.
-        resolved_verdict, resolved_status = (
+        _, resolved_status = (
             resolved_verdict_and_status(cluster)
             if cluster is not None
             else (claim.verdict, claim.evidence_status)
         )
-        support = list(
-            dict.fromkeys(
-                [
-                    *(
-                        cluster.verdict_evidence.get(resolved_verdict, [])
-                        if cluster is not None
-                        else []
-                    ),
-                    *claim.source_urls,
-                ]
+        # ``cites:`` is the validator's own allow-list — ``_build_point``
+        # accepts only a url on the named claims' ``source_urls`` — so this
+        # is the whole list: never a cluster's wider verdict-evidence urls,
+        # never a selected passage's own url. Either would advertise a url
+        # that copying the label exactly as shown would still get refused
+        # for; those urls are not lost, they are on the passage lines below,
+        # beside the excerpt they were found on.
+        urls: list[str] = [
+            url
+            for url in dict.fromkeys(
+                normalize_source_url(raw) for raw in claim.source_urls
             )
-        )
-        urls: list[str] = []
-        for raw in (*claim.source_urls, *support):
-            url = normalize_source_url(raw)
-            if url and url not in urls:
-                urls.append(url)
-        for evidence_id in selected:
-            unit = evidence.get(evidence_id)
-            if unit is None:
-                continue
-            url = normalize_source_url(unit.source_url)
-            if url and url not in urls:
-                urls.append(url)
+            if url
+        ]
         badge = (resolved_status or "") or (claim.evidence_status or "")
         target_ids = list(
             dict.fromkeys(
@@ -1348,7 +1367,7 @@ def build_canonical_packet(
         remaining -= _support_cost(counter)
         entries.append(
             PacketEntry(
-                label=claim_label(position),
+                label=label_for(position, claim),
                 claim_id=claim.claim_id,
                 cluster_id=claim.cluster_id,
                 # The claim as it was checked. A bound for a rendered table
@@ -1375,7 +1394,7 @@ def build_canonical_packet(
             )
         )
     omitted = [
-        claim_label(position)
+        label_for(position, claim)
         for position, claim in enumerate(ranked[len(entries) :], start=len(entries) + 1)
     ]
     size = batch_size if batch_size is not None else max(1, limit)
@@ -1411,6 +1430,10 @@ def render_canonical_packet(packet: CanonicalPacket) -> str:
             lines.append(
                 f"  targets: {', '.join(entry.target_ids)}; "
                 f"dimensions: {', '.join(entry.required_dimensions) or 'none'}"
+            )
+        if entry.answered_dimensions:
+            lines.append(
+                f"  coverage: {', '.join(entry.answered_dimensions)}"
             )
         for obligation in entry.obligations:
             lines.append(f"  obligation: {obligation}")
@@ -1579,6 +1602,7 @@ class DraftContext(ContractModel):
     """
     failures: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
+    rejected_points: list[RejectedDraftPoint] = Field(default_factory=list)
     dispositions: list[str] = Field(default_factory=list)
     returned: list[str] = Field(default_factory=list)
     counter: int = 0
@@ -1592,6 +1616,35 @@ class DraftContext(ContractModel):
         if disposition not in self.dispositions:
             self.dispositions.append(disposition)
         self.rejected.append(f"{where}: {reason}")
+
+    def reject_point(
+        self,
+        disposition: str,
+        where: str,
+        reason: str,
+        *,
+        text: str,
+        claim_ids: Sequence[str],
+        urls: Sequence[str],
+    ) -> None:
+        """Record one refused drafted point in full.
+
+        The un-truncated companion to ``note``'s terse ``rejected`` reason:
+        the exact drafted text, claim labels and source urls, so the
+        evidence ledger's 'Rejected draft content' section and the quality
+        record can show which drafted point tripped which reason without
+        replaying the provider call that wrote it.
+        """
+        self.note(disposition, where, reason)
+        self.rejected_points.append(
+            RejectedDraftPoint(
+                where=where,
+                text=text,
+                claim_ids=list(claim_ids),
+                source_urls=list(urls),
+                reason=reason,
+            )
+        )
 
 
 def _attestation_corpus(
@@ -2126,7 +2179,9 @@ def _evidence_lines(
                 continue
             excerpt = _bounded_passage(excerpt, limit=budget)
         used += len(excerpt)
-        lines.append(f'{evidence_id} {unit.locator} "{excerpt}"')
+        lines.append(
+            f'{evidence_id} {unit.locator} {unit.source_url} "{excerpt}"'
+        )
     if omitted:
         lines.append(
             f"({len(omitted)} further selected passage(s) were not shown for "
@@ -2295,38 +2350,55 @@ def _build_point(
     for ``ResearchError.details`` and for the ledger.
     """
     if not text.strip():
-        context.note("unlinked_statement", where, "blank statement")
+        context.reject_point(
+            "unlinked_statement", where, "blank statement",
+            text=text, claim_ids=labels, urls=urls,
+        )
         return None
     claims, unknown = _resolve_claims(labels, approved=context.approved)
     if not claims:
-        context.note("unlinked_statement", where, "no known checked claim")
+        context.reject_point(
+            "unlinked_statement", where, "no known checked claim",
+            text=text, claim_ids=labels, urls=urls,
+        )
         return None
     if unknown:
         context.rejected.append(
             f"{where}: {unknown} claim id(s) outside the registry"
         )
-    approved_urls = {
-        normalize_source_url(url)
-        for claim in claims
-        for url in claim.source_urls
-    }
+    claim_urls: list[str] = [
+        url
+        for url in dict.fromkeys(
+            normalize_source_url(raw)
+            for claim in claims
+            for raw in claim.source_urls
+        )
+        if url
+    ]
+    approved_urls = set(claim_urls)
     accepted: list[str] = []
-    invented = 0
+    dropped = 0
     for raw in urls:
         url = normalize_source_url(raw)
         if url not in approved_urls:
-            invented += 1
+            dropped += 1
             continue
         if url not in accepted:
             accepted.append(url)
-    if invented:
+    if not accepted and urls:
+        # Something was drafted, but none of it survived narrowing to the
+        # named claims: cite those claims' own urls instead of losing the
+        # point over one relay-only citation list.
+        accepted = list(claim_urls)
+    if dropped:
+        context.dispositions.append("citation_narrowed_to_claims")
         context.rejected.append(
-            f"{where}: {invented} source url(s) not on those claims"
+            f"{where}: {dropped} url(s) not on those claims were dropped"
         )
-        return None
     if not accepted:
-        context.note(
-            "unlinked_statement", where, "no source url for a settled statement"
+        context.reject_point(
+            "unlinked_statement", where, "no source url for a settled statement",
+            text=text, claim_ids=labels, urls=urls,
         )
         return None
     named = len(claims)
@@ -2340,56 +2412,55 @@ def _build_point(
         context.dispositions.append("claim_link_narrowed_to_citation")
 
     if not decision_section and _is_recommendation(text):
-        context.note(
-            "unsupported_recommendation",
-            where,
+        context.reject_point(
+            "unsupported_recommendation", where,
             "a recommendation outside the answer",
+            text=text, claim_ids=labels, urls=urls,
         )
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
     lowered = dropped_modality(text, claims)
     if lowered:
-        context.note(
-            "unsupported_modality",
-            where,
+        context.reject_point(
+            "unsupported_modality", where,
             "the statement drops the modality its evidence carries",
+            text=text, claim_ids=labels, urls=urls,
         )
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
     cited = _cited_evidence(claims, context) or context.corpus
     hardened = hardened_modality(text, cited)
     if hardened:
-        context.note(
-            "unsupported_modality",
-            where,
+        context.reject_point(
+            "unsupported_modality", where,
             "the statement hardens the modality its evidence carries",
+            text=text, claim_ids=labels, urls=urls,
         )
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
     qualifiers = unattached_qualifiers(text, cited)
     if qualifiers:
-        context.note(
-            "unsupported_qualifier",
-            where,
+        context.reject_point(
+            "unsupported_qualifier", where,
             "an unsupported figure qualification",
+            text=text, claim_ids=labels, urls=urls,
         )
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
     missing = _unsupported_figures(text, claims, context, basis)
     if missing:
-        context.note(
-            "unsupported_figure",
-            where,
-            "an unsupported figure",
+        context.reject_point(
+            "unsupported_figure", where, "an unsupported figure",
+            text=text, claim_ids=labels, urls=urls,
         )
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
         return None
     extrapolation = _unsupported_names(text, claims, context)
     if extrapolation:
-        context.note(
-            "unsupported_extrapolation",
-            where,
+        context.reject_point(
+            "unsupported_extrapolation", where,
             "a name or place the evidence does not state",
+            text=text, claim_ids=labels, urls=urls,
         )
         context.dispositions.append("returned_to_fact_checker")
         context.returned.append(summarize_text(text, limit=_CLAIM_TEXT_CHARS))
@@ -2467,6 +2538,15 @@ def _claim_attested_text(
     that no cited claim states is not thereby checked. The measured smoke
     published 19.6 GW statements on the sole 10.4 GW claim's cluster exactly
     that way, and the reader met an unchecked forecast as a settled fact.
+
+    Only *admitted* provenance travels: the attributed issuer, the measured
+    scope, the recorded data period, and the release date's own month —
+    the same bound ``_unsupported_names`` already holds a rendered point to.
+    ``vintage`` and ``statement_date`` are the extractor's own prose, never
+    checked against the read (``researcher.py`` stores them as written), so
+    they are left out here: admitting them let audit2's #1 borrow a
+    BloombergNEF title onto an EIA figure, and a cell built on an
+    unchecked vintage alone is the same hallucination.
     """
     parts: list[str] = []
     for claim in claims:
@@ -2477,13 +2557,13 @@ def _claim_attested_text(
             for value in (
                 provenance.attributed_issuer,
                 provenance.measure_scope,
-                provenance.vintage,
-                provenance.statement_date,
-                provenance.release_date,
                 provenance.data_period,
             )
             if value
         )
+        month = re.match(r"(?:19|20)\d{2}-(\d{2})", provenance.release_date or "")
+        if month and 1 <= int(month.group(1)) <= 12:
+            parts.append(calendar.month_name[int(month.group(1))])
     for cluster_id in clusters_for_claims(claims, context.clusters):
         proposition = context.clusters[cluster_id].proposition
         parts.append(proposition.text)
@@ -2586,7 +2666,10 @@ def _build_cell(
             basis="the row's evidence does not state this cell",
         )
     selected = _selected_claims(row, context)
-    evidence_text = _cited_evidence(selected, context) or context.corpus
+    evidence_text = (
+        f"{_cited_evidence(selected, context) or context.corpus} "
+        f"{_claim_attested_text(selected, context)}"
+    ).strip()
     unattested = [
         *unattested_words(raw, evidence_text),
         *unattested_atoms(raw, evidence_text),
@@ -3061,7 +3144,7 @@ def build_report_composition(
             summary, sections, context=context
         )
     if draft is not None:
-        sections = _render_omitted_bound_claims(
+        summary, sections = _render_omitted_bound_claims(
             summary, sections, context=context
         )
     if not rows:
@@ -3094,6 +3177,7 @@ def build_report_composition(
         uncertainty_notes=[statement.text for statement in uncertainty],
         uncertainty_statements=uncertainty,
         rejected=context.rejected,
+        rejected_points=context.rejected_points,
         answer_kind=contract.answer_kind if contract is not None else None,
         answer_rows=rows,
         claim_clusters=dict(task.claim_clusters),
@@ -3205,15 +3289,96 @@ def _restates_a_rendered_point(
     and #17 both carry EIA 64705's 10.4 GW addition, from different clusters.
     Giving #17 its own point under "left out" reprints a fact the reader
     already met rather than answering a planned question the draft missed.
-    Matched by the same answered role (the same period, forecast or outcome)
-    plus a shared unit-bearing figure, or by the claim's own wording
-    normalizing to a rendered point's — either is one restated fact, however
-    differently worded.
+    Matched by the same measured years plus a shared unit-bearing figure, or
+    by the claim's own wording normalizing to a rendered point's — either is
+    one restated fact, however differently worded. The hedge component of
+    the role is deliberately not compared: audit-3's own 19.6 GW claim read
+    "planned" where the rendered point read "carried the projection ...
+    plans" (no hedge marker), so comparing hedge state too missed the match
+    and printed the same figure twice.
     """
+    return _find_restated_point(claim, rendered) is not None
+
+
+_FORECAST_MARKER_PATTERN = re.compile(
+    r"\b(?:plan|plans|planned|planning|project|projects|projected|"
+    r"projection|projections|forecast|forecasts|forecasted|forecasting|"
+    r"expect|expects|expected|anticipate|anticipates|anticipated)\b",
+    re.IGNORECASE,
+)
+
+
+def _forecast_role(text: str) -> bool:
+    """True when the text reads as a plan, projection, or forecast — not a
+    stated outcome. Broader than ``hedge_marker``'s own pattern on purpose:
+    "carried the projection ... plans to add" and "planned to add" are the
+    same forecast role in different words, and a text that reads either way
+    must never be matched against an outcome that merely shares its figure
+    and year — one issuer's own forecast is not its own later actual.
+    """
+    return bool(_FORECAST_MARKER_PATTERN.search(text))
+
+
+# A past-tense, realised-outcome verb. Matched only outside a future or
+# conditional modal's own clause ("would be installed" still names a plan,
+# not a report of what happened) via ``_clause_around``, the same governing
+# scope ``hardened_modality`` reads a strong modal's exemption from.
+_REALIZED_OUTCOME_PATTERN = re.compile(
+    r"\b(?:installed|added|deployed|commissioned|came\s+online|built|"
+    r"reached|hit|beat|exceeded|surpassed)\b",
+    re.IGNORECASE,
+)
+_FUTURE_MODAL_PATTERN = re.compile(
+    r"\b(?:would|will|could|might|may|should|shall)\b", re.IGNORECASE
+)
+
+
+def _realized_outcome(text: str) -> bool:
+    """True when the text reports something that already happened.
+
+    A matched verb inside a clause a future or conditional modal governs is
+    still a plan ("EIA forecast that 16 GW would be installed"), not a
+    report of an outcome, so it does not count. Nor does a verb read as an
+    infinitive complement ("expected to hit 15 GW"): "hit" and "beat" spell
+    their infinitive and past-tense forms identically, and a verb right
+    after "to" is what a forecast is expected *to do*, not a report that it
+    did it. Mirrors ``claim_clusters.py``'s own to-infinitive guard for the
+    same ambiguity, so the two classifiers agree.
+    """
+    for match in _REALIZED_OUTCOME_PATTERN.finditer(text):
+        if re.search(r"\bto\s+\Z", text[: match.start()], re.IGNORECASE):
+            continue
+        if not _FUTURE_MODAL_PATTERN.search(_clause_around(text, match.start())):
+            return True
+    return False
+
+
+def _stated_role(text: str) -> str:
+    """Whether the text reads as a forecast, a realised outcome, or both.
+
+    A forecast marker alone is not the whole story: "the operator beat
+    projections: 16 GW was installed in 2025" carries a forecast marker
+    ("projections") *and* a past-tense, realised-outcome verb ("beat",
+    "installed") — it reports what happened, not an open plan. "mixed" is
+    the conservative reading for that case: neither a forecast nor an
+    actual is safe to match it against, because a real one of either kind
+    could be absorbed into a sentence that already settled the question the
+    other one still has open.
+    """
+    forecast = _forecast_role(text)
+    outcome = _realized_outcome(text)
+    if forecast and outcome:
+        return "mixed"
+    return "forecast" if forecast else "actual"
+
+def _find_restated_point(
+    claim: Claim, rendered: Sequence[ReportPoint]
+) -> ReportPoint | None:
+    """The already-rendered point whose content already states this claim, if any."""
     # A unit-bearing figure only: a bare year is not a figure a fact rests on
     # — it is usually also the role's own period, so two claims about
-    # unrelated facts that both happen to be dated "in 2025" and hedge
-    # neither would otherwise match on the year alone.
+    # unrelated facts that both happen to be dated "in 2025" would otherwise
+    # match on the year alone.
     def unit_bearing(text: str) -> set[str]:
         return {
             token
@@ -3221,15 +3386,114 @@ def _restates_a_rendered_point(
             if token != _figure_number(token)
         }
 
-    role = _text_role(claim.text)
+    years = _text_role(claim.text)[0]
     figures = unit_bearing(claim.text)
     normalized = _normalized_text(claim.text)
     for point in rendered:
         if normalized == _normalized_text(point.text):
-            return True
-        if _answer_role(point) == role and figures & unit_bearing(point.text):
-            return True
-    return False
+            return point
+        if years == _text_role(point.text)[0] and figures & unit_bearing(point.text):
+            return point
+    return None
+
+
+def _restatement_is_attachable(
+    point: ReportPoint, claim: Claim, *, context: DraftContext
+) -> bool:
+    """True when the point may safely fold this claim's content into itself.
+
+    A shared figure and year is necessary but not sufficient: two issuers
+    can publish the same rounded figure for the same year on unrelated
+    facts (WoodMac's own 13.3 GW forecast is not BNEF's), and one issuer's
+    own forecast is not its own later actual even when the figure survived
+    unchanged — whichever of the two already rendered. Checked the way a
+    drafted point naming this claim would be: a name the claim's own corpus
+    does not attest is refused (``_unsupported_names``), and a stated-role
+    mismatch is refused via ``_stated_role`` — "forecast", "actual", or
+    "mixed" when the text both names a forecast and reports a past,
+    realised outcome ("beat projections ... was installed"), which is
+    refused against *either* role since neither is safe to assume. This is
+    normalised past ``hedge_marker``'s own narrow pattern so "carried the
+    projection ... plans" and "planned" read as the same forecast role —
+    deliberately not a call to ``dropped_modality`` itself, which reads the
+    former as unhedged on that narrow pattern and would refuse the audited
+    restatement this project exists to fix. A recorded issuer that
+    disagrees is refused too.
+    """
+    if _unsupported_names(point.text, [claim], context):
+        return False
+    point_role = _stated_role(point.text)
+    claim_role = _stated_role(claim.text)
+    if point_role == "mixed" or claim_role == "mixed" or point_role != claim_role:
+        return False
+    claims_by_id = {c.claim_id: c for c in context.approved.values()}
+    point_issuers = {
+        claims_by_id[claim_id].provenance.attributed_issuer.casefold()
+        for claim_id in point.claim_ids
+        if claim_id in claims_by_id
+        and claims_by_id[claim_id].provenance.attributed_issuer
+    }
+    claim_issuer = claim.provenance.attributed_issuer
+    if (
+        point_issuers
+        and claim_issuer
+        and claim_issuer.casefold() not in point_issuers
+    ):
+        return False
+    return True
+
+
+def _attach_claim_to_point(
+    point: ReportPoint, claim: Claim, *, context: DraftContext
+) -> ReportPoint | None:
+    """Fold a restated bound claim into the point that already states it.
+
+    The point's own words are kept — the claim only restates what the
+    reader already sees — but its statement is rebuilt over the wider claim
+    set, so the target this claim answers and the dimensions it covers are
+    credited to the point instead of lost with the skipped claim. Its own
+    urls travel too, narrowed to what the new claim actually carries: a
+    point naming a claim that carries none of its cited urls is exactly the
+    unresolved citation the quality gate hard-fails on, so a claim that
+    shares none of the point's urls is refused here (``None``) rather than
+    attached, and one that shares only some narrows the point down to the
+    overlap. The statement keeps its own id: a repaired point must never
+    take the id of a kept record.
+    """
+    point_urls = {normalize_source_url(url) for url in point.source_urls}
+    claim_urls = {normalize_source_url(url) for url in claim.source_urls}
+    if point_urls <= claim_urls:
+        urls = list(point.source_urls)
+    else:
+        common = point_urls & claim_urls
+        if not common:
+            return None
+        urls = [
+            url for url in point.source_urls
+            if normalize_source_url(url) in common
+        ]
+    claims_by_id = {c.claim_id: c for c in context.approved.values()}
+    claim_ids = list(dict.fromkeys([*point.claim_ids, claim.claim_id]))
+    claims = [
+        claims_by_id[claim_id] for claim_id in claim_ids if claim_id in claims_by_id
+    ]
+    statement_id = (
+        point.statement.statement_id if point.statement else context.next_id("S")
+    )
+    basis = (point.statement.basis if point.statement else "") or ""
+    return point.model_copy(
+        update={
+            "claim_ids": claim_ids,
+            "source_urls": urls,
+            "statement": _statement_for_claims(
+                statement_id=statement_id,
+                text=point.text,
+                claims=claims,
+                context=context,
+                basis=basis,
+            ),
+        }
+    )
 
 
 def _render_omitted_bound_claims(
@@ -3237,7 +3501,7 @@ def _render_omitted_bound_claims(
     sections: Sequence[ReportSection],
     *,
     context: DraftContext,
-) -> list[ReportSection]:
+) -> tuple[list[ReportPoint], list[ReportSection]]:
     """Give a statement to every target-bound attributed claim the draft omitted.
 
     audit2's claim #14, EIA's own 15 GW 2025 actual, reached the reader only
@@ -3246,13 +3510,18 @@ def _render_omitted_bound_claims(
     independent support and no contradiction, is stated in its own checked
     words and cited to the URLs it carries. Every guard a drafted point
     passes still applies. A claim whose content a rendered point (or an
-    earlier one added here) already states is skipped rather than given a
-    point of its own: audit2's #1 and #17 both carry EIA 64705's 10.4 GW
-    finding from different clusters, and printing #17 here reprinted it a
-    third time under a heading that promises questions the draft left out.
+    earlier one added here) already states is not given a point of its own:
+    it is attached to the point that already states it instead, so the
+    target it answers and the dimensions it covers are credited to that
+    point rather than either lost with the claim or printed a second time.
     """
+    summary = list(summary)
+    sections = [
+        section.model_copy(update={"points": list(section.points)})
+        for section in sections
+    ]
     if not context.targets:
-        return list(sections)
+        return summary, sections
     rendered_points = [
         *summary, *(p for section in sections for p in section.points)
     ]
@@ -3266,8 +3535,30 @@ def _render_omitted_bound_claims(
             or claim.verdict == "contradicted"
             or claim.evidence_status not in ("source_supported", "verified_pair")
             or not set(claim.target_ids).intersection(context.targets)
-            or _restates_a_rendered_point(claim, [*rendered_points, *points])
         ):
+            continue
+        restated = _find_restated_point(claim, [*rendered_points, *points])
+        attached = (
+            _attach_claim_to_point(restated, claim, context=context)
+            if restated is not None
+            and _restatement_is_attachable(restated, claim, context=context)
+            else None
+        )
+        if attached is not None:
+            replaced_locally = False
+            for index, pending in enumerate(points):
+                if pending is restated:
+                    points[index] = attached
+                    replaced_locally = True
+                    break
+            if not replaced_locally:
+                _replace_point(summary, sections, restated, attached)
+            rendered_points = [
+                attached if point is restated else point
+                for point in rendered_points
+            ]
+            rendered.add(claim.claim_id)
+            context.dispositions.append("omitted_bound_claim_attached")
             continue
         point = _build_point(
             text=claim.text,
@@ -3279,9 +3570,28 @@ def _render_omitted_bound_claims(
         if point is not None:
             points.append(point)
     if not points:
-        return list(sections)
+        return summary, sections
     context.dispositions.append("omitted_bound_claim_rendered")
-    return [*sections, ReportSection(title=_OMITTED_BOUND_TITLE, points=points)]
+    sections = [*sections, ReportSection(title=_OMITTED_BOUND_TITLE, points=points)]
+    return summary, sections
+
+
+def _replace_point(
+    summary: list[ReportPoint],
+    sections: list[ReportSection],
+    old: ReportPoint,
+    new: ReportPoint,
+) -> None:
+    """Swap one already-rendered point for its attached replacement, in place."""
+    for index, point in enumerate(summary):
+        if point is old:
+            summary[index] = new
+            return
+    for section in sections:
+        for index, point in enumerate(section.points):
+            if point is old:
+                section.points[index] = new
+                return
 
 
 def _build_points(
@@ -3744,7 +4054,7 @@ def compose_report(
         unique_source_count=len(composition.sources),
         unique_claim_count=len(composition.claims),
     )
-    errors = [invalid_draft_error(rejected)] if rejected else []
+    errors = [invalid_draft_error(rejected, draft=draft)] if rejected else []
     return report, errors
 
 
@@ -3756,14 +4066,20 @@ def report_messages(
 ) -> list[ChatMessage]:
     """Build the messages that request one structured report draft.
 
-    The evidence packet is built from canonical checked claims, ranked by
-    coverage, verdict, and recorded impact, and bounded by the exact rendered
-    character representation. Raw findings are carried as open questions
-    only: they are leads, and the response contract forbids resting a settled
-    statement on one.
+    The evidence packet is one canonical, addressable block: every checked
+    claim it carries is labelled by the same registry position a drafted
+    point's ``claim_ids`` resolve against (``claim_registry`` /
+    ``DraftContext.approved``), ranked by coverage, verdict, and recorded
+    impact for *display order* only — the label itself never moves with
+    that order. Showing the same claim under two different labels in two
+    blocks let a draft cite the richer block's label and resolve to a
+    different claim than the one it read; one label space closes that. Raw
+    findings are carried as open questions only: they are leads, and the
+    response contract forbids resting a settled statement on one.
     """
+    registry = claim_registry(task.claims)
     packet, omitted = bounded_claim_packet(
-        claim_registry(task.claims),
+        registry,
         limit=claim_digest,
         budget_chars=SYNTHESIS_CLAIM_PACKET_CHARS,
     )
@@ -3775,6 +4091,7 @@ def report_messages(
         limit=finding_digest,
         budget_chars=SYNTHESIS_OPEN_QUESTIONS_CHARS,
     )
+    label_by_claim_id = {claim.claim_id: label for label, claim in packet}
     canonical = build_canonical_packet(
         claims=[claim for _, claim in packet],
         clusters=task.claim_clusters,
@@ -3783,7 +4100,14 @@ def report_messages(
         sources=task.sources,
         limit=claim_digest,
         failures=measured_failures(task),
+        labels=label_by_claim_id,
     )
+    canonical_body = render_canonical_packet(canonical)
+    if omitted:
+        canonical_body = (
+            f"{canonical_body}\n({omitted} further checked claim(s) were "
+            "omitted for length; they cannot be cited by this draft.)"
+        )
     sections = [f"# Research question\n{task.instruction}"]
     if task.guidance.strip():
         sections.append(f"# Context\n{task.guidance}")
@@ -3795,14 +4119,7 @@ def report_messages(
                 f"Scope: {task.scope.strip() or 'not stated'}"
             ),
             f"# Answer form\n{answer_form_instruction(task.answer_contract)}",
-            (
-                "# Checked claims to cite\n"
-                f"{render_report_claim_packet(packet, omitted=omitted)}"
-            ),
-            (
-                "# Canonical evidence packet\n"
-                f"{render_canonical_packet(canonical)}"
-            ),
+            f"# Canonical evidence packet\n{canonical_body}",
             (
                 "# Retrieved findings (open questions only)\n"
                 f"{open_questions}"
@@ -3884,8 +4201,23 @@ def report_output_limit_retry(
     )
 
 
-def invalid_draft_error(rejected: Sequence[str]) -> ResearchError:
-    """Warn that some drafted report content was refused."""
+def invalid_draft_error(
+    rejected: Sequence[str], *, draft: ReportDraft | None = None
+) -> ResearchError:
+    """Warn that some drafted report content was refused.
+
+    ``draft`` is the model's own raw reply, when the caller has one: every
+    point it proposed, whether it survived validation or not, with its full
+    text, claim labels and source urls exactly as drafted and never
+    truncated. The reasons alone name what went wrong; without the draft
+    beside them, a later diagnosis cannot tell which drafted point tripped
+    which reason — audit-3's own retained trace kept only token counts, not
+    messages, and the label collision it hid took a live reproduction to
+    find instead of a read of this record.
+    """
+    details: dict[str, JsonValue] = {"rejected": list(rejected)}
+    if draft is not None:
+        details["drafted_points"] = _drafted_point_records(draft)
     return agent_error(
         agent_name=SYNTHESIZER_NAME,
         error_type="synthesizer_invalid_draft",
@@ -3894,8 +4226,58 @@ def invalid_draft_error(rejected: Sequence[str]) -> ResearchError:
             "or source that is not in the checked evidence; it is listed in "
             "the evidence ledger instead of the reader report."
         ),
-        details={"rejected": list(rejected)},
+        details=details,
     )
+
+
+def _drafted_point_records(draft: ReportDraft) -> list[dict[str, JsonValue]]:
+    """Every point the model drafted, its full text and citations, unclamped.
+
+    One record per claim-linked item the schema carries — the executive
+    summary, each findings section, the ranked constraints, and the answer
+    rows — in the shape ``_build_point`` validates, before any of it was
+    narrowed, repaired, or refused. Diagnostic only: never fed back into a
+    prompt, so nothing here is length-bounded the way a routed assertion is.
+    """
+    records: list[dict[str, JsonValue]] = []
+
+    def add(
+        where: str, text: str, claim_ids: Sequence[str], urls: Sequence[str]
+    ) -> None:
+        records.append(
+            {
+                "where": where,
+                "text": text,
+                "claim_ids": list(claim_ids),
+                "source_urls": list(urls),
+            }
+        )
+
+    for position, point in enumerate(draft.executive_summary, start=1):
+        add(
+            f"executive summary point {position}",
+            point.text,
+            point.claim_ids,
+            point.source_urls,
+        )
+    for section_position, section in enumerate(draft.sections, start=1):
+        for position, point in enumerate(section.points, start=1):
+            add(
+                f"section {section_position} point {position}",
+                point.text,
+                point.claim_ids,
+                point.source_urls,
+            )
+    for position, constraint in enumerate(draft.ranked_constraints, start=1):
+        add(
+            f"constraint {position}",
+            constraint.constraint,
+            constraint.claim_ids,
+            constraint.source_urls,
+        )
+    for position, row in enumerate(draft.answer_rows, start=1):
+        add(f"answer row {position}", row.finding, row.claim_ids, row.source_urls)
+    return records
 
 
 def no_evidence_error() -> ResearchError:
@@ -4073,13 +4455,17 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
         writing step can never invent a report out of nothing. The third
         element is ``True`` only when the call itself failed.
 
-        An output-limit truncation is re-asked once at the lower effort, under
-        the same output budget — the global cap, since this call sends no
-        per-operation budget of its own. This is the largest output the run
-        asks for (27,301 of 32,768 tokens on the audited live pass) and it has
-        no fallback: without a synthesis there is no truthful report, so a
-        second truncation keeps this call's own failure path rather than
-        degrading. A provider outage is not re-asked at all.
+        Opened at ``reasoning_effort="high"``, not the provider's default: a
+        live pass measured both of its default-effort draft attempts
+        truncated at the output limit (27,301 and then 32,768 of 32,768
+        tokens spent on reasoning before a point was written), and only the
+        "high" retry that followed ever produced a draft. The retry ladder
+        stays — a truncated first attempt is still re-asked once, under the
+        same output budget, the provider's global cap, since this call sends
+        no per-operation budget of its own — and it has no fallback beyond
+        that: without a synthesis there is no truthful report, so a second
+        truncation keeps this call's own failure path rather than degrading.
+        A provider outage is not re-asked at all.
         """
         if not task.claims and not task.sources and not task.findings:
             return None, [no_evidence_error()], False
@@ -4089,8 +4475,8 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
             claim_digest=self._claim_digest,
         )
         truncations: list[ProviderOutputLimitError] = []
-        for position, effort in enumerate(OUTPUT_LIMIT_ATTEMPT_EFFORTS):
-            last_attempt = position + 1 == len(OUTPUT_LIMIT_ATTEMPT_EFFORTS)
+        for position, effort in enumerate(_DRAFT_ATTEMPT_EFFORTS):
+            last_attempt = position + 1 == len(_DRAFT_ATTEMPT_EFFORTS)
             try:
                 draft = await self.provider.complete_structured(
                     messages,

@@ -29,7 +29,11 @@ from pydantic import JsonValue
 from deep_research.agents.base import AgentRun
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.identity import merge_claim_snapshot, normalize_source_url
-from deep_research.agents.quality import compute_report_quality, review_status_fields
+from deep_research.agents.quality import (
+    apply_terminal_pursued_unmet_accounting,
+    compute_report_quality,
+    review_status_fields,
+)
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
     render_evidence_ledger,
@@ -281,10 +285,30 @@ def synthesizer_node(
         state = load_state(composed)
         if is_halted(state) or state.composition is None:
             return composed
-        quality = compute_report_quality(state, state.composition)
+        terminal = state.iteration >= state.max_iterations
+        # At the terminal pass, record every "pursued, unmet" target as real
+        # data — one target-itemed EvidenceDisposition and one "Not acquired"
+        # uncertainty statement on the composition — before the quality pass
+        # measures this state and before either artifact is rendered to
+        # Markdown, so ``_accounts_for_target``, the review packet, the
+        # evidence ledger, and the reader's own "Not acquired" group all read
+        # the same recorded reason (see ``quality.
+        # apply_terminal_pursued_unmet_accounting``).
+        accounting_update = apply_terminal_pursued_unmet_accounting(state)
+        quality_state = (
+            merge_research_state(state, accounting_update)
+            if accounting_update
+            else state
+        )
+        quality = compute_report_quality(
+            quality_state,
+            quality_state.composition,
+            terminal=terminal,
+        )
         return _with(
             state,
             {
+                **accounting_update,
                 "quality": quality,
                 "events": [
                     quality_assessed_event(
@@ -776,7 +800,11 @@ async def _review_report(
     reuse is checked against, and a composition-less report is recorded as
     unreviewable rather than as reviewed-and-fine.
     """
-    packet = build_report_review_input(state, state.composition)
+    packet = build_report_review_input(
+        state,
+        state.composition,
+        terminal=state.iteration >= state.max_iterations,
+    )
     previous = state.report_review
     if (
         previous is not None

@@ -28,6 +28,7 @@ from deep_research.agents.claim_clusters import (
     AtomicPairDraft,
     ClaimEquivalenceDraft,
     _sentences,
+    _target_realisation_kind,
     atom_answers_dimensions,
     atom_answers_target,
     atomic_compatible,
@@ -4522,3 +4523,633 @@ def test_audit_figures_do_not_answer_another_issuers_or_definition_target() -> N
         "The U.S. Energy Storage Monitor reported that the U.S. grid-scale "
         "segment added 12 GW of battery storage in 2025.",
     )
+
+
+# --------------------------------------------------------------------------
+# Fable change 3: audit-3's four broken bindings, one cross-topic bind, and
+# the segment-mismatch guard that must still hold (T3)
+# --------------------------------------------------------------------------
+#
+# Verbatim audit-3 claim texts (quality JSON claims 5ce0a6de, 87d73c73,
+# 23fecb06, 355a35fd, c4435990, 2993e776, 12aac722).
+
+
+_5CE0A6DE = (
+    "Wood Mackenzie forecast in its U.S. Energy Storage Monitor covering "
+    "year-end 2024 deployment that U.S. grid-scale storage installations "
+    "would reach 13.3 GW in 2025."
+)
+_87D73C73 = (
+    "Wood Mackenzie forecast U.S. grid-scale storage installations of "
+    "13.3 GW in 2025 in its U.S. Energy Storage Monitor covering year-end "
+    "2024 deployment."
+)
+_23FECB06 = (
+    "BloombergNEF's 2026 edition of its Sustainable Energy in America "
+    "Factbook, produced with the Business Council for Sustainable Energy, "
+    "reported that the U.S. commissioned an estimated 15.2 GW of new "
+    "utility-scale storage in 2025."
+)
+_355A35FD = (
+    "Wood Mackenzie reported that U.S. utility-scale storage installations "
+    "reached 16 GW/47.3 GWh in 2025, increases of 48% and 40% respectively "
+    "over 2024, in its March Energy Storage Monitor."
+)
+_C4435990 = (
+    "Wood Mackenzie reported that the U.S. energy storage market hit a "
+    "record 18.9 GW of battery energy storage system installations in "
+    "2025, a 52% increase over 2024."
+)
+_2993E776 = (
+    "According to EIA's January 2025 Preliminary Monthly Electric "
+    "Generator Inventory, operators reported plans to add 19.6 GW of "
+    "utility-scale battery storage to the U.S. grid in 2025, which would "
+    "set a record."
+)
+_12AAC722 = (
+    "Wood Mackenzie's U.S. Energy Storage Monitor recorded a record U.S. "
+    "energy storage market in 2024, with 12.3 GW of installations across "
+    "all segments \u2014 12,314 MW and 37,143 MWh."
+)
+_FF178DE3 = (
+    "Wood Mackenzie's U.S. Energy Storage Monitor reported that the U.S. "
+    "energy storage market hit a record 18.9 GW of battery energy storage "
+    "system installations in 2025, a 52% increase over 2024."
+)
+_D92280B0 = (
+    "The U.S. Energy Information Administration reported that generators "
+    "added 10.4 GW of new battery storage capacity in the United States "
+    "in 2024, the second-largest generating capacity addition that year "
+    "after solar."
+)
+_F5EB319C = (
+    "EIA reported that operators planned to add 19.6 GW of utility-scale "
+    "battery storage to the U.S. grid in 2025, which could set a record "
+    "for annual capacity growth from battery storage."
+)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # "its U.S. Energy Storage Monitor" is one clause whose "U.S." is
+        # adjectival before a title; splitting there left the figure atom
+        # with no attribution and the wrong period.
+        (_5CE0A6DE, 1),
+        (_87D73C73, 1),
+        # The control the audit's own example names: a genuine sentence break
+        # still splits, even at the same dotted initialism.
+        ("Capacity grew in the U.S. It fell in Canada.", 2),
+    ],
+)
+def test_a_possessed_title_does_not_split_the_clause(
+    text: str, expected: int
+) -> None:
+    """A determiner or possessive before "U.S." ties it to its own title."""
+    assert len(_sentences(text)) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # A bare determiner in front of "U.S." is not a possessive: the
+        # clause after it is a genuine new sentence, and joining it credited
+        # the wrong issuer to the fact that follows (RevF3 P2).
+        (
+            "Capacity grew in the U.S. The EIA reported this in its "
+            "January 2025 inventory.",
+            2,
+        ),
+        (
+            "The EIA inventory covers the U.S. Wood Mackenzie reported "
+            "that grid-scale storage installations would reach 13.3 GW "
+            "in 2025.",
+            2,
+        ),
+        # A possessive in front of "U.S." still splits when what follows is
+        # itself a sentence opener, not a title.
+        (
+            "Wood Mackenzie discussed its U.S. This report also covered "
+            "Canada.",
+            2,
+        ),
+    ],
+)
+def test_a_bare_determiner_or_a_sentence_opener_still_splits(
+    text: str, expected: int
+) -> None:
+    """Only a true possessive suppresses the split, and never before an
+    opener word ("The", "A", "An", "This", "These", "That", "It")."""
+    assert len(_sentences(text)) == expected
+
+
+def test_a_bare_determiner_before_us_does_not_credit_the_wrong_issuer() -> None:
+    """The EIA sentence must not lend its issuer to Wood Mackenzie's fact."""
+    atoms = extract_text_atoms(
+        "The EIA inventory covers the U.S. Wood Mackenzie reported that "
+        "grid-scale storage installations would reach 13.3 GW in 2025."
+    )
+    figure = next(atom for atom in atoms if atom.value == "13.3")
+
+    assert figure.attribution == "Wood Mackenzie"
+
+
+def test_a_bare_forecast_object_attributes_its_issuer() -> None:
+    """"Wood Mackenzie forecast <figure>" has no "that" clause and no
+    determiner in front of its object, and used to attribute nothing.
+    """
+    atom = extract_text_atoms(_87D73C73)[0]
+
+    assert atom.attribution == "Wood Mackenzie"
+    assert atom.value == "13.3"
+    assert atom.unit == "GW"
+    assert atom.observation_period == "2025"
+
+
+def test_a_possessive_owner_before_a_title_is_the_issuer() -> None:
+    """The embedded appositive's own title fragment is not the issuer.
+
+    "BloombergNEF's 2026 edition of its Sustainable Energy in America
+    Factbook, produced with the Business Council for Sustainable Energy,
+    reported ..." used to read "Sustainable Energy" — a title fragment
+    nearest the verb — as the issuer.
+    """
+    atom = extract_text_atoms(_23FECB06)[0]
+
+    assert atom.attribution == "BloombergNEF"
+
+
+@pytest.mark.parametrize(
+    ("text", "value", "unit"),
+    [
+        # A slash pair states one figure in two units; the first is the one
+        # a target's measure is checked against.
+        (_355A35FD, "16", "GW"),
+        # A value followed later by its own percentage delta is one
+        # measurement, not two.
+        (_C4435990, "18.9", "GW"),
+    ],
+)
+def test_a_slash_pair_or_trailing_percentage_keeps_the_first_figure(
+    text: str, value: str, unit: str
+) -> None:
+    atoms = [atom for atom in extract_text_atoms(text) if atom.value or atom.unit]
+
+    assert [(atom.value, atom.unit) for atom in atoms] == [(value, unit)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # A share's own base ("of the 48 GW") is not that share's comparison
+        # delta: the percentage is followed by "of", so it names a
+        # denominator, not a year-over-year change on an already-stated
+        # figure. Crediting the base as the clause's own value bound it to
+        # the critical EIA additions target (RevF3 P1).
+        (
+            "Solar and storage together accounted for 20% of the 48 GW of "
+            "new U.S. generating capacity added in 2024."
+        ),
+        (
+            "Battery storage accounted for 52% of the 18.9 GW of new "
+            "capacity added in 2025 in the United States."
+        ),
+    ],
+)
+def test_a_percentage_of_a_base_leaves_the_clause_ambiguous(text: str) -> None:
+    atoms = [atom for atom in extract_text_atoms(text) if atom.value or atom.unit]
+
+    assert atoms == []
+
+
+def test_a_reversed_slash_pair_still_keeps_the_power_figure() -> None:
+    """The power unit wins regardless of which side of the slash it is on."""
+    atoms = [
+        atom
+        for atom in extract_text_atoms(
+            "Wood Mackenzie reported that U.S. utility-scale storage "
+            "installations reached 47.3 GWh/16 GW in 2025."
+        )
+        if atom.value or atom.unit
+    ]
+
+    assert [(atom.value, atom.unit) for atom in atoms] == [("16", "GW")]
+
+
+def test_a_same_dimension_slash_pair_stays_ambiguous() -> None:
+    """A slash pair is a restatement only across power and energy; two power
+    figures joined by a slash are still two measurements."""
+    atoms = [
+        atom
+        for atom in extract_text_atoms(
+            "Wood Mackenzie reported that U.S. utility-scale storage "
+            "capacity reached 16 GW/18 GW in 2025."
+        )
+        if atom.value or atom.unit
+    ]
+
+    assert atoms == []
+
+
+def _custom_target(
+    target_id: str,
+    coverage_id: str,
+    question: str,
+    measure: str,
+    period: str,
+    source: str,
+) -> EvidenceTarget:
+    """A small dedicated target for isolating one mechanism, not the real plan."""
+    return EvidenceTarget(
+        target_id=target_id,
+        coverage_id=coverage_id,
+        question=question,
+        required_dimensions=[
+            f"measure: {measure}",
+            f"period: {period}",
+            "geography: United States",
+            f"source: {source}",
+        ],
+        required=True,
+        critical=False,
+        support_policy="primary_attribution",
+    )
+
+
+# The audit-3 plan's own six real targets, recovered verbatim from the
+# planner's chain-level "outputs.state.sub_topics" in the retained LangSmith
+# dump (%TEMP%/audit3/runs.jsonl, run id 01a0d264-f92d-7c32-aa6f-32176d892043)
+# — the state IS present on the chain run, only the LLM sub-call's own
+# "outputs" are token-count-only. Persisted here so T3's tests bind against
+# what the run actually planned, not a guessed paraphrase (ReRevF3).
+_AUDIT3_ANSWER_FORM = (
+    "answer form: the specific fact asked for, with its value, unit, and "
+    "the date the value applies to"
+)
+_AUDIT3_EVIDENCE_PERIOD = (
+    "evidence period: the period the question names (2024, 2025); answer "
+    "that period from the latest evidence available as of 2026-09-24 \u2014 "
+    "a projection is reported as a forecast with its issuer and release "
+    "vintage and a published outcome as an actual \u2014 and never "
+    "substitute today's figures for the period the question names"
+)
+_AUDIT3_TOPIC_01_TARGET_01 = EvidenceTarget(
+    target_id="topic-01-target-01",
+    coverage_id="topic-01",
+    question=(
+        "What nameplate power capacity of utility-scale (grid-scale) "
+        "battery storage, in megawatts, did the United States add during "
+        "2024 according to the U.S. Energy Information Administration's "
+        "published data?"
+    ),
+    required_dimensions=[
+        "measure: utility-scale battery storage capacity added, in "
+        "megawatts of nameplate power",
+        "period: calendar year 2024",
+        "geography: United States",
+        "source: the U.S. Energy Information Administration's published "
+        "2024 generator inventory or battery storage report",
+        _AUDIT3_ANSWER_FORM,
+        _AUDIT3_EVIDENCE_PERIOD,
+    ],
+    required=True,
+    critical=True,
+    support_policy="primary_attribution",
+)
+_AUDIT3_TOPIC_01_TARGET_02 = EvidenceTarget(
+    target_id="topic-01-target-02",
+    coverage_id="topic-01",
+    question=(
+        "What energy capacity, in megawatt-hours, did the utility-scale "
+        "(grid-scale) battery storage added in the United States during "
+        "2024 represent according to the U.S. Energy Information "
+        "Administration's published data?"
+    ),
+    required_dimensions=[
+        "measure: utility-scale battery storage energy capacity added, in "
+        "megawatt-hours",
+        "period: calendar year 2024",
+        "geography: United States",
+        "source: the U.S. Energy Information Administration's published "
+        "2024 battery storage figures",
+        _AUDIT3_ANSWER_FORM,
+        _AUDIT3_EVIDENCE_PERIOD,
+    ],
+    required=True,
+    critical=False,
+    support_policy="primary_attribution",
+)
+_AUDIT3_TOPIC_02_TARGET = EvidenceTarget(
+    target_id="topic-02-target-01",
+    coverage_id="topic-02",
+    question=(
+        "What utility-scale battery storage capacity addition, in "
+        "gigawatts, did the U.S. Energy Information Administration project "
+        "for the United States in 2025 in its latest published forecast "
+        "covering 2025?"
+    ),
+    required_dimensions=[
+        "measure: projected utility-scale battery storage capacity "
+        "additions, in gigawatts",
+        "period: calendar year 2025",
+        "geography: United States",
+        "source: the U.S. Energy Information Administration's published "
+        "forecast release covering 2025, identified by its release vintage",
+        _AUDIT3_ANSWER_FORM,
+        _AUDIT3_EVIDENCE_PERIOD,
+    ],
+    required=True,
+    critical=True,
+    support_policy="primary_attribution",
+)
+_AUDIT3_TOPIC_03_TARGET = EvidenceTarget(
+    target_id="topic-03-target-01",
+    coverage_id="topic-03",
+    question=(
+        "What grid-scale battery storage capacity addition, in the unit "
+        "the tracker publishes, did Wood Mackenzie report for the United "
+        "States in 2024 in its energy storage market figures?"
+    ),
+    required_dimensions=[
+        "measure: grid-scale battery storage capacity added, in the unit "
+        "the tracker publishes",
+        "period: calendar year 2024",
+        "geography: United States",
+        "source: Wood Mackenzie's published U.S. energy storage market "
+        "report, or a freely accessible summary of its own figures",
+        _AUDIT3_ANSWER_FORM,
+        _AUDIT3_EVIDENCE_PERIOD,
+    ],
+    required=True,
+    critical=False,
+    support_policy="primary_attribution",
+)
+_AUDIT3_TOPIC_04_TARGET = EvidenceTarget(
+    target_id="topic-04-target-01",
+    coverage_id="topic-04",
+    question=(
+        "What grid-scale battery storage capacity addition did Wood "
+        "Mackenzie project for the United States in 2025 in its latest "
+        "published forecast covering 2025?"
+    ),
+    required_dimensions=[
+        "measure: projected grid-scale battery storage capacity "
+        "additions, in the unit published",
+        "period: calendar year 2025",
+        "geography: United States",
+        "source: Wood Mackenzie's published U.S. energy storage market "
+        "report covering 2025, identified by its release vintage",
+        _AUDIT3_ANSWER_FORM,
+        _AUDIT3_EVIDENCE_PERIOD,
+    ],
+    required=True,
+    critical=False,
+    support_policy="primary_attribution",
+)
+_AUDIT3_TOPIC_05_TARGET = EvidenceTarget(
+    target_id="topic-05-target-01",
+    coverage_id="topic-05",
+    question=(
+        "What grid-scale battery storage capacity addition did "
+        "BloombergNEF project for the United States in 2025 in its latest "
+        "published forecast covering 2025?"
+    ),
+    required_dimensions=[
+        "measure: projected grid-scale battery storage capacity "
+        "additions, in the unit published",
+        "period: calendar year 2025",
+        "geography: United States",
+        "source: BloombergNEF's published U.S. energy storage outlook "
+        "covering 2025, or a freely accessible summary of its own "
+        "figures, identified by release vintage",
+        _AUDIT3_ANSWER_FORM,
+        _AUDIT3_EVIDENCE_PERIOD,
+    ],
+    required=True,
+    critical=False,
+    support_policy="primary_attribution",
+)
+_AUDIT3_REAL_TARGETS = (
+    _AUDIT3_TOPIC_01_TARGET_01,
+    _AUDIT3_TOPIC_01_TARGET_02,
+    _AUDIT3_TOPIC_02_TARGET,
+    _AUDIT3_TOPIC_03_TARGET,
+    _AUDIT3_TOPIC_04_TARGET,
+    _AUDIT3_TOPIC_05_TARGET,
+)
+
+
+def test_the_real_targets_kind_matches_their_own_tense() -> None:
+    """topic-01/03 ask "did ... add/report" (past tense: actual); topic-02/04/05
+    ask what an issuer "project[s]" (forecast) — read from the real plan's own
+    wording, not a guess (ReRevF3 P3)."""
+    assert _target_realisation_kind(_AUDIT3_TOPIC_01_TARGET_01) == "actual"
+    assert _target_realisation_kind(_AUDIT3_TOPIC_01_TARGET_02) == "actual"
+    assert _target_realisation_kind(_AUDIT3_TOPIC_02_TARGET) == "forecast"
+    assert _target_realisation_kind(_AUDIT3_TOPIC_03_TARGET) == "actual"
+    assert _target_realisation_kind(_AUDIT3_TOPIC_04_TARGET) == "forecast"
+    assert _target_realisation_kind(_AUDIT3_TOPIC_05_TARGET) == "forecast"
+
+
+@pytest.mark.parametrize(
+    ("text", "target"),
+    [
+        (_5CE0A6DE, _AUDIT3_TOPIC_04_TARGET),
+        (_87D73C73, _AUDIT3_TOPIC_04_TARGET),
+    ],
+)
+def test_the_forecast_probes_bind_their_own_topics_target(
+    text: str, target: EvidenceTarget
+) -> None:
+    """T3's forecast probes: each claim answers the target its own topic asks
+    for. 355a35fd/c4435990/ff178de3 (2025 actuals) are deliberately absent
+    here — see test_a_realised_wood_mackenzie_outcome_does_not_bind_the_forecast_target,
+    RevF3 NEW P1."""
+    atoms = extract_text_atoms(text)
+
+    assert any(
+        atom_answers_target(atom, target, question=target.question)
+        for atom in atoms
+    )
+
+
+@pytest.mark.parametrize("text", [_355A35FD, _C4435990, _FF178DE3])
+def test_a_realised_wood_mackenzie_outcome_does_not_bind_the_forecast_target(
+    text: str,
+) -> None:
+    """A 2025 actual must not stand in for the grid-scale 2025 forecast.
+
+    Printing a realised outcome as the forecast half of the answer breaks
+    the honesty contract's "actuals are labelled actuals" rule (RevF3 NEW
+    P1). Each of these three states a past-tense realised outcome (reached,
+    hit) with no forecast/plan/expect/project hedge anywhere in the clause.
+    """
+    atoms = extract_text_atoms(text)
+
+    assert not any(
+        atom_answers_target(
+            atom,
+            _AUDIT3_TOPIC_04_TARGET,
+            question=_AUDIT3_TOPIC_04_TARGET.question,
+        )
+        for atom in atoms
+    )
+
+
+def test_23fecb06_binds_no_real_target() -> None:
+    """BNEF's 2025 OUTTURN answers none of the plan's six real targets.
+
+    23fecb06 is BloombergNEF's own realised 2025 figure ("commissioned"),
+    published in its 2026 edition after the year ended — an outturn/estimate
+    of what happened, not the FORECAST topic-05-target-01 actually asks for
+    (ReRevF3 P1, most important). It also names the wrong issuer, period, or
+    scope for every other target.
+    """
+    atoms = extract_text_atoms(_23FECB06)
+
+    assert not any(
+        atom_answers_target(atom, target, question=target.question)
+        for target in _AUDIT3_REAL_TARGETS
+        for atom in atoms
+    )
+
+
+def test_the_eia_2024_actual_still_binds_its_real_target() -> None:
+    """topic-01-target-01 asks "did the United States add ... during 2024"
+    (an actual ask), and d92280b0's "reported that generators added 10.4
+    GW ... in 2024" is a realised outcome with no forecast hedge."""
+    atoms = extract_text_atoms(_D92280B0)
+
+    assert any(
+        atom_answers_target(
+            atom,
+            _AUDIT3_TOPIC_01_TARGET_01,
+            question=_AUDIT3_TOPIC_01_TARGET_01.question,
+        )
+        for atom in atoms
+    )
+
+
+@pytest.mark.parametrize("text", [_2993E776, _F5EB319C])
+def test_the_eia_2025_plan_claims_still_bind_the_forecast_target(
+    text: str,
+) -> None:
+    """2993e776 and f5eb319c ("reported/reported plans to add 19.6 GW ...,
+    which would/could set a record") are forecast-hedged and still answer
+    topic-02-target-01, whose own wording asks what EIA "projected" — the
+    cross-topic candidate offering (fact_checker.py) is what lets a finding
+    fetched under topic-01 reach this target at all; this checks the half
+    this module owns.
+    """
+    atoms = extract_text_atoms(text)
+
+    assert any(
+        atom_answers_target(
+            atom,
+            _AUDIT3_TOPIC_02_TARGET,
+            question=_AUDIT3_TOPIC_02_TARGET.question,
+        )
+        for atom in atoms
+    )
+
+
+def test_a_mixed_forecast_and_actual_clause_binds_neither_kind() -> None:
+    """A clause naming both a forecast marker and a realised-outcome verb is
+    "mixed" and answers neither a forecast-seeking nor an actual-seeking
+    target — mirroring synthesizer.py's ``_stated_role`` (F1Synth), whose
+    ``_restatement_is_attachable`` never matches a "mixed" text to anything
+    either. Both targets share one source so the mismatch this checks is the
+    forecast/actual gate alone, not attribution.
+    """
+    forecast_target = _custom_target(
+        "mixed-forecast",
+        "topic-x",
+        "What does Wood Mackenzie forecast for 2025 grid-scale battery "
+        "storage installations?",
+        "grid-scale battery storage capacity forecast, in gigawatts",
+        "2025",
+        "Wood Mackenzie",
+    )
+    actual_target = _custom_target(
+        "mixed-actual",
+        "topic-x",
+        "What does Wood Mackenzie state was actually installed for 2025 "
+        "grid-scale battery storage?",
+        "grid-scale battery storage capacity actually installed, in "
+        "gigawatts",
+        "2025",
+        "Wood Mackenzie",
+    )
+    atoms = extract_text_atoms(
+        "Wood Mackenzie reported that the operator beat grid-scale storage "
+        "projections as installed capacity reached 16 GW in the United "
+        "States in 2025."
+    )
+
+    assert not any(
+        atom_answers_target(atom, forecast_target, question=forecast_target.question)
+        for atom in atoms
+    )
+    assert not any(
+        atom_answers_target(atom, actual_target, question=actual_target.question)
+        for atom in atoms
+    )
+
+
+def test_a_to_infinitive_outcome_verb_is_read_as_a_forecast_not_mixed() -> None:
+    """"expected ... to hit" is an infinitive complement, not a realised
+    "hit": "hit" spells its infinitive and its past tense identically, and
+    reading the bare word as an outcome made a forecast with no realised
+    figure at all read as "mixed" (ReRevF3 P2)."""
+    forecast_target = _custom_target(
+        "to-infinitive-forecast",
+        "topic-x",
+        "What did Wood Mackenzie expect for 2025 grid-scale battery "
+        "storage installations?",
+        "grid-scale battery storage capacity forecast, in gigawatts",
+        "2025",
+        "Wood Mackenzie",
+    )
+    atoms = extract_text_atoms(
+        "Wood Mackenzie expected the market to hit 15 GW of grid-scale "
+        "battery storage installations in the United States in 2025."
+    )
+
+    assert any(
+        atom_answers_target(atom, forecast_target, question=forecast_target.question)
+        for atom in atoms
+    )
+
+
+def test_12aac722_does_not_bind_the_grid_scale_only_target() -> None:
+    """A 2024 all-segments total is not Wood Mackenzie's grid-scale count.
+
+    Segment mismatch is by design: "across all segments" is a different
+    scale than "grid-scale", however many other targets are now offered as
+    candidates.
+    """
+    atoms = extract_text_atoms(_12AAC722)
+
+    assert not any(
+        atom_answers_target(
+            atom,
+            _AUDIT3_TOPIC_03_TARGET,
+            question=_AUDIT3_TOPIC_03_TARGET.question,
+        )
+        for atom in atoms
+    )
+
+
+def test_5ce0a6de_and_87d73c73_merge_in_consolidation() -> None:
+    """Two paraphrases of the same 13.3 GW forecast are one assertion.
+
+    Before the sentence, attribution, and period fixes the two disagreed on
+    attribution, subject, and even which year was the forecast's own period;
+    a residual "year-end 2024" vintage number would otherwise still refuse
+    them as an unexplained second figure.
+    """
+    first = extract_text_atoms(_5CE0A6DE)[0]
+    second = extract_text_atoms(_87D73C73)[0]
+
+    assert atomic_compatible(first, second)
+    assert equivalence_strength(first, second) == "identical"

@@ -5756,12 +5756,15 @@ def test_a_source_requirement_that_names_one_body_is_not_named() -> None:
     ] == []
 
 
-def test_a_required_target_behind_a_paywall_is_named() -> None:
-    """A subscription page cannot be read, and an unanswered target hard-fails.
+def test_a_paywalled_only_target_is_planned_optional_with_an_advisory() -> None:
+    """A subscription page cannot be read, so the target is planned optional.
 
-    The plan added required targets whose only named source is a sold analyst
-    outlook, and an unanswered required target fails acceptance unless the
-    acquisition trail shows a denied URL or two empty searches (review rank 4).
+    The plan added a target whose only named source is a sold analyst
+    outlook. Demanding it as required would leave a required, unanswerable
+    obligation on the frozen inventory — an unanswered required target fails
+    acceptance unless the acquisition trail shows a denied URL or two empty
+    searches (review rank 4) — so it is planned optional here, with an
+    advisory naming why (change 6).
     """
     stamped = _one_topic_plan(
         _AUDIT_QUESTION,
@@ -5776,8 +5779,12 @@ def test_a_required_target_behind_a_paywall_is_named() -> None:
                 "source: S&P Global's latest published outlook",
             ],
             policy="primary_attribution",
+            critical=False,
         ),
     )
+
+    (target,) = stamped[0].evidence_targets
+    assert target.required is False
 
     named = [
         problem
@@ -5808,6 +5815,8 @@ def test_a_reachable_required_target_is_not_named() -> None:
         ),
     )
 
+    (target,) = stamped[0].evidence_targets
+    assert target.required is True
     assert [
         problem
         for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
@@ -5834,12 +5843,230 @@ def test_a_paywalled_outlook_beside_a_public_source_is_not_named() -> None:
         ),
     )
 
+    (target,) = stamped[0].evidence_targets
+    assert target.required is True
     assert [
         problem
         for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
         if "behind a paywall" in problem
     ] == []
 
+
+def test_an_energy_measure_the_capacity_question_never_named_is_optional() -> (
+    None
+):
+    """MWh for a "how much capacity" question is planned optional.
+
+    ``_AUDIT_QUESTION`` asks "how much ... capacity was added"; a target that
+    asks for MWh answers a measure the question never named, and no claim
+    about capacity can discharge it. Demanding it as required would leave a
+    required, unanswerable obligation on the frozen inventory the same way a
+    paywalled-only source does, so it is planned optional here too, with an
+    advisory naming why (change 6).
+    """
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="EIA additions",
+        criteria=["The energy added in 2024 is stated with its issuer."],
+        target=_target(
+            "How much energy did EIA report added to battery storage in "
+            "2024, in megawatt-hours?",
+            dimensions=[
+                "measure: annual battery storage energy additions, in MWh",
+                "period: calendar year 2024",
+                "source: the federal energy statistical agency's published "
+                "inventory",
+            ],
+            policy="primary_attribution",
+            critical=False,
+        ),
+    )
+
+    (target,) = stamped[0].evidence_targets
+    assert target.required is False
+
+    named = [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "energy figure" in problem
+    ]
+    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
+
+
+def test_a_capacity_measure_the_question_asked_for_is_not_named() -> None:
+    """The control: a target asking for the same power unit the question does."""
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="EIA additions",
+        criteria=["The capacity added in 2024 is stated with its issuer."],
+        target=_target(
+            "How much capacity did EIA report added to battery storage in "
+            "2024, in megawatts?",
+            dimensions=[
+                "measure: annual battery storage capacity additions, in MW",
+                "period: calendar year 2024",
+                "source: the federal energy statistical agency's published "
+                "inventory",
+            ],
+            policy="primary_attribution",
+        ),
+    )
+
+    (target,) = stamped[0].evidence_targets
+    assert target.required is True
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "energy figure" in problem
+    ] == []
+
+
+def test_an_energy_measure_an_energy_question_names_is_not_downgraded() -> (
+    None
+):
+    """The control: a question that itself asks about energy keeps the target."""
+    question = (
+        "How much energy did battery storage systems add to the grid in "
+        "2024, and what do the latest forecasts project for 2025?"
+    )
+    stamped = _one_topic_plan(
+        question,
+        title="EIA additions",
+        criteria=["The energy added in 2024 is stated with its issuer."],
+        target=_target(
+            "How much energy did EIA report added to battery storage in "
+            "2024, in megawatt-hours?",
+            dimensions=[
+                "measure: annual battery storage energy additions, in MWh",
+                "period: calendar year 2024",
+                "source: the federal energy statistical agency's published "
+                "inventory",
+            ],
+            policy="primary_attribution",
+        ),
+    )
+
+    (target,) = stamped[0].evidence_targets
+    assert target.required is True
+
+
+
+@pytest.mark.parametrize(
+    "energy_word",
+    ["energy", "duration", "hours"],
+)
+def test_a_question_naming_energy_duration_or_hours_in_words_is_not_downgraded(
+    energy_word: str,
+) -> None:
+    """P1-c: a question may name the energy family in words, not only units.
+
+    "How much ... capacity was added" still reads as a power question, but a
+    question that also asks about the storage's energy, duration, or hours of
+    discharge really did ask for an energy figure in words, even with no
+    literal "MWh" token in its own prose — the same way ``_ENERGY_UNIT``
+    exempts a question that spells the unit out.
+    """
+    question = (
+        "How much battery storage capacity and "
+        f"{energy_word} was added in the United States in 2024, and what "
+        "do the latest forecasts project for 2025?"
+    )
+    stamped = _one_topic_plan(
+        question,
+        title="EIA additions",
+        criteria=["The energy added in 2024 is stated with its issuer."],
+        target=_target(
+            "How much energy did EIA report added to battery storage in "
+            "2024, in megawatt-hours?",
+            dimensions=[
+                "measure: annual battery storage energy additions, in MWh",
+                "period: calendar year 2024",
+                "source: the federal energy statistical agency's published "
+                "inventory",
+            ],
+            policy="primary_attribution",
+            critical=False,
+        ),
+    )
+
+    (target,) = stamped[0].evidence_targets
+    assert target.required is True
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(question))
+        if "energy figure" in problem
+    ] == []
+
+
+def test_a_critical_paywalled_target_stays_required_with_an_advisory() -> None:
+    """P2: a critical obligation is never silently downgraded to optional.
+
+    The model's own judgement that the question cannot be answered without
+    this obligation overrides the hygiene heuristic (``required = target.
+    critical or not (downgrade conditions)``); the advisory still names the
+    tension so a reviewer can act on it.
+    """
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="Analyst outlooks",
+        criteria=["A projected 2025 addition is stated with its issuer."],
+        target=_target(
+            "What 2025 addition does S&P Global's latest outlook project?",
+            dimensions=[
+                "measure: projected battery storage capacity additions, in "
+                "megawatts",
+                "period: forecast year 2025",
+                "source: S&P Global's latest published outlook",
+            ],
+            policy="primary_attribution",
+            critical=True,
+        ),
+    )
+
+    (target,) = stamped[0].evidence_targets
+    assert target.critical is True
+    assert target.required is True
+
+    named = [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "behind a paywall" in problem
+    ]
+    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
+
+
+def test_a_critical_unrequested_energy_measure_target_stays_required_with_an_advisory() -> (
+    None
+):
+    """P2, the energy-measure half: critical still wins over the hygiene rule."""
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="EIA additions",
+        criteria=["The energy added in 2024 is stated with its issuer."],
+        target=_target(
+            "How much energy did EIA report added to battery storage in "
+            "2024, in megawatt-hours?",
+            dimensions=[
+                "measure: annual battery storage energy additions, in MWh",
+                "period: calendar year 2024",
+                "source: the federal energy statistical agency's published "
+                "inventory",
+            ],
+            policy="primary_attribution",
+            critical=True,
+        ),
+    )
+
+    (target,) = stamped[0].evidence_targets
+    assert target.critical is True
+    assert target.required is True
+
+    named = [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "energy figure" in problem
+    ]
+    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
 
 def test_the_plan_example_the_model_is_shown_passes_every_plan_check() -> None:
     """The one-shot example is a plan the planner itself would accept.

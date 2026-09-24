@@ -63,6 +63,8 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     SubTopic,
+    _ENERGY_UNIT,
+    _POWER_UNIT,
     counted_evidence_targets,
 )
 
@@ -2381,6 +2383,50 @@ def _paywalled_only_sources(target: EvidenceTarget) -> list[str]:
     return sorted(set(names))
 
 
+# What names the power/capacity family in a question's own prose, beside the
+# unit tokens ``_POWER_UNIT`` already matches. "How much ... capacity was
+# added" never spells "GW" or "MW", so the family has to be read from the
+# word the question actually uses, exactly as ``_measure_bases`` reads a
+# target's own unit tokens from its prose (researcher.py).
+_CAPACITY_MARKERS = ("capacity",)
+
+# What names the energy family in a question's own prose, beside the unit
+# tokens ``_ENERGY_UNIT`` already matches. A question can ask for energy
+# without ever spelling "MWh": "how much energy", "what duration", "how many
+# hours of discharge" are all energy asks in words.
+_ENERGY_MARKERS = ("energy", "duration", "hour")
+
+
+def _unrequested_energy_measure(
+    target: EvidenceTarget, *, contract: AnswerContract
+) -> bool:
+    """True when a target asks for an energy figure a capacity question never named.
+
+    "How much grid-scale battery storage capacity was added" is a power
+    question; a target that asks for MWh/GWh answers a different measure the
+    question never asked for, and the researcher spends a whole acquisition
+    loop on a figure nobody wanted (audit #3, C5). Read from the target's own
+    prose — its question and its required dimensions — because either can
+    carry the unit and neither is the whole obligation; the question's own
+    capacity wording is the anchor, so the check never has to guess what
+    family a unit-free question asks in.
+
+    A question that itself names the energy family — a literal unit
+    (``_ENERGY_UNIT``) or a word for it (``_ENERGY_MARKERS``: energy,
+    duration, hours) — is exempt: it really did ask for energy, and the
+    target answers it.
+    """
+    question = _normalized_question(contract.question)
+    if _ENERGY_UNIT.search(question) or _mentions(question, _ENERGY_MARKERS):
+        return False
+    if not (
+        _POWER_UNIT.search(question) or _mentions(question, _CAPACITY_MARKERS)
+    ):
+        return False
+    target_text = " ".join((target.question, *target.required_dimensions))
+    return bool(_ENERGY_UNIT.search(target_text))
+
+
 def _conjoined_demands(question: str) -> list[str]:
     """The separate demands one target's question makes, when it makes two."""
     parts = [part for part in _CONJUNCTION.split(question.rstrip("?")) if part]
@@ -2616,17 +2662,56 @@ def _plan_problems(
                         "advisory",
                     )
                 )
-            paywalled = _paywalled_only_sources(target)
-            if paywalled and target.required:
+            unrequested_measure = _unrequested_energy_measure(
+                target, contract=contract
+            )
+            if unrequested_measure:
                 problems.append(
                     _PlanProblem(
-                        f"{target.target_id} is a required target whose only "
-                        f"named source is behind a paywall "
-                        f"({', '.join(paywalled)}); the researcher cannot "
-                        "read a subscription page, and an unanswered "
-                        "required obligation fails acceptance. Name a freely "
-                        "reachable publication of the same figures, or drop "
-                        "it",
+                        (
+                            f"{target.target_id} is planned optional: it "
+                            "asks for an energy figure (MWh) a capacity "
+                            "question never named, and no claim about "
+                            "capacity can discharge it"
+                        )
+                        if not target.required
+                        else (
+                            f"{target.target_id} is a required, critical "
+                            "target that asks for an energy figure (MWh) a "
+                            "capacity question never named; no claim about "
+                            "capacity can discharge it, and an unanswered "
+                            "required obligation fails acceptance. Restate "
+                            "it in the question's own measure, or "
+                            "reconsider whether this obligation is truly "
+                            "critical"
+                        ),
+                        "advisory",
+                    )
+                )
+            paywalled = _paywalled_only_sources(target)
+            if paywalled:
+                problems.append(
+                    _PlanProblem(
+                        (
+                            f"{target.target_id} is planned optional: its "
+                            "only named source is behind a paywall "
+                            f"({', '.join(paywalled)}), and the researcher "
+                            "cannot read a subscription page. Name a "
+                            "freely reachable publication of the same "
+                            "figures if one exists"
+                        )
+                        if not target.required
+                        else (
+                            f"{target.target_id} is a required, critical "
+                            "target whose only named source is behind a "
+                            f"paywall ({', '.join(paywalled)}); the "
+                            "researcher cannot read a subscription page, "
+                            "and an unanswered required obligation fails "
+                            "acceptance. Name a freely reachable "
+                            "publication of the same figures, or "
+                            "reconsider whether this obligation is truly "
+                            "critical"
+                        ),
                         "advisory",
                     )
                 )
@@ -2731,11 +2816,24 @@ def apply_answer_contract(
     Every target keeps the dimensions the model proposed and gains the three
     the contract fixes: the answer form, the evidence period, and the
     geography rule. ``required`` is set here rather than taken from the
-    draft: an obligation the planner stamped is required by definition, and a
-    target that could be marked optional is a target that can be dropped
-    later without anyone deciding to drop it. The model's ``critical`` flag
-    is preserved — a critical obligation is one the question cannot be
-    answered without.
+    draft: an obligation the planner stamped is required by definition,
+    *unless* the target's own prose asks for a measure the question never
+    named (an energy figure for a capacity question,
+    ``_unrequested_energy_measure``) or names only a paywalled-only source
+    (``_paywalled_only_sources``) — a required, unanswerable obligation
+    invented by the plan rather than asked for by the question. Both are
+    stamped optional here, at the one place ``required`` is decided, rather
+    than left for the §2.3 gate to discover a target nobody could ever finish
+    acquiring in a one-iteration run.
+
+    A ``critical`` target is never downgraded by either rule
+    (``required = target.critical or not (...)``): the model's own judgement
+    that the question cannot be answered without this obligation overrides a
+    hygiene heuristic, so a critical target stays required and the §2.3 gates
+    still see it as a hard obligation. The plan-problem advisory still names
+    the tension for a reviewer to act on, whichever way ``required`` lands. A
+    target that could be marked optional for any other reason is still a
+    target that can be dropped later without anyone deciding to drop it.
     """
     form = answer_form_requirement(contract.answer_kind)
     period = latest_available_obligation(contract)
@@ -2758,7 +2856,11 @@ def apply_answer_contract(
                         geography,
                     ]
                 ),
-                required=True,
+                required=target.critical
+                or not (
+                    _unrequested_energy_measure(target, contract=contract)
+                    or _paywalled_only_sources(target)
+                ),
                 critical=target.critical,
                 support_policy=support_policy_for_target(
                     question=target.question,

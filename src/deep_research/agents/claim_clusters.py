@@ -271,9 +271,11 @@ def _accounted_numbers(proposition: AtomicProposition) -> set[str]:
     """The numbers in the clause that one of its own dimensions explains.
 
     A number is accounted for when it *is* the stated value with the stated
-    unit beside it, or when it is part of the stated observation period.
-    Anything else — a second figure, a scale word this contract has no unit
-    for, a number whose neighbour contradicts the stated unit — is residue.
+    unit beside it, when it is part of the stated observation period, or when
+    it is a vintage marker naming which edition or coverage window a document
+    is (:data:`_VINTAGE_MARKER`). Anything else — a second figure, a scale
+    word this contract has no unit for, a number whose neighbour contradicts
+    the stated unit — is residue.
     """
     accounted: set[str] = set()
     value = _canonical_number(proposition.value)
@@ -290,6 +292,9 @@ def _accounted_numbers(proposition: AtomicProposition) -> set[str]:
             accounted.add(number)
         elif number in period_parts:
             accounted.add(number)
+    for match in _VINTAGE_MARKER.finditer(proposition.text):
+        vintage = match.group("vintage_a") or match.group("vintage_b")
+        accounted.add(_canonical_number(vintage))
     return accounted
 
 
@@ -727,6 +732,18 @@ _PERIOD_PATTERN = re.compile(
     rf"\s*{_YEAR})?)(?![\d-])"
 )
 
+# A year attached to a vintage marker names which edition or coverage window a
+# document is, not a second measurement: "covering year-end 2024 deployment"
+# and "its 2026 edition" describe which release of a Monitor or Factbook a
+# forecast comes from, and treating that year as an unexplained residue number
+# kept two paraphrases of the same forecast — one with the vintage before its
+# "that" clause, one with it trailing the value — from ever being shown
+# compatible (Fable change 3, claims 5ce0a6de, 87d73c73).
+_VINTAGE_MARKER = re.compile(
+    rf"(?i:\byear-end\s+(?P<vintage_a>{_YEAR})\b"
+    rf"|\b(?P<vintage_b>{_YEAR})\s+edition\b)"
+)
+
 # The units a clause may attach to a number. Longest first, so "percentage
 # points" is never read as "points" and "million" never as "m".
 _UNIT_FORMS = (
@@ -817,6 +834,47 @@ _NEW_SENTENCE = re.compile(r"^[A-Z]")
 _INITIALISM_ONLY = re.compile(
     r"^\s*(?:(?:the|a|an)\s+)?(?:[A-Za-z]\.){2,}$", re.IGNORECASE
 )
+
+# A possessive right in front of a dotted initialism ties it to what follows
+# rather than opening a new sentence: "in its U.S. Energy Storage Monitor
+# covering …" is one clause whose "U.S." is adjectival, and splitting there
+# left a figure-bearing atom with no attribution and the wrong period (Fable
+# change 3, claims 5ce0a6de, 87d73c73). A bare determiner is not enough — "in
+# the U.S. The EIA reported …" and "… covers the U.S. Wood Mackenzie
+# reported …" are genuine sentence breaks, and joining them credited one
+# issuer's fact to the other (RevF3 P2) — only "its", "their", and a real
+# possessive ("Wood Mackenzie's", "EIA's") qualify. A title is read the same
+# way a title is read anywhere else in this module: two or more consecutive
+# capitalised words, which "It fell" in "in the U.S. It fell in Canada."
+# never is — that split must still happen, and neither does a sentence
+# opener ("The", "A", "An", "This", "These", "That", "It") even after a
+# genuine possessive: "Wood Mackenzie discussed its U.S. This report also
+# covered Canada." still splits.
+_TRAILING_POSSESSIVE = re.compile(
+    r"(?:^|\s)(?:its|their|[\w]+(?:'s|\u2019s))\s*$",
+    re.IGNORECASE,
+)
+_LEADING_TITLE_RUN = re.compile(r"^[A-Z][\w&'-]*\s+[A-Z]")
+_SENTENCE_OPENER_WORDS = frozenset(
+    {"the", "a", "an", "this", "these", "that", "it"}
+)
+
+
+def _opens_a_possessed_title(before: str, after: str) -> bool:
+    """Whether a dotted initialism sits inside "<possessive> <initialism> <Title>".
+
+    All three have to hold: the text right before the initialism is a real
+    possessive, what follows is itself a title run rather than a single
+    capitalised word starting a genuinely new sentence, and that title run's
+    own first word is not itself a sentence-opening determiner or pronoun.
+    """
+    if not _TRAILING_POSSESSIVE.search(before):
+        return False
+    if _LEADING_TITLE_RUN.match(after) is None:
+        return False
+    first_word = after.split(None, 1)[0].strip(".,;:")
+    return first_word.casefold() not in _SENTENCE_OPENER_WORDS
+
 
 # The scale of each SI-prefixed power and energy unit, as (base, exponent).
 # Read only to recognize a document restating one quantity in parentheses
@@ -1003,6 +1061,42 @@ _REPORTED_OBJECT = re.compile(
     r"(?i:\s*(?:the|a|an|this|these|those|its|their|his|her|our|my|it|they|"
     r"he|she|we|you|no|another|some|many|most|all)\b|\s*\d)"
 )
+
+# A reporting verb may also state its object with no determiner at all —
+# "Wood Mackenzie forecast U.S. grid-scale storage installations of 13.3 GW
+# in 2025" — when the object itself names a measured quantity within the
+# window a reported clause is read from. Bounded to the four verbs this
+# shape is documented for: every other reporting verb still needs the
+# determiner-led object or a "that" clause. The bound matters — "The United
+# States added 10.4 GW …, EIA reported" would otherwise let "States" (a
+# reporting verb in its own right) read "The United" as an issuer, because
+# "States added 10.4 GW" also names a quantity within the window (Fable
+# change 3, claim 87d73c73, guarded against the audit's own trailing-issuer
+# fixtures). Refused exactly where the determiner-led shape is refused: a
+# copula or auxiliary immediately after the verb is the verb used as a noun
+# ("the EIA forecast was published in February"), not a report.
+_MEASURED_OBJECT_REPORTING_VERBS = frozenset(
+    {
+        "forecast", "forecasts", "forecasted",
+        "project", "projects", "projected",
+        "expect", "expects", "expected",
+        "estimate", "estimates", "estimated",
+    }
+)
+_REPORTED_QUANTITY_GUARD = re.compile(
+    r"(?i:^\s*(?!(?:was|were|is|are|been|being|has|have|had|can|could|will|"
+    r"would|should|may|might|must)\b))"
+)
+
+
+def _states_a_measured_object(rest: str, *, verb: str) -> bool:
+    """Whether ``rest`` opens with a bare object naming its own quantity."""
+    if verb.casefold() not in _MEASURED_OBJECT_REPORTING_VERBS:
+        return False
+    if _REPORTED_QUANTITY_GUARD.match(rest) is None:
+        return False
+    return _VALUE_UNIT_PATTERN.search(rest[:_REPORTED_CLAUSE_WINDOW]) is not None
+
 
 # The name positions that name nobody: a determiner or pronoun in front of a
 # reporting verb states that *someone* reported something, never who. The list
@@ -1617,10 +1711,14 @@ def _sentences(text: str) -> list[str]:
             continue
         if _HONORIFIC_END.search(preceding):
             continue
-        if _ABBREVIATED_END.search(preceding) and not _NEW_SENTENCE.match(
-            text[match.end() :]
-        ):
-            continue
+        abbreviated = _ABBREVIATED_END.search(preceding)
+        if abbreviated is not None:
+            if not _NEW_SENTENCE.match(text[match.end() :]):
+                continue
+            if _opens_a_possessed_title(
+                preceding[: abbreviated.start()], text[match.end() :]
+            ):
+                continue
         sentences.append(text[start : match.start()])
         start = match.end()
     sentences.append(text[start:])
@@ -1687,6 +1785,104 @@ def _restates(
     return abs(left - right) <= abs(left) * _RESTATEMENT_TOLERANCE
 
 
+# "16 GW/47.3 GWh" states one utility-scale total in two units side by side,
+# joined by a slash rather than wrapped in parentheses; the first spelling is
+# the one a target's measure is checked against, the same rule a
+# parenthetical restatement already keeps. Only a power/energy pair is a
+# restatement of one quantity — "16 GW/18 GW" joins two power figures, which
+# is two measurements, not one written twice.
+_SLASH_JOIN = re.compile(r"\s*/\s*")
+
+
+def _power_base(unit: str) -> tuple[str, int] | None:
+    return _SI_UNIT_SCALE.get(_canonical_unit(unit))
+
+
+def _slash_paired(clause: str, previous: re.Match[str], current: re.Match[str]) -> bool:
+    """True when ``current`` is ``previous``'s own figure in a second unit.
+
+    The two units have to be recognized SI power/energy forms on different
+    bases (watts vs watt-hours) — the same magnitude written twice, at two
+    scales of one physical dimension, is not what a slash pair is asked to
+    read here.
+    """
+    if not _SLASH_JOIN.fullmatch(clause[previous.end() : current.start()]):
+        return False
+    previous_base = _power_base(previous.group("unit"))
+    current_base = _power_base(current.group("unit"))
+    if previous_base is None or current_base is None:
+        return False
+    return previous_base[0] != current_base[0]
+
+
+def _is_power_unit(unit: str) -> bool:
+    base = _power_base(unit)
+    return base is not None and base[0] == "w"
+
+
+# A percentage right after a figure is that figure's own year-over-year
+# change only when two things both hold: it is not itself the numerator of a
+# share ("20% of the 48 GW ..." names the 48 GW as a different total's base,
+# the same phrase :data:`_DENOMINATOR` reads a share's base from), and it
+# sits beside a word that names a change rather than a level. Neither alone
+# is enough — "48% of a growing market" still names a base, and a bare
+# percentage next to no change word could be anything.
+_FOLLOWED_BY_OF = re.compile(r"\s*of\b", re.IGNORECASE)
+_CHANGE_WORD = re.compile(
+    r"(?i:\b(?:increase|increases|increased|increasing|decrease|decreases|"
+    r"decreased|decreasing|rise|rises|rose|rising|fall|falls|fell|falling|"
+    r"up|down|more|less|over|from|growth|year-over-year|respectively)\b)"
+)
+_CHANGE_WORD_WINDOW = 40
+
+
+def _is_comparison_delta_percentage(clause: str, match: re.Match[str]) -> bool:
+    """Whether a percentage is a stated figure's own comparison delta.
+
+    "16 GW ..., increases of 48%" and "18.9 GW ..., a 52% increase" both
+    qualify; "20% of the 48 GW of new capacity" does not — its own "of"
+    names a base, not a change, and reading it as a delta credited that base
+    as the clause's own figure (RevF3 P1).
+    """
+    if _FOLLOWED_BY_OF.match(clause[match.end() :]) is not None:
+        return False
+    window = clause[
+        max(0, match.start() - _CHANGE_WORD_WINDOW) : match.end() + _CHANGE_WORD_WINDOW
+    ]
+    return _CHANGE_WORD.search(window) is not None
+
+
+def _drop_comparison_percentages(
+    clause: str, found: list[re.Match[str]]
+) -> list[re.Match[str]]:
+    """Drop every percentage that is a stated figure's own comparison delta.
+
+    "the U.S. energy storage market hit a record 18.9 GW …, a 52% increase
+    over 2024" and "16 GW/47.3 GWh in 2025, increases of 48% and 40%" each
+    state one measurement and its own year-over-year change; the change is
+    not a second measurement of the same quantity, and refusing the clause
+    because it also states one left the figure unread (Fable change 3, claims
+    355a35fd, c4435990). A percentage that names a different total's base
+    instead — "20% of the 48 GW …" — is left exactly as ambiguous as a
+    clause stating two real figures always has been (RevF3 P1).
+    """
+    absolute = [
+        match
+        for match in found
+        if _canonical_unit(match.group("unit")) not in ("%", "pp")
+    ]
+    percentages = [
+        match for match in found if _canonical_unit(match.group("unit")) in ("%", "pp")
+    ]
+    if len(absolute) != 1 or not percentages:
+        return found
+    if not all(
+        _is_comparison_delta_percentage(clause, match) for match in percentages
+    ):
+        return found
+    return absolute
+
+
 def _value_and_unit(clause: str, *, period: str) -> tuple[str, str]:
     """The one number and unit this clause states, if it states exactly one.
 
@@ -1699,7 +1895,11 @@ def _value_and_unit(clause: str, *, period: str) -> tuple[str, str]:
     value at all, so neither could answer the target it was written for. A
     share restated as its own absolute figure in parentheses — "grew by 47%
     (14 GW)" — keeps that absolute figure rather than the share, because the
-    unit a target asks for is the checkable one.
+    unit a target asks for is the checkable one. A slash pair states the same
+    figure a second time in a second unit — the power figure wins, whichever
+    side of the slash it is on — and a trailing percentage delta states the
+    figure's own year-over-year change, not a second measurement of it
+    (:func:`_slash_paired`, :func:`_drop_comparison_percentages`).
     """
     period_digits = set(re.findall(r"\d+", period))
     found: list[re.Match[str]] = []
@@ -1710,7 +1910,14 @@ def _value_and_unit(clause: str, *, period: str) -> tuple[str, str]:
             if _canonical_unit(found[-1].group("unit")) in ("%", "pp"):
                 found[-1] = match
             continue
+        if found and _slash_paired(clause, found[-1], match):
+            if _is_power_unit(match.group("unit")) and not _is_power_unit(
+                found[-1].group("unit")
+            ):
+                found[-1] = match
+            continue
         found.append(match)
+    found = _drop_comparison_percentages(clause, found)
     if len(found) != 1:
         return ("", "")
     value, unit = found[0].group("value"), found[0].group("unit")
@@ -1807,15 +2014,20 @@ def _clean_issuer(
     return cleaned
 
 
-def _introduces_a_reported_clause(clause: str, *, verb_end: int) -> bool:
+def _introduces_a_reported_clause(
+    clause: str, *, verb: str, verb_end: int
+) -> bool:
     """Whether what follows a reporting verb is the fact it reports.
 
-    Four shapes, and only four: a reported clause ("… reported that capacity
+    Five shapes, and only five: a reported clause ("… reported that capacity
     grew"), the end of the clause ("…, EIA reported."), a stated object ("EIA
-    said the 2024 addition set a record", "EIA expects 18.2 GW …"), and a
-    trailing punctuation mark. A copula or auxiliary directly after the verb
-    is refused, because "the EIA forecast that was published in February"
-    reports nothing.
+    said the 2024 addition set a record", "EIA expects 18.2 GW …"), a bare
+    measured object with no determiner in front of it, bounded to the four
+    verbs :data:`_MEASURED_OBJECT_REPORTING_VERBS` names ("EIA forecast U.S.
+    grid-scale storage installations of 13.3 GW in 2025"), and a trailing
+    punctuation mark. A copula or auxiliary directly after the verb is
+    refused in every shape, because "the EIA forecast that was published in
+    February" reports nothing.
     """
     rest = clause[verb_end:]
     if not rest.strip():
@@ -1824,7 +2036,9 @@ def _introduces_a_reported_clause(clause: str, *, verb_end: int) -> bool:
         return True
     if _REPORTED_THAT.search(rest[: _REPORTED_CLAUSE_WINDOW]) is not None:
         return True
-    return _REPORTED_OBJECT.match(rest) is not None
+    if _REPORTED_OBJECT.match(rest) is not None:
+        return True
+    return _states_a_measured_object(rest, verb=verb)
 
 
 def _has_internal_capital(name: str) -> bool:
@@ -2052,6 +2266,47 @@ def _subject_definitional_attribution(
     return ""
 
 
+# A clause that opens with a possessive owner is that owner's own report,
+# however far its reporting verb stands: "BloombergNEF's 2026 edition of its
+# Sustainable Energy in America Factbook, produced with the Business Council
+# for Sustainable Energy, reported that …" puts an appositive's own title
+# between the owner and its verb, close enough that the bounded name run
+# below reads the title fragment nearest the verb as the issuer instead of
+# the clause's own opening possessor (Fable change 3, claim 23fecb06).
+_LEADING_POSSESSIVE_OWNER = re.compile(
+    r"^\s*(?P<owner>[A-Z][\w&.'-]*)(?:'s|\u2019s)\b"
+)
+
+
+def _leading_possessive_attribution(
+    clause: str, *, claim_places: frozenset[str] = frozenset()
+) -> str:
+    """The owner named by a clause's own opening possessive, if it reports.
+
+    Read only when the owner is unmistakably a name — an acronym, a brand
+    spelling, or a multi-token name, the same bar :func:`_names_a_body`
+    applies — and only when the clause goes on to report something at all: a
+    possessive with no report behind it ("EIA's 2024 inventory is public.")
+    attributes nothing here.
+    """
+    match = _LEADING_POSSESSIVE_OWNER.match(clause)
+    if match is None:
+        return ""
+    owner = _clean_issuer(match.group("owner"), claim_places=claim_places)
+    if not owner or not (
+        _is_acronym(owner) or _has_internal_capital(owner) or " " in owner
+    ):
+        return ""
+    for verb in _REPORTING_VERB_IN_CLAUSE.finditer(clause, match.end()):
+        if verb.group("verb").casefold() in _NOUN_AMBIGUOUS_VERBS:
+            continue
+        if _introduces_a_reported_clause(
+            clause, verb=verb.group("verb"), verb_end=verb.end("verb")
+        ):
+            return owner
+    return ""
+
+
 def _subject_verb_attribution(
     clause: str,
     *,
@@ -2087,6 +2342,9 @@ def _subject_verb_attribution(
     is read by :func:`_subject_definitional_attribution` when no reporting verb
     in the clause has credited anyone.
     """
+    leading = _leading_possessive_attribution(clause, claim_places=claim_places)
+    if leading:
+        return leading
     for match in _SUBJECT_VERB_ATTRIBUTION.finditer(clause):
         captured = match.group("attribution")
         if _opens_a_participial_phrase(clause, start=match.start()):
@@ -2097,7 +2355,7 @@ def _subject_verb_attribution(
         ].strip():
             continue
         if not _introduces_a_reported_clause(
-            clause, verb_end=match.end("verb")
+            clause, verb=verb, verb_end=match.end("verb")
         ):
             continue
         name = _accepted_issuer(
@@ -2189,10 +2447,17 @@ def _reported_clause_start(clause: str) -> int:
     "EIA reported that Mexico added 300 MW …" states a fact about Mexico: the
     name in front of the verb is where the clause got the fact, not what the
     clause is about, so the subject a competing name has to match starts after
-    the "that" (re-review F2).
+    the "that" (re-review F2). The "that" may stand behind the same bounded
+    filler the attribution regex itself allows — "Wood Mackenzie forecast in
+    its U.S. Energy Storage Monitor covering year-end 2024 deployment that
+    U.S. grid-scale storage installations would reach 13.3 GW in 2025" reports
+    a 2025 fact, and reading only an immediately adjacent "that" left the
+    clause's own 2024 publication detail as its period instead (Fable change
+    3, claim 5ce0a6de).
     """
     for match in _SUBJECT_VERB_ATTRIBUTION.finditer(clause):
-        reports = _REPORTED_THAT.match(clause[match.end("verb") :])
+        rest = clause[match.end("verb") :]
+        reports = _REPORTED_THAT.search(rest[:_REPORTED_CLAUSE_WINDOW])
         if reports is not None:
             return match.end("verb") + reports.end()
     return 0
@@ -2592,7 +2857,13 @@ def _run_before(
     entity words, and a run that found nothing but relation words is unusable
     and erases like a light verb, so the caller falls through to the gap the
     relation leaves and reports a derivation failure if that is empty too. The
-    entity is never DERIVED from a relation word.
+    entity is never DERIVED from a relation word. A bare reporting verb with no
+    "that" clause behind it ends a run the same way: "Wood Mackenzie forecast
+    U.S. grid-scale storage installations of 13.3 GW" is the issuer's own
+    report, not part of what "U.S. grid-scale storage installations" names,
+    and reading "forecast" into the entity gave the same figure two different
+    subjects depending only on whether its clause used "that" (Fable change 3,
+    claims 5ce0a6de, 87d73c73).
     """
 
     def is_excluded(position: int) -> bool:
@@ -2614,7 +2885,7 @@ def _run_before(
                 erased = True
             collected.clear()
             continue
-        if folded in _RELATION_WORDS:
+        if folded in _RELATION_WORDS or folded in _REPORTING_VERBS:
             if collected:
                 break
             erased = True
@@ -3542,17 +3813,153 @@ def atom_satisfies_policy(atom: AtomicProposition, support_policy: str) -> bool:
     return True
 
 
+# Whether a target asks for a forecast/outlook or an already-realised
+# outcome, read from its own question and every required-dimension detail. A
+# target may name neither clearly, and that ambiguity is left alone rather
+# than guessed at (RevF3 NEW P1: "if a target's kind is ambiguous, keep
+# today's behaviour").
+_TARGET_FORECAST_WORDS = re.compile(
+    r"\b(?:forecast(?:s|ed|ing)?|project(?:s|ed|ing|ion)?|projections?|"
+    r"outlook|expect(?:s|ed|ing)?|anticipat(?:es|ed|ing)?)\b",
+    re.IGNORECASE,
+)
+_TARGET_ACTUAL_WORDS = re.compile(
+    r"\b(?:actual(?:ly)?|actuals|realised|realized|achieved|commissioned|"
+    r"installed|deployed)\b",
+    re.IGNORECASE,
+)
+# "did the United States add during 2024", "did Wood Mackenzie report ..." is
+# a past-tense factual question — an actual ask — even when it names none of
+# the explicit actual words above; "did the EIA project ..." is still a
+# forecast ask, because the target's own measure or question already names
+# the forecast word its "did" governs, so the forecast check always takes
+# precedence over this one (ReRevF3 P3).
+_PAST_TENSE_QUESTION = re.compile(r"\bdid\b", re.IGNORECASE)
+
+
+def _target_realisation_kind(target: EvidenceTarget) -> str:
+    """Whether the target's own wording asks for a forecast or an actual.
+
+    Read from the question and every ``measure:`` requirement's own detail
+    only — never ``source:``/``geography:``/``period:``, whose own words can
+    coincidentally spell a forecast or actual word ("the market monitor's
+    latest published outlook" names a publication, not a forecast ask).  ""
+    when the wording does not clearly ask for either, which keeps today's
+    behaviour rather than guessing at the target's intent.
+    """
+    texts = [target.question]
+    texts.extend(
+        dimension
+        for dimension in target.required_dimensions
+        if _canonical(dimension).startswith("measure:")
+    )
+    text = " ".join(texts)
+    wants_forecast = _TARGET_FORECAST_WORDS.search(text) is not None
+    wants_actual = _TARGET_ACTUAL_WORDS.search(text) is not None or (
+        not wants_forecast
+        and _PAST_TENSE_QUESTION.search(target.question) is not None
+    )
+    if wants_forecast and not wants_actual:
+        return "forecast"
+    if wants_actual and not wants_forecast:
+        return "actual"
+    return ""
+
+
+# Whether an atom's own clause is a forecast, an already-realised outcome,
+# both ("mixed"), or neither (""). Mirrors synthesizer.py's ``_stated_role``
+# word-for-word (its ``_FORECAST_MARKER_PATTERN`` / ``_REALIZED_OUTCOME_PATTERN``
+# / ``_FUTURE_MODAL_PATTERN``) so the two modules never disagree on the same
+# clause's role — cross-importing agents/synthesizer.py from here would be
+# poor layering, so the vocabulary is kept in sync by hand (F1Synth,
+# reconciliation round).
+_FORECAST_MARKER = re.compile(
+    r"\b(?:plan|plans|planned|planning|project|projects|projected|"
+    r"projection|projections|forecast|forecasts|forecasted|forecasting|"
+    r"expect|expects|expected|anticipate|anticipates|anticipated)\b",
+    re.IGNORECASE,
+)
+_REALISED_OUTCOME_VERB = re.compile(
+    r"\b(?:installed|added|deployed|commissioned|built|reached|hit|beat|"
+    r"exceeded|surpassed)\b|\bcame\s+online\b",
+    re.IGNORECASE,
+)
+# An outcome verb right after "to" is an infinitive complement ("expected to
+# hit 15 GW"), not a realised outcome — "hit" and "beat" spell their
+# infinitive and their past tense identically, so the word alone cannot tell
+# them apart. Checked immediately before the match, the same tight scope a
+# to-infinitive always has.
+_TO_INFINITIVE_BEFORE = re.compile(r"\bto\s+$", re.IGNORECASE)
+# An outcome verb inside a future/conditional clause is not a realised
+# outcome either: "EIA forecast that 16 GW would be installed" names a
+# forecast, not an installation that happened. Read over the whole atom text
+# rather than a separate clause split, because an atom is already the one
+# clause :func:`_split_clauses` cut the claim into.
+_FUTURE_MODAL = re.compile(
+    r"\b(?:would|will|could|might|may|should|shall)\b", re.IGNORECASE
+)
+
+
+def _has_realised_outcome_verb(text: str) -> bool:
+    """Whether ``text`` states a realised outcome verb outside an infinitive."""
+    for match in _REALISED_OUTCOME_VERB.finditer(text):
+        if _TO_INFINITIVE_BEFORE.search(text[:match.start()]):
+            continue
+        return True
+    return False
+
+
+def _atom_realisation_role(atom: AtomicProposition) -> str:
+    """"forecast", "actual", "mixed", or "" for the clause's own role.
+
+    "mixed" — both a forecast marker and a realised-outcome verb are present,
+    with no future modal shielding the verb — answers neither a
+    forecast-seeking nor an actual-seeking target: a clause that both names a
+    forecast and beats or realises one is not safely read as only the
+    forecast or only the outcome.
+    """
+    has_forecast_marker = _FORECAST_MARKER.search(atom.text) is not None
+    has_realised_verb = (
+        _has_realised_outcome_verb(atom.text)
+        and _FUTURE_MODAL.search(atom.text) is None
+    )
+    if has_forecast_marker and has_realised_verb:
+        return "mixed"
+    if has_forecast_marker:
+        return "forecast"
+    if has_realised_verb:
+        return "actual"
+    return ""
+
+
 def atom_answers_target(
     atom: AtomicProposition, target: EvidenceTarget, *, question: str
 ) -> bool:
     """True when this atom could answer this target's obligation.
 
-    Both halves have to hold: the atom states every required dimension this
-    contract can check, and it could carry the target's support policy.
+    Three halves have to hold: the atom states every required dimension this
+    contract can check, it could carry the target's support policy, and — a
+    target that clearly asks for a forecast or an actual is not answered by
+    the other kind or by a "mixed" clause, so a realised outcome cannot stand
+    in for a forecast the plan asked for and a forecast (or an ambiguous
+    forecast-and-outcome clause) cannot stand in for an actual (RevF3 NEW P1,
+    reconciled with synthesizer.py's role classifier). A target whose kind
+    this contract cannot tell keeps today's behaviour: neither half applies.
     """
-    return atom_answers_dimensions(
-        atom, target.required_dimensions, question=question
-    ) and atom_satisfies_policy(atom, target.support_policy)
+    if not (
+        atom_answers_dimensions(
+            atom, target.required_dimensions, question=question
+        )
+        and atom_satisfies_policy(atom, target.support_policy)
+    ):
+        return False
+    kind = _target_realisation_kind(target)
+    if not kind:
+        return True
+    role = _atom_realisation_role(atom)
+    if kind == "forecast":
+        return role not in ("actual", "mixed")
+    return role not in ("forecast", "mixed")
 
 
 def equivalence_messages(

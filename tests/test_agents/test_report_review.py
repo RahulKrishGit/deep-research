@@ -49,6 +49,7 @@ from deep_research.utils.config import LLMConfig
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     UNREVIEWED_STATEMENT_DISPOSITION,
+    AcquisitionState,
     Claim,
     CritiqueGap,
     EvidenceDisposition,
@@ -657,6 +658,95 @@ def test_the_packet_carries_every_statement_and_target() -> None:
     assert [statement.statement_id for statement in packet.statements] == ["S001"]
     assert [target.target_id for target in packet.targets] == ["t1"]
     assert packet.expected_statement_ids == ["S001"]
+
+
+def test_terminal_threads_into_the_review_packets_own_coverage() -> None:
+    """P1-a: ``build_report_review_input`` must agree with the terminal gate.
+
+    A target's acquisition can still hold a queued candidate at the terminal
+    pass even after it has been recorded ``pursued_unmet`` (nothing drains a
+    queue mid-write). ``compute_substantive_coverage``'s own ``terminal``
+    flag is what tells ``_has_outstanding_work`` that queue can never resume
+    — the same fact ``compute_report_quality`` already reads at the terminal
+    pass — so the review packet must be told the same thing, or its own
+    per-target view would disagree with the quality snapshot about a target
+    the run already recorded a reason for.
+    """
+    topic = _topic(coverage_id="topic-02", target_id="t2")
+    composition = _composition(sub_topics=(topic,))
+    state = _state(
+        composition=composition,
+        report="Break-even was reached.",
+        evidence_dispositions=[
+            EvidenceDisposition(
+                item_id="t2",
+                stage="acquisition",
+                reason="pursued_unmet",
+                target_ids=["t2"],
+            )
+        ],
+        acquisition_state_by_target={
+            "topic-02": AcquisitionState(
+                target_id="topic-02",
+                candidate_urls=["https://example.test/still-queued"],
+            )
+        },
+    )
+
+    mid_run = build_report_review_input(state)
+    (mid_run_view,) = [
+        target for target in mid_run.targets if target.target_id == "t2"
+    ]
+    assert mid_run_view.accounted is False
+
+    terminal = build_report_review_input(state, terminal=True)
+    (terminal_view,) = [
+        target for target in terminal.targets if target.target_id == "t2"
+    ]
+    assert terminal_view.accounted is True
+
+
+def test_a_sentinel_or_context_statement_is_never_offered_for_disposition() -> (
+    None
+):
+    """A 'not stated' cell (or any context statement) asserts nothing about
+    the world, so it is never asked for a per-statement disposition.
+
+    ``ReportStatement.substantive`` is exactly this distinction already:
+    ``context`` is "framing this pass composed rather than a research
+    finding", so a review that asked the model to judge one "supported" or
+    "unsupported" would be asking a question the statement was never built
+    to answer. It is still visible in ``packet.statements`` — the reviewer
+    can read it as context — but it is not in ``expected_statement_ids``, so
+    the review is never marked incomplete for skipping it and a reply that
+    dispositions it anyway cannot make it count.
+    """
+    sentinel = _statement(
+        "C001",
+        "not stated",
+        mode="context",
+        clusters=(),
+        evidence=(),
+        targets=(),
+        dimensions=(),
+        basis="the row's evidence does not state this cell",
+    )
+    composition = _composition(
+        statements=(
+            _statement("S001", "Break-even was reached."),
+            sentinel,
+        ),
+    )
+    state = _state(composition=composition, report="Break-even was reached.")
+
+    packet = _packet(state)
+
+    assert [statement.statement_id for statement in packet.statements] == [
+        "S001",
+        "C001",
+    ]
+    assert packet.expected_statement_ids == ["S001"]
+    assert packet.statement("C001") is not None
 
 
 def test_the_review_request_cannot_see_the_critic_score_or_the_threshold() -> None:
@@ -1470,6 +1560,60 @@ async def test_a_defect_outside_the_packet_is_refused() -> None:
     assert not semantic_review_passes(review)
 
 
+
+@pytest.mark.asyncio
+async def test_a_defect_naming_a_context_statement_is_accepted() -> None:
+    """A defect may still name a context statement, unlike a disposition.
+
+    ``expected_statement_ids`` (change 5) excludes a sentinel/context
+    statement from what a review must *disposition* — there is nothing to
+    judge "supported" or "unsupported" about a statement that asserts
+    nothing. That is a different question from whether a returned *defect*
+    may reference it: a reviewer can still observe a real problem with a
+    context statement's own wording (a confusing "not stated" cell, a
+    misleading uncertainty note), and that defect's scope must resolve
+    against every statement the packet carries, not only the dispositionable
+    ones.
+    """
+    sentinel = _statement(
+        "C001",
+        "not stated",
+        mode="context",
+        clusters=(),
+        evidence=(),
+        targets=(),
+        dimensions=(),
+        basis="the row's evidence does not state this cell",
+    )
+    composition = _composition(
+        statements=(
+            _statement("S001", "Break-even was reached."),
+            sentinel,
+        ),
+    )
+    state = _state(composition=composition, report="Break-even was reached.")
+    completer = ScriptedCompleter(
+        outputs=[
+            _draft_payload(
+                defects=[
+                    CritiqueGapDraft(
+                        statement_ids=["C001"],
+                        kind="presentation",
+                        severity="minor",
+                        repair_action="synthesize",
+                        problem="The 'not stated' cell reads confusingly.",
+                    )
+                ],
+            )
+        ]
+    )
+
+    review = await review_report(completer, _packet(state))
+
+    assert review.status == "scored"
+    assert any(gap.statement_ids == ["C001"] for gap in review.defects)
+    assert semantic_review_passes(review)
+
 @pytest.mark.asyncio
 async def test_an_unsettled_disposition_always_blocks_acceptance() -> None:
     """A reply that says "unsupported" cannot also claim a clean review."""
@@ -1531,6 +1675,54 @@ async def test_a_minor_defect_cannot_suppress_the_derived_material_defect() -> N
     assert derived.statement_ids == ["S001"]
     assert not semantic_review_passes(review)
 
+
+
+@pytest.mark.asyncio
+async def test_a_disposition_on_a_sentinel_statement_derives_no_material_defect() -> (
+    None
+):
+    """Change 5 (the review part): a 'not stated' cell derives no defect.
+
+    A reply that names the sentinel statement anyway — reading it, or even
+    dispositioning it ``unsupported`` — cannot turn "this cell was repaired
+    to 'not stated' because its row's evidence is silent" into a material
+    finding: the statement never asserted anything for the disposition to be
+    about. The recorded review reads exactly as if the reply had never
+    mentioned it.
+    """
+    sentinel = _statement(
+        "C001",
+        "not stated",
+        mode="context",
+        clusters=(),
+        evidence=(),
+        targets=(),
+        dimensions=(),
+        basis="the row's evidence does not state this cell",
+    )
+    composition = _composition(
+        statements=(
+            _statement("S001", "Break-even was reached."),
+            sentinel,
+        ),
+    )
+    state = _state(composition=composition, report="Break-even was reached.")
+    completer = ScriptedCompleter(
+        outputs=[
+            _draft_payload(
+                dispositions={"S001": "supported", "C001": "unsupported"},
+                reviewed_statements=["S001", "C001"],
+            )
+        ]
+    )
+
+    review = await review_report(completer, _packet(state))
+
+    assert review.status == "scored"
+    assert review.per_statement_dispositions == {"S001": "supported"}
+    assert review.derived_defect_statement_ids == []
+    assert not review.material_defects
+    assert semantic_review_passes(review)
 
 @pytest.mark.asyncio
 async def test_a_judgement_that_cannot_be_recorded_is_incomplete_not_a_crash(

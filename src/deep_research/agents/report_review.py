@@ -637,7 +637,22 @@ class ReportReviewInput(ContractModel):
 
     @property
     def expected_statement_ids(self) -> list[str]:
-        return [statement.statement_id for statement in self.statements]
+        """Statement ids a review must cover and disposition.
+
+        A ``context`` statement — a sentinel cell repaired to "not stated",
+        or an uncertainty note framing this pass — asserts nothing about the
+        world (``ReportStatement.substantive`` is ``False``), so it is never
+        offered for a per-statement disposition: there is nothing for a
+        reviewer to judge "supported" or "unsupported" against. It stays in
+        ``self.statements`` (and ``statement()`` still resolves it) so it is
+        still readable as context; it is only excluded from what the review
+        must cover to be scored.
+        """
+        return [
+            statement.statement_id
+            for statement in self.statements
+            if statement.substantive
+        ]
 
     @property
     def expected_batch_ids(self) -> list[str]:
@@ -818,6 +833,8 @@ def _badge_label(badge: str, *, verdict: str | None = None) -> str:
 def build_report_review_input(
     state: ResearchState,
     composition: ReportComposition | None = None,
+    *,
+    terminal: bool = False,
 ) -> ReportReviewInput:
     """Build the one packet a semantic review reads, from the exact candidate.
 
@@ -826,6 +843,13 @@ def build_report_review_input(
     targets, evidence, and claims come from the composition and the state's
     canonical snapshots, which is why a defect can only ever cite a record this
     packet carries.
+
+    ``terminal`` is the caller's own fact about this pass (``iteration >=
+    max_iterations``), threaded into ``compute_substantive_coverage`` so a
+    target's ``ReviewTargetView.accounted`` agrees with the quality
+    snapshot's own terminal-pass reading: a target's acquisition can still
+    hold a queued candidate the run will never resume, and only the caller
+    knows whether this is the pass that decides it.
     """
     if composition is None:
         composition = state.composition
@@ -878,7 +902,11 @@ def build_report_review_input(
         if evidence_id in units
     ]
 
-    coverage = compute_substantive_coverage(state, composition) if composition else None
+    coverage = (
+        compute_substantive_coverage(state, composition, terminal=terminal)
+        if composition
+        else None
+    )
     coverage = coverage or compute_substantive_coverage(
         state,
         ReportComposition(
@@ -886,6 +914,7 @@ def build_report_review_input(
             session_id=state.session_id,
             sub_topics=list(state.sub_topics),
         ),
+        terminal=terminal,
     )
     accounted = set(coverage.accounted_target_ids)
     targets: list[ReviewTargetView] = []
@@ -1617,17 +1646,26 @@ def _dispositions(
     overwritten by another reply's "supported", or a disagreement between two
     readings of the same text would be recorded as agreement. An id the packet
     does not carry is refused, exactly as an unresolvable defect scope is.
+
+    A statement the packet carries but that is not substantive — a sentinel
+    or context statement, never offered by ``expected_statement_ids`` — is a
+    no-op instead: it asserts nothing about the world, so a reply that names
+    it anyway is read as reading it, not as a judgement about it (see
+    ``ReportReviewInput.expected_statement_ids``).
     """
     resolved: dict[str, StatementReviewDisposition] = {}
     for draft in drafts:
         statement_id = draft.statement_id.strip()
         if not statement_id:
             continue
-        if packet.statement(statement_id) is None:
+        statement = packet.statement(statement_id)
+        if statement is None:
             raise ReportReviewContractViolation(
                 f"the reply judged statement {statement_id!r}, which this "
                 "packet does not carry"
             )
+        if not statement.substantive:
+            continue
         previous = resolved.get(statement_id)
         if previous is None or (
             draft.disposition in UNSETTLED_STATEMENT_DISPOSITIONS
@@ -1664,7 +1702,11 @@ def _resolved_defects(
     except CritiqueContractViolation as violation:
         raise ReportReviewContractViolation(str(violation)) from violation
     known_targets = {target.target_id for target in packet.targets}
-    known_statements = set(packet.expected_statement_ids)
+    # A defect's declared scope resolves against every statement the packet
+    # carries, not only the dispositionable ones (`expected_statement_ids`):
+    # a defect may legitimately be about a sentinel or context statement's
+    # own wording even though that statement is never offered a disposition.
+    known_statements = {statement.statement_id for statement in packet.statements}
     known_clusters: set[str] = set()
     for statement in packet.statements:
         known_clusters.update(statement.claim_cluster_ids)
@@ -1725,6 +1767,13 @@ def _derived_defects(
     assembled review, and that refusal propagated out of ``review_report`` —
     so a contract-valid reply crashed the run instead of recording the
     judgement the reviewer had actually made.
+
+    A statement that is not substantive — a sentinel cell repaired to "not
+    stated", or any other context statement — is never given a defect here
+    even if ``dispositions`` names it: ``_dispositions`` already drops such
+    an entry, so this is a second guard for a caller that built
+    ``dispositions`` some other way. A derived material defect requires a
+    statement that asserts something.
     """
     derived: list[CritiqueGap] = []
     derived_statements: list[str] = []
@@ -1737,7 +1786,7 @@ def _derived_defects(
         ):
             continue
         statement = packet.statement(statement_id)
-        if statement is None:
+        if statement is None or not statement.substantive:
             continue
         targets = [
             target.target_id

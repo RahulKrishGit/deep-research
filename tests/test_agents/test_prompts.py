@@ -690,6 +690,17 @@ def test_constraint_cells_state_how_they_are_checked() -> None:
     assert "replaced with 'not stated'" in instruction
 
 
+def test_claim_ids_are_copied_from_the_one_evidence_packet() -> None:
+    """The writer is shown one addressable claim block, not two whose labels
+    could disagree: the instruction must name that packet, never a second
+    'checked-claims' block the composer no longer sends.
+    """
+    instruction = REPORT_INSTRUCTION.casefold()
+
+    assert "copy the labels exactly as printed in the evidence packet" in instruction
+    assert "checked-claims packet" not in instruction
+
+
 def test_source_consumers_distinguish_quality_scores_from_statuses() -> None:
     assert "quality score of every source" not in SYNTHESIZER_SYSTEM_PROMPT
     assert "quality score when scored" in SYNTHESIZER_SYSTEM_PROMPT

@@ -34,6 +34,7 @@ from deep_research.agents.report import (
     render_evidence_ledger,
     render_reader_report,
 )
+from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.synthesizer import (
     PACKET_SUPPORT_CHARS,
@@ -72,6 +73,7 @@ from deep_research.agents.synthesizer import (
     compose_report,
     evidence_report_filename,
     high_confidence_claims,
+    invalid_draft_error,
     limitation_reasons,
     memory_payload,
     ordered_claims_for_report,
@@ -105,6 +107,7 @@ from deep_research.utils.types import (
     EvidenceUnit,
     Finding,
     ReadRecord,
+    RejectedDraftPoint,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -272,17 +275,21 @@ def _draft(
     *,
     summary: str = "Break-even was reached in 2025.",
     urls: list[str] | None = None,
+    claim_ids: list[str] | None = None,
     notes: list[str] | None = None,
 ) -> ReportDraft:
     cited = urls if urls is not None else [SOURCE_URL]
+    labels = claim_ids if claim_ids is not None else ["C001"]
     return ReportDraft(
-        executive_summary=[_point_draft(summary, source_urls=cited)],
+        executive_summary=[
+            _point_draft(summary, claim_ids=labels, source_urls=cited)
+        ],
         ranked_constraints=[
             ConstraintDraft(
                 constraint="Charge for driving inside the measured zone.",
                 deployment_mechanism="area licence with camera enforcement",
                 geography="not stated",
-                claim_ids=["C001"],
+                claim_ids=labels,
                 source_urls=cited,
             )
         ],
@@ -291,7 +298,9 @@ def _draft(
                 title="Error correction",
                 points=[
                     _point_draft(
-                        "Break-even was reached.", source_urls=cited
+                        "Break-even was reached.",
+                        claim_ids=labels,
+                        source_urls=cited,
                     )
                 ],
             )
@@ -617,11 +626,17 @@ def test_a_settled_point_needs_a_known_checked_claim() -> None:
     assert rejected == ["executive summary point 1: no known checked claim"]
 
 
-def test_a_point_citing_a_url_its_claims_do_not_carry_is_refused() -> None:
+def test_a_point_citing_a_foreign_url_falls_back_to_its_claims_own_url() -> None:
+    """A url the named claim does not carry is dropped, not fatal: the
+    point is kept on the claim's own url instead of losing the whole point
+    over one relay-only citation list.
+    """
     composition, rejected = build_report_composition(
         _task(),
         ReportDraft(
-            executive_summary=[_point_draft(source_urls=["https://invented.test/x"])],
+            executive_summary=[
+                _point_draft(source_urls=["https://invented.test/x"])
+            ],
             ranked_constraints=[],
             sections=[],
             uncertainty_notes=[],
@@ -630,10 +645,38 @@ def test_a_point_citing_a_url_its_claims_do_not_carry_is_refused() -> None:
         limitations=[],
     )
 
-    assert composition.summary == []
     assert rejected == [
-        "executive summary point 1: 1 source url(s) not on those claims"
+        "executive summary point 1: 1 url(s) not on those claims were dropped"
     ]
+    assert composition.summary[0].source_urls == [SOURCE_URL]
+    assert "citation_narrowed_to_claims" in _dispositions(composition)
+
+
+def test_a_point_citing_a_mix_of_urls_keeps_only_the_carried_one() -> None:
+    """A url the named claim does not carry is dropped from the point; the
+    one it does carry is kept, and the narrowing is recorded.
+    """
+    composition, rejected = build_report_composition(
+        _task(),
+        ReportDraft(
+            executive_summary=[
+                _point_draft(
+                    source_urls=[SOURCE_URL, "https://invented.test/x"]
+                )
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert rejected == [
+        "executive summary point 1: 1 url(s) not on those claims were dropped"
+    ]
+    assert composition.summary[0].source_urls == [SOURCE_URL]
+    assert "citation_narrowed_to_claims" in _dispositions(composition)
 
 
 def test_an_unknown_label_is_counted_and_never_silently_accepted() -> None:
@@ -1115,18 +1158,59 @@ def test_a_composed_report_carries_both_artifacts_and_its_counts() -> None:
 def test_a_refused_point_is_named_in_the_ledger_and_recorded() -> None:
     report, errors = compose_report(
         _task(),
-        draft=_draft(urls=["https://invented.test/x"]),
+        draft=_draft(claim_ids=["C999"]),
         limitations=[],
     )
 
-    assert "https://invented.test/x" not in report.markdown
-    assert "executive summary point 1: 1 source url(s) not on those claims" in (
+    assert "executive summary point 1: no known checked claim" in (
         report.evidence_markdown
     )
     assert [error.error_type for error in errors] == [
         "synthesizer_invalid_draft"
     ]
     assert errors[0].recoverable is True
+
+
+def test_invalid_draft_error_persists_every_drafted_points_full_text() -> None:
+    """Full text, claim_ids and urls of every drafted point — accepted and
+    refused alike — never clamped at the 240-character display bound a
+    routed assertion gets, so a later pass can tell which drafted point
+    tripped which reason without replaying the provider call that wrote it.
+    """
+    long_text = " ".join(["A carried figure."] * 20)
+    assert len(long_text) > 240
+    draft = ReportDraft(
+        executive_summary=[
+            _point_draft(long_text, claim_ids=["C001"], source_urls=[SOURCE_URL])
+        ],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for road use inside the measured zone.",
+                deployment_mechanism="not stated",
+                geography="not stated",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    error = invalid_draft_error(
+        ["executive summary point 1: an unsupported figure"], draft=draft
+    )
+
+    points = error.details["drafted_points"]
+    assert points[0]["text"] == long_text
+    assert points[0]["claim_ids"] == ["C001"]
+    assert points[0]["source_urls"] == [SOURCE_URL]
+    assert points[1]["where"] == "constraint 1"
+
+
+def test_invalid_draft_error_carries_no_draft_when_none_is_given() -> None:
+    error = invalid_draft_error(["some reason"])
+
+    assert "drafted_points" not in error.details
 
 
 def test_a_report_composed_without_a_model_still_declares_itself() -> None:
@@ -1176,8 +1260,8 @@ def test_report_messages_carry_every_input_the_writer_needs() -> None:
     assert "Close the cost gap." in body
     assert "# As of and scope" in body
     assert SYNTH_EXTRACTED_AT in body
-    assert "# Checked claims to cite" in body
-    assert "C001 [verified 0.80]" in body
+    assert "# Canonical evidence packet" in body
+    assert "C001 [verified 0.80 | independently corroborated]" in body
     assert "# Retrieved findings (open questions only)" in body
     assert "# Source quality" in body
     assert "# Known limitations" in body
@@ -1530,6 +1614,78 @@ def test_a_correctly_cited_but_unsupported_mechanism_is_repaired() -> None:
     mechanism = row.mechanism_statement
     assert mechanism is not None
     assert mechanism.mode == "context"
+
+
+def test_a_cell_is_attested_against_the_claims_recorded_provenance() -> None:
+    """A cell may restate what the claim's own provenance recorded — the
+    extractor's checked reading of the page — not only the raw passage it
+    was read from: the excerpt itself rarely repeats the scope phrase the
+    extraction recorded in its own words.
+    """
+    claim = _claim(
+        provenance=ClaimProvenance(measure_scope="utility-scale, 1 MW and above"),
+    )
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for road use inside the measured zone.",
+                deployment_mechanism="utility-scale, 1 MW and above",
+                geography="not stated",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, rejected = build_report_composition(
+        _grounded_task(claims=[claim]), draft, max_sections=4, limitations=[]
+    )
+
+    assert rejected == []
+    assert composition.constraints[0].deployment_mechanism == (
+        "utility-scale, 1 MW and above"
+    )
+
+
+def test_a_cell_may_not_be_attested_by_the_claims_unchecked_vintage_or_statement_date() -> (
+    None
+):
+    """``vintage`` and ``statement_date`` are the extractor's own prose,
+    never checked against the read; a cell built on them alone is exactly
+    the borrowed-title hallucination audit2's #1 published.
+    """
+    claim = _claim(
+        provenance=ClaimProvenance(
+            vintage="BloombergNEF 2026 Sustainable Energy in America Factbook",
+            statement_date="2026-04-01",
+        ),
+    )
+    draft = ReportDraft(
+        executive_summary=[],
+        ranked_constraints=[
+            ConstraintDraft(
+                constraint="Charge for road use inside the measured zone.",
+                deployment_mechanism=(
+                    "BloombergNEF 2026 Sustainable Energy in America Factbook"
+                ),
+                geography="not stated",
+                claim_ids=["C001"],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+        uncertainty_notes=[],
+    )
+
+    composition, _ = build_report_composition(
+        _grounded_task(claims=[claim]), draft, max_sections=4, limitations=[]
+    )
+
+    assert composition.constraints[0].deployment_mechanism == ""
+    assert "unsupported_cell" in _dispositions(composition)
 
 
 def test_an_attested_mechanism_and_geography_are_published_with_their_evidence() -> (
@@ -2191,7 +2347,9 @@ def test_a_second_passage_over_the_budget_is_cut_and_says_so() -> None:
     assert f'"{small}"' in support[0]
     # The second passage cannot fit what is left of this claim's share, so it
     # is carried up to a sentence end and the withheld count is stated.
-    assert support[1].startswith('e2 p. 4 "The review reports a measured result.')
+    assert support[1].startswith(
+        f'e2 p. 4 {SOURCE_URL} "The review reports a measured result.'
+    )
     assert "further character(s) were not shown]" in support[1]
     assert long_read not in support[1]
 
@@ -4247,6 +4405,390 @@ def test_an_omitted_claim_that_restates_a_rendered_point_is_not_repeated() -> No
     assert composition.sections == []
     assert "omitted_bound_claim_rendered" not in composition.statement_dispositions
 
+def test_an_omitted_claim_that_restates_a_hedged_rendered_point_is_attached_to_it() -> (
+    None
+):
+    """audit-3's S003 + f5eb319c: one 19.6 GW statement, not two.
+
+    f5eb319c's own wording is hedged ("planned to add"); the rendered
+    point's is not ("carried the projection ... plans to add") — comparing
+    the full role (years AND hedge) missed the match on that difference
+    alone and printed the fact a second time under "left out", unbound. The
+    bound claim is folded into the existing statement instead, so it
+    inherits the target the claim answers.
+    """
+    rendered_claim = _claim(
+        text="EIA reported that operators carried the projection to add "
+        "19.6 GW of utility-scale battery storage in 2025.",
+    )
+    bound_claim = _claim(
+        text="EIA's own release states that operators planned to add 19.6 "
+        "GW of utility-scale battery storage capacity in 2025.",
+        target_ids=["topic-05-target-01"],
+    )
+    composition, _ = build_report_composition(
+        _grounded_task(
+            claims=[rendered_claim, bound_claim],
+            sub_topics=[_eia_actual_topic()],
+            evidence_units={EVIDENCE_ID: _unit(excerpt=rendered_claim.text)},
+        ),
+        ReportDraft(
+            executive_summary=[
+                _point_draft(rendered_claim.text, claim_ids=["C001"])
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    rendered_texts = [point.text for point in composition.summary] + [
+        point.text for section in composition.sections for point in section.points
+    ]
+    assert rendered_texts == [rendered_claim.text]
+    assert composition.sections == []
+    statement = composition.summary[0].statement
+    assert statement is not None
+    assert "topic-05-target-01" in statement.target_ids
+    assert bound_claim.claim_id in composition.summary[0].claim_ids
+    assert "omitted_bound_claim_attached" in composition.statement_dispositions
+
+
+EIA_GOV_URL = "https://eia.gov/todayinenergy/example"
+HOUSE_DOCS_URL = "https://docs.house.gov/example"
+
+
+def _state_for(task: SynthesisTask) -> ResearchState:
+    return ResearchState(
+        session_id=task.session_id,
+        original_question=task.instruction,
+        sub_topics=list(task.sub_topics),
+        evaluated_sources=list(task.sources),
+        verified_claims=list(task.claims),
+        report="# Reader report",
+        report_evidence="# Evidence ledger",
+    )
+
+
+def test_a_restated_bound_claim_with_no_common_url_is_rendered_separately() -> (
+    None
+):
+    """audit-3's shape: the rendered point cites eia.gov; the bound claim
+    that restates it cites only docs.house.gov. Attaching without narrowing
+    would leave the point naming a claim that carries none of what it
+    cites — the quality gate's own unresolved_citations hard failure — so
+    it is rendered separately instead.
+    """
+    rendered_claim = _claim(
+        text="EIA reported that operators carried the projection to add "
+        "19.6 GW of utility-scale battery storage in 2025.",
+        urls=[EIA_GOV_URL],
+    )
+    bound_claim = _claim(
+        text="A congressional record states that operators planned to add "
+        "19.6 GW of utility-scale battery storage capacity in 2025.",
+        urls=[HOUSE_DOCS_URL],
+        target_ids=["topic-05-target-01"],
+    )
+    task = _grounded_task(
+        claims=[rendered_claim, bound_claim],
+        sub_topics=[_eia_actual_topic()],
+        sources=[_source(url=EIA_GOV_URL), _source(url=HOUSE_DOCS_URL)],
+        evidence_units={
+            EVIDENCE_ID: _unit(excerpt=rendered_claim.text, url=EIA_GOV_URL)
+        },
+    )
+    composition, _ = build_report_composition(
+        task,
+        ReportDraft(
+            executive_summary=[
+                _point_draft(
+                    rendered_claim.text,
+                    claim_ids=["C001"],
+                    source_urls=[EIA_GOV_URL],
+                )
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary[0].claim_ids == [rendered_claim.claim_id]
+    left_out = [
+        point
+        for section in composition.sections
+        for point in section.points
+        if bound_claim.claim_id in point.claim_ids
+    ]
+    assert len(left_out) == 1
+    assert left_out[0].source_urls == [HOUSE_DOCS_URL]
+
+    snapshot = compute_report_quality(_state_for(task), composition)
+    assert "unresolved_citations" not in snapshot.hard_failures
+
+
+def test_a_restated_bound_claim_with_a_partial_url_overlap_narrows_the_points_citations() -> (
+    None
+):
+    """When the restated claim carries only some of the point's urls, the
+    point is re-cited on the overlap instead of losing the merge entirely.
+    """
+    relay_url = "https://relay.example.test/copy"
+    rendered_claim = _claim(
+        text="EIA reported that operators carried the projection to add "
+        "19.6 GW of utility-scale battery storage in 2025.",
+        urls=[EIA_GOV_URL, relay_url],
+    )
+    bound_claim = _claim(
+        text="EIA's own release states that operators planned to add 19.6 "
+        "GW of utility-scale battery storage capacity in 2025.",
+        urls=[EIA_GOV_URL],
+        target_ids=["topic-05-target-01"],
+    )
+    task = _grounded_task(
+        claims=[rendered_claim, bound_claim],
+        sub_topics=[_eia_actual_topic()],
+        sources=[_source(url=EIA_GOV_URL), _source(url=relay_url)],
+        evidence_units={
+            EVIDENCE_ID: _unit(excerpt=rendered_claim.text, url=EIA_GOV_URL)
+        },
+    )
+    composition, _ = build_report_composition(
+        task,
+        ReportDraft(
+            executive_summary=[
+                _point_draft(
+                    rendered_claim.text,
+                    claim_ids=["C001"],
+                    source_urls=[EIA_GOV_URL, relay_url],
+                )
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.sections == []
+    point = composition.summary[0]
+    assert bound_claim.claim_id in point.claim_ids
+    assert point.source_urls == [EIA_GOV_URL]
+
+    snapshot = compute_report_quality(_state_for(task), composition)
+    assert "unresolved_citations" not in snapshot.hard_failures
+
+
+def test_a_restated_bound_claim_from_a_different_issuer_is_not_attached() -> None:
+    """WoodMac's own 13.3 GW forecast must not absorb BNEF's — the same
+    rounded figure for the same year is not the same fact when the claims'
+    own recorded issuers disagree.
+    """
+    rendered_claim = _claim(
+        text="Grid-scale storage installations are forecast to reach "
+        "13.3 GW in 2025.",
+        provenance=ClaimProvenance(attributed_issuer="Wood Mackenzie"),
+    )
+    bound_claim = _claim(
+        text="Utility-scale storage installations are forecast to reach "
+        "13.3 GW in 2025.",
+        provenance=ClaimProvenance(attributed_issuer="BloombergNEF"),
+        target_ids=["topic-05-target-01"],
+    )
+    composition, _ = build_report_composition(
+        _grounded_task(
+            claims=[rendered_claim, bound_claim],
+            sub_topics=[_eia_actual_topic()],
+            evidence_units={EVIDENCE_ID: _unit(excerpt=rendered_claim.text)},
+        ),
+        ReportDraft(
+            executive_summary=[
+                _point_draft(rendered_claim.text, claim_ids=["C001"])
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary[0].claim_ids == [rendered_claim.claim_id]
+    assert any(
+        bound_claim.claim_id in point.claim_ids
+        for section in composition.sections
+        for point in section.points
+    )
+
+
+def test_a_restated_bound_claim_with_a_mismatched_forecast_role_is_not_attached() -> (
+    None
+):
+    """A forecast is not its own later actual, even on the same figure and
+    year: absorbing one into the other would misreport a projection as a
+    settled outcome, or an outcome as still unresolved.
+    """
+    rendered_claim = _claim(
+        text="EIA reported that a record 15 GW of utility-scale battery "
+        "storage was added in 2025.",
+    )
+    bound_claim = _claim(
+        text="EIA forecast that 15 GW of utility-scale battery storage "
+        "would be added in 2025.",
+        target_ids=["topic-05-target-01"],
+    )
+    composition, _ = build_report_composition(
+        _grounded_task(
+            claims=[rendered_claim, bound_claim],
+            sub_topics=[_eia_actual_topic()],
+            evidence_units={EVIDENCE_ID: _unit(excerpt=rendered_claim.text)},
+        ),
+        ReportDraft(
+            executive_summary=[
+                _point_draft(rendered_claim.text, claim_ids=["C001"])
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary[0].claim_ids == [rendered_claim.claim_id]
+    assert any(
+        bound_claim.claim_id in point.claim_ids
+        for section in composition.sections
+        for point in section.points
+    )
+
+
+def test_a_mixed_forecast_and_outcome_text_is_not_attached_to_a_forecast() -> (
+    None
+):
+    """A text that both names a forecast and reports a realised, past-tense
+    outcome is neither role safely: "the operator beat projections: 16 GW
+    was installed in 2025" reports what happened, not an open plan, and
+    must not absorb — or be absorbed by — a genuine forecast on the same
+    figure. The failure mode here (rendered separately) is the safe one;
+    a wrong attach is not.
+    """
+    rendered_claim = _claim(
+        text="The operator reported that it beat projections: 16 GW was "
+        "installed in 2025.",
+    )
+    bound_claim = _claim(
+        text="EIA forecast that 16 GW would be installed in 2025.",
+        target_ids=["topic-05-target-01"],
+    )
+    composition, _ = build_report_composition(
+        _grounded_task(
+            claims=[rendered_claim, bound_claim],
+            sub_topics=[_eia_actual_topic()],
+            evidence_units={EVIDENCE_ID: _unit(excerpt=rendered_claim.text)},
+        ),
+        ReportDraft(
+            executive_summary=[
+                _point_draft(rendered_claim.text, claim_ids=["C001"])
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert composition.summary[0].claim_ids == [rendered_claim.claim_id]
+    assert any(
+        bound_claim.claim_id in point.claim_ids
+        for section in composition.sections
+        for point in section.points
+    )
+
+
+def test_an_infinitive_outcome_verb_after_to_is_still_a_forecast() -> None:
+    """"expected to hit 15 GW" names a plan, not an outcome: "hit" is an
+    infinitive complement of "expected", spelled the same as its past
+    tense, and must not read as a realised outcome the way "beat
+    projections ... was installed" does. Mirrors claim_clusters.py's own
+    to-infinitive guard for the same ambiguity, so the two classifiers
+    agree.
+    """
+    rendered_claim = _claim(
+        text="Wood Mackenzie forecast that the market is expected to hit "
+        "15 GW in 2025.",
+    )
+    bound_claim = _claim(
+        text="Wood Mackenzie's own release states that the market is "
+        "projected to hit 15 GW in 2025.",
+        target_ids=["topic-05-target-01"],
+    )
+    composition, _ = build_report_composition(
+        _grounded_task(
+            claims=[rendered_claim, bound_claim],
+            sub_topics=[_eia_actual_topic()],
+            evidence_units={EVIDENCE_ID: _unit(excerpt=rendered_claim.text)},
+        ),
+        ReportDraft(
+            executive_summary=[
+                _point_draft(rendered_claim.text, claim_ids=["C001"])
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    rendered_texts = [point.text for point in composition.summary] + [
+        point.text for section in composition.sections for point in section.points
+    ]
+    assert rendered_texts == [rendered_claim.text]
+    assert composition.sections == []
+    assert bound_claim.claim_id in composition.summary[0].claim_ids
+
+
+def test_a_refused_points_full_drafted_text_reaches_the_composition() -> None:
+    """A refused point's full text, claim_ids and urls travel with the
+    composition — never truncated — keyed by ``where``, so the evidence
+    ledger and the quality record can show exactly which drafted point
+    tripped which reason.
+    """
+    long_text = " ".join(["A carried figure that was refused."] * 10)
+    assert len(long_text) > 240
+    composition, _ = build_report_composition(
+        _task(),
+        ReportDraft(
+            executive_summary=[
+                _point_draft(
+                    long_text, claim_ids=["C999"], source_urls=[SOURCE_URL]
+                )
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        ),
+        max_sections=4,
+        limitations=[],
+    )
+
+    (rejected_point,) = composition.rejected_points
+    assert isinstance(rejected_point, RejectedDraftPoint)
+    assert rejected_point.where == "executive summary point 1"
+    assert rejected_point.text == long_text
+    assert rejected_point.claim_ids == ["C999"]
+    assert rejected_point.source_urls == [SOURCE_URL]
+    assert rejected_point.reason == "no known checked claim"
+
+
 def test_a_filled_statement_is_never_given_a_kept_id() -> None:
     """The fill path must not number a repaired point over a kept record.
 
@@ -4519,6 +5061,97 @@ def test_the_writer_sees_a_passage_past_the_page_head() -> None:
     assert figure in rendered
     assert any(figure in line for line in packet.entries[0].support)
 
+def test_canonical_packet_labels_come_from_the_registry_not_rank_position() -> (
+    None
+):
+    """One label space: a claim's canonical-packet label is stamped from the
+    checked-claim registry, never from ``_packet_rank``'s own position.
+
+    ``_packet_rank`` still decides *entry order* (the target-bound claim
+    sorts first here), which is exactly the case that used to relabel it: a
+    draft that read the packet and copied its label was resolving a
+    *different* claim through ``DraftContext.approved`` (built from the
+    registry), because the two disagreed on what "C001" meant.
+    """
+    unbound = _claim(text="Alpha fact was measured.", urls=[OTHER_URL])
+    bound = _claim(text="Beta fact was measured.", target_ids=["t1"])
+    registry = claim_registry([unbound, bound])
+    registry_label = {claim.claim_id: label for label, claim in registry}
+
+    packet = build_canonical_packet(
+        claims=[unbound, bound],
+        clusters={},
+        evidence={},
+        targets=[_target("t1")],
+        sources=[],
+        limit=10,
+        labels=registry_label,
+    )
+
+    assert [entry.claim_id for entry in packet.entries][0] == bound.claim_id
+    by_id = {entry.claim_id: entry.label for entry in packet.entries}
+    assert by_id[unbound.claim_id] == registry_label[unbound.claim_id]
+    assert by_id[bound.claim_id] == registry_label[bound.claim_id]
+
+
+def test_canonical_packet_cites_line_carries_only_the_claims_own_urls() -> None:
+    """``cites:`` is the validator's own allow-list: ``claim.source_urls``
+    alone. A cluster's wider verdict-evidence urls and a selected passage's
+    own url move to ``supports:`` instead — never into ``cites:`` — so the
+    writer is never shown a url copying the label exactly would still be
+    refused for.
+    """
+    claim = _claim(urls=[SOURCE_URL], target_ids=["t1"]).model_copy(
+        update={"cluster_id": CLUSTER_ID}
+    )
+    cluster = _cluster(
+        claim_ids=[claim.claim_id], evidence_ids=[EVIDENCE_ID]
+    ).model_copy(
+        update={"verdict_evidence": {"verified": [SOURCE_URL, OTHER_URL]}}
+    )
+    unit = _unit(url=OTHER_URL)
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={CLUSTER_ID: cluster},
+        evidence={EVIDENCE_ID: unit},
+        targets=[_target("t1")],
+        sources=[],
+        limit=10,
+    )
+
+    (entry,) = packet.entries
+    assert entry.citation_urls == [SOURCE_URL]
+    assert OTHER_URL not in entry.citation_urls
+    assert any(OTHER_URL in line for line in entry.support)
+
+
+def test_report_messages_uses_the_registry_label_in_the_evidence_packet() -> (
+    None
+):
+    """The single evidence packet block labels a claim by its registry
+    position, not by critical-target rank — the two disagree here on
+    purpose: ``bound`` ranks first (a target claims it) but registers
+    second (``unbound`` was declared first).
+    """
+    unbound = _claim(text="Alpha fact was measured.", urls=[OTHER_URL])
+    bound = _claim(text="Beta fact was measured.", target_ids=["t1"])
+    topic = _sub_topic().model_copy(update={"evidence_targets": [_target("t1")]})
+    task = _task(claims=[unbound, bound], sub_topics=[topic])
+
+    prompt = report_messages(task, finding_digest=5, claim_digest=10)[1].content
+    registry_label = {claim.claim_id: label for label, claim in task.claim_packet}
+
+    assert "# Checked claims to cite" not in prompt
+    bound_line = next(
+        line
+        for line in prompt.splitlines()
+        if line.startswith(f"{registry_label[bound.claim_id]} [")
+    )
+    assert bound.text in bound_line
+    assert unbound.text not in bound_line
+
+
 
 def test_the_packet_selects_the_evidence_ids_and_not_the_stances() -> None:
     """``evidence_selection`` is keyed by evidence id, valued with its stance.
@@ -4720,12 +5353,12 @@ async def test_a_report_provider_failure_discloses_one_limitation_list(
 
 
 @pytest.mark.asyncio
-async def test_an_invented_section_url_is_refused_and_recorded(
+async def test_an_invented_claim_label_is_refused_and_recorded(
     tracker: Tracker, tmp_path: Path
 ) -> None:
     agent = _synthesizer(
         tracker,
-        ScriptedCompleter(outputs=[_draft(urls=["https://invented.test/x"])]),
+        ScriptedCompleter(outputs=[_draft(claim_ids=["C999"])]),
         synthesizer_tools(tracker, output_root=tmp_path),
     )
 
@@ -4733,7 +5366,7 @@ async def test_an_invented_section_url_is_refused_and_recorded(
         outcome = await agent.run(_state())
 
     assert outcome.result is not None
-    assert "https://invented.test/x" not in outcome.result.markdown
+    assert "Break-even was reached in 2025." not in outcome.result.markdown
     assert [error.error_type for error in outcome.errors] == [
         "synthesizer_invalid_draft"
     ]
@@ -4885,7 +5518,7 @@ async def test_a_truncated_report_call_is_re_asked_once_at_a_high_effort(
 
     assert [call[0] for call in completer.calls] == ["ReportDraft", "ReportDraft"]
     assert completer.budgets == [None, None]
-    assert completer.efforts == [None, "high"]
+    assert completer.efforts == ["high", "high"]
     assert outcome.result is not None
     assert "Break-even was reached in 2025." in outcome.result.markdown
     assert outcome.react.stop_reason == "finished"
@@ -4927,7 +5560,7 @@ async def test_a_report_retry_that_hits_an_outage_is_recorded_as_failed(
     async with tracker.session_span("session-1", "question"):
         outcome = await agent.run(_state())
 
-    assert completer.efforts == [None, "high"]
+    assert completer.efforts == ["high", "high"]
     assert outcome.react.stop_reason == "provider_error"
     errors = {error.error_type: error for error in outcome.errors}
     assert set(errors) == {
@@ -4962,7 +5595,7 @@ async def test_a_twice_truncated_report_call_still_fails_as_it_did(
     async with tracker.session_span("session-1", "question"):
         outcome = await agent.run(_state())
 
-    assert completer.efforts == [None, "high"]
+    assert completer.efforts == ["high", "high"]
     assert outcome.result is not None
     assert REPORT_SUMMARY_FALLBACK in outcome.result.markdown
     assert outcome.react.stop_reason == "provider_error"

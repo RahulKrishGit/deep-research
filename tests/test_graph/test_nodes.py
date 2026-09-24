@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
-from deep_research.agents.report import render_reader_report
+from deep_research.agents.report import ReportComposition, ReportPoint, render_reader_report
 from deep_research.agents.report_review import build_report_review_input
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.graph.errors import GRAPH_ERROR_REASONS, GraphConfigurationError
@@ -62,6 +62,7 @@ from deep_research.utils.types import (
     RefinementTarget,
     ReportQualitySnapshot,
     ReportReview,
+    ReportStatement,
     ResearchError,
     ResearchState,
     SubTopic,
@@ -1043,6 +1044,115 @@ async def test_a_halted_synthesizer_pass_is_not_quality_graded() -> None:
     assert state.composition is not None
     assert state.quality is None
     assert _event_types(state) == ["graph.node.skipped"]
+
+
+@pytest.mark.asyncio
+async def test_the_synthesizer_node_materializes_terminal_pursued_unmet_accounting() -> (
+    None
+):
+    """P1-a end to end: the node itself records the terminal accounting.
+
+    A required, non-critical target the pass leaves unanswered, whose
+    acquisition loop ran at least once, gets a real ``pursued_unmet``
+    disposition and a "Not acquired" uncertainty statement the moment the
+    terminal synthesizer pass composes — not only a value a gate predicate
+    can see. The quality snapshot, the evidence-dispositions audit trail, and
+    the rendered reader report all agree.
+    """
+    t1 = EvidenceTarget(
+        target_id="t1",
+        coverage_id="topic-01",
+        question="What does topic 1 require?",
+        required_dimensions=["finding"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    t2 = EvidenceTarget(
+        target_id="t2",
+        coverage_id="topic-02",
+        question="What does topic 2 require?",
+        required_dimensions=["finding"],
+        required=True,
+        critical=False,
+        support_policy="independent_pair",
+    )
+    topics = [
+        fake_sub_topic("Topic 1", coverage_id="topic-01", priority=1).model_copy(
+            update={"evidence_targets": [t1]}
+        ),
+        fake_sub_topic("Topic 2", coverage_id="topic-02", priority=2).model_copy(
+            update={"evidence_targets": [t2]}
+        ),
+    ]
+    claim = fake_claim("Topic 1 was settled.")
+    point = ReportPoint(
+        text=claim.text,
+        claim_ids=[claim.claim_id],
+        source_urls=list(claim.source_urls),
+        statement=ReportStatement(
+            statement_id="S001",
+            text=claim.text,
+            claim_cluster_ids=[claim.claim_id],
+            target_ids=["t1"],
+            answered_dimensions=["finding"],
+        ),
+    )
+
+    def _pursued_update(state: ResearchState) -> dict[str, object]:
+        composition = ReportComposition(
+            question=state.original_question,
+            session_id=state.session_id,
+            iteration=state.iteration,
+            max_iterations=state.max_iterations,
+            scope="Topics 1 and 2.",
+            as_of="2026-08-01T12:00:00+00:00",
+            sub_topics=topics,
+            claims=[claim],
+            summary=[point],
+        )
+        return {
+            "report": render_reader_report(composition).strip(),
+            "report_evidence": "# Evidence ledger",
+            "composition": composition,
+        }
+
+    agent = FakeAgent("synthesizer", [], update_factory=_pursued_update)
+    state = fake_research_state(
+        sub_topics=topics,
+        verified_claims=[claim],
+        iteration=3,
+        max_iterations=3,
+        acquisition_state_by_target={
+            "topic-02": AcquisitionState(
+                target_id="topic-02",
+                attempted_urls=["https://example.test/pursued"],
+                empty_searches=1,
+            )
+        },
+    )
+
+    result = await synthesizer_node(agent)(dump_state(state))
+    final = load_state(result)
+
+    assert final.quality is not None
+    assert final.quality.unaccounted_target_ids == []
+    assert "unaccounted_required_targets" not in final.quality.hard_failures
+
+    (disposition,) = [
+        item for item in final.evidence_dispositions if item.item_id == "t2"
+    ]
+    assert disposition.reason == "pursued_unmet"
+
+    assert final.composition is not None
+    assert any(
+        statement.target_ids == ["t2"]
+        for statement in final.composition.uncertainty_statements
+    )
+
+    rendered = render_reader_report(final.composition)
+    assert "### Not acquired" in rendered
+    assert "What does topic 2 require?" in rendered
 
 
 # --- the terminal finalizer ---------------------------------------------------

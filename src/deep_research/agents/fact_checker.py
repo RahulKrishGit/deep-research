@@ -670,11 +670,15 @@ def claim_attribution(
     binding, and it is what lets a read fetched for one topic answer another
     topic's target. Every finding of a cited URL contributes, not only the one
     attribution consumes: a page can state several findings bound to different
-    targets, and the claim's prose may be answered by any of them. The
-    findings' own sub-topics stay a candidate source too, so a finding
-    extracted before the binding existed (one carrying no target ids) is
-    judged exactly as it was, and a named target the plan does not contain
-    contributes nothing: only the plan can issue an obligation.
+    targets, and the claim's prose may be answered by any of them. Every other
+    planned target follows, whatever sub-topic fetched the finding:
+    ``atom_answers_target`` already enforces a target's own measure, period,
+    geography, source, and support policy, so a claim fetched under one
+    sub-topic can still answer another sub-topic's target when its own prose
+    states that target's fact verbatim (Fable change 3, claim 2993e776: an EIA
+    finding fetched under topic-01 states the topic-02 forecast in the same
+    sentence). A named target the plan does not contain contributes nothing:
+    only the plan can issue an obligation.
     """
     fingerprints, consumed_coverage = consumed_provenance(
         draft, findings=findings, coverage_ids=coverage_ids
@@ -698,9 +702,7 @@ def claim_attribution(
         for group in targets.values()
         for target in group
     }
-    candidates = _candidate_targets(
-        cited_findings, targets=targets, planned=planned
-    )
+    candidates = _candidate_targets(cited_findings, planned=planned)
     for target in candidates:
         if any(
             atom_answers_target(atom, target, question=question)
@@ -743,19 +745,107 @@ def _cited_findings(
     ]
 
 
+# The head keywords a requirement uses to ask for *some number*, the same
+# vocabulary claim_clusters._DIMENSION_KINDS's "value" row reads off a
+# requirement's head, plus "figure" — a synonym that table does not carry
+# but a plan can still write. Checked directly on the requirement's own
+# text rather than through ``checkable_dimensions``, because that
+# classifier reads a hollow detail like "figure" as asking a *qualitative*
+# question instead (no unit, no number, no recognised countable noun) and
+# a qualitative dimension is satisfied by any clause with a named subject
+# at all — the most permissive dimension there is, not the least.
+_QUANTITY_ASKING_WORDS = frozenset(
+    {
+        "measure", "value", "quantity", "amount", "number", "count", "cost",
+        "capacity", "level", "rate", "total", "size", "price", "volume",
+        "figure",
+    }
+)
+_LEADING_ARTICLES = frozenset({"a", "an", "the"})
+_DETAIL_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _requirement_words(text: str) -> list[str]:
+    return [
+        word
+        for word in _DETAIL_WORD.findall(text.casefold())
+        if word not in _LEADING_ARTICLES
+    ]
+
+
+def _is_a_bare_quantity_requirement(dimension: str) -> bool:
+    """Whether this requirement only ever asks for *some number*, unnamed.
+
+    A requirement whose head is not one of :data:`_QUANTITY_ASKING_WORDS` at
+    all — ``"geography"``, ``"period: calendar year 2024"``, ``"deployment
+    mechanism"`` — is not this ambiguity regardless of its detail, so it is
+    read exactly as before. One whose head does ask for a number needs its
+    own detail to say what is being counted: "withheld capacity" says what
+    is being measured; "value", "amount", "figure", "a number", "the
+    quantity" do not — each is only the generic noun the head already
+    carries, with or without a leading article, so a ``:`` before it proves
+    nothing (ReRevLast P2: "measure: value" is exactly as ambiguous as bare
+    "value" and must be withheld from cross-topic offering the same way).
+    """
+    head, _, detail = dimension.partition(":")
+    if not any(word in _QUANTITY_ASKING_WORDS for word in _requirement_words(head)):
+        return False
+    detail_words = _requirement_words(detail)
+    return not detail_words or all(
+        word in _QUANTITY_ASKING_WORDS for word in detail_words
+    )
+
+
+def _has_a_measure_of_its_own(target: EvidenceTarget) -> bool:
+    """Whether the target's own requirements name what to look for.
+
+    A ``"measure: withheld capacity"`` requirement carries its own detail,
+    and a metadata requirement named outright — ``"geography"``,
+    ``"data period"``, ``"source"`` — is self-identifying without one: a
+    claim from any topic either states it or does not, so
+    ``atom_answers_target`` can judge it on its own terms regardless of
+    which sub-topic fetched it. A *bare quantity* requirement — ``"value"``,
+    ``"rate"``, or a hollow ``"measure: value"``/``"measure: figure"`` that
+    only restates the same generic noun after a colon
+    (:func:`_is_a_bare_quantity_requirement`) — carries none: the plan wrote
+    the measure into the *question* instead, and topic-scoping was the only
+    thing that ever kept a funding-round question from being satisfied by
+    an adoption-rate clause or vice versa. Offering such a target outside
+    the topic that planned it hands it a candidate ``atom_answers_target``
+    cannot actually tell apart from any other bare target's number (Main,
+    same-work-mirror e2e regression; hollow-detail spellings: ReRevLast
+    P2): a funding figure and an export figure both answered a critical
+    adoption-rate target once every planned target became a candidate for
+    every claim.
+    """
+    return not any(
+        _is_a_bare_quantity_requirement(dimension)
+        for dimension in target.required_dimensions
+    )
+
+
 def _candidate_targets(
     cited_findings: Sequence[Finding],
     *,
-    targets: Mapping[str, Sequence[EvidenceTarget]],
     planned: Mapping[str, EvidenceTarget],
 ) -> list[EvidenceTarget]:
-    """The plan targets one claim's cited findings make it eligible for.
+    """Every plan target one claim's cited findings make it eligible for.
 
     The findings' named targets lead, because they are the specific
-    obligations their content answers; the targets of the sub-topics that
-    fetched their reads follow, which is the whole candidate set before
-    findings carried a binding. Ids resolve through the plan, so a target id
-    no plan issued is simply absent rather than invented.
+    obligations their content answers — this half is unconditional, so a
+    finding still earns its own topic's target even when that target's
+    dimension is bare. Every *other* planned target follows, whatever
+    sub-topic fetched the finding, but only when it has a measure of its
+    own to check the clause against (:func:`_has_a_measure_of_its_own`):
+    ``atom_answers_target`` already enforces a target's own measure,
+    period, geography, source, and support policy, so offering a detailed
+    target this way costs nothing a claim's prose does not already have to
+    earn, and it is what lets a claim fetched under one sub-topic answer
+    another sub-topic's target when its own prose states that target's
+    fact verbatim (Fable change 3, claim 2993e776: an EIA finding fetched
+    under topic-01 states the topic-02 forecast in the same sentence). Ids
+    resolve through the plan, so a target id no plan issued is simply
+    absent rather than invented.
     """
     candidates: list[EvidenceTarget] = []
     seen: set[str] = set()
@@ -766,12 +856,11 @@ def _candidate_targets(
                 continue
             seen.add(target.target_id)
             candidates.append(target)
-    for finding in cited_findings:
-        for target in targets.get(_collapsed(finding.related_sub_topic), ()):
-            if target.target_id in seen:
-                continue
-            seen.add(target.target_id)
-            candidates.append(target)
+    for target in planned.values():
+        if target.target_id in seen or not _has_a_measure_of_its_own(target):
+            continue
+        seen.add(target.target_id)
+        candidates.append(target)
     return candidates
 
 

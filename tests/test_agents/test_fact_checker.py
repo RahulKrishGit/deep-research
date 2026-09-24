@@ -2685,8 +2685,11 @@ def test_build_claim_drafts_drops_the_example_url() -> None:
 
 
 def _targeted_topic(
-    coverage_id: str, title: str, target_id: str
+    coverage_id: str, title: str, target_id: str, *, source: str = ""
 ) -> SubTopic:
+    required_dimensions = ["measure: the reported value"]
+    if source:
+        required_dimensions.append(f"source: {source}")
     return SubTopic(
         coverage_id=coverage_id,
         title=title,
@@ -2699,7 +2702,7 @@ def _targeted_topic(
                 target_id=target_id,
                 coverage_id=coverage_id,
                 question=f"What does {title} show?",
-                required_dimensions=["measure: the reported value"],
+                required_dimensions=required_dimensions,
                 required=True,
                 critical=True,
                 support_policy="independent_pair",
@@ -2712,15 +2715,18 @@ def _obligated_state() -> ResearchState:
     """Two planned topics, three findings, and two evidence targets.
 
     Every finding states a measured value, because a target that requires one
-    is only answered by a claim that states it.
+    is only answered by a claim that states it. Each target also names its
+    own topic's issuer, so a claim fetched under one topic that also happens
+    to state a bare value cannot earn the other topic's target once every
+    planned target is offered as a candidate (Fable change 3).
     """
     return ResearchState(
         session_id="session-1",
         original_question="How mature is quantum error correction?",
         initial_target_ids=["target-1", "target-2"],
         sub_topics=[
-            _targeted_topic("topic-01", "Alpha", "target-1"),
-            _targeted_topic("topic-02", "Beta", "target-2"),
+            _targeted_topic("topic-01", "Alpha", "target-1", source="Alpha"),
+            _targeted_topic("topic-02", "Beta", "target-2", source="Beta"),
         ],
         raw_findings=[
             _check_finding(
@@ -3388,7 +3394,29 @@ def test_a_seeded_target_still_has_to_be_answered_by_the_prose() -> None:
 
 
 def test_an_unplanned_target_id_seeds_nothing_beyond_the_topic() -> None:
-    """An id the plan never issued is not a target any claim can earn."""
+    """An id the plan never issued is not a target any claim can earn.
+
+    Both planned targets ask for a dimension this claim's prose never states,
+    so the widened candidate set (Fable change 3: every planned target is now
+    offered, not only the fetching topic's own) still credits nothing: the
+    unplanned id and the real "beta" target are refused for the same reason,
+    not because either one was withheld as a candidate.
+    """
+    targets = {
+        "alpha": [
+            _attribution_target(
+                target_id="target-1",
+                required_dimensions=["deployment mechanism"],
+            )
+        ],
+        "beta": [
+            _attribution_target(
+                target_id="topic-02-target-01",
+                coverage_id="topic-02",
+                required_dimensions=["deployment mechanism"],
+            )
+        ],
+    }
     finding = _check_finding(
         content="1,200 MW was withheld in Texas in 2024.",
         target_ids=["topic-09-target-01"],
@@ -3398,7 +3426,15 @@ def test_an_unplanned_target_id_seeds_nothing_beyond_the_topic() -> None:
         source_urls=["https://example.org/a"],
     )
 
-    assert _seeded_attribution([finding], draft).target_ids == []
+    attribution = claim_attribution(
+        draft,
+        findings=[finding],
+        coverage_ids={"alpha": "topic-01", "beta": "topic-02"},
+        targets=targets,
+        question="Which deployment mechanisms are approved?",
+    )
+
+    assert attribution.target_ids == []
 
 
 def test_a_finding_without_target_ids_keeps_its_topics_targets() -> None:
@@ -3415,6 +3451,150 @@ def test_a_finding_without_target_ids_keeps_its_topics_targets() -> None:
     assert _seeded_attribution([finding], draft).target_ids == [
         "topic-02-target-01"
     ]
+
+
+def test_a_finding_fetched_under_one_topic_can_answer_another_topics_target() -> (
+    None
+):
+    """Every planned target is now a candidate, not only the fetching topic's.
+
+    The finding was fetched under alpha (topic-01) and carries no recorded
+    target id of its own, and alpha's own target asks for a dimension this
+    prose never states. Its content nonetheless states beta's fact word for
+    word — the Fable change 3 scenario, claim 2993e776: an EIA finding
+    fetched under topic-01 states the topic-02 forecast in the same
+    sentence — so it earns beta's target although nothing routed it there.
+    """
+    finding = _check_finding(
+        content="1,200 MW was withheld in Texas in 2024.",
+        sub_topic="Alpha",
+    )
+    draft = ClaimDraft(
+        text="1,200 MW was withheld in Texas in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    assert _seeded_attribution([finding], draft).target_ids == [
+        "topic-02-target-01"
+    ]
+
+
+def test_a_bare_dimension_target_is_never_offered_across_topics() -> None:
+    """A dimension with no measure detail of its own stays topic-scoped.
+
+    Topic-scoping was the only thing that ever told a funding-round claim
+    from an adoption-rate claim apart when a target's own requirement is
+    bare ("value", carrying no ``measure: ...`` detail): before the plan
+    was widened to every topic (Fable change 3), a finding fetched for one
+    topic was never even checked against another topic's target, so a bare
+    requirement's lack of detail cost nothing. Once every target became a
+    candidate for every claim, a bare requirement has nothing of its own
+    left to check a foreign clause against, and an adoption-rate clause
+    earned a funding-round target and vice versa (Main, same-work-mirror
+    e2e regression). A requirement with a ``:`` detail of its own — e.g.
+    "measure: withheld capacity" — is unaffected and still crosses topics
+    (Fable change 3, claim 2993e776).
+    """
+    bare_targets = {
+        "alpha": [
+            _attribution_target(
+                target_id="topic-01-target-01",
+                coverage_id="topic-01",
+                question="What was the adoption rate in the United States in 2024?",
+                required_dimensions=["value"],
+            )
+        ],
+        "beta": [
+            _attribution_target(
+                target_id="topic-02-target-01",
+                coverage_id="topic-02",
+                question="What was the funding round in the United States in 2024?",
+                required_dimensions=["value"],
+            )
+        ],
+    }
+    own_finding = _check_finding(
+        content="the adoption rate in the United States was 40 percent in 2024.",
+        sub_topic="Alpha",
+        target_ids=["topic-01-target-01"],
+    )
+    draft = ClaimDraft(
+        text="the adoption rate in the United States was 40 percent in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    attribution = claim_attribution(
+        draft,
+        findings=[own_finding],
+        coverage_ids={"alpha": "topic-01", "beta": "topic-02"},
+        targets=bare_targets,
+        question="What is the corroborated adoption rate for 2024?",
+    )
+
+    assert attribution.target_ids == ["topic-01-target-01"]
+
+
+@pytest.mark.parametrize(
+    "hollow_detail",
+    [
+        "measure: value",
+        "measure: amount",
+        "measure: figure",
+        "measure: number",
+        "measure: quantity",
+    ],
+)
+def test_a_measure_detail_that_only_restates_the_bare_quantity_is_still_bare(
+    hollow_detail: str,
+) -> None:
+    """A ``:`` alone does not prove a requirement carries its own detail.
+
+    "measure: value", "measure: amount", "measure: figure", "measure:
+    number" and "measure: quantity" all just restate the generic quantity
+    noun after the colon — none of them says what is being measured any
+    more than a bare "value" dimension does, so each is exactly the shape a
+    bare dimension is and must be withheld from cross-topic offering
+    exactly like one (ReRevLast P2). A requirement whose detail says
+    something beyond the bare noun — "measure: withheld capacity" — is
+    unaffected (see the sibling cross-topic test above).
+    """
+    hollow_targets = {
+        "alpha": [
+            _attribution_target(
+                target_id="topic-01-target-01",
+                coverage_id="topic-01",
+                question="What was the adoption rate in the United States in 2024?",
+                required_dimensions=[hollow_detail],
+            )
+        ],
+        "beta": [
+            _attribution_target(
+                target_id="topic-02-target-01",
+                coverage_id="topic-02",
+                question="What was the funding round in the United States in 2024?",
+                required_dimensions=[hollow_detail],
+            )
+        ],
+    }
+    own_finding = _check_finding(
+        content="the adoption rate in the United States was 40 percent in 2024.",
+        sub_topic="Alpha",
+        target_ids=["topic-01-target-01"],
+    )
+    draft = ClaimDraft(
+        text="the adoption rate in the United States was 40 percent in 2024.",
+        source_urls=["https://example.org/a"],
+    )
+
+    attribution = claim_attribution(
+        draft,
+        findings=[own_finding],
+        coverage_ids={"alpha": "topic-01", "beta": "topic-02"},
+        targets=hollow_targets,
+        question="What is the corroborated adoption rate for 2024?",
+    )
+
+    assert attribution.target_ids == ["topic-01-target-01"]
 
 
 # --------------------------------------------------------------------------

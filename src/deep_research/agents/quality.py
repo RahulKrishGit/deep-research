@@ -25,8 +25,11 @@ from deep_research.agents.report import (
 from deep_research.agents.sources import normalize_source_url
 from deep_research.utils.types import (
     Claim,
+    EvidenceDisposition,
+    EvidenceTarget,
     ReportQualitySnapshot,
     ReportReview,
+    ReportStatement,
     ResearchState,
     ScoredSource,
     SubstantiveCoverage,
@@ -159,6 +162,22 @@ def _mentions_coverage_id(note: str, coverage_id: str) -> bool:
     return re.search(pattern, note.casefold()) is not None
 
 
+def _target_by_id(
+    state: ResearchState, target_id: str
+) -> EvidenceTarget | None:
+    """The plan's own evidence target for ``target_id``, if the plan names it.
+
+    Shared by every reader that needs the target object rather than just its
+    id: the acquisition-state lookup keys by the sub-topic's coverage id, and
+    the terminal accounting rule needs the target's own ``critical`` flag.
+    """
+    for topic in state.sub_topics:
+        for target in counted_evidence_targets(topic.evidence_targets):
+            if target.target_id == target_id:
+                return target
+    return None
+
+
 def _acquisition_state_for(
     state: ResearchState, target_id: str
 ) -> AcquisitionState | None:
@@ -175,16 +194,15 @@ def _acquisition_state_for(
     the honest answer for it: the accounting has no queue to judge and no
     attempt to credit.
     """
-    for topic in state.sub_topics:
-        for target in counted_evidence_targets(topic.evidence_targets):
-            if target.target_id == target_id:
-                return state.acquisition_state_by_target.get(
-                    target.coverage_id
-                )
-    return None
+    target = _target_by_id(state, target_id)
+    if target is None:
+        return None
+    return state.acquisition_state_by_target.get(target.coverage_id)
 
 
-def _has_outstanding_work(acquisition: AcquisitionState | None) -> bool:
+def _has_outstanding_work(
+    acquisition: AcquisitionState | None, *, terminal: bool = False
+) -> bool:
     """True when this target's acquisition still holds queued work.
 
     Keyed on state, not on which reason wrote a disposition:
@@ -196,13 +214,38 @@ def _has_outstanding_work(acquisition: AcquisitionState | None) -> bool:
     queue to be outstanding, which is not the same claim as "nothing is
     queued" — see the second branch's own docstring in
     ``_accounted_target_ids``.
+
+    At the terminal pass (``terminal=True``) queued work is never
+    outstanding: there is no later pass to drain a candidate URL or a pending
+    passage, so a queue that will never run again cannot hold a target's
+    account back.
     """
-    if acquisition is None:
+    if acquisition is None or terminal:
         return False
     return bool(
         acquisition.candidate_urls
         or acquisition.pending_passage_ids
         or acquisition.pending_extraction_ids
+    )
+
+
+def _acquisition_loop_ran(acquisition: AcquisitionState) -> bool:
+    """True once this target's acquisition made at least one search or read.
+
+    The terminal-pass "pursued, unmet" rule needs a lower bar than the live
+    path's "denied, or two empty searches" (``_accounted_target_ids``): there
+    is no later pass to spend a second search on, so one search or one read
+    attempt is what "this obligation was pursued" can mean here.
+    ``consecutive_searches`` resets to zero the moment a read follows it, so a
+    target that searched once and then read is caught by ``attempted_urls``/
+    ``read_urls`` instead — together the four fields are the whole trail a
+    loop that ran at all leaves behind.
+    """
+    return bool(
+        acquisition.attempted_urls
+        or acquisition.read_urls
+        or acquisition.consecutive_searches
+        or acquisition.empty_searches
     )
 
 
@@ -226,40 +269,95 @@ def _accounts_for_target(disposition: EvidenceDisposition, target_id: str) -> bo
     return disposition.item_id == target_id and bool(disposition.reason.strip())
 
 
+def pursued_unmet_target_ids(
+    state: ResearchState, unanswered: Sequence[str]
+) -> list[str]:
+    """The required, non-critical targets among ``unanswered`` worth recording
+    as "pursued, unmet" at the terminal pass, in ``unanswered`` order.
+
+    A target qualifies when its acquisition holds no work that would be
+    outstanding at the terminal pass (``_has_outstanding_work(...,
+    terminal=True)``), it does not already clear the live-path bar (a denied
+    URL, or two empty searches — that target is accounted for some other
+    way), it is not critical (``unanswered_critical_targets`` stays a hard
+    gate the terminal pass never relaxes), and its acquisition loop ran at
+    least one search or read (``_acquisition_loop_ran``).
+
+    This is the pure decision ``_accounted_target_ids`` uses for its own
+    terminal-only branch, exported so the graph's synthesizer node can also
+    call it directly: the caller is expected to *record* each id here as a
+    real, target-itemed ``EvidenceDisposition`` (see
+    ``apply_terminal_pursued_unmet_accounting``) rather than let this
+    function's return value be the only place the decision is visible — a
+    gate predicate a caller must re-derive is not an audit trail.
+    """
+    ids: list[str] = []
+    for target_id in unanswered:
+        acquisition = _acquisition_state_for(state, target_id)
+        if acquisition is None:
+            continue
+        if _has_outstanding_work(acquisition, terminal=True):
+            continue
+        if acquisition.denied_urls or acquisition.empty_searches >= 2:
+            continue
+        target = _target_by_id(state, target_id)
+        if (
+            target is not None
+            and not target.critical
+            and _acquisition_loop_ran(acquisition)
+        ):
+            ids.append(target_id)
+    return ids
+
+
 def _accounted_target_ids(
     state: ResearchState,
     unanswered: Sequence[str],
+    *,
+    terminal: bool = False,
 ) -> set[str]:
     """The unanswered targets this run has a recorded reason for.
 
-    Two local records count, and both are evidence a reader can check rather
-    than a claim about the model's intent:
+    Three local records count, and all are evidence a reader can check
+    rather than a claim about the model's intent:
 
     * an ``EvidenceDisposition`` whose *item* is the target — the shape a
-      terminal judgement about the obligation takes. **No producer writes one
-      today**: every construction site in the tree records a read id, an
-      evidence id, a URL, or an attempt marker, so on real input this branch
-      never fires. It is kept as the rule such a record has to satisfy, not as
-      a path anything currently takes, and it must not be read as an audit
-      trail the run is producing. A per-passage omission, however explicit its
-      reason, does not count (``_accounts_for_target``);
+      terminal judgement about the obligation takes. Real producers write one
+      target-itemed record today: at the terminal pass, the graph's
+      synthesizer node writes a ``pursued_unmet`` disposition for every id
+      ``pursued_unmet_target_ids`` names (``apply_terminal_pursued_unmet_
+      accounting``), before this pass's report is rendered. A per-passage
+      omission, however explicit its reason, still does not count
+      (``_accounts_for_target``);
     * an acquisition state for the target that shows a spent search (a denied
       URL, or two empty searches) with nothing queued behind it. **This is the
       live path**: it is where a run actually records that an obligation was
-      pursued and could not be met.
+      pursued and could not be met;
+    * at the terminal pass only (``terminal=True``), the same "pursued,
+      unmet" set ``pursued_unmet_target_ids`` computes, read directly here as
+      well: this is the gate predicate's own fallback, so a caller that asks
+      this question before (or instead of) the graph node has recorded the
+      matching disposition still gets the correct answer. There is no later
+      pass to spend a second search or clear a queue on, so "pursued, unmet"
+      is the honest reading of a target the run tried and did not finish,
+      rather than treating it as never attempted.
 
-    Neither counts while the target's acquisition still holds queued work
-    (``_has_outstanding_work``): a deferral is a decision to do the work
-    later, which is the opposite of terminal — ``_record_deferred_passages``
-    writes a ``deferred_capacity`` disposition in the same breath it queues
-    the omitted passage, so the disposition alone cannot be read as a
-    finished judgement while that queue is still open.
+    None of the three counts while the target's acquisition still holds
+    queued work at a non-terminal pass (``_has_outstanding_work``): a
+    deferral is a decision to do the work later, which is the opposite of
+    terminal — ``_record_deferred_passages`` writes a ``deferred_capacity``
+    disposition in the same breath it queues the omitted passage, so the
+    disposition alone cannot be read as a finished judgement while that queue
+    is still open and another pass remains to drain it. At the terminal pass
+    a queue can never drain, so it never holds a target back
+    (``_has_outstanding_work(..., terminal=True)`` is always ``False``).
 
     Nothing else does. In particular a target nobody has attempted yet is
-    *not* accounted for: calling an unstarted obligation "unavailable" is the
-    same error as calling it "answered", in the opposite direction.
+    *not* accounted for, at any pass: calling an unstarted obligation
+    "unavailable" is the same error as calling it "answered", in the
+    opposite direction.
 
-    Both records are read through the target's own coverage id
+    Every record is read through the target's own coverage id
     (``_acquisition_state_for``), which is the key the Researcher writes the
     queue under.
     """
@@ -272,23 +370,27 @@ def _accounted_target_ids(
             if target_id in unanswered
             and _accounts_for_target(disposition, target_id)
             and not _has_outstanding_work(
-                _acquisition_state_for(state, target_id)
+                _acquisition_state_for(state, target_id), terminal=terminal
             )
         )
     for target_id in unanswered:
         acquisition = _acquisition_state_for(state, target_id)
         if acquisition is None:
             continue
-        if _has_outstanding_work(acquisition):
+        if _has_outstanding_work(acquisition, terminal=terminal):
             continue
         if acquisition.denied_urls or acquisition.empty_searches >= 2:
             accounted.add(target_id)
+    if terminal:
+        accounted.update(pursued_unmet_target_ids(state, unanswered))
     return accounted
 
 
 def compute_substantive_coverage(
     state: ResearchState,
     composition: ReportComposition | None,
+    *,
+    terminal: bool = False,
 ) -> SubstantiveCoverage:
     """Section 2.3 coverage, from the plan's obligations and the answers.
 
@@ -301,10 +403,18 @@ def compute_substantive_coverage(
     the target's support policy. A claim that merely recorded consuming a
     topic id does not enter this count at all.
 
-    ``covered_topics`` is stricter still: a topic counts only when it has
-    counted obligations and every one of them is answered. A topic with no
-    counted target is not covered — the honest reading of a plan that owes
-    nothing, and the one that keeps a legacy plan from scoring 100%.
+    ``covered_topics`` counts a topic when every counted target is answered,
+    accounted for (the terminal-pass rule in ``_accounted_target_ids``), or
+    optional (``not target.required``): a topic a plan owes nothing on, or
+    whose only open obligation is a pursued-and-unmet or genuinely optional
+    target, is not the gap a broad-plan gate exists to catch. A topic with no
+    counted target at all is not covered — the honest reading of a plan that
+    owes nothing, and the one that keeps a legacy plan from scoring 100%.
+
+    ``terminal`` is the caller's own fact about this pass (``iteration >=
+    max_iterations``), threaded straight into ``_accounted_target_ids``: it
+    changes what counts as accounted, which in turn changes which topics
+    ``covered_topics`` reads as covered.
 
     The judgement is made against the composition this function was handed,
     not against whatever the state happens to carry: ``target_is_answered``
@@ -325,7 +435,6 @@ def compute_substantive_coverage(
         else state.model_copy(update={"composition": composition})
     )
 
-    covered_topics = 0
     planned_targets = 0
     required_targets = 0
     answered_targets = 0
@@ -333,13 +442,14 @@ def compute_substantive_coverage(
     answered_critical_targets = 0
     unanswered_required: list[str] = []
     unanswered_critical: list[str] = []
+    answered_by_id: dict[str, bool] = {}
 
     for topic in state.sub_topics:
         counted = counted_evidence_targets(topic.evidence_targets)
         planned_targets += len(counted)
-        answered_in_topic = 0
         for target in counted:
             answered = target_is_answered(view, target)
+            answered_by_id[target.target_id] = answered
             if target.required:
                 required_targets += 1
                 if answered:
@@ -352,12 +462,20 @@ def compute_substantive_coverage(
                     answered_critical_targets += 1
                 else:
                     unanswered_critical.append(target.target_id)
-            if answered:
-                answered_in_topic += 1
-        if counted and answered_in_topic == len(counted):
+
+    accounted = _accounted_target_ids(state, unanswered_required, terminal=terminal)
+
+    covered_topics = 0
+    for topic in state.sub_topics:
+        counted = counted_evidence_targets(topic.evidence_targets)
+        if counted and all(
+            answered_by_id[target.target_id]
+            or not target.required
+            or target.target_id in accounted
+            for target in counted
+        ):
             covered_topics += 1
 
-    accounted = _accounted_target_ids(state, unanswered_required)
     planned_topics = len(state.sub_topics)
     return SubstantiveCoverage(
         planned_topics=planned_topics,
@@ -387,15 +505,128 @@ def compute_substantive_coverage(
     )
 
 
+def apply_terminal_pursued_unmet_accounting(
+    state: ResearchState,
+) -> dict[str, object]:
+    """Record the terminal pass's "pursued, unmet" targets as real data.
+
+    Called once, from the graph's synthesizer node, after the composition
+    exists and before it is rendered to Markdown. For every id
+    ``pursued_unmet_target_ids`` names, this returns an update that adds:
+
+    * one target-itemed ``EvidenceDisposition`` (``reason="pursued_unmet"``),
+      so ``_accounts_for_target`` and every quality-snapshot consumer read a
+      real record instead of only the gate predicate seeing the decision;
+    * one ``context`` ``ReportStatement``, appended to the composition's
+      ``uncertainty_statements`` (and ``uncertainty_notes``) with a
+      ``basis`` the reader's own lexicon classifies "Not acquired"
+      (``report._uncertainty_group``) — so the rendered reader report and
+      the evidence ledger, both pure functions of the composition, name the
+      target instead of silently omitting it.
+
+    The return value is a plain ``ResearchStateUpdate``-shaped dict, never a
+    full ``ResearchState``: ``evidence_dispositions`` is a mergeable list
+    field (``merge_evidence_dispositions`` unions the new records into
+    whatever the state already carries), so the caller applies this update
+    the same way every other node applies its own — through
+    ``merge_research_state`` — rather than this function re-deriving the
+    union itself.
+
+    An empty dict off the terminal pass, without a composition, or when
+    nothing qualifies: nothing is recorded, so a caller may call this
+    unconditionally every pass without guarding it itself.
+    """
+    composition = state.composition
+    if state.iteration < state.max_iterations or composition is None:
+        return {}
+    coverage = compute_substantive_coverage(state, composition)
+    pursued = pursued_unmet_target_ids(
+        state, coverage.unanswered_required_target_ids
+    )
+    if not pursued:
+        return {}
+
+    existing_item_ids = {
+        disposition.item_id for disposition in state.evidence_dispositions
+    }
+    new_dispositions = [
+        EvidenceDisposition(
+            item_id=target_id,
+            stage="acquisition",
+            reason="pursued_unmet",
+            target_ids=[target_id],
+        )
+        for target_id in pursued
+        if target_id not in existing_item_ids
+    ]
+
+    target_by_id = {
+        target.target_id: target
+        for topic in state.sub_topics
+        for target in counted_evidence_targets(topic.evidence_targets)
+    }
+    existing_texts = set(composition.uncertainty_notes)
+    new_statements: list[ReportStatement] = []
+    for target_id in pursued:
+        target = target_by_id.get(target_id)
+        question = target.question if target is not None else target_id
+        text = (
+            f"Not acquired: {question} was pursued (at least one search or "
+            "read) but was not resolved within this run's budget."
+        )
+        if text in existing_texts:
+            continue
+        new_statements.append(
+            ReportStatement(
+                statement_id=f"terminal-{target_id}",
+                text=text,
+                mode="context",
+                target_ids=[target_id],
+                basis=(
+                    "not acquired: the acquisition loop ran and did not "
+                    "resolve within this run's budget"
+                ),
+            )
+        )
+
+    update: dict[str, object] = {}
+    if new_dispositions:
+        update["evidence_dispositions"] = new_dispositions
+    if new_statements:
+        update["composition"] = composition.model_copy(
+            update={
+                "uncertainty_statements": [
+                    *composition.uncertainty_statements,
+                    *new_statements,
+                ],
+                "uncertainty_notes": [
+                    *composition.uncertainty_notes,
+                    *(statement.text for statement in new_statements),
+                ],
+            }
+        )
+    return update
+
+
 def compute_report_quality(
     state: ResearchState,
     composition: ReportComposition,
+    *,
+    terminal: bool = False,
 ) -> ReportQualitySnapshot:
     """Compute deterministic report metrics and integrity hard failures.
 
     ``state`` supplies the cumulative evidence snapshots and artifact
     presence.  ``composition`` supplies the exact typed points that were
     selected for the reader report.  No report prose is parsed.
+
+    ``terminal`` is the caller's own fact about this pass — ``iteration >=
+    max_iterations``, the graph's own terminal check (``graph.state.
+    route_decision``) — and it is not inferred here: this function is pure
+    over its two arguments, and the pass boundary is a fact about the run,
+    not about the state snapshot. It is threaded into
+    ``compute_substantive_coverage``, which is where the terminal-pass
+    accounting and coverage rules live.
     """
 
     points = list(_reader_points(composition))
@@ -470,7 +701,7 @@ def compute_report_quality(
     planned_topics = len(topics)
     covered_topics = len(covered_ids)
     coverage_ratio = covered_topics / planned_topics if planned_topics else 0.0
-    substantive = compute_substantive_coverage(state, composition)
+    substantive = compute_substantive_coverage(state, composition, terminal=terminal)
     unresolved_topic_ids = [
         coverage_id
         for coverage_id in topic_ids
@@ -613,7 +844,9 @@ def review_status_fields(
 __all__ = [
     "BROAD_PLAN_COVERAGE_THRESHOLD",
     "BROAD_PLAN_MIN_TOPICS",
+    "apply_terminal_pursued_unmet_accounting",
     "compute_report_quality",
     "compute_substantive_coverage",
+    "pursued_unmet_target_ids",
     "review_status_fields",
 ]

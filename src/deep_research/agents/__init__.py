@@ -388,8 +388,10 @@ from deep_research.agents.quality import (
     BROAD_PLAN_COVERAGE_THRESHOLD,
     BROAD_PLAN_MIN_TOPICS,
     ReportQualitySnapshot,
+    apply_terminal_pursued_unmet_accounting,
     compute_report_quality,
     compute_substantive_coverage,
+    pursued_unmet_target_ids,
     review_status_fields,
 )
 from deep_research.agents.react import (
@@ -1009,6 +1011,8 @@ __all__ = [
     "answer_form_requirement",
     "answer_kind_for",
     "apply_answer_contract",
+    "apply_terminal_pursued_unmet_accounting",
+    "pursued_unmet_target_ids",
     "derive_answer_contract",
     "earned_support_policy",
     "extension_messages",
