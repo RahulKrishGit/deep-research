@@ -37,13 +37,14 @@ from datetime import datetime
 
 from pydantic import JsonValue
 
+from deep_research.agents.figures import quantities_in, same_quantity
 from deep_research.agents.identity import (
     deduplicate_findings,
     finding_fingerprint,
     merge_claim_snapshot,
     merge_source_snapshot,
 )
-from deep_research.agents.sources import normalize_source_url
+from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import summarize_text
 from deep_research.utils.types import (
     ANSWERING_STATEMENT_MODES,
@@ -54,6 +55,9 @@ from deep_research.utils.types import (
     Citation,
     Claim,
     EvidenceUnit,
+    FactRow,
+    FigureAttribution,
+    FigureKind,
     Finding,
     ReadRecord,
     ReportAnswerRow,
@@ -4027,3 +4031,208 @@ def render_quality_json(
         session_status=session_status,
     )
     return json.dumps(record, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+
+
+# --- the evidence-verifier report layout (spec §6.1) --------------------------
+
+
+_FACTS_HEADER = "| Organisation | Measure | Period | Value | Kind | Scope | Release or edition | Source |"
+
+
+def figure_label(
+    *,
+    organisation: str,
+    attribution: FigureAttribution,
+    relay_host: str | None,
+    kind: FigureKind,
+    release: str | None,
+    unchecked: bool,
+) -> str:
+    """§6.1's reader label: who, kind (with a forecast's release), edition, unchecked."""
+    if attribution == "own":
+        who = f"{organisation}'s own figure"
+    elif attribution == "relayed":
+        who = f"relayed by {relay_host or 'another site'} from {organisation}"
+    else:
+        who = "source does not attribute it"
+    if kind == "forecast":
+        # PD-24 (F5): a forecast with no release says so, never silently "forecast"
+        parts = [who, f"forecast ({release})" if release else "forecast (release not stated on the page)"]
+    else:
+        parts = [who, kind]
+    if kind == "actual" and release:
+        parts.append(release)
+    if unchecked:
+        parts.append("unchecked context")
+    return "; ".join(parts)
+
+
+def _row_label(row: FactRow) -> str:
+    return figure_label(organisation=row.organisation, attribution=row.attribution,
+                        relay_host=row.relay_host, kind=row.kind, release=row.release,
+                        unchecked=row.context_unchecked)
+
+
+def _table_cell(text: str) -> str:
+    return " ".join(text.split()).replace("|", "\\|")
+
+
+def _findings_by_id(composition: ReportComposition) -> dict[str, Finding]:
+    return {finding_fingerprint(finding): finding for finding in composition.findings}
+
+
+def written_citations(composition: ReportComposition) -> list[Citation]:
+    """Only the pages the report cites, numbered in the order a reader meets them."""
+    by_id = _findings_by_id(composition)
+    ordered: list[str] = []
+
+    def add(url: str) -> None:
+        normalized = normalize_source_url(url)
+        if normalized and normalized not in ordered:
+            ordered.append(normalized)
+
+    for point in composition.summary:
+        for url in point.source_urls:
+            add(url)
+    for row in composition.fact_rows:
+        if row.finding_id in by_id:
+            add(by_id[row.finding_id].source_url)
+    for section in composition.sections:
+        for point in section.points:
+            for url in point.source_urls:
+                add(url)
+    titles = {normalize_source_url(s.url): s.title for s in composition.sources}
+    for finding in composition.findings:
+        titles.setdefault(normalize_source_url(finding.source_url), finding.source_title)
+    return [Citation(number=n, url=url, title=titles.get(url, url)) for n, url in enumerate(ordered, start=1)]
+
+
+def _point_labels(point: ReportPoint, composition: ReportComposition) -> list[str]:
+    cited = set(point.statement.finding_ids) if point.statement is not None else set()
+    stated = quantities_in(point.text)
+    labels: list[str] = []
+    for row in composition.fact_rows:
+        if row.finding_id not in cited and not cited & set(row.duplicate_finding_ids):
+            continue
+        if any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated):
+            label = _row_label(row)
+            if label not in labels:
+                labels.append(label)
+    return labels
+
+
+def _written_point(point: ReportPoint, composition: ReportComposition, index: Sequence[Citation]) -> str:
+    markers = citation_markers(point.source_urls, index)
+    labels = _point_labels(point, composition)
+    suffix = f" — *{' | '.join(labels)}*" if labels else ""
+    return f"- {point.text} {markers}{suffix}".rstrip()
+
+
+def _header_counts(composition: ReportComposition) -> str:
+    statuses = [f.verification for f in composition.findings if f.verification is not None]
+    checked = sum(1 for v in statuses if v.status != "dropped")
+    corrected = sum(1 for v in statuses if v.status == "verified_corrected")
+    unchecked = sum(1 for v in statuses if v.status != "dropped" and v.context_unchecked)
+    dropped = sum(1 for v in statuses if v.status == "dropped")
+    return (f"{len(written_citations(composition))} sources cited; {checked} findings checked against "
+            f"their pages ({corrected} with corrected context, {unchecked} with unchecked context), "
+            f"{dropped} dropped; {len(composition.not_found)} required targets not found.")
+
+
+def render_written_report(composition: ReportComposition) -> str:
+    """§6.1 items 1-6: header, summary, key facts, findings sections, Not found, sources."""
+    index = written_citations(composition)
+    by_id = _findings_by_id(composition)
+    lines = [
+        f"# {composition.question}", "",
+        f"*As of {composition.as_of or 'not recorded'}. Scope: {composition.scope or 'not recorded'}. "
+        f"{_header_counts(composition)}*", "",
+        "## Executive summary", "",
+    ]
+    lines += [_written_point(p, composition, index) for p in composition.summary] or [
+        "No summary statement could be printed from the checked findings; the key facts follow."
+    ]
+    lines += ["", "## Key facts", ""]
+    if composition.fact_rows:
+        lines += [_FACTS_HEADER, "|---|---|---|---|---|---|---|---|"]
+        for row in composition.fact_rows:
+            finding = by_id.get(row.finding_id)
+            organisation = {
+                "own": row.organisation,
+                "relayed": f"{row.organisation} (relayed by {row.relay_host})",
+                "unattributed": f"{row.organisation} (source does not attribute it)",
+            }[row.attribution]
+            release = "; ".join([row.release or "not stated", *(
+                f"earlier edition {e.value}" + (f" ({e.release})" if e.release else "") for e in row.earlier
+            )])
+            cells = [organisation, row.measure, row.period or "not stated", row.value,
+                     row.kind + (" (unchecked context)" if row.context_unchecked else ""),
+                     row.scope or "not stated", release,
+                     citation_markers([finding.source_url], index) if finding else ""]
+            lines.append("| " + " | ".join(_table_cell(c) for c in cells) + " |")
+    else:
+        lines.append("No figure passed the Evidence Verifier.")
+    for section in composition.sections:
+        lines += ["", f"## {section.title}", ""]
+        lines += [_written_point(p, composition, index) for p in section.points]
+    if composition.not_found:
+        lines += ["", "## Not found", ""]
+        for target in composition.not_found:
+            if target.searched:
+                trail = "Searched: " + "; ".join(f'"{q}"' for q in target.queries) + f". Pages read: {len(target.pages_read)}"
+                trail += (" (" + ", ".join(target.pages_read[:5]) + ")." if target.pages_read else ".")
+            else:
+                trail = "Not searched in this run."
+            lines.append(f"- **{target.question}** No checked finding answers it. {trail}")
+    lines += ["", "## Sources", "", render_citations(index)]
+    return "\n".join(lines) + "\n"
+
+
+def render_finding_log(composition: ReportComposition) -> str:
+    """§6.1 item 7: every finding with its snippet and verification, every drop and refusal."""
+    labels = {finding_id: label for label, finding_id in composition.finding_labels.items()}
+    row_release = {fid: row.release for row in composition.fact_rows
+                    for fid in (row.finding_id, *row.duplicate_finding_ids)}
+    lines = [f"# Evidence log: {composition.question}", "",
+             f"Session {composition.session_id}, pass {composition.iteration}. Every finding the "
+             "researcher recorded, with its snippet and its verification result.", "", "## Findings", ""]
+    unlabelled = 0
+    for finding in composition.findings:
+        finding_id = finding_fingerprint(finding)
+        label = labels.get(finding_id)
+        if label is None:
+            unlabelled += 1
+            label = f"X{unlabelled:02d}"
+        verification = finding.verification
+        if verification is None:
+            status = "not checked"
+        else:
+            status = {"verified": "verified", "verified_corrected": "verified with corrections",
+                      "dropped": f"dropped ({verification.dropped_reason})"}[verification.status]
+            if verification.context_unchecked:
+                status += "; context unchecked"
+        lines += [f"### {label} — {finding.source_title}", "", f"- Source: {finding.source_url}",
+                  f"- Read: {finding.read_id or 'none'}, locator {finding.locator or 'none'}",
+                  f'- Snippet: "{finding.snippet or ""}"', f"- Verification: {status}"]
+        for result in verification.figure_results if verification else []:
+            text = f"{result.figure.value} {result.figure.unit}"
+            if result.kept and result.context is not None:
+                context = result.context
+                line = (f"  - {text}: kept; period {context.period or 'not stated'}; scope "
+                        f"{context.scope or 'not stated'}; "
+                        + figure_label(organisation=context.organisation, attribution=context.attribution,
+                                       relay_host=publisher_identity(finding.source_url), kind=context.kind,
+                                       release=row_release.get(finding_id), unchecked=verification.context_unchecked))
+                if result.evidence_words:
+                    line += f'; evidence words: "{result.evidence_words}"'
+                if result.corrected:
+                    line += "; corrected"
+            else:
+                line = f"  - {text}: dropped ({result.dropped_reason})" + (f": {result.reason}" if result.reason else "")
+            lines.append(line)
+        lines.append("")
+    if composition.rejected_points:
+        lines += ["## Refused sentences", ""]
+        for rejected in composition.rejected_points:
+            lines.append(f'- "{rejected.text}" (cited {", ".join(rejected.finding_labels) or "nothing"}): {rejected.reason}')
+    return "\n".join(lines) + "\n"
