@@ -590,10 +590,10 @@ PLAN_INSTRUCTION = (
     "measure (what is measured, in words: \"battery storage power capacity "
     "added\"), unit_dimension (power for a capacity in kW, MW or GW; energy for "
     "MWh or GWh; percent for a share; empty when the answer is not a quantity), "
-    "period (the year or period the answer applies to), kind "
+    "period (the year or period the question names, or empty), kind "
     "(actual for a measured outcome, forecast for a projection; empty when the "
-    "answer is not a quantity), geography, and organisation (the one body whose "
-    "figure the target asks for, or empty when any body's figure answers it). "
+    "answer is not a quantity), geography, and organisation (the one body the "
+    "question names as the source of the figure, or empty otherwise). "
     "Plan one target per organisation, measure, period and kind.\n"
     "Mark a target critical when the question cannot be answered without it, "
     "and give every target the dimensions a reader needs to judge it: the "
@@ -638,16 +638,16 @@ _PLAN_REPLY_EXAMPLES = (
         'city","source: the operator\'s published ridership report"],'
         '"critical":true,"support_policy":"primary_attribution",'
         '"measure":"annual ridership","unit_dimension":"",'
-        '"period":"most recent reported year","kind":"actual",'
-        '"geography":"the city","organisation":"the operator"},'
+        '"period":"","kind":"actual",'
+        '"geography":"the city","organisation":""},'
         '{"question":"What ridership did the rail option carry in the most '
         'recent reported year?","required_dimensions":["measure: annual '
         'ridership","period: most recent reported year","geography: the '
         'city","source: the operator\'s published ridership report"],'
         '"critical":true,"support_policy":"primary_attribution",'
         '"measure":"annual ridership","unit_dimension":"",'
-        '"period":"most recent reported year","kind":"actual",'
-        '"geography":"the city","organisation":"the operator"}]},'
+        '"period":"","kind":"actual",'
+        '"geography":"the city","organisation":""}]},'
         '{"title":"cost and delivery",'
         '"rationale":"Compare the resources and time required to deliver each '
         'option.",'
@@ -663,7 +663,7 @@ _PLAN_REPLY_EXAMPLES = (
         'publishes"],'
         '"critical":false,"support_policy":"independent_pair",'
         '"measure":"capital cost per route kilometre","unit_dimension":"",'
-        '"period":"the most recent published estimate","kind":"actual",'
+        '"period":"","kind":"",'
         '"geography":"the city","organisation":""}]},'
         '{"title":"service reliability",'
         '"rationale":"Establish how reliably each option delivers its '
@@ -679,8 +679,8 @@ _PLAN_REPLY_EXAMPLES = (
         '"source: the operator\'s performance report"],'
         '"critical":false,"support_policy":"primary_attribution",'
         '"measure":"on-time performance","unit_dimension":"percent",'
-        '"period":"the most recent reported year","kind":"actual",'
-        '"geography":"the city","organisation":"the operator"}]}'
+        '"period":"","kind":"actual",'
+        '"geography":"the city","organisation":""}]}'
         "]}",
     ),
 )
@@ -713,14 +713,14 @@ class EvidenceTargetDraft(ContractModel):
     and ``support_policy_for_target`` validates the name and keeps every
     policy the question's own form earns.
     """
+    # The fields a program checks an answer against; empty when the
+    # question does not name one.
     measure: str = ""
     unit_dimension: str = ""
     period: str = ""
     kind: str = ""
     geography: str = ""
     organisation: str = ""
-    """The fields a program checks an answer against; empty when the question
-    does not name one."""
 
 
 class SubTopicDraft(ContractModel):
