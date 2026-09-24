@@ -1994,6 +1994,52 @@ async def test_an_unplanned_target_id_is_recorded_on_the_run(
 
 
 @pytest.mark.asyncio
+async def test_a_figure_with_no_value_or_unit_is_dropped_not_the_finding(
+    tracker: Tracker,
+) -> None:
+    """The drop is its own error, never the "malformed finding" one.
+
+    A figure a draft could not usably state is not a reason to distrust the
+    finding it came from: the finding is kept, admitted with its other
+    figure, and the drop is recorded under its own error type so an
+    operator reading the run's errors is never told a finding was dropped
+    that was not.
+    """
+    state = _forecast_plan_state()
+    completer = ScriptedCompleter(
+        decisions=_forecast_reading_decisions(),
+        outputs=[_forecast_reply_with_an_unusable_figure],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
+        ),
+        http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    (finding,) = outcome.result.findings
+    assert finding.figures == [
+        FindingFigure(value="19.6", unit="GW", kind="forecast")
+    ]
+    assert not any(
+        error.error_type == "researcher_invalid_finding"
+        for error in outcome.errors
+    )
+    recorded = [
+        error for error in outcome.errors
+        if error.error_type == "researcher_dropped_figure"
+    ]
+    assert [error.details["dropped_figures"] for error in recorded] == [
+        ["finding 1: figure 1 has no value or unit"]
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_reads_own_target_line_never_costs_the_run_its_evidence(
     tracker: Tracker,
 ) -> None:
@@ -2225,6 +2271,7 @@ def _eia_forecast_draft(
     messages: list[ChatMessage],
     *,
     target_ids: Sequence[str] = (FORECAST_TARGET_ID,),
+    figures: Sequence[FindingFigureDraft] = (),
 ) -> SubTopicFindingsDraft:
     """The draft a model that read the packet would return for EIA 64705."""
     read_id, locator = _packet_locator_for("19.6 GW", messages[1].content)
@@ -2244,6 +2291,7 @@ def _eia_forecast_draft(
                 locator=locator,
                 snippet=EIA_64705_FORECAST_EXCERPT,
                 target_ids=list(target_ids),
+                figures=list(figures),
                 data_period="2025",
                 statement_date="2025-03-12",
                 vintage="January 2025 preliminary inventory",
@@ -2265,6 +2313,19 @@ def _forecast_reply_with_an_invented_target_id(
     del schema
     return _eia_forecast_draft(
         messages, target_ids=[FORECAST_TARGET_ID, "topic-09-target-01"]
+    )
+
+
+def _forecast_reply_with_an_unusable_figure(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    del schema
+    return _eia_forecast_draft(
+        messages,
+        figures=[
+            FindingFigureDraft(value="", unit="GW"),
+            FindingFigureDraft(value="19.6", unit="GW", kind="forecast"),
+        ],
     )
 
 
@@ -4410,10 +4471,16 @@ def test_an_unusable_figure_is_dropped_but_the_finding_is_kept() -> None:
         FindingFigureDraft(value="", unit="GW"),
         FindingFigureDraft(value="10.4", unit="GW", kind="estimate"),
     ])
-    findings, rejected = _build(read, draft)
+    dropped_figures: list[str] = []
+    findings, rejected = build_findings(
+        draft, sub_topic=_topic(), extracted_at="2026-09-24T00:00:00+00:00",
+        known_urls=[read.resolved_url], known_reads={read.read_id: read},
+        dropped_figures=dropped_figures,
+    )
+    assert rejected == []
     [finding] = findings
     assert finding.figures == [FindingFigure(value="10.4", unit="GW", kind=None)]
-    assert any("figure 1 has no value or unit" in reason for reason in rejected)
+    assert any("figure 1 has no value or unit" in reason for reason in dropped_figures)
 
 
 def test_planned_targets_render_their_structured_fields() -> None:
