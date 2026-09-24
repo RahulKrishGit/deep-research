@@ -23,21 +23,22 @@
   - No as-of cutoff is inferred from a year in the question; an explicit "as of" still freezes the date.
   - Only 1-iteration live runs until the report is judged great (see PD-2).
 - `graph.max_extra_passes` defaults to 1. An extra pass runs only when required targets are missing, and only for those targets (D4, §6.5).
-- Context Check: one call per batch of 15 findings, batches run concurrently (at most 4 at once), no tools and no web search, reasoning effort `high` (§5.2).
+- Context Check: one call per batch of `agents.verifier_batch_size` (5) findings, batches run concurrently (at most `agents.verifier_concurrency`, 8, at once), no tools and no web search, reasoning effort `high` (§5.2, §7.3, D8/D9). The Statement Check (§5.4, D8) judges one batch of 5 drafted sentences per call under the same concurrency.
 - Researcher per sub-topic: tool budget 20 (`agents.tool_budget_overrides.researcher`, §7.2) and at most 7 model turns (`agents.max_iterations: 7`, the cap that actually bounds a sub-topic's loop); at most 5 sub-topics (`agents.max_sub_topics: 5`). Both set in Task 1.3 (F1).
+- Researcher sub-topics run concurrently (D9, §7.2): at most `agents.sub_topic_concurrency` (5) in flight, each with its own scratchpad and acquisition context, while the tool section (policy decision, fetch, admission) runs under one run-wide lock so a page two loops request is downloaded once; findings and events fold in plan order. Source-evaluator scoring batches run at most `agents.source_scoring_concurrency` (3) in flight, each batch standing alone. Every cap is config (§7.3), never a module constant; Task 4.13 sets them and the telemetry of Task 4.14 reports them.
 - Snippet: one or two sentences copied verbatim, enforced as at most 600 characters (`MAX_SNIPPET_CHARS`).
 - Report Reviewer acceptance: mean ≥ 0.80 over the seven dimensions, no material defect, no gate failure (§6.3).
-- Out of scope (§12): UI changes (README line 747 records that the Streamlit app was removed; there is no UI code to compile), other benchmark questions (they are exercised by the e2e matrix only), and parallel researcher sub-topics.
+- Out of scope (§12): UI changes (README line 747 records that the Streamlit app was removed; there is no UI code to compile), other benchmark questions (they are exercised by the e2e matrix only), and automatic adjustment of concurrency or budgets during a run (§7.3 only advises; Task 4.14 prints the advice and never tunes).
 - Never read `.env`. Live model calls happen off-peak only: never start one if any minute of the next 50 minutes falls inside Mon–Fri 01:00–04:00 or 06:00–10:00 UTC. A started live run is never hard-stopped.
 - New public names in `src/deep_research/agents/*.py` are imported by `src/deep_research/agents/__init__.py` and listed in its `__all__` (`tests/test_imports.py::test_agent_submodule_public_names_all_reach_all`). Public names in `src/deep_research/utils/types.py` that other packages use are re-exported from `src/deep_research/utils/__init__.py` the way `Finding` is today.
 - No formatter, linter, or whole-suite run inside a task. Whole-suite runs happen only at the phase gates that name them.
 
 ## Review Focus
 
-1. **A forecast the writer states as fact or hardens** ("EIA's outlook adds 14 GW in 2025"; "will grow" where the page says "could grow"): it must be rewritten once by code, re-checked, and kept. The 2026-09-24 pre-flight lost two of its three 2025 forecasts to this refusal, both for hardened modality. Pinned by Task 3.4 `test_forecast_stated_as_fact_is_rewritten_once_and_kept` and `test_a_hardened_forecast_takes_the_pages_own_modal` (the rewrite itself: Task 3.3 `test_hedge_forecast_makes_a_forecast_read_as_one` and `test_hedge_forecast_takes_the_pages_own_modal`).
+1. **A forecast sentence the writer drafts is kept by the Statement Check with a correct code-built label.** D8 deletes the code rewrite: the Statement Check (§5.4) judges the wording once, and code attaches the figure's verified organisation, kind and release as the reader label, so a kept forecast still reads as a forecast, with its issuer, whatever the prose says. The 2026-09-24 pre-flight lost two of its three 2025 forecasts to the old code refusal; the eight live G3 sentences — all forecasts — are kept now. Pinned by Task 3.4 `test_the_eight_live_g3_sentences_are_kept_when_the_checker_says_consistent` and `test_every_kept_sentence_still_ends_with_its_figures_code_built_label`; the reviewer side by Task 4.12 RV1–RV3.
 2. **The Context Check call fails for a batch** (outage, timeout, truncation twice): those findings stay citable with the "unchecked context" label, the run records the error, and the report still publishes. Pinned by Task 2.1 `test_failed_batch_marks_findings_context_unchecked` and Task 4.8 `test_run_publishes_when_the_context_check_fails`.
 3. **The extra pass finds nothing for the missing target**: the report publishes once with the target under Not found; there is no second extra pass and no crash. Pinned by Task 4.8 `test_extra_pass_that_finds_nothing_publishes_with_not_found` and e2e row `extra-pass-finds-nothing` (Task 4.9).
-4. **An all-segment figure written as grid-scale** (audit-2's 18.9 GW is "utility, C&I, and residential"): the sentence is refused and logged; it never reaches the reader. Pinned by Task 3.4 `test_grid_scale_wording_on_an_all_segment_figure_is_refused`.
+4. **An all-segment figure written as grid-scale** (audit-2's 18.9 GW is "utility, C&I, and residential"): the sentence is refused and logged; it never reaches the reader. Under D8 the Statement Check refuses it (an `inconsistent` verdict whose reason names the scope), and the figure's own label still states the verified scope. Pinned by Task 4.9's e2e row `scope-corrected-to-all-segments`, the harness check C4 (Task 3.6), and Task 3.4 `test_an_inconsistent_verdict_refuses_with_its_reason`.
 5. **Cosmetic differences between a snippet and its page** (curly quotes, soft hyphens, a word broken across a line, capital letters) must not drop a correct finding, while a snippet whose words are not on the page is dropped. Pinned by Task 1.2 `test_excerpt_matches_is_cosmetic_only`.
 
 ---
@@ -97,9 +98,9 @@ cd "$W/../ev-$ID" && export PYTHONPATH='src;.'
 - **PD-7 Qualitative targets.** A target with no unit dimension is answered by a verified finding that names it in `target_ids`, provided the organisation matches when the target names one. Every other §6.6 check needs a figure. (Listed in the review section.)
 - **PD-8 Attribution is resolved by code** from the Context Check's proposal and the page's own words, per the table in Task 2.1.
 - **PD-9 Duplicates and revisions.** The same value for the same organisation, unit dimension, period and kind is one fact, with or without a target. A revision needs two findings that answer the same target, both carrying a release key (`release_date`, `vintage` or `statement_date`) that differ. Anything else stays two rows and is never called a revision.
-- **PD-10 Gate set (§6.4).** `unresolved_citations`, `uncited_settled_points`, `duplicate_fact_rows`, `missing_as_of`, `missing_scope`, `untraced_figures`, `unaccounted_required_targets`, `missing_reader_report`, `missing_evidence_ledger`. Removed: `duplicate_claims`, `duplicate_source_rows`, `unscored_cited_sources`, `contradicted_settled_claims`, `broad_plan_coverage_below_0.80`, `unanswered_critical_targets`. `duplicate_fact_rows` is an invariant: `fact_rows()` already merges same-fact rows, so it guards hand-built compositions and future producers, and no test fixture is spent on it (F11).
+- **PD-10 Gate set (§6.4).** `unresolved_citations`, `uncited_settled_points`, `duplicate_fact_rows`, `missing_as_of`, `missing_scope`, `unjudged_sentences`, `unaccounted_required_targets`, `missing_reader_report`, `missing_evidence_ledger`. Removed: `duplicate_claims`, `duplicate_source_rows`, `unscored_cited_sources`, `contradicted_settled_claims`, `broad_plan_coverage_below_0.80`, `unanswered_critical_targets`, and `untraced_figures` (D8 deletes the code wording checks that computed it). `duplicate_fact_rows` is an invariant: `fact_rows()` already merges same-fact rows, so it guards hand-built compositions and future producers, and no test fixture is spent on it (F11). `unjudged_sentences` replaces it as the same kind of invariant: `compose_written_report` records every kept sentence's Statement Check outcome in `ReportComposition.statement_verdicts` (`consistent`, `corrected` or `unchecked` when its batch failed), so the gate fires only when a kept sentence has no verdict and no recorded batch failure — exactly §6.4's "every kept sentence was judged by the Statement Check, or its batch failure is recorded".
 - **PD-11 Names (D5).** The renames apply to what an operator or reader sees: module `agents/report_writer.py` (class `ReportWriterAgent`, node and config key `report_writer`) and module `agents/report_reviewer.py` (class `ReportReviewer`, node `report_reviewer`, service role and `model_overrides` key `report_reviewer`). Unchanged: the artifact names (`report-<session>-<n>.md`, `-evidence.md`, `-quality.json`), the code name "evidence ledger", the config key `agents.report_review_max_tokens`, and the graph status value `max_iterations` (API and CLI vocabulary, now meaning "extra passes spent and the report not accepted", PD-23).
-- **PD-12 Context Check constants.** Batch size 15, concurrency 4 and the 3,000-character passage window are module constants, not config.
+- **PD-12 Context Check bounds (§7.3, D8/D9).** The batch size (5) and the concurrency (8) are the config values `agents.verifier_batch_size` and `agents.verifier_concurrency`, read by the Evidence Verifier from its `AgentRuntimeConfig`; `CONTEXT_CHECK_BATCH_SIZE` and `CONTEXT_CHECK_CONCURRENCY` stay only as the module defaults (and as the constructor defaults the verifier's tests may pin to 1). The 3,000-character passage window stays a module constant: it is a prompt bound, not a concurrency cap. The Statement Check shares the same two bounds (§5.4).
 - **PD-13 An unscored review** (provider failure or invalid reply) routes to publication with graph status `incomplete` and quality `partial`. It never fails the run.
 - **PD-14 Graph-historical e2e harness: retired (decided by the user, review item 8).** Its scripted six-agent doubles replay a graph that no longer exists, and the real-agent matrix covers the new graph end to end. Task 4.11 deletes its manifest, its `--mode graph-historical` and its scripted doubles with their tests; Task 4.6 deletes its README subsection; no gate runs it.
 - **PD-15 CLI and API names stay.** The CLI flag `--max-iterations` and the API request field `max_iterations` keep their names, so existing invocations keep working (priority 1); they now set `max_extra_passes`, with the same numbers as before (PD-2). The config key (`graph.max_extra_passes`, env `GRAPH_MAX_EXTRA_PASSES`) and the state field (`ResearchState.max_extra_passes`) are renamed, as D4 names them. (Renaming the flag too is listed in the review section.)
@@ -114,6 +115,7 @@ cd "$W/../ev-$ID" && export PYTHONPATH='src;.'
 - **PD-24 A forecast with no release says so (F5).** `figure_label` prints "forecast (release not stated on the page)" when a forecast carries no release, and `ReportQualitySnapshot.forecasts_without_release` counts such fact rows. It is printed on the CLI Integrity line and must be 0 in the pre-flight; it is not a gate (§6.4's gate list is fixed).
 - **PD-25 The page's own organisation comes from the Source Evaluator first (F13; decided).** Spec §3 keeps the Source Evaluator's owning-organisation identification. When the evaluated source for a read carries a validated `identity_anchors["issuer"]`, the Evidence Verifier uses it as the page's own organisation (before PD-18's host rule), and the Report Writer adds the evaluated source's title and issuer to its attested corpus, so "Wood Mackenzie projects …" on `woodmac.com` is attested.
 - **PD-26 An unchecked finding keeps its Figure Match status (F9).** A finding whose Context Check reply is missing or whose batch failed keeps status `verified` or `verified_corrected` from Figure Match and carries `context_unchecked`; it is never promoted by a Context Check it did not get, and its reader label says "unchecked context". The label is the reader's signal (§5.2).
+- **PD-27 Concurrency is config with module defaults (D9, §7.3; from `agent://FableParallel`).** `agents.sub_topic_concurrency: 5`, `agents.source_scoring_concurrency: 3`, `agents.verifier_batch_size: 5` and `agents.verifier_concurrency: 8` (each with its `AGENTS_*` environment override) are the only caps; the module constants Task 2.1 left stay as defaults, and the researcher takes `sub_topic_concurrency=` as a constructor argument defaulting to the configured value, so a test that pins order can pin 1. The tool section of a turn (policy decision, fetch, admission) runs under one run-wide lock, and sub-topic findings and events fold in plan order, never completion order. (Listed in the review section; Task 4.13 implements it, Task 4.14 reports it.)
 
 ## Shared interfaces
 
@@ -309,7 +311,7 @@ class ReportQualitySnapshot(ContractModel):  # new fields (Task 4.1); the review
     duplicate_fact_rows: int = Field(default=0, ge=0)      # an invariant: fact_rows() already merges (PD-10)
     uncited_settled_points: int = Field(default=0, ge=0)
     unresolved_citations: int = Field(default=0, ge=0)
-    untraced_figures: list[str] = Field(default_factory=list)   # "S003: 12 GW"
+    unjudged_sentences: list[str] = Field(default_factory=list)  # "S003": kept, no verdict, no batch failure
     refused_sentences: int = Field(default=0, ge=0)
     forecasts_without_release: int = Field(default=0, ge=0)   # PD-24: counted and printed, not a gate
     hard_failures: list[str] = Field(default_factory=list)
@@ -326,6 +328,8 @@ class ReportComposition(ContractModel):     # Task 4.1 renames max_iterations ->
     ...                                     # Task 4.10 removes claims, claim_clusters, evidence_units,
                                             # constraints, answer_rows, uncertainty_statements,
                                             # statement_dispositions, returned_to_fact_checker
+    # added: statement_verdicts: dict[str, str] = {}   # statement id -> "consistent" | "corrected" |
+                                            # "unchecked" (its batch failed); Task 4.3 fills it and gates on it
 
 
 class EvidenceTarget(ContractModel):        # Task 4.1 removes support_policy (PD-16)
@@ -374,9 +378,9 @@ def without_dates(text: str) -> str: ...                      # the text with it
 
 ```python
 EVIDENCE_VERIFIER_NAME = "evidence_verifier"
-CONTEXT_CHECK_BATCH_SIZE = 15
-CONTEXT_CHECK_CONCURRENCY = 4
-CONTEXT_PASSAGE_CHARS = 3000
+CONTEXT_CHECK_BATCH_SIZE = 5       # D8: the default for agents.verifier_batch_size (PD-12)
+CONTEXT_CHECK_CONCURRENCY = 8      # D8: the default for agents.verifier_concurrency (PD-12)
+CONTEXT_PASSAGE_CHARS = 3000       # a prompt bound, not a config cap
 
 @dataclass(frozen=True)
 class FigureMatch:
@@ -536,7 +540,7 @@ CLI and API (PD-15): the flag `--max-iterations N` and the request field `max_it
 | 1 | `agents/figures.py`, `agents/evidence_verifier.py`, `agents/wording.py` (Task 3.3, wave 1B), `tests/evidence_fakes.py`, `tests/test_agents/test_figures.py`, `tests/test_agents/test_evidence_verifier.py`, `tests/test_agents/test_wording.py`, `scratch/ev_rebuild_audit2.py` | `utils/types.py`, `utils/__init__.py`, `agents/identity.py`, `agents/evidence.py`, `agents/researcher.py`, `agents/planner.py`, `agents/synthesizer.py`, `agents/__init__.py`, `e2e_evaluation/replay.py`, `config.yaml`, tests | — |
 | 2 | `agents/verified_facts.py` and `tests/test_agents/test_verified_facts.py` (Task 3.1), `tests/test_agents/test_report_layout.py` (Task 3.2), `scratch/ev_verify_audit2.py` | `agents/evidence.py`, `agents/researcher.py`, `agents/evidence_verifier.py`, `agents/report.py` (Task 3.2), `agents/__init__.py`, tests | — |
 | 3 | `agents/report_writer.py`, `tests/test_agents/test_report_writer.py`, `scratch/ev_compose_audit2.py` | `agents/__init__.py` | — |
-| 4 | `agents/report_reviewer.py` and `tests/test_agents/test_report_reviewer.py` (git mv), `evaluation/cases/evidence_verifier.py`, `evaluation/cases/report_writer.py` (git mv), `tests/test_evaluation/test_cases_evidence_verifier.py`, `tests/test_evaluation/test_cases_report_writer.py` (git mv), `tests/test_e2e_evaluation/test_replay_doubles.py` | `utils/*`, `config.yaml`, `agents/{quality,report,report_writer,researcher,planner,evidence,identity,prompts,__init__}.py`, `graph/*`, `runtime/*`, `main.py`, `cli.py`, `api/*`, `evaluation/*`, `e2e_evaluation/*`, `README.md`, tests | `agents/fact_checker.py`, `agents/claim_clusters.py`, `agents/critic.py`, `agents/synthesizer.py`, `utils/claims.py`, `evaluation/cases/fact_checker.py`, `evaluation/cases/critic.py`, and their tests |
+| 4 | `agents/report_reviewer.py` and `tests/test_agents/test_report_reviewer.py` (git mv), `evaluation/cases/evidence_verifier.py`, `evaluation/cases/report_writer.py` (git mv), `tests/test_evaluation/test_cases_evidence_verifier.py`, `tests/test_evaluation/test_cases_report_writer.py` (git mv), `tests/test_e2e_evaluation/test_replay_doubles.py`, `observability/run_telemetry.py` and `tests/test_observability_run_telemetry.py` | `utils/*`, `config.yaml`, `agents/{quality,report,report_writer,researcher,planner,evidence,identity,prompts,__init__}.py`, `graph/*`, `runtime/*`, `main.py`, `cli.py`, `api/*`, `providers/*`, `evaluation/*`, `e2e_evaluation/*`, `README.md`, tests | `agents/fact_checker.py`, `agents/claim_clusters.py`, `agents/critic.py`, `agents/synthesizer.py`, `utils/claims.py`, `evaluation/cases/fact_checker.py`, `evaluation/cases/critic.py`…
 | 5 | `scratch/ev_plan_probe.py` | `utils/types.py`, `tests/evidence_fakes.py`, `agents/planner.py`, `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/{replay,replay_matrix}.py`, `agents/__init__.py`, tests | — |
 | 6 | — | `scratch/run_live_proof.py` | — |
 
@@ -585,17 +589,19 @@ The user asked for maximum parallel dispatch of implementation and review. Run t
 
 | Shared file | Its single owner in each phase | Contract fixed before the wave |
 |---|---|---|
-| `src/deep_research/utils/types.py`, `src/deep_research/utils/__init__.py` | 1.1; 4.1 (additions and renames), then 4.10 (removals); 5.1 | "Shared interfaces", `utils/types.py` blocks |
+| `src/deep_research/utils/types.py`, `src/deep_research/utils/__init__.py` | 1.1; 4.1 (additions and renames), then 4.10 (removals) and 4.14 (`ResearchState.run_telemetry`); 5.1 | "Shared interfaces", `utils/types.py` blocks |
 | `tests/evidence_fakes.py` | 1.1; 4.1; 5.1 | the builders in Task 1.1 |
 | `src/deep_research/agents/__init__.py` (re-exports) | 1.5; 2.2; 3.5; 4.10; 5.4 | none needed: names are exported after the wave that creates them |
 | `tests/test_evaluation/test_config.py` (fingerprint pins) | 1.5 (researcher, planner, synthesizer); 2.2; 4.7 (agent names), then 4.10 (pins); 5.4 | PD-17 |
-| `config.yaml`, `src/deep_research/utils/config.py`, `tests/test_config.py` | 1.3; 4.1 | the config block in Task 4.1 |
-| Graph wiring: `graph/*.py`, `runtime/assembly.py`, `runtime/__init__.py`, `main.py` | 4.8 | node names, routes, `ReportPublisher`, `run_research` in "Shared interfaces" |
+| `config.yaml`, `src/deep_research/utils/config.py`, `tests/test_config.py` | 1.3; 4.1 | the config block in Task 4.1 (the four §7.3 caps included) |
+| Graph wiring: `graph/*.py`, `runtime/assembly.py`, `runtime/__init__.py`, `main.py` | 4.8, then 4.14 (the telemetry collector only) | node names, routes, `ReportPublisher`, `run_research` in "Shared interfaces" |
+| `src/deep_research/providers/*.py` | 4.14 | `RunTelemetryCollector`, the retry loop's 429 accounting and `_record_tokens` |
+| `src/deep_research/cli.py` | 4.6, then 4.14 (one summary line) | Task 4.14's Telemetry line and advice format |
 | `src/deep_research/e2e_evaluation/replay.py`, `replay_matrix.py` | 1.3; 4.9, then 4.11; 5.3 | request formats: Task 2.1 (Context Check), Task 3.4 (writer registry lines), Task 4.2 (reviewer) |
-| `src/deep_research/agents/report.py` | 3.2 (wave 2A); 4.5, then 4.10 | |
+| `src/deep_research/agents/report.py` | 3.2 (wave 2A); 4.5, then 4.10 and 4.14 (the telemetry block) | |
 | `src/deep_research/agents/synthesizer.py` | 3.3 (wave 1B); 4.1 (filename helpers out); 4.10 (deletes it) | the `wording.py` block of "Shared interfaces" |
-| `src/deep_research/agents/evidence_verifier.py` | 1.2; 2.1 | the `evidence_verifier.py` block of "Shared interfaces" |
-| `src/deep_research/agents/researcher.py` | 1.3; 2.1; 4.4, then 4.10; 5.3 | |
+| `src/deep_research/agents/evidence_verifier.py` | 1.2; 2.1; 4.13 (its two config reads) | the `evidence_verifier.py` block of "Shared interfaces"; PD-12 |
+| `src/deep_research/agents/researcher.py` | 1.3; 2.1; 4.4, then 4.13 and 4.10; 5.3 | |
 | `README.md` | 4.6 | the node, route, flag and case names in "Shared interfaces" and Task 4.9 |
 
 ### Waves
@@ -629,9 +635,11 @@ Sizes: S about 20 minutes of implementation, M 45, L 75, XL 120.
 | 4B | 4.7 Per-agent evaluation | sp-hard-implementer | 4.1 merged | `evaluation/**`, `tests/test_evaluation/**` | XL |
 | 4C | 4.8 Graph and runtime cutover | sp-hard-implementer | 4.2, 4.3, 4.4 merged | `graph/*.py`, `runtime/assembly.py`, `runtime/__init__.py`, `runtime/recall.py`, `runtime/memory_bridge.py`, `runtime/errors.py`, `main.py`, `tests/graph_fakes.py`, `tests/research_fakes.py`, `tests/test_graph/*`, `tests/test_runtime/*` except `test_outcome.py` | XL |
 | 4C | 4.9 E2E replay doubles and cases | sp-hard-implementer | 4.2 merged | `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_e2e_evaluation/test_replay_doubles.py` | L |
-| 4D | 4.10 Deletion sweep, exports and pins | sp-hard-implementer | 4.2–4.8 merged; waits (R5) for the reviews of 4.2–4.5 and 4.7 | deleted files; `agents/__init__.py`, `utils/types.py`, `utils/__init__.py`, `utils/claims.py`, `agents/prompts.py`, `agents/evidence.py`, `agents/identity.py`; dead names in `agents/{quality,report,report_reviewer,planner,researcher}.py`; `tests/test_imports.py`, `tests/test_types.py`, `tests/test_state.py`, `tests/test_evaluation/test_config.py`, `tests/test_agents/{test_evidence,test_identity,test_prompts,test_report,test_tool_free_prompts,test_native_react_boundary,test_source_evaluator}.py` | L |
+| 4C | 4.13 Parallel sub-topics and scoring batches (D9) | sp-hard-implementer | 4.4 merged and its review clean (R5: same files; 4.1 and 2.1 merged) | `agents/researcher.py`, `agents/react.py`, `agents/base.py`, `agents/source_evaluator.py`, `agents/evidence_verifier.py` (its two config reads), `tests/agent_fakes.py` (the target-keyed completer), `tests/test_agents/test_researcher.py`, `tests/test_agents/test_react.py`, `tests/test_agents/test_source_evaluator.py`, `tests/test_agents/test_evidence_verifier.py` | L |
+| 4D | 4.10 Deletion sweep, exports and pins | sp-hard-implementer | 4.2–4.8 and 4.13 merged; waits (R5) for the reviews of 4.2–4.5, 4.7 and 4.13 | deleted files; `agents/__init__.py`, `utils/types.py`, `utils/__init__.py`, `utils/claims.py`, `agents/prompts.py`, `agents/evidence.py`, `agents/identity.py`; dead names in `agents/{quality,report,report_writer,report_reviewer,planner,researcher,wording,figures,verified_facts}.py`; `tests/test_imports.py`, `tests/test_types.py`, `tests/test_state.py`, `tests/test_evaluation/test_config.py`, `tests/test_agents/{test_evidence,test_identity,test_prompts,test_report,test_tool_free_prompts,test_native_react_boundary,test_source_evaluator,test_wording,test_figures,test_verified_facts}.py` | L |
 | 4D | 4.11 E2E matrix green; graph-historical harness retired | sp-hard-implementer | 4.8 and 4.9 merged; waits (R5) for the review of 4.9 | `e2e_evaluation/{cases,evaluators,models,runner,replay,replay_matrix}.py`, `tests/test_e2e_evaluation/*` | L |
 | 4D | 4.12 Reviewer acceptance probe | sp-implementer; `--live` by the operator | 4.2, 4.3 and 4.8 merged | `scratch/ev_review_audit2.py` | M |
+| 4D | 4.14 Concurrency and budget telemetry (spec §7.3) | sp-implementer | 4.5, 4.6, 4.8 and 4.10 merged and their reviews clean (R5: their files) | `observability/run_telemetry.py` (new), `observability/__init__.py`, `providers/{retry,deepseek_provider,openai_provider,factory}.py`, `utils/types.py` (one field), `agents/report.py` (the telemetry block), `cli.py` (one summary line), `runtime/assembly.py`, `graph/nodes.py`, `tests/test_observability_run_telemetry.py` (new), `tests/test_retry_policy.py`, `tests/test_cli/test_render.py`, `tests/test_agents/test_report.py` | M |
 | 5A | 5.1 Contract: the final target fields | sp-implementer | G4 | `utils/types.py`, `utils/__init__.py`, `tests/evidence_fakes.py`, `tests/test_types.py` | M |
 | 5B | 5.2 Planner: the question's targets only | sp-hard-implementer | 5.1 merged | `agents/planner.py`, `tests/test_agents/test_planner.py` | L |
 | 5B | 5.3 Target consumers | sp-implementer | 5.1 merged | `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_report_reviewer.py`, `tests/test_agents/test_planner_researcher_seam.py`, `tests/test_evaluation/test_cases_planner.py`, `tests/test_evaluation/test_evaluators_agents.py`, `tests/test_e2e_evaluation/test_real_agents.py` | M |
@@ -643,7 +651,7 @@ Sizes: S about 20 minutes of implementation, M 45, L 75, XL 120.
 | 6C | 6.3 The live run `ev-1` | operator | 6.2 passed, final-review fixes merged and G4/G5 offline commands re-run, off-peak | — | |
 | 6D | 6.4 Independent audit against spec §10 | fresh read-only reviewer | 6.3 done | — | |
 
-Parallel slots at the peak: wave 4B runs six implementers beside the review of 4.1, then up to six reviews beside 4.8 and 4.9 (at most 13 agents at once, under the cap of 32).
+Parallel slots at the peak: wave 4B runs six implementers beside the review of 4.1, then up to six reviews beside 4.8, 4.9 and 4.13 (at most 14 agents at once, under the cap of 32).
 
 ### Critical path and wall-clock estimate
 
@@ -655,10 +663,10 @@ Assumptions: the sizes above; a task review takes 15 minutes (S, M) or 25 (L, XL
 | 1 | 1.1 (75) → 1.3 (75; 1.2, 1.4 and 3.3 beside it) → 1.6 with its `--live` probe (60; 1.5 beside it) → last review 15 → fix round 25 → G1 25 | 275 | 315 |
 | 2 | 2.1 (120; 3.1 and 3.2 beside it, the R8 exception) → 2.3 (45; 2.2 beside it) → last review 15 → fix round 25 → G2 30 | 235 | 305 |
 | 3 | 3.4 (120; 3.1 and 3.2 merged just after G2) → 3.6 (75; 3.5 beside it) → last review 25 → fix round 25 → G3 25 | 270 | 340 |
-| 4 | 4.1 (75) → 4.2 (120; 4.3–4.7 beside it) → 4.8 (120; 4.9 beside it) → 4.11 (75; 4.10 and 4.12 beside it) → last review 25 → fix round 25 → G4 (the matrix once, and the reviewer probe) 42 | 482 | 732 |
+| 4 | 4.1 (75) → 4.2 (120; 4.3–4.7 beside it) → 4.8 (120; 4.9 and 4.13 beside it) → 4.11 (75; 4.10, 4.12 and 4.14 beside it; 4.14 starts after 4.10's review) → last review 25 → fix round 25 → G4 (the matrix once, and the reviewer probe) 42 | 517 | 767 |
 | 5 | 5.1 (45) → 5.2 (75; 5.3 beside it) → 5.5 (45; 5.4 beside it) → last review 15 → fix round 25 → G5 25 | 230 | 270 |
 | 6 | the final review and its fixes (90; 6.1 beside them) → 6.2 (25) → 6.3 (45) → 6.4 (40) | 200 | 260 |
-| **Total** | | **1,737 ≈ 29 hours** | **2,267 ≈ 38 hours** |
+| **Total** | | **1,772 ≈ 29.5 hours** | **2,302 ≈ 38 hours** |
 
 Plan with the realistic figure: **36–40 hours of agent wall time** (two extra rounds instead of three on 4.8 and 4.11 give about 36 hours; one more round on each XL task, about 40), **plus off-peak waits**: the live steps of G1 (researcher probe), G2, G3, G4 (reviewer probe), G5, 6.2 and 6.3 each wait up to 3 hours if they meet a peak window (Mon–Fri 01:00–04:00 and 06:00–10:00 UTC), so schedule them off-peak in advance. The approved R8 exception (Task 3.3 in wave 1B; Tasks 3.1 and 3.2 in wave 2A) takes about 75 minutes off Phase 3. Run one task at a time with no review overlapping any implementation, the planned figures come to about 3,300 minutes (55 hours); the waves save about half.
 
@@ -669,17 +677,17 @@ Measured baseline (audit-3, `output/live-proof/audit-3/cli.log`, first pass): pl
 | Stage | Pass-0 work | Budget | What bounds it |
 |---|---|---|---|
 | Planner | 1 plan request plus at most 2 plan-review calls | 3 min | `MAX_PLAN_REVIEW_CALLS = 2`; `planner_final_max_tokens` 65,536; five or fewer required targets (step 5) |
-| Researcher | at most 5 planned sub-topics in priority order, one after another (§12), each ≤ 7 model turns and ≤ 20 tool calls | 12 min | `agents.max_iterations: 7`, the ReAct turn cap that actually bounds a sub-topic (audit-3 measured ≈ 18.6 s per turn, so 35 turns ≈ 11–13 min); `agents.max_sub_topics: 5`; `agents.tool_budget_overrides.researcher: 20` (F1); the organisation's own page first means fewer relay reads |
-| Source Evaluator | 1–3 batched calls (batch 12, at most 36 sources) | 1.5 min | unchanged |
-| Evidence Verifier | Figure Match (milliseconds), then about 30 findings in 2 Context Check batches of 15, run at once | 3 min | batch 15, at most 4 batches at once (PD-12); a truncated batch is asked once more in two halves; a failed batch marks its findings `context_unchecked` and the run goes on |
-| Report Writer | 1 draft request; a second only after a truncated one | 4 min | two attempts (the profile's effort, then high after a truncation, F10); code builds the key facts table, Not found and the labels, so the model writes only prose |
+| Researcher | at most 5 planned sub-topics, run concurrently (§7.2, D9: at most `agents.sub_topic_concurrency` = 5 in flight, one run-wide tool lock), each ≤ 7 model turns and ≤ 20 tool calls | 4 min | the slowest sub-topic, not the sum: ≈ 8 attempts × 13–18 s + ≈ 9 s tools ≈ 1.9–2.6 min, plus whatever 5 in-flight decision calls add (unmeasured; bounded by Task 6.2's per-turn mean ≤ 27 s); `agents.max_iterations: 7`, `agents.max_sub_topics: 5`, `agents.tool_budget_overrides.researcher: 20` (F1) |
+| Source Evaluator | 1–3 batched calls (batch 12, at most 36 sources), run concurrently (D9: at most `agents.source_scoring_concurrency` = 3) | 1 min | `agents.source_evaluator.batch_size` 12 and `max_total_sources` 36; each batch's failure stands alone (Task 4.13) |
+| Evidence Verifier | Figure Match (milliseconds), then about 30 findings in 6 Context Check batches of `agents.verifier_batch_size` (5), at most `agents.verifier_concurrency` (8) in flight | 2 min | the batch size and the concurrency are config (§7.3, PD-12); a truncated batch is asked once more in two halves; a failed batch marks its findings `context_unchecked` and the run goes on |
+| Report Writer | 1 draft request; a second only after a truncated one; then one Statement Check call per 5 drafted sentences (2 calls for a typical report) | 4 min | two attempts (the profile's effort, then high after a truncation, F10); code builds the key facts table, Not found and the labels, so the model writes only prose; the Statement Check shares `agents.verifier_batch_size`/`agents.verifier_concurrency` |
 | Report Reviewer | 1 request; a second only after a truncated one | 4 min | `report_review_max_tokens` 65,536; `report_reviewer` timeout 360 s, `retry_count` 1; the evidence-batch follow-up calls are gone (§6.3: one call) |
 | Publish | three file writes | seconds | |
-| **First pass** | | **≈ 27.5 min** (≈ 30 at the researcher's upper bound) | |
-| Extra pass, only when a required target has no verified finding | researcher on the sub-topics that own the missing targets only (usually 1–2, ≈ 2.2 min each), then source evaluator, Evidence Verifier on the new findings only, writer, reviewer | ≈ 14 min | `graph.max_extra_passes: 1`; targeted to the missing target ids (§6.5, §7.2) |
-| **With the extra pass** | | **≈ 41.5 min** | ≤ 45; if Task 6.2 projects a first pass over 30 minutes, `agents.max_iterations: 6` (review item 15) takes about 2 minutes off it |
+| **First pass** | | **≈ 14–17 min** | |
+| Extra pass, only when a required target has no verified finding | researcher on the sub-topics that own the missing targets only (usually 1–2, concurrent, ≈ 2.5 min), then source evaluator, Evidence Verifier on the new findings only, writer and Statement Check, reviewer | ≈ 10 min | `graph.max_extra_passes: 1`; targeted to the missing target ids (§6.5, §7.2) |
+| **With the extra pass** | | **≈ 24–28 min** | under the 30-minute target even when a pass fires; if Task 6.2 projects a first pass over 30 minutes or a researcher per-turn mean over 27 s, lower `agents.sub_topic_concurrency` to 3 before `ev-1` without re-running the pre-flight (the sequential budget already fits 45 min); `agents.max_iterations: 6` (review item 15) is the last resort |
 
-Failures never add a pass and never stop a run: a failed Context Check batch leaves its findings citable as "unchecked context"; a failed writer draft still publishes the code-built key facts table, Not found and sources; an unscored review publishes as `partial` with status `incomplete` (PD-13). Task 6.1 prints every stage's duration and the researcher's seconds per sub-topic from the timestamped `cli.log`; the live run starts only if the capped pre-flight passes Task 6.2's criteria: quality accepted, a projected first pass of at most 30 minutes, the Evidence Verifier, Report Writer and Report Reviewer each within 1.5 times their budget above, no failed Context Check batch, and no forecast without release. What can still break the budget: a reviewer timeout (360 s, `retry_count` 1: up to 12 minutes, then published as partial), a truncated writer draft (+5 minutes) or a truncated Context Check batch (+1–2 minutes for the halves).
+Failures never add a pass and never stop a run: a failed Context Check batch leaves its findings citable as "unchecked context"; a failed writer draft still publishes the code-built key facts table, Not found and sources; an unscored review publishes as `partial` with status `incomplete` (PD-13). Task 6.1 reads each stage's duration from `cli.log` and the researcher's slowest sub-topic and per-turn mean from the `sub_topic.completed` events' `elapsed_s` (Task 4.13); the live run starts only if the capped pre-flight passes Task 6.2's criteria: quality accepted, a projected first pass of at most 30 minutes, a researcher per-turn mean of at most 27 s, the Evidence Verifier, Report Writer and Report Reviewer each within 1.5 times their budget above, no failed Context Check batch, no forecast without release, zero unrecovered 429s and no truncated call. What can still break the budget: a reviewer timeout (360 s, `retry_count` 1: up to 12 minutes, then published as partial), a truncated writer draft (+5 minutes) or a truncated Context Check batch (+1–2 minutes for the halves).
 
 ---
 
@@ -1058,6 +1066,8 @@ git commit -m "feat(types): contracts for finding evidence, verification and rep
 **Role:** sp-implementer. **Wave:** 1B, parallel with Tasks 1.3 and 1.4. **Depends on:** Task 1.1 merged.
 
 **Owns:** `src/deep_research/agents/evidence.py` (the "canonical text" section, `canonical_read_text` and `excerpt_matches`, around lines 124–166), `src/deep_research/agents/figures.py` (new), `src/deep_research/agents/evidence_verifier.py` (new), `tests/test_agents/test_evidence.py`, `tests/test_agents/test_figures.py` (new), `tests/test_agents/test_evidence_verifier.py` (new).
+
+**Superseded by D7/D8:** the D8 contract (`SDD/d8-contract.md`, `.superpowers/sdd/2026-09-24-evidence-verifier-pipeline/d8-contract.md`) narrows Figure Match to snippet-on-page: `figure_match` keeps `read_found` and `snippet_on_page` and stops computing the per-figure `matched` tuple, because every figure is judged by the Context Check instead. `figures.py`, `figure_in_text` (the P1-2 fallback for a figure with no reply) and the cosmetic rule stand. Apply the contract where this body differs; do not rewrite the body.
 
 **Interfaces:**
 - Consumes: `UnitDimension`, `Finding`, `FindingFigure` (Task 1.1); `tests/evidence_fakes.py` (Task 1.1).
@@ -2260,6 +2270,8 @@ Phase goal: a finding's figures come out of the Evidence Verifier with a verifie
 
 **Owns:** `src/deep_research/agents/evidence.py` (move three attribution helpers in; add `relay_attribution_on_page` and `own_organisation_on_page`), `src/deep_research/agents/researcher.py` (delete the moved helpers, lines 928–984; import them from `evidence.py`), `src/deep_research/agents/evidence_verifier.py`, `tests/test_agents/test_evidence_verifier.py`, `tests/test_agents/test_evidence.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_tool_free_prompts.py`.
 
+**Superseded by D7/D8:** the D8 contract (`SDD/d8-contract.md`) replaces this task's bounds (15 per call, 4 in flight) with 5 per call and 8 in flight, deletes the `not_matched` rescue branch and every code check that a figure's value occurs in the evidence words (the AI rejects a figure its snippet or passage does not state; code keeps only "`evidence_words` is on the page"), keeps `correction_not_on_page`, the relay cue rules and the page-owner naming, and adds the Statement Check (`check_statements`, §5.4) beside the Context Check. Task 4.1's config block and Task 4.13 make the bounds config values (PD-12, PD-27). Apply the contract where this body differs; do not rewrite the body.
+
 **Interfaces:**
 - Consumes: `figure_match`, `read_text`, `figure_in_text` (Task 1.2); the verification types (Task 1.1); `ScoredSource` and its `identity_anchors` (existing, `utils/types.py` lines 496–535); `first_party_host_evidences_issuer`, `_issuer_name_pattern`, `_institutional_domain_label`, `_identity_words`, `_document_text` (existing, `evidence.py` lines 1031, 896, 927, 740); `publisher_identity` (`agents/sources.py`); `finding_fingerprint`, `deduplicate_findings` (`agents/identity.py`); `stated_role` (`agents/wording.py`, Task 3.3, merged in wave 1B); `render_structured_reply_format` (`agents/prompts.py` line 73); `agent_error` (`agents/errors.py`); `agent_event` (`agents/events.py`).
 - Produces: everything listed for `evidence_verifier.py` and the Task 2.1 lines of `evidence.py` in "Shared interfaces". Nothing is re-exported here (Task 2.2 does it).
@@ -2534,8 +2546,8 @@ def test_a_stale_locator_neither_raises_nor_hides_a_relay() -> None:
 - [ ] **Step 4: Implement the Context Check** in `evidence_verifier.py` (append below `figure_match`). Imports: `asyncio`, `dataclasses.replace`, `Literal`, `Sequence`, `ValidationError` (pydantic), `ProviderError`, `ProviderOutputLimitError`, `StructuredOutputError` (from `deep_research.providers`), `ChatMessage`, `render_structured_reply_format`, `BaseAgent`, `AgentRun`, `AgentTask`, `ReActRun`, `agent_error`, `agent_event`, the types (with `ScoredSource`), `finding_fingerprint`, `deduplicate_findings`, `publisher_identity`, `cosmetic_text`, `neighbouring_passage_text`, `own_organisation_on_page`, `relay_attribution_on_page` and `_identity_words` from `deep_research.agents.evidence`, and `stated_role` from `deep_research.agents.wording` (Task 3.3, merged in wave 1B). The code below calls `own_organisation_on_page` through `_owns_page` everywhere; it never calls `first_party_host_evidences_issuer` directly (F9).
 
 ```python
-CONTEXT_CHECK_BATCH_SIZE = 15
-CONTEXT_CHECK_CONCURRENCY = 4
+CONTEXT_CHECK_BATCH_SIZE = 5       # D8; Task 4.13 reads agents.verifier_batch_size (PD-12)
+CONTEXT_CHECK_CONCURRENCY = 8      # D8; Task 4.13 reads agents.verifier_concurrency (PD-12)
 CONTEXT_PASSAGE_CHARS = 3000
 
 CONTEXT_CHECK_SYSTEM_PROMPT = (
@@ -3064,21 +3076,23 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 - **3.6 Harness** `scratch/ev_compose_audit2.py`: `rebuild()` → `verify_scripted()` → a scripted draft built from real audit-2 findings (EIA's 10.4 GW 2024 actual; the January 2025 STEO's 14 GW forecast relayed by ent.news; Wood Mackenzie's Q1 2025 forecast of 15 GW / 49 GWh; "EIA's outlook adds 14 GW in 2025"; one "18.9 GW of grid-scale storage" sentence; one duplicate restatement) → compose → render. `--live` asks the real writer (off-peak). Checks: C1, the summary states 10.4 GW labelled actual with an EIA organisation and a release. C2, at least two summary lines state 2025 forecasts from two organisations, each labelled "forecast (<release>)". C3, the "adds 14 GW" sentence is rewritten and kept. C4, the grid-scale sentence is refused with a scope reason. C5, no duplicate figure line (in the summary or the key facts). C6, no verdict wording. C7, nothing untraced. `--live` must pass C1, C2, C5, C6 and C7.
 - **Gate G3:** the four new test files, the full suite (the old pipeline is still green, PD-3), and the harness: `--scripted` passes C1–C7, `--live` passes C1, C2, C5, C6 and C7. Spec §9 step 3's proof: the summary carries the 2024 actual and at least two 2025 forecasts with organisation and release; there is no duplicate figure line and no verdict wording.
 
-### Phase 4 (spec step 4): the cutover (tasks 4.1–4.12 as in the wave table)
+### Phase 4 (spec step 4): the cutover (tasks 4.1–4.14 as in the wave table)
 
-- **4.1** Adds and renames the step-4 types. `utils/config.py`: `PRODUCTION_AGENT_NAMES` = planner, researcher, source_evaluator, evidence_verifier, report_writer; `SERVICE_ROLE_NAMES = ("report_reviewer",)`; `GraphConfig.max_extra_passes = 1` (env `GRAPH_MAX_EXTRA_PASSES`); `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens`, `claim_verification_max_tokens` and their env keys (and their tests in `tests/test_config.py`) are removed. `config.yaml`: overrides planner `max`, researcher `high`, source_evaluator `high`, evidence_verifier `high` (§5.2), report_writer `high` (the writer's one effort source, F10), report_reviewer `max` with timeout 360 and retry_count 1; `tool_budget_overrides` for planner 1, researcher 20, source_evaluator 0, evidence_verifier 0, report_writer 0; `graph.max_extra_passes: 1`. Also: `git mv` of `report_review.py` to `report_reviewer.py` with every import line updated, `REPORT_JUDGE_ROLE` renamed to `REPORT_REVIEWER_ROLE = "report_reviewer"`, and the three filename helpers moved into `report_writer.py`. Acceptance: IMPORT SMOKE for agents, graph, runtime, api, cli and main.
-- **4.2 Report Reviewer.** One call. The packet holds the statements with their cited findings' snippets and labels, the key facts, Not found, and the gate results. Dispositions are supported, unsupported or not_reviewed; an unsupported statement becomes a material derived defect. A truncated reply is asked once more at high effort; a provider failure gives `provider_failed`; missing dispositions give `incomplete`. No critic imports. The node, not the model, stamps `missing_required_target_ids` (PD-5).
-- **4.3 Quality.** `compute_report_quality(state, composition)` with the PD-10 gates and the new snapshot fields. Missing targets are the required targets no finding answers (`verified_facts`); unaccounted targets are the missing ones absent from Not found.
+- **4.1** Adds and renames the step-4 types. `utils/config.py`: `PRODUCTION_AGENT_NAMES` = planner, researcher, source_evaluator, evidence_verifier, report_writer; `SERVICE_ROLE_NAMES = ("report_reviewer",)`; `GraphConfig.max_extra_passes = 1` (env `GRAPH_MAX_EXTRA_PASSES`); `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens`, `claim_verification_max_tokens` and their env keys (and their tests in `tests/test_config.py`) are removed. `config.yaml`: overrides planner `max`, researcher `high`, source_evaluator `high`, evidence_verifier `high` (§5.2), report_writer `high` (the writer's one effort source, F10), report_reviewer `max` with timeout 360 and retry_count 1; `tool_budget_overrides` for planner 1, researcher 20, source_evaluator 0, evidence_verifier 0, report_writer 0; `graph.max_extra_passes: 1`; the four §7.3 caps `agents.sub_topic_concurrency: 5`, `agents.source_scoring_concurrency: 3`, `agents.verifier_batch_size: 5` and `agents.verifier_concurrency: 8`, each with its `AGENTS_*` environment key and its `test_config.py` assertion. Also: `git mv` of `report_review.py` to `report_reviewer.py` with every import line updated, `REPORT_JUDGE_ROLE` renamed to `REPORT_REVIEWER_ROLE = "report_reviewer"`, and the three filename helpers moved into `report_writer.py`. Acceptance: IMPORT SMOKE for agents, graph, runtime, api, cli and main.
+- **4.2 Report Reviewer.** One call. The packet holds the statements with their code-built labels and their cited findings' snippets and labels, the key facts, Not found, and the gate results. Dispositions are supported, unsupported or not_reviewed; an unsupported statement becomes a material derived defect, and the reviewer may record a defect for prose that contradicts its label (the Statement Check is the primary guard, §6.3). A truncated reply is asked once more at high effort; a provider failure gives `provider_failed`; missing dispositions give `incomplete`. No critic imports. The node, not the model, stamps `missing_required_target_ids` (PD-5).
+- **4.3 Quality.** `compute_report_quality(state, composition)` with the PD-10 gates and the new snapshot fields, including `unjudged_sentences` in place of `untraced_figures` (D8: a kept sentence with no Statement Check verdict and no recorded batch failure); `compose_written_report` fills `ReportComposition.statement_verdicts`. Missing targets are the required targets no finding answers (`verified_facts`); unaccounted targets are the missing ones absent from Not found.
 - **4.4 Researcher and planner.** The first pass runs every planned sub-topic in priority order. An extra pass runs only the sub-topics that own `state.extra_pass_target_ids`, and shows only those targets. The critic-driven selection helpers are deleted. The planner drops its `claim_clusters` import, the three dimension-validation blocks, `support_policy` (draft field, prompt paragraph and examples) and the `extend_plan` path.
 - **4.5 Quality record.** `render_quality_json` carries the new snapshot, the review, the findings with their verification, the fact rows, Not found, the statements, and the refused sentences in full. The quality contract version is bumped.
-- **4.6 Outcome, API, CLI, README.** Coverage becomes required, answered, missing and not found. Evidence counts cover reads, sources, and findings verified, corrected, dropped, unchecked and cited. The summary lines are rewritten: no critic score and no claim lines; the review mean is shown; the integrity line counts duplicate fact rows, uncited statements, untraced figures and forecasts without release. `--max-iterations` accepts 0 and its help says "extra research passes for missing required targets". Progress events cover the new nodes; the README sections are rewritten, the graph-historical subsection is deleted, and a short "Upgrading" note lists the renamed env key, the removed config keys and the unresumable old checkpoints (F15).
+- **4.6 Outcome, API, CLI, README.** Coverage becomes required, answered, missing and not found. Evidence counts cover reads, sources, and findings verified, corrected, dropped, unchecked and cited. The summary lines are rewritten: no critic score and no claim lines; the review mean is shown; the integrity line counts duplicate fact rows, uncited statements, unjudged sentences and forecasts without release. `--max-iterations` accepts 0 and its help says "extra research passes for missing required targets". Progress events cover the new nodes; the README sections are rewritten, the graph-historical subsection is deleted, and a short "Upgrading" note lists the renamed env key, the removed config keys and the unresumable old checkpoints (F15).
 - **4.7 Evaluation.** `AGENT_NAMES` becomes planner, researcher, source_evaluator, evidence_verifier, report_writer. The fact_checker and critic cases, gates, scenarios, conftest outputs and tests are deleted. `cases/report_writer.py` is the `git mv` of the synthesizer cases, reworked to verified findings. A new `cases/evidence_verifier.py` holds the case count that `cases/__init__.py` enforces (scope correction, relay, invented evidence words; the live case uses the benchmark's EIA and Wood Mackenzie pages), with the gates `verification_recorded`, `no_invented_evidence` and `drop_reasons_named`.
 - **4.8 Graph and runtime,** with the contract in "Shared interfaces". `graph_route` (PD-23): halted → end. A missing required target with `iteration < max_extra_passes` → extra_pass (`extra_pass_requested`). An unscored review → finalize (`review_unavailable`, `incomplete`). Clear gates and a passing review → finalize (`report_accepted`, `completed`), with any still-missing target under Not found. Otherwise, a missing target with no pass left → finalize (`extra_passes_exhausted`, status `max_iterations`), else finalize (`report_not_accepted`, `incomplete`). Quality is `accepted` only on `report_accepted`. The writer node runs `compute_report_quality`; the reviewer node stamps `missing_required_target_ids`; the extra-pass node sets `extra_pass_target_ids` and advances the iteration. Finalize renders `render_written_report`, `render_finding_log` and `render_quality_json`, and saves cited findings to memory only when the report is accepted. The critic, fact-checker, refine and repair machinery is deleted. Pinned by `test_run_publishes_when_the_context_check_fails` and `test_extra_pass_that_finds_nothing_publishes_with_not_found`.
-- **4.9 E2E doubles and cases.** The `ClaimsDraft`, `ClaimVerdictDraft`, `ClaimEquivalenceDraft`, `CritiqueDraft` and `ReportDraft` doubles are deleted. New doubles: `ContextCheckDraft` (confirms by default, with per-source overrides), `ReportWriterDraft` (one point per registry figure, from the fixed line format) and the reviewer draft. `REPLAY_CASE_MANIFEST` is reworked. same-work-mirror, primary-attribution, current-versus-forecast and reopen-unanswered-target become Evidence Verifier cases; semantic-duplicate-claims and late-contradiction are retired with stated reasons. New rows: relay-labelled-as-relay, figure-not-on-page-dropped, evidence-words-not-on-page-rejected, scope-corrected-to-all-segments, revision-noted, forecast-versus-actual-kept-apart and extra-pass-finds-nothing. The graph-only rows go with the graph-historical harness (PD-14, Task 4.11).
-- **4.10 Deletion sweep.** Deletes the four modules, `utils/claims.py`, their tests and every dead name, and cleans up the types. Updates the exports and `test_imports.py`, re-pins the fingerprints (PD-17), and runs the acceptance grep outside e2e.
-- **4.11 E2E matrix.** Reworks the models, evaluators and runner, and retires the graph-historical harness (PD-14). The real-agent matrix is green at three repetitions, and the acceptance grep passes over e2e.
+- **4.9 E2E doubles and cases.** The `ClaimsDraft`, `ClaimVerdictDraft`, `ClaimEquivalenceDraft`, `CritiqueDraft` and `ReportDraft` doubles are deleted. New doubles: `ContextCheckDraft` (confirms by default, with per-source overrides, one reply per batch of 5), `StatementCheckDraft` (consistent by default, per-scenario corrected/inconsistent overrides), `ReportWriterDraft` (one point per registry figure, from the fixed line format) and the reviewer draft. `REPLAY_CASE_MANIFEST` is reworked. same-work-mirror, primary-attribution, current-versus-forecast and reopen-unanswered-target become Evidence Verifier cases; semantic-duplicate-claims and late-contradiction are retired with stated reasons. New rows: relay-labelled-as-relay, figure-not-on-page-dropped, evidence-words-not-on-page-rejected, scope-corrected-to-all-segments, revision-noted, forecast-versus-actual-kept-apart and extra-pass-finds-nothing. The graph-only rows go with the graph-historical harness (PD-14, Task 4.11).
+- **4.10 Deletion sweep.** Deletes the four modules, `utils/claims.py`, their tests and every dead name (including the D8 helpers `hedge_forecast`, `page_modal`, `unattested_names`/`stated_scopes` if unread, `bare_numbers`, `untraced_numbers`, and the `figure_not_in_evidence` drop reason), and cleans up the types. Updates the exports and `test_imports.py`, re-pins the fingerprints (PD-17), and runs the acceptance grep outside e2e.
+- **4.11 E2E matrix.** Reworks the models, evaluators and runner, and retires the graph-historical harness (PD-14). The doubles script both check drafts; the real-agent matrix is green at three repetitions, and the acceptance grep passes over e2e.
 - **4.12 Reviewer probe** `scratch/ev_review_audit2.py`: the real writer and the real Report Reviewer on the audit-2 state (off-peak, about 10 minutes); the review must be scored and accepting (F7).
-- **Gate G4:** both full-suite invocations, the real-agent e2e matrix at three repetitions, IMPORT SMOKE, the acceptance grep over everything, and the reviewer probe, all green (spec §9 step 4).
+- **4.13 Parallel sub-topics and scoring batches (D9).** The researcher's sub-topics run concurrently (at most `agents.sub_topic_concurrency`, 5) with one run-wide tool lock and per-loop scratchpads and acquisition contexts; findings and events fold in plan order; source-evaluator batches run at most `agents.source_scoring_concurrency` (3) at once; the Evidence Verifier's two bounds come from config; `sub_topic.completed` carries `elapsed_s`.
+- **4.14 Concurrency and budget telemetry (§7.3).** One collector per run records the 429 count and how many a retry recovered, the peak provider calls in flight, per-stage calls/seconds/slowest, and per-operation max output tokens against the configured cap plus the truncation count. It lands in the quality JSON and in one CLI summary line with advisory messages that name the config knob; nothing auto-tunes.
+- **Gate G4:** both full-suite invocations, the real-agent e2e matrix at three repetitions, IMPORT SMOKE, the acceptance grep over everything, the reviewer probe and the Telemetry line, all green (spec §9 step 4).
 
 ### Phase 5 (spec step 5): the planner's floor
 
@@ -3091,8 +3105,8 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 
 ### Phase 6 (spec step 6): the live proof
 
-- **6.1** `scratch/run_live_proof.py` gains two labels, with per-label arguments and environment recorded in `run.env`. `ev-preflight`: the benchmark question, `--max-iterations 0`, `AGENTS_MAX_SUB_TOPICS=2` and `--request-tavily-attempt-ceiling 12`. `ev-1`: the benchmark question on the default config.
-- **6.2** The operator runs `ev-preflight` off-peak. Pass: exit 0 (quality accepted; exit 4 fails); report, evidence log and quality JSON written; the projected first pass within 30 minutes; no failed Context Check batch and no unchecked context; no forecast without release (F7, F8, PD-24).
+- **6.1** `scratch/run_live_proof.py` gains two labels, with per-label arguments and environment recorded in `run.env`. `ev-preflight`: the benchmark question, `--max-iterations 0`, `AGENTS_MAX_SUB_TOPICS=2` and `--request-tavily-attempt-ceiling 12`. `ev-1`: the benchmark question on the default config. The stage-time summary prints the slowest sub-topic and the researcher's per-turn mean from each `sub_topic.completed` event's `elapsed_s` (Task 4.13), plus the Telemetry line (Task 4.14).
+- **6.2** The operator runs `ev-preflight` off-peak. Pass: exit 0 (quality accepted; exit 4 fails); report, evidence log and quality JSON written; the projected first pass within 30 minutes; the researcher's per-turn mean at most 27 s; no failed Context Check batch and no unchecked context; no forecast without release (F7, F8, PD-24); zero unrecovered 429s and no truncated call on the Telemetry line. A violated criterion is fixed by lowering the config knob its advice names (`agents.sub_topic_concurrency` to 3), no code change.
 - **6.3** The operator runs `ev-1` off-peak, never hard-stopped.
 - **6.4** A fresh read-only reviewer audits `output/live-proof/ev-1/` against spec §10: wall time at most 45 minutes; the summary answers both halves with releases; every number is traced; relays are labelled; no wrong scope, period or kind; the reviewer accepted with no gate failure; rated GREAT.
 
@@ -4008,6 +4022,8 @@ git commit -m "feat(report): the evidence-verifier report layout, reader labels 
 
 **Owns:** `src/deep_research/agents/wording.py` (new), `src/deep_research/agents/synthesizer.py`, `tests/test_agents/test_wording.py` (new).
 
+**Superseded by D7/D8:** D8 deletes the writer's code checks on sentence wording, so `hedge_forecast`, `page_modal`, `unattested_names` and `stated_scopes` end this plan with no caller unless something else reads them; Task 4.10's sweep removes each one with its export and tests (the D8 contract, `SDD/d8-contract.md`). The moved rules and `stated_role` (the Evidence Verifier's kind fallback) stand. Apply the contract where this body differs; do not rewrite the body.
+
 **Interfaces:**
 - Produces: the `wording.py` block of "Shared interfaces". `synthesizer.py` keeps working unchanged (it imports what moved). Task 2.1 imports `stated_role` from `wording.py`; Task 3.4 imports the rest.
 
@@ -4184,6 +4200,8 @@ git commit -m "refactor(wording): shared hedge, forecast and attested-name rules
 **Role:** sp-hard-implementer. **Wave:** 3B, alone. **Depends on:** Gate G2, then Tasks 3.1 and 3.2 merged (the controller merges them after G2, rule R8); Task 3.3 was merged in wave 1B.
 
 **Owns:** `src/deep_research/agents/report_writer.py` (new), `tests/test_agents/test_report_writer.py` (new).
+
+**Superseded by D7/D8:** the D8 contract (`SDD/d8-contract.md`) deletes every code check on sentence wording in this body — untraced numbers, dates, scopes, names, forecast-versus-actual, the hedge rewrite, `_governing_position` and its helpers — and puts the Statement Check (`check_statements`, §5.4) in their place: one call after drafting, `consistent` keeps the sentence, `corrected` replaces it with `corrected_text`, `inconsistent` refuses it with its reason, and a failed batch keeps its sentences with the error recorded. Code keeps only the known-label requirement, the length limit and the full-text refusal record, and the code-built labels stay on every kept sentence (§6.2). Apply the contract where this body differs; do not rewrite the body.
 
 **Interfaces:**
 - Consumes: `verified_facts` (Task 3.1); `figure_label`, `render_written_report`, `render_finding_log`, `written_citations`, `report_as_of`, `report_scope` (`report.py`, Task 3.2 and existing); `hedge_forecast`, `page_modal`, `hardened_modality`, `stated_role`, `clause_around`, `stated_scopes`, `stated_years`, `unattested_names` (Task 3.3); `quantities_in`, `same_quantity`, `dates_in`, `without_dates` (`figures.py`, Task 1.2); `ScoredSource` and its `identity_anchors` (PD-25); `cosmetic_text`; `finding_fingerprint`; `publisher_identity`; `render_structured_reply_format`; `OUTPUT_LIMIT_RETRY_EFFORT`, `BaseAgent`, `AgentRun`, `AgentTask` (`agents/base.py`); `ReActRun`; `agent_error`; `agent_event`; the provider errors.
@@ -4736,6 +4754,8 @@ git commit -m "feat(report_writer): the Report Writer cites verified findings by
 
 **Files:** Create (untracked) `scratch/ev_compose_audit2.py`.
 
+**Superseded by D7/D8:** with D8 in place, the harness's wording checks are the scripted Statement Check's: the draft stays, the `ScriptedCompleter` (or the real provider in `--live`) answers `StatementCheckDraft` with one verdict per point, and C3 becomes "line (2) is kept unchanged and its rendered label reads `forecast (<release>)`", C4 "a scripted `inconsistent` verdict refuses line (4) with that reason", and C7 "every kept point carries a `statement_verdicts` entry and `unjudged_sentences` is empty" — `check_point` and `untraced_numbers` no longer run (the D8 contract, `SDD/d8-contract.md`). Apply the contract where this body differs; do not rewrite the body.
+
 **Interfaces:** Consumes `rebuild()`, `QUESTION`, `fixture_plan()` (Task 1.6); `scripted_replies()`, `verify_scripted()` (Task 2.3); `ReportWriterAgent`, `compose_written_report`, `ReportWriterDraft`, `WriterPointDraft` (Task 3.4); `render_written_report`, `render_finding_log` (Task 3.2).
 
 - [ ] **Step 1: Write the harness.** Behaviour:
@@ -4832,13 +4852,18 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     assert set(settings.agents.tool_budget_overrides) <= set(PRODUCTION_AGENT_NAMES)
     assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
     assert SERVICE_ROLE_NAMES == ("report_reviewer",)
+    # Spec 7.3 (D9/PD-27): the four concurrency caps, one assertion each.
+    assert settings.agents.sub_topic_concurrency == 5
+    assert settings.agents.source_scoring_concurrency == 3
+    assert settings.agents.verifier_batch_size == 5
+    assert settings.agents.verifier_concurrency == 8
 ```
 
 (Use the existing imports of `tests/test_config.py`; add `load_settings`, `PRODUCTION_AGENT_NAMES`, `SERVICE_ROLE_NAMES` if absent.)
 
 - [ ] **Step 3: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_types.py tests/test_config.py -k "review_defects or extra_passes or evidence_verifier_pipeline"`. Expected: FAIL.
 
-- [ ] **Step 4: Types** (`utils/types.py`), exactly as the step-4 block of "Shared interfaces": add `ReviewDefect`; set `StatementReviewDisposition` to `"supported" | "unsupported" | "not_reviewed"`; set `REVIEW_RUBRIC_VERSION = 3`; give `ReportReview` the final field list (defects typed `list[ReviewDefect]`, `missing_required_target_ids` added, the evidence-batch fields `reviewed_evidence_ids`, `omitted_evidence_ids`, `reviewed_batch_ids`, `expected_batch_ids`, `reviewed_target_ids` removed; keep `mean_score` and `material_defects` properties and adapt `validate_scored_review` so a scored review needs the seven dimensions and a disposition for every reviewed statement); add the new `ReportQualitySnapshot` fields (old ones stay until Task 4.10); rename `ResearchState.max_iterations` → `max_extra_passes` (`Field(default=1, ge=0)`) and add `extra_pass_target_ids: list[str]` (replaced on write, not appended) in `ResearchState` and `ResearchStateUpdate`; `advance_research_iteration` refuses `iteration >= max_extra_passes`; rename `ReportComposition.max_iterations` → `max_extra_passes`; remove `EvidenceTarget.support_policy` and the validators that read it (PD-16; the `SupportPolicy` alias stays until Task 4.10). Re-export `ReviewDefect` from `utils/__init__.py`. In `tests/evidence_fakes.py`, drop `support_policy` from `make_target`'s legacy branch.
+- [ ] **Step 4: Types** (`utils/types.py`), exactly as the step-4 block of "Shared interfaces": add `ReviewDefect`; set `StatementReviewDisposition` to `"supported" | "unsupported" | "not_reviewed"`; set `REVIEW_RUBRIC_VERSION = 3`; give `ReportReview` the final field list (defects typed `list[ReviewDefect]`, `missing_required_target_ids` added, the evidence-batch fields `reviewed_evidence_ids`, `omitted_evidence_ids`, `reviewed_batch_ids`, `expected_batch_ids`, `reviewed_target_ids` removed; keep `mean_score` and `material_defects` properties and adapt `validate_scored_review` so a scored review needs the seven dimensions and a disposition for every reviewed statement); add the new `ReportQualitySnapshot` fields (old ones stay until Task 4.10); rename `ResearchState.max_iterations` → `max_extra_passes` (`Field(default=1, ge=0)`) and add `extra_pass_target_ids: list[str]` (replaced on write, not appended) in `ResearchState` and `ResearchStateUpdate`; `advance_research_iteration` refuses `iteration >= max_extra_passes`; rename `ReportComposition.max_iterations` → `max_extra_passes` and add `ReportComposition.statement_verdicts: dict[str, str] = Field(default_factory=dict)` (statement id → `"consistent"` | `"corrected"` | `"unchecked"`; Task 4.3 fills it and gates on it, PD-10); remove `EvidenceTarget.support_policy` and the validators that read it (PD-16; the `SupportPolicy` alias stays until Task 4.10). Re-export `ReviewDefect` from `utils/__init__.py`. In `tests/evidence_fakes.py`, drop `support_policy` from `make_target`'s legacy branch.
 
 - [ ] **Step 5: Config.** In `utils/config.py`: `PRODUCTION_AGENT_NAMES = ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")`; `SERVICE_ROLE_NAMES = ("report_reviewer",)`; in `GraphConfig` replace `max_iterations` with `max_extra_passes: int = Field(default=1, ge=0)` and its env key `GRAPH_MAX_ITERATIONS` with `GRAPH_MAX_EXTRA_PASSES`; delete `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens`, `claim_verification_max_tokens` and their env keys. `config.yaml`, replacing the matching blocks (keep every comment that still describes something that exists; rewrite the per-agent effort comment to name the new agents):
 
@@ -4850,7 +4875,8 @@ def test_the_evidence_verifier_pipeline_config() -> None:
       reasoning_effort: high
     source_evaluator:
       reasoning_effort: high
-    # The Context Check (spec 5.2): one batched, tool-free call per 15 findings.
+    # The Context Check and Statement Check (spec 5.2, 5.4): batched, tool-free
+    # calls, `agents.verifier_batch_size` items per call (Task 4.1).
     evidence_verifier:
       reasoning_effort: high
     # The writer's first attempt runs at this effort; a truncated draft is asked
@@ -4875,7 +4901,19 @@ graph:
   checkpointing_enabled: false
 ```
 
-and delete the `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens` and `claim_verification_max_tokens` keys with their comments. In `tests/test_config.py`, delete the claim-batch config tests (lines 770–793 at the plan's base commit: the tests that import `fact_checker.DEFAULT_MAX_CLAIMS` or assert those four keys), because their keys and their import are gone.
+and delete the `claim_batch_size`, `claim_batches_per_pass`, `critic_review_max_tokens` and `claim_verification_max_tokens` keys with their comments. The `agents:` block also gains the four §7.3 caps (D9), each with a comment naming the spec section:
+
+```yaml
+agents:
+  # Spec 7.3 (D9/PD-27): the only concurrency bounds. Lower one from live
+  # results without a code change; Task 4.14's telemetry names the knob to turn.
+  sub_topic_concurrency: 5         # researcher sub-topics in flight
+  source_scoring_concurrency: 3    # source-evaluator scoring batches in flight
+  verifier_batch_size: 5           # Context and Statement Check items per call
+  verifier_concurrency: 8          # verification calls in flight
+```
+
+In `AgentRuntimeConfig`, add `sub_topic_concurrency: int = Field(default=5, ge=1)`, `source_scoring_concurrency: int = Field(default=3, ge=1)`, `verifier_batch_size: int = Field(default=5, ge=1)` and `verifier_concurrency: int = Field(default=8, ge=1)`, and the four environment keys following the existing pattern: `"AGENTS_SUB_TOPIC_CONCURRENCY": ("agents", "sub_topic_concurrency")`, `"AGENTS_SOURCE_SCORING_CONCURRENCY": ("agents", "source_scoring_concurrency")`, `"AGENTS_VERIFIER_BATCH_SIZE": ("agents", "verifier_batch_size")` and `"AGENTS_VERIFIER_CONCURRENCY": ("agents", "verifier_concurrency")`. Task 4.13's researcher and source evaluator read the first two, and the Evidence Verifier reads the last two (PD-12, PD-27); each has its assertion in `test_the_evidence_verifier_pipeline_config` (Step 2). In `tests/test_config.py`, delete the claim-batch config tests (lines 770–793 at the plan's base commit: the tests that import `fact_checker.DEFAULT_MAX_CLAIMS` or assert those four keys), because their keys and their import are gone.
 
 Only if Gate G2's live run recorded a failed Context Check batch (`evidence_verifier_context_check_failed`) or a batch over about 60 s, also add `timeout: 240.0` under `evidence_verifier` in `model_overrides` (review item 13, F8), with a comment naming the measurement. Otherwise add nothing.
 
@@ -4897,7 +4935,8 @@ Only if Gate G2's live run recorded a failed Context Check batch (`evidence_veri
 
 **Interfaces:**
 - Keeps the names the graph uses: `ReportReviewer` (with `review(packet, *, previous) -> ReportReview` and `review_records`), `build_report_review_input(state, composition) -> ReportReviewInput` (the `terminal` parameter goes), `ReportReviewInput` (with `fingerprint`, `composition_fingerprint`, `expected_statement_ids`, `rubric_version`, `reader_content`), `semantic_review_passes`, `composition_semantic_fingerprint`, `REPORT_REVIEWER_ROLE`.
-- The packet: `question`; `answer_contract`; `reader_content` (the rendered report); `statements` (id, text, the labels of the findings each cites); `findings` (label → source title, host, snippet, figure labels); `fact_rows` (the key facts lines); `not_found` (target questions); `deterministic` (the snapshot's `hard_failures`, `untraced_figures`, `duplicate_fact_rows`, `unresolved_citations`, `uncited_settled_points`). No claim, verdict, cluster or evidence-batch field.
+- The packet: `question`; `answer_contract`; `reader_content` (the rendered report); `statements` (id, text, its code-built reader label, and the labels of the findings each cites); `findings` (label → source title, host, snippet, figure labels); `fact_rows` (the key facts lines); `not_found` (target questions); `deterministic` (the snapshot's `hard_failures`, `unjudged_sentences`, `duplicate_fact_rows`, `unresolved_citations`, `uncited_settled_points`). No claim, verdict, cluster or evidence-batch field.
+- The reviewer MAY record a defect for a sentence whose prose contradicts its code-built label (spec §6.3), with that statement's id; the Statement Check (§5.4) is the primary guard for sentence wording, and this defect is the reviewer's own judgement, never a gate.
 - The reply schema: `ReportReviewDraft(dimensions: ReviewDimensionScores, statement_dispositions: list[StatementDispositionDraft], defects: list[ReviewDefectDraft], rationale: str)` with `ReviewDefectDraft(kind: str, severity: str, statement_ids: list[str], target_ids: list[str], problem: str)`.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_agents/test_report_reviewer.py`: keep the file's tests of dimension scoring, `semantic_review_passes` thresholds and packet fingerprinting after porting their fixtures to the new packet; delete every test of claims, verdict badges, critic gap normalisation, evidence batches and batch follow-ups (their behaviour is gone); and add:
@@ -4919,6 +4958,12 @@ async def test_an_unsupported_statement_is_a_material_defect(reviewer_with_reply
 async def test_a_missing_disposition_leaves_the_review_incomplete(reviewer_with_reply) -> None:
     reviewer, _ = reviewer_with_reply(skip=["S003"])
     assert (await reviewer.review(packet(), previous=None)).status == "incomplete"
+
+
+async def test_a_defect_for_prose_against_its_label_is_kept(reviewer_with_reply) -> None:
+    reviewer, _ = reviewer_with_reply(contradicting=["S001"])
+    review = await reviewer.review(packet(), previous=None)
+    assert [d.statement_ids for d in review.defects if d.material] == [["S001"]]
 
 
 async def test_a_truncated_reply_is_asked_once_more_then_a_failure_is_recorded(reviewer_truncating) -> None:
@@ -4949,7 +4994,7 @@ def test_the_packet_holds_statements_findings_and_facts_but_no_claims() -> None:
 
 **Role:** sp-hard-implementer. **Wave:** 4B. **Depends on:** Task 4.1 merged.
 
-**Owns:** `src/deep_research/agents/quality.py`, `tests/test_agents/test_quality.py`.
+**Owns:** `src/deep_research/agents/quality.py`, `tests/test_agents/test_quality.py`, plus `src/deep_research/agents/report_writer.py` and `tests/test_agents/test_report_writer.py` for the one change the gate needs: `compose_written_report` records each kept candidate's Statement Check outcome in `ReportComposition.statement_verdicts` (§6.4's "every kept sentence was judged by the Statement Check, or its batch failure is recorded"). Nothing else in those two files changes.
 
 - [ ] **Step 1: Write the failing tests** (new section of `tests/test_agents/test_quality.py`; delete the file's tests of claim coverage, broad-plan coverage, critical targets, duplicate claims, contradicted claims and pursued-unmet accounting). Build states with Task 3.4's `compose_written_report` over `tests/evidence_fakes.py` findings:
 
@@ -4960,7 +5005,7 @@ def test_a_clean_written_report_has_no_hard_failure() -> None:
 
 
 def test_each_gate_fires_on_its_own_defect() -> None:
-    assert "untraced_figures" in compute_report_quality(*with_point_text("Generators added 12 GW in 2024.")).hard_failures
+    assert "unjudged_sentences" in compute_report_quality(*with_unjudged_sentence()).hard_failures
     assert "uncited_settled_points" in compute_report_quality(*with_uncited_point()).hard_failures
     assert "unresolved_citations" in compute_report_quality(*with_unknown_finding_id()).hard_failures
     assert "missing_as_of" in compute_report_quality(*with_composition(as_of="")).hard_failures
@@ -4987,11 +5032,18 @@ def test_a_forecast_row_without_a_release_is_counted_not_failed() -> None:
     assert snapshot.forecasts_without_release == 1 and snapshot.hard_failures == []
 ```
 
-No test builds a duplicate fact row: `fact_rows()` merges same-fact rows, so the `duplicate_fact_rows` gate only guards hand-built compositions and future producers (PD-10, F11).
+No test builds a duplicate fact row: `fact_rows()` merges same-fact rows, so the `duplicate_fact_rows` gate only guards hand-built compositions and future producers (PD-10, F11). `with_unjudged_sentence()` builds a composition whose kept statement has no `statement_verdicts` entry; `with_unjudged_sentence(recorded_failure=True)` gives it the entry `"unchecked"` and a `statement_check_failed` error in `composition.errors`, which is §6.4's recorded-batch-failure case:
+
+```python
+def test_a_recorded_batch_failure_keeps_the_sentence_but_is_not_a_gate_failure() -> None:
+    state, composition = with_unjudged_sentence(recorded_failure=True)
+    snapshot = compute_report_quality(state, composition)
+    assert snapshot.unjudged_sentences == [] and snapshot.hard_failures == []
+```
 
 - [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_quality.py`. Expected: FAIL.
 
-- [ ] **Step 3: Implement** `compute_report_quality(state, composition)` (drop `terminal`):
+- [ ] **Step 3: Implement** `compute_report_quality(state, composition)` (drop `terminal`, and the `untraced_numbers` import with it):
 
 ```python
 def compute_report_quality(state: ResearchState, composition: ReportComposition) -> ReportQualitySnapshot:
@@ -5007,9 +5059,18 @@ def compute_report_quality(state: ResearchState, composition: ReportComposition)
     uncited = sum(1 for p in points if p.statement is None or not p.statement.finding_ids)
     unresolved = sum(1 for p in points if p.statement is not None and (
         any(i not in by_id for i in p.statement.finding_ids) or not p.source_urls))
-    untraced = [
-        f"{p.statement.statement_id}: {n}" for p in points if p.statement is not None
-        for n in untraced_numbers(p.text, [by_id[i] for i in p.statement.finding_ids if i in by_id])
+    # §6.4, D8: every kept sentence was judged by the Statement Check, or its
+    # batch failure is recorded. A kept sentence with neither is the gate.
+    failure_recorded = any(
+        error.error_type in {"evidence_verifier_statement_check_failed", "report_writer_statement_check_failed"}
+        for error in composition.errors
+    )
+    judged = {"consistent", "corrected"}
+    unjudged = [
+        p.statement.statement_id for p in points
+        if p.statement is not None
+        and (verdict := composition.statement_verdicts.get(p.statement.statement_id)) not in judged
+        and not (verdict == "unchecked" and failure_recorded)
     ]
     rows = composition.fact_rows
     # Invariant (F11): fact_rows() already merges same-fact rows, so this guards
@@ -5021,7 +5082,7 @@ def compute_report_quality(state: ResearchState, composition: ReportComposition)
     failures = [name for name, failed in (
         ("unresolved_citations", unresolved > 0), ("uncited_settled_points", uncited > 0),
         ("duplicate_fact_rows", duplicates > 0), ("missing_as_of", not composition.as_of),
-        ("missing_scope", not composition.scope), ("untraced_figures", bool(untraced)),
+        ("missing_scope", not composition.scope), ("unjudged_sentences", bool(unjudged)),
         ("unaccounted_required_targets", bool(unaccounted)),
         ("missing_reader_report", not state.report), ("missing_evidence_ledger", not state.report_evidence),
     ) if failed]
@@ -5036,7 +5097,7 @@ def compute_report_quality(state: ResearchState, composition: ReportComposition)
         cited_findings=len({i for p in points if p.statement for i in p.statement.finding_ids}),
         cited_sources=len({u for p in points for u in p.source_urls}),
         duplicate_fact_rows=duplicates, uncited_settled_points=uncited,
-        unresolved_citations=unresolved, untraced_figures=untraced,
+        unresolved_citations=unresolved, unjudged_sentences=unjudged,
         refused_sentences=len(composition.rejected_points), hard_failures=failures,
         forecasts_without_release=sum(1 for row in rows if row.kind == "forecast" and not row.release),
     )
@@ -5047,7 +5108,7 @@ Keep `review_status_fields`. Leave the claim-era functions in place when anythin
 - [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_quality.py`. Expected: PASS.
 - [ ] **Step 5: Commit** both owned files with "feat(quality): the evidence-verifier gate set (spec 6.4, PD-10)".
 
-**Acceptance:** exactly the PD-10 gates fire, each on its own defect; a missing required target is reported, and fails a gate only when Not found does not list it.
+**Acceptance:** exactly the PD-10 gates fire, each on its own defect; a kept sentence with no Statement Check verdict and no recorded batch failure fails `unjudged_sentences`, while a recorded batch failure does not; a missing required target is reported, and fails a gate only when Not found does not list it; `compose_written_report` fills `statement_verdicts` for every kept point.
 
 ### Task 4.4: Researcher and planner: the targeted extra pass; support policy out
 
@@ -5209,7 +5270,7 @@ def test_missing_targets_buy_one_extra_pass_then_publish() -> None:
 
 def test_the_final_routes_and_their_statuses() -> None:
     assert _routed() == ("finalize", "report_accepted")
-    assert _routed(quality=ReportQualitySnapshot(hard_failures=["untraced_figures"])) == ("finalize", "report_not_accepted")
+    assert _routed(quality=ReportQualitySnapshot(hard_failures=["unjudged_sentences"])) == ("finalize", "report_not_accepted")
     assert _routed(review=ReportReview(status="provider_failed")) == ("finalize", "review_unavailable")
     assert graph_status(ResearchState(session_id="s", original_question="q", report_review=ReportReview(status="provider_failed"),
                                       quality=ReportQualitySnapshot())) == "incomplete"
@@ -5300,21 +5361,21 @@ def graph_quality_status(state: ResearchState) -> str:
 
 **Owns:** `src/deep_research/e2e_evaluation/replay.py`, `src/deep_research/e2e_evaluation/replay_matrix.py`, `tests/test_e2e_evaluation/test_replay_doubles.py` (new).
 
-- [ ] **Step 1: Write the failing tests** (`tests/test_e2e_evaluation/test_replay_doubles.py`): feed each new double the real request its agent builds and assert the reply: `_reply_ContextCheckDraft` answers one `FigureCheckDraft` per `F<nn> | figure <n>` the request lists, confirming by default and applying a `ReplaySource`'s `context` override (`scope`, `attribution`, `organisation`, `kind`, `evidence_words`, `verdict`); `_reply_ReportWriterDraft` answers one summary point per registry line (`"<organisation> reports <value> <unit> for <period>."` for an actual, `"<organisation> projects <value> <unit> for <period>."` for a forecast), and `compose_written_report` keeps every one of them; `_reply_ReportReviewDraft` scores the seven dimensions at the scenario's value (0.9 by default) and disposes of every statement id the request lists as `supported`, unless the scenario lists it as unsupported.
+- [ ] **Step 1: Write the failing tests** (`tests/test_e2e_evaluation/test_replay_doubles.py`): feed each new double the real request its agent builds and assert the reply: `_reply_ContextCheckDraft` answers one `FigureCheckDraft` per `F<nn> | figure <n>` the request lists, confirming by default and applying a `ReplaySource`'s `context` override (`scope`, `attribution`, `organisation`, `kind`, `evidence_words`, `verdict`) — one request is one batch of `agents.verifier_batch_size` (5) findings, so the double keys its reply to the labels that request carries, never to a global order; `_reply_StatementCheckDraft` answers one `StatementVerdictDraft` per `S<nn>` label the request lists, `consistent` by default and the scenario's `statement` override (`corrected` with a replacement text, or `inconsistent` with its reason) where the scenario names one — its request is also a batch of 5, and the writer keeps, corrects or refuses each point from the reply; `_reply_ReportWriterDraft` answers one summary point per registry line (`"<organisation> reports <value> <unit> for <period>."` for an actual, `"<organisation> projects <value> <unit> for <period>."` for a forecast), and `compose_written_report` keeps every one of them; `_reply_ReportReviewDraft` scores the seven dimensions at the scenario's value (0.9 by default) and disposes of every statement id the request lists as `supported`, unless the scenario lists it as unsupported.
 - [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_e2e_evaluation/test_replay_doubles.py`. Expected: FAIL.
-- [ ] **Step 3: Implement.** In `replay.py`: delete `_reply_ClaimsDraft`, `_reply_ClaimVerdictDraft`, `_reply_ClaimEquivalenceDraft`, `_reply_CritiqueDraft`, `_reply_ReportDraft` and their imports; add the three doubles above; `ReplaySource` gains `context: dict[str, str] = field(default_factory=dict)` for the Context Check overrides. In `replay_matrix.py`, rework `REPLAY_CASE_MANIFEST`: keep `broad-constraints`, `comparative-conflict` (two organisations, two attributed rows, never a conflict), `refinement-evidence-recovery` (renamed `extra-pass-recovers-missing-target`), `blocked-html-pdf-fallback`, `stalled-refinement` (renamed `extra-pass-finds-nothing`: the missing target stays missing; one extra pass; published once with the target under Not found), `unsupported-mechanism`, `judge-failure` (renamed `review-unavailable`), `non-constraint-answer`, `empty-but-clean`, `memory-is-not-read`, `validated-cache-reuse`, `decision-context-late-candidate`; convert `same-work-mirror` (a mirror is one row, labelled by its organisation), `primary-attribution` (renamed `relay-labelled-as-relay`), `current-versus-forecast` (renamed `forecast-versus-actual-kept-apart`) and `reopen-unanswered-target` (renamed `missing-target-triggers-one-extra-pass`); retire `semantic-duplicate-claims` ("claim equivalence is gone; duplicate figures are one fact row by field key, covered by `revision-noted` and `same-work-mirror`") and `late-contradiction` ("no stage issues verdicts; two organisations' figures are two rows"); add `figure-not-on-page-dropped`, `evidence-words-not-on-page-rejected`, `scope-corrected-to-all-segments` and `revision-noted`. Each row states its sources, its `context` overrides, its declared result (accepted/partial and exit code) and its invariants over production state (for example `scope-corrected-to-all-segments`: the kept figure's scope is "all segments", the finding is `verified_corrected`, and no reader sentence says "grid-scale"). Leave `GRAPH_ONLY_HISTORICAL_MANIFEST` alone: Task 4.11 deletes the whole graph-historical harness (PD-14).
+- [ ] **Step 3: Implement.** In `replay.py`: delete `_reply_ClaimsDraft`, `_reply_ClaimVerdictDraft`, `_reply_ClaimEquivalenceDraft`, `_reply_CritiqueDraft`, `_reply_ReportDraft` and their imports; add the four doubles above; `ReplaySource` gains `context: dict[str, str] = field(default_factory=dict)` for the Context Check overrides and `statement: dict[str, str] = field(default_factory=dict)` for the Statement Check overrides, plus one row that scripts a `statement_check_failed` exception so the keep-on-batch-failure path (`statement_verdicts[id] == "unchecked"`) runs in the matrix. In `replay_matrix.py`, rework `REPLAY_CASE_MANIFEST`: keep `broad-constraints`, `comparative-conflict` (two organisations, two attributed rows, never a conflict), `refinement-evidence-recovery` (renamed `extra-pass-recovers-missing-target`), `blocked-html-pdf-fallback`, `stalled-refinement` (renamed `extra-pass-finds-nothing`: the missing target stays missing; one extra pass; published once with the target under Not found), `unsupported-mechanism`, `judge-failure` (renamed `review-unavailable`), `non-constraint-answer`, `empty-but-clean`, `memory-is-not-read`, `validated-cache-reuse`, `decision-context-late-candidate`; convert `same-work-mirror` (a mirror is one row, labelled by its organisation), `primary-attribution` (renamed `relay-labelled-as-relay`), `current-versus-forecast` (renamed `forecast-versus-actual-kept-apart`) and `reopen-unanswered-target` (renamed `missing-target-triggers-one-extra-pass`); retire `semantic-duplicate-claims` ("claim equivalence is gone; duplicate figures are one fact row by field key, covered by `revision-noted` and `same-work-mirror`") and `late-contradiction` ("no stage issues verdicts; two organisations' figures are two rows"); add `figure-not-on-page-dropped`, `evidence-words-not-on-page-rejected`, `scope-corrected-to-all-segments` and `revision-noted`. Each row states its sources, its `context` overrides, its declared result (accepted/partial and exit code) and its invariants over production state (for example `scope-corrected-to-all-segments`: the kept figure's scope is "all segments", the finding is `verified_corrected`, and no reader sentence says "grid-scale"). Leave `GRAPH_ONLY_HISTORICAL_MANIFEST` alone: Task 4.11 deletes the whole graph-historical harness (PD-14).
 - [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_e2e_evaluation/test_replay_doubles.py`. Expected: PASS. (The matrix runs in Task 4.11, once the graph of Task 4.8 is merged.)
 - [ ] **Step 5: Commit** the three owned files with "test(e2e): evidence-verifier replay doubles and matrix cases".
 
 ### Task 4.10: Deletion sweep, exports and fingerprint pins
 
-**Role:** sp-hard-implementer. **Wave:** 4D, parallel with Task 4.11. **Depends on:** Tasks 4.2–4.8 merged, and the reviews of 4.2, 4.3, 4.4, 4.5 and 4.7 clean (rule R5: it edits their files).
+**Role:** sp-hard-implementer. **Wave:** 4D, parallel with Task 4.11. **Depends on:** Tasks 4.2–4.8 and 4.13 merged, and the reviews of 4.2, 4.3, 4.4, 4.5, 4.7 and 4.13 clean (rule R5: it edits their files, and Task 4.13 owns `researcher.py` and `test_source_evaluator.py` last).
 
-**Owns:** the files it deletes; `agents/__init__.py`, `utils/types.py`, `utils/__init__.py`, `utils/claims.py`, `agents/prompts.py`, `agents/evidence.py`, `agents/identity.py`; the dead names in `agents/{quality,report,report_reviewer,planner,researcher}.py`; `tests/test_imports.py`, `tests/test_types.py`, `tests/test_state.py`, `tests/test_evaluation/test_config.py`, `tests/test_agents/{test_evidence,test_identity,test_prompts,test_report,test_tool_free_prompts,test_native_react_boundary,test_source_evaluator}.py`.
+**Owns:** the files it deletes; `agents/__init__.py`, `utils/types.py`, `utils/__init__.py`, `utils/claims.py`, `agents/prompts.py`, `agents/evidence.py`, `agents/identity.py`; the dead names in `agents/{quality,report,report_writer,report_reviewer,planner,researcher,wording,figures,verified_facts}.py`; `tests/test_imports.py`, `tests/test_types.py`, `tests/test_state.py`, `tests/test_evaluation/test_config.py`, `tests/test_agents/{test_evidence,test_identity,test_prompts,test_report,test_tool_free_prompts,test_native_react_boundary,test_source_evaluator,test_wording,test_figures,test_verified_facts}.py`.
 
 - [ ] **Step 1: Confirm nothing outside the doomed set still imports it.** Run `grep -rn "agents.fact_checker\|agents.claim_clusters\|agents.critic\|agents.synthesizer\|utils.claims" src tests --include=*.py | grep -v "src/deep_research/agents/\(fact_checker\|claim_clusters\|critic\|synthesizer\).py\|tests/test_agents/test_\(fact_checker\|claim_clusters\|critic\|synthesizer\|synthesis_seam\|evidence_quality_seam\).py\|e2e_evaluation"`. Expected: only `agents/__init__.py` and the test files this task owns. Anything else goes back to its Phase-4 owner (rule R6).
 - [ ] **Step 2: Delete.** `git rm` `agents/fact_checker.py`, `agents/claim_clusters.py`, `agents/critic.py`, `agents/synthesizer.py`, `utils/claims.py`, `tests/test_agents/test_fact_checker.py`, `tests/test_agents/test_claim_clusters.py`, `tests/test_agents/test_critic.py`, `tests/test_agents/test_synthesizer.py`, `tests/test_agents/test_synthesis_seam.py`, `tests/test_agents/test_evidence_quality_seam.py`.
-- [ ] **Step 3: Remove the dead names.** From `utils/types.py`, every symbol of the acceptance grep (Caller inventory) and the fields `ResearchState.{verified_claims, claim_clusters, critique, refinement_targets, progress_history, repair_stop_reason, unique_claim_count}`, the claim fields of `ReportComposition`, `ReportQualitySnapshot`, `ReportStatement`, `ReportPoint`, `RejectedDraftPoint` and `ReportTerminalState` (critic status and score, critical-target counts), with `merge_research_state`'s claim merging and its lazy `claim_clusters` import. From `agents/prompts.py`, the fact-checker and critic prompt constants. From `agents/evidence.py`, the pair-only machinery (`source_origin_id`, `shares_lineage`, `eligible_independent_pair`, `EvidenceEligibility`, and `COPIED_TRANSPORT_RELATIONS` if nothing else reads it). From `agents/identity.py`, `merge_claim_snapshot`, `atomic_fingerprint`, `claim_cluster_id`, and `claim_fingerprint` if `grep -rn claim_fingerprint src tests` shows no surviving reader. From `quality.py`, `report.py`, `report_reviewer.py`, `planner.py` and `researcher.py`, every name Phase 4 left without a caller (`grep -rn "<name>" src tests` prints only its definition). Then rewrite `agents/__init__.py`, `utils/__init__.py` and `tests/test_imports.py` to the surviving public names, and remove the claim and critique tests from the owned test files.
+- [ ] **Step 3: Remove the dead names.** From `utils/types.py`, every symbol of the acceptance grep (Caller inventory) and the fields `ResearchState.{verified_claims, claim_clusters, critique, refinement_targets, progress_history, repair_stop_reason, unique_claim_count}`, the claim fields of `ReportComposition`, `ReportQualitySnapshot`, `ReportStatement`, `ReportPoint`, `RejectedDraftPoint` and `ReportTerminalState` (critic status and score, critical-target counts), with `merge_research_state`'s claim merging and its lazy `claim_clusters` import. From `agents/prompts.py`, the fact-checker and critic prompt constants. From `agents/evidence.py`, the pair-only machinery (`source_origin_id`, `shares_lineage`, `eligible_independent_pair`, `EvidenceEligibility`, and `COPIED_TRANSPORT_RELATIONS` if nothing else reads it). From `agents/identity.py`, `merge_claim_snapshot`, `atomic_fingerprint`, `claim_cluster_id`, and `claim_fingerprint` if `grep -rn claim_fingerprint src tests` shows no surviving reader. From `quality.py`, `report.py`, `report_reviewer.py`, `planner.py` and `researcher.py`, every name Phase 4 left without a caller (`grep -rn "<name>" src tests` prints only its definition). Then rewrite `agents/__init__.py`, `utils/__init__.py` and `tests/test_imports.py` to the surviving public names, and remove the claim and critique tests from the owned test files. Also remove the D8 dead helpers — each one only when `grep -rn "<name>" src tests` shows no importer outside its own module and its own tests: `agents/wording.py`'s `hedge_forecast` and `page_modal` (D8's cutover left both dead) and `unattested_names` and `stated_scopes` if nothing reads them; `agents/figures.py`'s `bare_numbers` and `agents/verified_facts.py`'s `untraced_numbers` (both went with the `untraced_figures` gate) — `figure_in_text` stays while the P1-2 fallback reads it, and `dates_in`/`without_dates` go only if `bare_numbers` was their only caller. Remove each with its line in `agents/__init__.py`'s import block and its `__all__` entry, and with its tests. And from `utils/types.py`'s `FigureDropReason`, remove `figure_not_in_evidence` (D8 deleted the not_matched rescue branch that raised it) and keep `context_unavailable` (the P1-2 ruling reads it when an unjudged figure fails `figure_in_text`).
 - [ ] **Step 4: Re-pin the fingerprints** (PD-17) with the Task 1.5 command: all five pins move (`agents/prompts.py` changed); record one comment line "Evidence Verifier plan, Task 4.10: agent set and shared prompts changed"; delete the historical single-value tests (including every `CRITIC_PROMPT_FINGERPRINT` test and the constant).
 - [ ] **Step 5: Run the checks.** Run the acceptance grep of the Caller inventory over `src tests` excluding `src/deep_research/e2e_evaluation` and `tests/test_e2e_evaluation`: it prints nothing. Run the IMPORT SMOKE without `deep_research.e2e_evaluation`. Run `"$PY" -m pytest -q tests --ignore=tests/test_state.py --ignore=tests/test_e2e_evaluation` and, alone, `"$PY" -m pytest -q tests/test_state.py`. Expected: PASS.
 - [ ] **Step 6: Commit** with "refactor: remove the fact checker, claim clusters, critic and synthesizer; exports and pins".
@@ -5325,8 +5386,8 @@ def graph_quality_status(state: ResearchState) -> str:
 
 **Owns:** `e2e_evaluation/{cases,evaluators,models,runner,replay,replay_matrix}.py`, `tests/test_e2e_evaluation/*`. (The README's "Graph-historical harness" subsection is deleted by Task 4.6, which owns `README.md`.)
 
-- [ ] **Step 1: Models, evaluators, runner.** `models.py`: `AGENT_NAMES` as Task 4.7's; `SnapshotPass` loses `claims` and `critic_targets`; `DeterministicEvaluation` replaces the claim fields (`checked_claims`, `claims_with_provenance`, `checked_claim_provenance_ratio`, `duplicate_claims`, `contradicted_claims`, `disclosed_contradictions`, `critic_targets`, `closed_critic_targets`, `repeated_claim_snapshot_passes`) with `verified_findings`, `dropped_findings`, `context_unchecked_findings`, `duplicate_fact_rows`, `untraced_figures`, `missing_required_targets`, `extra_passes`. `evaluators.py` reads them from production state and from the new CLI summary lines (Task 4.6); `runner.py`'s acceptance checks `duplicate_fact_rows == 0` in place of `duplicate_claims == 0`.
-- [ ] **Step 2: Run the real-agent matrix and fix until green.** Run: `"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3`. Every row passes its declared result and invariants in all three repetitions. A failure caused by a double or a row is fixed here; a failure caused by product code goes to its Phase-4 owner (rule R6).
+- [ ] **Step 1: Models, evaluators, runner.** `models.py`: `AGENT_NAMES` as Task 4.7's; `SnapshotPass` loses `claims` and `critic_targets`; `DeterministicEvaluation` replaces the claim fields (`checked_claims`, `claims_with_provenance`, `checked_claim_provenance_ratio`, `duplicate_claims`, `contradicted_claims`, `disclosed_contradictions`, `critic_targets`, `closed_critic_targets`, `repeated_claim_snapshot_passes`) with `verified_findings`, `dropped_findings`, `context_unchecked_findings`, `duplicate_fact_rows`, `unjudged_sentences`, `missing_required_targets`, `extra_passes`. `evaluators.py` reads them from production state and from the new CLI summary lines (Task 4.6); `runner.py`'s acceptance checks `duplicate_fact_rows == 0` in place of `duplicate_claims == 0`, and `unjudged_sentences == 0` (every kept sentence carries a Statement Check verdict — a recorded batch failure is an `"unchecked"` verdict, not an unjudged one).
+- [ ] **Step 2: Run the real-agent matrix and fix until green.** Run: `"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3`. Every row passes its declared result and invariants in all three repetitions; the replay doubles script `ContextCheckDraft` replies in batches of `agents.verifier_batch_size` (5) and `StatementCheckDraft` replies for every `S<nn>` label a request lists (Task 4.9), so a row with a scripted `inconsistent` verdict pins the refusal path and a row with a scripted batch failure pins `unchecked`. The invariant `_invariant_read_downloaded_once` stays deterministic: Task 4.13's run-wide tool lock serialises the tool section, so a page two sub-topics request is downloaded once and the second admission comes from the cache. A failure caused by a double or a row is fixed here; a failure caused by product code goes to its Phase-4 owner (rule R6).
 - [ ] **Step 3: Retire the graph-historical harness (PD-14; decided by the user).** Delete `GRAPH_ONLY_HISTORICAL_MANIFEST`; the `graph-historical` mode in `runner.py` (its `--mode` choice and its dispatch; if the remaining mode is then the only choice, delete the `--mode` argument and its dispatch too, since a one-choice flag is dead code); the scripted six-agent doubles in `cases.py` that only that mode uses (`ScriptedDependencies` and its helpers: first run `grep -rn "ScriptedDependencies" src tests` and keep anything the real-agent matrix still imports); and their tests. Then `grep -rn "graph-historical\|graph_historical\|GRAPH_ONLY_HISTORICAL" src tests README.md` prints nothing.
 - [ ] **Step 4: Run the tests.** Run: `"$PY" -m pytest -q tests/test_e2e_evaluation` and the acceptance grep of the Caller inventory over `src/deep_research/e2e_evaluation tests/test_e2e_evaluation`: it prints nothing.
 - [ ] **Step 5: Commit** every owned file changed with "test(e2e): evidence-verifier matrix green; graph-historical harness retired".
@@ -5347,9 +5408,154 @@ def graph_quality_status(state: ResearchState) -> str:
 - [ ] **Step 3: Run live (operator, off-peak).** Run the OFF-PEAK CHECK; if `OK`, run `"$PY" scratch/ev_review_audit2.py --live`. Expected: `PASS RV1`–`PASS RV3`, one or two writer calls and one reviewer call, under 12 minutes. On a failure, each printed defect goes to its owner (rule R6): a writing defect to Task 3.4's writer prompt, a packet defect (the reviewer could not see a label, a release or the Not found list) to Task 4.2. Then re-run this step.
 - [ ] **Step 4: No commit** (scratch).
 
+### Task 4.13: Parallel sub-topics and scoring batches
+
+**Role:** sp-hard-implementer. **Wave:** 4C, beside Tasks 4.8 and 4.9 (off their critical path: it is L beside 4.8's XL). **Depends on:** Tasks 4.1 (the four §7.3 config values) and 2.1 merged, and Task 4.4 merged with its review clean (rule R5: it edits `agents/researcher.py` and `tests/test_agents/test_researcher.py`, which Task 4.4 owns until then). **Size:** L.
+
+**Owns:** `src/deep_research/agents/researcher.py`, `src/deep_research/agents/react.py`, `src/deep_research/agents/base.py`, `src/deep_research/agents/source_evaluator.py`, `src/deep_research/agents/evidence_verifier.py` (its two config reads only), `tests/agent_fakes.py` (the target-keyed completer only), `tests/test_agents/test_researcher.py`, `tests/test_agents/test_react.py`, `tests/test_agents/test_source_evaluator.py`, `tests/test_agents/test_evidence_verifier.py` (the config-read tests only). Task 4.10 re-pins the researcher fingerprint afterwards (PD-17) and owns these files last.
+
+**Interfaces:**
+- Consumes: `agents.sub_topic_concurrency`, `agents.source_scoring_concurrency`, `agents.verifier_batch_size` and `agents.verifier_concurrency` (Task 4.1); `CONTEXT_CHECK_BATCH_SIZE` and `CONTEXT_CHECK_CONCURRENCY` as the defaults (Task 2.1, PD-12); `ScratchpadMemory` (`memory/scratchpad.py`); `run_react_loop` and `ToolPolicyDecision` (`react.py`); `ResearcherAgent._policy_for_task`; `extract_findings`; the existing `test_researcher.py` provider-failure pins (`provider_failure_stopped_processing`).
+- Produces: `ResearcherAgent(..., sub_topic_concurrency: int | None = None)` — default the configured `agents.sub_topic_concurrency`, so a test that pins order can construct the agent with 1; `run_react_loop(..., tool_lock: asyncio.Lock | None = None)`; `BaseAgent._complete_react_decision(..., scratchpad: ScratchpadMemory | None = None)` and `_record_step(step, *, scratchpad: ScratchpadMemory | None = None)`; `sub_topic_completed_event`'s metadata gains `elapsed_s`; `SourceEvaluatorAgent` scores its batches under `asyncio.Semaphore(config.source_scoring_concurrency)`; the Evidence Verifier reads its batch size and concurrency from `self.config`. Every cap is config (PD-27); no new module constant is added.
+
+- [ ] **Step 1: Write the failing tests.** Append to `tests/test_agents/test_researcher.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_two_loops_never_see_each_others_observations_or_acquisition_context(tracker) -> None:
+    """Loop A's second turn carries A's own observation and A's own acquisition
+    context, never B's, whatever order the turns complete in: each loop gets its
+    own ScratchpadMemory and its own policy (D9, §7.2)."""
+
+
+@pytest.mark.asyncio
+async def test_findings_and_events_fold_in_plan_order_not_completion_order(tracker) -> None:
+    """`runs`, `findings` and the sub-topic events come out in plan order even when
+    the last plan topic finishes first."""
+
+
+@pytest.mark.asyncio
+async def test_a_page_two_loops_request_at_once_is_downloaded_once_and_admitted_from_cache(
+    tracker, web_tools
+) -> None:
+    """The tool lock makes the second loop's fetch of the same URL a cache hit from
+    the first loop's admission, so the run downloads the page once
+    (`_invariant_read_downloaded_once`)."""
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_lets_running_loops_finish_and_skips_unstarted_ones(tracker) -> None:
+    """One loop dies on ProviderError; the loops already running finish, and every
+    loop that never started records `provider_failure_stopped_processing`."""
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_limit_in_one_loop_still_halts_the_run(tracker) -> None:
+    """RequestAttemptLimitError in one loop is re-raised after every sibling settles,
+    so the node still halts the run."""
+```
+
+Append to `tests/test_agents/test_react.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_the_tool_lock_serialises_only_the_tool_section(tracker) -> None:
+    """Two interleaved loops never enter `tool.execute` at once, while their model
+    turns overlap: the lock wraps decision → execute → after_action only."""
+```
+
+Append to `tests/test_agents/test_source_evaluator.py`:
+
+```python
+@pytest.mark.asyncio
+async def test_a_failing_source_scoring_batch_leaves_the_other_batches_scored(...) -> None:
+    """One batch's ProviderError marks that batch `unscored_provider`; the other
+    batches are scored, keyed by URL, in `task.groups` order."""
+```
+
+And in `tests/agent_fakes.py` add a target-keyed completer beside the order-based `ScriptedCompleter` (which keeps serving single-loop callers): `complete_react` dispatches a scripted decision on the `target_id=` line of the ReAct packet, and `complete_structured` on the sub-topic title line, the way `e2e_evaluation/replay.py`'s `_researcher_turn` does; a decision addressed to a topic no loop asked for fails the test outright (the order-based completer hands decisions to the wrong loop as soon as a tool suspends).
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_researcher.py -k "each_others or plan_order or downloaded_once or provider_failure_lets or attempt_limit" tests/test_agents/test_react.py tests/test_agents/test_source_evaluator.py`. Expected: FAIL.
+
+- [ ] **Step 3: The researcher's loop.** `ResearcherAgent.run` builds one coroutine per selected sub-topic and runs them under `asyncio.Semaphore(self._sub_topic_concurrency)`; the folds (`runs`, `findings`, `events`, the acquisition snapshot) iterate the plan-ordered task list, never the completion order; `asyncio.gather(..., return_exceptions=True)` collects, and after every coroutine settles the first `RequestAttemptLimitError` is re-raised so `graph/nodes.py` still halts the run. A `stop` flag is set by the first non-recoverable provider failure in a loop and checked as a loop acquires the semaphore, so an unstarted sub-topic keeps `provider_failure_stopped_processing` while a running one finishes. `_research_sub_topic` builds `ScratchpadMemory(session_id, agent_name, max_entries)` per loop and passes `decision_context=policy.context(...)` and the run-wide `tool_lock` into `run_react_loop`; `extract_findings` takes its `policy` explicitly (and returns the target-obligation flag) instead of reading `self._active_acquisition`; delete `_active_acquisition`, `_active_target_id` and the `_last_*` counters (their values become each loop's own locals and the `sub_topic_completed_event` metadata).
+
+- [ ] **Step 4: The tool lock.** `run_react_loop` gains a keyword-only `tool_lock: asyncio.Lock | None = None` and holds it across the policy decision, `tool.execute` and `after_action` only — never across the model call. `BaseAgent._complete_react_decision` and `_record_step` take an optional `scratchpad` argument, so a loop's prompt renders its own notes instead of the shared `self._scratchpad`.
+
+- [ ] **Step 5: Source-evaluator batches.** `SourceEvaluatorAgent.score_sources` gathers one coroutine per batch under `asyncio.Semaphore(self._config.source_scoring_concurrency)`; each batch's failure marks its own groups `unscored_provider` and stands alone (no batch marks a later one), and the results are assembled in `task.groups` order exactly as today.
+
+- [ ] **Step 6: The caps come from config, and the sub-topic event gains its duration.** In `EvidenceVerifierAgent`, replace `CONTEXT_CHECK_BATCH_SIZE`/`CONTEXT_CHECK_CONCURRENCY` reads with `self.config.verifier_batch_size`/`self.config.verifier_concurrency` (module constants stay the defaults, PD-12); the same two values bound `check_statements`. Add `elapsed_s` (the loop's wall seconds, rounded to 0.1) to `sub_topic_completed_event`'s metadata, so per-sub-topic time survives concurrency: the CLI prints every sub-topic event at node completion, where log timestamps no longer separate them.
+
+- [ ] **Step 7: Run the tests.** Run: `"$PY" -m pytest -q tests/test_agents/test_researcher.py tests/test_agents/test_react.py tests/test_agents/test_source_evaluator.py tests/test_agents/test_evidence_verifier.py tests/test_agents/test_base.py tests/test_config.py`. Expected: PASS. A multi-topic test that flips decisions under the target-keyed completer is ported to it here; a failure in a file this task does not own is reported (rule R2).
+
+- [ ] **Step 8: Commit** every owned file changed with "feat(researcher): concurrent sub-topics under a run-wide tool lock; concurrent scoring batches; caps from config (D9)".
+
+**Acceptance:** no run exceeds `agents.sub_topic_concurrency` sub-topic loops or `agents.source_scoring_concurrency` scoring calls at once; two loops never share a scratchpad or an acquisition context; findings and events are in plan order regardless of completion order; a page two loops request is downloaded once and admitted from cache; `provider_failure_stopped_processing` and the `RequestAttemptLimitError` halt are unchanged; the Evidence Verifier's batch size and concurrency come from config; `sub_topic.completed` carries `elapsed_s`.
+
+### Task 4.14: Concurrency and budget telemetry
+
+**Role:** sp-implementer. **Wave:** 4D, beside Tasks 4.11 and 4.12. **Depends on:** Tasks 4.5, 4.6, 4.8 and 4.10 merged, and their reviews clean (rule R5: it edits `agents/report.py`, `cli.py`, `graph/nodes.py`, `runtime/assembly.py` and `utils/types.py`, which those tasks own). **Size:** M.
+
+**Why this sequencing (disjoint from 4.5, 4.6 and 4.13).** The telemetry lands in the two artifacts those tasks own — the quality JSON (`agents/report.py`, Task 4.5) and the CLI summary (`cli.py`, Task 4.6) — so it runs after both are merged and review-clean rather than beside them (same pattern as Task 4.10's lock wait); 4.13's files (`researcher.py`, `react.py`, `base.py`, `source_evaluator.py`, `evidence_verifier.py`, `agent_fakes.py`) are not touched at all: the provider-call gauge lives in `providers/` and `observability/`, so the two tasks can run in parallel and neither waits on the other.
+
+**Owns:** `src/deep_research/observability/run_telemetry.py` (new), `src/deep_research/observability/__init__.py` (exports only), `src/deep_research/providers/retry.py`, `src/deep_research/providers/deepseek_provider.py`, `src/deep_research/providers/openai_provider.py`, `src/deep_research/providers/factory.py` (passing the collector the way it passes `request_budget`), `src/deep_research/utils/types.py` (one `ResearchState` field), `src/deep_research/agents/report.py` (the quality record's telemetry block only), `src/deep_research/cli.py` (one summary line), `src/deep_research/runtime/assembly.py`, `src/deep_research/graph/nodes.py` (create and thread the collector only), `tests/test_observability_run_telemetry.py` (new), `tests/test_retry_policy.py`, `tests/test_cli/test_render.py`, `tests/test_agents/test_report.py`.
+
+**Interfaces:**
+- Consumes the existing seams only: `RequestBudget`'s observer stream (`set_observer`, `RequestBudgetUpdate`, the callable the CLI's `RequestBudgetStream` already receives — attempt reserved = one call in flight, reported tokens = one call done, and the collector decrements on any completion so a failed attempt does not leak); `ProviderResponseTelemetry`'s `configured_max_tokens`, `usage` and `finish_reason_category`; the providers' `_record_tokens` call sites; `providers/retry.py`'s retry loop; the tracker's per-call spans (the provider calls already carry `agent_name`, and the span knows its seconds).
+- Produces: `RunTelemetry` (frozen: `rate_limit_errors`, `rate_limit_recovered`, `peak_calls_in_flight`, `peak_agent`, `stages: tuple[StageTelemetry, ...]` with `agent`, `calls`, `seconds`, `slowest_seconds`, `operations: tuple[OperationTelemetry, ...]` with `agent`, `max_output_tokens`, `configured_cap`, `truncations`, `cap_key`); `RunTelemetryCollector` (a no-op default, so every harness that builds a provider directly keeps working); `render_telemetry_line(telemetry) -> str`; and `ResearchState.run_telemetry: RunTelemetry | None = None` (replaced on write, never appended).
+
+- [ ] **Step 1: Write the failing tests** (`tests/test_observability_run_telemetry.py`, plus one addition each in the two owned test files, and a 429-accounting case in `tests/test_retry_policy.py`):
+
+```python
+def test_rate_limits_are_counted_and_recovered() -> None:
+    """Three transient rate-limit failures, two retried to success, one that
+    exhausted the ladder: 3 errors, 2 recovered."""
+
+
+def test_peak_in_flight_is_the_high_water_mark() -> None:
+    """Reservations and completions interleaved: the peak is 8, not the final 0,
+    and it names the agent whose calls set it."""
+
+
+def test_a_stage_aggregates_calls_seconds_and_slowest() -> None:
+    """Three calls of 2 s, 9 s and 4 s: calls=3, seconds=15.0, slowest=9.0."""
+
+
+def test_output_tokens_are_reported_against_the_cap() -> None:
+    """The operation's maximum output tokens are compared with that call's
+    `configured_max_tokens`, and `finish_reason_category == "length"` counts
+    as a truncation."""
+
+
+def test_the_advice_names_the_knob_and_the_cap() -> None:
+    """N × 429 prints "rate limits hit N times; consider lowering
+    agents.verifier_concurrency" (the knob of the agent at the peak); a call at
+    93% of its cap prints "output within 93% of the report_writer cap; consider
+    raising it"; with neither, no advice line is added."""
+```
+
+and `test_the_quality_record_carries_the_telemetry_block` in `tests/test_agents/test_report.py` (the record's `telemetry` key holds the four parts) and `test_the_summary_prints_one_telemetry_line` in `tests/test_cli/test_render.py`.
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_observability_run_telemetry.py tests/test_retry_policy.py tests/test_cli/test_render.py tests/test_agents/test_report.py -k "telemetry or retry"`. Expected: FAIL (`ModuleNotFoundError: deep_research.observability.run_telemetry`).
+
+- [ ] **Step 3: Collect.** In `providers/retry.py`, wrap the retry loop so each transient failure is reported to the collector and a later attempt's success marks it recovered; the provider's `_record_tokens` call site also records the call's seconds (from the span), its `usage.output_tokens`, its `configured_max_tokens` and whether `finish_reason_category == "length"`. The collector's budget observer gives `peak_calls_in_flight` and `peak_agent`. One `RunTelemetryCollector` per run is created in `runtime/assembly.py::build_runtime` beside `RequestBudget` (line 403) and handed to the providers exactly as the budget is (through `build_chat_provider`/`factory.py`), so every provider call of the run reports to the same collector; the collector defaults to a no-op, so Tasks 2.3, 3.6 and 4.12's harnesses keep building providers directly.
+
+- [ ] **Step 4: Store and print.** Add `ResearchState.run_telemetry` (one field; `utils/types.py`), and let the terminal publication thread the collector from `build_runtime` through `build_graph` into the node that calls `_terminal_artifacts` (`graph/nodes.py`), stamping the state before the record is rendered. `render_quality_record` gains a `telemetry` block (the `RunTelemetry` dump, `None` when the run had no collector). `cli.py` prints one line, after the Integrity line:
+
+```
+Telemetry: peak 8 provider calls in flight (evidence_verifier); 3 rate limits (2 recovered); slowest call report_reviewer 223.4 s; report_writer output 61,200 of 65,536 tokens (93% of its cap); 0 truncated
+```
+
+followed, only when triggered, by the §7.3 advice: `rate limits hit N times; consider lowering <knob>` when N > 0 (`<knob>` is the config key of the agent at the peak: `agents.verifier_concurrency`, `agents.sub_topic_concurrency` or `agents.source_scoring_concurrency`), and `output within X% of the <op> cap; consider raising it` when a call used 90% or more of its cap or was truncated (`<op>` is the operation, with the config key that bounds it — `planner_final_max_tokens`, `report_review_max_tokens`, `react_decision_max_tokens`, else `llm.max_tokens`). Advice only: nothing is auto-tuned (§12).
+
+- [ ] **Step 5: Run the tests.** Run: `"$PY" -m pytest -q tests/test_observability_run_telemetry.py tests/test_retry_policy.py tests/test_cli tests/test_agents/test_report.py tests/test_runtime/test_outcome.py`. Expected: PASS.
+
+- [ ] **Step 6: Commit** every owned file changed with "feat(telemetry): rate limits, peak in flight, per-stage times and output caps (spec 7.3)".
+
+**Acceptance:** a run's quality JSON carries the four §7.3 parts, and the CLI prints them in one line; the advice lines appear only when their trigger fires and name a real config key; no behaviour changes: nothing auto-tunes concurrency or budgets, and a run without a collector still works.
+
 ### Gate G4 — end of step 4
 
-Run in `$W` once Tasks 4.1–4.12 are merged and review-clean (rule R8):
+Run in `$W` once Tasks 4.1–4.14 are merged and review-clean (rule R8):
 
 ```bash
 "$PY" -m pytest -q tests --ignore=tests/test_state.py
@@ -5362,7 +5568,7 @@ grep -rnwE "<the Caller inventory's acceptance pattern>" src tests    # prints n
 "$PY" -m deep_research --help
 ```
 
-**Pass condition:** every command succeeds; the grep prints nothing; `--help` shows `--max-iterations` described as extra research passes; the reviewer probe exits 0 in its default mode and prints `PASS RV1`–`PASS RV3` live. That is spec §9 step 4's proof: the full test suite green and the reworked e2e replay matrix green, plus the proof that the real Report Reviewer accepts a report built to §6 (F7). Do not start Phase 5 until G4 passes.
+**Pass condition:** every command succeeds; the grep prints nothing; `--help` shows `--max-iterations` described as extra research passes; the reviewer probe exits 0 in its default mode and prints `PASS RV1`–`PASS RV3` live; the CLI summary of the reviewer probe's default mode carries the one Telemetry line (Task 4.14). That is spec §9 step 4's proof: the full test suite green and the reworked e2e replay matrix green, plus the proof that the real Report Reviewer accepts a report built to §6 (F7). Do not start Phase 5 until G4 passes.
 
 ---
 
@@ -5488,7 +5694,7 @@ and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `c
 **Files:** Modify (untracked) `scratch/run_live_proof.py`.
 
 - [ ] **Step 1: Per-label arguments.** Change `RUNS` to `dict[str, tuple[str, list[str], dict[str, str]]]` (question, extra CLI arguments, extra environment); keep the old labels as `(AUDIT or SMOKE, [], {})`; add `"ev-preflight": (AUDIT, ["--max-iterations", "0", "--request-tavily-attempt-ceiling", "12"], {"AGENTS_MAX_SUB_TOPICS": "2"})` and `"ev-1": (AUDIT, [], {})`. `run()` appends the extra arguments, merges the extra environment, and writes both to `run.env` (`EXTRA_ARGS=...`, `EXTRA_ENV=...`). Keep `PROOF_MAX_ITERATIONS` as it is (it still maps to `--max-iterations`); update the docstring's "macro refinement budget the critic may spend" to "extra research passes for missing required targets".
-- [ ] **Step 2: A stage-time summary.** After the run, read `cli.log` and print each stage's duration: the time between consecutive `graph.node.completed` lines, per node name and pass, and the total; also print the researcher's seconds per sub-topic, from its per-sub-topic turn lines (their format: `output/live-proof/audit-3/cli.log` lines 86–157 in the `agent-cli-quality-trace-plan` checkout), and the mean. Append them to `SUMMARY.tsv` as a `stages=` column and a `researcher_per_subtopic=` column.
+- [ ] **Step 2: A stage-time summary.** After the run, read `cli.log` and print each stage's duration: the time between consecutive `graph.node.completed` lines, per node name and pass, and the total; then print the researcher's slowest sub-topic and its per-turn mean, never the sum — each sub-topic's `sub_topic.completed` event carries `elapsed_s` (Task 4.13), so `slowest = max(elapsed_s)` and `per_turn_mean = elapsed_s / iterations` across the sub-topics (concurrent sub-topics no longer separate in the log's timestamps). Append them to `SUMMARY.tsv` as a `stages=` column, a `researcher=` column (`slowest=…; per_turn_mean=…`) and a `telemetry=` column (the Telemetry line, Task 4.14).
 - [ ] **Step 3: Dry check.** `"$PY" -c "import runpy; m = runpy.run_path('scratch/run_live_proof.py'); print(sorted(m['RUNS']))"` lists `ev-1` and `ev-preflight`. No commit (scratch).
 
 ### Task 6.2: Capped live pre-flight (operator)
@@ -5498,11 +5704,12 @@ and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `c
 - [ ] Run `"$PY" scratch/run_live_proof.py ev-preflight`. **Pass**, every item:
   - exit 0. The runner passes `--require-quality`, so 0 means quality `accepted`; exit 4 (the report was not accepted) fails the pre-flight;
   - `output/live-proof/ev-preflight/` holds the report, the evidence log and the quality JSON, and the report has every §6.1 section; no traceback in `cli.log`;
-  - timing: (the researcher's mean seconds per sub-topic × the sub-topics Gate G5's live plan probe planned) + every other stage's seconds ≤ 30 minutes; the Evidence Verifier, Report Writer and Report Reviewer are each within 1.5 times their "Runtime budget" row;
+  - timing: the slowest sub-topic's `elapsed_s` (Task 6.1) plus every other stage's seconds ≤ 30 minutes as the projected first pass — concurrent sub-topics overlap, so the sum of per-sub-topic times is not the projection; the researcher's per-turn mean ≤ 27 s; the Evidence Verifier, Report Writer and Report Reviewer are each within 1.5 times their "Runtime budget" row;
   - zero `evidence_verifier_context_check_failed` errors in the quality JSON, and the Findings line shows 0 unchecked context;
-  - the Integrity line shows `0 forecasts without release` (PD-24).
+  - the Integrity line shows `0 forecasts without release` (PD-24);
+  - the Telemetry line (Task 4.14) shows zero unrecovered 429s and `0 truncated`.
 
-  On a failure, stop: fix through the owning task's fix loop, re-run the affected gate's offline commands, then repeat 6.2. A failed or slow Context Check batch is fixed by review item 13's one config line; a projected first pass over 30 minutes by item 15's fallback (`agents.max_iterations: 6`).
+  On a failure, stop: fix through the owning task's fix loop, re-run the affected gate's offline commands, then repeat 6.2. A per-turn mean over 27 s or a projected first pass over 30 minutes is fixed by lowering the named config knob before `ev-1` — `agents.sub_topic_concurrency` to 3, no code change and no re-run of 6.2, because the sequential budget already fits 45 minutes — and `agents.max_iterations: 6` (review item 15) is the last resort. Recurring 429s are lowered the same way on the knob the Telemetry advice names (the knob of the agent at the peak; `agents.verifier_concurrency` first), and a truncated or near-cap call by raising the cap that advice names. A failed or slow Context Check batch is review item 13's one config line.
 
 ### Task 6.3: The live run `ev-1` (operator)
 
@@ -5522,7 +5729,7 @@ and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `c
 
 ## Over-engineering review: decisions for the user
 
-Each item goes beyond the spec's letter, or is a choice the spec leaves open. Each carries a recommendation. None is silently included: the plan does what the "Plan" column says. Items marked **decided** were ruled on by the user after the plan audit (`agent://FablePlanAudit`); the rest stand as recommended unless the user rules otherwise.
+Each item goes beyond the spec's letter, or is a choice the spec leaves open. Each carries a recommendation. None is silently included: the plan does what the "Plan" column says. Items marked **decided** were ruled on by the user after the plan audit (`agent://FablePlanAudit`) or during execution (D7, D8 and D9: `agent://FableParallel`); the rest stand as recommended unless the user rules otherwise.
 
 | # | Item | Plan | Recommendation and trade-off |
 |---|---|---|---|
@@ -5530,7 +5737,7 @@ Each item goes beyond the spec's letter, or is a choice the spec leaves open. Ea
 | 2 | New module `agents/wording.py` (PD-19) | included; **decided**: Task 3.3 runs in wave 1B | Keep. The verifier and the writer both need `stated_role`. Moving 3.3 to wave 1B lets Task 2.1 import `stated_role` from `wording.py` from the start, so no task edits `evidence_verifier.py` across phases. |
 | 3 | Naming an agency's own page from its host (PD-18) | included, as the last fallback after the Source Evaluator's validated issuer (PD-25) | Keep (about 15 lines). PD-25 is the mechanism; PD-18 only covers a page the Source Evaluator recorded no issuer for. Only government and education hosts qualify, and the page must name the organisation. |
 | 4 | "source:" as an attribution cue (Task 2.1) | included | Keep. The EIA STEO read is a mirror on ent.news that credits EIA in a source line. Without the cue, that forecast loses its EIA attribution and cannot answer the "EIA forecast" target. |
-| 5 | A truncated Context Check batch is asked once more in two halves | included | Keep. It is bounded (two extra calls at most), and truncation is the likely failure. The alternative, going straight to `context_unchecked`, is simpler but labels up to 15 findings "unchecked context". |
+| 5 | A truncated Context Check batch is asked once more in two halves | included | Keep. It is bounded (two extra calls at most), and truncation is the likely failure. The alternative, going straight to `context_unchecked`, is simpler but leaves a whole batch unchecked (up to 5 findings, `agents.verifier_batch_size`). |
 | 6 | Missing required targets computed by code, not by the reviewer (PD-5) | included | Keep. The spec lists them as reviewer output; computing them from fields (§6.6) makes the extra pass deterministic and immune to a reviewer outage. |
 | 7 | The writer cites labels only, so there is no URL guard (PD-6) | included | Keep. A URL the findings do not carry cannot occur. |
 | 8 | The graph-historical e2e harness (PD-14) | **RETIRED — decided** | Task 4.11 deletes it; Task 4.6 deletes its README subsection; Gate G4 has no graph-historical command. The real-agent matrix covers the new graph end to end. Saves about an hour in Task 4.11 and all future upkeep of doubles for a graph that no longer exists. |
@@ -5549,3 +5756,6 @@ Each item goes beyond the spec's letter, or is a choice the spec leaves open. Ea
 | 21 | Four integration tasks (1.5, 2.2, 3.5, 5.4) exist only for re-exports and fingerprint pins | included | Keep: they are off the critical path and keep `agents/__init__.py` and `test_config.py` single-owner per wave. The alternative folds each into its phase's last implementation task (fewer dispatches, one more shared file per wave). |
 | 22 | `same_organisation`'s token heuristics (initials, prefix of 4 or more, legal suffixes), Task 3.1 | included | Keep for now; it is tested. With PD-25 supplying validated publisher names, it could shrink later. |
 | 23 | A `release` field (with evidence words) on `FigureCheckDraft`, so the Context Check can point at the page's edition line | not included | Add only if the pre-flight's `forecasts_without_release` is above 0. PD-24's label keeps the reader informed meanwhile. |
+| 24 | D7: minimal writer guards (numbers, dates, scope, a known label), labels carry provenance, the reviewer flags prose that contradicts its label | superseded by D8 | D7's minimal *code* guards never shipped: the user's D8 replaces them with the LLM checks (Context Check for figures, Statement Check for sentences). What D7 added and stays: code-built labels on every figure, the reviewer's defect for contradicting prose (§6.3), and the two prompt lines. |
+| 25 | D8: the Context Check judges each figure and the Statement Check each sentence; 5 items per call, 8 in flight; code keeps only "the quoted words are on the page" and mechanical rules | included; **decided** (user, spec `d34fd21`) | Removes every code wording check, and with them the false refusals that cost the G3 live runs two of three forecasts. Contract: `SDD/d8-contract.md`. The batch bounds become config in D9 (PD-12). |
+| 26 | D9: researcher sub-topics concurrent (5) under one run-wide tool lock, source-evaluator scoring batches concurrent (3), every cap in config, §7.3 telemetry with advice only | included; **decided** (user, spec `3789d0a`, from `agent://FableParallel`) | The one change measured to move the first pass materially: ≈ 23–27 min → ≈ 14–17, and ≈ 24–28 with the extra pass, under the 30-minute target. Rejected alternatives: fewer or larger sub-topics (paid in turns per target; `AGENTS_MAX_SUB_TOPICS` stays the fallback), overlapping only first extractions (dominated), tool calls within a turn (high risk for ≤ 30 s), overlapping the verifier with the source evaluator (1 minute for graph complexity). Caps are config so live results can lower them without a code change: Task 4.13 implements, Task 4.14 reports. |
