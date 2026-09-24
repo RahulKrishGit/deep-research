@@ -78,7 +78,7 @@ from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.wording import (
     _ACRONYM_PATTERN,
     _CLAUSE_SPLIT,
-    _COMMON_ABBREVIATIONS,
+    _COMMON_ABBREVIATIONS,  # noqa: F401 -- kept for tests/test_agents/test_synthesizer.py; both deleted in Task 4.10
     _FIGURE_PATTERN,
     _PROPER_NOUN_PATTERN,
     _SENTENCE_INITIAL,

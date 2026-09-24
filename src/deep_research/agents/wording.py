@@ -518,8 +518,7 @@ def _realized_outcome(text: str) -> bool:
     "hit" and "beat" spell their infinitive and past-tense forms identically,
     and a verb right after "to" (optionally "to be" or "to have been") is
     what a forecast is expected *to do*, not a report that it did it. Mirrors
-    ``claim_clusters.py``'s own to-infinitive guard for the same ambiguity,
-    so the two classifiers agree.
+    ``claim_clusters.py``'s own to-infinitive guard for the same ambiguity.
     """
     for match in _REALIZED_OUTCOME_PATTERN.finditer(text):
         if re.search(
@@ -550,12 +549,25 @@ def stated_role(text: str) -> Literal["forecast", "actual", "mixed"]:
     return "forecast" if forecast else "actual"
 
 
-_YEAR_TOKEN = re.compile(r"\b(?:19|20)\d{2}\b")
+_YEAR_TOKEN = re.compile(r"\b(?:FY\s?)?((?:19|20)\d{2})(?:-(\d{2}))?\b")
 
 
 def stated_years(text: str) -> list[str]:
-    """The four-digit years ``text`` names, in order, once each."""
-    return list(dict.fromkeys(_YEAR_TOKEN.findall(text)))
+    """The four-digit years ``text`` names, in order, once each.
+
+    "FY2024" states 2024; a hyphenated range ("2025-26") states both years,
+    the second one completed with the first year's century.
+    """
+    years: list[str] = []
+    for match in _YEAR_TOKEN.finditer(text):
+        year, suffix = match.group(1), match.group(2)
+        if year not in years:
+            years.append(year)
+        if suffix:
+            second = year[:2] + suffix
+            if second not in years:
+                years.append(second)
+    return years
 
 
 # Question-independent segment and basis words (spec §6.2: "no ... scope that the
@@ -567,44 +579,104 @@ SCOPE_TERMS: tuple[str, ...] = (
 )
 
 
+# "commercial and industrial" is "c&i" spelled out; a report and a finding
+# that use different spellings of the same segment must read as one scope.
+_SCOPE_CANONICAL: dict[str, str] = {"commercial and industrial": "c&i"}
+
+
 def stated_scopes(text: str) -> list[str]:
-    """The scope terms ``text`` states, hyphen and space spellings alike."""
+    """The scope terms ``text`` states, hyphen and space spellings alike.
+
+    The longest term is tested first, and its matched span is blanked before
+    a shorter term is tested, so "commercial and industrial" does not also
+    yield its own "commercial" and "industrial" components. "non-residential"
+    and "non residential" state no scope: a negated segment is not the scope
+    it names.
+    """
     folded = " ".join(text.casefold().replace("-", " ").split())
     found: list[str] = []
     for term in SCOPE_TERMS:
         pattern = re.escape(term.replace("-", " "))
-        if re.search(rf"(?<![a-z&]){pattern}(?![a-z])", folded) and term not in found:
-            found.append(term)
+        match = re.search(rf"(?<![a-z&]){pattern}(?![a-z])", folded)
+        if not match:
+            continue
+        negated = bool(re.search(r"\bnon\s*$", folded[: match.start()]))
+        folded = (
+            folded[: match.start()]
+            + " " * len(match.group(0))
+            + folded[match.end() :]
+        )
+        if negated:
+            continue
+        canonical = _SCOPE_CANONICAL.get(term, term)
+        if canonical not in found:
+            found.append(canonical)
     return found
 
 
-_PAST_PASSIVE = re.compile(r"\b(was|were|has been|have been)\s+(added|installed|deployed|commissioned|built)\b", re.I)
-_PAST_ACTIVE = re.compile(r"\b(added|installed|deployed|commissioned|built|reached|hit|exceeded|surpassed)\b", re.I)
-_BASE_FORM = {"added": "add", "installed": "install", "deployed": "deploy", "commissioned": "commission",
-              "built": "build", "reached": "reach", "hit": "hit", "exceeded": "exceed", "surpassed": "surpass"}
+_PAST_PASSIVE = re.compile(
+    r"\b(was|were|has been|have been)\s+"
+    r"(added|installed|deployed|commissioned|built)\b",
+    re.I,
+)
+_PAST_ACTIVE = re.compile(
+    r"\b(added|installed|deployed|commissioned|built|reached|hit|exceeded|surpassed)\b",
+    re.I,
+)
+_BASE_FORM = {
+    "added": "add",
+    "installed": "install",
+    "deployed": "deploy",
+    "commissioned": "commission",
+    "built": "build",
+    "reached": "reach",
+    "hit": "hit",
+    "exceeded": "exceed",
+    "surpassed": "surpass",
+}
 
 
 _WILL_WOULD = re.compile(r"\b(will|would)\b", re.I)
-# Lower case only: "May" in "May 2025" is a month, not a hedge.
-_PAGE_MODAL = re.compile(r"\b(could|might|may)\b")
+# Case-insensitive for "could"/"might" (a sentence-initial "Could" is still a
+# hedge); "may" stays lower case only — "May" in "May 2025" is a month.
+_PAGE_MODAL = re.compile(r"\b(?:[Cc]ould|[Mm]ight|may)\b")
 
 
 def page_modal(text: str) -> str:
     """The first hedging modal the page's own words use ("could"), or ""."""
     match = _PAGE_MODAL.search(text)
-    return match.group(1) if match else ""
+    return match.group(0).casefold() if match else ""
+
+
+def _subject_is_plural(text: str, position: int) -> bool:
+    """True when the word right before ``position`` reads as a plural subject."""
+    match = re.search(r"([A-Za-z][A-Za-z'-]*)\s*$", text[:position])
+    if not match:
+        return False
+    word = match.group(1).casefold()
+    return word.endswith("s") and not word.endswith("ss")
 
 
 def hedge_forecast(text: str, organisation: str, *, marker: str = "") -> str:
     """Spec §6.2: re-attach the verified hedge to a forecast stated as fact, once.
 
     ``marker`` is the page's own modal for the figure (``page_modal`` of its
-    evidence words). A hardened "will"/"would" takes that modal, else "is
-    expected to" (F3); a past-tense outcome verb becomes an expectation.
+    evidence words). A hardened "will"/"would" takes that modal, else "is" or
+    "are expected to" for the subject's number (F3); a past-tense outcome verb
+    becomes an expectation.
     """
     if _WILL_WOULD.search(text):
-        modal = marker if marker in {"could", "might", "may"} else "is expected to"
-        return _WILL_WOULD.sub(modal, text)
+        def will_would_replacement(match: re.Match[str]) -> str:
+            if marker in {"could", "might", "may"}:
+                modal = marker
+            else:
+                plural = _subject_is_plural(text, match.start())
+                modal = "are expected to" if plural else "is expected to"
+            if match.group(0)[:1].isupper():
+                return modal[:1].upper() + modal[1:]
+            return modal
+
+        return _WILL_WOULD.sub(will_would_replacement, text)
 
     def passive(match: re.Match[str]) -> str:
         plural = match.group(1).casefold() in {"were", "have been"}
@@ -617,5 +689,8 @@ def hedge_forecast(text: str, organisation: str, *, marker: str = "") -> str:
 
     hedged = _PAST_ACTIVE.sub(active, _PAST_PASSIVE.sub(passive, text))
     if not _forecast_role(hedged):
-        hedged = f"{hedged.rstrip().rstrip('.')}, according to {organisation}'s forecast."
+        hedged = (
+            f"{hedged.rstrip().rstrip('.')}, according to "
+            f"{organisation}'s forecast."
+        )
     return hedged
