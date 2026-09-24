@@ -233,6 +233,12 @@ registry. It keeps these guards:
   fields do not carry;
 - an actual is never stated as a forecast, and a forecast never as an actual
   (the finding's verified `kind`);
+- the writer's prompt gives each figure's verified `kind`, and a forecast is
+  phrased as a forecast ("EIA expects", "projects"). A sentence that is
+  refused only because it states a forecast as fact is rewritten once by
+  code, re-attaching the verified hedge ("is expected to"), and then checked
+  again. The pre-flight of 2026-09-24 lost two of its three 2025 forecasts
+  to that refusal;
 - a citation URL not carried by the cited findings is dropped;
 - a refused sentence is dropped and published in the evidence log and the
   quality JSON with its full text, cited labels and reason.
