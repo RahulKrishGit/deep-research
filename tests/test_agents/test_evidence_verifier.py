@@ -17,9 +17,14 @@ from deep_research.agents.evidence_verifier import (
     ContextItem,
     EvidenceVerifierAgent,
     FigureCheckDraft,
+    StatementCheckDraft,
+    StatementCheckItem,
+    StatementVerdictDraft,
+    check_statements,
     context_passage,
     evaluated_issuer,
     figure_match,
+    page_owner,
     resolve_attribution,
     verify_finding,
 )
@@ -31,6 +36,8 @@ from deep_research.providers import (
     ProviderTimeoutError,
 )
 from deep_research.utils.types import (
+    FigureContext,
+    FigureResult,
     Finding,
     FindingVerification,
     ResearchState,
@@ -42,7 +49,7 @@ from tests.evidence_fakes import figure, make_finding, make_read
 SNIPPET = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"
 
 
-def test_figure_match_confirms_the_snippet_and_each_figure() -> None:
+def test_figure_match_confirms_the_snippet_is_on_the_page() -> None:
     read = make_read()
     finding = make_finding(
         read, SNIPPET,
@@ -50,27 +57,26 @@ def test_figure_match_confirms_the_snippet_and_each_figure() -> None:
     )
     match = figure_match(finding, {read.read_id: read})
     assert match.read_found and match.snippet_on_page
-    assert match.matched == (True, False)  # 19.6 GW is on the page, but not in this snippet
 
 
-def test_a_snippet_that_is_not_on_the_page_matches_nothing() -> None:
+def test_a_snippet_that_is_not_on_the_page_is_reported() -> None:
     read = make_read()
     finding = make_finding(read, "EIA says 10.4 GW was added in 2024.",
                            figures=[figure("10.4", "GW")])
     match = figure_match(finding, {read.read_id: read})
-    assert match.read_found and not match.snippet_on_page and match.matched == (False,)
+    assert match.read_found and not match.snippet_on_page
 
 
 def test_a_missing_read_is_reported() -> None:
     finding = make_finding(make_read(), SNIPPET, figures=[figure("10.4", "GW")])
     match = figure_match(finding, {})
-    assert not match.read_found and match.matched == (False,)
+    assert not match.read_found
 
 
 def test_the_snippet_check_is_cosmetic() -> None:
     read = make_read()
     finding = make_finding(read, SNIPPET.upper(), figures=[figure("10,400", "MW")])
-    assert figure_match(finding, {read.read_id: read}).matched == (True,)
+    assert figure_match(finding, {read.read_id: read}).snippet_on_page
 
 
 # ---------------------------------------------------------------------------
@@ -171,18 +177,6 @@ def test_a_scope_correction_not_on_the_page_is_dropped() -> None:
     assert result.figure_results[0].dropped_reason == "correction_not_on_page"
 
 
-def test_a_not_matched_figure_is_rescued_only_by_its_evidence_words() -> None:
-    read, finding = _woodmac_finding()
-    finding = finding.model_copy(update={"figures": [figure("13.3", "GW", "2025", "forecast")]})
-    item = _item(read, finding)
-    assert item.match.matched == (False,)
-    kept = verify_finding(item, {1: _reply(
-        kind="forecast", evidence_words="Grid-scale storage installations are forecasted to reach 13.3 GW in 2025")})
-    assert kept.figure_results[0].kept
-    dropped = verify_finding(item, {1: _reply(kind="forecast")})
-    assert dropped.figure_results[0].dropped_reason == "figure_not_in_evidence"
-
-
 def test_a_rejected_figure_drops_and_the_rest_survive() -> None:
     read, finding = _woodmac_finding()
     finding = finding.model_copy(update={"figures": [
@@ -209,8 +203,11 @@ def test_a_relay_needs_its_originator_named_on_the_page() -> None:
     finding = make_finding(read, "According to Wood Mackenzie, utility-scale installations reached 16 GW in 2025.")
     assert resolve_attribution(proposed="relayed", organisation="Wood Mackenzie",
                                finding=finding, read=read, issuer=None) == ("relayed", "Wood Mackenzie")
+    # The page's own title names it "Utility Dive", matching its host
+    # (verified_facts.same_organisation): page_owner now reports that name
+    # rather than the bare "utilitydive.com" label (this round's own fix).
     assert resolve_attribution(proposed="relayed", organisation="BloombergNEF",
-                               finding=finding, read=read, issuer=None) == ("unattributed", "utilitydive.com")
+                               finding=finding, read=read, issuer=None) == ("unattributed", "Utility Dive")
 
 
 def test_an_admitted_attribution_makes_a_relay() -> None:
@@ -342,17 +339,17 @@ async def test_the_context_check_call_is_fingerprinted(tracker: Tracker) -> None
 
 
 @pytest.mark.asyncio
-async def test_findings_are_checked_fifteen_per_call(tracker: Tracker) -> None:
+async def test_findings_are_checked_five_per_call(tracker: Tracker) -> None:
     read = make_read(_metrics_page(20), url="https://example.test/batch", title="Batch metrics")
     findings = [_metric_finding(read, i) for i in range(20)]
-    completer = ScriptedCompleter(outputs=[_confirm_reply, _confirm_reply])
+    completer = ScriptedCompleter(outputs=[_confirm_reply] * 4)
     agent = _evidence_verifier(tracker, completer)
     state = _state(raw_findings=findings, read_records={read.read_id: read})
 
     async with tracker.session_span("session-1", "question"):
         outcome = await agent.run(state)
 
-    assert [call[0] for call in completer.calls] == ["ContextCheckDraft", "ContextCheckDraft"]
+    assert [call[0] for call in completer.calls] == ["ContextCheckDraft"] * 4
     judged = outcome.state_update["verified_findings"]
     assert len(judged) == 20
     assert all(
@@ -472,29 +469,6 @@ async def test_a_snippet_not_on_the_page_drops_the_finding_at_the_agent_level(
 
 
 @pytest.mark.asyncio
-async def test_a_not_matched_figure_in_a_failed_batch_is_dropped_as_context_unavailable(
-    tracker: Tracker,
-) -> None:
-    read = make_read()
-    # 19.6 GW is on the page, but not inside this snippet: Figure Match
-    # leaves it not_matched rather than dropping the finding outright.
-    finding = make_finding(read, SNIPPET, figures=[figure("19.6", "GW", "2025", "forecast")])
-    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
-    agent = _evidence_verifier(tracker, completer)
-    state = _state(raw_findings=[finding], read_records={read.read_id: read})
-
-    async with tracker.session_span("session-1", "question"):
-        outcome = await agent.run(state)
-
-    [judged] = outcome.state_update["verified_findings"]
-    assert judged.verification.status == "dropped"
-    assert judged.verification.dropped_reason == "all_figures_dropped"
-    [result] = judged.verification.figure_results
-    assert not result.matched
-    assert result.dropped_reason == "context_unavailable"
-
-
-@pytest.mark.asyncio
 async def test_a_batch_truncated_twice_gives_context_unchecked_and_two_errors(
     tracker: Tracker,
 ) -> None:
@@ -553,11 +527,11 @@ class _ConcurrencyProbe:
 
 
 @pytest.mark.asyncio
-async def test_the_concurrency_cap_is_four(tracker: Tracker) -> None:
-    """§5.2: batches run concurrently, at most 4 at once. Six batches racing
-    for the same semaphore prove the cap holds rather than merely happening
-    to fit."""
-    batch_count = 6
+async def test_the_concurrency_cap_is_eight(tracker: Tracker) -> None:
+    """§5.2/D8: batches run concurrently, at most 8 at once. More batches
+    than the cap, all racing for the same semaphore, prove the cap holds
+    rather than merely happening to fit."""
+    batch_count = 10
     total = batch_count * CONTEXT_CHECK_BATCH_SIZE
     read = make_read(_metrics_page(total), url="https://example.test/cap", title="Cap test")
     findings = [_metric_finding(read, i) for i in range(total)]
@@ -651,3 +625,231 @@ def test_an_opening_mention_with_no_authorship_cue_stays_unattributed() -> None:
         proposed="relayed", organisation="BloombergNEF",
         finding=finding, read=read, issuer=None,
     ) == ("unattributed", "ent.news")
+
+
+def test_page_owner_uses_the_pages_own_name_when_it_matches_the_host() -> None:
+    """A woodmac.com page whose own title states 'Wood Mackenzie' is shown
+    to the reader as Wood Mackenzie's own page, not the bare host label."""
+    read = make_read(
+        "The U.S. energy storage market hit a record 18.9 GW in 2025.",
+        url="https://www.woodmac.com/press-releases/2025-us-energy-storage",
+        title="2025 U.S. Energy Storage Installations Set New Record | Wood Mackenzie",
+    )
+    assert page_owner(read) == "Wood Mackenzie"
+
+
+def test_page_owner_keeps_the_host_label_when_nothing_matches() -> None:
+    """A generic title and body naming no organisation that matches the
+    host: the bare registrable host label is kept, never invented."""
+    read = make_read(
+        "Storage market update: installations continue to grow.",
+        url="https://www.utilitydive.com/news/storage-update",
+        title="Storage market update",
+    )
+    assert page_owner(read) == "utilitydive.com"
+
+
+def test_page_owner_never_credits_a_merely_similar_name_on_a_gov_host() -> None:
+    """verified_facts.same_organisation is strict: energy.gov (the
+    Department of Energy's own host) is never credited as "EIA" merely
+    because the page's own title names EIA -- the two are not the same
+    organisation, however similar the first word of each looks."""
+    read = make_read(
+        "The Department of Energy oversees EIA, an independent statistical agency.",
+        url="https://www.energy.gov/articles/eia-overview",
+        title="DOE Newsroom | EIA",
+    )
+    assert page_owner(read) == "energy.gov"
+
+
+# ---------------------------------------------------------------------------
+# check_statements (spec §6.2, D8): the Report Writer's sibling check
+# ---------------------------------------------------------------------------
+
+
+def _statement_finding(
+    value: str, unit: str = "GW", *, period: str | None = "2025",
+    organisation: str = "Wood Mackenzie", evidence_words: str = "",
+) -> Finding:
+    """A verified finding carrying one kept figure, for a StatementCheckItem."""
+    finding = _bare_finding(
+        f"{organisation} states {value} {unit}.",
+        figures=[figure(value, unit, period, "actual")],
+    )
+    context = FigureContext(period=period, scope=None, attribution="own",
+                            organisation=organisation, kind="actual")
+    result = FigureResult(figure=finding.figures[0], matched=True,
+                          evidence_words=evidence_words or f"{value} {unit}", context=context)
+    verification = FindingVerification(status="verified", figure_results=[result])
+    return finding.model_copy(update={"verification": verification})
+
+
+def _statement_item(label: str, text: str, *findings: Finding) -> StatementCheckItem:
+    return StatementCheckItem(
+        label=label, text=text, findings=list(findings),
+        labels=[f"F{i:02d}" for i in range(1, len(findings) + 1)],
+    )
+
+
+def _confirm_statement_reply(messages: list, schema: type) -> StatementCheckDraft:
+    """Answer every listed statement with a plain 'consistent' verdict.
+
+    Reads the batch's own labels back out of the request body, so it
+    answers correctly whichever batch it is handed.
+    """
+    del schema
+    body = messages[1].content
+    labels = re.findall(r"## (S\d+)", body)
+    return StatementCheckDraft(statements=[
+        StatementVerdictDraft(label=label, verdict="consistent", reason="Matches the findings.")
+        for label in labels
+    ])
+
+
+@pytest.mark.asyncio
+async def test_statements_are_checked_five_per_call() -> None:
+    finding = _statement_finding("18.9", "GW")
+    items = [
+        _statement_item(f"S{i:02d}", f"Wood Mackenzie states {i} GW.", finding)
+        for i in range(12)
+    ]
+    completer = ScriptedCompleter(outputs=[_confirm_statement_reply] * 3)
+
+    results, errors = await check_statements(completer, items, question="How much storage?")
+
+    assert [call[0] for call in completer.calls] == ["StatementCheckDraft"] * 3
+    assert errors == []
+    assert len(results) == 12
+    assert all(verdict is not None and verdict.verdict == "consistent" for verdict in results.values())
+
+
+class _StatementConcurrencyProbe:
+    """A completer that records the peak number of concurrent calls in flight."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self._in_flight = 0
+        self.max_in_flight = 0
+
+    async def complete_structured(self, messages, schema, *, agent_name=None,
+                                  max_tokens=None, reasoning_effort=None):
+        self.calls.append(schema.__name__)
+        self._in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        try:
+            await asyncio.sleep(0.01)
+            return _confirm_statement_reply(list(messages), schema)
+        finally:
+            self._in_flight -= 1
+
+
+@pytest.mark.asyncio
+async def test_statement_check_concurrency_cap_is_eight() -> None:
+    finding = _statement_finding("18.9", "GW")
+    batch_count = 10
+    total = batch_count * CONTEXT_CHECK_BATCH_SIZE
+    items = [
+        _statement_item(f"S{i:03d}", f"Wood Mackenzie states {i} GW.", finding)
+        for i in range(total)
+    ]
+    probe = _StatementConcurrencyProbe()
+
+    results, errors = await check_statements(probe, items, question="How much storage?")
+
+    assert len(probe.calls) == batch_count
+    assert probe.max_in_flight == CONTEXT_CHECK_CONCURRENCY
+    assert len(results) == total
+    assert errors == []
+
+
+@pytest.mark.asyncio
+async def test_consistent_corrected_and_inconsistent_verdicts_pass_through() -> None:
+    finding = _statement_finding("18.9", "GW", evidence_words="18.9 GW in 2025")
+
+    def reply(messages: list, schema: type) -> StatementCheckDraft:
+        del messages, schema
+        return StatementCheckDraft(statements=[
+            StatementVerdictDraft(label="S01", verdict="consistent", reason="Matches."),
+            StatementVerdictDraft(label="S02", verdict="corrected",
+                                  corrected_text="Wood Mackenzie reported 18.9 GW.",
+                                  reason="Softened to reported."),
+            StatementVerdictDraft(label="S03", verdict="inconsistent", reason="Invents a date."),
+        ])
+
+    items = [
+        _statement_item("S01", "Wood Mackenzie states 18.9 GW.", finding),
+        _statement_item("S02", "Wood Mackenzie confirms 18.9 GW.", finding),
+        _statement_item("S03", "Wood Mackenzie states 18.9 GW on March 1.", finding),
+    ]
+    fingerprinted: list[str] = []
+    completer = ScriptedCompleter(outputs=[reply])
+
+    results, errors = await check_statements(
+        completer, items, question="How much storage?", fingerprint=fingerprinted.append
+    )
+
+    assert errors == []
+    assert results["S01"].verdict == "consistent"
+    assert results["S02"].verdict == "corrected"
+    assert results["S02"].corrected_text == "Wood Mackenzie reported 18.9 GW."
+    assert results["S03"].verdict == "inconsistent"
+    assert fingerprinted == ["StatementCheckDraft"]
+
+
+@pytest.mark.asyncio
+async def test_a_blank_corrected_text_is_treated_as_inconsistent() -> None:
+    finding = _statement_finding("18.9", "GW")
+
+    def reply(messages: list, schema: type) -> StatementCheckDraft:
+        del messages, schema
+        return StatementCheckDraft(statements=[
+            StatementVerdictDraft(label="S01", verdict="corrected", corrected_text="   ",
+                                  reason="Tried to correct but found nothing to change."),
+        ])
+
+    items = [_statement_item("S01", "Wood Mackenzie states 18.9 GW.", finding)]
+    completer = ScriptedCompleter(outputs=[reply])
+
+    results, errors = await check_statements(completer, items, question="How much storage?")
+
+    assert errors == []
+    assert results["S01"].verdict == "inconsistent"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_statement_batch_gives_none_and_an_error() -> None:
+    finding = _statement_finding("18.9", "GW")
+    items = [
+        _statement_item("S01", "Wood Mackenzie states 18.9 GW.", finding),
+        _statement_item("S02", "Wood Mackenzie states 18.9 GW too.", finding),
+    ]
+    completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
+
+    results, errors = await check_statements(completer, items, question="How much storage?")
+
+    assert results == {"S01": None, "S02": None}
+    assert len(errors) == 1
+    assert errors[0].error_type == "evidence_verifier_statement_check_failed"
+
+
+@pytest.mark.asyncio
+async def test_a_missing_label_in_the_reply_gives_none() -> None:
+    finding = _statement_finding("18.9", "GW")
+
+    def reply(messages: list, schema: type) -> StatementCheckDraft:
+        del messages, schema
+        return StatementCheckDraft(statements=[
+            StatementVerdictDraft(label="S01", verdict="consistent", reason="Matches."),
+        ])
+
+    items = [
+        _statement_item("S01", "Wood Mackenzie states 18.9 GW.", finding),
+        _statement_item("S02", "Wood Mackenzie states 18.9 GW too.", finding),
+    ]
+    completer = ScriptedCompleter(outputs=[reply])
+
+    results, errors = await check_statements(completer, items, question="How much storage?")
+
+    assert errors == []
+    assert results["S01"].verdict == "consistent"
+    assert results["S02"] is None
