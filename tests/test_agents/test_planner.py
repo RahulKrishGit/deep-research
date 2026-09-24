@@ -4561,7 +4561,7 @@ def test_graph_budgets_let_the_planner_look_once_and_the_rest_work() -> None:
     settings = load_config(str(Path("config.yaml")))
 
     assert settings.agents.tool_budget_for("planner") == 1
-    assert settings.agents.tool_budget_for("researcher") == 10
+    assert settings.agents.tool_budget_for("researcher") == 20
     assert settings.agents.tool_budget_for("fact_checker") == 10
     assert settings.agents.tool_budget_for("source_evaluator") == 0
     assert settings.agents.tool_budget_for("synthesizer") == 0
