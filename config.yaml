@@ -50,14 +50,12 @@ llm:
   retry_initial_delay: 1.0
   retry_max_delay: 16.0
   temperature: 0.7
-  # Output budget ceiling. Every request type carries a generous budget. The
-  # global cap and every operation-specific budget resolve to 32768, with one
-  # documented exception: the planner's plan requests, whose budget is larger
-  # because the planner reasons at `max` effort and a reasoning token is a
-  # completion token (see agents.planner_final_max_tokens below). A low cap
-  # does not save money when it is unused, but it does cost a whole repetition
-  # when it truncates a large structured reply. If a particular operation
-  # proves slow, reduce its prompt rather than this ceiling.
+  # Default output budget. Most operations use 32768; the planner's plan
+  # requests and terminal report review use 65536. Both reason at `max`
+  # effort, where thinking consumes completion tokens as well as the answer.
+  # The operation-specific bounds below are provider-tested headroom, not
+  # known provider maxima. A cap unused by the model costs no output tokens;
+  # a cap reached before the JSON reply costs a whole request.
   max_tokens: 32768
 
 langsmith:
@@ -152,12 +150,13 @@ agents:
   # 4096 it returned non-JSON text on both the initial attempt and the single
   # repair in three consecutive live canaries.
   critic_review_max_tokens: 32768
-  # Operation-specific output budget for the report judge's single request
-  # (AGENTS_REPORT_REVIEW_MAX_TOKENS overrides this). One reply carries seven
-  # dimension scores, a disposition for every reader statement, and the typed
-  # defects found, so it is the Critic's review budget's size class and not a
-  # small reply.
-  report_review_max_tokens: 32768
+  # Operation-specific cap for the terminal reviewer (whole-report and
+  # evidence-batch requests; AGENTS_REPORT_REVIEW_MAX_TOKENS overrides it).
+  # Pre-flight reported finish=length and exactly 32768 completion tokens on
+  # a whole-report call, including its thinking. A thinking-enabled planner
+  # request has completed at 65536 with this provider. This is headroom, not
+  # a known provider maximum; the bounded high-effort retry still applies.
+  report_review_max_tokens: 65536
   # Operation-specific output budget for the judge's JudgeVerdict request
   # (AGENTS_JUDGE_MAX_TOKENS overrides this). The verdict carries six common
   # dimensions, the agent-specific dimensions, and a rationale; once the

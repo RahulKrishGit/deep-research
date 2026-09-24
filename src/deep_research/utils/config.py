@@ -283,13 +283,12 @@ class AgentRuntimeConfig(BaseModel):
     claim_batches_per_pass: int = Field(default=6, ge=1)
     planner_final_max_tokens: int = Field(default=65536, ge=1)
     critic_review_max_tokens: int = Field(default=32768, ge=1)
-    report_review_max_tokens: int = Field(default=32768, ge=1)
-    """Operation-specific output budget for the report judge's one request.
+    report_review_max_tokens: int = Field(default=65536, ge=1)
+    """Output headroom for the report judge's whole-report and batch requests.
 
-    One reply carries the seven dimension scores, a disposition for every
-    reader statement, and the typed defects found, so it is the same size class
-    as the Critic's review — which is why it starts at the same generous value
-    rather than at the global cap the Critic's own review once failed under.
+    Completion tokens include reasoning: the 32768 cap truncated a live
+    whole-report review despite its comparatively small structured reply.
+    DeepSeek has accepted 65536 for a thinking-enabled planner request.
     """
     judge_max_tokens: int = Field(default=32768, ge=1)
     react_decision_max_tokens: int = Field(default=32768, ge=1)

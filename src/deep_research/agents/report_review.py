@@ -106,12 +106,12 @@ the run before any collaborator exists.
 REPORT_REVIEW_PROMPT_VERSION = "report-review-1"
 """The prompt and reply contract this review's requests are versioned under."""
 
-REPORT_REVIEW_MAX_TOKENS = 32768
-"""The review request's own output budget.
+REPORT_REVIEW_MAX_TOKENS = 65536
+"""Output headroom for reasoning and the complete structured judgement.
 
-One reply carries seven dimension scores, a disposition for every reader
-statement, and the defects it found, so it is not a small reply; it is the same
-reasoning the Critic's review budget exists for.
+The 32768-token cap truncated the pre-flight's whole-report request with
+32768 completion tokens consumed. DeepSeek accepted 65536 for a planner
+request with thinking enabled; this is a verified setting, not a maximum.
 """
 
 REPORT_REVIEW_EVIDENCE_BATCH_CHARS = 4000
@@ -2042,9 +2042,9 @@ class ReportReviewer:
                 ProviderOutputLimitError.SAFE_MESSAGE
             ) from None
         except ProviderError as retry_error:
-            # The retry failed at the provider: no reply arrived, the review
-            # takes its own provider-failed path, and the retry is recorded as
-            # what it was.
+            # A retry that cannot produce a valid reply keeps its typed error:
+            # schema failures and transport failures have different statuses
+            # at the review boundary, and neither delivered a judgement.
             self._record_retry(error, schema, outcome="failed")
             raise retry_error.redacted_copy(str(retry_error)) from None
         self._record_retry(error, schema, outcome="answered")
@@ -2162,10 +2162,10 @@ async def _review_packet(
         cross = await reviewer._request(  # noqa: SLF001
             review_messages(packet), ReportReviewDraft
         )
-    except ProviderError as error:
-        return _failed_review(packet, _provider_reason(error))
     except (StructuredOutputError, ValidationError) as error:
         return _failed_review(packet, _schema_reason(error), status="incomplete")
+    except ProviderError as error:
+        return _failed_review(packet, _provider_reason(error))
     except ReportReviewContractViolation as violation:
         return _failed_review(packet, str(violation), status="incomplete")
 
@@ -2187,10 +2187,10 @@ async def _review_packet(
             reply = await reviewer._request(  # noqa: SLF001
                 batch_review_messages(packet, batch), ReviewBatchDraft
             )
-        except ProviderError as error:
-            return _failed_review(packet, _provider_reason(error))
         except (StructuredOutputError, ValidationError) as error:
             return _failed_review(packet, _schema_reason(error), status="incomplete")
+        except ProviderError as error:
+            return _failed_review(packet, _provider_reason(error))
         except ReportReviewContractViolation as violation:
             return _failed_review(packet, str(violation), status="incomplete")
         disposition_drafts.extend(reply.statement_dispositions)

@@ -1012,6 +1012,47 @@ async def test_a_truncated_review_call_is_re_asked_once_at_a_high_effort() -> No
     assert retry.details["outcome"] == "answered"
     assert retry.details["max_tokens"] == 4096
 
+@pytest.mark.asyncio
+async def test_a_full_size_review_has_room_to_finish_after_an_output_limit() -> None:
+    """A provider-verified budget must leave room for a second structured reply."""
+    class BudgetSensitiveCompleter(ScriptedCompleter):
+        def __init__(self):
+            super().__init__(outputs=[_draft_payload()])
+            self.truncated = False
+
+        async def complete_structured(
+            self, messages, schema, *, agent_name=None,
+            max_tokens=None, reasoning_effort=None,
+        ):
+            if max_tokens is None or max_tokens < 65536 or not self.truncated:
+                self.truncated = True
+                raise ProviderOutputLimitError(
+                    ProviderResponseTelemetry(
+                        finish_reason_category="length",
+                        configured_max_tokens=max_tokens or 32768,
+                        usage=TokenUsage(
+                            input_tokens=18000, output_tokens=max_tokens or 32768
+                        ),
+                        request_attempt=1,
+                    )
+                )
+            return await super().complete_structured(
+                messages,
+                schema,
+                agent_name=agent_name,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+            )
+
+    state = _state(composition=_composition(), report="Break-even was reached.")
+    reviewer = ReportReviewer(provider=BudgetSensitiveCompleter())
+
+    review = await reviewer.review(_packet(state))
+
+    assert review.status == "scored"
+    assert review.reviewed_batch_ids == ["batch-01"]
+    assert reviewer.review_records[0].details["outcome"] == "answered"
+
 
 @pytest.mark.asyncio
 async def test_a_review_retry_that_hits_an_outage_is_recorded_as_failed() -> None:
@@ -1052,6 +1093,45 @@ async def test_a_review_retry_that_hits_an_outage_is_recorded_as_failed() -> Non
     assert retry.details["outcome"] == "failed"
     assert retry.recoverable is True
 
+
+@pytest.mark.asyncio
+async def test_a_truncated_batch_with_an_invalid_retry_is_incomplete() -> None:
+    """A schema-invalid retry did not deliver a judgement, not an outage."""
+    from deep_research.providers import StructuredOutputError
+
+    composition = _composition(
+        statements=(
+            _statement("S001", "One.", evidence=("e1",)),
+            _statement("S002", "Two.", evidence=("e2",)),
+        ),
+        units={"e1": _unit("e1"), "e2": _unit("e2")},
+    )
+    packet = _packet(_state(composition=composition, report="Two statements."))
+    completer = ScriptedCompleter(
+        outputs=[
+            _draft_payload(
+                reviewed_statements=["S001", "S002"], reviewed_evidence=["e1"]
+            ),
+            _output_limit_error(),
+            StructuredOutputError(
+                "DeepSeek output failed ReviewBatchDraft validation after repair"
+            ),
+        ]
+    )
+    reviewer = ReportReviewer(provider=completer)
+
+    review = await reviewer.review(packet)
+
+    assert review.status == "incomplete"
+    assert review.dimensions == {}
+    assert not semantic_review_passes(review)
+    assert "StructuredOutputError" in review.rationale
+    assert [call[0] for call in completer.calls] == [
+        "ReportReviewDraft",
+        "ReviewBatchDraft",
+        "ReviewBatchDraft",
+    ]
+    assert reviewer.review_records[0].details["outcome"] == "failed"
 
 @pytest.mark.asyncio
 async def test_a_second_truncation_keeps_the_non_fatal_unjudged_path() -> None:
