@@ -917,9 +917,17 @@ CRITIC_PROMPT_FINGERPRINT = "9f62f005745a"
 # ``researcher_invalid_finding``. Module-source drift only — no prompt string
 # was edited, and the other five pins are unchanged.
 # Evidence Verifier plan, Task 2.1: attribution helpers moved to evidence.py.
+# Task 2.1 fix round 1 ("review round 1 - honesty-rule fixes for relay
+# windowing and correction scope") then moved the researcher's value again,
+# ``bdc3400c3cec`` -> ``90f3fa33d7da``: its import block dropped the now-unused
+# ``ATTRIBUTION_CUE_PATTERN`` (the relay-windowing fix moved that pattern's
+# only remaining use into ``evidence.py`` itself) and reordered the
+# ``_ENERGY_UNIT``/``_POWER_UNIT`` imports from ``utils.types``. Module-source
+# drift only — no prompt string was edited, and the other five pins are
+# unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "b062e8c3e7cc",
-    "researcher": "bdc3400c3cec",
+    "researcher": "90f3fa33d7da",
     "source_evaluator": "1a7f057fad85",
     "fact_checker": "96e323f7271a",
     "synthesizer": "948a744cdb31",
