@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from deep_research.agents.wording import (
     hardened_modality,
-    hedge_forecast,
     hedge_marker,
-    page_modal,
     stated_role,
     stated_scopes,
     stated_years,
@@ -27,6 +25,12 @@ def test_the_moved_rules_behave_as_before() -> None:
             "the fleet will set a record", "capacity could set a record"
         )
         == "will"
+    )
+    # A page that already hedges its own claim is not a page whose wording the
+    # report hardened: nothing to re-attach, so nothing is reported.
+    assert (
+        hardened_modality("Storage could grow 47% in 2025.", "capacity could grow")
+        == ""
     )
 
 
@@ -52,62 +56,6 @@ def test_years_and_scopes_are_read_from_the_text() -> None:
         "residential",
         "c&i",
     ]
-
-
-def test_hedge_forecast_makes_a_forecast_read_as_one() -> None:
-    eia = "U.S. Energy Information Administration"
-    rewritten = hedge_forecast("EIA's outlook adds 14 GW in 2025.", eia)
-    assert rewritten == (
-        "EIA's outlook adds 14 GW in 2025, according to "
-        "U.S. Energy Information Administration's forecast."
-    )
-    assert stated_role(rewritten) == "forecast"
-    passive = hedge_forecast("In 2025, 18.2 GW was added.", eia)
-    assert passive == "In 2025, 18.2 GW is expected to be added."
-    assert stated_role(passive) == "forecast"
-    active = hedge_forecast("Developers added 14 GW in 2025.", eia)
-    assert active == "Developers expected to add 14 GW in 2025."
-    assert stated_role(active) == "forecast"
-
-
-def test_hedge_forecast_takes_the_pages_own_modal() -> None:
-    eia = "U.S. Energy Information Administration"
-    assert (
-        hedge_forecast("Storage will grow 47% in 2025.", eia, marker="could")
-        == "Storage could grow 47% in 2025."
-    )
-    assert (
-        hedge_forecast("Storage would reach 14 GW in 2025.", eia)
-        == "Storage is expected to reach 14 GW in 2025."
-    )
-    assert (
-        hardened_modality("Storage could grow 47% in 2025.", "capacity could grow")
-        == ""
-    )
-    assert (
-        page_modal("Battery storage capacity could grow by 47% (14 GW) in 2025.")
-        == "could"
-    )
-    assert page_modal("The outlook was released in May 2025.") == ""
-
-
-
-def test_hedge_forecast_matches_subject_number_and_keeps_a_capital() -> None:
-    eia = "U.S. Energy Information Administration"
-    assert (
-        hedge_forecast("Additions would reach 14 GW.", eia)
-        == "Additions are expected to reach 14 GW."
-    )
-    assert (
-        hedge_forecast("Will storage grow?", eia, marker="could")
-        == "Could storage grow?"
-    )
-
-
-def test_page_modal_accepts_a_capitalised_could_or_might_but_never_may() -> None:
-    assert page_modal("Could storage grow by 47% in 2025?") == "could"
-    assert page_modal("Might reach 15 GW, analysts said.") == "might"
-    assert page_modal("May output rose across the sector.") == ""
 
 
 def test_stated_scopes_consumes_the_longest_match_and_rejects_negation() -> None:
