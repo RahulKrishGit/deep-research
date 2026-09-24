@@ -916,9 +916,10 @@ CRITIC_PROMPT_FINGERPRINT = "9f62f005745a"
 # recorded under its own error type instead of being folded into
 # ``researcher_invalid_finding``. Module-source drift only — no prompt string
 # was edited, and the other five pins are unchanged.
+# Evidence Verifier plan, Task 2.1: attribution helpers moved to evidence.py.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "b062e8c3e7cc",
-    "researcher": "d6200b7bd918",
+    "researcher": "bdc3400c3cec",
     "source_evaluator": "1a7f057fad85",
     "fact_checker": "96e323f7271a",
     "synthesizer": "948a744cdb31",
