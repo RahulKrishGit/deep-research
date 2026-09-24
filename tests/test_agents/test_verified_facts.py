@@ -62,6 +62,16 @@ def eia_2024(value="10.4", **fields):
     ("EIA", "eia.news", False),
     ("EIA", "IEA", False),
     ("Wood Mackenzie", "BloombergNEF", False),
+    ("energy.gov", EIA, False),
+    ("Energy", EIA, False),
+    ("Wood", "Wood Mackenzie", False),
+    ("American", "American Clean Power Association", False),
+    ("SEIA", "Solar Energy Industries Association", True),
+    ("seia.org", "Solar Energy Industries Association", True),
+    ("EPRI", "Electric Power Research Institute", True),
+    ("IEA", "International Energy Agency", True),
+    ("iea.org", "International Energy Agency", True),
+    (f"{EIA} (EIA)", "EIA", True),
 ])
 def test_same_organisation(left, right, same) -> None:
     assert same_organisation(left, right) is same
@@ -148,3 +158,35 @@ def test_untraced_numbers() -> None:
     assert untraced_numbers("EIA reports 10,400 MW added in 2024.", cited) == []
     assert untraced_numbers("EIA reports 12 GW added in 2024.", cited) == ["12 GW"]
     assert untraced_numbers("EIA reports 10.4 GW across 37 states.", cited) == ["37"]
+    assert untraced_numbers("  EIA reports 12 GW added.", cited) == ["12 GW"]
+    assert untraced_numbers("re\xadports 12 GW and 15 GW.", cited) == ["12 GW", "15 GW"]
+
+
+def test_earlier_editions_are_ordered_newest_first_regardless_of_input_order() -> None:
+    a = eia_2024(value="18.2", release_date="2025-02-10")
+    b = eia_2024(value="19.1", release_date="2025-02-20")
+    c = eia_2024(value="20.0", release_date="2025-03-01")
+    expected_earlier = [("19.1 GW", "released 2025-02-20"), ("18.2 GW", "released 2025-02-10")]
+    for findings in ([a, b, c], [c, b, a], [a, c, b], [b, a, c]):
+        [row] = fact_rows(list(findings), [make_target()])
+        assert row.value == "20.0 GW"
+        assert [(e.value, e.release) for e in row.earlier] == expected_earlier
+
+
+def test_target_answering_refuses_a_scope_mismatch_but_treats_grid_scale_and_utility_scale_as_one() -> None:
+    read = make_read()
+    grid_scale_target = make_target(measure="grid-scale additions")
+    woodmac = verified(
+        make_finding(read, "Wood Mackenzie added 12.3 GW across all segments in 2024,",
+                     figures=[figure("12.3", "GW", "2024", "actual")],
+                     target_ids=["topic-01-target-01"]),
+        ctx(organisation="Wood Mackenzie", scope="all segments"),
+    )
+    eia_utility_scale = verified(
+        make_finding(read, "EIA added 10.4 GW of utility-scale storage in 2024,",
+                     figures=[figure("10.4", "GW", "2024", "actual")],
+                     target_ids=["topic-01-target-01"]),
+        ctx(scope="utility-scale"),
+    )
+    assert not finding_answers(woodmac, grid_scale_target)
+    assert finding_answers(eia_utility_scale, grid_scale_target)

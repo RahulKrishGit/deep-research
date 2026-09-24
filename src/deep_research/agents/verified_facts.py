@@ -21,6 +21,7 @@ from deep_research.agents.figures import (
 )
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.sources import publisher_identity
+from deep_research.agents.wording import stated_scopes
 from deep_research.utils.types import (
     AcquisitionState,
     EarlierEdition,
@@ -64,6 +65,10 @@ _MONTH_YEAR = re.compile(
 _ISO_DATE = re.compile(r"\b((?:19|20)\d{2})(?:-(\d{1,2})(?:-(\d{1,2}))?)?\b")
 _MEASURE_BY_DIMENSION = {"power": "power capacity", "energy": "energy capacity", "percent": "share"}
 _ATTRIBUTION_RANK = {"own": 0, "relayed": 1, "unattributed": 2}
+# "grid-scale" and "utility-scale" name the same segment in practice (spec
+# §6.6 gap): a target asking for one is answered by a figure stating the
+# other. No other pair of ``wording.SCOPE_TERMS`` is treated as equivalent.
+_SCOPE_EQUIVALENTS = {"grid-scale": "utility-scale"}
 
 
 @dataclass(frozen=True)
@@ -114,25 +119,65 @@ def _core(tokens: Sequence[str]) -> list[str]:
     return [t.casefold() for t in tokens if t.casefold() not in _COUNTRY_WORDS | _CONNECTORS]
 
 
-def _initials(tokens: Sequence[str]) -> str:
+def _initials_variants(tokens: Sequence[str]) -> set[str]:
+    """The name's initials, and again with a trailing Agency/Institute/
+    Association word kept.
+
+    "Solar Energy Industries Association" spells SEIA, not SEI, and
+    "International Energy Agency" spells IEA, not IE: a trailing legal- or
+    institutional-form word is noise for most organisations ("Wood Mackenzie
+    Inc" is still "Wood Mackenzie"), but an agency's own acronym often
+    includes it. Both readings are offered rather than guessed at.
+    """
     kept = [t for t in tokens if t.casefold() not in _COUNTRY_WORDS | _CONNECTORS]
+
+    def spell(words: Sequence[str]) -> str:
+        return "".join(
+            t.casefold() if t.isupper() and len(t) > 1 else t[0].casefold() for t in words
+        )
+
+    variants = {spell(kept)}
     if len(kept) > 1 and kept[-1].casefold() in _LEGAL_SUFFIXES:
-        kept = kept[:-1]
-    return "".join(t.casefold() if t.isupper() and len(t) > 1 else t[0].casefold() for t in kept)
+        variants.add(spell(kept[:-1]))
+    return variants
 
 
 def _single_token(value: str) -> str | None:
-    """The one token a host label or a one-word name stands for, else ``None``."""
+    """The one token a host label or an all-capitals acronym stands for, else
+    ``None``.
+
+    A Title Case one-word name ("Energy", "Wood") is refused here: it is one
+    word of a longer organisation's own name, not a stand-in for the whole
+    of it -- accepting it let "energy.gov" (the Department of Energy) read
+    as the U.S. Energy Information Administration, whose name happens to
+    start with the same word.
+    """
     text = value.strip().casefold()
     if _HOST.fullmatch(text):
         label, _, suffix = publisher_identity(f"https://{text}").partition(".")
         return label if suffix.rsplit(".", 1)[-1] in _NAMEABLE_SUFFIXES else None
     tokens = _tokens(value)
-    return tokens[0].casefold() if len(tokens) == 1 else None
+    if len(tokens) == 1 and tokens[0].isupper() and len(tokens[0]) > 1:
+        return tokens[0].casefold()
+    return None
+
+
+_TRAILING_PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def _drop_trailing_parenthetical(value: str) -> str:
+    """A name's own trailing "(ACRONYM)" aside, dropped before it is split
+    into words: "U.S. Energy Information Administration (EIA)" is one name,
+    and its aside must not add a spurious extra word to the initials the
+    name, read without it, already spells.
+    """
+    return _TRAILING_PARENTHETICAL.sub("", value)
 
 
 def same_organisation(left: str, right: str) -> bool:
     """Whether two organisation names, acronyms or hosts name one organisation."""
+    left = _drop_trailing_parenthetical(left)
+    right = _drop_trailing_parenthetical(right)
     if not left.strip() or not right.strip():
         return False
     if _HOST.fullmatch(left.strip().casefold()) and _HOST.fullmatch(right.strip().casefold()):
@@ -149,8 +194,22 @@ def same_organisation(left: str, right: str) -> bool:
         if _HOST.fullmatch(other.strip().casefold()):
             continue
         tokens = _tokens(other)
-        joined = "".join(_core(tokens))
-        if token in {_initials(tokens), joined} or (len(token) >= 4 and joined.startswith(token)):
+        core_words = _core(tokens)
+        joined = "".join(core_words)
+        if token in _initials_variants(tokens) | {joined}:
+            return True
+        # The four-letters-or-more prefix reading is for a host label that
+        # blends several of the name's words ("woodmac" for Wood Mackenzie):
+        # restricted to host labels, and refused when the token merely
+        # spells one of the name's own words whole ("energy" is a literal
+        # prefix of "energyinformationadministration", but energy.gov is the
+        # Department of Energy, not the agency whose name starts that word).
+        if (
+            _HOST.fullmatch(one.strip().casefold())
+            and len(token) >= 4
+            and joined.startswith(token)
+            and token not in core_words
+        ):
             return True
     return False
 
@@ -168,7 +227,22 @@ def same_period(left: str | None, right: str | None) -> bool:
     return key is not None and key == _period_key(right)
 
 
+def _canonical_scopes(text: str | None) -> set[str]:
+    """The scope terms ``text`` states, with grid-scale/utility-scale folded
+    into one term; empty for no stated scope."""
+    if not text:
+        return set()
+    return {_SCOPE_EQUIVALENTS.get(term, term) for term in stated_scopes(text)}
+
+
 def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget) -> bool:
+    target_scopes = _canonical_scopes(target.measure)
+    figure_scopes = _canonical_scopes(figure.context.scope)
+    if target_scopes and figure_scopes and target_scopes.isdisjoint(figure_scopes):
+        # A target whose measure names a scope ("grid-scale additions") is
+        # refused by a figure stating a *different* one ("all segments");
+        # a figure with no stated scope is never refused on this ground.
+        return False
     return (
         figure.quantity is not None
         and figure.quantity.dimension == target.unit_dimension
@@ -337,11 +411,15 @@ def _fold_revisions(rows: Sequence[tuple[FactRow, Finding]]) -> list[FactRow]:
         if pair is None:
             return [row for row, _ in kept]
         (latest_row, latest_finding), (earlier_row, _) = pair
-        merged = latest_row.model_copy(update={"earlier": [
-            *latest_row.earlier,
-            EarlierEdition(value=earlier_row.value, release=earlier_row.release, finding_id=earlier_row.finding_id),
-            *earlier_row.earlier,
-        ]})
+        merged = latest_row.model_copy(update={"earlier": sorted(
+            [
+                *latest_row.earlier,
+                EarlierEdition(value=earlier_row.value, release=earlier_row.release, finding_id=earlier_row.finding_id),
+                *earlier_row.earlier,
+            ],
+            key=lambda edition: _date_key(edition.release) or (0, 0, 0),
+            reverse=True,
+        )})
         kept = [(merged, latest_finding) if row is latest_row else (row, finding)
                 for row, finding in kept if row is not earlier_row]
 
@@ -367,6 +445,13 @@ def not_found_targets(
     return rows
 
 
+_DISPLAY_UNIT = {
+    "kw": "kW", "mw": "MW", "gw": "GW", "tw": "TW",
+    "kwh": "kWh", "mwh": "MWh", "gwh": "GWh", "twh": "TWh",
+    "%": "%",
+}
+
+
 def untraced_numbers(text: str, cited: Sequence[Finding]) -> list[str]:
     """§6.4: the numbers ``text`` states that no kept figure of ``cited`` carries."""
     figures = verified_figures(cited)
@@ -375,12 +460,16 @@ def untraced_numbers(text: str, cited: Sequence[Finding]) -> list[str]:
         cosmetic_text(f.figure.value).replace(",", "").replace(" ", "")
         for f in figures if f.quantity is None or f.quantity.base is None
     }
-    # ``quantities_in``'s offsets index ``cosmetic_text(text)`` (casefolded), so
-    # slicing the *original* text at those offsets -- not ``q.value_text``/
-    # ``q.unit_text`` -- is what keeps the page's own capitalisation ("GW",
-    # not "gw") in a number the report has to trace back to what was written.
+    # ``quantities_in`` matches against ``cosmetic_text(text)`` (casefolded),
+    # and its offsets index that normalised string, not ``text`` -- slicing
+    # the original at them drifts on anything cosmetic_text shortens (a
+    # leading/collapsed run of whitespace, a soft hyphen, an NFC fold), and
+    # once drifted the reported number is simply wrong. ``q.value_text`` and
+    # ``q.unit_text`` are the matched groups themselves, so they are always
+    # right; only the unit's *casing* is casefolded, restored here from its
+    # canonical spelling.
     untraced = [
-        text[q.start:q.end].strip() for q in quantities_in(text)
+        f"{q.value_text} {_DISPLAY_UNIT.get(q.unit, q.unit_text)}" for q in quantities_in(text)
         if not any(same_quantity(q, k) for k in known)
     ]
     untraced.extend(number for number in bare_numbers(text) if number not in literal)
