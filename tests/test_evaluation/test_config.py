@@ -911,9 +911,14 @@ CRITIC_PROMPT_FINGERPRINT = "9f62f005745a"
 # 9f62f005745a (shared prompt module).
 # Evidence Verifier plan, Tasks 1.3, 1.4 and 3.3: researcher and planner
 # module edits; wording rules moved to agents/wording.py.
+# Task 1.5 fix round 1: Task 1.3's own fix round then moved the researcher's
+# value again, ``981e42c6588f`` -> ``d6200b7bd918``: a dropped figure is now
+# recorded under its own error type instead of being folded into
+# ``researcher_invalid_finding``. Module-source drift only — no prompt string
+# was edited, and the other five pins are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "b062e8c3e7cc",
-    "researcher": "981e42c6588f",
+    "researcher": "d6200b7bd918",
     "source_evaluator": "1a7f057fad85",
     "fact_checker": "96e323f7271a",
     "synthesizer": "948a744cdb31",
