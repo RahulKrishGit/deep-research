@@ -1185,12 +1185,78 @@ def _windowed_passage(text: str, snippet: str, *, chars: int) -> str:
     return text[start : start + chars]
 
 
-def relay_attribution_on_page(read: ReadRecord, locator: str, snippet: str, organisation: str) -> bool:
-    """True when the passage around ``locator`` credits ``organisation`` for a figure.
+# How much of a read's own opening — the cover or title block, and the
+# masthead statement right after it — is read for who produced the whole
+# document, rather than a section it merely mentions. Bounded so a short
+# opening excerpt is never stretched into an assertion its own words never
+# carry.
+_OPENING_PASSAGE_COUNT = 3
+_OPENING_CREDITS_CHARS = 2000
 
-    The same rule a researcher attribution quote is admitted under: the name is
-    in the snippet's own passage or its immediate neighbour, with an attribution
-    cue ("according to", "reported by", a possessive, ...) beside it.
+# The verbs an active masthead sentence uses to say that the body it just
+# named produced the whole document -- "The U.S. Energy Information
+# Administration (EIA), the statistical and analytical agency within the
+# U.S. Department of Energy (DOE), prepared this report" -- as opposed to
+# the passive forms _ATTRIBUTION_PHRASES already reads ("prepared by X").
+_AUTHORSHIP_VERB_PATTERN = re.compile(
+    r"(?:prepared|produced|published)\s+(?:this|the)\s+(?:report|outlook|document)",
+    re.IGNORECASE,
+)
+# How far the verb may sit past the matched name: a real masthead sentence
+# names the body, then a whole appositive clause identifying it ("the
+# statistical and analytical agency within the U.S. Department of Energy
+# (DOE)"), then the verb -- not merely a cue's usual few words.
+_AUTHORSHIP_VERB_REACH = 120
+
+
+def _opening_credits(read: ReadRecord) -> str:
+    """The read's opening: its first few passages, bounded and whitespace-folded."""
+    keys = list(read.passages.keys())[:_OPENING_PASSAGE_COUNT]
+    text = " ".join(read.passages[key] for key in keys)
+    return " ".join(text.split())[:_OPENING_CREDITS_CHARS]
+
+
+def _opening_credits_organisation(read: ReadRecord, organisation: str) -> bool:
+    """True when the read's opening credits ``organisation`` as its author.
+
+    A cover or title block that merely mentions a body is not authorship --
+    a name has to sit beside one of the phrases this project reads as
+    *assigning* the document to somebody: the existing passive attribution
+    phrases ("prepared by X", "published by X", ...), a copyright mark
+    ("© X", "copyright X"), or the active form a masthead statement writes
+    it in ("X ... prepared this report").
+    """
+    opening = _opening_credits(read)
+    name = organisation.strip()
+    if not opening or not name:
+        return False
+    pattern = _issuer_name_pattern(name)
+    for phrase in (*_ATTRIBUTION_PHRASES, r"©"):
+        if re.search(
+            rf"(?<![A-Za-z0-9]){phrase}{_ATTRIBUTION_GAP}(?:the\s+)?(?:\d{{4}}\s*)?"
+            rf"{pattern}(?![A-Za-z0-9])",
+            opening, re.IGNORECASE,
+        ):
+            return True
+    for match in re.finditer(pattern, opening, re.IGNORECASE):
+        tail = opening[match.end() : match.end() + _AUTHORSHIP_VERB_REACH]
+        if _AUTHORSHIP_VERB_PATTERN.search(tail):
+            return True
+    return False
+
+
+def relay_attribution_on_page(read: ReadRecord, locator: str, snippet: str, organisation: str) -> bool:
+    """True when the read credits ``organisation`` for a figure at ``locator``.
+
+    Either of two things the researcher's own attribution quote is admitted
+    under also credits a relay: the name is in the snippet's own passage (or
+    a bounded window around it, when the locator does not resolve one) beside
+    an attribution cue ("according to", "reported by", a possessive, ...); or
+    the read's own opening names ``organisation`` as the document's author or
+    publisher (PD-8), which applies to every figure in the document however
+    far from that opening it sits -- a mirrored PDF that credits its
+    originator only on its cover and in scattered captions never within reach
+    of a given figure is still that originator's relay of the whole document.
     """
     # F9: Figure Match admits a snippet found anywhere on the page, so its locator
     # may be stale. The fallback is a bounded window centred on the snippet
@@ -1201,10 +1267,13 @@ def relay_attribution_on_page(read: ReadRecord, locator: str, snippet: str, orga
         _document_text(read), snippet, chars=_RELAY_PASSAGE_CHARS
     )
     name = organisation.strip()
-    if not passage or not name:
+    if not name:
         return False
-    pattern = re.compile(_issuer_name_pattern(name), re.IGNORECASE)
-    return any(attribution_cue_adjacent(passage, match) for match in pattern.finditer(passage))
+    if passage:
+        pattern = re.compile(_issuer_name_pattern(name), re.IGNORECASE)
+        if any(attribution_cue_adjacent(passage, match) for match in pattern.finditer(passage)):
+            return True
+    return _opening_credits_organisation(read, name)
 
 
 def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
