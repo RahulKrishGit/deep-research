@@ -738,6 +738,7 @@ from deep_research.agents.toolset import AgentToolset, ToolDescriptor
 from deep_research.agents.verified_facts import (
     VerifiedFigure,
     answered_target_ids,
+    canonical_scopes,
     citable_findings,
     fact_rows,
     finding_answers,
@@ -756,6 +757,7 @@ from deep_research.agents.wording import (
     hedge_forecast,
     hedge_marker,
     page_modal,
+    realized_outcome,
     stated_role,
     stated_scopes,
     stated_years,
@@ -1533,4 +1535,10 @@ __all__ = [
     "finding_memory_payload",
     "report_written_event",
     "ReportWriterAgent",
+    # Fix round 1: Task 3.4's fix round made ``verified_facts.canonical_scopes``
+    # public (was ``_canonical_scopes``) and added ``wording.realized_outcome``,
+    # both consumed by the Report Writer's positive forecast-rewrite check
+    # (F3). Appended as one block, for the same AST-coverage reason as above.
+    "canonical_scopes",
+    "realized_outcome",
 ]
