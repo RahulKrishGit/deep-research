@@ -25,9 +25,20 @@ from deep_research.evaluation.evaluators import (
     evaluate_general_gates,
     evaluate_target,
 )
-from deep_research.evaluation.models import AGENT_NAMES, DependencyLedger
+from deep_research.evaluation.models import (
+    AGENT_NAMES,
+    CaseExpectations,
+    DependencyLedger,
+    DeterministicMetric,
+    EvaluationCase,
+    JudgeRubric,
+    TargetOutput,
+)
 from deep_research.tools.base import ToolResult
-from deep_research.utils.types import ORIGINAL_QUESTION_OMISSION_REFERENCE
+from deep_research.utils.types import (
+    ORIGINAL_QUESTION_OMISSION_REFERENCE,
+    ResearchState,
+)
 
 
 def gate(results, gate_id):
@@ -1045,6 +1056,96 @@ def test_a_plan_that_lost_its_comparison_scores_zero(
             output, scoped_targets_case, "support_policy_not_downgraded"
         )
         == 0.0
+    )
+
+
+def test_a_contract_only_confirmation_demand_is_seen_as_a_downgrade() -> None:
+    """The metric reads the session's own question, exactly as the floor does.
+
+    The planner always rewrites a target into an atomic sentence, so
+    "Independently confirm X" survives only in the contract's original
+    question. Before the metric threaded ``contract_question`` through, a
+    plan that recorded such a target under ``primary_attribution`` could not
+    be told apart from one that earned no policy at all (review rank 1).
+    """
+    case = EvaluationCase(
+        case_id="confirmation-demand-probe",
+        version=1,
+        agent_name="planner",
+        tier="controlled",
+        title="Independent confirmation demanded by the original question",
+        purpose="Probe _support_policy_not_downgraded_passes's contract reading.",
+        state=ResearchState(
+            session_id="evaluation-confirmation-demand-probe",
+            original_question=(
+                "Independently confirm how much grid-scale battery storage "
+                "the US added in 2024."
+            ),
+        ),
+        dependency_scenario="planner-clean-memory",
+        expectations=CaseExpectations(
+            required_output_fields=["sub_topics"],
+            max_iterations=2,
+            max_tool_calls=10,
+            deterministic_metrics=[
+                DeterministicMetric(
+                    metric_id="support_policy_not_downgraded",
+                    weight=1.0,
+                    description="probe",
+                )
+            ],
+        ),
+        judge_rubric=JudgeRubric(
+            rubric_id="confirmation-demand-probe",
+            version=1,
+        ),
+    )
+    output = TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id="evaluation-confirmation-demand-probe",
+        experiment_name="planner-controlled-probe",
+        completed=True,
+        result={
+            "sub_topics": [
+                {
+                    "coverage_id": "topic-01",
+                    "title": "Battery storage additions",
+                    "rationale": "The measured 2024 addition.",
+                    "search_queries": ["battery storage additions 2024"],
+                    "success_criteria": ["The 2024 addition is stated."],
+                    "priority": 1,
+                    "evidence_targets": [
+                        {
+                            "target_id": "topic-01-target-01",
+                            "coverage_id": "topic-01",
+                            "question": (
+                                "How much battery storage capacity was "
+                                "added in the US in 2024?"
+                            ),
+                            "required_dimensions": [
+                                "measure: battery storage capacity added, "
+                                "in MW",
+                                "source: the federal energy statistical "
+                                "agency's published capacity data",
+                            ],
+                            "required": True,
+                            "critical": True,
+                            "support_policy": "primary_attribution",
+                        }
+                    ],
+                }
+            ]
+        },
+        target_model_requested="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+    assert (
+        metric_score(output, case, "support_policy_not_downgraded") == 0.0
     )
 
 

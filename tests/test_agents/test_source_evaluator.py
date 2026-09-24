@@ -15,6 +15,7 @@ from deep_research.agents.evidence import (
     source_origin_id,
 )
 from deep_research.agents.fact_checker import (
+    evidenced_issuer,
     AdjudicationPacket,
     ClaimDraft,
     ClaimVerdictDraft,
@@ -2196,6 +2197,16 @@ def _identity_packet(
                 read=read,
                 source=by_url[normalize_source_url(read.resolved_url)],
                 assessment=None,
+            )
+            for unit, read in zip(units, reads, strict=True)
+        },
+        # What the Fact Checker's own packet builder passes: the issuing body
+        # each candidate's source is *evidenced* to be, which is the passage
+        # side of the primary badge. Without it the claim could carry no badge
+        # however completely the report supports it.
+        passage_issuers={
+            unit.evidence_id: evidenced_issuer(
+                by_url[normalize_source_url(read.resolved_url)]
             )
             for unit, read in zip(units, reads, strict=True)
         },

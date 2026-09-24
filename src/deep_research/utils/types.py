@@ -156,8 +156,12 @@ class AnswerContract(ContractModel):
     ``as_of_date`` is stamped from the run's injected clock, never from model
     knowledge or memory — a September 2026 session that treated 2024 as
     "current" produced stale anchors (baseline TR-04). When the question
-    itself names a date or period, that date is preserved instead: a question
-    about 2021 is answered as of 2021, and the contract says so.
+    itself *states* a date, that date is preserved instead: a question that
+    says "as of 2025-12-31" is answered as of 2025-12-31, and the contract
+    says so. A year the question merely observes is not a cutoff: it is the
+    period the answer is about, named in ``evidence_period_requirement``,
+    while ``as_of_date`` stays the clock's — so later revisions and published
+    outcomes stay admissible beside the forecasts.
 
     ``geographic_scope`` is ``"unspecified"`` when the question names none,
     and ``assumptions`` then carries the explicit assumption. An empty
@@ -369,6 +373,57 @@ class Finding(ContractModel):
     that says whether two figures are even comparable, so a vintage
     comparison never ranks a 2024 actual against a 2025 projection.
     """
+    attributed_issuer: str | None = None
+    """The body this page ATTRIBUTES the figure to, not the body that served it.
+
+    A relay is a page whose own words hand the figure to somebody else — the
+    audited run's cleanedge.com dive says "according to the U.S. Energy
+    Information Administration (EIA)" beside EIA's 10.3 GW and 18.2 GW. Empty
+    means the page states the figure as its own publisher's, which is the
+    ``source_url``'s publisher and needs no second name. Credit is what this
+    field exists to get right: read as the host, a relay's copy of one
+    measurement becomes a second, independent one, and the report prints a
+    conflict where the evidence holds one figure published twice.
+    """
+    attribution_quote: str | None = None
+    """The page's own words that attribute the figure to ``attributed_issuer``.
+
+    Admitted only when the read the finding cites carries the phrase verbatim
+    in the excerpt's own passage or its immediate neighbour, never merely
+    somewhere else in the document, and only when the phrase both names that
+    body and carries a recognized attribution cue beside the name —
+    "according to", "reported by", a possessive, or similar — so the two
+    fields are one claim recorded in two halves: naming a body is not
+    crediting it with anything, and a page that merely mentions or contrasts
+    itself with a body — "Unlike the EIA, our survey found..." — attributes
+    nothing to it. An attribution the read does not carry this way is not a
+    fact about the page, and both fields are then recorded empty. Shaped
+    after ``TemporalClaim``'s value/quote pair for the same reason — a name
+    without its phrase is the model's reading of a document it is quoting.
+    """
+    measure_scope: str | None = None
+    """The segment or basis the figure covers, in the source's own words.
+
+    "all segments" for the market monitor's 12,314 MW, "grid-scale" for its
+    2025 forecast: two figures of one market on two bases, so a target asking
+    for one of them is answered by that one alone. Admitted only when the
+    read's own text carries this exact wording, the same containment an
+    excerpt is admitted with; empty means the page states no scope, or the
+    model's proposed wording is not the read's, which is not the same as the
+    scope being the target's.
+    """
+    release_date: str | None = None
+    """The date the ATTRIBUTED body released the figure, as the page writes it.
+
+    Distinct from ``statement_date``, which is when the page carrying the
+    figure states it: on a relay the two differ, and a reader dating a figure
+    needs the release the figure belongs to rather than the copy's own day.
+    Admitted only when the read's own text states this value, at this
+    precision or a finer one — the same verification every other date in
+    this project passes. Empty when the page states no release date, or
+    states one the model's proposed value does not match, and then
+    ``statement_date`` is the only date recorded.
+    """
 
     @model_validator(mode="after")
     def normalize_binding_and_dates(self) -> "Finding":
@@ -379,7 +434,15 @@ class Finding(ContractModel):
         date a reader could rank against a real one.
         """
         self.target_ids = list(dict.fromkeys(self.target_ids))
-        for name in ("vintage", "statement_date", "data_period"):
+        for name in (
+            "vintage",
+            "statement_date",
+            "data_period",
+            "attributed_issuer",
+            "attribution_quote",
+            "measure_scope",
+            "release_date",
+        ):
             value = getattr(self, name)
             if value is not None and not value.strip():
                 setattr(self, name, None)
@@ -777,6 +840,92 @@ class ConflictAssessment(ContractModel):
     rationale: str = Field(min_length=1)
 
 
+class ClaimProvenance(ContractModel):
+    """Where one claim's figure comes from, as the page that stated it recorded it.
+
+    A figure is not just a number: "10.4 GW" is EIA's January 2025 inventory
+    of utility-scale additions, released 2025-03-12, and two figures for one
+    measurement are two *editions* of one series rather than a disagreement.
+    The Fact Checker copies these from the finding the claim was extracted
+    from, so the composition, the reader report and the evidence ledger can
+    state the attribution per figure instead of guessing it from the source's
+    own dates.
+
+    Every field is nullable and ``None`` means "the page did not say": a
+    claim whose provenance nothing recorded is never given a date or an
+    issuer this system did not read. ``attributed_issuer`` is the body the
+    page attributes the figure to — the originating issuer, which is not
+    necessarily the host that served the page — and it is what the Fact
+    Checker's primary badge is tied to.
+    """
+
+    attributed_issuer: str | None = None
+    """The body the page attributes the figure to, or ``None`` when it names none."""
+    measure_scope: str | None = None
+    """The segment or basis the figure covers, in the page's words.
+
+    "all segments" is not "utility-scale, 1 MW and above": an all-segment
+    total may never stand for a grid-scale figure, and the scope is what the
+    report states beside the number.
+    """
+    vintage: str | None = None
+    """The dated edition of the data the figure rests on, in the source's words."""
+    statement_date: str | None = None
+    """The date the explaining page states or carries the figure, as it writes it."""
+    release_date: str | None = None
+    """The date the attributed issuer released the figure, as the page writes it.
+
+    Distinct from ``statement_date`` (the citing page's own date) and from
+    ``vintage`` (the edition): it is what orders two revisions of one series.
+    """
+    data_period: str | None = None
+    """The period the figure applies to, as the source writes it."""
+
+    @property
+    def release(self) -> str:
+        """The date the attributed issuer released the figure, or ``""``.
+
+        Only ``release_date`` orders two revisions of one series. The citing
+        page's own ``statement_date`` is a real date the evidence states, but
+        it is the page's day, not the issuer's, and letting it stand in here
+        is what made a relay's article date order and label two releases of
+        one measurement.
+        """
+        return self.release_date or ""
+
+    def as_text(self) -> str:
+        """The attribution a reader meets beside the figure, or ``""``.
+
+        "EIA, January 2025 Preliminary Monthly Electric Generator Inventory,
+        released 2025-03-12": the issuing body, the edition the data rest on,
+        and the date that body released it, in that order. Absent a recorded
+        release, the citing page's own date still appears, worded as what it
+        is — "stated 2025-03-13" — never as a release nobody stated. Only the
+        parts the page recorded appear at all.
+        """
+        parts = [self.attributed_issuer or "", self.vintage or ""]
+        if self.release_date:
+            parts.append(f"released {self.release_date}")
+        elif self.statement_date:
+            parts.append(f"stated {self.statement_date}")
+        return ", ".join(part for part in parts if part)
+
+    @property
+    def recorded(self) -> bool:
+        """True when the page said anything at all about this figure's origin."""
+        return any(
+            getattr(self, name)
+            for name in (
+                "attributed_issuer",
+                "measure_scope",
+                "vintage",
+                "statement_date",
+                "release_date",
+                "data_period",
+            )
+        )
+
+
 class Claim(ContractModel):
     claim_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
@@ -786,6 +935,13 @@ class Claim(ContractModel):
     evidence: list[str]
     contradictions: list[str]
     verification_evidence: list[EvidencePassage]
+    provenance: ClaimProvenance = Field(default_factory=ClaimProvenance)
+    """Where this claim's figure comes from, copied from its finding.
+
+    Empty for a claim nothing recorded provenance for — a fixture, a legacy
+    passthrough, or a claim whose finding stated no issuer, edition or date.
+    An empty record is never rendered as a date or an attribution.
+    """
     # Why this claim could not be judged, and ``None`` for every claim that
     # was. Set only when ``verdict == "insufficient_evidence"``, from the Fact
     # Checker's enumerated ``INSUFFICIENT_REASONS`` set, so that "nothing
@@ -2027,6 +2183,17 @@ _CAUSAL_LINK = re.compile(
     re.I,
 )
 
+# A "battery" measure asks for the battery fleet specifically. A clause that
+# spells "battery" or "BESS" itself is never refused on this ground; one that
+# names none of these words but names a different storage technology, or a
+# combined renewables-and-storage total, is refused (review rank 1).
+_BATTERY_WORD = re.compile(r"\bbatter(?:y|ies)\b|\bbess\b", re.I)
+_OTHER_STORAGE_TECHNOLOGY = re.compile(
+    r"\b(?:pumped|hydro\w*|compressed[\s-]air|caes|thermal|flywheel|"
+    r"hydrogen|solar|wind|gas)\b",
+    re.I,
+)
+
 # The classes of publisher a source requirement can name. The plan writes the
 # class, not the publisher ("the market monitor's latest published outlook",
 # "the agency's published methodology documentation"), and a requirement that
@@ -2073,8 +2240,13 @@ _DEFINITIONAL_CUES: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
     (
         re.compile(r"\b(?:facilit(?:y|ies)|types?)\b", re.I),
         re.compile(
+            # Not "count(s)" alone: "Counting projects larger than 1 MW in the
+            # electric power sector, EIA projected …" says how many, not what
+            # the count includes, and it bound the facility-types targets for
+            # it (review rank 2). A clause answering this obligation names the
+            # types, the facilities, or what is included or excluded.
             r"\b(?:types?|facilit\w*|includ\w*|exclud\w*|co-?located|hybrid|"
-            r"stand-?alone|count\w*)\b",
+            r"stand-?alone)\b",
             re.I,
         ),
     ),
@@ -2105,24 +2277,124 @@ _MEASURE_HEAD_END = re.compile(
 )
 
 
-def _measure_head(detail: str) -> str:
-    """The words of a measure detail that name the concept it asks about."""
+def measure_head(detail: str) -> str:
+    """The words of a measure detail that name the concept it asks about.
+
+    Public because the head decides two things in two modules: whether the
+    requirement asks a quantity at all (``claim_clusters._demands_a_quantity``
+    reads only the head's countable nouns) and whether it names a convention
+    (:func:`names_a_definition`).
+    """
     head = detail.split(",", 1)[0]
     boundary = _MEASURE_HEAD_END.search(head)
     return head[: boundary.start()] if boundary else head
 
 
+def names_a_definition(detail: str) -> bool:
+    """Whether a measure asks what a convention is rather than how much.
+
+    The head decides it, on the same cue vocabulary the clause test below
+    uses: "capacity threshold applied …", "facility types included …" and
+    "storage segment covered …" name a concept, and every qualifier they carry
+    describes that concept. The converse is a quantity: "battery storage
+    capacity added …", "projected additions …".
+    """
+    head = measure_head(detail)
+    return any(concept.search(head) for concept, _clause_cue in _DEFINITIONAL_CUES)
+
+
+# The market scale a requirement or a clause states its figures cover. Two
+# quantities are comparable at one scale only: the market monitor's
+# all-segments 2024 total (12,314 MW) is not its grid-scale total, and
+# crediting one for the other is the substitution the honesty contract
+# forbids, whatever unit both are written in. "Utility-scale" and "grid-scale"
+# are one scale — the sources use both for the ≥1 MW fleet and a target may
+# name either — and a clause that names no scale is not thereby at a different
+# one, exactly as an unnamed measurand is not a different measurand.
+_MEASURE_SCALES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "all",
+        re.compile(
+            r"\b(?:all|every|total|whole|across(?:\s+all)?)\s+"
+            r"(?:market\s+|storage\s+)?segments?\b",
+            re.I,
+        ),
+    ),
+    (
+        "grid",
+        re.compile(
+            r"\b(?:grid|utility)[\s-]?scale\b|\bfront[\s-]of[\s-]the[\s-]meter\b",
+            re.I,
+        ),
+    ),
+    ("residential", re.compile(r"\bresidential\b", re.I)),
+    (
+        "commercial",
+        # Not "commercial operation": EIA's standard lifecycle phrase for a
+        # project reaching service, which names no market segment at all
+        # (review rank 2).
+        re.compile(r"\b(?:commercial(?!\s+operat\w*)|c\s?&\s?i)\b", re.I),
+    ),
+    (
+        "behind-the-meter",
+        re.compile(r"\b(?:behind[\s-]the[\s-]meter|distributed)\b", re.I),
+    ),
+)
+
+# A scale word that only appears after one of these cues is not the clause's
+# own scale — it is the scale the clause is carving *out* of an otherwise
+# unscoped total: "excluding distributed systems" and "excluding residential
+# and commercial systems" state no scale of their own (review rank 2).
+_SCALE_EXCLUSION_CUE = re.compile(
+    r"\bexclud\w*\b|\bnot counting\b|\bexcept\b|\bseparately from\b", re.I
+)
+
+
+def _measure_scale(text: str) -> frozenset[str]:
+    """Every market scale ``text`` names of its own, empty when it names none.
+
+    Every one, not the first: a clause can name two while stating one
+    quantity — "behind-the-meter storage is excluded from the reported
+    utility-scale capacity total" is about both the excluded scale and the
+    total. Two texts are at conflicting scales only when they share none. A
+    scale named after an exclusion cue is disclaimed, not stated, so only the
+    text before the first such cue is read.
+    """
+    cue = _SCALE_EXCLUSION_CUE.search(text)
+    scoped = text[: cue.start()] if cue else text
+    return frozenset(scale for scale, pattern in _MEASURE_SCALES if pattern.search(scoped))
+
+
 def qualifier_matches_requirement(
-    proposition: AtomicProposition, requirement: str
+    proposition: AtomicProposition, requirement: str, *, question: str = ""
 ) -> bool:
-    """Check explicit qualifier values, not just the presence of a field."""
+    """Check explicit qualifier values, not just the presence of a field.
+
+    ``question`` is the target's own question, which states the measure in its
+    own words as well as the plan does: the live figure target's question asks
+    for the additions "at grid scale" while its measure detail says only
+    "battery storage capacity added, in megawatts", so either may name the
+    scale the clause has to be at.
+    """
     kind, separator, detail = requirement.casefold().partition(":")
     if not separator:
         return True
     detail = detail.strip()
     if "period" in kind or "year" in kind:
+        # The years a requirement names constrain the periods the clause
+        # *states*. A clause that states none is not thereby wrong about the
+        # period it never wrote: whether such a clause discharges the
+        # obligation at all is the dimension check's question, and
+        # ``atom_answers_dimensions`` asks it first. A definition states the
+        # rule a classification is in force by and no observation of its own
+        # (review rank 2), while a clause that states a period the requirement
+        # does not name is refused here.
         years = set(_YEAR.findall(detail))
-        if years and not years.intersection(_YEAR.findall(proposition.observation_period)):
+        if (
+            years
+            and proposition.observation_period
+            and not years.intersection(_YEAR.findall(proposition.observation_period))
+        ):
             return False
     if "geography" in kind or "country" in kind:
         if re.search(r"\bunited states\b|\bu\.?s\.?\b", detail, re.I):
@@ -2175,9 +2447,26 @@ def qualifier_matches_requirement(
             )
             if actual != wanted:
                 return False
-        if "battery" in detail and "battery" not in proposition.text.casefold():
-            return False
+        # The measure is read through the unit family, never through the one
+        # noun the planner happened to write. A "battery storage" measure
+        # refused every clause that spelled the fleet the page's way — the
+        # market monitor's own "12,314 MW of energy storage was deployed" —
+        # so the tracker's figure could not be used at all (review rank 1b).
+        # What the family decides is the basis: an MWh figure never answers a
+        # megawatt measure.
         if "storage" in detail and "storage" not in proposition.text.casefold():
+            return False
+        # A "battery" measure is not "storage" in general: the market
+        # monitor's own "12,314 MW of energy storage" is the same fleet
+        # (review rank 1b), but a clause naming another storage technology,
+        # or a combined renewables-and-storage total, is a different one
+        # (review rank 1). A clause that spells "battery" or "BESS" itself
+        # is never refused here, whatever else it also names.
+        if (
+            "battery" in detail
+            and _BATTERY_WORD.search(proposition.text) is None
+            and _OTHER_STORAGE_TECHNOLOGY.search(proposition.text) is not None
+        ):
             return False
         if "add" in detail and _ADDITION.search(proposition.text) is None:
             return False
@@ -2189,7 +2478,19 @@ def qualifier_matches_requirement(
                 return False
         if "mechanism" in detail and _CAUSAL_LINK.search(proposition.text) is None:
             return False
-        head = _measure_head(detail)
+        # A quantity is answered at one scale, and the clause's own scale words
+        # decide whether it is at this one: the monitor's all-segments total is
+        # not the grid-scale figure the target asks for. The clause is read by
+        # the scales it names, and refused only when it shares none with the
+        # requirement — a clause that names no scale is not at a different one.
+        # A definitional measure is exempt: there the clause is *about* the
+        # scales, and the cue vocabulary below is what decides.
+        if not names_a_definition(detail):
+            wanted_scales = _measure_scale(detail) | _measure_scale(question)
+            stated_scales = _measure_scale(proposition.text)
+            if wanted_scales and stated_scales and not (wanted_scales & stated_scales):
+                return False
+        head = measure_head(detail)
         for concept, clause_cue in _DEFINITIONAL_CUES:
             if concept.search(head) and clause_cue.search(proposition.text) is None:
                 return False

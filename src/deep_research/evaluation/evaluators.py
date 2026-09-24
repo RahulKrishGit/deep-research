@@ -2134,17 +2134,24 @@ def _support_policy_not_downgraded_passes(
     """No obligation lost the support policy its own question earns.
 
     Two clauses, because they catch different plans. The first compares each
-    recorded policy against the policy its question *earns* — ``None`` for a
+    recorded policy against the policy its target *earns* — ``None`` for a
     descriptive question whose evidence the plan may price itself, which is
     what lets a plan stamp ``primary_attribution`` on a figure one issuer
     publishes — and refuses a target recorded under a weaker policy than the
-    one its question earns. It reads ``earned_support_policy`` rather than
+    one it earns. It reads ``earned_support_policy`` rather than
     ``support_policy_for``: the latter falls back to ``independent_pair``
     wherever the form earns nothing, so reading it scored every obligation the
-    planner is meant to stamp as a downgrade. The second requires the plan's
-    recorded policy set to cover the case's declared set: a plan that dropped
-    the comparative obligation entirely has no downgraded target for the first
-    clause to see.
+    planner is meant to stamp as a downgrade. It passes the target's own
+    ``required_dimensions`` with its question, exactly as the planner's floor
+    does, because the attribution a measured quantity rests on is stated in
+    either place, and it passes ``case.state.original_question`` as
+    ``contract_question`` for the same reason the floor does: an explicit
+    "independently confirm X" is written in the session's own question, not
+    in the planner's rewritten atomic target sentence. One notion of "earned"
+    is what keeps this metric and the stamp it scores in step. The second
+    requires the plan's recorded policy set to cover the case's declared set:
+    a plan that dropped the comparative obligation entirely has no downgraded
+    target for the first clause to see.
     """
     planned = _planned_targets(output)
     if not planned:
@@ -2152,7 +2159,12 @@ def _support_policy_not_downgraded_passes(
     targets = [target for group in planned for target in group]
     for target in targets:
         if target.support_policy != "independent_pair" and (
-            earned_support_policy(target.question) == "independent_pair"
+            earned_support_policy(
+                target.question,
+                required_dimensions=target.required_dimensions,
+                contract_question=case.state.original_question or "",
+            )
+            == "independent_pair"
         ):
             return False
     required = _reference_strings(case, "required_support_policies")

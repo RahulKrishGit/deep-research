@@ -10,10 +10,11 @@ domain rules locally where their failures can be turned into a repair prompt.
 
 from __future__ import annotations
 
+import calendar
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal, TypeAlias, get_args
 
 from pydantic import Field, ValidationError, field_validator, model_validator
@@ -525,24 +526,42 @@ PLAN_INSTRUCTION = (
     # industry tracker as two measurements of the same 2024 addition, although
     # the two publish different segments — so the target demanded a pair that
     # cannot exist, exactly as the single-issuer figures did (review rank 2).
-    # Two figures that are not the same measurement are two targets.
+    # Two differently scoped figures are two targets. Only a figure named as
+    # one issuer's own series earns that issuer's primary-attribution floor;
+    # an unattributed empirical fact may instead have independent accounts.
     "Name every target's support_policy, and let the evidence settle it. Use "
-    "independent_pair when a second, independent measurement of the same "
-    "fact can exist — a comparison or ranking, or one quantity that two "
-    "independent bodies measure on the same basis — and then require that "
-    "pair in the success criterion: state that at least two sources from "
-    "different publishers must state the number or finding, and say how a "
-    "reader would recognise the second one. Two bodies that publish "
-    "differently scoped figures — different segments, units, or vintages — "
-    "are not that pair, because differently scoped figures are different "
-    "measurements: give each issuer its own primary_attribution target "
-    "instead of one independent_pair target. Use primary_attribution when a "
-    "single authoritative issuer settles the fact — its own count, rule, "
-    "definition, or methodology — and then do not demand a second publisher "
-    "for it: a fact only one source states is recorded as unverified no "
-    "matter how authoritative that source is, no independent pair of one "
-    "agency's figure exists, and a criterion that demands one leaves the "
-    "obligation unanswered.\n"
+    "independent_pair only when a second, independent account can state the "
+    "whole finding on the same basis — a comparison, a ranking, or a causal "
+    "conclusion — and then require that pair in the success criterion: state "
+    "that at least two sources from different publishers must state the "
+    "finding, and say how a reader would recognise the second one. A count, "
+    "total, capacity, or projection that a named body publishes — an agency's "
+    "inventory, a market monitor's count, a company's filing — is that body's "
+    "own figure: name the issuer in its primary_attribution target. When a "
+    "second body publishes its own count of the same market, give that body "
+    "its own primary_attribution target, so the report shows both figures "
+    "with their scopes side by side. A generic empirical fact with no named "
+    "issuer takes independent_pair only when two independent accounts can "
+    "each state the same fact in full. Two bodies that publish differently "
+    "scoped figures — different segments, units, or vintages — are not a "
+    "pair, because differently scoped figures are different measurements: "
+    "never plan one independent_pair target across two issuers' figures, and "
+    "never name two bodies in one target's source dimension. Use "
+    "primary_attribution when a single authoritative issuer settles the "
+    "fact — its own count, rule, definition, or methodology — and then do not "
+    "demand a second publisher for it: a statistic only one body publishes "
+    "has no second measurer, so name that body. A fact only one source states "
+    "is recorded as unverified no matter how authoritative that source is, "
+    "no independent pair of one agency's figure exists, and a criterion that "
+    "demands one leaves the obligation unanswered. An explicit request for "
+    "independent confirmation is the one demand none of this lowers: keep "
+    "such a target on independent_pair.\n"
+    # A source behind a subscription cannot be read at all, and an unanswered
+    # required obligation fails acceptance however honest the report is, so a
+    # required target must not depend on one (review rank 4).
+    "Never make a required target depend on a source behind a paywall: name a "
+    "freely reachable publication of the same figures, or leave the "
+    "obligation out.\n"
     "Aim the queries at primary sources — regulations, standards, filings, "
     "and datasets that state the facts directly — and say which class of "
     "source each query should reach. For a target planned under "
@@ -1085,21 +1104,291 @@ def _mentions_ranking(normalized: str) -> bool:
     )
 
 
+# An explicit request for a second, independent account. This is the one demand
+# the local rule may not lower: the user asked for a second *measurement*, and
+# whether one figure happens to have a second measurer cannot answer a request
+# the user made (user decision 1). Matched three ways, because the request is
+# written every way round: "independently confirm X", "verify X
+# independently", "an independent verification of X", "confirmed by a second
+# source", and "corroborated by another publisher" all ask for the same
+# account. "independent power producers" and "the independent system
+# operator" name a kind of body, not a request, so those two continuations
+# never count as the independence half of the demand.
+_INDEPENDENCE_MARKERS = ("independent", "independently")
+_INDEPENDENCE_MARKER_PATTERN = re.compile(
+    r"\bindependent(?:ly)?\b(?!\s+(?:power\s+producers?|system\s+operators?))"
+)
+_CONFIRMATION_MARKERS = (
+    "confirm",
+    "confirms",
+    "confirmed",
+    "confirming",
+    "confirmation",
+    "corroborate",
+    "corroborates",
+    "corroborated",
+    "corroborating",
+    "corroboration",
+    "cross-check",
+    "cross check",
+    "verify",
+    "verifies",
+    "verified",
+    "verifying",
+    "verification",
+    "check",
+    "validate",
+    "validated",
+)
+# A second body named without the word "independent" at all: "confirmed by a
+# second source" and "corroborated by another publisher" ask for the same
+# second measurement the adverb otherwise signals.
+_SECOND_SOURCE_PHRASES = (
+    "second source",
+    "another source",
+    "another publisher",
+    "other sources",
+)
+
+
+def _demands_independent_confirmation(normalized: str) -> bool:
+    """True when the question asks for a second, independent account."""
+    if not _mentions(normalized, _CONFIRMATION_MARKERS):
+        return False
+    if _INDEPENDENCE_MARKER_PATTERN.search(normalized) is not None:
+        return True
+    return _mentions(normalized, _SECOND_SOURCE_PHRASES)
+
+
+# How a target names the body whose series its figure is: the possessive the
+# plan itself writes for it, followed — within a few words — by one of the
+# publication nouns such a series is published as. "the agency's published
+# capacity data", "the market monitor's latest published outlook" and "the
+# operator's published ridership report" are all one named body's own series,
+# while "the city's population" is a property the question describes and "the
+# cost analysis each body publishes" names no single body at all. A quantity
+# nobody in particular reports — "how many people live in New York City?" —
+# names no series, so the plan's own proposal keeps deciding it: there is no
+# blanket "it has a number" rule (user decision 1).
+_REPORTED_SERIES_NOUNS = (
+    "accounts",
+    "analysis",
+    "count",
+    "counts",
+    "data",
+    "database",
+    "dataset",
+    "documentation",
+    "estimate",
+    "estimates",
+    "figures",
+    "filing",
+    "filings",
+    "forecast",
+    "forecasts",
+    "inventory",
+    "methodology",
+    "numbers",
+    "outlook",
+    "outlooks",
+    "projection",
+    "projections",
+    "publication",
+    "publications",
+    "record",
+    "records",
+    "release",
+    "releases",
+    "report",
+    "reports",
+    "series",
+    "statistics",
+    "study",
+    "survey",
+    "surveys",
+)
+# The pronouns whose "'s" is never a body's own series ("it's", "there's"),
+# and the possessors that name a time, an indefinite person, or a collective
+# concept rather than any particular body — "today's figures", "last year's
+# figures", "anyone's published data", "the world's best estimates", "the
+# market's latest data" all read as an attribution but name no issuer at all,
+# and the same guard catches the planner's own evidence-period sentence
+# ("never substitute today's figures"). The rest of the pattern is what
+# decides: a possessive followed by a publication noun is an attribution, and
+# these are the possessives that only look like one. An indefinite article
+# ("a reputable publisher's report") is filtered separately, by the
+# ``article`` group rather than the guard set: it names no one in particular
+# regardless of its head noun.
+_SERIES_POSSESSIVE_GUARDS = frozenset(
+    {
+        "it",
+        "that",
+        "this",
+        "there",
+        "these",
+        "those",
+        "today",
+        "yesterday",
+        "tomorrow",
+        "year",
+        "week",
+        "month",
+        "day",
+        "anyone",
+        "someone",
+        "everyone",
+        "world",
+        "market",
+    }
+)
+_POSSESSIVE_SERIES_PATTERN = re.compile(
+    r"\b(?:(?P<article>a|an)\s+|the\s+)?"
+    r"(?P<possessor>[a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,3})"
+    r"(?:'s|’s)\s+(?:[a-z][a-z-]*\s+){0,4}(?:"
+    + "|".join(_REPORTED_SERIES_NOUNS)
+    + r")(?![a-z0-9])"
+)
+
+
+def _named_possessive_series(text: str) -> bool:
+    """A body's own series named in possessive form, or a false one filtered.
+
+    "a reputable publisher's report" is filtered by its indefinite article,
+    and "the world's best estimates" is filtered because "world" is the
+    possessor's own last word, not a body (:data:`_SERIES_POSSESSIVE_GUARDS`).
+    "the federal energy statistical agency's published capacity data" keeps
+    neither guard: its possessor is definite and its last word, "agency",
+    names a kind of issuing body rather than a time or a generic concept.
+    ``text`` must already be normalized (:func:`_normalized_question`).
+    """
+    for match in _POSSESSIVE_SERIES_PATTERN.finditer(text):
+        if match.group("article") is not None:
+            continue
+        possessor_words = match.group("possessor").split()
+        if possessor_words[-1] in _SERIES_POSSESSIVE_GUARDS:
+            continue
+        return True
+    return False
+
+
+# A body named by its own proper-noun title instead of a possessive: "the
+# Census Bureau population estimates" and "the US Energy Storage Monitor"
+# name their issuer with no "'s" at all. Case-sensitive and read from the
+# *raw* text — never the casefolded form the rest of this module matches
+# against — because capitalisation is the only signal here: a generic
+# descriptive phrase such as "the federal energy statistical agency" is
+# deliberately left to the possessive form above, not this one.
+_TITLE_ENTITY_PATTERN = re.compile(
+    r"\bthe\s+(?P<entity>[A-Z][\w&]*(?:\s+[A-Z][\w&]*){1,4})"
+    r"(?:\s+(?P<tail>(?:[a-z][a-z-]*\s+){0,3}(?:"
+    + "|".join(_REPORTED_SERIES_NOUNS)
+    + r"))(?![a-zA-Z0-9]))?"
+)
+
+
+_GEOGRAPHIC_TITLE_HEADS = frozenset(
+    {"city", "county", "kingdom", "province", "region", "republic", "state", "states", "union"}
+)
+_PUBLICATION_TITLE_HEADS = frozenset(
+    {"bulletin", "inventory", "monitor", "outlook", "report", "survey", "tracker"}
+)
+
+
+def _named_title_series(raw_text: str) -> bool:
+    """Recognise an issuer's title, not every capitalised geographic name.
+
+    A publisher's proper name must modify a publication noun (``Census
+    Bureau population estimates``), or itself end in a publication title
+    (``US Energy Storage Monitor``). A jurisdiction such as ``United States``
+    is a geographic scope, even when followed by ``figures``; it is not the
+    body that published those figures.
+    """
+    for match in _TITLE_ENTITY_PATTERN.finditer(raw_text):
+        head = match.group("entity").split()[-1].casefold()
+        if head not in _GEOGRAPHIC_TITLE_HEADS and (
+            match.group("tail") is not None or head in _PUBLICATION_TITLE_HEADS
+        ):
+            return True
+    return False
+
+
+def _asks_a_named_issuers_series(
+    question: str,
+    required_dimensions: Sequence[str],
+) -> bool:
+    """Whether the target asks what one named body's series reports.
+
+    Two halves, and both are needed. The *measure* has to be one the binding
+    gate checks as a numeric value (:func:`checkable_dimensions`), because a
+    figure is what an issuer's series reports: an obligation about a
+    classification or a rule is settled by reading the document that states
+    it, not by one body's number. The *attribution* has to be in the target —
+    the question or one of its own requirements has to name the body whose
+    series the figure is — and it has to name it *as* that body's series,
+    either in possessive form (:func:`_named_possessive_series`) or by its own
+    capitalised title (:func:`_named_title_series`). The recorded 2024
+    addition target names its agency only in its source requirement, which is
+    why the requirements are read here and not just the sentence.
+
+    ``question`` is read in *both* forms: casefolded for the possessive
+    check, which is lexical, and raw for the title check, which needs
+    capitalisation to tell a proper-noun issuer from a generic phrase.
+    """
+    if not any(
+        checkable_dimensions(requirement) == ("value",)
+        for requirement in required_dimensions
+    ):
+        return False
+    normalized_text = " ; ".join(
+        [
+            _normalized_question(question),
+            *(_normalized_question(value) for value in required_dimensions),
+        ]
+    )
+    if _named_possessive_series(normalized_text):
+        return True
+    raw_text = " ; ".join([question, *required_dimensions])
+    return _named_title_series(raw_text)
+
+
 def _earned_support_policy(
     normalized: str,
     *,
     comparison_evidence: _ComparisonEvidence,
+    attributed_quantity: bool = False,
+    demands_independent_confirmation: bool = False,
 ) -> _SupportPolicy | None:
     """The policy a question's own form earns, or ``None`` when it earns none.
 
     Every branch here is a *reason*: a comparison — explicit or only
     ambiguous — needs two independent accounts by construction, a computed
     quantity needs its premises supported, a causal question is answered by an
-    argument rather than by one issuer's figure, and an official rule or
+    argument rather than by one issuer's figure, an explicit request for
+    independent confirmation is a demand the user made, and an official rule or
     definition is settled by the body that issues it. ``None`` is not a reason:
     it is where the local rule has nothing to say, and where a target whose
     evidence has one issuer can be planned as ``primary_attribution`` instead of
     demanding a pair that cannot exist (audit #3).
+
+    ``demands_independent_confirmation`` is computed by the caller rather than
+    read from ``normalized`` alone, because the request that matters can live
+    in the session's frozen *contract* question rather than the target's own
+    rewritten sentence — the planner always rewrites a target into an atomic
+    question, and "independently confirm X" never survives that rewrite
+    verbatim (review rank 1, user decision 1).
+
+    ``attributed_quantity`` is the one branch that reads the target's
+    *requirements* rather than its sentence, and it comes last on purpose: a
+    measured quantity that the target itself attributes to a named body's
+    published series (:func:`_asks_a_named_issuers_series`) is that body's own
+    figure. A second body's count of the same market is a differently scoped
+    measurement — a different claim — and a relay or a shared-data reanalysis
+    is never a second measurement, so a verified pair of one figure cannot be
+    formed at all: ``independent_pair`` on it is unanswerable by construction,
+    which is what made the policy on the run's critical 2024 target a
+    sample-to-sample coin flip (review rank 2, user decision 1). Comparison,
+    derivation, ranking, causal and an explicit confirmation request all keep
+    their own policy above this branch.
 
     The ambiguous comparison and the causal branches keep the *floor* the
     fallback used to provide. They change nothing about ``support_policy_for``
@@ -1108,6 +1397,8 @@ def _earned_support_policy(
     to earn it here or the model can lower it (review F5).
     """
     if comparison_evidence == "explicit":
+        return "independent_pair"
+    if demands_independent_confirmation:
         return "independent_pair"
     if _mentions(normalized, _DERIVATION_MARKERS):
         return "derivation"
@@ -1125,6 +1416,8 @@ def _earned_support_policy(
         return "independent_pair"
     if _mentions(normalized, _CAUSAL_MARKERS):
         return "independent_pair"
+    if attributed_quantity:
+        return "primary_attribution"
     return None
 
 
@@ -1136,7 +1429,11 @@ def _support_policy_from(
     """Classify evidence policy without a clock-dependent answer kind."""
     return (
         _earned_support_policy(
-            normalized, comparison_evidence=comparison_evidence
+            normalized,
+            comparison_evidence=comparison_evidence,
+            demands_independent_confirmation=_demands_independent_confirmation(
+                normalized
+            ),
         )
         or "independent_pair"
     )
@@ -1311,8 +1608,11 @@ def _evidence_period_requirement(
     if past_years:
         stated = ", ".join(str(year) for year in past_years)
         parts.append(
-            f"the period the question names ({stated}); answer it as of "
-            f"{as_of_date} and never substitute today's figures"
+            f"the period the question names ({stated}); answer that period "
+            f"from the latest evidence available as of {as_of_date} — a "
+            "projection is reported as a forecast with its issuer and release "
+            "vintage and a published outcome as an actual — and never "
+            "substitute today's figures for the period the question names"
         )
     elif asks_for_currency:
         parts.append(
@@ -1330,6 +1630,84 @@ def _evidence_period_requirement(
     return "; ".join(parts)
 
 
+# Natural-language phrases that state an explicit evidence cutoff, the way
+# an ISO date in the question already does: "as of December 31, 2025", "as
+# of the end of 2025", "at the end of 2025" and "by the end of 2025" all
+# freeze the date they name (user decision 2). A bare observation year with
+# no such phrase — "for 2025" — still does not: :func:`_past_years` reads
+# that as the period the answer is *about*, not a cutoff.
+_EXPLICIT_CUTOFF_PREFIX_PATTERN = re.compile(
+    r"\b(?:as of|at the end of|by the end of)\s+(?:the end of\s+)?",
+    re.IGNORECASE,
+)
+_MONTH_NAMES = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
+_MONTH_NAME_ALTERNATION = "|".join(_MONTH_NAMES)
+_EXPLICIT_MONTH_DAY_YEAR_PATTERN = re.compile(
+    rf"\b(?P<month>{_MONTH_NAME_ALTERNATION})\s+"
+    r"(?P<day>\d{1,2}),?\s+(?P<year>(?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_MONTH_YEAR_PATTERN = re.compile(
+    rf"\b(?P<month>{_MONTH_NAME_ALTERNATION})\s+"
+    r"(?P<year>(?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
+# The ``(?!-\d)`` keeps this from re-reading an ISO date's year: "2025" in
+# "as of 2025-12-31" is not a bare year, and :data:`_ISO_DATE_PATTERN` already
+# reads that form exactly.
+_EXPLICIT_YEAR_ONLY_PATTERN = re.compile(r"\b(?P<year>(?:19|20)\d{2})\b(?!-\d)")
+
+
+def _explicit_cutoff_date(question: str, *, clock_date: str) -> str | None:
+    """The date an explicit cutoff phrase states, capped at ``clock_date``.
+
+    Narrow on purpose: only a phrase that names a cutoff — "as of", "at the
+    end of", "by the end of" — freezes anything. A month, day and year
+    freezes that date; a month and year freezes that month's last day; a
+    bare year freezes that year's last day. Every form is capped at the
+    clock, because a stated cutoff that has not happened yet is not evidence
+    anyone could have read.
+    """
+    for prefix in _EXPLICIT_CUTOFF_PREFIX_PATTERN.finditer(question):
+        rest = question[prefix.end() :]
+        month_day_year = _EXPLICIT_MONTH_DAY_YEAR_PATTERN.match(rest)
+        if month_day_year is not None:
+            month = _MONTH_NAMES[month_day_year.group("month").casefold()]
+            day = int(month_day_year.group("day"))
+            year = int(month_day_year.group("year"))
+            try:
+                candidate = date(year, month, day).isoformat()
+            except ValueError:
+                continue
+            return min(candidate, clock_date)
+        month_year = _EXPLICIT_MONTH_YEAR_PATTERN.match(rest)
+        if month_year is not None:
+            month = _MONTH_NAMES[month_year.group("month").casefold()]
+            year = int(month_year.group("year"))
+            last_day = calendar.monthrange(year, month)[1]
+            candidate = date(year, month, last_day).isoformat()
+            return min(candidate, clock_date)
+        year_only = _EXPLICIT_YEAR_ONLY_PATTERN.match(rest)
+        if year_only is not None:
+            year = int(year_only.group("year"))
+            candidate = date(year, 12, 31).isoformat()
+            return min(candidate, clock_date)
+    return None
+
+
 def derive_answer_contract(
     *,
     question: str,
@@ -1339,11 +1717,21 @@ def derive_answer_contract(
     """Freeze the question, its scope, its as-of date, and its answer form.
 
     ``as_of_date`` comes from ``now`` — the run's injected clock — and never
-    from model knowledge or memory. The one exception is a period the question
-    itself supplies and the clock has already passed: a question about 2021 is
-    answered as of 2021, and the contract says so rather than silently
-    re-anchoring it to today. Years later than the clock's are forecast
-    horizons, not as-of dates, so a 2035 projection cannot become today's cost.
+    from model knowledge or memory. The one exception is a date the question
+    itself states and the clock has already passed: a question that says "as of
+    2025-12-31" is answered as of that date, and the contract says so rather
+    than silently re-anchoring it to today. Years later than the clock's are
+    forecast horizons, not as-of dates, so a 2035 projection cannot become
+    today's cost.
+
+    The years the question *observes* are its period, not a cutoff. Reading
+    them as one put an untouched 2025-12-31 into every target's binding
+    evidence period — "answer it as of 2025-12-31 and never substitute today's
+    figures" — which forbids the later revisions and the published 2025
+    outturn the reader needs, on a session whose question is exactly about
+    them (user decision 2, review rank 4). The period requirement says which
+    period the answer is *about*; the delivery date says when the evidence was
+    read, and only a stated date freezes anything.
 
     Naming the clock's *own* year is a currency frame, not a closed period: a
     question about "the 2026 rules" asked on 2026-09-16 is answered as of
@@ -1366,14 +1754,17 @@ def derive_answer_contract(
     future_years = [year for year in years if year > clock_year]
     iso_dates = _ISO_DATE_PATTERN.findall(question)
     historical_iso = [value for value in iso_dates if value <= clock_date]
+    explicit_cutoff = _explicit_cutoff_date(question, clock_date=clock_date)
 
-    if historical_iso:
-        as_of_date = max(historical_iso)
-    elif past_years:
-        # Capped at the clock as well as at the year's end: a question about
-        # the current year cannot reach this branch, and if a future one ever
-        # did, the cap keeps the contract's date from moving past today.
-        as_of_date = min(f"{max(past_years)}-12-31", clock_date)
+    cutoff_candidates = list(historical_iso)
+    if explicit_cutoff is not None:
+        cutoff_candidates.append(explicit_cutoff)
+
+    if cutoff_candidates:
+        # A date the question states is the user's own cutoff: it is preserved
+        # exactly, never moved further out than its own year's end, and never
+        # re-anchored to the clock.
+        as_of_date = max(cutoff_candidates)
     else:
         as_of_date = clock_date
 
@@ -1416,8 +1807,10 @@ def latest_available_obligation(contract: AnswerContract) -> str:
     """The one dimension every target carries about the evidence period.
 
     It is built from the frozen contract, so it cannot become a hard-coded
-    older year: with a 2026 clock it asks for the latest available evidence
-    as of 2026-09-16, and a question about 2021 asks for 2021.
+    older year: with a 2026 clock it asks for the latest evidence available as
+    of 2026-09-16, while a question about 2021 keeps 2021 as the period the
+    answer is *about* — the two are separate obligations, and only a date the
+    question states moves the first one.
     """
     return f"evidence period: {contract.evidence_period_requirement}"
 
@@ -1511,7 +1904,12 @@ def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
     return stamped
 
 
-def earned_support_policy(question: str) -> str | None:
+def earned_support_policy(
+    question: str,
+    *,
+    required_dimensions: Sequence[str] = (),
+    contract_question: str = "",
+) -> str | None:
     """The support policy this question's own form earns, or ``None``.
 
     Published because two consumers have to ask the same question, and
@@ -1520,14 +1918,49 @@ def earned_support_policy(question: str) -> str | None:
     whether a policy was *lowered* — the evaluation metric that scores a plan's
     policies, and :func:`support_policy_for_target` itself — cannot tell "the
     question earns a pair" from "the local rule had nothing to say".
+
+    ``required_dimensions`` is the target's own statement of what its answer
+    has to be, and the floor reads it because the sentence does not always
+    carry the attribution: the run's 2024 addition target names its agency only
+    in its source requirement, and a caller that passed only the question would
+    price the target differently from the planner that stamps it. Callers that
+    have no plan to read — the legacy classifiers — keep passing the question
+    alone, and get the reading they always had.
+
+    ``contract_question`` is the session's own frozen original question, read
+    only for an explicit independent-confirmation request. The planner always
+    rewrites a target into an atomic sentence, so "Independently confirm how
+    much battery storage the US added in 2024" survives only in the contract,
+    never in the rewritten target's own question — and a caller with no
+    contract to read (the legacy classifiers, and every call site before the
+    plan is stamped) keeps the reading it always had.
     """
+    normalized = _normalized_question(question)
+    demands_confirmation = _demands_independent_confirmation(normalized) or (
+        bool(contract_question)
+        and _demands_independent_confirmation(
+            _normalized_question(contract_question)
+        )
+    )
     return _earned_support_policy(
-        _normalized_question(question),
+        normalized,
         comparison_evidence=_comparison_evidence_for(question),
+        attributed_quantity=_asks_a_named_issuers_series(
+            question, required_dimensions
+        ),
+        demands_independent_confirmation=demands_confirmation,
     )
 
 
-def support_policy_for_target(*, question: str, proposed: str = "") -> str:
+
+
+def support_policy_for_target(
+    *,
+    question: str,
+    proposed: str = "",
+    required_dimensions: Sequence[str] = (),
+    contract_question: str = "",
+) -> str:
     """The binding support policy for one target: the proposal, under the floor.
 
     Section 2.1 requires the policy to be assigned before any verdict exists,
@@ -1536,16 +1969,28 @@ def support_policy_for_target(*, question: str, proposed: str = "") -> str:
 
     Two halves, and the order matters. A question whose own *form* earns a
     policy keeps it — a comparison is never downgraded to citing one authority
-    because a plan proposed to, an official rule stays the issuing body's to
-    state, and a computed quantity stays a derivation. Where the local rule
-    has no reason to give, the plan's own proposal decides, because whether
-    independent measurement of a fact exists is knowledge about the evidence:
-    the capacity one agency's inventory publishes has no second measurer, so
-    demanding a verified pair makes the target unanswerable, while the run's
-    plan put 10 of its 11 obligations on ``independent_pair`` (audit #3, P0).
-    An unusable proposal falls back to ``independent_pair``.
+    because a plan proposed to, a computed quantity stays a derivation, an
+    explicit request for independent confirmation stays a pair however it is
+    phrased or wherever in the contract it is written, and a measured
+    quantity the target attributes to a named body's published series is that
+    body's own figure rather than a pair no evidence can verify. The question
+    is read together with ``required_dimensions``, because a target states its
+    attribution in either place, and with ``contract_question`` because a
+    request for confirmation is not guaranteed to survive the planner's own
+    rewrite of the target's sentence. Where the local rule has no reason to
+    give, the plan's own proposal decides, because whether independent
+    measurement of a fact exists is knowledge about the evidence: the capacity
+    one agency's inventory publishes has no second measurer, so demanding a
+    verified pair makes the target unanswerable, while the run's plan put 10 of
+    its 11 obligations on ``independent_pair`` (audit #3, P0). An unusable
+    proposal keeps the independent-pair default: a generic numeric value
+    cannot become a named issuer's own series merely by being numeric.
     """
-    earned = earned_support_policy(question)
+    earned = earned_support_policy(
+        question,
+        required_dimensions=required_dimensions,
+        contract_question=contract_question,
+    )
     if earned is not None:
         return earned
     if proposed in get_args(_SupportPolicy):
@@ -1576,7 +2021,9 @@ def _draft_targets(
             required=True,
             critical=target.critical,
             support_policy=support_policy_for_target(
-                question=target.question, proposed=target.support_policy
+                question=target.question,
+                proposed=target.support_policy,
+                required_dimensions=target.required_dimensions,
             ),
         )
         for position, target in enumerate(item.evidence_targets, start=1)
@@ -1635,9 +2082,9 @@ def stale_year_anchors(
     anywhere in it into the report. That is why ``question_years`` exists —
     a year the frozen question itself names is the question's subject, not a
     claim that the year is current, so it is dropped before the report is
-    built. The audit question names 2024 under an as-of date of 2025-12-31, and
-    without this exemption the rule reported the question's own wording and
-    ended two live runs before any research.
+    built. The audit question names 2024 under a contract whose as-of date is
+    the session clock, and without this exemption the rule reported the
+    question's own wording and ended two live runs before any research.
 
     The co-occurrence reading is deliberate in the other direction too: it
     over-reports rather than under-reports, and the plan review call is what
@@ -1850,6 +2297,90 @@ def _demands_corroboration(sub_topic: SubTopic) -> bool:
     return _mentions(normalized, _CORROBORATION_MARKERS)
 
 
+# The words that turn an independence demand into a demand for a *second body*:
+# "the agency's published data and, independently, a tracker" names two, while
+# "an independent analysis of the market" names one. The distinction is what
+# the source requirement is checked for — two bodies' figures are two
+# differently scoped measurements, which is one target per issuer, not one
+# target with two sources.
+_SECOND_BODY_MARKERS = (
+    "additional",
+    "and",
+    "another",
+    "both",
+    "plus",
+    "second",
+    "separate",
+    "separately",
+    "two",
+)
+
+# Analyst outlooks that are sold rather than published. The researcher cannot
+# read a subscription page, and an unanswered *required* obligation fails
+# acceptance unless the acquisition trail shows a denied URL or two empty
+# searches (``quality.unaccounted_required_targets``), so a required target
+# whose only named source is one of these is a plan defect the review owns
+# (review rank 4).
+_PAYWALLED_OUTLOOKS = ("s&p", "bloombergnef", "bloomberg nef")
+
+
+def _source_requirements(target: EvidenceTarget) -> list[str]:
+    """The target's own requirements about where its answer comes from."""
+    return [
+        requirement
+        for requirement in target.required_dimensions
+        if requirement.partition(":")[0].strip().casefold() == "source"
+    ]
+
+
+def _demanded_second_body(target: EvidenceTarget) -> str:
+    """The source requirement that demands a second body, or ``""``.
+
+    The run's plan asked one target for "the federal energy statistical
+    agency's published capacity data and, independently, an industry
+    energy-storage market tracker": two bodies, two scopes, and a pair that
+    cannot be verified — but the target is stamped ``primary_attribution``
+    under the floor, so the two demands have to become two targets.
+    """
+    for requirement in _source_requirements(target):
+        normalized = _normalized_question(requirement)
+        if _mentions(normalized, _INDEPENDENCE_MARKERS) and _mentions(
+            normalized, _SECOND_BODY_MARKERS
+        ):
+            return requirement
+    return ""
+
+
+# What separates one named source from another inside a single requirement:
+# "S&P Global's outlook, or the agency's published data" names two, and the
+# second is one the researcher can read.
+_SOURCE_CLAUSE_SPLIT = re.compile(r"\s*(?:;|,| and | or )\s*", re.IGNORECASE)
+
+
+def _paywalled_only_sources(target: EvidenceTarget) -> list[str]:
+    """The paywalled outlooks a target names, when they are all it names.
+
+    Read clause by clause, not requirement by requirement: a requirement that
+    names a public publication beside the sold outlook — or a second
+    requirement that names one — leaves the target reachable, and the
+    researcher can read that source.
+    """
+    names: list[str] = []
+    for source in _source_requirements(target):
+        for clause in _SOURCE_CLAUSE_SPLIT.split(source):
+            if not clause.strip():
+                continue
+            found = [
+                publisher
+                for publisher in _PAYWALLED_OUTLOOKS
+                if _mentions(_normalized_question(clause), (publisher,))
+            ]
+            if not found:
+                return []
+            names.extend(found)
+    return sorted(set(names))
+
+
 def _conjoined_demands(question: str) -> list[str]:
     """The separate demands one target's question makes, when it makes two."""
     parts = [part for part in _CONJUNCTION.split(question.rstrip("?")) if part]
@@ -1970,6 +2501,33 @@ def _plan_problems(
                         f"{'; '.join(unanswerable)} names no dimension a "
                         "clause can be credited for. Restate the obligation "
                         "in terms a claim can state",
+                        "advisory",
+                    )
+                )
+            second_body = _demanded_second_body(target)
+            if second_body:
+                problems.append(
+                    _PlanProblem(
+                        f"{target.target_id} asks one source requirement for "
+                        f"a second body beside the first ({second_body}); two "
+                        "bodies' figures are two differently scoped "
+                        "measurements, and no pair of them can be verified. "
+                        "Give each issuer its own target — one target per "
+                        "issuer, each naming its own source",
+                        "advisory",
+                    )
+                )
+            paywalled = _paywalled_only_sources(target)
+            if paywalled and target.required:
+                problems.append(
+                    _PlanProblem(
+                        f"{target.target_id} is a required target whose only "
+                        f"named source is behind a paywall "
+                        f"({', '.join(paywalled)}); the researcher cannot "
+                        "read a subscription page, and an unanswered "
+                        "required obligation fails acceptance. Name a freely "
+                        "reachable publication of the same figures, or drop "
+                        "it",
                         "advisory",
                     )
                 )
@@ -2104,7 +2662,10 @@ def apply_answer_contract(
                 required=True,
                 critical=target.critical,
                 support_policy=support_policy_for_target(
-                    question=target.question, proposed=target.support_policy
+                    question=target.question,
+                    proposed=target.support_policy,
+                    required_dimensions=target.required_dimensions,
+                    contract_question=contract.question,
                 ),
             )
             for position, target in enumerate(

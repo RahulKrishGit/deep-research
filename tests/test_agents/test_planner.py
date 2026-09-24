@@ -1841,12 +1841,22 @@ def test_the_answer_contract_is_stamped_from_the_injected_run_clock() -> None:
     assert contract.assumptions
 
 
-def test_a_question_that_names_a_year_keeps_that_year_as_its_as_of_date() -> None:
-    """A user-supplied historical date is preserved, not re-anchored."""
+def test_a_question_that_names_a_year_keeps_that_year_as_its_period() -> None:
+    """The year the question names is its period, not an evidence cutoff.
+
+    A question about 2021 is answered about 2021 — that is what the evidence
+    period says — but the *cutoff* the user never stated is not inferred from
+    it: the contract reads from the latest evidence the run can reach, so a
+    later revision of the 2021 figure stays usable (user decision 2, review
+    rank 4). Only an explicit "as of <date>" freezes the date.
+    """
     contract = _contract("What did the 2021 capacity market rules require?")
 
-    assert contract.as_of_date == "2021-12-31"
-    assert "2021" in contract.evidence_period_requirement
+    assert contract.as_of_date == "2026-09-16"
+    assert "the period the question names (2021)" in (
+        contract.evidence_period_requirement
+    )
+    assert "2021-12-31" not in contract.scope_statement
     assert "never substitute today's figures" in (
         contract.evidence_period_requirement
     )
@@ -2245,37 +2255,38 @@ def test_four_digit_count_syntax_keeps_a_current_contract(
 
 
 @pytest.mark.parametrize(
-    ("question", "expected_as_of", "expected_years"),
+    ("question", "expected_years"),
     [
         (
             "Did the 2024 federal regulation cost more than 2019 federal regulation?",
-            "2024-12-31",
             ("2019", "2024"),
         ),
         (
             "Was the 2022 regional capacity market rule more costly than the 2018 "
             "regional capacity market rule?",
-            "2022-12-31",
             ("2018", "2022"),
         ),
         (
             "Did the 2023 state permit requirement cost more than the 2020 state "
             "permit requirement?",
-            "2023-12-31",
             ("2020", "2023"),
         ),
     ],
 )
 def test_parallel_multiword_year_work_keeps_both_historical_periods(
     question: str,
-    expected_as_of: str,
     expected_years: tuple[str, str],
 ) -> None:
-    """A repeated year/work pair is a comparison, not a count-shaped date loss."""
+    """A repeated year/work pair is a comparison, not a count-shaped date loss.
+
+    Both years are the periods the answer is *about*; the contract's as-of date
+    is the session clock, because the observation years are not a cutoff the
+    user stated (user decision 2).
+    """
     contract = _contract(question)
 
     assert contract.answer_kind == "comparison"
-    assert contract.as_of_date == expected_as_of
+    assert contract.as_of_date == "2026-09-16"
     assert all(
         year in contract.evidence_period_requirement for year in expected_years
     )
@@ -2283,43 +2294,42 @@ def test_parallel_multiword_year_work_keeps_both_historical_periods(
 
 
 @pytest.mark.parametrize(
-    ("question", "expected_as_of", "expected_years"),
+    ("question", "expected_years"),
     [
         (
             "How many 2024 projects cost more than 2019 projects?",
-            "2024-12-31",
             ("2019", "2024"),
         ),
         (
             "How many 2024 federal regulation projects cost more than 2019 "
             "federal regulation projects?",
-            "2024-12-31",
             ("2019", "2024"),
         ),
         (
             "How many 2024 regional capacity market projects cost more than the "
             "2019 regional capacity market projects?",
-            "2024-12-31",
             ("2019", "2024"),
         ),
         (
             "What number of 2023 state permit projects cost more than the 2020 "
             "state permit projects?",
-            "2023-12-31",
             ("2020", "2023"),
         ),
     ],
 )
 def test_count_framed_parallel_year_work_keeps_every_historical_period(
     question: str,
-    expected_as_of: str,
     expected_years: tuple[str, str],
 ) -> None:
-    """Parallel year/work evidence outranks an overlapping count operand."""
+    """Parallel year/work evidence outranks an overlapping count operand.
+
+    The periods are the question's own; the as-of date is the session clock,
+    which is not inferred from them (user decision 2).
+    """
     contract = _contract(question)
 
     assert contract.answer_kind == "comparison"
-    assert contract.as_of_date == expected_as_of
+    assert contract.as_of_date == "2026-09-16"
     assert all(
         year in contract.evidence_period_requirement for year in expected_years
     )
@@ -2540,9 +2550,10 @@ def test_stale_year_anchors_are_reported_only_in_a_currency_frame() -> None:
 
 
 # The question the four live CLI runs used. It names 2024 as the period it is
-# about and asks for 2025 forecasts, so ``derive_answer_contract`` stamps
-# ``as_of_date`` 2025-12-31 and 2024 sits below it — which is why the
-# co-occurrence rule reported the question's own wording.
+# about and asks for 2025 forecasts. The observation years are the question's
+# subject, not an evidence cutoff, so the contract reads from the run clock —
+# which is why a target that mirrors the question's own wording names a year
+# the as-of date has left behind, and why the co-occurrence rule reported it.
 _AUDIT_QUESTION = (
     "How much grid-scale battery storage capacity was added in the United "
     "States in 2024, and what do the latest forecasts project for 2025?"
@@ -2584,20 +2595,106 @@ def _mirroring_audit_plan() -> ResearchPlanDraft:
 def test_the_year_the_question_itself_names_is_never_a_stale_anchor() -> None:
     """The question's own period is its subject, not a currency claim.
 
-    The audit question is *about* 2024 under a 2025-12-31 contract, so a target
+    The audit question is *about* 2024 under a 2026-09-23 contract, so a target
     that mirrors the question's wording names a year below the as-of date. The
     co-occurrence rule reported exactly those targets — and criteria — in live
     runs 3 and 4, and because a reported anchor was fatal, both runs ended
     before any research started.
     """
     contract = _audit_contract()
-    assert contract.as_of_date == "2025-12-31"
+    assert contract.as_of_date == "2026-09-23"
     sub_topics, problems = validate_plan_draft(_mirroring_audit_plan())
     assert problems == []
 
     stamped = apply_answer_contract(sub_topics, contract)
 
     assert target_problems(stamped, contract) == []
+
+
+def test_the_questions_observation_years_are_not_an_evidence_cutoff() -> None:
+    """User decision 2: "for 2025" is the period, not a knowledge cutoff.
+
+    ``derive_answer_contract`` inferred 2025-12-31 from the observation years,
+    so every target's binding evidence period said "as of 2025-12-31 and never
+    substitute today's figures" — a cutoff the user never asked for, which
+    forbids the later revisions and the published 2025 outturn the reader needs
+    (review rank 4).
+    """
+    contract = _audit_contract()
+
+    assert contract.as_of_date == "2026-09-23"
+    assert "2025-12-31" not in contract.scope_statement
+    period = contract.evidence_period_requirement
+    assert "the period the question names (2024, 2025)" in period
+    assert "as of 2026-09-23" in period
+    # A later revision and a published outturn stay admissible — labelled for
+    # what they are, beside the forecasts the question asks for.
+    assert "as a forecast" in period
+    assert "as an actual" in period
+
+
+def test_an_explicit_as_of_date_still_freezes_the_contract() -> None:
+    """The one thing that does freeze the date: a date the question states."""
+    contract = _contract(
+        "How much grid-scale battery storage capacity had been added in the "
+        "United States as of 2025-12-31?"
+    )
+
+    assert contract.as_of_date == "2025-12-31"
+    assert "as of 2025-12-31" in contract.evidence_period_requirement
+    assert "2026-09-16" not in contract.evidence_period_requirement
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        (
+            "As of December 31, 2025, how much storage was operating in "
+            "the US?"
+        ),
+        "As of the end of 2025, how much storage was operating in the US?",
+        "As of 2025, how much storage was operating in the US?",
+    ],
+)
+def test_an_explicit_as_of_phrase_freezes_the_contract(question: str) -> None:
+    """A cutoff written in words freezes the date exactly like an ISO one.
+
+    User decision 2: an explicit "as of" still freezes the date, whether it
+    names a full date, "the end of" a year, or a bare year following "as
+    of" — the last two meaning that year's end (review rank 2).
+    """
+    contract = _contract(question)
+
+    assert contract.as_of_date == "2025-12-31"
+    assert "as of 2025-12-31" in contract.evidence_period_requirement
+
+
+def test_an_explicit_as_of_month_and_year_freezes_to_month_end() -> None:
+    """A month and year with no day freezes to that month's last day."""
+    contract = _contract(
+        "As of June 2025, how much storage was operating in the US?"
+    )
+
+    assert contract.as_of_date == "2025-06-30"
+
+
+def test_a_future_explicit_as_of_is_capped_at_the_clock() -> None:
+    """A stated cutoff nobody has lived through yet cannot be evidence."""
+    contract = _contract(
+        "As of 2026, how much storage is operating in the US?"
+    )
+
+    assert contract.as_of_date == "2026-09-16"
+
+
+def test_a_bare_observation_year_still_earns_no_explicit_cutoff() -> None:
+    """User decision 2, restated for the natural-language reader: a bare
+    "for 2025" at a 2026 clock names the period, not a cutoff — only a
+    cutoff phrase freezes anything."""
+    contract = _contract("What were battery storage additions for 2025?")
+
+    assert contract.as_of_date == "2026-09-16"
+    assert "2025-12-31" not in contract.scope_statement
 
 
 def test_a_year_the_question_does_not_name_is_still_a_stale_anchor() -> None:
@@ -2631,7 +2728,7 @@ def test_a_year_the_question_does_not_name_is_still_a_stale_anchor() -> None:
 
     assert target_problems(stamped, contract) == [
         "topic-01-target-01 anchors currency to 2023 for a session as of "
-        "2025-12-31; ask for the latest available evidence instead"
+        "2026-09-23; ask for the latest available evidence instead"
     ]
 
 
@@ -3532,7 +3629,8 @@ async def test_the_planning_request_carries_the_frozen_contract_and_its_obligati
 
     plan_request = completer.calls[0][2][1].content
     assert "# Answer contract" in plan_request
-    assert "- As of: 2021-12-31" in plan_request
+    assert "- As of: 2026-09-16" in plan_request
+    assert "the period the question names (2021)" in plan_request
     assert "never substitute today's figures" in plan_request
     assert "between 1 and 4 evidence_targets" in plan_request
     assert "2024" not in plan_request
@@ -4544,6 +4642,13 @@ def test_a_comparative_target_keeps_the_policy_its_question_earns() -> None:
 
 
 def test_an_unusable_support_policy_falls_back_to_the_local_rule() -> None:
+    """An unattributed measurement has no named issuer to credit.
+
+    A generic value does not become one publisher's own series just because it
+    is numeric. With no usable proposal or named-issuer floor, the target keeps
+    the independent-pair fallback; an explicit primary-attribution proposal
+    and a named issuer's series still earn primary attribution separately.
+    """
     target = _stamped(
         _AUDIT_QUESTION,
         _target(
@@ -4554,6 +4659,377 @@ def test_an_unusable_support_policy_falls_back_to_the_local_rule() -> None:
     )
 
     assert target.support_policy == "independent_pair"
+
+
+def test_a_qualitative_target_keeps_the_fallback_it_always_had() -> None:
+    """The control: nothing here checks as a value, so the pair still stands."""
+    target = _stamped(
+        _AUDIT_QUESTION,
+        _target(
+            "Which storage segment does the market monitor count?",
+            dimensions=[
+                "measure: storage segment covered by the grid-scale "
+                "additions figures"
+            ],
+            policy="whatever the model felt like",
+        ),
+    )
+
+    assert target.support_policy == "independent_pair"
+
+
+# The recorded ``topic-01-target-01`` from the 1-iteration run, verbatim: the
+# question, the four dimensions the model proposed, and the ``independent_pair``
+# it proposed with them. Its figure is one agency's own inventory — no second
+# body measures that addition on the same basis — and the policy stamped here
+# decided whether the whole run could be accepted (review rank 2).
+_RECORDED_ADDITION_QUESTION = (
+    "How much battery storage capacity, in megawatts, was added at grid "
+    "scale in the United States in 2024?"
+)
+_RECORDED_ADDITION_DIMENSIONS = [
+    "measure: battery storage capacity added, in megawatts",
+    "period: calendar year 2024",
+    "geography: United States",
+    "source: the federal energy statistical agency's published capacity data "
+    "and, independently, an industry energy-storage market tracker",
+]
+
+
+def test_the_recorded_addition_target_is_stamped_primary_attribution() -> None:
+    """A named issuer's measured series is that issuer's own figure."""
+    assert (
+        support_policy_for_target(
+            question=_RECORDED_ADDITION_QUESTION,
+            proposed="independent_pair",
+            required_dimensions=_RECORDED_ADDITION_DIMENSIONS,
+        )
+        == "primary_attribution"
+    )
+
+
+def test_the_floor_reads_the_plans_own_measure_not_the_sentence() -> None:
+    """The question alone earns nothing; the plan's dimensions carry the floor."""
+    assert earned_support_policy(_RECORDED_ADDITION_QUESTION) is None
+    assert (
+        earned_support_policy(
+            _RECORDED_ADDITION_QUESTION,
+            required_dimensions=_RECORDED_ADDITION_DIMENSIONS,
+        )
+        == "primary_attribution"
+    )
+
+
+def test_both_stamping_paths_stamp_the_recorded_addition_target_primary() -> None:
+    """Through ``_draft_targets`` and ``apply_answer_contract`` — the live path."""
+    target = _stamped(
+        _AUDIT_QUESTION,
+        _target(
+            _RECORDED_ADDITION_QUESTION,
+            dimensions=list(_RECORDED_ADDITION_DIMENSIONS),
+            policy="independent_pair",
+        ),
+    )
+
+    assert target.support_policy == "primary_attribution"
+
+
+def test_an_unattributed_number_is_not_forced_into_primary_attribution() -> None:
+    """No blanket "it has a number" shortcut: nobody's series, nobody's figure.
+
+    The measure checks as a value all the same — the floor reads the
+    *attribution*, and an empirical question that names no issuing body keeps
+    the policy the plan proposed for it (user decision 1).
+    """
+    dimensions = [
+        "measure: population living in the city, in people",
+        "period: calendar year 2024",
+        "geography: New York City",
+    ]
+
+    assert checkable_dimensions(dimensions[0]) == ("value",)
+    assert (
+        earned_support_policy(
+            "How many people live in New York City?",
+            required_dimensions=dimensions,
+        )
+        is None
+    )
+    assert (
+        support_policy_for_target(
+            question="How many people live in New York City?",
+            proposed="independent_pair",
+            required_dimensions=dimensions,
+        )
+        == "independent_pair"
+    )
+
+
+@pytest.mark.parametrize(
+    "source_dimension",
+    [
+        "source: today's figures",
+        "source: last year's figures",
+        "source: a reputable publisher's report",
+        "source: anyone's published data",
+        "source: the world's best estimates",
+        "source: the market's latest data",
+    ],
+)
+def test_a_generic_possessive_names_no_issuer(source_dimension: str) -> None:
+    """A time, indefinite, or collective possessive names nobody: "today's",
+    "last year's", "a reputable publisher's", "anyone's", "the world's" and
+    "the market's" are not issuers (review rank 3)."""
+    dimensions = ["measure: population count, in people", source_dimension]
+
+    assert (
+        earned_support_policy(
+            "How many people live in New York City?",
+            required_dimensions=dimensions,
+        )
+        is None
+    )
+    assert (
+        support_policy_for_target(
+            question="How many people live in New York City?",
+            proposed="independent_pair",
+            required_dimensions=dimensions,
+        )
+        == "independent_pair"
+    )
+
+
+def test_the_planners_own_period_text_names_no_issuer() -> None:
+    """The evidence-period sentence itself must never satisfy the named-
+    issuer check, however it reaches a target's dimensions."""
+    dimensions = [
+        "measure: population count, in people",
+        "period: the period the question names (2024); answer that period "
+        "from the latest evidence available as of 2026-09-23 — a "
+        "projection is reported as a forecast with its issuer and release "
+        "vintage and a published outcome as an actual — and never "
+        "substitute today's figures for the period the question names",
+    ]
+
+    assert (
+        earned_support_policy(
+            "How many people lived in New York City in 2024?",
+            required_dimensions=dimensions,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "source_dimension",
+    [
+        "source: the Census Bureau population estimates",
+        "source: EIA's inventory",
+        "source: the US Energy Storage Monitor",
+    ],
+)
+def test_a_named_proper_noun_issuer_is_named(source_dimension: str) -> None:
+    """A capitalised name or acronym — possessive or its own title — is a
+    named issuer's series, whether or not it takes an apostrophe."""
+    dimensions = ["measure: population count, in people", source_dimension]
+
+    assert (
+        earned_support_policy(
+            "How many people live in New York City?",
+            required_dimensions=dimensions,
+        )
+        == "primary_attribution"
+    )
+
+
+
+@pytest.mark.parametrize(
+    ("place", "source"),
+    [
+        ("the United States", ""),
+        ("the United Kingdom", ""),
+        ("the United States", "source: the United States figures"),
+        ("the United Kingdom", "source: the United Kingdom population estimates"),
+    ],
+)
+def test_a_geographic_name_is_not_an_issuers_series(
+    place: str, source: str
+) -> None:
+    """A country in a measured question does not publish that measurement."""
+    question = f"What was the Acme widget funding round in {place} in 2024?"
+    dimensions = ["value", *([source] if source else [])]
+
+    assert earned_support_policy(question, required_dimensions=dimensions) is None
+    assert (
+        support_policy_for_target(
+            question=question,
+            required_dimensions=dimensions,
+        )
+        == "independent_pair"
+    )
+
+
+def test_a_plain_official_source_still_names_no_issuer() -> None:
+    """The control: "an official statistical agency" names a kind of body,
+    not any particular one."""
+    dimensions = [
+        "measure: population count, in people",
+        "source: an official statistical agency",
+    ]
+
+    assert (
+        earned_support_policy(
+            "How many people live in New York City?",
+            required_dimensions=dimensions,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        (
+            "How much grid-scale battery storage capacity was added in the "
+            "United States in 2024, independently confirmed by a second "
+            "source?"
+        ),
+        (
+            "Independently verify how much battery storage capacity the "
+            "agency's published inventory reports as added in 2024."
+        ),
+        (
+            "What did the 2024 additions come to, and can an independent "
+            "verification of the figure be found?"
+        ),
+    ],
+)
+def test_an_independent_confirmation_request_keeps_the_pair(
+    question: str,
+) -> None:
+    """The one demand no floor may lower: the user asked for a second account."""
+    assert (
+        support_policy_for_target(
+            question=question,
+            proposed="primary_attribution",
+            required_dimensions=[
+                "measure: battery storage capacity added, in megawatts",
+                "source: the federal energy statistical agency's published "
+                "capacity data",
+            ],
+        )
+        == "independent_pair"
+    )
+
+
+def test_a_contract_only_confirmation_request_keeps_the_pair() -> None:
+    """The demand can live in the contract's question, not the target's.
+
+    The planner always rewrites a target into an atomic sentence, so
+    "Independently confirm how much..." survives only in the frozen
+    contract's own question — never in the rewritten target's — and the
+    floor has to read both (review rank 1, user decision 1).
+    """
+    target_question = (
+        "How much battery storage capacity was added in the US in 2024?"
+    )
+    dimensions = [
+        "measure: battery storage capacity added, in megawatts",
+        "source: the federal energy statistical agency's published "
+        "capacity data",
+    ]
+    contract_question = (
+        "Independently confirm how much grid-scale battery storage the "
+        "US added in 2024."
+    )
+
+    # Without the contract's own question, the floor cannot see the demand
+    # and prices the target as the named issuer's own figure.
+    assert (
+        support_policy_for_target(
+            question=target_question,
+            proposed="independent_pair",
+            required_dimensions=dimensions,
+        )
+        == "primary_attribution"
+    )
+    # With it, the demand survives the planner's own rewrite.
+    assert (
+        support_policy_for_target(
+            question=target_question,
+            proposed="primary_attribution",
+            required_dimensions=dimensions,
+            contract_question=contract_question,
+        )
+        == "independent_pair"
+    )
+    assert (
+        earned_support_policy(
+            target_question,
+            required_dimensions=dimensions,
+            contract_question=contract_question,
+        )
+        == "independent_pair"
+    )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Was EIA's 2024 battery addition figure confirmed by a second source?",
+        "Is EIA's 2024 figure corroborated by another publisher?",
+        "Can a second, independent source check EIA's 2024 figure?",
+        "Please validate EIA's 2024 figure independently.",
+    ],
+)
+def test_a_widened_confirmation_phrasing_keeps_the_pair(question: str) -> None:
+    """Confirmed or corroborated by a second source or publisher, or
+    checked or validated alongside "independent(ly)", all ask for the same
+    account the floor may never lower (review rank 4)."""
+    assert (
+        support_policy_for_target(
+            question=question,
+            proposed="primary_attribution",
+            required_dimensions=[
+                "measure: battery storage capacity added, in megawatts",
+                "source: the federal energy statistical agency's published "
+                "capacity data",
+            ],
+        )
+        == "independent_pair"
+    )
+
+
+def test_independent_power_producers_is_not_a_confirmation_request() -> None:
+    """"Independent" naming a kind of body is not a demand for one — the
+    review rank 4 false positive."""
+    assert (
+        support_policy_for_target(
+            question=(
+                "How much capacity do US independent power producers "
+                "hold, according to EIA verified data?"
+            ),
+            proposed="independent_pair",
+            required_dimensions=[
+                "measure: capacity held, in megawatts",
+                "source: the federal energy statistical agency's published "
+                "capacity data",
+            ],
+        )
+        == "primary_attribution"
+    )
+
+
+def test_a_derivation_keeps_its_premises_under_the_floor() -> None:
+    """A computed quantity is still a derivation, not an issuer's figure."""
+    assert (
+        support_policy_for_target(
+            question="What was the calculated cost per megawatt in 2024?",
+            proposed="independent_pair",
+            required_dimensions=["measure: cost per megawatt, in dollars"],
+        )
+        == "derivation"
+    )
 
 
 def test_a_target_no_clause_could_answer_is_named_at_plan_time() -> None:
@@ -4799,8 +5275,15 @@ def test_a_criterion_demanding_a_pair_for_a_single_issuer_fact_is_named() -> Non
     assert [problem.split()[0] for problem in named] == ["topic-01"]
 
 
-def test_a_criterion_demanding_a_pair_for_a_measured_fact_is_not_named() -> None:
-    """The control: where independent measurement exists, the demand stands."""
+def test_a_criterion_demanding_a_pair_for_a_measured_fact_is_named() -> None:
+    """The control, re-pinned: under the floor a quantity target IS one issuer's.
+
+    The old control proposed ``independent_pair`` for a measured fact the plan
+    itself attributes to a named body's published series, which is exactly the
+    coin-flip the floor exists to remove: the target is stamped
+    ``primary_attribution``, so a criterion demanding a second publisher now
+    asks for evidence that cannot exist (review rank 2, user decision 1).
+    """
     stamped = _one_topic_plan(
         _AUDIT_QUESTION,
         title="Measured additions",
@@ -4810,6 +5293,32 @@ def test_a_criterion_demanding_a_pair_for_a_measured_fact_is_not_named() -> None
         ],
         target=_target(
             "How much capacity was added in 2024?",
+            dimensions=[
+                "measure: battery storage capacity added, in MW",
+                "source: the federal energy statistical agency's published "
+                "capacity data",
+            ],
+            policy="independent_pair",
+        ),
+    )
+
+    assert [problem.split()[0] for problem in target_problems(
+        stamped, _contract(_AUDIT_QUESTION)
+    ) if "primary_attribution" in problem] == ["topic-01"]
+
+
+def test_a_criterion_demanding_a_pair_for_a_comparison_is_not_named() -> None:
+    """The control: a comparison really does need two accounts, so it stands."""
+    question = "Was more capacity added in Texas than in California in 2024?"
+    stamped = _one_topic_plan(
+        question,
+        title="Compared additions",
+        criteria=[
+            "At least two sources from different publishers state the 2024 "
+            "addition."
+        ],
+        target=_target(
+            "Was more capacity added in Texas than in California in 2024?",
             dimensions=["measure: battery storage capacity added, in MW"],
             policy="independent_pair",
         ),
@@ -4817,8 +5326,156 @@ def test_a_criterion_demanding_a_pair_for_a_measured_fact_is_not_named() -> None
 
     assert [
         problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        for problem in target_problems(stamped, _contract(question))
         if "primary_attribution" in problem
+    ] == []
+
+
+def test_a_source_requirement_that_names_two_bodies_is_named_for_a_split() -> None:
+    """The recorded source dimension: an official statistic *and* a tracker.
+
+    Two bodies publishing differently scoped figures are two measurements, and
+    the floor stamps the target ``primary_attribution`` — so one target cannot
+    carry both: the plan is told to give each issuer its own target (review
+    rank 2, user decision 1).
+    """
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="Reported additions",
+        criteria=["The 2024 addition is stated with its issuer."],
+        target=_target(
+            _RECORDED_ADDITION_QUESTION,
+            dimensions=[
+                "measure: battery storage capacity added, in megawatts",
+                "period: calendar year 2024",
+                "geography: United States",
+                "source: the federal energy statistical agency's published "
+                "capacity data and, independently, an industry "
+                "energy-storage market tracker",
+            ],
+            policy="independent_pair",
+        ),
+    )
+
+    named = [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "one target per issuer" in problem
+    ]
+
+    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
+    (first,) = stamped[0].evidence_targets
+    assert first.support_policy == "primary_attribution"
+
+
+def test_a_source_requirement_that_names_one_body_is_not_named() -> None:
+    """The control: one body's own series is one source, and one target."""
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="Reported additions",
+        criteria=["The 2024 addition is stated with its issuer."],
+        target=_target(
+            _RECORDED_ADDITION_QUESTION,
+            dimensions=[
+                "measure: battery storage capacity added, in megawatts",
+                "period: calendar year 2024",
+                "geography: United States",
+                "source: the federal energy statistical agency's published "
+                "capacity data",
+            ],
+            policy="independent_pair",
+        ),
+    )
+
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "one target per issuer" in problem
+    ] == []
+
+
+def test_a_required_target_behind_a_paywall_is_named() -> None:
+    """A subscription page cannot be read, and an unanswered target hard-fails.
+
+    The plan added required targets whose only named source is a sold analyst
+    outlook, and an unanswered required target fails acceptance unless the
+    acquisition trail shows a denied URL or two empty searches (review rank 4).
+    """
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="Analyst outlooks",
+        criteria=["A projected 2025 addition is stated with its issuer."],
+        target=_target(
+            "What 2025 addition does S&P Global's latest outlook project?",
+            dimensions=[
+                "measure: projected battery storage capacity additions, in "
+                "megawatts",
+                "period: forecast year 2025",
+                "source: S&P Global's latest published outlook",
+            ],
+            policy="primary_attribution",
+        ),
+    )
+
+    named = [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "behind a paywall" in problem
+    ]
+
+    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
+
+
+def test_a_reachable_required_target_is_not_named() -> None:
+    """The control: a published outlook the researcher can actually read."""
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="Published outlooks",
+        criteria=["A projected 2025 addition is stated with its issuer."],
+        target=_target(
+            "What 2025 addition does the agency's latest published outlook "
+            "project?",
+            dimensions=[
+                "measure: projected battery storage capacity additions, in "
+                "megawatts",
+                "period: forecast year 2025",
+                "source: the federal energy statistical agency's latest "
+                "published outlook",
+            ],
+            policy="primary_attribution",
+        ),
+    )
+
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "behind a paywall" in problem
+    ] == []
+
+
+def test_a_paywalled_outlook_beside_a_public_source_is_not_named() -> None:
+    """A source requirement that also names a free publication is reachable."""
+    stamped = _one_topic_plan(
+        _AUDIT_QUESTION,
+        title="Analyst outlooks",
+        criteria=["A projected 2025 addition is stated with its issuer."],
+        target=_target(
+            "What 2025 addition is projected for battery storage?",
+            dimensions=[
+                "measure: projected battery storage capacity additions, in "
+                "megawatts",
+                "period: forecast year 2025",
+                "source: S&P Global's latest outlook, or the federal energy "
+                "statistical agency's published capacity data",
+            ],
+            policy="primary_attribution",
+        ),
+    )
+
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        if "behind a paywall" in problem
     ] == []
 
 
@@ -4857,10 +5514,21 @@ def test_the_plan_example_the_model_is_shown_passes_every_plan_check() -> None:
 def test_a_comparative_or_causal_question_keeps_independent_pair(
     question: str,
 ) -> None:
-    """The plan may not lower what the question's own form earns."""
+    """The plan may not lower what the question's own form earns.
+
+    Every one of these carries the value-checked measure dimension the floor
+    reads, and keeps its own policy all the same: comparison, ranking, and
+    causal questions come first in the precedence order.
+    """
     assert (
         support_policy_for_target(
-            question=question, proposed="primary_attribution"
+            question=question,
+            proposed="primary_attribution",
+            required_dimensions=[
+                "measure: battery storage capacity added, in megawatts",
+                "source: the federal energy statistical agency's published "
+                "capacity data",
+            ],
         )
         == "independent_pair"
     )
@@ -4882,7 +5550,13 @@ def test_a_comparative_or_causal_question_keeps_independent_pair(
 def test_a_descriptive_quantity_still_takes_the_plans_own_policy(
     question: str,
 ) -> None:
-    """The control: where the form earns nothing, the proposal decides."""
+    """The control, on the question-only reading: the proposal decides.
+
+    A caller that reads no plan gets exactly this — the legacy classifiers and
+    ``support_policy_for`` still do — while the stamping paths pass the
+    target's dimensions, where the *plan's* own attribution decides before the
+    proposal does (see the recorded target's tests above).
+    """
     assert (
         support_policy_for_target(
             question=question, proposed="primary_attribution"

@@ -32,7 +32,12 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.events import agent_event
-from deep_research.agents.evidence import excerpt_matches, retained_work_count
+from deep_research.agents.evidence import (
+    _issuer_name_pattern,
+    _quote_states,
+    excerpt_matches,
+    retained_work_count,
+)
 from deep_research.agents.identity import deduplicate_findings
 from deep_research.agents.prompts import (
     AgentTask,
@@ -170,6 +175,16 @@ class FindingDraft(ContractModel):
     data_period: str | None = None
     statement_date: str | None = None
     vintage: str | None = None
+    # What the page hands to somebody else, and what the figure it reports is
+    # measured over. A relay's copy of an issuer's figure is that issuer's
+    # measurement, not the host's, and a market total is not the segment a
+    # target asks about: both are the model's own readings of the packet, so
+    # both travel as their own fields instead of being folded into the
+    # finding's prose where no later stage can check them.
+    attributed_issuer: str | None = None
+    attribution_quote: str | None = None
+    measure_scope: str | None = None
+    release_date: str | None = None
 
 
 class SubTopicFindingsDraft(ContractModel):
@@ -623,17 +638,24 @@ _FINDING_REPLY_EXAMPLES = (
         "Example input: passage read-111111111111111111111111 locator page-4-"
         "chunk-0 of the example report at "
         "https://evidence.example.test/report (fetched for topic-01); the "
-        "Planned targets list names topic-01-target-01 (how much capacity was "
+        "passage reads \"The measured reduction was 12 percent, according to "
+        "the Example Statistical Agency, across all classes.\"; the Planned "
+        "targets list names topic-01-target-01 (how much capacity was "
         "added?).",
-        '{"findings":[{"content":"The example report measured a 12 percent '
-        'reduction in 2024, from its January 2025 preliminary inventory.",'
-        '"source_url":"https://evidence.example.test/report",'
+        '{"findings":[{"content":"The example report relays the Example '
+        "Statistical Agency's measurement: a 12 percent reduction in 2024 "
+        'across all classes, from the agency\'s January 2025 preliminary '
+        'inventory.","source_url":"https://evidence.example.test/report",'
         '"source_title":"Example report","confidence":0.8,'
         '"read_id":"read-111111111111111111111111","locator":"page-4-chunk-0",'
-        '"excerpt":"The measured reduction was 12 percent.",'
+        '"excerpt":"The measured reduction was 12 percent, according to the '
+        'Example Statistical Agency, across all classes.",'
         '"target_ids":["topic-01-target-01"],"data_period":"2024",'
         '"statement_date":"2025-03-12",'
-        '"vintage":"January 2025 preliminary inventory"}]}',
+        '"vintage":"January 2025 preliminary inventory",'
+        '"attributed_issuer":"Example Statistical Agency",'
+        '"attribution_quote":"according to the Example Statistical Agency",'
+        '"measure_scope":"all classes","release_date":"2025-03-12"}]}',
     ),
 )
 
@@ -648,6 +670,42 @@ _FINDING_DATES_CONTRACT = (
     "on — each written as the source writes it (dates as YYYY, YYYY-MM, or "
     "YYYY-MM-DD) and each null when the source does not state it. The vintage "
     "is what tells the latest statement of a quantity from an older one."
+)
+
+# Who a figure belongs to, and what it is measured over. Both are properties
+# of the figure, not of the page that carried it, and the audited run got both
+# wrong in the same way: it credited a relay with the agency's own count — and
+# so published a conflict where there was one figure published twice — and its
+# extraction dropped a market monitor's all-segment total rather than record
+# the segment the release states. A relay's copy is that body's measurement,
+# and a total over every segment is not the segment a target asks about.
+_FINDING_PROVENANCE_CONTRACT = (
+    " Name the body the page attributes it to, separately from the page that "
+    "served it: a release, a news story, or a data dive that repeats another "
+    "organisation's figure credits that organisation, so put it in "
+    "attributed_issuer and the page's own words for the attribution in "
+    "attribution_quote — \"according to the U.S. Energy Information "
+    "Administration (EIA)\" — and never credit the host that repeated it. "
+    "The page's words for the attribution need not sit inside the excerpt you "
+    "copied: an excerpt is one passage of the page, the attribution is "
+    "another, and a sentence carrying on from an attributed one — \"the EIA "
+    "projects that solar capacity will grow by another 32.5 GW in 2025. And "
+    "... a record-breaking 18.2 GW ... are projected this year\" — is still "
+    "that body's figure. Quote the page's own words for it, copied from the "
+    "read rather than written in your own. "
+    "Leave both null when the page states the figure as its own publisher's, "
+    "and never state an attribution the passage does not carry, and keep the "
+    "page's own words for what the figure measures: \"energy storage\" does "
+    "not become \"battery storage\", and a count of installations does not "
+    "become a count of something else. When the page states the scope, "
+    "segment, or basis a figure covers, state the segment or basis the figure "
+    "covers in measure_scope — \"all segments\", \"grid-scale\", "
+    "\"utility-scale projects larger than 1 MW\" — and when the body the "
+    "figure belongs to released it on a date the page states, record that "
+    "date in release_date. A figure whose own scope differs from a target's "
+    "wording is still a finding for the target whose measure it matches: "
+    "record it with the scope the page states rather than dropping it, and "
+    "never restate it in the target's own terms."
 )
 
 
@@ -806,7 +864,12 @@ def extraction_messages(
         "the sub-topic that fetched its read. A finding whose excerpt the "
         "locator does not contain is dropped. Copy source_url and source_title "
         "from the same read record, never from memory, a search snippet, or "
-        "another finding's text; never invent a content hash. Return an empty "
+        "another finding's text; never substitute the URL or title the "
+        "document names as its origin — a copy served from another host is "
+        "cited where you read it, and the body it came from belongs in "
+        "attributed_issuer — and never rewrite the read's title, not to drop "
+        "the reader's own markers and not to put the document's own headline "
+        "in their place. Never invent a content hash. Return an empty "
         "list when the evidence supports nothing."
         if acquisition_context is not None
         else "Return one finding per distinct, source-backed claim. Use the "
@@ -848,7 +911,8 @@ def extraction_messages(
                     )
                 )
             ),
-            f"# Response contract\n{registry_contract}{_FINDING_DATES_CONTRACT}",
+            f"# Response contract\n{registry_contract}{_FINDING_DATES_CONTRACT}"
+            f"{_FINDING_PROVENANCE_CONTRACT}",
             (
                 "# Reply format\n"
                 f"{render_structured_reply_format(_FINDING_REPLY_EXAMPLES)}"
@@ -859,6 +923,144 @@ def extraction_messages(
         ChatMessage(role="developer", content=EXTRACTION_SYSTEM_PROMPT),
         ChatMessage(role="user", content="\n\n".join(sections)),
     ]
+
+
+def _neighbouring_passage_text(read: ReadRecord, locator: str) -> str:
+    """The excerpt's own passage, and the one immediately before or after it.
+
+    Passages are stored in the order the document was read in, so this is
+    the excerpt's own context: the documented case is an attribution
+    sentence sitting at the end of the passage just before the one an
+    excerpt was drawn from. Nothing further away is close enough to be read
+    as attributing THIS excerpt rather than some other part of the page —
+    the failure this restricts, a quote admitted from anywhere at all in the
+    document, is what let a contrastive or unrelated mention of a body
+    credit a figure that body never claimed.
+    """
+    keys = list(read.passages.keys())
+    if locator not in keys:
+        return ""
+    index = keys.index(locator)
+    neighbours = keys[max(0, index - 1) : index + 2]
+    return " ".join(read.passages[key] for key in neighbours)
+
+
+# The words that turn a mention of a body into a claim about who published a
+# figure. A name on its own is not one of them — "Unlike the EIA" and a bare
+# "EIA" both name the body without saying the figure is its own — and neither
+# is a body named for something else on the same page. "or similar" in the
+# specification this enforces covers the possessive, which is not a fixed
+# word: :func:`_attribution_cue_adjacent` reads "Wood Mackenzie's ... Monitor"
+# the same way.
+_ATTRIBUTION_CUE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:according\s+to|reported\s+by|released\s+by|"
+    r"data\s+from|estimates?\s+from|per|said)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# A possessive immediately after the matched name: "Wood Mackenzie's" names
+# an owner of what follows exactly as "according to Wood Mackenzie" does.
+_POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
+# How many characters may separate a cue from the name it attributes: the
+# connective words an attribution is written with ("the", a comma, a colon),
+# not a whole unrelated clause standing between them.
+_ATTRIBUTION_CUE_REACH = 15
+
+
+def _attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
+    """True when a recognized attribution cue sits beside the matched name.
+
+    A body the page merely mentions is not an attribution — "Unlike the EIA,
+    ... our survey found 12 GW" names the EIA without crediting it with
+    anything — so admission requires one of the words this project reads as
+    handing a figure to somebody, immediately before or after the name.
+    """
+    if _POSSESSIVE_MARK.match(phrase[name_match.end() :]):
+        return True
+    for cue in _ATTRIBUTION_CUE_PATTERN.finditer(phrase):
+        if 0 <= name_match.start() - cue.end() <= _ATTRIBUTION_CUE_REACH:
+            return True
+        if 0 <= cue.start() - name_match.end() <= _ATTRIBUTION_CUE_REACH:
+            return True
+    return False
+
+
+def _admitted_attribution(
+    issuer: object,
+    quote: object,
+    *,
+    read: ReadRecord | None,
+    locator: str | None = None,
+) -> tuple[str | None, str | None]:
+    """The attribution a read evidences, or no attribution at all.
+
+    The two halves are one claim — this page's own words hand the figure to
+    that body — so they stand or fall together. Four things are all
+    required, none of them alone: the quote has to be the read's verbatim
+    text, the same containment an excerpt is admitted with, drawn from the
+    excerpt's own passage or its immediate neighbour rather than anywhere in
+    the document; it has to name the body the finding credits, matched the
+    way every other issuer name in this project is matched; and a
+    recognized attribution cue — "according to", "said", a possessive, or
+    similar — has to sit beside that name, because a body the page only
+    names, in passing or in contrast, is not a body the page credits with
+    anything. Nothing else is admitted: an attribution the page does not
+    state is the exact failure this pair exists to prevent, and the
+    read-less legacy path has nothing to check a quote against, so it
+    records none.
+
+    Dropping the pair never drops the finding. Its excerpt is still the
+    source's own text; what is lost is the claim about who published the
+    figure, and with it any credit a later stage could give the wrong body.
+    """
+    if read is None:
+        return None, None
+    name = issuer.strip() if isinstance(issuer, str) else ""
+    phrase = quote.strip() if isinstance(quote, str) else ""
+    if not name or not phrase:
+        return None, None
+    document = _neighbouring_passage_text(read, locator or "")
+    if not excerpt_matches(document, phrase):
+        return None, None
+    name_match = re.search(_issuer_name_pattern(name), phrase, re.IGNORECASE)
+    if name_match is None or not _attribution_cue_adjacent(phrase, name_match):
+        return None, None
+    return name, phrase
+
+
+def _admitted_measure_scope(read: ReadRecord | None, value: object) -> str | None:
+    """The measured scope the read states, or ``None``.
+
+    Admitted only when the page's own text carries it verbatim — the same
+    containment an excerpt is admitted with — so a scope the model
+    paraphrased or invented, the exact failure that let an all-segment total
+    print as a target's narrower "grid-scale", is dropped rather than
+    trusted.
+    """
+    if read is None:
+        return None
+    scope = value.strip() if isinstance(value, str) else ""
+    if not scope:
+        return None
+    document = " ".join([read.title, *read.passages.values()])
+    return scope if excerpt_matches(document, scope) else None
+
+
+def _admitted_release_date(read: ReadRecord | None, value: object) -> str | None:
+    """The release date the read states, or ``None``.
+
+    Verified the way :mod:`evidence` verifies every other date this project
+    records: the read's own text has to state this value, at this precision
+    or a finer one, as a date rather than as a fragment of an identifier. A
+    value the page never wrote is dropped rather than printed as the
+    attributed body's own release day.
+    """
+    if read is None:
+        return None
+    date = value.strip() if isinstance(value, str) else ""
+    if not date:
+        return None
+    document = " ".join([read.title, *read.passages.values()])
+    return date if _quote_states(document, (date,)) else None
 
 
 def build_findings(
@@ -956,6 +1158,12 @@ def build_findings(
             rejected.append(f"finding {index}: source url was not retrieved")
             continue
         try:
+            attributed_issuer, attribution_quote = _admitted_attribution(
+                item.attributed_issuer,
+                item.attribution_quote,
+                read=read,
+                locator=item.locator,
+            )
             findings.append(
                 Finding(
                     content=item.content,
@@ -968,6 +1176,10 @@ def build_findings(
                     data_period=item.data_period,
                     statement_date=item.statement_date,
                     vintage=item.vintage,
+                    attributed_issuer=attributed_issuer,
+                    attribution_quote=attribution_quote,
+                    measure_scope=_admitted_measure_scope(read, item.measure_scope),
+                    release_date=_admitted_release_date(read, item.release_date),
                 )
             )
         except ValidationError as error:

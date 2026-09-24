@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 
-from deep_research.agents.critic import fallback_critique
+from deep_research.agents.critic import (
+    CritiqueDraft,
+    CritiqueGapDraft,
+    build_critique,
+    fallback_critique,
+)
 from deep_research.agents.evidence import (
     READ_ADMISSION_OPERATION,
     build_boundary_audit,
@@ -55,6 +62,7 @@ from deep_research.utils.types import (
     ReportStatement,
     ResearchError,
     ResearchProgress,
+    ResearchState,
     SubTopic,
     progress_improved,
 )
@@ -526,6 +534,146 @@ def test_a_critic_still_asking_for_a_pass_is_never_accepted() -> None:
     )
 
     assert graph_route(state) == (ROUTE_FINALIZE, "max_iterations_reached")
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
+
+
+def _ceiling_critique(
+    *,
+    score: int,
+    gaps: Sequence[CritiqueGapDraft] = (),
+    unsupported_claims: Sequence[str] = (),
+) -> Critique:
+    """The critique the production Critic records at the last allowed pass.
+
+    Built through ``build_critique`` rather than hand-assembled. At the
+    ceiling, ``route_decision`` checks the iteration bound before it looks at
+    score, gaps, or unsupported claims, so the critique it returns always
+    carries ``should_continue=False`` here regardless of these arguments —
+    exactly the signal ``_acceptance_satisfied`` must not trust on its own.
+    """
+    draft = CritiqueDraft(
+        score=score,
+        gaps=list(gaps),
+        unsupported_claims=list(unsupported_claims),
+        recommended_queries=[],
+        rationale="Recorded for graph tests.",
+    )
+    critique, _ = build_critique(draft, iteration=1, max_iterations=1)
+    return critique
+
+
+def _last_allowed_iteration(**overrides: object) -> ResearchState:
+    """A fully satisfied acceptance at the last iteration, minus one thing.
+
+    Every signal the deterministic gate and both reviewers emit here is a
+    clean acceptance; a test that wants one blocker passes it by keyword.
+    """
+    settings: dict[str, object] = {
+        "critique": _ceiling_critique(score=9),
+        "quality": fake_quality(hard_failures=[]),
+        "report_review": fake_report_review(),
+        "report": "A composed reader report.",
+        "iteration": 1,
+        "max_iterations": 1,
+    }
+    settings.update(overrides)
+    return fake_research_state(**settings)
+
+
+def test_a_clean_acceptance_at_the_last_allowed_iteration_is_accepted() -> None:
+    """A spent budget is not a defect in the report: the last pass can be it.
+
+    One iteration is the whole budget of a short run, so a run that did
+    everything asked of it — the deterministic gate found no hard failure, the
+    Critic stopped asking for more, and the terminal semantic review scored the
+    report at or above the threshold — is the very report those gates call
+    accepted with budget to spare. The exhaustion stop used to be read first,
+    so that report published as ``max_iterations`` and ``partial``: "the budget
+    ran out" said of a report both reviewers had already cleared. Nothing is
+    waived here — ``finalize`` is not another pass, and the acceptance is the
+    full conjunction, so any one missing condition still ends the run on the
+    exhausted path (the cases below).
+    """
+    state = _last_allowed_iteration()
+
+    assert state.iteration == state.max_iterations
+    assert graph_route(state) == (ROUTE_FINALIZE, "critique_satisfied")
+    assert graph_status(state) == "completed"
+    assert graph_quality_status(state) == QUALITY_STATUS_ACCEPTED
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param(
+            {"quality": fake_quality(hard_failures=["duplicate_claims"])},
+            id="hard-gate-failure",
+        ),
+        pytest.param({"quality": None}, id="no-quality-judgement"),
+        pytest.param(
+            {"critique": _ceiling_critique(score=4)},
+            id="critic-still-asking-a-low-score",
+        ),
+        pytest.param(
+            {
+                "critique": _ceiling_critique(
+                    score=9,
+                    gaps=[
+                        CritiqueGapDraft(
+                            target_ids=["t1"],
+                            kind="coverage",
+                            severity="major",
+                            repair_action="acquire",
+                            problem="No cost data was found for the estimate.",
+                        )
+                    ],
+                )
+            },
+            id="critic-still-asking-a-material-gap",
+        ),
+        pytest.param(
+            {
+                "critique": _ceiling_critique(
+                    score=9,
+                    unsupported_claims=[
+                        "The report claims a 40% cost drop with no cited source."
+                    ],
+                )
+            },
+            id="critic-still-asking-an-unsupported-claim",
+        ),
+        pytest.param(
+            {"critique": fake_failed_critique()}, id="critique-never-reviewed"
+        ),
+        pytest.param({"report_review": None}, id="no-semantic-review"),
+        pytest.param(
+            {"report_review": fake_report_review(status="incomplete")},
+            id="incomplete-semantic-review",
+        ),
+        pytest.param(
+            {"report_review": fake_report_review(status="provider_failed")},
+            id="provider-failed-semantic-review",
+        ),
+        pytest.param(
+            {"report_review": fake_rejected_report_review()},
+            id="refused-by-the-semantic-review",
+        ),
+    ],
+)
+def test_one_unmet_condition_keeps_the_last_iteration_partial(
+    overrides: dict[str, object]
+) -> None:
+    """The ceiling accepts the fully satisfied report and never a near miss.
+
+    Each case is the clean acceptance above with exactly one condition unmet,
+    and none of them may be called accepted: an exhausted budget is what those
+    runs still ended on. None of them may buy a pass either — the ceiling is
+    the ceiling — and a refused review must not be outranked by it.
+    """
+    state = _last_allowed_iteration(**overrides)
+
+    assert graph_route(state)[0] == ROUTE_FINALIZE
+    assert graph_status(state) != "completed"
     assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
 
 

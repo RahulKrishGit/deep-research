@@ -120,8 +120,11 @@ def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
     passage may come back unbound — an id outside the plan is dropped rather
     than fatal — so a confidence-only fold would let a restatement delete the
     only record of which planned target that evidence answers. Target ids are
-    unioned in the kept record's order, its own dates win, and a date it lacks
-    is filled from the duplicate.
+    unioned in the kept record's order, and its own dates and provenance win,
+    with a field it lacks filled from the duplicate: the same argument covers
+    whose figure the evidence is, because a restatement that recorded no
+    attribution must not put an issuer's count back under the host that
+    carried it.
     """
     kept: dict[str, Finding] = {}
     for finding in findings:
@@ -139,22 +142,41 @@ def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
 
 
 def _merge_duplicate_findings(winner: Finding, loser: Finding) -> Finding:
-    """The record to keep, carrying both records' bindings and dates.
+    """The record to keep, carrying both records' bindings and provenance.
 
     Only the fields a fold could otherwise erase are merged. Content, URL,
     topic and confidence are the identity and the ranking, and the kept
     record's own values stand.
+
+    Provenance is filled from the duplicate the way a date is, and in the same
+    order — the kept record's own value wins and a field it lacks is filled —
+    except for the attribution pair, which is one claim recorded in two
+    halves: an attribution without its quote is not admitted, so a record that
+    already carries a named body keeps both of its own halves rather than
+    taking the loser's name beside its own phrase.
     """
     target_ids = list(dict.fromkeys([*winner.target_ids, *loser.target_ids]))
     dates = {
         name: getattr(winner, name) or getattr(loser, name)
-        for name in ("vintage", "statement_date", "data_period")
+        for name in (
+            "vintage",
+            "statement_date",
+            "data_period",
+            "measure_scope",
+            "release_date",
+        )
     }
-    if target_ids == winner.target_ids and all(
-        getattr(winner, name) == value for name, value in dates.items()
-    ):
+    merged = winner.model_copy(update={"target_ids": target_ids, **dates})
+    if not merged.attributed_issuer:
+        merged = merged.model_copy(
+            update={
+                "attributed_issuer": loser.attributed_issuer,
+                "attribution_quote": loser.attribution_quote,
+            }
+        )
+    if merged == winner:
         return winner
-    return winner.model_copy(update={"target_ids": target_ids, **dates})
+    return merged
 
 
 def merge_source_snapshot(

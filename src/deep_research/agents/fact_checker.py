@@ -39,6 +39,7 @@ from deep_research.agents.claim_clusters import (
     ClaimConsolidation,
     _VALUE_UNIT_PATTERN,
     _canonical_unit,
+    _claim_issuer,
     _split_clauses,
     atom_answers_target,
     claim_cluster_id,
@@ -58,6 +59,7 @@ from deep_research.agents.errors import (
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence import (
     EvidenceEligibility,
+    _identity_words,
     canonical_read_text,
     eligible_independent_pair,
     resolve_source_identities,
@@ -114,6 +116,7 @@ from deep_research.utils.types import (
     BoundaryAudit,
     Claim,
     ClaimCluster,
+    ClaimProvenance,
     ClaimVerdict,
     ConflictAssessment,
     ContractModel,
@@ -273,6 +276,14 @@ class ClaimAttribution(ContractModel):
     consumed_coverage_ids: list[str] = []
     target_ids: list[str] = []
     target_policies: dict[str, str] = Field(default_factory=dict)
+    provenance: ClaimProvenance = Field(default_factory=ClaimProvenance)
+    """Where this claim's figure comes from, read from the finding it states.
+
+    Carried here rather than re-derived at adjudication: the pass that read
+    the findings is the pass that knows which one this claim's figure came
+    from, and the verdict must record the same attribution the extraction
+    made.
+    """
 
 
 class PendingClaim(ContractModel):
@@ -511,6 +522,46 @@ def consumed_provenance(
     )
 
 
+def claim_provenance_for(
+    draft: ClaimDraft, *, findings: Sequence[Finding]
+) -> ClaimProvenance:
+    """The provenance of the one finding this claim's figure came from.
+
+    A page can state several figures — EIA's March 2025 release carries both
+    the 2024 additions and the 2025 forecast — and each has its own period,
+    edition and release date, so provenance is read from the finding whose own
+    text carries a figure this claim states and from no other. Where two
+    findings carry the same figure the attribution is ambiguous and nothing is
+    copied: a guess here would print an edition and a release date beside a
+    figure that did not come from it.
+    """
+    cited = _cited_findings(draft, findings=findings)
+    if not cited:
+        return ClaimProvenance()
+    wanted = set(_NUMBER.findall(draft.text))
+    scored = [
+        (len(wanted.intersection(_NUMBER.findall(finding.content))), position)
+        for position, finding in enumerate(cited)
+    ]
+    best = max(score for score, _ in scored)
+    if best == 0:
+        # No figure to choose by: one cited finding is still unambiguous.
+        chosen = cited[0] if len(cited) == 1 else None
+    else:
+        winners = [position for score, position in scored if score == best]
+        chosen = cited[winners[0]] if len(winners) == 1 else None
+    if chosen is None:
+        return ClaimProvenance()
+    return ClaimProvenance(
+        attributed_issuer=chosen.attributed_issuer,
+        measure_scope=chosen.measure_scope,
+        vintage=chosen.vintage,
+        statement_date=chosen.statement_date,
+        release_date=chosen.release_date,
+        data_period=chosen.data_period,
+    )
+
+
 def claim_attribution(
     draft: ClaimDraft,
     *,
@@ -571,6 +622,7 @@ def claim_attribution(
         target_policies={
             target_id: policies[target_id] for target_id in obligations
         },
+        provenance=claim_provenance_for(draft, findings=findings),
     )
 
 
@@ -1120,6 +1172,32 @@ class AdjudicationPacket(ContractModel):
     exactly as the extracted path does. A support-policy gate that filters an
     empty list reads as enforcement while gating nothing."""
     claim_cluster_id: str = ""
+    claimed_issuer: str = ""
+    """The body this claim attributes its figure to, in the claim's own words.
+
+    Read from the finding the claim was extracted from (the attributed issuer
+    the page names) and otherwise from the claim's own prose. Empty means the
+    claim names no issuer, and then nothing here can be *that* body's account
+    either — the badge reports a named issuer's own publication.
+    """
+    passage_issuers: dict[str, str] = Field(default_factory=dict)
+    """Each candidate's issuing body, as the Source Evaluator evidenced it.
+
+    ``evidence_id -> the ``issuer`` anchor accepted for that passage's
+    source``, and nothing for a candidate whose source establishes no issuing
+    body: a copy, a relay, an unattributed page, or a source nobody assessed.
+    This and only this is the passage side of the primary badge — the claim's
+    own cited host is not evidence about who published anything, which is how
+    a House.gov printout of an EIA article was read as EIA's own account.
+    """
+    claim_provenance: ClaimProvenance = Field(default_factory=ClaimProvenance)
+    """Where this claim's figure comes from, as its finding recorded it.
+
+    Copied onto the verdict, so the composition, the reader report and the
+    ledger state an issuer, an edition and a release date per figure. An
+    empty record means nothing was recorded, never that the figure has no
+    origin.
+    """
     units: list[EvidenceUnit] = Field(default_factory=list)
     eligibility: dict[str, EvidenceEligibility] = Field(default_factory=dict)
     omitted: list[EvidenceDisposition] = Field(default_factory=list)
@@ -1727,22 +1805,34 @@ def build_adjudication_packet(
     omitted_count: int | None = None,
     missing_read_ids: Sequence[str] = (),
     target_ids: Sequence[str] = (),
+    provenance: ClaimProvenance | None = None,
+    passage_issuers: Mapping[str, str] | None = None,
 ) -> AdjudicationPacket:
     """Assemble the packet, with the fingerprint that identifies it.
 
     The fingerprint covers the claim and the exact text of every candidate, so
     two adjudications of the same claim over the same evidence share it and a
     changed body, an added passage, or a re-worded claim does not.
+
+    ``provenance`` is what the extraction recorded about this claim's figure
+    and ``passage_issuers`` what each candidate's source is evidenced to be;
+    both travel with the packet into the verdict, so a claim keeps the
+    attribution that was read rather than re-deriving it from the page it
+    happens to cite.
     """
     units = list(pool)
     fingerprint = adjudication_fingerprint(claim.text, units)
     atoms = extract_text_atoms(claim.text)
+    recorded = provenance or ClaimProvenance()
     return AdjudicationPacket(
         claim_id=claim_fingerprint(claim.text),
         claim_text=claim.text,
         claim_source_urls=list(getattr(claim, "source_urls", ()) or ()),
         claim_target_ids=list(target_ids),
         claim_cluster_id=claim_cluster_id(atoms[0]) if atoms else "",
+        claimed_issuer=claimed_issuer_for(claim.text, provenance=recorded),
+        passage_issuers=dict(passage_issuers or {}),
+        claim_provenance=recorded,
         units=units,
         eligibility=dict(eligibility or {}),
         omitted=list(omitted)[:MAX_PACKET_OMISSIONS],
@@ -1921,49 +2011,145 @@ class RefusedReadPolicy:
         )
 
 
-def _issuer_publishers(packet: AdjudicationPacket) -> set[str]:
-    """The publishers the claim itself cites: who the claim attributes to.
+def evidenced_issuer(source: ScoredSource | None) -> str:
+    """The issuing body one assessed source is evidenced to be, or ``""``.
 
-    A claim's cited URLs are the sources its own finding came from, so they
-    name the issuer whose fact the claim states ("EIA reported that …" cites
-    the EIA page). A passage from one of them is that issuer's own account; a
-    passage from anywhere else is a relay or another publisher's telling,
-    however complete it reads.
+    The Source Evaluator's accepted ``issuer`` anchor is the only record that
+    says a page *is* a named body's own publication: it is written only after
+    ``evidence._issuer_evidenced`` accepted the read — an attribution phrase
+    about this document, or the body's own institutionally served host under a
+    title that names it. ``ScoredSource.publisher_id`` is not that record: with
+    no accepted anchor it is the serving host's identity, which is how a
+    House.gov printout of an EIA article came to read as EIA's own account.
     """
-    return {
-        publisher_identity(url)
-        for url in packet.claim_source_urls
-        if isinstance(url, str) and url.strip()
-    }
+    if source is None or source.evaluation_status != "scored":
+        return ""
+    issuer = (source.identity_anchors or {}).get("issuer")
+    return issuer.strip() if isinstance(issuer, str) else ""
+
+
+def _initialism(words: str) -> str:
+    """The acronym a name's own significant words spell, or ``""``.
+
+    A dotted initial ("U.S." folds to ``u s``) is part of a name, not of its
+    acronym: taking those letters would spell "useia" for the Energy
+    Information Administration. A one-word name spells no acronym.
+    """
+    significant = [word for word in words.split() if len(word) > 1]
+    if len(significant) < 2:
+        return ""
+    return "".join(word[0] for word in significant)
+
+
+def _issuer_core(words: str) -> str:
+    """One name's identity with its qualifier and its own acronym gloss folded away.
+
+    A leading "the" or "u s" ("U.S." once punctuation folds) is a qualifier,
+    not part of what the name identifies: "the department of energy" and
+    "department of energy" name one body, and so do "u s energy information
+    administration" and "energy information administration". A trailing word
+    that spells the same acronym as the rest of the name is the parenthetical
+    gloss a page writes beside its own name ("... Administration (EIA)"), not
+    an added qualifier, so it folds away too. Folding never empties a
+    non-empty name.
+    """
+    tokens = words.split()
+    if len(tokens) > 1 and tokens[0] == "the":
+        tokens = tokens[1:]
+    elif len(tokens) > 2 and tokens[:2] == ["u", "s"]:
+        tokens = tokens[2:]
+    if len(tokens) > 1 and _initialism(" ".join(tokens[:-1])) == tokens[-1]:
+        tokens = tokens[:-1]
+    return " ".join(tokens)
+
+
+def issuer_matches(claimed: str, evidenced: str) -> bool:
+    """True when two spellings name one issuing body.
+
+    Case, typography and prose punctuation fold, so "eia" and "EIA" are one
+    name; a leading qualifier or a name's own acronym gloss folds away, so
+    "EIA", "U.S. Energy Information Administration" and "U.S. Energy
+    Information Administration (EIA)" share one core; and an acronym the
+    longer core spells out is that body. Two names merge only when their
+    cores are equal or one core is exactly the acronym the other spells —
+    never because one spelling's words happen to appear inside the other's,
+    which is the word-containment rule this replaces: it let "EIA" match
+    "EIA News" and "Department of Energy" match "Texas Department of Energy".
+
+    Decided, accepted limit: two different bodies whose full names spell the
+    same acronym — "EIA" the Energy Information Administration and "EIA" the
+    Environmental Investigation Agency — are indistinguishable here. Both
+    pairs look identical to a two-name comparison (a bare acronym against the
+    full name it spells), which is exactly the shape the "EIA" ==
+    "U.S. Energy Information Administration" chain needs to hold at all.
+    Telling the two real bodies apart needs a registry of known issuers, a
+    different mechanism from comparing the two names in front of it.
+    """
+    claimed_words = _identity_words(claimed)
+    evidenced_words = _identity_words(evidenced)
+    if not claimed_words or not evidenced_words:
+        return False
+    claimed_core = _issuer_core(claimed_words)
+    evidenced_core = _issuer_core(evidenced_words)
+    if claimed_core == evidenced_core:
+        return True
+    return (
+        _initialism(evidenced_core) == claimed_core.replace(" ", "")
+        or _initialism(claimed_core) == evidenced_core.replace(" ", "")
+    )
+
+
+def claimed_issuer_for(
+    text: str, *, provenance: ClaimProvenance | None = None
+) -> str:
+    """The body one claim attributes its figure to, or ``""`` when it names none.
+
+    The finding's recorded attribution leads: it is the body the page itself
+    attributes the figure to, validated against the read's own words. The
+    claim's prose is the fallback for a claim extracted before that record
+    existed. A claim that names nobody stays unnamed — the page it happened to
+    be found on is not a body it attributes anything to.
+    """
+    recorded = (
+        provenance.attributed_issuer if provenance is not None else ""
+    ) or ""
+    if recorded.strip():
+        return recorded.strip()
+    return _claim_issuer(text)
+
+
+def _passage_issuer(packet: AdjudicationPacket, evidence_id: str) -> str:
+    """The issuing body one candidate's source is evidenced to be, or ``""``."""
+    return packet.passage_issuers.get(evidence_id, "")
 
 
 def _issuer_passage_stands(
     packet: AdjudicationPacket,
-    units: Mapping[str, EvidenceUnit],
     supports: Sequence[str],
-    eligibility: Mapping[str, EvidenceEligibility],
     rows: Mapping[str, SupportAssessment],
 ) -> bool:
-    """True when one complete support is the claim's issuer's own passage.
+    """True when one complete support is the claiming body's own account.
 
-    Both the URL's own publisher and the identity the Source Evaluator
-    resolved are read: a mirror that evidences its issuer is that issuer's
-    account, and a host that merely repeats the figure is not, whichever way
-    the two were spelled.
+    Two things have to hold, and neither is read from the URL the claim
+    already cites. The passage's source must be *evidenced* to be a named
+    issuing body's own publication, and — when the claim names the body its
+    figure belongs to — it must be that body. Another publisher's page, a copy
+    whose issuing body nothing establishes, and an unattributed page all
+    support the claim without being its issuer's account of it, and none may
+    earn a badge that reads as the agency's own word. A claim that names
+    nobody is not thereby barred: the badge then reports the publisher the
+    passage itself evidences.
     """
-    issuers = _issuer_publishers(packet)
-    if not issuers:
-        return False
     for evidence_id in supports:
-        unit = units.get(evidence_id)
-        if unit is None:
-            continue
         row = rows.get(evidence_id)
         if row is None or row.dependence != "primary":
             continue
-        if eligibility[evidence_id].publisher_id in issuers:
-            return True
-        if publisher_identity(unit.source_url) in issuers:
+        evidenced = _passage_issuer(packet, evidence_id)
+        if not evidenced:
+            continue
+        if not packet.claimed_issuer or issuer_matches(
+            packet.claimed_issuer, evidenced
+        ):
             return True
     return False
 
@@ -2548,14 +2734,9 @@ def validate_adjudication(
             # The badge is about a supporting passage, so it is only asked
             # for when one exists: a claim with no support at all is not
             # told its support was a relay.
-            status, badge_flags = _settled_badge(
-                packet, shown, supports, eligibility, accepted
-            )
-            identity_flags = _insufficient_flags(eligibility, supports)
-            flags.extend(badge_flags)
-            flags.extend(identity_flags)
-            analysis.extend(badge_flags)
-            analysis.extend(identity_flags)
+            status, reasons = _support_reasons(packet, supports, accepted, eligibility)
+            flags.extend(reasons)
+            analysis.extend(reasons)
         else:
             flags.append(_no_support_reason(partial, unshown))
     elif verified_pair is not None:
@@ -2563,14 +2744,9 @@ def validate_adjudication(
         status = "verified_pair"
     elif supports:
         verdict = "insufficient_evidence"
-        status, badge_flags = _settled_badge(
-            packet, shown, supports, eligibility, accepted
-        )
-        identity_flags = _insufficient_flags(eligibility, supports)
-        flags.extend(badge_flags)
-        flags.extend(identity_flags)
-        analysis.extend(badge_flags)
-        analysis.extend(identity_flags)
+        status, reasons = _support_reasons(packet, supports, accepted, eligibility)
+        flags.extend(reasons)
+        analysis.extend(reasons)
     elif selected_support_candidates:
         # The model selected a support and no complete support stands: the
         # passage said something, and not the whole claim. The primary badge is
@@ -2642,6 +2818,7 @@ def validate_adjudication(
             if passage.stance == "contradicts"
         ],
         verification_evidence=passages,
+        provenance=packet.claim_provenance,
         insufficient_reason=reason,
         cluster_id=packet.claim_cluster_id or None,
         evidence_status=status,
@@ -2662,29 +2839,53 @@ def validate_adjudication(
     return claim
 
 
+# Independence failures a pair test *proved* — the supports are one work, one
+# publisher, or share one origin — outrank the badge's reason, which only says
+# why no primary badge was written. A proof is the reason a reader acts on;
+# "identity unknown" beside it would hide it.
+_PROVEN_INDEPENDENCE_FAILURES = ("same_work", "same_publisher", "shared_origin")
+
+
+def _support_reasons(
+    packet: AdjudicationPacket,
+    supports: Sequence[str],
+    rows: Mapping[str, SupportAssessment],
+    eligibility: Mapping[str, EvidenceEligibility],
+) -> tuple[str | None, list[str]]:
+    """The badge complete supports earn, and every flag, most specific first.
+
+    Order: a proven independence failure, then the badge's own reason (relay
+    or unknown identity), then the remaining pair flags. The first flag is the
+    claim's published reason, so the order is the contract.
+    """
+    status, badge_flags = _settled_badge(packet, supports, rows)
+    identity_flags = _insufficient_flags(eligibility, supports)
+    proven = [flag for flag in identity_flags if flag in _PROVEN_INDEPENDENCE_FAILURES]
+    rest = [flag for flag in identity_flags if flag not in _PROVEN_INDEPENDENCE_FAILURES]
+    return status, list(dict.fromkeys([*proven, *badge_flags, *rest]))
+
+
 def _settled_badge(
     packet: AdjudicationPacket,
-    units: Mapping[str, EvidenceUnit],
     supports: Sequence[str],
-    eligibility: Mapping[str, EvidenceEligibility],
     rows: Mapping[str, SupportAssessment],
 ) -> tuple[str | None, list[str]]:
     """The badge complete supports earn, and the flag when they earn none.
 
     ``source_supported`` is published as "primary-source attribution", so it is
-    written only where a complete supporting passage *is* the claim's issuer's
-    own account. A relay — a trade-press story repeating an agency's figure —
-    still supports the claim and is still recorded as its evidence; it is not
-    the issuer's account of it, and the badge says what the evidence is.
+    written only where a complete supporting passage is an evidenced
+    publication of the body the claim attributes its figure to. A relay — a
+    trade-press story repeating an agency's figure — still supports the claim
+    and is still recorded as its evidence; it is not the issuer's account of
+    it, and the badge says what the evidence is.
     """
-    if _issuer_passage_stands(packet, units, supports, eligibility, rows):
+    if _issuer_passage_stands(packet, supports, rows):
         return "source_supported", []
     # The reason says what is actually known. A passage the adjudicator called
     # *derivative* repeats another work's figure: that is a relay. A passage
-    # judged its own account but from a publisher the claim does not cite, or
-    # one whose dependence nobody stated, is not a relay — the identity flags
-    # name why no badge stands instead of asserting a relationship the row
-    # never recorded.
+    # judged its own account whose source establishes no issuing body is not a
+    # relay — nothing says it repeats anyone — and the identity that is missing
+    # is the one the badge would have named.
     if all(
         rows.get(evidence_id) is not None
         and rows[evidence_id].dependence == "unknown"
@@ -2692,6 +2893,17 @@ def _settled_badge(
     ):
         # Nobody said what this passage is, so the reason may not either.
         return None, []
+    if any(
+        rows.get(evidence_id) is not None
+        and rows[evidence_id].dependence == "derivative"
+        for evidence_id in supports
+    ):
+        # The adjudicator's own dependence judgement already says this
+        # passage repeats another work's figure; that is what a relay is,
+        # whether or not an issuer anchor names who it repeats.
+        return None, ["relay_source"]
+    if not any(_passage_issuer(packet, evidence_id) for evidence_id in supports):
+        return None, ["identity_unknown"]
     return None, ["relay_source"]
 
 
@@ -2865,22 +3077,20 @@ def issuer_passage_carried(
     *,
     shown: Sequence[str] | None = None,
 ) -> bool:
-    """True when the request carries the claim's own issuer's passage.
+    """True when the request carries the claiming body's own account.
 
     The local half of :func:`_issuer_passage_stands`, asked before any model
-    call: the claim cites an issuer and a candidate of the request is that
-    issuer's own reading — by the publisher the Source Evaluator resolved or by
-    the URL's own publisher, the same two spellings the badge reads. Whether
-    the passage supports the claim is the model's judgement; this only says the
-    account an obligation on the claim's own issuer needs is already in hand.
+    call: a candidate of the request is an evidenced publication of the body
+    the claim attributes its figure to — the same two facts the badge reads,
+    both about the passage's source rather than about the URL the claim
+    already cites. Whether the passage supports the claim is the model's
+    judgement; this only says the account an obligation on the claim's own
+    issuer needs is already in hand.
 
     ``shown`` restricts the test to the candidates one request actually carries,
     and a candidate carried only in part never counts: a passage nobody saw
     whole may not stand as a complete support.
     """
-    issuers = _issuer_publishers(packet)
-    if not issuers:
-        return False
     carried = (
         None
         if shown is None
@@ -2892,9 +3102,12 @@ def issuer_passage_carried(
         eligibility = packet.eligibility.get(unit.evidence_id)
         if eligibility is None or not eligibility.read_valid:
             continue
-        if eligibility.publisher_id in issuers:
-            return True
-        if publisher_identity(unit.source_url) in issuers:
+        evidenced = _passage_issuer(packet, unit.evidence_id)
+        if not evidenced:
+            continue
+        if not packet.claimed_issuer or issuer_matches(
+            packet.claimed_issuer, evidenced
+        ):
             return True
     return False
 
@@ -3269,12 +3482,15 @@ def build_claim(
     consumed_finding_fingerprints: Sequence[str] = (),
     consumed_coverage_ids: Sequence[str] = (),
     target_ids: Sequence[str] = (),
+    provenance: ClaimProvenance | None = None,
 ) -> Claim:
     """Stamp one model verdict into a validated ``Claim`` record.
 
     ``retrieved_urls`` is the verification loop's own read set and
     ``upstream_read_urls`` the URLs this run's findings came from; the
-    passages the verdict is resolved from may cite either.
+    passages the verdict is resolved from may cite either. ``provenance`` is
+    what the extraction recorded about this claim's figure, carried onto the
+    verdict so the attribution survives adjudication.
     """
     claimed = list(
         claimed_publishers
@@ -3307,6 +3523,7 @@ def build_claim(
             if passage.stance == "contradicts"
         ],
         verification_evidence=passages,
+        provenance=provenance or ClaimProvenance(),
         consumed_finding_fingerprints=list(consumed_finding_fingerprints),
         consumed_coverage_ids=list(consumed_coverage_ids),
         target_ids=list(target_ids),
@@ -3336,6 +3553,7 @@ def insufficient_claim(
     consumed_finding_fingerprints: Sequence[str] = (),
     consumed_coverage_ids: Sequence[str] = (),
     target_ids: Sequence[str] = (),
+    provenance: ClaimProvenance | None = None,
 ) -> Claim:
     """Record a claim that could not be judged, with no invented confidence.
 
@@ -3372,6 +3590,7 @@ def insufficient_claim(
         evidence=[],
         contradictions=[],
         verification_evidence=[],
+        provenance=provenance or ClaimProvenance(),
         insufficient_reason=reason,
         consumed_finding_fingerprints=list(consumed_finding_fingerprints),
         consumed_coverage_ids=list(consumed_coverage_ids),
@@ -3951,6 +4170,33 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
 
     # --- Task 6: the claim-specific evidence union --------------------------
 
+    def _provenance_for(self, draft: ClaimDraft) -> ClaimProvenance:
+        """What the extraction recorded about this claim's figure.
+
+        Read from the attribution `extract_claims` computed for this draft, so
+        the verdict carries the issuer, edition and release date the pass read
+        — never a second derivation from the page the claim happens to cite. A
+        draft the extraction pass never attributed (a resumed queue, a
+        fixture) has nothing recorded, which is what an empty record means.
+        """
+        return self._pending_provenance.get(
+            claim_fingerprint(draft.text), ClaimAttribution()
+        ).provenance
+
+    def _passage_issuers(
+        self, pool: Sequence[EvidenceUnit]
+    ) -> dict[str, str]:
+        """Each candidate's issuing body, as its source is evidenced to be.
+
+        Empty for a candidate whose source establishes no issuing body — a
+        copy, a relay, an unattributed page, or a source nobody assessed — so
+        no such passage can stand as the account of the body the claim names.
+        """
+        return {
+            unit.evidence_id: evidenced_issuer(self._claim_source(unit))
+            for unit in pool
+        }
+
     def _claim_source(self, unit: EvidenceUnit) -> ScoredSource | None:
         """The assessed source behind one candidate passage, if there is one."""
         read = self._run_reads.get(unit.read_id)
@@ -4018,6 +4264,8 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             draft,
             pool,
             eligibility=eligibility,
+            provenance=self._provenance_for(draft),
+            passage_issuers=self._passage_issuers(pool),
             omitted=omitted,
             omitted_count=len(omitted),
             missing_read_ids=claim_missing_read_ids(
@@ -4131,6 +4379,12 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             task.claim,
             enlarged,
             eligibility=eligibility,
+            # The attribution and the issuing bodies travel with the rebuild:
+            # this packet replaces the one the task carried, and a rebuilt
+            # packet that lost them would adjudicate the claim as if the
+            # extraction had recorded nothing about its figure.
+            provenance=self._provenance_for(task.claim),
+            passage_issuers=self._passage_issuers(enlarged),
             omitted=merged_dispositions,
             omitted_count=packet.omitted_count + len(claim_dispositions),
             missing_read_ids=claim_missing_read_ids(
@@ -4597,6 +4851,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             claim = insufficient_claim(
                 task.claim,
                 reason="no_candidate",
+                provenance=self._provenance_for(task.claim),
                 consumed_finding_fingerprints=(
                     task.consumed_finding_fingerprints
                 ),
@@ -4689,6 +4944,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             claim = insufficient_claim(
                 task.claim,
                 reason="no_independent_source",
+                provenance=self._provenance_for(task.claim),
                 consumed_finding_fingerprints=(
                     task.consumed_finding_fingerprints
                 ),
@@ -4742,6 +4998,7 @@ class FactCheckerAgent(BaseAgent[VerifiedClaims]):
             ),
             consumed_coverage_ids=task.consumed_coverage_ids,
             target_ids=task.target_ids,
+            provenance=self._provenance_for(task.claim),
         )
         return (
             claim.model_copy(

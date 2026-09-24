@@ -68,6 +68,76 @@ _PARAGRAPH_BREAK = re.compile(r"\n[ \t\r]*\n")
 # that merely mentions "access denied" from losing its read record.
 _SHELL_CONTENT_MAX_CHARS = 2000
 
+# What a host's error handler says instead of a document. A title carrying
+# one of these *as its own label* -- not merely mentioning it in a longer
+# headline -- is the publisher's name for the page it served; the same words
+# in a body are the handler's message, and only classify a body too short to
+# have been an article. "access denied" is deliberately absent here: a page
+# that only says so is a denial, which the shell markers below already
+# cover, and keeping it here would relabel every short "Access Denied" WAF
+# page as a served error page instead of the automated-access shell it is.
+_ERROR_PAGE_MARKERS = (
+    "unexpected error",
+    "404 not found",
+    "page not found",
+    "request rejected",
+)
+
+# The automated-access shells a *short* body announces.
+_SHELL_MARKERS = (
+    "enable javascript",
+    "checking your browser",
+    "please verify you are human",
+    "are you a robot",
+    "captcha",
+    "robot check",
+    "accept cookies to continue",
+    "consent management",
+    "access denied",
+    "automated access",
+    "just a moment",
+)
+
+# A handler and a site name are usually joined by one of these, e.g.
+# "EIA - Sorry! Unexpected Error" or "Access Denied: Storage Queues Explained".
+_TITLE_LABEL_SEPARATORS = re.compile(r" - | \| | – |:")
+
+# Interjections and generic nouns a handler pads its own label with. Dropped
+# from *both* a title clause and a marker before they are compared, so
+# "Sorry! Unexpected Error" reduces to the same words as "unexpected error",
+# and a bare "404" prefix does not stop "404 Not Found" from reducing to
+# "not found" on both sides of the comparison.
+_TITLE_LABEL_FILLER_WORDS = frozenset({"sorry", "404", "error"})
+_TITLE_LABEL_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _title_label_words(text: str) -> tuple[str, ...]:
+    """The words ``text`` reduces to once punctuation and filler are dropped."""
+    words = _TITLE_LABEL_WORD.findall(text)
+    return tuple(word for word in words if word not in _TITLE_LABEL_FILLER_WORDS)
+
+
+_ERROR_PAGE_MARKER_WORDS = frozenset(
+    _title_label_words(marker) for marker in _ERROR_PAGE_MARKERS
+)
+
+
+def _title_is_error_label(normalized_title: str) -> bool:
+    """True when the title *is* an error label, not merely mentions one.
+
+    A handler names its page directly -- the whole title, or its final
+    clause once a site name is split off: "EIA - Sorry! Unexpected Error",
+    "Page Not Found". A real document that happens to use the same words in
+    a longer headline, "Access Denied: How Interconnection Queues Shut Out
+    Storage", is not labelled by them; only the clause that equals a marker
+    outright, word for word once filler is dropped, is decisive.
+    """
+    last_clause = _TITLE_LABEL_SEPARATORS.split(normalized_title)[-1]
+    return any(
+        _title_label_words(candidate) in _ERROR_PAGE_MARKER_WORDS
+        for candidate in (normalized_title, last_clause)
+    )
+
 # Candidate discoveries a URL may be read on. Any URL the run was actually
 # given — by a search result, a memory lead, or a document link it followed —
 # stays readable after it leaves the queue, including on a host that denied a
@@ -315,7 +385,7 @@ def _payload_read_parts(
 
 
 def _content_limitation(text: str, title: str = "") -> str | None:
-    """Classify an automated-access shell without length-gating real sources.
+    """Classify a served error page or automated-access shell, or admit the read.
 
     A shell page is *short* and says one of a few things: a browser check, a
     consent wall, or an outright denial. The marker words alone cannot say
@@ -324,26 +394,33 @@ def _content_limitation(text: str, title: str = "") -> str | None:
     invert the rule that a short authoritative page is never classified
     unusable by length alone. A marker therefore only classifies a shell when
     the body could not have carried a document in the first place.
+
+    A served error page is the same refusal with a different cause: a host
+    answers ``200`` with its own handler — "EIA - Sorry! Unexpected Error" —
+    and the body is the handler's message, not a publication. Only a title
+    that *is* the error label, word for word once filler is dropped, decides
+    that regardless of length; a title that merely uses the same words in a
+    longer headline — "Access Denied: How Interconnection Queues Shut Out
+    Storage" — carries no such label and falls through to the checks below.
+    A body mention alone classifies a short page only when its title also
+    carries a marker, which is the case for a genuine handler's title and
+    body agreeing on the same failure; the same words in an otherwise
+    ordinary short body — a press release reporting an "unexpected error" in
+    its own operations — are not the page's label and keep their read.
     """
-    markers = (
-        "enable javascript",
-        "checking your browser",
-        "please verify you are human",
-        "are you a robot",
-        "captcha",
-        "robot check",
-        "accept cookies to continue",
-        "consent management",
-        "access denied",
-        "automated access",
-        "just a moment",
-    )
     body = " ".join(text.split()).casefold()
+    normalized_title = " ".join(title.split()).casefold()
+    if _title_is_error_label(normalized_title):
+        return "unusable_error_page"
     if len(body) > _SHELL_CONTENT_MAX_CHARS:
         return None
-    lowered = f"{' '.join(title.split()).casefold()} {body}"
-    if any(marker in lowered for marker in markers):
+    lowered = f"{normalized_title} {body}"
+    if any(marker in lowered for marker in _SHELL_MARKERS):
         return "unusable_content_shell"
+    if any(marker in normalized_title for marker in _ERROR_PAGE_MARKERS) and any(
+        marker in body for marker in _ERROR_PAGE_MARKERS
+    ):
+        return "unusable_error_page"
     return None
 
 
@@ -2022,22 +2099,24 @@ def build_acquisition_context(
         ),
         *focus_rows,
     ]
-    for candidate in state.candidate_records.values():
-        rows.append(
-            (f"candidate:{candidate.candidate_id}", _render_candidate(candidate))
-        )
+    # The reads the selected evidence came from are rendered immediately
+    # ahead of that evidence, because ``build_findings`` requires every
+    # finding to copy its read's own resolved_url and title verbatim: a
+    # bounded packet that shows the evidence without the read record it
+    # cites cannot become an admissible finding at all. The audited run's
+    # topic-01 packet dropped every read row behind a reorder that put
+    # evidence first, and every tracker finding the model drafted was
+    # rejected for a source url or title that matched no admitted read.
     for read_id, read in selected_reads.items():
         if f"read:{read_id}" not in focused_ids:
             rows.append((f"read:{read_id}", _render_read(read)))
-        for locator, text in read.passages.items():
-            if f"passage:{read_id}/{locator}" in focused_ids:
-                continue
-            rows.append(
-                (
-                    f"passage:{read_id}/{locator}",
-                    f"passage read_id={read_id} locator={locator} text={text}",
-                )
-            )
+    # The selected units come before the reads' own passage dumps, because
+    # they are what the packet is *for*: each row carries the excerpt the
+    # selection chose. A caller's budget is bounded — the researcher's is
+    # 24,000 characters — and the audited run's topic-01 packet spent all of
+    # it on four reads' passages, dropping the market monitor's evidence
+    # behind a ``packet_overflow`` marker with nothing mined from it. Context
+    # the caller did not select never crowds out the evidence it did.
     for evidence_id, unit in selected_evidence.items():
         if f"evidence:{evidence_id}" in focused_ids:
             continue
@@ -2049,6 +2128,20 @@ def build_acquisition_context(
                 f"locator={unit.locator} targets={targets} excerpt={unit.excerpt}",
             )
         )
+    for candidate in state.candidate_records.values():
+        rows.append(
+            (f"candidate:{candidate.candidate_id}", _render_candidate(candidate))
+        )
+    for read_id, read in selected_reads.items():
+        for locator, text in read.passages.items():
+            if f"passage:{read_id}/{locator}" in focused_ids:
+                continue
+            rows.append(
+                (
+                    f"passage:{read_id}/{locator}",
+                    f"passage read_id={read_id} locator={locator} text={text}",
+                )
+            )
     for disposition in dispositions:
         if target_id is not None and target_id not in disposition.target_ids:
             continue

@@ -27,6 +27,7 @@ from typing import TypedDict
 
 from pydantic import JsonValue
 
+from deep_research.agents.critic import route_decision
 from deep_research.agents.report_review import semantic_review_passes
 from deep_research.utils.types import (
     GAP_MATERIAL_SEVERITIES,
@@ -254,13 +255,22 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     and the terminal quality status all read the same decision.
     ``Critique.should_continue`` is the critic's recommendation and the
     deterministic quality gate is the graph's own verdict; the iteration bound
-    is the graph's law and is checked here regardless of what either said.
+    is the graph's law and grants no further pass regardless of what either
+    said.
 
     There are three destinations. ``ROUTE_REFINE`` buys another research pass.
     ``ROUTE_FINALIZE`` publishes and stops — the Critic's acceptance when the
     gates agree, or the best report a spent budget allows. ``ROUTE_END`` skips
     publication entirely, and is reached only by a halted run: a failed run
     publishes nothing rather than a stale earlier pass's artifact.
+
+    The bound stops the *loop*, not the verdict. A final allowed pass that
+    cleared the gates and satisfied both reviewers finalizes as the acceptance
+    it is, with ``critique_satisfied``, exactly as the same report would with
+    budget to spare: the budget running out is a fact about the machine, and
+    reading it first would report a judged-and-cleared report as merely
+    exhausted. ``max_iterations_reached`` therefore means what it says — the
+    last pass did not earn acceptance.
 
     A critique that was never *made* cannot satisfy anything. A failed review
     carries ``should_continue=False`` for the same reason a provider outage
@@ -289,6 +299,14 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
         return ROUTE_FINALIZE, "critique_failed"
     rejected = semantic_review_rejects(state)
     if state.iteration >= state.max_iterations:
+        if _acceptance_satisfied(state, critique):
+            # The budget ending is not itself a defect in the report: a run
+            # whose final allowed pass cleared the gates and satisfied both
+            # reviewers is the same report, judged the same way, as one with
+            # budget to spare, and it finalizes as the acceptance it is. Read
+            # before the stop because "the budget ran out" is a fact about the
+            # machine, and this report was in fact judged.
+            return ROUTE_FINALIZE, "critique_satisfied"
         return (
             ROUTE_FINALIZE,
             "semantic_review_gap" if rejected else "max_iterations_reached",
@@ -314,6 +332,50 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     if rejected:
         return ROUTE_REFINE, "semantic_review_gap"
     return ROUTE_FINALIZE, "critique_satisfied"
+
+
+def _acceptance_satisfied(state: ResearchState, critique: Critique) -> bool:
+    """True when every gate cleared the report and both reviewers accepted it.
+
+    The conjunction the router's own tail reaches ``critique_satisfied`` on,
+    plus the two conditions the ceiling has to insist on precisely because no
+    further pass can repair them: a quality pass that actually judged the
+    report, and a *scored* semantic review the report passed.
+    ``semantic_review_rejects`` is deliberately not enough — a review that was
+    never made is a non-acceptance rather than a rejection, so reading only the
+    rejection would finalize an unjudged report as an accepted one.
+
+    ``review_status`` is part of the definition rather than a second copy of
+    the router's control flow: ``failed`` returns earlier in ``graph_route``,
+    and a status added to the enum later must not count as a review by default.
+
+    ``critique.should_continue`` cannot be read directly here: the Critic's own
+    ``route_decision`` (``agents.critic``) checks the iteration bound *before*
+    it looks at score, material gaps, or unsupported claims, so a critique
+    recorded at the last allowed pass always carries ``should_continue=False``
+    regardless of what it actually found — the bound already overrode it once.
+    Trusting that flag here would accept any report the ceiling happened to
+    catch, exactly the report the Critic would have sent back with budget to
+    spare. Re-running ``route_decision`` with the bound lifted
+    (``iteration=0, max_iterations=1``) recovers the verdict the Critic
+    reached on the report's own merits — the same score, gaps, and unsupported
+    claims the ceiling already recorded, judged with no ceiling in the way.
+    """
+    unbounded_should_continue, _ = route_decision(
+        score=critique.score,
+        gaps=critique.gaps,
+        unsupported_claims=critique.unsupported_claims,
+        iteration=0,
+        max_iterations=1,
+        has_report=state.report is not None,
+    )
+    return (
+        critique.review_status == "reviewed"
+        and not unbounded_should_continue
+        and state.quality is not None
+        and not state.quality.hard_failures
+        and semantic_review_passes(state.report_review)
+    )
 
 
 def _wants_another_pass(state: ResearchState, critique: Critique) -> bool:
@@ -375,11 +437,12 @@ def graph_quality_status(state: ResearchState) -> str:
     sees and the edge the graph took cannot disagree. Only a report the gates
     cleared *and* the Critic accepted *and* the terminal semantic review scored
     at or above the threshold is ``accepted``: ``critique_satisfied`` is itself
-    reachable only once the gates found no hard failure while budget remained,
-    so a run that exhausted its budget with failures ends ``partial``. A run no
-    quality pass ever judged is ``partial`` too — nothing unjudged may be
-    called accepted, and the finalizer saves no claim to memory for a partial
-    run.
+    reachable only once the gates found no hard failure, a quality pass judged
+    the report, and the Critic accepted — and, at the iteration bound, only
+    once the scored semantic review cleared it too, so a run that exhausted its
+    budget with failures ends ``partial``. A run no quality pass ever judged is
+    ``partial`` too — nothing unjudged may be called accepted, and the
+    finalizer saves no claim to memory for a partial run.
 
     A failed review is the case this distinction exists for: its score is the
     floor and its gap list is empty, so every other signal it carries reads

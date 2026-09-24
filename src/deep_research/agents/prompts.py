@@ -8,13 +8,23 @@ on directly in tests.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 
 from pydantic import Field
 
-from deep_research.agents.evidence import ReadDossier
+from deep_research.agents.evidence import (
+    _INSTITUTIONAL_SUFFIXES,
+    _ISSUER_ACRONYM,
+    _title_spellings,
+    ReadDossier,
+)
 from deep_research.agents.identity import merge_source_snapshot
-from deep_research.agents.sources import SourceGroup, normalize_source_url
+from deep_research.agents.sources import (
+    SourceGroup,
+    normalize_source_url,
+    publisher_identity,
+)
 from deep_research.agents.steps import summarize_text
 from deep_research.memory.entries import ScratchpadEntry
 from deep_research.providers import ChatMessage
@@ -142,8 +152,11 @@ SOURCE_SCORING_INSTRUCTION = (
     "period. The two must agree: the quote has to state the value's own "
     "numbers, in the same order, and a quote naming two ends is never returned "
     "as one of them. When the document spells a date in words, return the "
-    "value at the precision it writes in digits — the year, for \"January 15, "
-    "2026\" — because the value has to be in the quote. publication_date is "
+    "full date the words name — \"January 15, 2026\" is 2026-01-15 and "
+    "\"January 2025\" is 2025-01 — because a date written in words is as "
+    "precise as one written in digits, and never reduce it to a coarser one: "
+    "return the date the words name and no finer one, so a document that "
+    "names only its year is not given a month or a day. publication_date is "
     "when it was published, data_period is "
     "the period its data cover, forecast_horizon is the future period a "
     "projection refers to, and effective_date is when a rule or version took "
@@ -702,18 +715,91 @@ def render_read_dossier(
     return "\n".join(lines)
 
 
+# The issuer's own bracketed acronym, when its name is written the same way
+# every attribution example in this project writes it -- "U.S. Energy
+# Information Administration (EIA)". :func:`_title_spellings` looks for that
+# acronym printed *beside the bare name in the title*; an issuer that already
+# carries its own acronym has to have it stripped first, or the bare-name
+# match it is meant to find never happens and the acronym is compared to
+# nothing.
+_TRAILING_ISSUER_ACRONYM = re.compile(rf"\s*{_ISSUER_ACRONYM}\Z")
+
+
+def _serves_the_attributed_body(finding: Finding) -> bool:
+    """True when the host that served the page IS the body it attributes to.
+
+    A publisher's own release states the publisher's own figure, and calling
+    that page a relay reads as two bodies where there is one — the same
+    confusion, in the other direction, that crediting a relay creates. First
+    party is established the way :mod:`evidence` already establishes it for
+    a read, reusing its own helpers rather than a second rule: the serving
+    host's suffix has to be one only that body's registry controls
+    (:data:`_INSTITUTIONAL_SUFFIXES`), and the label has to be exactly the
+    spelling the title itself gives for the issuer — the name run together,
+    or its bracketed acronym (:func:`_title_spellings`) — not any substring
+    of the issuer's name. A commercial or news suffix keeps its relay clause
+    however closely its label reads like the issuer's letters: "eia" is
+    inside "eia.news" too, and a news relay is not the agency.
+    """
+    label, _, suffix = publisher_identity(finding.source_url).partition(".")
+    if not label or suffix not in _INSTITUTIONAL_SUFFIXES:
+        return False
+    bare_issuer = _TRAILING_ISSUER_ACRONYM.sub("", finding.attributed_issuer or "")
+    return label in _title_spellings(finding.source_title, bare_issuer)
+
+
+def _finding_provenance(finding: Finding) -> str:
+    """What one finding's figure is, whose it is, and when it was said.
+
+    A digest line that names only the host describes every relay as an
+    originator: the audited run's fact checker read "Clean Edge" beside EIA's
+    10.3 GW and had nothing to tell it the figure was EIA's, or that a newer
+    inventory stated 10.4 GW. The relay is named as a relay — the body the
+    page attributes the figure to, and the host that carried it — and the
+    dates and scope the finding recorded follow, each under its own label so
+    a vintage is never read as a period or as a release date.
+
+    Empty when the finding carries no provenance at all, which is the whole
+    line for a legacy finding: a label with nothing after it would describe
+    evidence that is not there.
+    """
+    parts: list[str] = []
+    if finding.attributed_issuer:
+        parts.append(f"attributed to {finding.attributed_issuer}")
+        if not _serves_the_attributed_body(finding):
+            parts.append(f"as relayed by {publisher_identity(finding.source_url)}")
+    if finding.measure_scope:
+        parts.append(f"scope: {finding.measure_scope}")
+    if finding.data_period:
+        parts.append(f"period: {finding.data_period}")
+    if finding.vintage:
+        parts.append(f"vintage: {finding.vintage}")
+    if finding.release_date:
+        parts.append(f"released: {finding.release_date}")
+    if finding.statement_date:
+        parts.append(f"stated: {finding.statement_date}")
+    return f" ({'; '.join(parts)})" if parts else ""
+
+
 def render_finding_digest(
     findings: Sequence[Finding],
     *,
     limit: int = 200,
 ) -> str:
-    """Render findings as one numbered, sub-topic-tagged line each."""
+    """Render findings as one numbered, sub-topic-tagged line each.
+
+    Each line carries the finding's provenance beside its text and its source
+    URL: whose figure it is, what the figure is measured over, and the dates
+    that place it. A later stage can then judge the figure rather than the
+    page it was found on, which is the difference between one published
+    measurement and two.
+    """
     lines: list[str] = []
     for position, finding in enumerate(findings, start=1):
         content = summarize_text(finding.content, limit=limit)
         lines.append(
-            f"{position}. [{finding.related_sub_topic}] {content} "
-            f"({finding.source_url})"
+            f"{position}. [{finding.related_sub_topic}] {content}"
+            f"{_finding_provenance(finding)} ({finding.source_url})"
         )
     return "\n".join(lines) or "(no findings)"
 

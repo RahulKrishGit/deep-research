@@ -2365,6 +2365,203 @@ def test_a_verified_quote_is_recorded_at_the_precision_it_states() -> None:
     assert finer.status == "unknown"
 
 
+def test_a_date_the_document_spells_in_words_keeps_its_own_precision() -> None:
+    """A page that writes its date in words dates itself by that day.
+
+    The audited run's EIA pages carry "In-brief analysis August 7, 2026" and
+    "March 12, 2025", and the evaluator's instruction reduced every one of
+    them to its year, so two releases of one series could not be ranked
+    against each other. The quote states the day, so the day is what is
+    recorded — and a day the words never name is still refused.
+    """
+    read = _dated(
+        "Battery storage capacity grew. In-brief analysis August 7, 2026 "
+        "Battery storage capacity averaged 70% growth over three years.",
+        url="https://eia.gov/todayinenergy/detail.php?id=67925",
+    )
+    quote = "In-brief analysis August 7, 2026"
+
+    spelled = validated_temporal(
+        read,
+        publication_date=_claim("2026-08-07", quote),
+        status="current",
+    )
+    year = validated_temporal(
+        read,
+        publication_date=_claim("2026", quote),
+        status="current",
+    )
+    other_day = validated_temporal(
+        read,
+        publication_date=_claim("2026-08-08", quote),
+        status="current",
+    )
+
+    assert spelled.publication_date == "2026-08-07"
+    assert spelled.status == "current"
+    # The coarser value a finer quote states stays admissible.
+    assert year.publication_date == "2026"
+    # A day the words do not name is not a day the quote states.
+    assert other_day.publication_date is None
+    assert other_day.status == "unknown"
+
+
+def test_a_spelled_month_and_year_is_a_date_at_that_precision() -> None:
+    """The inventory's own edition, and two ends a page spells as a period."""
+    read = _dated(
+        "Data source: U.S. Energy Information Administration, Preliminary "
+        "Monthly Electric Generator Inventory, January 2025. Registration "
+        "opens September 29, 2026 - November 12, 2026 for the series.",
+        url="https://eia.gov/todayinenergy/detail.php?id=64705",
+    )
+
+    edition = validated_temporal(
+        read,
+        data_period=_claim(
+            "2025-01",
+            "Preliminary Monthly Electric Generator Inventory, January 2025",
+        ),
+        status="stale_data",
+    )
+    period = validated_temporal(
+        read,
+        effective_date=_claim(
+            "2026-09-29-2026-11-12", "September 29, 2026 - November 12, 2026"
+        ),
+        status="effective",
+    )
+    inconsistent = validated_temporal(
+        read,
+        data_period=_claim(
+            "2025-02",
+            "Preliminary Monthly Electric Generator Inventory, January 2025",
+        ),
+        status="stale_data",
+    )
+
+    assert edition.data_period == "2025-01"
+    assert edition.status == "stale_data"
+    assert period.effective_date == "2026-09-29-2026-11-12"
+    assert period.status == "effective"
+    assert inconsistent.data_period is None
+    assert inconsistent.status == "unknown"
+
+def test_a_periods_second_end_is_not_also_a_stand_alone_month() -> None:
+    """Re-scanning the words never states a period's end a second time alone.
+
+    "January 2024 through March 2025" states the period; the words do not
+    separately state "March 2025" as a stand-alone month the way they would
+    if nothing joined it to January.
+    """
+    read = _dated(
+        "Coverage Report. Deployment ran January 2024 through March 2025 "
+        "across the program."
+    )
+    quote = "January 2024 through March 2025"
+
+    period = validated_temporal(
+        read, data_period=_claim("2024-01-2025-03", quote), status="stale_data"
+    )
+    end_alone = validated_temporal(
+        read, data_period=_claim("2025-03", quote), status="stale_data"
+    )
+
+    assert period.data_period == "2024-01-2025-03"
+    assert period.status == "stale_data"
+    # A stated period's own second end is not a month the words state alone.
+    assert end_alone.data_period is None
+    assert end_alone.status == "unknown"
+
+
+def test_a_bare_month_joined_to_a_dated_end_states_no_finer_than_the_year() -> None:
+    """A period whose start borrows the end's year states only that year.
+
+    "January to March 2025" and "Jan-Mar 2025" never give their start month
+    a year of its own, and "between June and August 2024" joins with "and",
+    the one connective a digit period never uses. None of them states its
+    end's own month as a fact by itself -- the words would have to write
+    "March 2025" or "August 2024" unjoined for that.
+    """
+    to_read = _dated("Enrollment ran January to March 2025 for the pilot.")
+    hyphen_read = _dated(
+        "Enrollment ran Jan-Mar 2025 for the pilot.",
+        url="https://lab.example/jan-mar",
+    )
+    and_read = _dated(
+        "Enrollment ran between June and August 2024 for the pilot.",
+        url="https://lab.example/june-august",
+    )
+
+    to_year = validated_temporal(
+        to_read,
+        publication_date=_claim("2025", "January to March 2025"),
+        status="current",
+    )
+    to_month = validated_temporal(
+        to_read,
+        publication_date=_claim("2025-03", "January to March 2025"),
+        status="current",
+    )
+    hyphen_year = validated_temporal(
+        hyphen_read,
+        publication_date=_claim("2025", "Jan-Mar 2025"),
+        status="current",
+    )
+    hyphen_month = validated_temporal(
+        hyphen_read,
+        publication_date=_claim("2025-03", "Jan-Mar 2025"),
+        status="current",
+    )
+    and_year = validated_temporal(
+        and_read,
+        publication_date=_claim("2024", "between June and August 2024"),
+        status="current",
+    )
+    and_month = validated_temporal(
+        and_read,
+        publication_date=_claim("2024-08", "between June and August 2024"),
+        status="current",
+    )
+
+    assert to_year.publication_date == "2025"
+    assert to_year.status == "current"
+    assert to_month.publication_date is None
+    assert to_month.status == "unknown"
+    assert hyphen_year.publication_date == "2025"
+    assert hyphen_month.publication_date is None
+    assert and_year.publication_date == "2024"
+    assert and_month.publication_date is None
+
+
+def test_the_modal_verb_may_is_not_read_as_the_month() -> None:
+    """"may 2025" is ordinary prose; only a capitalised spelling names May."""
+    lowercase = _dated(
+        "Board Notes. Results may 2025 look different from today's.",
+        url="https://lab.example/modal-may",
+    )
+    capitalised = _dated(
+        "Board Notes. Results were finalised May 2025.",
+        url="https://lab.example/proper-may",
+    )
+
+    modal = validated_temporal(
+        lowercase,
+        publication_date=_claim("2025-05", "may 2025"),
+        status="current",
+    )
+    month = validated_temporal(
+        capitalised,
+        publication_date=_claim("2025-05", "May 2025"),
+        status="current",
+    )
+
+    assert modal.publication_date is None
+    assert modal.status == "unknown"
+    assert month.publication_date == "2025-05"
+    assert month.status == "current"
+
+
+
 @pytest.mark.parametrize(
     "quote",
     [

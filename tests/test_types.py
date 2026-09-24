@@ -14,6 +14,7 @@ from deep_research.utils.types import (
     AnswerContract,
     BoundaryAudit,
     Claim,
+    ClaimProvenance,
     Critique,
     EvidencePassage,
     EvidenceTarget,
@@ -754,3 +755,30 @@ def test_unscored_source_accepts_null_quality_scores_and_explicit_status() -> No
     assert source.recency_score is None
     assert source.relevance_score is None
     assert source.evaluation_status == "unscored_cap"
+
+
+def test_a_relays_own_date_never_prints_or_orders_as_the_issuers_release() -> (
+    None
+):
+    """``release`` and ``as_text`` read only what was recorded as a release.
+
+    ``release_date`` is what the attributed issuer released the figure on;
+    ``statement_date`` is only the date the citing page itself carries. A
+    relay that names no release must not have its own article date printed
+    as if it were one, nor used to order or label revisions of a series.
+    """
+    relay = ClaimProvenance(attributed_issuer="EIA", statement_date="2025-03-13")
+    assert relay.release == ""
+    assert relay.as_text() == "EIA, stated 2025-03-13"
+
+    released = ClaimProvenance(
+        attributed_issuer="EIA",
+        statement_date="2025-03-13",
+        release_date="2025-03-12",
+    )
+    assert released.release == "2025-03-12"
+    assert released.as_text() == "EIA, released 2025-03-12"
+
+    silent = ClaimProvenance(attributed_issuer="EIA")
+    assert silent.release == ""
+    assert silent.as_text() == "EIA"

@@ -929,7 +929,10 @@ class PacketEntry(ContractModel):
     support: list[str] = Field(default_factory=list)
     counter: list[str] = Field(default_factory=list)
     source_assessment: list[str] = Field(default_factory=list)
-    dates: list[str] = Field(default_factory=list)
+    provenance: list[str] = Field(default_factory=list)
+    """What this claim records about its figure: issuer, edition, release, period,
+    scope. One line, or none when the extraction recorded nothing — never a
+    date read off the page the claim cites."""
     target_ids: list[str] = Field(default_factory=list)
     required_dimensions: list[str] = Field(default_factory=list)
     answered_dimensions: list[str] = Field(default_factory=list)
@@ -1138,26 +1141,34 @@ def _selected_ids(claim: Claim, cluster: ClaimCluster | None) -> list[str]:
     return list(claim.evidence_selection)
 
 
-def _packet_dates(
-    urls: Sequence[str],
-    sources: Mapping[str, ScoredSource],
-) -> list[str]:
-    dates: list[str] = []
-    for url in urls:
-        source = sources.get(url)
-        if source is None:
-            continue
+def _packet_provenance(claim: Claim) -> list[str]:
+    """What one checked claim records about the figure it states.
+
+    Read from the claim's own provenance, never from the page it cites: a
+    source's publication date is not the edition its data rest on, and a page
+    can carry several figures — EIA's March 2025 release states both the 2024
+    additions and the 2025 forecast. The writer can only state what it is
+    shown, so the issuer, the edition, the release date, the period and the
+    scope travel together.
+
+    One rendered line per claim, or none when nothing was recorded: an empty
+    line would invite the writer to fill it in.
+    """
+    provenance = claim.provenance
+    if not provenance.recorded:
+        return []
+    line = provenance.as_text()
+    details = [
+        f"{label} {value}"
         for label, value in (
-            ("publication", source.temporal.publication_date),
-            ("data_period", source.temporal.data_period),
-            ("forecast", source.temporal.forecast_horizon),
-            ("effective", source.temporal.effective_date),
-        ):
-            if value:
-                dates.append(f"{label}={value}")
-        if dates:
-            break
-    return dates
+            ("period", provenance.data_period),
+            ("scope", provenance.measure_scope),
+        )
+        if value
+    ]
+    if details:
+        line = f"{line} ({'; '.join(details)})" if line else "; ".join(details)
+    return [line] if line else []
 
 
 def _packet_source_assessment(
@@ -1354,7 +1365,7 @@ def build_canonical_packet(
                 support=support,
                 counter=counter,
                 source_assessment=_packet_source_assessment(urls, source_index),
-                dates=_packet_dates(urls, source_index),
+                provenance=_packet_provenance(claim),
                 target_ids=target_ids,
                 required_dimensions=required,
                 answered_dimensions=list(claim.consumed_coverage_ids),
@@ -1393,8 +1404,8 @@ def render_canonical_packet(packet: CanonicalPacket) -> str:
         )
         for assessment in entry.source_assessment:
             lines.append(f"  source: {assessment}")
-        if entry.dates:
-            lines.append(f"  dates: {', '.join(entry.dates)}")
+        if entry.provenance:
+            lines.append(f"  provenance: {', '.join(entry.provenance)}")
         if entry.target_ids:
             lines.append(
                 f"  targets: {', '.join(entry.target_ids)}; "
@@ -2201,29 +2212,88 @@ def _unsupported_names(
     ]
 
 
+def _claim_attested_text(
+    claims: Sequence[Claim], context: DraftContext
+) -> str:
+    """The figures one statement may restate: what its own claims state.
+
+    The claim's own words, the values its atoms record, and the provenance it
+    carries — an edition and a release date are part of a figure, so a
+    statement may name them. The *selected passage* is deliberately not part
+    of it: one paragraph can state several propositions, and a figure in it
+    that no cited claim states is not thereby checked. The measured smoke
+    published 19.6 GW statements on the sole 10.4 GW claim's cluster exactly
+    that way, and the reader met an unchecked forecast as a settled fact.
+    """
+    parts: list[str] = []
+    for claim in claims:
+        parts.append(claim.text)
+        provenance = claim.provenance
+        parts.extend(
+            value
+            for value in (
+                provenance.attributed_issuer,
+                provenance.measure_scope,
+                provenance.vintage,
+                provenance.statement_date,
+                provenance.release_date,
+                provenance.data_period,
+            )
+            if value
+        )
+    for cluster_id in clusters_for_claims(claims, context.clusters):
+        proposition = context.clusters[cluster_id].proposition
+        parts.append(proposition.text)
+        parts.extend(
+            value
+            for value in (
+                proposition.subject,
+                proposition.value,
+                proposition.unit,
+                proposition.observation_period,
+                proposition.geography,
+                proposition.population,
+                proposition.quantity_noun,
+                proposition.denominator,
+                proposition.comparator,
+            )
+            if value
+        )
+    return " ".join(parts).casefold()
+
+
 def _unsupported_figures(
     text: str,
     claims: Sequence[Claim],
     context: DraftContext,
     basis: str,
 ) -> list[str]:
-    """Figures the cited evidence does not state.
+    """Figures the cited claims do not state.
 
     A unit conversion or an arithmetic step passes only as a recorded
     derivation: the statement declares a ``basis``, that basis names the
-    operation, and the premises it rests on — the figures the evidence does
-    state — are attested. That is what separates a checked derivation from a
-    model that did some arithmetic and called it a conversion.
+    operation, and the premises it rests on — the figures the cited evidence
+    states — are attested. That is what separates a checked derivation from a
+    model that did some arithmetic and called it a conversion, and it is the
+    one place the selected passage still attests a figure: a derivation is
+    *about* the evidence it was read off.
     """
-    corpus = _cited_evidence(claims, context) or context.corpus
     missing = [
-        atom for atom in unattested_atoms(text, corpus) if re.match(r"\d", atom)
+        atom
+        for atom in unattested_atoms(text, _claim_attested_text(claims, context))
+        if re.match(r"\d", atom)
     ]
     if not missing:
         return []
     if not basis.strip():
         return missing
+    corpus = _cited_evidence(claims, context) or context.corpus
     tokens = _corpus_tokens(corpus)
+    if any(_figure_number(atom) in tokens for atom in missing):
+        # Restating a figure the passage already carries is not deriving it:
+        # a declared basis only earns a pass for a number the passage itself
+        # does not state.
+        return missing
     if not _names_an_operation(basis):
         return missing
     if not _derivation_premises(basis, tokens):

@@ -14,7 +14,7 @@ from deep_research.agents.acquisition import UNMINED_QUANTITY_REASON
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.evidence import build_read_record
 from deep_research.agents.identity import claim_fingerprint
-from deep_research.agents.prompts import AgentTask
+from deep_research.agents.prompts import AgentTask, render_finding_digest
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
     HIGH_PRIORITY_THRESHOLD,
@@ -273,13 +273,18 @@ QEC_READ = qec_read_record()
 
 _FINDING_EXAMPLE_OUTPUT = (
     "Example JSON output:\n"
-    '{"findings":[{"confidence":0.8,"content":"The example report measured a '
-    '12 percent reduction in 2024, from its January 2025 preliminary '
-    'inventory.","data_period":"2024","excerpt":"The measured reduction was '
-    '12 percent.","locator":"page-4-chunk-0","read_id":'
-    '"read-111111111111111111111111","source_title":"Example report",'
-    '"source_url":"https://evidence.example.test/report","statement_date":'
-    '"2025-03-12","target_ids":["topic-01-target-01"],"vintage":'
+    '{"findings":[{"attributed_issuer":"Example Statistical Agency",'
+    '"attribution_quote":"according to the Example Statistical Agency",'
+    '"confidence":0.8,"content":"The example report relays the Example '
+    "Statistical Agency's measurement: a 12 percent reduction in 2024 across "
+    "all classes, from the agency's January 2025 preliminary inventory.\","
+    '"data_period":"2024","excerpt":"The measured reduction was 12 percent, '
+    'according to the Example Statistical Agency, across all classes.",'
+    '"locator":"page-4-chunk-0","measure_scope":"all classes","read_id":'
+    '"read-111111111111111111111111","release_date":"2025-03-12",'
+    '"source_title":"Example report","source_url":'
+    '"https://evidence.example.test/report","statement_date":"2025-03-12",'
+    '"target_ids":["topic-01-target-01"],"vintage":'
     '"January 2025 preliminary inventory"}]}'
 )
 
@@ -1485,6 +1490,445 @@ def test_an_undated_figure_records_no_dates_at_all() -> None:
     assert findings[0].data_period is None
     assert findings[0].statement_date is None
     assert findings[0].vintage is None
+
+
+# ---------------------------------------------------------------------------
+# The audited run's relay: a page that states somebody else's figures
+# ---------------------------------------------------------------------------
+#
+# cleanedge.com's data dive carries EIA's own December-2024-inventory figures
+# inside an EIA-attributed paragraph, and the audited run published them as
+# "Clean Edge reported", which manufactured a conflict with EIA's newer
+# release. The passage is the stored read's own text.
+
+RELAY_URL = (
+    "https://cleanedge.com/data-dive/"
+    "u-s-electric-utility-scale-capacity-additions-by-fuel-type-2"
+)
+RELAY_TITLE = (
+    "U.S. Electric Utility-Scale Capacity Additions, by Fuel Type - Clean Edge"
+)
+RELAY_PASSAGE = (
+    "Solar accounted for most of the new capacity in 2024, according to the "
+    "U.S. Energy Information Administration (EIA). The EIA projects that "
+    "solar capacity will grow by another 32.5 GW in 2025. And while not "
+    "tracked in our chart above, a record-breaking 18.2 GW of utility-scale "
+    "battery storage are projected this year, up from 10.3 GW in 2024."
+)
+RELAY_ATTRIBUTION = (
+    "according to the U.S. Energy Information Administration (EIA)"
+)
+
+# The independent tracker's own release. Its figure is the market monitor's,
+# measured across all segments, and it says so — which is what a finding has
+# to record rather than silently restate in the target's scope.
+TRACKER_URL = (
+    "https://woodmac.com/press-releases/2024-press-releases/"
+    "energy-storages-meteoric-rise-breaks-another-record"
+)
+TRACKER_TITLE = "Energy Storage's Meteoric Rise Breaks Another Record | Wood Mackenzie"
+TRACKER_PASSAGE = (
+    "The U.S. energy storage market set a new record in 2024 with 12.3 "
+    "gigawatts (GW) of installations across all segments, according to the "
+    "latest U.S. Energy Storage Monitor report released today by the "
+    "American Clean Power Association (ACP) and Wood Mackenzie. The report "
+    "shows a total of 12,314 megawatts (MW) and 37,143 megawatt hours (MWh) "
+    "deployed, in an edition dated March 24, 2025."
+)
+
+
+def _relay_read() -> ReadRecord:
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=RELAY_URL,
+        resolved_url=RELAY_URL,
+        title=RELAY_TITLE,
+        retrieved_at=EXTRACTED_AT,
+        text=RELAY_PASSAGE,
+        passages={"chunk-2": RELAY_PASSAGE},
+        extraction_complete=True,
+    )
+
+
+def _tracker_read() -> ReadRecord:
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=TRACKER_URL,
+        resolved_url=TRACKER_URL,
+        title=TRACKER_TITLE,
+        retrieved_at=EXTRACTED_AT,
+        text=TRACKER_PASSAGE,
+        passages={"chunk-16": TRACKER_PASSAGE},
+        extraction_complete=True,
+    )
+
+
+def _build_relay(
+    read: ReadRecord,
+    locator: str,
+    **overrides: object,
+) -> tuple[list[Finding], list[str]]:
+    """Stamp one draft against ``read`` through the acquisition path."""
+    values: dict[str, object] = {
+        "content": "A figure was reported.",
+        "source_url": read.resolved_url,
+        "source_title": read.title,
+        "confidence": 0.8,
+        "read_id": read.read_id,
+        "locator": locator,
+        "excerpt": read.passages[locator],
+        "target_ids": [PLANNED_TARGET_ID],
+    }
+    values.update(overrides)
+    return build_findings(
+        SubTopicFindingsDraft(findings=[FindingDraft(**values)]),
+        sub_topic=_sub_topic("Alpha"),
+        extracted_at=EXTRACTED_AT,
+        known_urls=(read.resolved_url,),
+        known_reads={read.read_id: read},
+        valid_target_ids=(PLANNED_TARGET_ID,),
+    )
+
+
+def test_a_relayed_figure_is_attributed_to_the_body_the_page_names() -> None:
+    """The relay publishes somebody else's figure; the finding says whose.
+
+    The audited run's report printed "Clean Edge reported a lower 2024 count of
+    10.3 GW", a second measurement that never existed: the page attributes
+    both figures to EIA in its own words. The finding carries that body and the
+    page's phrase for it, so no later stage can credit the host.
+    """
+    findings, rejected = _build_relay(
+        _relay_read(),
+        "chunk-2",
+        content=(
+            "A record-breaking 18.2 GW of utility-scale battery storage are "
+            "projected for 2025, up from 10.3 GW in 2024, according to the "
+            "U.S. Energy Information Administration (EIA)."
+        ),
+        attributed_issuer="U.S. Energy Information Administration (EIA)",
+        attribution_quote=RELAY_ATTRIBUTION,
+    )
+
+    assert rejected == []
+    assert findings[0].attributed_issuer == (
+        "U.S. Energy Information Administration (EIA)"
+    )
+    assert findings[0].attribution_quote == RELAY_ATTRIBUTION
+
+
+def test_an_attribution_quote_the_read_does_not_carry_is_not_recorded() -> None:
+    """A relay claim the page never makes is not evidence about the page.
+
+    The finding is kept — its excerpt is the source's own text — but the
+    attribution is dropped with the quote that failed, because an attribution
+    nothing in the read states is exactly the fabrication this field exists to
+    stop.
+    """
+    findings, rejected = _build_relay(
+        _relay_read(),
+        "chunk-2",
+        attributed_issuer="U.S. Energy Information Administration (EIA)",
+        attribution_quote="according to the National Renewable Energy Laboratory",
+    )
+
+    assert rejected == []
+    assert findings[0].attributed_issuer is None
+    assert findings[0].attribution_quote is None
+
+
+def test_an_attribution_that_does_not_name_the_issuer_is_not_recorded() -> None:
+    """The page's phrase has to name the body the finding credits."""
+    findings, _ = _build_relay(
+        _relay_read(),
+        "chunk-2",
+        attributed_issuer="Wood Mackenzie",
+        attribution_quote=RELAY_ATTRIBUTION,
+    )
+
+    assert findings[0].attributed_issuer is None
+    assert findings[0].attribution_quote is None
+
+
+def test_a_blank_attribution_records_nothing_at_all() -> None:
+    """A page's own figure is not a relay, and a blank is not a name."""
+    findings, _ = _build_relay(
+        _relay_read(),
+        "chunk-2",
+        attributed_issuer="  ",
+        attribution_quote="",
+    )
+
+    assert findings[0].attributed_issuer is None
+    assert findings[0].attribution_quote is None
+
+
+SURVEY_PASSAGE = (
+    "Unlike the EIA, which counted 10.3 GW, our survey found 12 GW of "
+    "batteries installed in 2024. Separately, the EIA reported 5 GW of wind."
+)
+
+
+def _survey_read() -> ReadRecord:
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url="https://example.test/battery-survey",
+        resolved_url="https://example.test/battery-survey",
+        title="Battery Storage Survey",
+        retrieved_at=EXTRACTED_AT,
+        text=SURVEY_PASSAGE,
+        passages={"chunk-2": SURVEY_PASSAGE},
+        extraction_complete=True,
+    )
+
+
+def test_a_contrastive_mention_of_a_body_is_not_an_attribution() -> None:
+    """"Unlike the EIA" names the body without crediting it with anything.
+
+    The review's own case: the survey's own 12 GW figure must not be
+    credited to the EIA merely because the EIA is named in a contrasting
+    clause right beside it.
+    """
+    findings, rejected = _build_relay(
+        _survey_read(),
+        "chunk-2",
+        content="Our survey found 12 GW of batteries installed in 2024.",
+        attributed_issuer="EIA",
+        attribution_quote="Unlike the EIA",
+    )
+
+    assert rejected == []
+    assert findings[0].attributed_issuer is None
+    assert findings[0].attribution_quote is None
+
+
+def test_the_bare_name_alone_is_not_an_attribution() -> None:
+    """A name with no cue beside it credits nobody with anything."""
+    findings, rejected = _build_relay(
+        _survey_read(),
+        "chunk-2",
+        content="Our survey found 12 GW of batteries installed in 2024.",
+        attributed_issuer="EIA",
+        attribution_quote="EIA",
+    )
+
+    assert rejected == []
+    assert findings[0].attributed_issuer is None
+    assert findings[0].attribution_quote is None
+
+
+NEIGHBOUR_LEAD = (
+    "According to the U.S. Energy Information Administration (EIA), "
+    "battery installations are accelerating nationwide."
+)
+NEIGHBOUR_FIGURE = (
+    "A record-breaking 18.2 GW of utility-scale battery storage are "
+    "projected for 2025, up from 10.3 GW in 2024."
+)
+
+
+def _multi_passage_read(*, passages: dict[str, str], url: str) -> ReadRecord:
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=url,
+        resolved_url=url,
+        title="Storage Market Report",
+        retrieved_at=EXTRACTED_AT,
+        text=" ".join(passages.values()),
+        passages=passages,
+        extraction_complete=True,
+    )
+
+
+def test_an_attribution_in_the_neighbouring_passage_is_admitted() -> None:
+    """The documented case: the attribution sits at the end of the prior chunk.
+
+    A live call read the figure passage whose attribution sentence sits in
+    the passage just before it; the excerpt's own passage is not the only
+    place the read may state who a figure belongs to.
+    """
+    read = _multi_passage_read(
+        passages={"chunk-1": NEIGHBOUR_LEAD, "chunk-2": NEIGHBOUR_FIGURE},
+        url="https://example.test/neighbour-attribution",
+    )
+
+    findings, rejected = _build_relay(
+        read,
+        "chunk-2",
+        attributed_issuer="U.S. Energy Information Administration (EIA)",
+        attribution_quote=(
+            "According to the U.S. Energy Information Administration (EIA)"
+        ),
+    )
+
+    assert rejected == []
+    assert findings[0].attributed_issuer == (
+        "U.S. Energy Information Administration (EIA)"
+    )
+
+
+def test_an_attribution_only_in_a_far_passage_is_not_admitted() -> None:
+    """A quote elsewhere in the document, but not beside the excerpt, is not read.
+
+    The old rule searched the whole document for a matching quote; this one
+    is scoped to the excerpt's own passage and its immediate neighbour, so a
+    body named several passages away cannot be credited with a figure it was
+    never placed beside.
+    """
+    read = _multi_passage_read(
+        passages={
+            "chunk-1": NEIGHBOUR_LEAD,
+            "chunk-2": "Filler paragraph with no attribution at all here today.",
+            "chunk-3": NEIGHBOUR_FIGURE,
+        },
+        url="https://example.test/far-attribution",
+    )
+
+    findings, rejected = _build_relay(
+        read,
+        "chunk-3",
+        attributed_issuer="U.S. Energy Information Administration (EIA)",
+        attribution_quote=(
+            "According to the U.S. Energy Information Administration (EIA)"
+        ),
+    )
+
+    assert rejected == []
+    assert findings[0].attributed_issuer is None
+    assert findings[0].attribution_quote is None
+
+
+def test_a_tracker_figure_keeps_its_segment_and_release_date() -> None:
+    """An all-segment total must travel as one, not as a grid-scale figure.
+
+    Wood Mackenzie's release states 12,314 MW across all segments; the
+    grid-scale 2025 forecast is a different figure on a different basis. The
+    finding records the segment the page states and the date the page carries,
+    so a later stage can refuse the all-segment total for a grid-scale target
+    instead of silently substituting it.
+    """
+    findings, rejected = _build_relay(
+        _tracker_read(),
+        "chunk-16",
+        content=(
+            "The U.S. energy storage market set a new record in 2024 with "
+            "12,314 MW of installations across all segments."
+        ),
+        attributed_issuer="Wood Mackenzie",
+        attribution_quote=(
+            "the latest U.S. Energy Storage Monitor report released today by "
+            "the American Clean Power Association (ACP) and Wood Mackenzie"
+        ),
+        measure_scope="all segments",
+        release_date="2025-03-24",
+    )
+
+    assert rejected == []
+    assert findings[0].measure_scope == "all segments"
+    assert findings[0].release_date == "2025-03-24"
+
+
+def test_a_blank_scope_or_release_date_is_recorded_as_absent() -> None:
+    findings, _ = _build_relay(
+        _tracker_read(), "chunk-16", measure_scope=" ", release_date=""
+    )
+
+    assert findings[0].measure_scope is None
+    assert findings[0].release_date is None
+
+
+def test_a_measure_scope_the_read_does_not_state_is_not_recorded() -> None:
+    """A scope the page never wrote is not a fact about the page."""
+    findings, rejected = _build_relay(
+        _tracker_read(), "chunk-16", measure_scope="grid-scale only"
+    )
+
+    assert rejected == []
+    assert findings[0].measure_scope is None
+
+
+def test_a_release_date_the_read_does_not_state_is_not_recorded() -> None:
+    """A release date the page never wrote is not a fact about the page."""
+    findings, rejected = _build_relay(
+        _tracker_read(), "chunk-16", release_date="2099-01-01"
+    )
+
+    assert rejected == []
+    assert findings[0].release_date is None
+
+
+def test_extraction_contract_requires_the_attribution_and_the_scope() -> None:
+    """The request carries the relay rule, not only the response schema.
+
+    Every finding the model returns is derived from the packet, so the two
+    mistakes the audited run made — crediting the relay, and restating a
+    figure's segment as the target's — have to be refused in the request the
+    model reads, in the words it is asked to follow.
+    """
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.",
+        sub_topic=_sub_topic("Alpha"),
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    body = extraction_messages(
+        task,
+        run,
+        evidence_chars=200,
+        acquisition_context="- evidence_id=ev-1 read_id=read-1 locator=chunk-0",
+        planned_targets=_forecast_plan_targets(),
+    )[1].content
+
+    assert "the body the page attributes it to" in body
+    assert "keep the page's own words for what the figure measures" in body
+    assert "state the segment or basis the figure covers" in body
+
+
+def test_extraction_contract_requires_the_registry_copy_it_checks() -> None:
+    """A finding cites the read it came from, not the URL the document names.
+
+    The recorded run read EIA's article as a House hearing PDF, and the PDF's
+    own text prints "https://www.eia.gov/todayinenergy/detail.php?id=64705".
+    Citing that URL is citing a page this run never read — the membership check
+    drops the finding — and it is also the relay mistake in a different
+    spelling: the copy is where the figure was read, and the body it came from
+    belongs in the attribution, not in the citation.
+    """
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.",
+        sub_topic=_sub_topic("Alpha"),
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    body = extraction_messages(
+        task,
+        run,
+        evidence_chars=200,
+        acquisition_context="- evidence_id=ev-1 read_id=read-1 locator=chunk-0",
+        planned_targets=_forecast_plan_targets(),
+    )[1].content
+
+    assert (
+        "never substitute the URL or title the document names as its origin"
+        in body
+    )
+    assert "not to drop the reader's own markers" in body
 
 
 def test_extraction_names_every_planned_target_a_read_may_serve() -> None:
@@ -3592,7 +4036,8 @@ _QUANTITY_LEDE = (
 ) * 2
 _QUANTITY_SENTENCE = (
     "In 2024, the United States deployed 12,314 megawatts (MW) and "
-    "37,143 megawatt hours (MWh) of grid-scale battery storage."
+    "37,143 megawatt hours (MWh) of grid-scale battery storage across all "
+    "segments, according to the March 4, 2025 edition."
 )
 _QUANTITY_BODY = f"{_QUANTITY_LEDE}\n\n{_QUANTITY_SENTENCE}"
 _QUANTITY_TARGET_QUESTION = (
@@ -3694,6 +4139,41 @@ def _quantity_retry_reply(
     )
 
 
+def _quantity_scoped_retry_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The finding the retry returns for the monitor's own segment total."""
+    del schema
+    read_id, locator, excerpt = _packet_passage_for(
+        "37,143 megawatt hours", messages[1].content
+    )
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "The U.S. Energy Storage Monitor reports that the United "
+                    "States deployed 12,314 MW of energy storage in 2024, "
+                    "measured across all segments."
+                ),
+                source_url=_QUANTITY_URL,
+                source_title=_QUANTITY_TITLE,
+                confidence=0.9,
+                read_id=read_id,
+                locator=locator,
+                excerpt=excerpt,
+                target_ids=[PLANNED_TARGET_ID],
+                data_period="2024",
+                attributed_issuer="Wood Mackenzie",
+                attribution_quote=(
+                    "Wood Mackenzie's U.S. Energy Storage Monitor"
+                ),
+                measure_scope="all segments",
+                release_date="2025-03-04",
+            )
+        ]
+    )
+
+
 def _packet_evidence_locators(packet: str) -> list[str]:
     """The locator of every evidence row one rendered packet carries, in order."""
     return [
@@ -3777,6 +4257,51 @@ async def test_a_targets_measure_unit_is_mined_by_one_bounded_re_extraction(
     assert "37,143 MWh" in finding.content
     assert finding.source_url == _QUANTITY_URL
     assert finding.data_period == "2024"
+
+
+@pytest.mark.asyncio
+async def test_a_mined_figure_keeps_the_scope_and_attribution_the_page_states(
+    tracker: Tracker,
+) -> None:
+    """The retry mines the tracker's figure with its own segment and body.
+
+    The audited run's extraction had no way to record a figure whose basis
+    differs from the target's: the monitor's total is measured across all
+    segments, so an extraction reading "grid-scale" refused to state it at
+    all and the tracker's own accounting reached no finding. The bounded
+    re-extraction is asked for the figure *with* the scope and the body the
+    page states, so the claim stage can see the difference instead of a
+    figure silently restated in the target's terms.
+    """
+    completer = ScriptedCompleter(
+        decisions=_quantity_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            _quantity_scoped_retry_reply,
+        ],
+    )
+    agent = _quantity_agent(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_quantity_topic()]))
+
+    (finding,) = outcome.result.findings
+    assert finding.measure_scope == "all segments"
+    assert finding.attributed_issuer == "Wood Mackenzie"
+    assert finding.attribution_quote == "Wood Mackenzie's U.S. Energy Storage Monitor"
+    assert finding.release_date == "2025-03-04"
+    # The retry is where it came from, and the request it answered carries the
+    # contract that asks for those fields.
+    requests = _extraction_requests(completer)
+    assert len(requests) == 2
+    assert "measure_scope" in requests[0]
+    assert "measure_scope" in requests[1]
+    # The digest the fact checker reads describes the figure rather than only
+    # the host it was found on.
+    digest = render_finding_digest(outcome.result.findings)
+    assert "attributed to Wood Mackenzie" in digest
+    assert "scope: all segments" in digest
+    assert "released: 2025-03-04" in digest
 
 
 @pytest.mark.asyncio

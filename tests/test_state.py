@@ -38,6 +38,7 @@ from deep_research.utils.types import (
     derive_statement,
     merge_research_state,
     progress_improved,
+    qualifier_matches_requirement,
     target_is_answered,
     unanswered_required_targets,
 )
@@ -1274,3 +1275,212 @@ def test_an_attributed_qualitative_rule_answers_its_required_target(
     )
 
     assert target_is_answered(state, target) is expected
+
+
+# --------------------------------------------------------------------------
+# What a measure requirement accepts, and what a period requirement asks for
+# --------------------------------------------------------------------------
+
+# The market monitor's own sentence, in the page's words: Wood Mackenzie/ACP's
+# U.S. Energy Storage Monitor writes "energy storage", and its 2024 total is
+# quoted in megawatts.
+_TRACKER_SENTENCE = (
+    "Wood Mackenzie reported that 12,314 MW of energy storage was deployed in "
+    "the United States in 2024."
+)
+# The same total stated as every segment's, which is not the utility-scale
+# fleet the figure target asks about.
+_TRACKER_ALL_SEGMENTS = (
+    "Wood Mackenzie reported that 12,314 MW of battery storage was deployed "
+    "across all segments in the United States in 2024."
+)
+# EIA's own count of the convention it counts by, with no observation period:
+# a definition states the rule, not a year's observation.
+_DEFINITIONAL_THRESHOLD = (
+    "EIA counts battery storage projects larger than 1 MW in the electric "
+    "power sector when reporting U.S. utility-scale battery storage capacity."
+)
+_CLASSIFICATION_PERIOD = (
+    "period: the classification in force for the 2024 and 2025 data years"
+)
+
+
+def _tracker_proposition(**overrides: object) -> AtomicProposition:
+    fields: dict[str, object] = {
+        "text": _TRACKER_SENTENCE,
+        "value": "12,314",
+        "unit": "MW",
+        "observation_period": "2024",
+        "geography": "United States",
+        "attribution": "Wood Mackenzie",
+    }
+    fields.update(overrides)
+    return AtomicProposition(**fields)  # type: ignore[arg-type]
+
+
+def test_a_megawatt_measure_accepts_the_pages_energy_storage_wording() -> None:
+    """The page's measurand words are not the requirement's words.
+
+    ``qualifier_matches_requirement`` refused any clause that did not spell
+    "battery", so the market monitor's own sentence — "12,314 MW of energy
+    storage was deployed" — answered no battery-storage measure, whatever unit
+    it stated (review rank 1b). The unit family already decides whether the
+    clause states the quantity the measure asks for.
+    """
+    assert qualifier_matches_requirement(
+        _tracker_proposition(), "measure: battery storage capacity added, in megawatts"
+    )
+
+
+def test_a_megawatt_measure_still_refuses_a_megawatt_hour_figure() -> None:
+    """The control: the unit family is what carries the measure's basis."""
+    assert not qualifier_matches_requirement(
+        _tracker_proposition(
+            text=(
+                "Wood Mackenzie reported that 37,143 MWh of energy storage was "
+                "deployed in the United States in 2024."
+            ),
+            unit="MWh",
+            value="37,143",
+        ),
+        "measure: battery storage capacity added, in megawatts",
+    )
+
+
+def test_a_grid_scale_measure_refuses_an_all_segments_total() -> None:
+    """A wider total is a different quantity, not a paraphrase of this one.
+
+    The monitor's all-segments 2024 total is not its grid-scale one, and
+    crediting it to a grid-scale measure is the substitution Section 2.3
+    forbids. A clause that names no scale at all is still accepted — an
+    unnamed scope is not a different scope.
+    """
+    assert not qualifier_matches_requirement(
+        _tracker_proposition(text=_TRACKER_ALL_SEGMENTS),
+        "measure: grid-scale battery storage capacity added, in megawatts",
+    )
+    assert qualifier_matches_requirement(
+        _tracker_proposition(text=_TRACKER_ALL_SEGMENTS),
+        "measure: battery storage capacity added in every market segment, in "
+        "megawatts",
+    )
+
+
+def test_a_battery_measure_refuses_a_solar_wind_and_storage_total() -> None:
+    """A combined renewables-and-storage total names no battery at all.
+
+    Dropping the lexical "battery" word test let any clause that says
+    "storage" stand in for the battery figure, even a mixed total naming
+    other technologies (review rank 1). "63 GW of new solar, wind and
+    storage capacity" is such a total.
+    """
+    assert not qualifier_matches_requirement(
+        _tracker_proposition(
+            text=(
+                "EIA projected that developers will add 63 GW of new solar, "
+                "wind and storage capacity in the United States in 2025."
+            ),
+            value="63,000",
+            unit="MW",
+            observation_period="2025",
+            attribution="EIA",
+        ),
+        "measure: projected battery storage capacity additions, in megawatts",
+    )
+
+
+def test_a_battery_measure_refuses_pumped_storage_hydropower() -> None:
+    """A different storage technology is not the battery figure either."""
+    assert not qualifier_matches_requirement(
+        _tracker_proposition(
+            text=(
+                "EIA reported that developers added 1,200 MW of "
+                "pumped-storage hydropower capacity in the United States in "
+                "2024."
+            ),
+            value="1,200",
+            unit="MW",
+            attribution="EIA",
+        ),
+        "measure: battery storage capacity added, in megawatts",
+    )
+
+
+def test_a_grid_scale_measure_accepts_commercial_operation_wording() -> None:
+    """"Commercial operation" is EIA's lifecycle phrase, not the C&I segment.
+
+    ``\\bcommercial\\b`` matched the standard "entered commercial operation"
+    wording, so a megawatt sentence using it was refused as if it stated the
+    commercial segment (review rank 2).
+    """
+    assert qualifier_matches_requirement(
+        _tracker_proposition(
+            text=(
+                "EIA reported that developers added 10,400 MW of battery "
+                "storage capacity in the United States in 2024 as projects "
+                "entered commercial operation."
+            ),
+            value="10,400",
+            unit="MW",
+            attribution="EIA",
+        ),
+        "measure: grid-scale battery storage capacity added, in megawatts",
+    )
+
+
+def test_a_scale_named_after_excluding_is_not_the_clauses_own_scale() -> None:
+    """A scale the clause disclaims is not the scale it states.
+
+    "Excluding distributed systems" states no scale of its own; it excludes
+    one from a total that otherwise names none (review rank 2).
+    """
+    assert qualifier_matches_requirement(
+        _tracker_proposition(
+            text=(
+                "EIA reported that developers added 10,400 MW of battery "
+                "storage capacity in the United States in 2024, excluding "
+                "distributed systems."
+            ),
+            value="10,400",
+            unit="MW",
+            attribution="EIA",
+        ),
+        "measure: grid-scale battery storage capacity added, in megawatts",
+    )
+
+
+def test_a_period_requirement_does_not_refuse_a_claim_that_states_no_period() -> None:
+    """A definition says which rule is in force, and states no observation.
+
+    The classification requirement names the years the rule covers; the claim
+    that answers it states the convention and no period at all. Whether an
+    unstated period *discharges* the obligation is the dimension check's
+    question — refusal here is reserved for a period the clause does state and
+    the requirement does not name.
+    """
+    definition = AtomicProposition(
+        text=_DEFINITIONAL_THRESHOLD,
+        value="1",
+        unit="MW",
+        geography="United States",
+        attribution="EIA",
+    )
+
+    assert qualifier_matches_requirement(definition, _CLASSIFICATION_PERIOD)
+
+
+def test_a_period_requirement_still_refuses_a_claim_that_states_another_year() -> None:
+    """The control: a dated clause is held to the years the requirement names."""
+    dated = AtomicProposition(
+        text=(
+            "EIA counted battery storage projects larger than 1 MW in the "
+            "electric power sector in the United States in 2023."
+        ),
+        value="1",
+        unit="MW",
+        observation_period="2023",
+        geography="United States",
+        attribution="EIA",
+    )
+
+    assert not qualifier_matches_requirement(dated, _CLASSIFICATION_PERIOD)

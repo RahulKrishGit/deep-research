@@ -93,6 +93,7 @@ from deep_research.providers import (
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    ClaimProvenance,
     AnswerContract,
     AtomicProposition,
     Claim,
@@ -184,6 +185,7 @@ def _claim(
     contradictions: list[str] | None = None,
     passages: list[EvidencePassage] | None = None,
     target_ids: list[str] | None = None,
+    provenance: ClaimProvenance | None = None,
 ) -> Claim:
     return Claim(
         claim_id=claim_fingerprint(text),
@@ -204,6 +206,7 @@ def _claim(
         consumed_finding_fingerprints=finding_fingerprints or [],
         consumed_coverage_ids=coverage_ids or [],
         target_ids=target_ids or [],
+        provenance=provenance or ClaimProvenance(),
     )
 
 
@@ -1329,7 +1332,9 @@ def test_the_reader_prints_the_run_date_not_the_asked_for_date(
     )
 
     assert generated_on == "**Generated on:** 2026-09-23"
-    assert as_of == "**As of:** 2026-09-20T08:00:00+00:00"
+    # The stamp says which date it is: the evidence's retrieval, never the
+    # period the figures cover — each figure states its own edition.
+    assert as_of == "**As of:** 2026-09-20T08:00:00+00:00 (evidence retrieved)"
     assert "2024-12-31" in date_basis
     assert "2024-12-31" not in generated_on
 
@@ -2392,6 +2397,124 @@ def test_an_attested_figure_is_published() -> None:
     assert composition.summary[0].statement is not None
     assert composition.summary[0].statement.mode == "settled"
     assert composition.summary[0].statement.evidence_ids == [EVIDENCE_ID]
+
+
+def test_a_figure_the_cited_claim_does_not_state_is_never_published() -> None:
+    """A paragraph with two figures is not two checked propositions.
+
+    The adjudicated claim is EIA's 2024 count; the passage it selected also
+    carries the agency's 2025 forecast. In the measured smoke, 19.6 GW
+    statements rode the sole 10.4 GW claim's cluster: every figure in the
+    shared excerpt was attested, so an unchecked proposition was published on
+    a claim that never stated it.
+    """
+    excerpt = (
+        "EIA reported that utility-scale battery storage capacity additions "
+        "reached 10.4 GW in 2024, and forecasts 19.6 GW of additions in 2025."
+    )
+    claim = _claim(
+        text=(
+            "EIA reported that utility-scale battery storage capacity "
+            "additions reached 10.4 GW in 2024."
+        ),
+        urls=[SOURCE_URL],
+    )
+    task = _grounded_task(
+        claims=[claim],
+        evidence_units={EVIDENCE_ID: _unit(excerpt=excerpt)},
+        claim_clusters={CLUSTER_ID: _cluster(claim_ids=[claim.claim_id])},
+    )
+
+    def _point(text: str) -> ReportDraft:
+        return ReportDraft(
+            executive_summary=[
+                ReportPointDraft(
+                    text=text,
+                    claim_ids=["C001"],
+                    source_urls=[SOURCE_URL],
+                )
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        )
+
+    unchecked, rejected = build_report_composition(
+        task,
+        _point("EIA forecasts 19.6 GW of utility-scale additions in 2025."),
+        max_sections=4,
+        limitations=[],
+    )
+    checked, accepted = build_report_composition(
+        task,
+        _point("EIA reported 10.4 GW of utility-scale additions in 2024."),
+        max_sections=4,
+        limitations=[],
+    )
+
+    assert unchecked.summary == []
+    assert rejected == ["executive summary point 1: an unsupported figure"]
+    assert "unsupported_figure" in _dispositions(unchecked)
+    # The figure the claim does state is still published on it.
+    assert accepted == []
+    assert checked.summary[0].text.startswith("EIA reported 10.4 GW")
+
+
+def test_a_declared_basis_never_launders_a_figure_the_passage_already_states() -> (
+    None
+):
+    """A basis naming an operation does not excuse restating a passage figure.
+
+    The measured smoke: drafts with basis='ratio: 19.6 GW / 10.4 GW' and
+    basis='converted 19.6 GW to MW' both published the unchecked 19.6 GW
+    forecast on the sole 10.4 GW claim, because a declared basis bypassed the
+    claim-scoped figure guard whenever the derivation's own premises happened
+    to already sit in the passage. Restating a passage figure is not
+    deriving it, whatever operation the basis names.
+    """
+    excerpt = (
+        "EIA reported that utility-scale battery storage capacity additions "
+        "reached 10.4 GW in 2024, and forecasts 19.6 GW of additions in 2025."
+    )
+    claim = _claim(
+        text=(
+            "EIA reported that utility-scale battery storage capacity "
+            "additions reached 10.4 GW in 2024."
+        ),
+        urls=[SOURCE_URL],
+    )
+    task = _grounded_task(
+        claims=[claim],
+        evidence_units={EVIDENCE_ID: _unit(excerpt=excerpt)},
+        claim_clusters={CLUSTER_ID: _cluster(claim_ids=[claim.claim_id])},
+    )
+
+    def _point(basis: str) -> ReportDraft:
+        return ReportDraft(
+            executive_summary=[
+                ReportPointDraft(
+                    text=(
+                        "EIA forecasts 19.6 GW of utility-scale additions "
+                        "in 2025."
+                    ),
+                    basis=basis,
+                    claim_ids=["C001"],
+                    source_urls=[SOURCE_URL],
+                )
+            ],
+            ranked_constraints=[],
+            sections=[],
+            uncertainty_notes=[],
+        )
+
+    for basis in ("ratio: 19.6 GW / 10.4 GW", "converted 19.6 GW to MW"):
+        composition, rejected = build_report_composition(
+            task, _point(basis), max_sections=4, limitations=[]
+        )
+        assert composition.summary == [], basis
+        assert rejected == [
+            "executive summary point 1: an unsupported figure"
+        ], basis
 
 
 def test_a_checked_derivation_passes_through_recorded_premises() -> None:
@@ -3553,9 +3676,51 @@ def test_the_canonical_packet_carries_support_counterevidence_and_dates() -> Non
 
     assert "supports:" in rendered
     assert "contradicts:" in rendered
-    assert "publication=2026-01-01" in rendered
-    assert "data_period=2024" in rendered
     assert "obligation:" in rendered
+
+
+def test_the_canonical_packet_states_each_figures_issuer_and_release() -> None:
+    """The writer is shown the attribution the claim recorded, not the page's dates.
+
+    A source's publication date is not the edition its data rest on, and the
+    writer can only state what it is shown: while the packet printed
+    ``publication=`` off the cited page, the report had nothing to put beside a
+    figure but the page it happened to be found on.
+    """
+    claim = _claim(
+        text="EIA reported 10.4 GW of additions in 2024.",
+        provenance=ClaimProvenance(
+            attributed_issuer="EIA",
+            vintage="January 2025 Preliminary Monthly Electric Generator Inventory",
+            release_date="2025-03-12",
+            data_period="2024",
+            measure_scope="utility-scale, 1 MW and above",
+        ),
+    )
+
+    packet = build_canonical_packet(
+        claims=[claim],
+        clusters={},
+        evidence={EVIDENCE_ID: _unit()},
+        targets=[_target()],
+        sources=[
+            _source(
+                temporal=SourceTemporal(
+                    publication_date="2026-01-01",
+                    data_period="2024",
+                )
+            )
+        ],
+        limit=10,
+    )
+    rendered = render_canonical_packet(packet)
+
+    assert (
+        "provenance: EIA, January 2025 Preliminary Monthly Electric Generator "
+        "Inventory, released 2025-03-12 (period 2024; scope utility-scale, "
+        "1 MW and above)" in rendered
+    )
+    assert "publication=2026-01-01" not in rendered
 
 
 def test_the_canonical_packet_lists_omitted_ids_and_continuation_batches() -> None:

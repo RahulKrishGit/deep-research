@@ -838,6 +838,280 @@ def test_a_short_shell_body_is_still_refused_its_read() -> None:
     )
 
 
+# The read the audited run recorded for the page the researcher guessed at:
+# EIA's site-wide error handler, served with status 200, admitted as a
+# complete read and scored 0.165 (read-997d6ebcf9d6d4a31f9f2af0,
+# sha 8048df6622b422312922b5eaf64dabd63eabbb9ec2247fb6d8ed18aa5ba0139f).
+# Title and body are verbatim.
+_ERROR_PAGE_URL = "https://eia.gov/todayinenergy/detail.php?id=64444"
+_ERROR_PAGE_TITLE = "EIA - Sorry! Unexpected Error"
+_ERROR_PAGE_BODY = (
+    "EIA - Sorry! Unexpected Error Home > Error Unexpected Error Sorry! An "
+    "error was encountered. This error could be due to scheduled maintenance. "
+    "Information about the error has been routed to the appropriate person. "
+    "Please try again later Site-wide Error Handler"
+)
+
+
+def _error_page_result(
+    *,
+    title: str = _ERROR_PAGE_TITLE,
+    text: str = _ERROR_PAGE_BODY,
+) -> ToolResult:
+    """The transport's payload for a served error page: 200, and no document."""
+    return ToolResult(
+        tool_name="web_scraper",
+        success=True,
+        data={
+            "url": _ERROR_PAGE_URL,
+            "requested_url": _ERROR_PAGE_URL,
+            "resolved_url": _ERROR_PAGE_URL,
+            "title": title,
+            "text": text,
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+
+def _web_step(result: ToolResult, url: str) -> ReActStep:
+    return ReActStep(
+        iteration=2,
+        thought="Read the page.",
+        action="use_tool",
+        tool_name="web_scraper",
+        tool_input={"url": url},
+        observation=ReActObservation(
+            tool_name="web_scraper", success=True, summary="read"
+        ),
+        tool_result=result,
+    )
+
+
+def test_a_served_error_page_is_refused_its_read() -> None:
+    """The error handler the audited run scored is not a source.
+
+    ``eia.gov/todayinenergy/detail.php?id=64444`` answered with EIA's own
+    site-wide error handler. The status was 200, so nothing upstream refused
+    it, and the read was stored as complete and scored. A page that names an
+    error in its own title carries no publication, so it gets no read record
+    and the Source Evaluator has nothing to score.
+    """
+    assert (
+        build_read_record_from_tool_result(
+            _error_page_result(), session_id="session-1"
+        )
+        is None
+    )
+
+
+def test_a_served_error_page_is_recorded_unusable_and_never_scored() -> None:
+    """Refusing the read is recorded: a typed reason, and no read to score."""
+    policy = _gateway_policy(candidate_urls=[_ERROR_PAGE_URL], remaining_calls=2)
+
+    policy.after_action(_web_step(_error_page_result(), _ERROR_PAGE_URL))
+
+    reasons = {
+        item.item_id: item.reason
+        for item in policy.dispositions
+        if item.stage == "read-selection"
+    }
+    # The disposition names the attempt: the URL and the reader that made it.
+    assert reasons[f"{_ERROR_PAGE_URL}#web_scraper#1"] == "unusable_error_page"
+    assert policy.reads == {}
+    assert policy.evidence == {}
+    assert policy.state.candidate_records[_ERROR_PAGE_URL].status == "unusable"
+
+
+def test_a_handler_that_pads_its_body_is_still_refused_its_read() -> None:
+    """A title that names the failure is the publisher's own label for the page.
+
+    Handler boilerplate is not a length guarantee: a site whose error page
+    carries a long navigation and footer is still an error page, and the title
+    is what says so.
+    """
+    boilerplate = "Site navigation. Today in Energy. Browse by tag. ".ljust(
+        120, "n"
+    )
+
+    assert (
+        build_read_record_from_tool_result(
+            _error_page_result(
+                title="Page Not Found",
+                text=f"{_ERROR_PAGE_URL} {boilerplate}" * 30,
+            ),
+            session_id="session-1",
+        )
+        is None
+    )
+
+
+def test_a_normal_eia_article_keeps_its_complete_read() -> None:
+    """The ordinary case is untouched: a real article is a real article."""
+    read = build_read_record_from_tool_result(
+        _eia_web_result(), session_id="session-1"
+    )
+
+    assert read is not None
+    assert read.extraction_complete is True
+
+
+def test_an_article_that_discusses_error_rates_keeps_its_complete_read() -> None:
+    """A document that merely mentions 'error' is not a served error page.
+
+    Forecast pages publish their own error rates and a portal study tallies
+    '404 Not Found' responses; both are documents. The words alone cannot
+    classify a long body, or a real source loses its read to a substring.
+    """
+    paragraph = (
+        "Forecast error rates. Our day-ahead wind forecasts carried a mean "
+        "absolute error of 4 percent in 2024, and the share of 404 Not Found "
+        "responses to our data API fell to 0.2 percent of requests. "
+    )
+    read = build_read_record_from_tool_result(
+        _error_page_result(
+            title=(
+                "Battery storage capacity averaged 70% growth over the last "
+                "three years"
+            ),
+            text=paragraph * 14,
+        ),
+        session_id="session-1",
+    )
+
+    assert read is not None
+    assert read.extraction_complete is True
+
+
+def _web_scraper_result(
+    *,
+    title: str,
+    text: str,
+    url: str = "https://newsroom.example/release",
+) -> ToolResult:
+    """A generic web_scraper payload for a page that is not a served error
+    page or shell -- title and body are what each guard case below varies."""
+    return ToolResult(
+        tool_name="web_scraper",
+        success=True,
+        data={
+            "url": url,
+            "requested_url": url,
+            "resolved_url": url,
+            "title": title,
+            "text": text,
+            "extraction_complete": True,
+        },
+        latency_ms=0,
+    )
+
+
+_INTERCONNECTION_PARAGRAPH = (
+    "Storage developers say interconnection queues now stretch past four "
+    "years in several regions, and utilities are piloting fast-track "
+    "studies to clear the backlog of battery projects still awaiting a "
+    "grid connection agreement. "
+)
+
+
+def test_a_title_that_merely_mentions_an_error_marker_keeps_a_long_read() -> None:
+    """A marker word inside a title clause is not the page's own label.
+
+    Each title below carries one of the marker phrases, but only as part of
+    a longer headline joined by a separator or embedded in prose -- never as
+    the whole title or its final clause the way a handler names itself. The
+    ~4,500-char body under each is a real document and keeps its read.
+    """
+    titles = (
+        "Access Denied: How Interconnection Queues Shut Out Storage",
+        "Page Not Found: The Missing Megawatts of Grid Storage",
+        "An Unexpected Error in Load Forecasting",
+        "FERC Rehearing Request Rejected for Storage Tariff",
+    )
+    for title in titles:
+        read = build_read_record_from_tool_result(
+            _web_scraper_result(
+                title=title,
+                text=_INTERCONNECTION_PARAGRAPH * 20,
+                url="https://policy.example/storage-queues",
+            ),
+            session_id="session-1",
+        )
+        assert read is not None, title
+        assert read.extraction_complete is True
+
+
+def test_a_short_press_release_mentioning_unexpected_error_keeps_its_read() -> None:
+    """Ordinary prose about an error is not the page's own error label.
+
+    The title carries no marker, so 'unexpected error' in the body of an
+    otherwise ordinary short press release must not classify it -- only a
+    title that also carries a marker would.
+    """
+    read = build_read_record_from_tool_result(
+        _web_scraper_result(
+            title="Ridgeline Battery Plant Restores Full Output",
+            text=(
+                "Output at the Ridgeline battery plant dipped for six "
+                "hours last week due to an unexpected error in meter "
+                "telemetry, the operator said, and full output resumed "
+                "once the fault was cleared."
+            ),
+        ),
+        session_id="session-1",
+    )
+
+    assert read is not None
+    assert read.extraction_complete is True
+
+
+def test_a_short_press_release_mentioning_request_rejected_keeps_its_read() -> None:
+    """'Request rejected' in ordinary prose is not a served error page."""
+    read = build_read_record_from_tool_result(
+        _web_scraper_result(
+            title="Commission Sets New Storage Tariff Schedule",
+            text=(
+                "The utility's expedited interconnection request rejected "
+                "by the commission last spring has since been resubmitted "
+                "with updated cost estimates, a spokesperson confirmed."
+            ),
+        ),
+        session_id="session-1",
+    )
+
+    assert read is not None
+    assert read.extraction_complete is True
+
+
+def test_a_short_access_denied_page_keeps_its_shell_label() -> None:
+    """A short WAF page titled 'Access Denied' is a shell, not an error page.
+
+    'access denied' is also plain English for one of the error markers, but
+    the title check must not relabel every automated-access shell as a
+    served error page -- the disposition reason is what a caller keys on.
+    """
+    url = "https://waf.example/blocked"
+    policy = _gateway_policy(candidate_urls=[url], remaining_calls=2)
+
+    policy.after_action(
+        _web_step(
+            _web_scraper_result(
+                title="Access Denied",
+                text="This page is not available in your region right now.",
+                url=url,
+            ),
+            url,
+        )
+    )
+
+    reasons = {
+        item.item_id: item.reason
+        for item in policy.dispositions
+        if item.stage == "read-selection"
+    }
+    assert reasons[f"{url}#web_scraper#1"] == "unusable_content_shell"
+
+
 # ---------------------------------------------------------------------------
 # the local extract gate: a bounded continuation batch that terminates
 # ---------------------------------------------------------------------------
@@ -996,6 +1270,157 @@ def test_the_second_passage_batch_is_bounded_and_terminates() -> None:
     # No third batch: the handoff is idempotent once the bound is reached.
     assert policy.complete_extraction() is None
     assert len(policy.evidence) == 8
+
+
+def test_a_bounded_packet_spends_its_budget_on_the_selected_evidence() -> None:
+    """Selected units, and the reads they cite, reach the model first.
+
+    The audited run's topic-01 packet was the researcher's 24,000-character
+    budget: several earlier reads' passages filled it, and the market
+    monitor's own passages — including the one carrying "12,314 megawatts
+    (MW) and 37,143 megawatt hours (MWh) deployed" — were dropped whole
+    behind a ``continuation_ids=packet_overflow`` marker. The extraction then
+    had nothing to mine, the monitor's selected units were recorded
+    "irrelevant", and the tracker's evidence never reached a finding.
+
+    A second, narrower failure survives even once the evidence itself is
+    shown: ``build_findings`` requires a finding's ``source_url`` and
+    ``source_title`` to match its read's own record exactly, and the read's
+    row is what states them. A packet that renders the tracker's evidence
+    without the tracker's own ``read:`` row shows the model a figure it can
+    cite but no record it can cite it *from* — every drafted finding is then
+    rejected for a source url or title that matched no admitted read. Read
+    rows therefore lead the packet beside the evidence they back, ahead of
+    candidates and every read's unselected passage dump.
+    """
+    publicpower = "https://example.test/publicpower"
+    tracker = "https://woodmac.com/press-releases/energy-storages-meteoric-rise"
+    tracker_title = (
+        "Energy Storage\u2019s Meteoric Rise Breaks Another Record | Wood Mackenzie"
+    )
+    figure = (
+        "The U.S. energy storage market set a new record in 2024 with 12.3 "
+        "gigawatts (GW) of installations across all segments. The report "
+        "shows a total of 12,314 megawatts (MW) and 37,143 megawatt hours "
+        "(MWh) deployed."
+    )
+    forecast = (
+        "Grid-scale storage installations are forecasted to reach 13.3 GW "
+        "in 2025, on the market monitor's own definition of the segment."
+    )
+    first_passages = {
+        f"chunk-{index}": f"Menu item {index} " * 12 for index in range(20)
+    }
+    first_read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=publicpower,
+        resolved_url=publicpower,
+        title="EIA Sees Addition of 62.8 GW - American Public Power Association",
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text=" ".join(first_passages.values()),
+        passages=first_passages,
+        extraction_complete=True,
+        target_ids=["topic-01"],
+    )
+    # Ten reads, each split into many ordinary-sized passages the way a real
+    # web page or PDF is chunked, stand in for the audited run's other
+    # admitted reads: cumulatively their admitted content alone crowds the
+    # researcher's real 24,000-character budget, so the tracker's read
+    # record only survives a bounded packet if read rows are rendered ahead
+    # of every read's passage dump rather than interleaved with it. A single
+    # oversized passage would not prove this: an atomic row too big to fit
+    # is skipped without spending any of the budget, so this fixture uses
+    # many small chunks that are individually admitted and add up instead.
+    filler_reads = []
+    for filler_index in range(10):
+        filler_url = f"https://example.test/filler-report-{filler_index}"
+        filler_passages = {
+            f"chunk-{chunk_index}": (
+                f"Filler {filler_index}-{chunk_index} item padding text here now "
+                * 6
+            )
+            for chunk_index in range(20)
+        }
+        filler_reads.append(
+            build_read_record(
+                session_id="session-1",
+                reader="web_scraper",
+                requested_url=filler_url,
+                resolved_url=filler_url,
+                title=f"Filler Report {filler_index}",
+                retrieved_at="2026-08-01T12:00:00+00:00",
+                text=" ".join(filler_passages.values()),
+                passages=filler_passages,
+                extraction_complete=True,
+                target_ids=["topic-01"],
+            )
+        )
+    tracker_passages = {
+        f"chunk-{index}": f"chunk {index} " * 12 for index in range(27)
+    }
+    tracker_passages["chunk-16"] = figure
+    tracker_passages["chunk-17"] = forecast
+    tracker_read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=tracker,
+        resolved_url=tracker,
+        title=tracker_title,
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text=" ".join(tracker_passages.values()),
+        passages=tracker_passages,
+        extraction_complete=True,
+        target_ids=["topic-01"],
+    )
+    figure_unit = EvidenceUnit(
+        evidence_id="ev-tracker",
+        read_id=tracker_read.read_id,
+        source_url=tracker,
+        source_title=tracker_read.title,
+        locator="chunk-16",
+        excerpt=figure,
+        target_ids=["topic-01"],
+        origin="researcher",
+    )
+    forecast_unit = EvidenceUnit(
+        evidence_id="ev-tracker-forecast",
+        read_id=tracker_read.read_id,
+        source_url=tracker,
+        source_title=tracker_read.title,
+        locator="chunk-17",
+        excerpt=forecast,
+        target_ids=["topic-01"],
+        origin="researcher",
+    )
+
+    reads = {first_read.read_id: first_read}
+    for filler_read in filler_reads:
+        reads[filler_read.read_id] = filler_read
+    reads[tracker_read.read_id] = tracker_read
+
+    packet = build_acquisition_context(
+        AcquisitionState(target_id="topic-01", remaining_calls=3),
+        reads,
+        {
+            figure_unit.evidence_id: figure_unit,
+            forecast_unit.evidence_id: forecast_unit,
+        },
+        limit=24000,
+        target_id="topic-01",
+    )
+
+    assert "12,314 megawatts (MW)" in packet
+    assert "across all segments" in packet
+    assert "13.3 GW in 2025" in packet
+    # The tracker's own read record -- what ``build_findings`` checks a
+    # finding's source_url and source_title against -- survives the bounded
+    # packet even though several other reads' full passage dumps do not.
+    assert tracker in packet
+    assert tracker_title in packet
+    assert packet.index(f"evidence_id={figure_unit.evidence_id}") < packet.index(
+        "passage read_id="
+    )
 
 
 def test_a_focused_packet_shows_the_unit_it_was_narrowed_to_first() -> None:

@@ -399,6 +399,13 @@ _DETAILED_ERROR_TYPES = frozenset(
     {"agent_tool_failed", _SUB_TOPIC_SKIP_ERROR_TYPE}
 )
 _NO_DATED_EVIDENCE = "no dated evidence was recorded"
+#: Why the ``As of`` stamp is not the figures' date. It is the newest timestamp
+#: the recorded *evidence* carries — a read's retrieval or a finding's
+#: extraction — and a reader who takes it for the data's own date would read a
+#: retrieval clock as a measurement vintage. Every figure states the edition it
+#: rests on beside it; these two words say which of the two the stamp is, and
+#: the reader's word ceiling is charged for every one of them.
+_AS_OF_MEANING = " (evidence retrieved)"
 _NO_SCOPE = "not stated"
 _CELL_EMPTY = "—"
 _BLOCK_SEPARATOR = " · "
@@ -1434,8 +1441,13 @@ def render_terminal_status(terminal: ReportTerminalState) -> list[str]:
 
 
 def _reader_header(composition: ReportComposition) -> str:
+    stamp = composition.as_of.strip()
     lines = [
-        f"**As of:** {composition.as_of.strip() or _NO_DATED_EVIDENCE}",
+        (
+            f"**As of:** {stamp}{_AS_OF_MEANING}"
+            if stamp
+            else f"**As of:** {_NO_DATED_EVIDENCE}"
+        ),
     ]
     if composition.generated_on.strip():
         lines.append(f"**Generated on:** {composition.generated_on.strip()}")
@@ -1467,18 +1479,22 @@ def _point_line(
     composition: ReportComposition,
     index: Sequence[Citation],
     *,
-    vintage: str = "",
+    revision: str = "",
     notes: Mapping[str, str] | None = None,
 ) -> str:
     """One rendered statement: its text, its notes and its markers.
 
     A bullet whose words are a claim this pass could not establish carries that
-    reading as a parenthetical, between the vintage note and the citation
-    markers. The uncertainty section does not reprint a claim the reader has
-    already met above it, so without the note the bullet would be the report's
-    only word on that claim and would say nothing about its status: a reader
-    could not tell an established finding from one no independent source
-    supported.
+    reading as a parenthetical, between the figure's own attribution and the
+    citation markers. The uncertainty section does not reprint a claim the
+    reader has already met above it, so without the note the bullet would be
+    the report's only word on that claim and would say nothing about its
+    status: a reader could not tell an established finding from one no
+    independent source supported.
+
+    The attribution comes from the claim's recorded provenance, so a figure
+    reaches the reader with the issuer, the edition and the release date it
+    was read with — never with a date picked off the page it was found on.
     """
     markers = citation_markers(
         _statement_urls_for_point(point, composition), index
@@ -1486,7 +1502,7 @@ def _point_line(
     note = (notes or {}).get(_note_key(point.text), "")
     return (
         f"{_clamped(point.text, limit=_POINT_CHARS)}"
-        f"{vintage}"
+        f"{_point_note(point, composition, revision=revision)}"
         f"{note}"
         f"{_marker_suffix(markers)}"
     )
@@ -1531,6 +1547,93 @@ def asks_for_the_latest(question: str) -> bool:
     return any(marker in folded for marker in _LATEST_MARKERS)
 
 
+def point_provenance(
+    point: ReportPoint,
+    composition: ReportComposition,
+) -> str:
+    """The attribution this point's own claims record for its figures.
+
+    Read from the claim and never from the source: a page can state several
+    figures — EIA's March 2025 release carries both the 2024 additions and the
+    2025 forecast — and a source's own publication date is not the edition its
+    data rest on. Every distinct record the point's claims carry is stated, in
+    the point's claim order, so a statement resting on two claims from two
+    editions names both rather than one of them.
+    """
+    claims = {claim.claim_id: claim for claim in composition.claims}
+    parts: list[str] = []
+    for claim_id in point.claim_ids:
+        claim = claims.get(claim_id)
+        if claim is None:
+            continue
+        text = claim.provenance.as_text()
+        if text and text not in parts:
+            parts.append(text)
+    return "; ".join(parts)
+
+
+#: How a recorded figure's own status reads to a reader. ``observed`` is a
+#: count of what happened; the rest are somebody's projection of what has not.
+_FIGURE_KINDS = {
+    "observed": "actual",
+    "projected": "forecast",
+    "forecast": "forecast",
+    "estimated": "estimate",
+}
+
+
+def _figure_kind(point: ReportPoint, composition: ReportComposition) -> str:
+    """Whether this point's figure is a projection or an observation, or ``""``.
+
+    Read from the recorded proposition, not from the sentence: "19.6 GW in
+    2025" is a forecast and "10.4 GW in 2024" counts what happened, and a
+    reader must be able to tell which of the two an answer rests on.
+    """
+    claims = {claim.claim_id: claim for claim in composition.claims}
+    kinds: list[str] = []
+    for claim_id in point.claim_ids:
+        claim = claims.get(claim_id)
+        if claim is None:
+            continue
+        cluster = composition.claim_clusters.get(claim.cluster_id or "")
+        if cluster is None:
+            continue
+        kind = _FIGURE_KINDS.get(
+            cluster.proposition.forecast_status.strip().casefold(), ""
+        )
+        if kind and kind not in kinds:
+            kinds.append(kind)
+    return ", ".join(kinds)
+
+
+def _point_note(
+    point: ReportPoint,
+    composition: ReportComposition,
+    *,
+    revision: str = "",
+) -> str:
+    """The reading a bullet carries beside its text, from the record alone.
+
+    The attribution per figure — issuer, edition, release date — the revision
+    label when two editions of one measurement stand on the page, and whether
+    the figure is a projection or an observation. Nothing is printed that the
+    recorded provenance does not carry.
+    """
+    labels = [
+        label
+        for label in (revision, _figure_kind(point, composition))
+        if label
+    ]
+    provenance = point_provenance(point, composition)
+    if not labels and not provenance:
+        return ""
+    if labels and provenance:
+        body = f"{', '.join(labels)}: {provenance}"
+    else:
+        body = provenance or ", ".join(labels)
+    return f" ({body})"
+
+
 def _vintage_key(value: str) -> tuple[int, int, int] | None:
     """A recorded date value as a sortable key, or ``None`` when undated.
 
@@ -1549,28 +1652,113 @@ def point_vintage(
     point: ReportPoint,
     composition: ReportComposition,
 ) -> tuple[tuple[int, int, int], str] | None:
-    """The newest recorded vintage behind one point, with the value it came from.
+    """The newest release one point's own claims record, and what records it.
 
-    Read from the sources the point cites: the period a source's data cover
-    when it states one, and its publication date otherwise. A point whose
-    sources carry no date has no vintage and is never given one — a date this
-    system did not record is not a date it may print.
+    Read from the claim's provenance: the date the attributed issuer released
+    the figure, and the dated edition of the data when no release date was
+    recorded. A page's own publication date and the run's retrieval clock are
+    deliberately not candidates — a date this system did not read as *this
+    figure's* edition is not a vintage it may print — and a point whose claims
+    record no date has none.
     """
-    urls = {normalize_source_url(url) for url in point.source_urls}
+    claims = {claim.claim_id: claim for claim in composition.claims}
     newest: tuple[tuple[int, int, int], str] | None = None
-    for source in composition.sources:
-        if normalize_source_url(source.url) not in urls:
+    for claim_id in point.claim_ids:
+        claim = claims.get(claim_id)
+        if claim is None:
             continue
-        temporal = source.temporal
-        for value in (temporal.data_period, temporal.publication_date):
+        provenance = claim.provenance
+        for value in (provenance.release, provenance.vintage):
             if not value:
                 continue
             key = _vintage_key(value)
             if key is None:
                 continue
             if newest is None or key > newest[0]:
-                newest = (key, value)
+                newest = (
+                    key,
+                    provenance.as_text() or value,
+                )
+            break
     return newest
+
+
+_MONTH_WORDS = frozenset(
+    {
+        "january", "february", "march", "april", "may", "june", "july",
+        "august", "september", "october", "november", "december",
+        "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept",
+        "oct", "nov", "dec",
+    }
+)
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _series_words(vintage: str) -> str:
+    """The series a vintage names, with its edition taken out.
+
+    "December 2024 Preliminary Monthly Electric Generator Inventory" and
+    "January 2025 Preliminary Monthly Electric Generator Inventory" are two
+    editions of one series, and the edition is what orders them: it is not
+    part of the identity that decides whether two figures are comparable.
+    """
+    return " ".join(
+        word
+        for word in _WORD.findall(vintage.casefold())
+        if word not in _MONTH_WORDS and not any(char.isdigit() for char in word)
+    )
+
+
+def _revision_key(
+    point: ReportPoint,
+    composition: ReportComposition,
+) -> tuple[object, ...]:
+    """The comparable identity of one dated measurement, from its own claims.
+
+    Who published it, in what series, of what measurand, over what scope, in
+    what units and years. Two figures are revisions of one measurement only
+    when all of those agree — a solar total, a cumulative stock and an
+    all-segment count are another issuer, series, measurand or scope, however
+    alike their units and years look.
+    """
+    claims = {claim.claim_id: claim for claim in composition.claims}
+    issuers: list[str] = []
+    series: list[str] = []
+    scopes: list[str] = []
+    measurands: list[str] = []
+    for claim_id in point.claim_ids:
+        claim = claims.get(claim_id)
+        if claim is None:
+            continue
+        provenance = claim.provenance
+        for target, value in (
+            (issuers, provenance.attributed_issuer),
+            (series, provenance.vintage),
+            (scopes, provenance.measure_scope),
+        ):
+            text = " ".join((value or "").casefold().split())
+            if text and text not in target:
+                target.append(text)
+        cluster = composition.claim_clusters.get(claim.cluster_id or "")
+        if cluster is None:
+            continue
+        proposition = cluster.proposition
+        measurand = " ".join(
+            (
+                proposition.change_kind,
+                proposition.quantity_noun,
+                proposition.unit,
+            )
+        ).casefold()
+        if measurand.strip() and measurand not in measurands:
+            measurands.append(measurand)
+    return (
+        tuple(issuers),
+        tuple(sorted({_series_words(value) for value in series})),
+        tuple(scopes),
+        tuple(measurands),
+        *_measure_signature(point),
+    )
 
 
 _MEASURE_UNIT = re.compile(
@@ -1617,8 +1805,8 @@ def _vintage_group(
     """
     statement = point.statement
     if statement is not None and statement.target_ids:
-        return ("target", tuple(sorted(statement.target_ids)))
-    return ("measure", *_measure_signature(point))
+        return ("target", tuple(sorted(statement.target_ids)), *_revision_key(point, composition))
+    return ("measure", *_revision_key(point, composition))
 
 
 def _ordered_summary(
@@ -1661,33 +1849,41 @@ def _ordered_summary(
 def _summary_entries(
     composition: ReportComposition,
 ) -> list[tuple[ReportPoint, str]]:
-    """Every summary point in reader order, each with the vintage note it carries.
+    """Every summary point in reader order, each with the release label it carries.
 
     Empty for a question that did not ask for recency. Otherwise every dated
-    statement whose own measurement appears at more than one vintage is told
-    its vintage — which is what lets a reader see why two figures for one year
-    differ — and the older ones are told that they are older.
+    statement whose own measurement appears at more than one release is told
+    which release it is — which is what lets a reader see why two figures for
+    one year differ — and the older ones are told that they are older. The
+    labels are ordered by release date, never by the order the writer happened
+    to put them in.
     """
     ordered = _ordered_summary(composition)
     if not asks_for_the_latest(composition.question):
         return [(point, "") for point in ordered]
-    vintages = [point_vintage(point, composition) for point in ordered]
+    releases = [point_vintage(point, composition) for point in ordered]
     groups: dict[tuple[object, ...], list[int]] = {}
     for position, point in enumerate(ordered):
-        if vintages[position] is None:
+        if releases[position] is None:
             continue
         groups.setdefault(_vintage_group(point, composition), []).append(position)
-    notes: dict[int, str] = {}
+    labels: dict[int, str] = {}
     for positions in groups.values():
         if len(positions) < 2:
             continue
-        newest = max(vintages[position][0] for position in positions)
+        newest = max(releases[position][0] for position in positions)
+        oldest = min(releases[position][0] for position in positions)
         for position in positions:
-            key, value = vintages[position]
-            label = "older vintage" if key < newest else "vintage"
-            notes[position] = f" ({label}: {value})"
+            key, _ = releases[position]
+            labels[position] = (
+                "older release"
+                if key < newest
+                else "newer release"
+                if key > oldest
+                else "release"
+            )
     return [
-        (point, notes.get(position, ""))
+        (point, labels.get(position, ""))
         for position, point in enumerate(ordered)
     ]
 
@@ -1724,9 +1920,9 @@ def _reader_summary(
             + _bullets(
                 [
                     _point_line(
-                        point, composition, index, vintage=vintage, notes=notes
+                        point, composition, index, revision=revision, notes=notes
                     )
-                    for point, vintage in established
+                    for point, revision in established
                 ]
             )
         )
@@ -1736,9 +1932,9 @@ def _reader_summary(
             + _bullets(
                 [
                     _point_line(
-                        point, composition, index, vintage=vintage, notes=notes
+                        point, composition, index, revision=revision, notes=notes
                     )
-                    for point, vintage in attributed
+                    for point, revision in attributed
                 ]
             )
         )
@@ -1748,9 +1944,9 @@ def _reader_summary(
             + _bullets(
                 [
                     _point_line(
-                        point, composition, index, vintage=vintage, notes=notes
+                        point, composition, index, revision=revision, notes=notes
                     )
-                    for point, vintage in contested
+                    for point, revision in contested
                 ]
             )
         )
@@ -1759,9 +1955,9 @@ def _reader_summary(
             _bullets(
                 [
                     _point_line(
-                        point, composition, index, vintage=vintage, notes=notes
+                        point, composition, index, revision=revision, notes=notes
                     )
-                    for point, vintage in context
+                    for point, revision in context
                 ]
             )
         )
@@ -1781,6 +1977,13 @@ def disclosed_limitations(
     cites carries that score — the audited report told its reader that sources
     behind its findings were low confidence when the flagged source supported
     no finding and appeared in no reference.
+
+    The budget reason is keyed on the route outcome rather than on the
+    iteration count: a final allowed pass that cleared the gates and satisfied
+    both reviewers is the acceptance it is, and telling its reader the critic
+    never accepted the report would be false about the one run whose verdict
+    the reader can already see in the status line. Only a ceiling the report
+    did not earn discloses it.
     """
     if cited is None:
         cited = {citation.url for citation in reader_citations(composition)}
@@ -1789,11 +1992,18 @@ def disclosed_limitations(
         for source in composition.sources
         if source.evaluation_status == "scored" and source.low_confidence
     }
+    exhausted_without_acceptance = (
+        composition.iteration >= composition.max_iterations
+        and composition.quality_status != QUALITY_STATUS_ACCEPTED
+    )
     return [
         reason
         for reason in composition.limitations
-        if reason != "low_confidence_sources"
-        or bool(low_confidence.intersection(cited))
+        if (
+            reason != "low_confidence_sources"
+            or bool(low_confidence.intersection(cited))
+        )
+        and (reason != "max_iterations_reached" or exhausted_without_acceptance)
     ]
 
 
@@ -2404,7 +2614,8 @@ def _ledger_header(composition: ReportComposition) -> str:
         (
             f"**Session:** {composition.session_id} | "
             f"**Iteration:** {composition.iteration} | "
-            f"**As of:** {composition.as_of.strip() or _NO_DATED_EVIDENCE}",
+            f"**As of:** {composition.as_of.strip() or _NO_DATED_EVIDENCE}"
+            f"{_AS_OF_MEANING if composition.as_of.strip() else ''}",
             f"**Scope:** {composition.scope.strip() or _NO_SCOPE}",
             f"**Quality status:** {composition.quality_status.strip() or _NO_SCOPE}",
             f"**Canonical counts:** {len(composition.sources)} source(s), "

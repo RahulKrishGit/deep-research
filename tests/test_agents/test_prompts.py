@@ -292,15 +292,30 @@ def _prompt_finding(
     *,
     content: str = "Logical error rates fell below break-even.",
     url: str = "https://example.org/a",
+    source_title: str = "QEC 2025",
     sub_topic: str = "Alpha",
+    attributed_issuer: str | None = None,
+    attribution_quote: str | None = None,
+    measure_scope: str | None = None,
+    vintage: str | None = None,
+    release_date: str | None = None,
+    data_period: str | None = None,
+    statement_date: str | None = None,
 ) -> Finding:
     return Finding(
         content=content,
         source_url=url,
-        source_title="QEC 2025",
+        source_title=source_title,
         extracted_at=PROMPT_EXTRACTED_AT,
         confidence=0.8,
         related_sub_topic=sub_topic,
+        attributed_issuer=attributed_issuer,
+        attribution_quote=attribution_quote,
+        measure_scope=measure_scope,
+        vintage=vintage,
+        release_date=release_date,
+        data_period=data_period,
+        statement_date=statement_date,
     )
 
 
@@ -366,6 +381,163 @@ def test_finding_digest_numbers_findings_and_names_their_sources() -> None:
 
 def test_finding_digest_handles_an_empty_list() -> None:
     assert render_finding_digest([]) == "(no findings)"
+
+
+def test_finding_digest_carries_issuer_vintage_and_release_date() -> None:
+    """The fact checker judges a figure by whose it is and how current it is.
+
+    The audited run's claim stage read "Clean Edge reported 10.3 GW" from a
+    digest that carried the host and nothing else: not that the page
+    attributes both figures to EIA, not the inventory vintage behind them, and
+    not the release date that tells the December-2024 inventory from the
+    January-2025 one. Every fact the finding recorded about the figure's
+    provenance has to reach the model that adjudicates it.
+    """
+    rendered = render_finding_digest(
+        [
+            _prompt_finding(
+                content=(
+                    "U.S. utility-scale capacity additions in 2024, by fuel "
+                    "type."
+                ),
+                url=(
+                    "https://cleanedge.com/data-dive/"
+                    "u-s-electric-utility-scale-capacity-additions-by-fuel-type-2"
+                ),
+                attributed_issuer="U.S. Energy Information Administration (EIA)",
+                attribution_quote=(
+                    "according to the U.S. Energy Information Administration "
+                    "(EIA)"
+                ),
+                measure_scope="utility-scale, projects larger than 1 MW",
+                vintage="January 2025 Preliminary Monthly Electric Generator Inventory",
+                release_date="2025-03-12",
+                data_period="2024",
+            )
+        ]
+    )
+
+    assert "attributed to U.S. Energy Information Administration (EIA)" in rendered
+    assert "as relayed by cleanedge.com" in rendered
+    assert "scope: utility-scale, projects larger than 1 MW" in rendered
+    assert (
+        "vintage: January 2025 Preliminary Monthly Electric Generator Inventory"
+        in rendered
+    )
+    assert "released: 2025-03-12" in rendered
+    assert "period: 2024" in rendered
+    assert "(https://cleanedge.com/data-dive/" in rendered
+
+
+def test_finding_digest_does_not_call_an_institutional_body_a_relay() -> None:
+    """First party is established the way evidence.py establishes it for a read.
+
+    eia.gov's own "Today in Energy" page names the agency and prints its
+    bracketed acronym, and ``.gov`` is a suffix only the agency's registry
+    controls, so printing "as relayed by eia.gov" beside the agency's own
+    name would describe a relay where there is one body. Wood Mackenzie's
+    press release sits on a plain commercial domain no registry reserves for
+    it, so it keeps the neutral clause even though it is the monitor's own
+    report — the safe direction this rule never silently drops a host it
+    cannot verify as the issuer's own.
+    """
+    rendered = render_finding_digest(
+        [
+            _prompt_finding(
+                content="The agency's own count is 10.4 GW in 2024.",
+                url="https://eia.gov/todayinenergy/detail.php?id=64705",
+                source_title=(
+                    "Today in Energy - U.S. Energy Information Administration "
+                    "(EIA)"
+                ),
+                attributed_issuer="U.S. Energy Information Administration (EIA)",
+                attribution_quote=(
+                    "according to our January 2025 preliminary electric "
+                    "generator inventory data"
+                ),
+            ),
+            _prompt_finding(
+                content="The monitor's 2024 total is 12,314 MW.",
+                url="https://woodmac.com/press-releases/energy-storages-rise",
+                source_title="Energy Storage's Meteoric Rise | Wood Mackenzie",
+                attributed_issuer="Wood Mackenzie",
+                attribution_quote=(
+                    "released today by the American Clean Power Association "
+                    "(ACP) and Wood Mackenzie"
+                ),
+                measure_scope="all segments",
+            ),
+        ]
+    )
+
+    assert (
+        "attributed to U.S. Energy Information Administration (EIA)) "
+        "(https://eia.gov/todayinenergy/detail.php?id=64705)"
+    ) in rendered
+    assert "attributed to Wood Mackenzie" in rendered
+    assert "as relayed by woodmac.com" in rendered
+    assert "as relayed by eia.gov" not in rendered
+
+
+def test_finding_digest_keeps_the_relay_clause_for_a_lookalike_host() -> None:
+    """A letters substring on the label is not a first party.
+
+    eia.news spells the agency's acronym exactly as eia.gov does, and
+    energy.gov's label is inside the agency's own name too, but neither
+    domain is the agency's: a news site's suffix carries no registry
+    guarantee, and DOE's own department site is not the sub-agency it
+    reports on. Both keep the relay clause.
+    """
+    rendered = render_finding_digest(
+        [
+            _prompt_finding(
+                content="Battery installations reached 12 GW in 2024.",
+                url="https://eia.news/batteries",
+                source_title="Energy News - Battery Storage Roundup",
+                attributed_issuer="U.S. Energy Information Administration (EIA)",
+                attribution_quote=(
+                    "according to the U.S. Energy Information Administration "
+                    "(EIA)"
+                ),
+            ),
+            _prompt_finding(
+                content="DOE announced a new loan guarantee program.",
+                url="https://www.energy.gov/articles/loan-guarantee",
+                source_title="DOE Announces New Loan Guarantee Program",
+                attributed_issuer="U.S. Energy Information Administration (EIA)",
+                attribution_quote=(
+                    "data from the U.S. Energy Information Administration (EIA)"
+                ),
+            ),
+        ]
+    )
+
+    assert "as relayed by eia.news" in rendered
+    assert "as relayed by energy.gov" in rendered
+
+
+def test_finding_digest_leaves_a_self_published_figure_unattributed() -> None:
+    """No relay claim where the page states its own figure, and no blank labels.
+
+    The digest is read as a description of evidence: printing "attributed to"
+    or "relayed by" beside a body's own figure, or an empty label where the
+    source states no date, would describe provenance the finding does not
+    carry.
+    """
+    rendered = render_finding_digest(
+        [
+            _prompt_finding(
+                url="https://eia.gov/todayinenergy/detail.php?id=64705",
+                vintage="January 2025 preliminary inventory",
+            )
+        ]
+    )
+
+    assert "attributed to" not in rendered
+    assert "relayed by" not in rendered
+    assert "vintage: January 2025 preliminary inventory" in rendered
+    assert "released:" not in rendered
+    assert "scope:" not in rendered
 
 
 def test_source_quality_marks_low_confidence_sources() -> None:
@@ -482,6 +654,25 @@ def test_new_prompt_constants_state_their_contracts() -> None:
     assert "authority" in SOURCE_SCORING_INSTRUCTION
     assert "between 0 and 1" in SOURCE_SCORING_INSTRUCTION
     assert "exact url" in SOURCE_EVALUATOR_SYSTEM_PROMPT
+
+
+def test_the_source_evaluator_keeps_a_written_date_at_its_own_precision() -> None:
+    """A dateline written in words dates the document by that day.
+
+    The instruction used to ask for "the year, for 'January 15, 2026'",
+    because the value had to appear in the quote. Every EIA page in the
+    audited run dates itself that way, so two releases of one series were
+    recorded as the same "2026" and could not be ranked — the reduction is
+    what the instruction must not ask for, and the reader now accepts the
+    full date a spelled quote states.
+    """
+    instruction = SOURCE_SCORING_INSTRUCTION
+
+    assert "return the full date the words name" in instruction
+    assert "the year, for" not in instruction
+    # The value still has to be one the quote states: precision is the
+    # document's, never the model's.
+    assert "the date the words name and no finer one" in instruction
 
 
 def test_constraint_cells_state_how_they_are_checked() -> None:

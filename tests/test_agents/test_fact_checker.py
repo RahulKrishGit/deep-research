@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import get_args
 
 import httpx
@@ -70,6 +70,8 @@ from deep_research.agents.fact_checker import (
     build_claim_drafts,
     claim_attribution,
     claim_checked_event,
+    claim_provenance_for,
+    claimed_issuer_for,
     claim_evidence_pool,
     claim_extraction_messages,
     claim_missing_read_ids,
@@ -77,9 +79,11 @@ from deep_research.agents.fact_checker import (
     claimed_domains_for,
     consumed_provenance,
     defer_beyond_budget,
+    evidenced_issuer,
     fact_check_completed_event,
     independent_domains,
     insufficient_claim,
+    issuer_matches,
     known_source_urls,
     memory_candidate_count,
     memory_recall_count,
@@ -89,6 +93,7 @@ from deep_research.agents.fact_checker import (
     provider_failure_reason,
     resolve_verdict,
     retrieved_source_urls,
+    single_source_suffices,
     supporting_publisher_count,
     union_claim_provenance,
     unshown_candidates,
@@ -131,6 +136,7 @@ from deep_research.utils.types import (
     ConflictAssessment,
     QUALITY_CONTRACT_VERSION,
     Claim,
+    ClaimProvenance,
     ClaimVerdict,
     Critique,
     CritiqueGap,
@@ -3751,7 +3757,10 @@ def test_a_relay_support_is_not_primary_attribution() -> None:
     the badge is not awarded on it.
     """
     packet = _verdict_packet(
-        _eligibility(), _independent_second(), _third_origin()
+        _eligibility(), _independent_second(), _third_origin(),
+        claim_text="EIA reported that wind capacity reached 10 GW in 2025.",
+        claimed_issuer="EIA",
+        passage_issuers={"ev-left": "Trade Press"},
     ).model_copy(
         update={"claim_source_urls": ["https://eia.test/todayinenergy"]}
     )
@@ -3809,6 +3818,199 @@ def test_a_complete_support_from_the_issuer_still_earns_the_badge() -> None:
     assert admitted_target_ids(
         claim, {TASK6_TARGET: "primary_attribution"}
     ) == [TASK6_TARGET]
+
+
+def test_a_copy_of_an_agencys_article_is_not_the_issuers_own_passage() -> None:
+    """The issuer side of the badge is an identity a read *evidences*.
+
+    ``ScoredSource.publisher_id`` is the accepted issuer when one was
+    accepted and the serving host's identity otherwise, so the two are not
+    the same evidence. The audited run's 10.4 GW passage lived on a
+    docs.house.gov printout of an EIA article: the only thing evidenced about
+    that page is who served it, and the badge it earned — "primary-source
+    attribution" — read as the agency's own account of the figure.
+    """
+    printout = _ab_source(
+        "https://docs.house.gov/printout.pdf", "docs.house.gov", "sha256:copy"
+    )
+    original = _ab_source(
+        "https://www.eia.gov/todayinenergy/detail.php?id=64705",
+        "www.eia.gov",
+        "sha256:eia",
+        issuer="U.S. Energy Information Administration",
+    )
+
+    assert evidenced_issuer(printout) == ""
+    assert evidenced_issuer(original) == "U.S. Energy Information Administration"
+    # Nobody assessed this source at all, so nothing about it is evidenced.
+    assert evidenced_issuer(None) == ""
+
+
+def test_one_issuer_keeps_its_name_across_the_claim_and_the_page() -> None:
+    """The claim's words and the anchor are compared as names of one body.
+
+    "EIA" in a claim and "U.S. Energy Information Administration" in the
+    anchor the Source Evaluator accepted are one body; two different bodies
+    never become one because both strings carry a stop word or a year — and
+    never because one spelling's words happen to appear inside the other's.
+    Word containment is the rule this replaces: it let "EIA" match "EIA
+    News", "EIA" match "EIA Energy Consulting", "Department of Energy" match
+    "Texas Department of Energy", and "Energy Information Administration"
+    match "Energy Information Administration of Ontario".
+    """
+    assert issuer_matches("EIA", "U.S. Energy Information Administration")
+    assert issuer_matches("eia", "U.S. Energy Information Administration")
+    assert issuer_matches(
+        "U.S. Energy Information Administration (EIA)",
+        "U.S. Energy Information Administration",
+    )
+    assert issuer_matches("U.S. Energy Information Administration (EIA)", "EIA")
+    assert issuer_matches(
+        "U.S. Energy Information Administration",
+        "Energy Information Administration",
+    )
+    assert issuer_matches("Example Lab", "Example Lab")
+    assert not issuer_matches(
+        "Clean Edge", "U.S. Energy Information Administration"
+    )
+    assert not issuer_matches("", "U.S. Energy Information Administration")
+    # Word containment let a partial name pass as the whole body; a shared
+    # word, alone, is never enough.
+    assert not issuer_matches("EIA", "EIA News")
+    assert not issuer_matches("EIA", "EIA Energy Consulting")
+    assert not issuer_matches(
+        "Department of Energy", "Texas Department of Energy"
+    )
+    assert not issuer_matches(
+        "Energy Information Administration",
+        "Energy Information Administration of Ontario",
+    )
+    assert not issuer_matches("Energy", "U.S. Energy Information Administration")
+    assert not issuer_matches(
+        "Administration", "U.S. Energy Information Administration"
+    )
+
+
+def test_a_shared_acronym_is_a_documented_limit_of_two_name_comparison() -> None:
+    """Decision: acronym matching cannot tell two same-initialed bodies apart.
+
+    ``issuer_matches`` only ever sees the two names in front of it. "EIA" the
+    Energy Information Administration and "EIA" the Environmental
+    Investigation Agency both look exactly like "an acronym, and the full
+    name it spells" — the very shape the "EIA" == "U.S. Energy Information
+    Administration" match relies on to hold at all. Telling the two real
+    bodies apart needs a registry of known issuers, a different mechanism
+    from comparing the two names it is given; this stays an accepted,
+    documented limit rather than a silently wrong "no".
+    """
+    assert issuer_matches("EIA", "Environmental Investigation Agency")
+
+
+def test_a_copy_of_an_agencys_article_never_earns_the_agency_primary_badge() -> (
+    None
+):
+    """No evidenced issuer on the passage, so no agency-primary badge.
+
+    The passage completely supports the claim and the model judged it a
+    primary account, which is what the badge used to need. What is missing is
+    any evidence that the page IS the claiming body's own publication — and
+    the reader must not be told it is.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin(),
+        passage_issuers={},
+    ).model_copy(
+        update={
+            "claim_target_ids": [TASK6_TARGET],
+            "claimed_issuer": "U.S. Energy Information Administration",
+        }
+    )
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="A copy of the agency's article states the figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.verdict == "insufficient_evidence"
+    assert claim.evidence_status is None
+    assert claim.insufficient_reason == "identity_unknown"
+    # And the skip does not fire on the copy: only the agency's own page can
+    # answer an obligation that needs the agency's account.
+    assert (
+        single_source_suffices(packet, {TASK6_TARGET: "primary_attribution"})
+        is False
+    )
+
+
+def test_the_issuers_evidenced_page_earns_the_badge_and_the_skip() -> None:
+    """The same packet with the issuer evidenced is the account it names."""
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    ).model_copy(
+        update={
+            "claim_target_ids": [TASK6_TARGET],
+            "claimed_issuer": "EIA",
+            "passage_issuers": {
+                "ev-left": "U.S. Energy Information Administration"
+            },
+        }
+    )
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="The agency's own page states the figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.evidence_status == "source_supported"
+    assert claim.insufficient_reason != "identity_unknown"
+    assert (
+        single_source_suffices(packet, {TASK6_TARGET: "primary_attribution"})
+        is True
+    )
+
+
+def test_another_body_s_page_is_never_the_claiming_bodies_own_account() -> None:
+    """An evidenced publisher that is not the claiming body is a relay."""
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    ).model_copy(
+        update={
+            "claimed_issuer": "U.S. Energy Information Administration",
+            "passage_issuers": {"ev-left": "Clean Edge"},
+        }
+    )
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="A trade-press page repeating the agency's figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.evidence_status is None
+    assert claim.insufficient_reason == "relay_source"
 
 
 def test_a_clipped_candidate_is_never_judged_as_no_complete_support() -> None:
@@ -3999,7 +4201,31 @@ async def _task6_run(
         return await agent.run(state)
 
 
-def _ab_read(read_id: str, url: str, title: str, text: str) -> object:
+def _issuer_note(issuer: str) -> str:
+    """What a page says about its own publisher, or ``""`` for none."""
+    return f"Published by {issuer}." if issuer else ""
+
+
+def _ab_body(text: str, *, issuer: str = "") -> str:
+    """The body of one fixture read: the passage, and its identity note.
+
+    The Source Evaluator only accepts an issuer a read actually evidences, and
+    every source is re-resolved against its read, so a fixture that wants an
+    evidenced issuing body has to state it in the body — and any reread of that
+    body has to carry the same text, because the read id is minted from it.
+    """
+    note = _issuer_note(issuer)
+    return f"{text}\n\n{note}" if note else text
+
+
+def _ab_read(
+    read_id: str, url: str, title: str, text: str, *, issuer: str = ""
+) -> object:
+    """One read, with an optional identity note beside the passage."""
+    note = _issuer_note(issuer)
+    passages = {"chunk-0": text}
+    if note:
+        passages["chunk-1"] = note
     return build_read_record(
         session_id="session-1",
         reader="web_scraper",
@@ -4007,8 +4233,8 @@ def _ab_read(read_id: str, url: str, title: str, text: str) -> object:
         resolved_url=url,
         title=title,
         retrieved_at=CHECK_EXTRACTED_AT,
-        text=text,
-        passages={"chunk-0": text},
+        text=_ab_body(text, issuer=issuer),
+        passages=passages,
         extraction_complete=True,
         # The production adapter stamps the target a read was made for, which
         # is the link the packet's handoff audit resolves.
@@ -4016,7 +4242,14 @@ def _ab_read(read_id: str, url: str, title: str, text: str) -> object:
     )
 
 
-def _ab_source(url: str, host: str, work: str, *, scored: bool = True) -> ScoredSource:
+def _ab_source(
+    url: str,
+    host: str,
+    work: str,
+    *,
+    scored: bool = True,
+    issuer: str = "",
+) -> ScoredSource:
     return ScoredSource(
         url=url,
         title="Wind capacity audit",
@@ -4033,12 +4266,20 @@ def _ab_source(url: str, host: str, work: str, *, scored: bool = True) -> Scored
         source_role="independent_research" if scored else "unknown",
         self_interest="none",
         evaluation_status="scored" if scored else "unscored_missing",
+        identity_anchors={"issuer": issuer} if issuer else {},
     )
 
 
-def _ab_state(*, score_b: bool = True, units_for_b: bool = True) -> ResearchState:
+def _ab_state(
+    *,
+    score_b: bool = True,
+    units_for_b: bool = True,
+    issuer_a: str = "Lab A",
+) -> ResearchState:
     """Upstream A+B, read by the Researcher, targeted at one claim."""
-    read_a = _ab_read("read-a", A_URL, "Lab A report", A_TEXT)
+    read_a = _ab_read(
+        "read-a", A_URL, "Lab A report", A_TEXT, issuer=issuer_a
+    )
     read_b = _ab_read("read-b", B_URL, "Lab B audit", B_TEXT)
     units = [
         build_evidence_unit(
@@ -4069,7 +4310,10 @@ def _ab_state(*, score_b: bool = True, units_for_b: bool = True) -> ResearchStat
             _check_finding(B_URL, content=B_TEXT, sub_topic="Alpha"),
         ],
         evaluated_sources=[
-            _ab_source(A_URL, "lab-a.test", f"sha256:{read_a.content_sha256}"),
+            _ab_source(
+                A_URL, "lab-a.test", f"sha256:{read_a.content_sha256}",
+                issuer=issuer_a,
+            ),
             _ab_source(
                 B_URL, "lab-b.test", f"sha256:{read_b.content_sha256}", scored=score_b
             ),
@@ -4276,6 +4520,7 @@ def test_a_memory_only_pair_never_becomes_a_packet() -> None:
 
     assert claim_evidence_pool(state, draft, target_ids=[TASK6_TARGET]) == []
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = {}
     agent._run_sources = list(state.evaluated_sources)
@@ -4294,6 +4539,7 @@ def test_a_sufficient_packet_is_recognised_before_any_model_call() -> None:
     state = _ab_state()
     draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
@@ -4340,6 +4586,7 @@ def test_a_boundary_loss_names_the_missing_read_and_never_verifies() -> None:
     )
 
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
@@ -4648,6 +4895,10 @@ def _pair_packet(
         claim_text=TASK6_CLAIM,
         claim_source_urls=["https://one.test/a"],
         claim_cluster_id="cluster-1",
+        # The left source is evidenced to be the publisher its eligibility
+        # names, which is the shape these pairs are about; this claim names no
+        # body of its own.
+        passage_issuers={"ev-left": "publisher-one"},
         units=[left_unit, right_unit],
         eligibility={
             left_unit.evidence_id: left,
@@ -5228,6 +5479,7 @@ def test_the_manifest_ids_are_joinable_evidence_ids() -> None:
         None,
     )
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._session_id = "session-1"
     agent._evidence_chars = 4000
     agent._passages_per_read = 4
@@ -5263,6 +5515,7 @@ def test_a_second_pass_keeps_its_manifests_distinct_from_the_first() -> None:
     """
     packet = _pair_packet(_eligibility(), _independent_second())
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._session_id = "session-1"
     agent._evidence_chars = 4000
     agent._passages_per_read = 4
@@ -5317,6 +5570,7 @@ def test_the_persisted_manifest_is_bounded_and_summarizes_its_overflow() -> None
         fingerprint="fingerprint-1",
     )
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._session_id = "session-1"
     agent._evidence_chars = 4000
     agent._passages_per_read = 4
@@ -5356,6 +5610,7 @@ def test_a_handoff_loss_is_named_from_the_audit_not_the_test() -> None:
     )
     draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
@@ -5486,6 +5741,7 @@ def test_memory_candidates_are_counted_apart_from_read_support() -> None:
     # The packet's independent-publisher count is derived from validated read
     # support alone, and memory can never raise it.
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
@@ -5755,6 +6011,7 @@ def test_the_manifest_refuses_are_visible_and_joinable() -> None:
     assert claim.refused_evidence_ids == ["ev-invented"]
     assert set(claim.evidence_selection) == {"ev-left", "ev-right"}
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._session_id = "session-1"
     agent._evidence_chars = 4000
     agent._passages_per_read = 4
@@ -5820,6 +6077,7 @@ def test_a_mirror_pair_is_joined_by_id_not_by_excerpt() -> None:
         None,
     )
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._session_id = "session-1"
     agent._evidence_chars = 4000
     agent._passages_per_read = 4
@@ -5839,6 +6097,7 @@ def test_the_packet_path_carries_and_gates_the_claims_obligations() -> None:
     state = _ab_state()
     draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
@@ -5906,6 +6165,7 @@ async def test_a_handoff_loss_is_dropped_once_the_retrieval_repairs_it(
     )
     draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
@@ -5972,6 +6232,7 @@ async def test_a_handoff_loss_is_dropped_once_the_retrieval_repairs_it(
 def _reread_agent(state: ResearchState) -> FactCheckerAgent:
     """A Fact Checker mid-pass over reads the run already holds."""
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
@@ -6052,7 +6313,7 @@ async def test_a_reread_of_a_recorded_body_keeps_the_recorded_description() -> N
         state,
         agent,
         {
-            "text": A_TEXT,
+            "text": _ab_body(A_TEXT, issuer="Lab A"),
             "requested_url": reread_url,
             "resolved_url": reread_url,
             "title": "Lab A report",
@@ -6093,7 +6354,7 @@ async def test_a_reread_may_not_relabel_a_recorded_passage() -> None:
         state,
         agent,
         {
-            "text": A_TEXT,
+            "text": _ab_body(A_TEXT, issuer="Lab A"),
             "requested_url": A_URL,
             "resolved_url": A_URL,
             "title": "",
@@ -6892,8 +7153,18 @@ def _verdict_packet(
     *eligibilities: EvidenceEligibility,
     texts: tuple[str, ...] = (SUPPORT_TEXT, AUDIT_TEXT, REFUTATION_TEXT),
     omitted: tuple[object, ...] = (),
+    passage_issuers: Mapping[str, str] | None = None,
+    claim_text: str = TASK6_CLAIM,
+    claimed_issuer: str = "",
 ) -> AdjudicationPacket:
-    """A packet of named candidates with the identity each one carries."""
+    """A packet of named candidates with the identity each one carries.
+
+    ``passage_issuers`` is what each candidate's source is *evidenced* to be.
+    The default is the left candidate's assessed publisher, which is the shape
+    the badge tests are about: the supporting passage is an evidenced account
+    of the publisher it belongs to, and this claim names no other body. A test
+    about a copy, a relay, or a claim that names its issuer passes its own map.
+    """
     names = ("left", "right", "third")
     units = [
         _pair_unit(name, f"https://{name}.test/{name}", text)
@@ -6901,9 +7172,15 @@ def _verdict_packet(
     ]
     return AdjudicationPacket(
         claim_id="claim-1",
-        claim_text=TASK6_CLAIM,
+        claim_text=claim_text,
         claim_source_urls=["https://left.test/left"],
         claim_cluster_id="cluster-1",
+        claimed_issuer=claimed_issuer,
+        passage_issuers=(
+            {"ev-left": "publisher-one"}
+            if passage_issuers is None
+            else dict(passage_issuers)
+        ),
         units=units,
         eligibility={
             unit.evidence_id: eligibility
@@ -8140,6 +8417,7 @@ def test_the_request_carries_the_passages_that_bear_on_the_claim() -> None:
 def _packet_agent(state: ResearchState) -> FactCheckerAgent:
     """A checker with exactly what ``_packet_for`` reads."""
     agent = object.__new__(FactCheckerAgent)
+    agent._pending_provenance = {}
     agent._evidence_chars = FACT_CHECK_EVIDENCE_CHARS
     agent._run_reads = dict(state.read_records)
     agent._run_sources = list(state.evaluated_sources)
@@ -8614,6 +8892,184 @@ def test_a_reader_specific_failure_does_not_refuse_the_other_reader() -> None:
     assert retry.allowed is False
     assert "already refused" in retry.reason
 
+
+def _provenance_finding(
+    url: str,
+    *,
+    content: str,
+    issuer: str = "",
+    vintage: str = "",
+    release: str = "",
+    period: str = "",
+    scope: str = "",
+) -> Finding:
+    """One finding with the provenance its page recorded for its figure."""
+    return Finding(
+        content=content,
+        source_url=url,
+        source_title="Battery storage capacity additions",
+        extracted_at=CHECK_EXTRACTED_AT,
+        confidence=0.8,
+        related_sub_topic="Alpha",
+        target_ids=[TASK6_TARGET],
+        attributed_issuer=issuer or None,
+        measure_scope=scope or None,
+        vintage=vintage or None,
+        release_date=release or None,
+        statement_date=release or None,
+        data_period=period or None,
+    )
+
+
+EIA_2024_FINDING = "Utility-scale battery storage capacity additions reached 10.4 GW in 2024."
+
+
+def test_a_claim_records_the_provenance_of_the_finding_it_states() -> None:
+    """One page, two figures, two editions: provenance follows the figure.
+
+    EIA's March 2025 release states the 2024 additions and the 2025 forecast,
+    and each has its own period. Reading the first finding for the URL gave
+    the forecast claim the 2024 edition and release date, which is exactly the
+    mislabelling this record exists to stop.
+    """
+    findings = [
+        _provenance_finding(
+            A_URL,
+            content=EIA_2024_FINDING,
+            issuer="U.S. Energy Information Administration",
+            vintage="January 2025 Preliminary Monthly Electric Generator Inventory",
+            release="2025-03-12",
+            period="2024",
+            scope="utility-scale, 1 MW and above",
+        ),
+        _provenance_finding(
+            A_URL,
+            content=(
+                "EIA forecasts utility-scale battery storage additions of "
+                "19.6 GW in 2025."
+            ),
+            issuer="U.S. Energy Information Administration",
+            vintage="January 2025 Preliminary Monthly Electric Generator Inventory",
+            release="2025-03-12",
+            period="2025",
+            scope="utility-scale, 1 MW and above",
+        ),
+    ]
+
+    counted = claim_provenance_for(
+        ClaimDraft(text="EIA reported 10.4 GW added in 2024.", source_urls=[A_URL]),
+        findings=findings,
+    )
+    forecast = claim_provenance_for(
+        ClaimDraft(
+            text="EIA forecasts 19.6 GW of additions in 2025.",
+            source_urls=[A_URL],
+        ),
+        findings=findings,
+    )
+
+    assert counted.data_period == "2024"
+    assert counted.attributed_issuer == "U.S. Energy Information Administration"
+    assert counted.vintage == (
+        "January 2025 Preliminary Monthly Electric Generator Inventory"
+    )
+    assert counted.release_date == "2025-03-12"
+    assert counted.measure_scope == "utility-scale, 1 MW and above"
+    assert forecast.data_period == "2025"
+
+
+def test_an_ambiguous_finding_records_no_provenance() -> None:
+    """Two findings carrying one figure are not a coin toss.
+
+    Both state 10.4 GW for 2024 — one from each of two vintages — and nothing
+    in the draft says which measurement it is. Recording either one's edition
+    and release date would print a date beside a figure it may not describe.
+    """
+    findings = [
+        _provenance_finding(
+            A_URL,
+            content=EIA_2024_FINDING,
+            issuer="EIA",
+            vintage="January 2025 inventory",
+            release="2025-03-12",
+            period="2024",
+        ),
+        _provenance_finding(
+            A_URL,
+            content="Grid-scale battery storage additions reached 10.4 GW in 2024.",
+            issuer="EIA",
+            vintage="February 2025 inventory",
+            release="2025-04-15",
+            period="2024",
+        ),
+    ]
+
+    recorded = claim_provenance_for(
+        ClaimDraft(text="EIA reported 10.4 GW added in 2024.", source_urls=[A_URL]),
+        findings=findings,
+    )
+
+    assert recorded.recorded is False
+
+
+def test_the_packet_carries_the_claims_provenance_into_the_verdict() -> None:
+    """What the extraction read is what the verdict records.
+
+    The claim is the record every later stage reads, so the issuer, the
+    edition and the release date have to survive adjudication — otherwise the
+    composition has nothing to state beside the figure.
+    """
+    provenance = ClaimProvenance(
+        attributed_issuer="U.S. Energy Information Administration",
+        vintage="January 2025 Preliminary Monthly Electric Generator Inventory",
+        release_date="2025-03-12",
+        data_period="2024",
+        measure_scope="utility-scale, 1 MW and above",
+    )
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin()
+    ).model_copy(update={"claim_provenance": provenance})
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[_row("ev-left", "supports")],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale="The agency's own page states the figure.",
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.provenance == provenance
+
+
+def test_the_claimed_issuer_is_read_from_the_record_then_the_prose() -> None:
+    """The body the claim attributes to is read from the record, then the prose.
+
+    The recorded attribution is what the page itself said about the figure;
+    the claim's own wording is the fallback for a claim extracted before that
+    record existed. A claim that names nobody stays unnamed.
+    """
+    recorded = ClaimProvenance(
+        attributed_issuer="U.S. Energy Information Administration"
+    )
+
+    assert (
+        claimed_issuer_for(
+            "Utility-scale additions reached 10.4 GW in 2024.",
+            provenance=recorded,
+        )
+        == "U.S. Energy Information Administration"
+    )
+    assert (
+        claimed_issuer_for("According to Example Lab, capacity fell.") == "Example Lab"
+    )
+    assert claimed_issuer_for("Capacity reached 10 GW in 2025.") == ""
+
+
 def test_a_document_page_longer_than_the_request_can_still_support() -> None:
     """No single passage may starve the request or lose complete support.
 
@@ -8706,6 +9162,11 @@ def test_a_document_page_longer_than_the_request_can_still_support() -> None:
     assert plan.partially_shown == []
     assert len(plan.rendered) > 1
 
+    # The form's instructions are the agency's own document, which is what the
+    # Source Evaluator's accepted issuer anchor records about that read.
+    bounded = bounded.model_copy(
+        update={"passage_issuers": {carrying[0]: "EIA"}}
+    )
     claim = validate_adjudication(
         ClaimVerdictDraft(
             verdict="insufficient_evidence",
@@ -8749,6 +9210,43 @@ def test_an_unknown_dependence_is_not_called_a_relay() -> None:
     assert claim.evidence_status is None
     assert "relay_source" not in claim.audit_flags
     assert claim.insufficient_reason
+
+
+def test_a_relay_with_no_evidenced_issuer_is_still_relay_source() -> None:
+    """The adjudicator's own dependence judgement is what names a relay.
+
+    The realistic shape for a trade-press relay: the Source Evaluator
+    accepted no issuer anchor for the passage at all (``passage_issuers``
+    empty), and the adjudicator judged the supporting passage ``derivative``.
+    That alone is enough to say it is a relay — the reason must not fall
+    back to ``identity_unknown`` just because nobody named who it repeats.
+    """
+    packet = _verdict_packet(
+        _eligibility(), _independent_second(), _third_origin(),
+        passage_issuers={},
+    )
+
+    claim = validate_adjudication(
+        ClaimVerdictDraft(
+            verdict="insufficient_evidence",
+            confidence=0.6,
+            assessments=[
+                _row("ev-left", "supports", dependence="derivative")
+            ],
+            support_ids=["ev-left"],
+            contradiction_ids=[],
+            rationale=(
+                "A trade-press page repeating the agency's figure, with no "
+                "accepted issuer anchor of its own."
+            ),
+        ),
+        packet,
+        None,
+    )
+
+    assert claim.evidence_status is None
+    assert claim.insufficient_reason == "relay_source"
+    assert "relay_source" in claim.audit_flags
 
 
 def test_a_passage_that_states_the_claims_own_figure_is_offered_first() -> None:
@@ -9158,9 +9656,42 @@ def test_a_single_source_obligation_needs_no_retrieval_once_the_issuer_is_carrie
     assert primary_needed is False
 
 
-def _primary_attribution_state() -> ResearchState:
-    """The run's own read of the cited page, under a single-source rule."""
-    base = _ab_state(units_for_b=False)
+def test_a_copy_of_the_issuers_page_does_not_skip_retrieval() -> None:
+    """The skip needs the issuer's own page, not a copy of it.
+
+    ``_packet_for`` skipped the loop on the strength of the claim's own cited
+    host, so a House.gov printout of an EIA article answered an obligation
+    that needs EIA's account — and EIA's own page was never fetched. With the
+    source's issuing body unestablished, retrieval stays the claim's only
+    path.
+    """
+    state = _primary_attribution_state(issuer="")
+    draft = ClaimDraft(text=TASK6_CLAIM, source_urls=[A_URL])
+    agent = _packet_agent(state)
+
+    packet, needed = FactCheckerAgent._packet_for(
+        agent,
+        state,
+        draft,
+        target_ids=[TASK6_TARGET],
+        policies={TASK6_TARGET: "primary_attribution"},
+    )
+
+    assert packet is not None
+    assert needed is True
+    assert (
+        single_source_suffices(packet, {TASK6_TARGET: "primary_attribution"})
+        is False
+    )
+
+
+def _primary_attribution_state(issuer: str = "Lab A") -> ResearchState:
+    """The run's own read of the cited page, under a single-source rule.
+
+    ``issuer`` is the body the Source Evaluator accepted for that read; the
+    empty string is the copy whose issuing body nothing established.
+    """
+    base = _ab_state(units_for_b=False, issuer_a=issuer)
     (topic,) = base.sub_topics
     (target,) = topic.evidence_targets
     return base.model_copy(

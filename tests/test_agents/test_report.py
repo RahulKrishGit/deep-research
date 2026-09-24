@@ -73,6 +73,7 @@ from deep_research.agents.report import (
 from deep_research.agents.researcher import sub_topic_skipped_error
 from deep_research.utils.types import (
     EVIDENCE_BADGE_LABELS,
+    ClaimProvenance,
     QUALITY_CONTRACT_VERSION,
     REVIEW_DIMENSIONS,
     AtomicProposition,
@@ -168,6 +169,8 @@ def _claim(
     insufficient_reason: str | None = None,
     badge: str | None = None,
     target_ids: list[str] | None = None,
+    provenance: ClaimProvenance | None = None,
+    cluster_id: str | None = None,
 ) -> Claim:
     """One checked claim. ``badge`` overrides the verdict-derived badge."""
     return Claim(
@@ -201,6 +204,8 @@ def _claim(
         consumed_finding_fingerprints=finding_fingerprints or [],
         consumed_coverage_ids=coverage_ids or [],
         target_ids=target_ids or [],
+        provenance=provenance or ClaimProvenance(),
+        cluster_id=cluster_id,
     )
 
 
@@ -1692,11 +1697,12 @@ def _cluster(
     verdicts: list[str] | None = None,
     target_ids: list[str] | None = None,
     verdict_evidence: dict[str, list[str]] | None = None,
+    proposition: AtomicProposition | None = None,
 ) -> ClaimCluster:
     claim = _claim()
     return ClaimCluster(
         cluster_id=cluster_id,
-        proposition=AtomicProposition(text=claim.text),
+        proposition=proposition or AtomicProposition(text=claim.text),
         evidence_ids=evidence_ids if evidence_ids is not None else ["e1"],
         member_claim_ids=claim_ids if claim_ids is not None else [claim.claim_id],
         target_ids=target_ids if target_ids is not None else ["t1"],
@@ -2129,6 +2135,52 @@ def test_unanswered_critical_targets_are_named_before_a_recorded_reason() -> Non
     assert "9 of 9 critical targets have no answer" in summary
 
 
+def test_an_accepted_report_at_the_ceiling_never_says_the_budget_blocked_it() -> (
+    None
+):
+    """The budget ending is not a defect in a report both reviewers accepted.
+
+    A clean final allowed pass now finalizes as the acceptance it is, so
+    ``max_iterations_reached`` is no longer true of every ceiling run: the
+    disclosure is keyed on the route outcome — accepted at the ceiling is not
+    "exhausted" — and not on the iteration count.
+    """
+    composition = _composition(
+        iteration=1,
+        max_iterations=1,
+        quality_status="accepted",
+        terminal=_terminal(
+            status="completed",
+            critic_status="scored",
+            review_status="scored",
+            required_targets=9,
+            answered_targets=9,
+            critical_targets=9,
+            answered_critical_targets=9,
+            gate_failures=[],
+        ),
+        limitations=["max_iterations_reached"],
+    )
+    reader = render_reader_report(composition)
+
+    assert LIMITATION_REASONS["max_iterations_reached"] not in reader
+    assert "refinement budget was exhausted" not in reader
+
+
+def test_an_exhausted_report_at_the_ceiling_still_discloses_the_budget() -> None:
+    """The same ceiling without acceptance is still the exhaustion it is."""
+    composition = _composition(
+        iteration=1,
+        max_iterations=1,
+        quality_status="partial",
+        terminal=_terminal(status="max_iterations", gate_failures=[]),
+        limitations=["max_iterations_reached"],
+    )
+    reader = render_reader_report(composition)
+
+    assert LIMITATION_REASONS["max_iterations_reached"] in reader
+
+
 def test_low_confidence_is_scoped_to_the_sources_the_report_cites() -> None:
     """A source behind no finding is not a limitation of *this* report.
 
@@ -2184,40 +2236,71 @@ def _vintage(
     )
 
 
-def test_the_latest_dated_statement_leads_and_older_ones_say_they_are_older() -> (
-    None
-):
-    """The audited report led with an 18.2 GW forecast its own citations
-    already superseded, and named no vintage anywhere.
+DECEMBER_VINTAGE = "December 2024 Preliminary Monthly Electric Generator Inventory"
+JANUARY_VINTAGE = "January 2025 Preliminary Monthly Electric Generator Inventory"
 
-    When the question asks for the latest and the claims carry dated vintages,
-    the newest recorded vintage leads and every older one is named as older —
-    which is also what lets a reader see why two figures for one year differ.
+
+def _eia_provenance(
+    *,
+    issuer: str = "EIA",
+    vintage: str = JANUARY_VINTAGE,
+    released: str = "2025-03-12",
+    period: str = "2024",
+    scope: str = "utility-scale, 1 MW and above",
+) -> ClaimProvenance:
+    return ClaimProvenance(
+        attributed_issuer=issuer,
+        measure_scope=scope,
+        vintage=vintage,
+        statement_date=released,
+        release_date=released,
+        data_period=period,
+    )
+
+
+def test_two_releases_of_one_series_are_shown_as_older_and_newer() -> None:
+    """The audited report led with an 18.2 GW forecast its own citations
+    already superseded, and named no release anywhere.
+
+    Two EIA inventory releases state the same two measurements — the 2024
+    additions and the 2025 projection — so each measurement has an older and a
+    newer release, the newest leads inside its own measurement, and every
+    figure is told which release it came from.
     """
-    older_url = "https://eia.gov/december-inventory"
-    newer_url = "https://eia.gov/january-inventory"
-    older_claim = _claim(
-        text="EIA forecast 18.2 GW for 2025.", urls=[older_url]
+    december = _eia_provenance(vintage=DECEMBER_VINTAGE, released="2025-02-24")
+    january = _eia_provenance()
+    counted_old = _claim(
+        text="EIA reported 10.3 GW of additions in 2024.",
+        provenance=december,
+        target_ids=["t1"],
     )
-    newer_claim = _claim(
-        text="EIA forecast 19.6 GW for 2025.", urls=[newer_url]
+    counted_new = _claim(
+        text="EIA reported 10.4 GW of additions in 2024.",
+        provenance=january,
+        target_ids=["t1"],
     )
-    composition = _composition(
+    forecast_old = _claim(
+        text="EIA projected 18.2 GW of additions in 2025.",
+        provenance=december,
+        target_ids=["t2"],
+    )
+    forecast_new = _claim(
+        text="EIA projected 19.6 GW of additions in 2025.",
+        provenance=january,
+        target_ids=["t2"],
+    )
+    composition = _evidence_composition(
         question="What do the latest forecasts project for 2025?",
-        claims=[older_claim, newer_claim],
-        sources=[_vintage(older_url, data_period="2024-12"),
-                 _vintage(newer_url, data_period="2025-01")],
+        claims=[counted_old, counted_new, forecast_old, forecast_new],
         summary=[
-            _point(
-                text="EIA forecast 18.2 GW for 2025.",
-                claim_ids=[older_claim.claim_id],
-                source_urls=[older_url],
-            ),
-            _point(
-                text="EIA forecast 19.6 GW for 2025.",
-                claim_ids=[newer_claim.claim_id],
-                source_urls=[newer_url],
-            ),
+            _stated(
+                claim.text,
+                claim_ids=[claim.claim_id],
+                statement=_statement(
+                    claim.text, target_ids=list(claim.target_ids)
+                ),
+            )
+            for claim in (counted_old, forecast_old, counted_new, forecast_new)
         ],
         sections=[],
     )
@@ -2225,9 +2308,12 @@ def test_the_latest_dated_statement_leads_and_older_ones_say_they_are_older() ->
         render_reader_report(composition), "## Executive summary"
     )
 
+    assert summary.index("10.4 GW") < summary.index("10.3 GW")
     assert summary.index("19.6 GW") < summary.index("18.2 GW")
-    assert "(vintage: 2025-01)" in summary
-    assert "(older vintage: 2024-12)" in summary
+    assert summary.count("older release") == 2
+    assert summary.count("newer release") == 2
+    assert f"(older release: EIA, {DECEMBER_VINTAGE}, released 2025-02-24)" in summary
+    assert f"(newer release: EIA, {JANUARY_VINTAGE}, released 2025-03-12)" in summary
 
 
 def test_a_question_that_does_not_ask_for_the_latest_keeps_its_order() -> None:
@@ -2263,39 +2349,37 @@ def test_a_question_that_does_not_ask_for_the_latest_keeps_its_order() -> None:
     assert "(vintage" not in summary
 
 
-def test_a_2024_actual_is_not_labelled_an_older_vintage_of_a_2025_forecast() -> (
+def test_a_2024_count_is_not_labelled_an_older_release_of_a_2025_forecast() -> (
     None
 ):
-    """Different quantities are not two vintages of one measurement.
+    """Different quantities are not two releases of one measurement.
 
     Any question containing "latest" compared every dated summary point with
-    the newest vintage in the whole summary, so a 2024 actual was moved below a
-    2025 forecast and told it was the older vintage of it.
+    the newest release in the whole summary, so a 2024 actual was moved below a
+    2025 forecast and told it was the older release of it. Both are the same
+    series here, and only the measurement they state keeps them apart.
     """
-    actual_url = "https://eia.gov/january-inventory"
-    forecast_url = "https://woodmac.example/2025-outlook"
-    actual = _claim(text="EIA reported 10.4 GW added in 2024.", urls=[actual_url])
-    forecast = _claim(
-        text="Wood Mackenzie forecast 18.9 GW installed in 2025.",
-        urls=[forecast_url],
+    actual = _claim(
+        text="EIA reported 10.4 GW added in 2024.",
+        provenance=_eia_provenance(period="2024"),
     )
-    composition = _composition(
+    forecast = _claim(
+        text="EIA forecast 19.6 GW added in 2025.",
+        provenance=_eia_provenance(period="2025"),
+    )
+    composition = _evidence_composition(
         question="What do the latest forecasts project for 2025?",
         claims=[actual, forecast],
-        sources=[
-            _vintage(actual_url, data_period="2024-12"),
-            _vintage(forecast_url, data_period="2025-06"),
-        ],
         summary=[
             _point(
-                text="EIA reported 10.4 GW added in 2024.",
+                text=actual.text,
                 claim_ids=[actual.claim_id],
-                source_urls=[actual_url],
+                source_urls=[SOURCE_URL],
             ),
             _point(
-                text="Wood Mackenzie forecast 18.9 GW installed in 2025.",
+                text=forecast.text,
                 claim_ids=[forecast.claim_id],
-                source_urls=[forecast_url],
+                source_urls=[SOURCE_URL],
             ),
         ],
         sections=[],
@@ -2304,37 +2388,41 @@ def test_a_2024_actual_is_not_labelled_an_older_vintage_of_a_2025_forecast() -> 
         render_reader_report(composition), "## Executive summary"
     )
 
-    assert summary.index("10.4 GW") < summary.index("18.9 GW")
-    assert "(vintage" not in summary
+    assert summary.index("10.4 GW") < summary.index("19.6 GW")
+    assert "older release" not in summary
+    assert "newer release" not in summary
+    assert "(EIA, January 2025" in summary
 
 
-def test_two_restatements_of_one_measure_are_compared_by_their_vintages() -> None:
-    """The same unit over the same year is one measurement, told twice.
+def test_two_restatements_of_one_measure_are_compared_by_their_releases() -> None:
+    """The same issuer, series, scope and measurand is one measurement, twice.
 
-    This is the 10.4-versus-10.3 case: two EIA inventory vintages of the 2024
-    addition, which the reader can only reconcile if both vintages are named.
+    Read from the claims' own provenance rather than from the sources' dates:
+    a page's publication date is not the edition its data rest on, and this is
+    the one place the two are told apart.
     """
-    newer_url = "https://eia.gov/january-inventory"
-    older_url = "https://eia.gov/december-inventory"
-    newer = _claim(text="EIA reported 10.4 GW added in 2024.", urls=[newer_url])
-    older = _claim(text="EIA reported 10.3 GW added in 2024.", urls=[older_url])
-    composition = _composition(
+    newer = _claim(
+        text="EIA reported 10.4 GW added in 2024.", provenance=_eia_provenance()
+    )
+    older = _claim(
+        text="EIA reported 10.3 GW added in 2024.",
+        provenance=_eia_provenance(
+            vintage=DECEMBER_VINTAGE, released="2025-02-24"
+        ),
+    )
+    composition = _evidence_composition(
         question="How much was added in 2024, and what is the latest?",
         claims=[newer, older],
-        sources=[
-            _vintage(newer_url, data_period="2025-01"),
-            _vintage(older_url, data_period="2024-12"),
-        ],
         summary=[
-            _point(
-                text="EIA reported 10.3 GW added in 2024.",
+            _stated(
+                older.text,
                 claim_ids=[older.claim_id],
-                source_urls=[older_url],
+                statement=_statement(older.text, target_ids=[]),
             ),
-            _point(
-                text="EIA reported 10.4 GW added in 2024.",
+            _stated(
+                newer.text,
                 claim_ids=[newer.claim_id],
-                source_urls=[newer_url],
+                statement=_statement(newer.text, target_ids=[]),
             ),
         ],
         sections=[],
@@ -2344,8 +2432,307 @@ def test_two_restatements_of_one_measure_are_compared_by_their_vintages() -> Non
     )
 
     assert summary.index("10.4 GW") < summary.index("10.3 GW")
-    assert "(vintage: 2025-01)" in summary
-    assert "(older vintage: 2024-12)" in summary
+    assert f"(newer release: EIA, {JANUARY_VINTAGE}, released 2025-03-12)" in summary
+    assert f"(older release: EIA, {DECEMBER_VINTAGE}, released 2025-02-24)" in summary
+
+
+def test_a_composition_states_each_figures_issuer_edition_and_release_date() -> (
+    None
+):
+    """A figure is not just a number: the reader is told whose it is.
+
+    The claim records the body the page attributed the figure to, the edition
+    the data rest on, and the date that body released it, and the reader meets
+    all three beside the figure.
+    """
+    claim = _claim(
+        text="EIA reported 10.4 GW of additions in 2024.",
+        provenance=_eia_provenance(),
+    )
+    composition = _composition(
+        claims=[claim],
+        summary=[
+            _point(
+                text=claim.text,
+                claim_ids=[claim.claim_id],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+    )
+
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert (
+        f"({claim.provenance.attributed_issuer}, {JANUARY_VINTAGE}, "
+        f"released 2025-03-12)" in summary
+    )
+
+
+def test_a_solar_cumulative_or_all_segment_figure_is_never_an_older_version() -> (
+    None
+):
+    """Only comparable measurements are ordered against each other.
+
+    A solar total, a cumulative stock and an all-segment count are not
+    editions of one series however alike their units and years look: they are
+    another issuer, another series, another measurand, or another scope, and
+    none of them may be called an older version of the battery additions.
+    """
+    older = _claim(
+        text="EIA reported 10.3 GW of additions in 2024.",
+        provenance=_eia_provenance(
+            vintage=DECEMBER_VINTAGE, released="2025-02-24"
+        ),
+    )
+    newer = _claim(
+        text="EIA reported 10.4 GW of additions in 2024.",
+        provenance=_eia_provenance(),
+    )
+    solar = _claim(
+        text="EIA reported 32.5 GW of solar additions in 2024.",
+        provenance=_eia_provenance(
+            vintage="February 2025 Electric Power Monthly",
+            released="2025-04-25",
+            scope="utility-scale solar",
+        ),
+    )
+    cumulative = _claim(
+        text="The United States had 43.6 GW of capacity at the end of 2025.",
+        provenance=_eia_provenance(
+            vintage="February 2026 Electric Power Monthly",
+            released="2026-02-25",
+            period="2025",
+            scope="operating stock",
+        ),
+    )
+    all_segments = _claim(
+        text="Wood Mackenzie reported 12.3 GW installed in 2024.",
+        provenance=_eia_provenance(
+            issuer="Wood Mackenzie",
+            vintage="US Energy Storage Monitor Q4 2024",
+            released="2025-03-06",
+            scope="all segments",
+        ),
+    )
+    composition = _evidence_composition(
+        question="How much was added, and what is the latest?",
+        claims=[older, newer, solar, cumulative, all_segments],
+        summary=[
+            _stated(
+                text,
+                claim_ids=[claim.claim_id],
+                statement=_statement(text, target_ids=[]),
+            )
+            for text, claim in (
+                (older.text, older),
+                (newer.text, newer),
+                (solar.text, solar),
+                (cumulative.text, cumulative),
+                (all_segments.text, all_segments),
+            )
+        ],
+        sections=[],
+    )
+
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert summary.count("older release") == 1
+    assert summary.count("newer release") == 1
+    assert "older release: EIA, February 2025 Electric Power Monthly" not in summary
+    assert "older release: Wood Mackenzie" not in summary
+    # Each of them still states its own attribution.
+    assert "(EIA, February 2025 Electric Power Monthly, released 2025-04-25)" in (
+        summary
+    )
+    assert "(Wood Mackenzie, US Energy Storage Monitor Q4 2024, released 2025-03-06)" in (
+        summary
+    )
+
+
+def test_a_relays_own_article_date_never_prints_as_the_issuers_release() -> None:
+    """Replays the recorded run's APPA relay: an article date is not a release.
+
+    APPA's story about EIA's Preliminary Monthly Electric Generator
+    Inventory carries its own article date and states no release date for
+    the figure. Before the fix, ``ClaimProvenance.release`` fell back to
+    that article date and the reader was told the inventory itself was
+    "released 2024-02-20" — APPA's publication day, not EIA's.
+    """
+    relay_provenance = ClaimProvenance(
+        attributed_issuer="EIA",
+        vintage="Preliminary Monthly Electric Generator Inventory",
+        statement_date="2024-02-20",
+    )
+    claim = _claim(
+        text="Battery storage grew 70% in 2023, reaching 6.4 GW.",
+        provenance=relay_provenance,
+    )
+    composition = _evidence_composition(
+        claims=[claim],
+        summary=[
+            _point(
+                text=claim.text,
+                claim_ids=[claim.claim_id],
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sections=[],
+    )
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert "released 2024-02-20" not in summary
+    assert "stated 2024-02-20" in summary
+
+
+def test_a_shared_target_never_merges_different_measurands_into_one_series() -> (
+    None
+):
+    """The target branch needs the same revision key too.
+
+    A cumulative stock, an all-segment total and an annual addition can share
+    one target obligation without being editions of one series. The review's
+    repro put a 10.4 GW addition, a 12.3 GW all-segment total and a 43.6 GW
+    stock under one target ("t1") and had the stock render as the addition's
+    "newer release" and the all-segment total as its "older release".
+    """
+    addition = _claim(
+        text="EIA reported 10.4 GW of additions in 2024.",
+        provenance=_eia_provenance(),
+    )
+    all_segments = _claim(
+        text="Wood Mackenzie reported 12.3 GW installed in 2024.",
+        provenance=_eia_provenance(
+            issuer="Wood Mackenzie",
+            vintage="US Energy Storage Monitor Q4 2024",
+            released="2025-03-06",
+            scope="all segments",
+        ),
+    )
+    stock = _claim(
+        text="The United States had 43.6 GW of capacity at the end of 2025.",
+        provenance=_eia_provenance(
+            vintage="February 2026 Electric Power Monthly",
+            released="2026-02-25",
+            period="2025",
+            scope="operating stock",
+        ),
+    )
+    composition = _evidence_composition(
+        question="How much was added, and what is the latest?",
+        claims=[addition, all_segments, stock],
+        summary=[
+            _stated(
+                claim.text,
+                claim_ids=[claim.claim_id],
+                statement=_statement(claim.text, target_ids=["t1"]),
+            )
+            for claim in (addition, all_segments, stock)
+        ],
+        sections=[],
+    )
+
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert "older release" not in summary
+    assert "newer release" not in summary
+    assert (
+        f"(EIA, {JANUARY_VINTAGE}, released 2025-03-12)" in summary
+    )
+    assert (
+        "(Wood Mackenzie, US Energy Storage Monitor Q4 2024, "
+        "released 2025-03-06)" in summary
+    )
+    assert (
+        "(EIA, February 2026 Electric Power Monthly, released 2026-02-25)"
+        in summary
+    )
+
+
+def test_a_forecast_is_labelled_a_forecast_and_an_actual_an_actual() -> None:
+    """Neither masquerades as the other, and each keeps its own edition.
+
+    The 2024 additions are an observation and the 2025 figure is a projection
+    from the same release; a reader has to be able to tell them apart, and a
+    retrieved-today report must not make either read as current.
+    """
+    actual = _claim(
+        text="EIA reported 10.4 GW of additions in 2024.",
+        provenance=_eia_provenance(),
+        cluster_id="cluster-actual",
+    )
+    forecast = _claim(
+        text="EIA forecasts 19.6 GW of additions in 2025.",
+        provenance=_eia_provenance(period="2025"),
+        cluster_id="cluster-forecast",
+    )
+    composition = _composition(
+        question="How much was added in 2024, and what is projected for 2025?",
+        claims=[actual, forecast],
+        claim_clusters={
+            "cluster-actual": _cluster(
+                claim_ids=[actual.claim_id],
+                proposition=AtomicProposition(
+                    text=actual.text,
+                    forecast_status="observed",
+                    observation_period="2024",
+                ),
+            ),
+            "cluster-forecast": _cluster(
+                claim_ids=[forecast.claim_id],
+                proposition=AtomicProposition(
+                    text=forecast.text,
+                    forecast_status="projected",
+                    observation_period="2025",
+                ),
+            ),
+        },
+        summary=[
+            _point(
+                text=actual.text,
+                claim_ids=[actual.claim_id],
+                source_urls=[SOURCE_URL],
+            ),
+            _point(
+                text=forecast.text,
+                claim_ids=[forecast.claim_id],
+                source_urls=[SOURCE_URL],
+            ),
+        ],
+        sections=[],
+    )
+
+    summary = _section_body(
+        render_reader_report(composition), "## Executive summary"
+    )
+
+    assert "(actual: EIA, January 2025" in summary
+    assert "(forecast: EIA, January 2025" in summary
+
+
+def test_the_as_of_line_says_which_date_it_states() -> None:
+    """A retrieval stamp must not read as a measurement vintage.
+
+    ``As of`` is the newest timestamp the recorded *evidence* carries, and
+    every figure states its own edition beside it. The line says which of the
+    two it is, so a reader cannot take a retrieval date for the data's date.
+    """
+    composition = _composition()
+    reader = render_reader_report(composition)
+    line = next(
+        line for line in reader.splitlines() if line.startswith("**As of:**")
+    )
+
+    assert EXTRACTED_AT in line
+    assert "retrieved" in line
 
 
 def test_a_date_range_is_keyed_by_the_year_it_ends_in() -> None:
@@ -2455,8 +2842,11 @@ def test_the_reader_word_ceiling_follows_the_frozen_contract() -> None:
         )
         for index in range(12)
     ]
+    # Two words above the ceiling under test: the header's ``As of`` stamp now
+    # says which date it states, and the ceiling charges the header like every
+    # other word. What this test pins is the fitter's order, not the number.
     composition = _evidence_composition(
-        requested_word_limit=250,
+        requested_word_limit=252,
         summary=points[:6],
         sections=[ReportSection(title="Error correction", points=points[6:])],
     )
@@ -2465,7 +2855,7 @@ def test_the_reader_word_ceiling_follows_the_frozen_contract() -> None:
     fitted, _ = fit_report_composition(composition)
     reader = render_reader_report(fitted)
 
-    assert reader_word_count(reader) <= 250
+    assert reader_word_count(reader) <= 252
     assert "Statement 11" not in reader
     assert "Statement 0 reports" in reader
 

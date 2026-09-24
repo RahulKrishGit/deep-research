@@ -669,6 +669,9 @@ _TOKEN_AFTER = (
 # date of its own: an abbreviated year is a spelling local code would have to
 # guess at, and guessing dates is what this contract removes.
 _RANGE_JOIN = r"\s*(?:-|\u2013|\u2014|/|to|through|until|thru)\s*"
+# The same join, compiled: a period a document spells in words is read by
+# matching the separator where the first spelled date ends.
+_PERIOD_JOIN = re.compile(_RANGE_JOIN, re.IGNORECASE)
 # One date, or one period, the document states. A period is two dates it
 # states, so both of its ends are read and neither is ever inferred.
 _DATE_TOKEN_PATTERN = re.compile(
@@ -1836,9 +1839,14 @@ def _stated_dates(quote: str) -> list[tuple[str, ...]]:
     A number shaped like a date and not one — "2026-13" — is not a date the
     quote states, and neither is a fragment of an identifier: the digits of
     "doi:10.1234/grid.2025" are the identifier's own numbers, and the boundary
-    is what says so.
+    is what says so. A date the quote spells in words is read the same way and
+    at the precision it writes — see :func:`_spelled_dates` — so a document
+    that dates itself "August 7, 2026" evidences that day rather than only its
+    year. The two readers' findings are returned in the order they appear in
+    the quote, because one quote can state both spellings and a caller reading
+    the list should see them where the document puts them.
     """
-    stated: list[tuple[str, ...]] = []
+    stated: list[tuple[int, tuple[str, ...]]] = []
     for match in _DATE_TOKEN_PATTERN.finditer(quote):
         if not _is_delimited_date_token(quote, match.start(), match.end()):
             continue
@@ -1848,8 +1856,150 @@ def _stated_dates(quote: str) -> list[tuple[str, ...]]:
             if atom is not None
         )
         if all(_is_date_atom(atom) for atom in atoms):
-            stated.append(atoms)
+            stated.append((match.start(), atoms))
+    stated.extend(_spelled_dates(quote))
+    stated.sort(key=lambda item: item[0])
+    return [atoms for _position, atoms in stated]
+
+
+# The month names a document writes, folded to the month each one names. The
+# full names and the three-letter abbreviations are read; an abbreviation
+# without its final letters is not, for the same reason an abbreviated year is
+# not: a spelling code would have to guess at is not a date the document wrote.
+_MONTH_NUMBERS = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "sept": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+# One date a document writes in words: the month's name, then a day and a year
+# or a year alone, in the order a dateline writes them. The day is optional and
+# the comma with it is; a name that continues into a longer word is not a
+# month ("Marching"), and neither is one followed by neither a day nor a year.
+_SPELLED_DATE = re.compile(
+    r"(?<![A-Za-z])(?P<month>"
+    + "|".join(sorted(_MONTH_NUMBERS, key=len, reverse=True))
+    + r")\.?(?![A-Za-z])\s+"
+    r"(?:(?P<day>\d{1,2})(?:st|nd|rd|th)?[\s,]+)?"
+    r"(?P<year>\d{4})(?![\d-])",
+    re.IGNORECASE,
+)
+
+# A month name with no day or year of its own, immediately joined -- the way
+# two spelled dates ever join -- to the date that follows it: "January to
+# March 2025" and "Jan-Mar 2025" name a period whose start borrows the end's
+# year, and "between June and August 2024" joins with the one connective
+# ("and") a digit period never uses, because English prose, not a digit
+# range, is what writes it. Anchored to the very end of the text it is
+# searched against (``\Z``), so it only ever matches the month sitting
+# immediately before the date a caller is asking about.
+_BARE_MONTH_PERIOD_LEAD = re.compile(
+    r"(?<![A-Za-z])(?P<month>"
+    + "|".join(sorted(_MONTH_NUMBERS, key=len, reverse=True))
+    + r")\.?(?![A-Za-z])"
+    r"\s*(?:-|\u2013|\u2014|/|to|through|until|thru|and)\s*\Z",
+    re.IGNORECASE,
+)
+
+
+def _spelled_dates(text: str) -> list[tuple[int, tuple[str, ...]]]:
+    """Every date ``text`` spells in words, as its digit form and where it is.
+
+    One date atom is what a spelled date yields, in the shape the rest of this
+    module compares values in: "August 7, 2026" is ``2026-08-07`` and "January
+    2025" is ``2025-01``. Two of them joined the way a document joins a period
+    are a period, exactly as two digit dates are, and a day that does not
+    exist in its month ("February 31, 2026") is not a date the document stated,
+    for the reason a "2026-02-31" is not one either. The month's name is the
+    document's own word for it, so a value it never wrote cannot be read from
+    it — the same containment rule the digit reader applies.
+
+    A period's second end is never also read as a standalone date of its own:
+    once "March 2025" has been read as the end of "January 2024 through March
+    2025", the scan is driven forward past it with a cursor, so it is not
+    rediscovered a second time as if the document had stated it alone. A bare
+    month with no year of its own ("January to March 2025", "Jan-Mar 2025",
+    "between June and August 2024") is a period whose start is not dated at
+    the end's precision either, so nothing finer than the year both ends
+    share is recorded for it — not the coincidence that the end's own month
+    looks like a fact stated by itself.
+    """
+    stated: list[tuple[int, tuple[str, ...]]] = []
+    cursor = 0
+    for match in _SPELLED_DATE.finditer(text):
+        if match.start() < cursor:
+            continue
+        atom = _spelled_atom(match)
+        if atom is None:
+            continue
+        lead = _BARE_MONTH_PERIOD_LEAD.search(text[: match.start()])
+        if lead is not None and lead.group("month") != "may":
+            stated.append((lead.start(), (atom[:4],)))
+            cursor = match.end()
+            continue
+        end = match.end()
+        joined = _PERIOD_JOIN.match(text, end)
+        other: str | None = None
+        other_end = end
+        if joined is not None:
+            following = _SPELLED_DATE.match(text, joined.end())
+            if following is None:
+                following = _DATE_TOKEN_PATTERN.match(text, joined.end())
+                candidate = (
+                    following.group("atom") if following is not None else None
+                )
+                other = (
+                    candidate if candidate and _is_date_atom(candidate) else None
+                )
+                other_end = following.end() if following is not None else end
+            else:
+                other = _spelled_atom(following)
+                other_end = following.end()
+        if other is not None and other >= atom:
+            stated.append((match.start(), (atom, other)))
+            cursor = other_end
+            continue
+        stated.append((match.start(), (atom,)))
+        cursor = end
     return stated
+
+
+def _spelled_atom(match: re.Match[str]) -> str | None:
+    """The digit form of one spelled date, or ``None`` if it names no date."""
+    spelling = match.group("month")
+    if spelling == "may":
+        # The modal verb, not the month: "may 2025" is ordinary prose no
+        # document dates itself with. Only a capitalised spelling -- "May",
+        # "MAY" -- names the fifth month.
+        return None
+    month = _MONTH_NUMBERS[spelling.casefold()]
+    year = int(match.group("year"))
+    day = match.group("day")
+    if day is None:
+        return f"{year:04d}-{month:02d}"
+    atom = f"{year:04d}-{month:02d}-{int(day):02d}"
+    return atom if _is_date_atom(atom) else None
 
 
 class ReadDossier(ContractModel):

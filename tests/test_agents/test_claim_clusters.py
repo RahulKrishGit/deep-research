@@ -3487,6 +3487,15 @@ def test_the_run_spelling_keeps_its_value_and_place_across_the_period() -> None:
         # what the convention is, not how much (integration review P2).
         "measure: rating basis of the reported figures (AC or DC MW)",
         "measure: whether capacity is reported in MW or MWh",
+        # A cue noun in a qualifier says what the count covers, not that a
+        # number is asked for: reading the whole detail made the facility-types
+        # target a numeric one, so no answer that states the types could ever
+        # bind it (review rank 2).
+        "measure: facility types included in the utility-scale battery storage "
+        "capacity count",
+        "measure: facility types included in the utility-scale battery storage "
+        "capacity count, including the treatment of storage co-located with "
+        "other generation",
     ],
 )
 def test_a_qualitative_measure_never_demands_a_numeric_value(
@@ -4117,4 +4126,170 @@ def test_outcome_alone_cannot_answer_a_mechanism_obligation(
             for atom in extract_text_atoms(claim)
         )
         is expected
+    )
+
+
+# --------------------------------------------------------------------------
+# The live figures: the page's own measurand words, the scale it states, and
+# the definition that states the convention
+# --------------------------------------------------------------------------
+
+# The market monitor's press release, in the page's words. Wood Mackenzie and
+# ACP write "energy storage"; their 2024 total is 12,314 MW across every
+# segment, which is not EIA's utility-scale 10.4 GW.
+_TRACKER_OWN_WORDS = (
+    "Wood Mackenzie reported that 12,314 MW of energy storage was deployed in "
+    "the United States in 2024."
+)
+_TRACKER_ALL_SEGMENTS = (
+    "Wood Mackenzie reported that 12,314 MW of battery storage was deployed "
+    "across all segments in the United States in 2024."
+)
+# The run's fourteenth claim, verbatim: the convention EIA counts by, stated
+# with no observation period of its own.
+_DEFINITIONAL_THRESHOLD_CLAIM = (
+    "EIA counts battery storage projects larger than 1 MW in the electric "
+    "power sector when reporting U.S. utility-scale battery storage capacity."
+)
+
+
+def _live_target_by_id(target_id: str) -> EvidenceTarget:
+    return next(target for target in _LIVE_TARGETS if target.target_id == target_id)
+
+
+def _binds(target: EvidenceTarget, text: str) -> bool:
+    return any(
+        atom_answers_target(atom, target, question=target.question)
+        for atom in extract_text_atoms(text)
+    )
+
+
+def test_the_pages_own_storage_wording_answers_the_figure_target() -> None:
+    """The tracker's own sentence must bind the figure target it answers.
+
+    The measure's "battery" was read as a lexical test on the clause, so the
+    page's "energy storage" wording answered nothing at all while the same
+    figure in the measure's own word did — the difference between the tracker's
+    figure being used and being dropped for its wording (review rank 1b).
+    """
+    assert _binds(_live_target_by_id("topic-01-target-01"), _TRACKER_OWN_WORDS)
+
+
+def test_an_all_segments_total_does_not_answer_the_grid_scale_figure_target() -> None:
+    """A wider total is a different quantity, whatever words introduce it.
+
+    The live figure target asks for the additions at grid scale, so the
+    monitor's all-segments total cannot answer it: the substitution the plan's
+    scope rule exists to stop, and the reason the clause's own scale words are
+    read rather than only the measure's.
+    """
+    assert not _binds(_live_target_by_id("topic-01-target-01"), _TRACKER_ALL_SEGMENTS)
+
+
+def test_an_all_segments_total_does_not_answer_a_grid_scale_measure() -> None:
+    """The same rule where the measure, not the question, names the scale."""
+    assert not _binds(_battery_binding_target(), _TRACKER_ALL_SEGMENTS)
+    assert _binds(_battery_binding_target(), _TRACKER_OWN_WORDS)
+
+
+def test_a_mixed_solar_wind_and_storage_total_does_not_answer_the_battery_target() -> (
+    None
+):
+    """A combined renewables-and-storage total names no battery at all.
+
+    Dropping the lexical "battery" test let any clause spelling "storage"
+    stand in for the figure, even a total naming other technologies (review
+    rank 1).
+    """
+    assert not _binds(
+        _live_target_by_id("topic-02-target-01"),
+        "EIA projected that developers will add 63 GW of new solar, wind "
+        "and storage capacity in the United States in 2025.",
+    )
+
+
+def test_pumped_storage_hydropower_does_not_answer_the_battery_target() -> None:
+    """A different storage technology is not the battery figure either."""
+    assert not _binds(
+        _live_target_by_id("topic-01-target-01"),
+        "EIA reported that developers added 1,200 MW of pumped-storage "
+        "hydropower capacity in the United States in 2024.",
+    )
+
+
+def test_commercial_operation_wording_still_answers_the_grid_scale_target() -> None:
+    """"Commercial operation" is EIA's lifecycle phrase, not the C&I segment."""
+    assert _binds(
+        _live_target_by_id("topic-01-target-01"),
+        "EIA reported that developers added 10,400 MW of battery storage "
+        "capacity in the United States in 2024 as projects entered "
+        "commercial operation.",
+    )
+
+
+def test_excluding_distributed_systems_still_answers_the_grid_scale_target() -> None:
+    """A scale the clause disclaims is not the scale it states."""
+    assert _binds(
+        _live_target_by_id("topic-01-target-01"),
+        "EIA reported that developers added 10,400 MW of battery storage "
+        "capacity in the United States in 2024, excluding distributed "
+        "systems.",
+    )
+
+
+def test_excluding_residential_and_commercial_still_answers_the_outlook_target() -> (
+    None
+):
+    """The same rule where the target's own question names the scale."""
+    assert _binds(
+        _live_target_by_id("topic-02-target-01"),
+        "EIA projected that developers will add 10,700 MW of battery "
+        "storage capacity in the United States in 2025, excluding "
+        "residential and commercial systems.",
+    )
+
+
+def test_a_definitional_claim_answers_the_classification_target() -> None:
+    """The convention is what the target asks for, and a definition states it.
+
+    The classification requirement names the years the rule is in force; a
+    definition states no observation period, and refusing it for the period it
+    never claimed left the live classification target unanswerable (review
+    rank 2).
+    """
+    target = _live_target_by_id("topic-03-target-01")
+
+    assert _binds(target, _DEFINITIONAL_THRESHOLD_CLAIM)
+
+
+def test_a_definitional_claim_stating_another_year_does_not_answer_it() -> None:
+    """The control: a stated period outside the requirement's years is refused."""
+    assert not _binds(
+        _live_target_by_id("topic-03-target-01"),
+        "EIA counted battery storage projects larger than 1 MW in the electric "
+        "power sector in the United States in 2023.",
+    )
+
+
+def test_an_undated_quantity_claim_does_not_answer_the_classification_target() -> None:
+    """The control: a report that states the convention is no definition of it."""
+    assert not _binds(
+        _live_target_by_id("topic-03-target-01"),
+        "EIA reported that generators added 10.4 GW of battery storage "
+        "capacity in the United States.",
+    )
+
+
+def test_a_qualitative_facility_types_answer_answers_its_target() -> None:
+    """A measure that asks which types are counted is answered by saying which.
+
+    Read as a numeric obligation, the facility-types measure was unmet by any
+    answer that states the types and states no observation period — the two
+    reasons no claim could bind it (review rank 2).
+    """
+    assert _binds(
+        _live_target_by_id("topic-03-target-02"),
+        "According to EIA, the utility-scale battery storage count in the "
+        "United States includes co-located and stand-alone battery storage "
+        "projects.",
     )

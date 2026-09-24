@@ -99,6 +99,10 @@ def finding(
     vintage: str | None = None,
     statement_date: str | None = None,
     data_period: str | None = None,
+    attributed_issuer: str | None = None,
+    attribution_quote: str | None = None,
+    measure_scope: str | None = None,
+    release_date: str | None = None,
 ) -> Finding:
     return Finding(
         content=content,
@@ -111,6 +115,10 @@ def finding(
         vintage=vintage,
         statement_date=statement_date,
         data_period=data_period,
+        attributed_issuer=attributed_issuer,
+        attribution_quote=attribution_quote,
+        measure_scope=measure_scope,
+        release_date=release_date,
     )
 
 
@@ -421,6 +429,33 @@ def test_deduplicate_findings_keeps_every_binding_of_a_folded_pair() -> None:
     assert kept.data_period == "2024"
     # The identity is unchanged by the fold.
     assert finding_fingerprint(kept) == finding_fingerprint(bound)
+
+
+def test_deduplicate_findings_keeps_the_provenance_one_round_recorded() -> None:
+    """A restatement cannot erase whose figure the evidence is.
+
+    The relay rule lives in fields a fold can drop: a first extraction records
+    that the page attributes its figure to EIA, a later one of the same
+    passage records a different confidence and no attribution. Keeping only
+    the later record's silences would put the figure back under the host that
+    carried it, which is the misattribution the fields exist to prevent.
+    """
+    attributed = finding(
+        "Adoption rose.",
+        attributed_issuer="Example Statistical Agency",
+        attribution_quote="according to the Example Statistical Agency",
+        measure_scope="all segments",
+        release_date="2025-03-12",
+    )
+    restated = finding("Adoption rose.", confidence=0.9)
+
+    (kept,) = deduplicate_findings([attributed, restated])
+
+    assert kept.confidence == 0.9
+    assert kept.attributed_issuer == "Example Statistical Agency"
+    assert kept.attribution_quote == "according to the Example Statistical Agency"
+    assert kept.measure_scope == "all segments"
+    assert kept.release_date == "2025-03-12"
 
 
 def test_deduplicate_findings_unions_both_records_bindings() -> None:

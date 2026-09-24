@@ -53,6 +53,8 @@ from deep_research.utils.types import (
     EvidenceUnit,
     ResearchState,
     SubjectState,
+    measure_head,
+    names_a_definition,
     qualifier_matches_requirement,
 )
 
@@ -3100,6 +3102,10 @@ def equivalence_strength(
 # bare dimension name or as "<kind>: <detail>", so the kind is read as the
 # dimension it names. Longest-first, so "percentage points" is never read as
 # "points" and "geography" never as "graph".
+# The dimension a period requirement is checked against. Named because
+# :func:`_definitional_measure` waives exactly this one for a target that asks
+# what a convention is: a definition states the rule and no observation.
+_PERIOD_DIMENSION = "observation_period"
 _DIMENSION_KINDS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("measure", "value", "quantity", "amount", "number", "count", "cost",
       "capacity", "level", "rate", "total", "size", "price", "volume"),
@@ -3112,7 +3118,7 @@ _DIMENSION_KINDS: tuple[tuple[tuple[str, ...], str], ...] = (
      "attribution"),
     (("forecast", "projection", "projected", "outlook", "horizon"),
      "forecast_status"),
-    (("period", "year", "date", "vintage", "timeframe"), "observation_period"),
+    (("period", "year", "date", "vintage", "timeframe"), _PERIOD_DIMENSION),
 )
 
 # The obligations the *contract* fixes are not prose dimensions. The evidence
@@ -3258,7 +3264,17 @@ _AMOUNT_ASKED_PATTERN = re.compile(
 
 
 def _demands_a_quantity(detail: str) -> bool:
-    """Whether a measure requirement's own detail asks for a number."""
+    """Whether a measure requirement's own detail asks for a number.
+
+    The countable-noun fallback reads the measure's *head* only. A cue noun in
+    a qualifier says what the count covers, not that a number is asked for:
+    "facility types included in the utility-scale battery storage capacity
+    count" names the types a count includes, and reading "capacity" and
+    "count" out of its qualifier made it a numeric obligation that no answer
+    stating those types could meet (review rank 2). A unit or a number still
+    decides the whole detail, so "capacity threshold applied …, in megawatts"
+    remains a quantity ask.
+    """
     folded = _canonical(detail)
     if _UNIT_LIST_PATTERN.search(folded):
         return False
@@ -3268,7 +3284,7 @@ def _demands_a_quantity(detail: str) -> bool:
         return True
     if _NUMBER_TOKEN.search(folded):
         return True
-    return _COUNTABLE_NOUN_PATTERN.search(folded) is not None
+    return _COUNTABLE_NOUN_PATTERN.search(measure_head(folded)) is not None
 
 
 def checkable_dimensions(required_dimension: str) -> tuple[str, ...]:
@@ -3326,6 +3342,27 @@ def _dimension_states(atom: AtomicProposition) -> frozenset[str]:
     return frozenset(stated)
 
 
+def _definitional_measure(required_dimensions: Sequence[str]) -> bool:
+    """Whether the target's own measures ask what a convention is.
+
+    A classification or methodology target states the years its rule is in
+    force rather than an observation its evidence has to carry: "the
+    classification in force for the 2024 and 2025 data years" is about the
+    rule, and "EIA counts battery storage projects larger than 1 MW …" states
+    it with no period at all. Read as a period the claim has to state, such a
+    requirement left the live classification target unanswerable (review
+    rank 2). A quantity measure is untouched, so a figure still has to carry
+    the period it is asked for.
+    """
+    for required in required_dimensions:
+        folded = _canonical(required)
+        if not folded.startswith("measure:"):
+            continue
+        if names_a_definition(folded.partition(":")[2].strip()):
+            return True
+    return False
+
+
 def atom_answers_dimensions(
     atom: AtomicProposition,
     required_dimensions: Sequence[str],
@@ -3342,6 +3379,7 @@ def atom_answers_dimensions(
     publication date can never stand in for a deployment mechanism.
     """
     stated = _dimension_states(atom)
+    definitional = _definitional_measure(required_dimensions)
     for required in required_dimensions:
         folded = _canonical(required)
         if folded == _canonical(LEGACY_COVERAGE_DIMENSION):
@@ -3356,7 +3394,9 @@ def atom_answers_dimensions(
                 question=question,
                 dimension=dimension,
                 stated_dimensions=stated,
-            ) or not qualifier_matches_requirement(atom, required):
+            ) and not (definitional and dimension == _PERIOD_DIMENSION):
+                return False
+            if not qualifier_matches_requirement(atom, required, question=question):
                 return False
     return True
 

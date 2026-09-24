@@ -276,7 +276,11 @@ async def test_findings_flow_through_scoring_into_an_adjudicated_claim(
     claim = state.verified_claims[0]
     assert claim.source_urls == [SOURCE_URL]
     assert claim.verdict == "insufficient_evidence"
-    assert claim.evidence_status == "source_supported"
+    # No primary-source badge either: the claim names no issuer and no read
+    # evidences one, so nothing establishes a publication by the body the
+    # figure belongs to. The badge used to be granted from the cited page's
+    # own host, which counted any page as its own primary source.
+    assert claim.evidence_status is None
     assert claim.insufficient_reason == "same_work"
     assert claim.verification_evidence
     assert {passage.source_url for passage in claim.verification_evidence} == {
