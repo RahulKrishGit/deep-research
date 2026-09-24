@@ -2757,7 +2757,7 @@ async def test_a_contents_only_fixture_cannot_supply_a_measurement(
                 confidence=0.9,
                 read_id=read.read_id,
                 locator=locator,
-                excerpt="Basin A | 34 | 128",
+                snippet="Basin A | 34 | 128",
                 target_ids=["topic-01-target-01"],
             )
         ]
@@ -2773,7 +2773,7 @@ async def test_a_contents_only_fixture_cannot_supply_a_measurement(
     )
 
     assert findings == []
-    assert rejected == ["finding 1: excerpt was not admitted at locator"]
+    assert rejected == ["finding 1: snippet was not admitted at locator"]
 
 def test_a_hard_cut_never_splits_a_decomposed_character() -> None:
     """A cut lands on a character boundary even where there is no whitespace.

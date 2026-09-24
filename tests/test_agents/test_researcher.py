@@ -21,6 +21,7 @@ from deep_research.agents.researcher import (
     MAX_FINDINGS_PER_SUB_TOPIC,
     MAX_UNIQUE_SOURCES_PER_SUB_TOPIC,
     FindingDraft,
+    FindingFigureDraft,
     ResearcherAgent,
     ResearchFindings,
     SubTopicFindingsDraft,
@@ -34,6 +35,7 @@ from deep_research.agents.researcher import (
     is_high_priority,
     merge_react_runs,
     render_evidence,
+    render_planned_targets,
     render_session_guidance,
     render_sub_topic_guidance,
     retrieved_finding_urls,
@@ -59,12 +61,14 @@ from deep_research.providers import (
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    MAX_SNIPPET_CHARS,
     Claim,
     Critique,
     CritiqueGap,
     EvidenceTarget,
     EvidenceUnit,
     Finding,
+    FindingFigure,
     MemorySnapshot,
     ReadRecord,
     RefinementTarget,
@@ -77,6 +81,7 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
+from tests.evidence_fakes import make_read, make_target
 from tests.research_fakes import (
     QEC_PASSAGE,
     FakeMemory,
@@ -273,19 +278,7 @@ QEC_READ = qec_read_record()
 
 _FINDING_EXAMPLE_OUTPUT = (
     "Example JSON output:\n"
-    '{"findings":[{"attributed_issuer":"Example Statistical Agency",'
-    '"attribution_quote":"according to the Example Statistical Agency",'
-    '"confidence":0.8,"content":"The example report relays the Example '
-    "Statistical Agency's measurement: a 12 percent reduction in 2024 across "
-    "all classes, from the agency's January 2025 preliminary inventory.\","
-    '"data_period":"2024","excerpt":"The measured reduction was 12 percent, '
-    'according to the Example Statistical Agency, across all classes.",'
-    '"locator":"page-4-chunk-0","measure_scope":"all classes","read_id":'
-    '"read-111111111111111111111111","release_date":"2025-03-12",'
-    '"source_title":"Example report","source_url":'
-    '"https://evidence.example.test/report","statement_date":"2025-03-12",'
-    '"target_ids":["topic-01-target-01"],"vintage":'
-    '"January 2025 preliminary inventory"}]}'
+    """{"findings":[{"attributed_issuer":"Example Statistical Agency","attribution_quote":"according to the Example Statistical Agency","confidence":0.8,"content":"The example report relays the Example Statistical Agency's measurement: a 12 percent reduction in 2024 across all classes, from the agency's January 2025 preliminary inventory.","data_period":"2024","figures":[{"kind":"actual","period":"2024","unit":"percent","value":"12"}],"locator":"page-4-chunk-0","measure_scope":"all classes","read_id":"read-111111111111111111111111","release_date":"2025-03-12","snippet":"The measured reduction was 12 percent, according to the Example Statistical Agency, across all classes.","source_title":"Example report","source_url":"https://evidence.example.test/report","statement_date":"2025-03-12","target_ids":["topic-01-target-01"],"vintage":"January 2025 preliminary inventory"}]}"""
 )
 
 
@@ -1307,7 +1300,7 @@ def _registry_draft(**overrides: object) -> SubTopicFindingsDraft:
         "confidence": 0.8,
         "read_id": QEC_READ.read_id,
         "locator": "chunk-0",
-        "excerpt": QEC_PASSAGE,
+        "snippet": QEC_PASSAGE,
         "target_ids": [PLANNED_TARGET_ID],
     }
     values.update(overrides)
@@ -1368,11 +1361,11 @@ def test_a_finding_naming_another_reads_url_or_title_is_dropped() -> None:
 def test_an_excerpt_the_locator_does_not_contain_is_dropped() -> None:
     """An altered number or a paraphrase is not source text."""
     findings, rejected = _build_admitted(
-        _registry_draft(excerpt="Logical error rates fell below 0.1 percent.")
+        _registry_draft(snippet="Logical error rates fell below 0.1 percent.")
     )
 
     assert findings == []
-    assert rejected == ["finding 1: excerpt was not admitted at locator"]
+    assert rejected == ["finding 1: snippet was not admitted at locator"]
 
 
 def test_a_registry_shaped_finding_is_still_admitted() -> None:
@@ -1578,7 +1571,7 @@ def _build_relay(
         "confidence": 0.8,
         "read_id": read.read_id,
         "locator": locator,
-        "excerpt": read.passages[locator],
+        "snippet": read.passages[locator],
         "target_ids": [PLANNED_TARGET_ID],
     }
     values.update(overrides)
@@ -2249,7 +2242,7 @@ def _eia_forecast_draft(
                 confidence=0.95,
                 read_id=read_id,
                 locator=locator,
-                excerpt=EIA_64705_FORECAST_EXCERPT,
+                snippet=EIA_64705_FORECAST_EXCERPT,
                 target_ids=list(target_ids),
                 data_period="2025",
                 statement_date="2025-03-12",
@@ -2311,7 +2304,8 @@ def test_extraction_messages_require_the_registry_shape() -> None:
     )[1].content
     legacy_body = extraction_messages(task, run, evidence_chars=200)[1].content
 
-    assert "MUST copy the read_id, locator, and excerpt" in acquisition_body
+    assert "MUST copy read_id and locator" in acquisition_body
+    assert "MUST carry a snippet" in acquisition_body
     assert '"read_id":"read-111111111111111111111111"' in acquisition_body
     assert '"locator":"page-4-chunk-0"' in acquisition_body
     # The conditional phrasing that let the model skip the registry is gone.
@@ -2794,7 +2788,7 @@ def _findings_draft(
                 confidence=0.8,
                 read_id=QEC_READ.read_id,
                 locator="chunk-0",
-                excerpt=QEC_PASSAGE,
+                snippet=QEC_PASSAGE,
                 target_ids=["topic-01"],
             )
         ]
@@ -3007,7 +3001,7 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
                 confidence=confidence,
                 read_id=QEC_READ.read_id,
                 locator="chunk-0",
-                excerpt=QEC_PASSAGE,
+                snippet=QEC_PASSAGE,
                 target_ids=["topic-01"],
             )
             for confidence in (0.4, 0.9, 0.6)
@@ -3020,7 +3014,7 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
                 confidence=0.5,
                 read_id=QEC_READ.read_id,
                 locator="chunk-0",
-                excerpt=QEC_PASSAGE,
+                snippet=QEC_PASSAGE,
                 target_ids=["topic-01"],
             )
             for index in range(7)
@@ -3136,7 +3130,7 @@ async def test_a_selected_passage_no_finding_used_gets_its_own_disposition(
                     extraction_complete=True,
                 ).read_id,
                 locator="chunk-0",
-                excerpt=passages["chunk-0"],
+                snippet=passages["chunk-0"],
                 target_ids=["topic-01"],
             )
         ]
@@ -4131,7 +4125,7 @@ def _quantity_retry_reply(
                 confidence=0.9,
                 read_id=read_id,
                 locator=locator,
-                excerpt=excerpt,
+                snippet=excerpt,
                 target_ids=[PLANNED_TARGET_ID],
                 data_period="2024",
             )
@@ -4160,7 +4154,7 @@ def _quantity_scoped_retry_reply(
                 confidence=0.9,
                 read_id=read_id,
                 locator=locator,
-                excerpt=excerpt,
+                snippet=excerpt,
                 target_ids=[PLANNED_TARGET_ID],
                 data_period="2024",
                 attributed_issuer="Wood Mackenzie",
@@ -4353,3 +4347,76 @@ async def test_a_measure_unit_left_unmined_is_disposed_of_by_its_own_reason(
     assert reasons[unmined.evidence_id] != "irrelevant"
     assert reasons[lede.evidence_id] == "irrelevant"
 
+
+
+_SNIPPET = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"
+
+
+def _topic() -> SubTopic:
+    return SubTopic(
+        coverage_id="topic-01", title="Battery storage", rationale="r",
+        search_queries=["q"], success_criteria=["c"], priority=1,
+    )
+
+
+def _draft(read, **overrides) -> SubTopicFindingsDraft:
+    fields = dict(
+        content="EIA reports 10.4 GW of battery storage added in 2024.",
+        source_url=read.resolved_url, source_title=read.title, confidence=0.9,
+        read_id=read.read_id, locator="page-1-chunk-0", snippet=_SNIPPET,
+        figures=[FindingFigureDraft(value="10.4", unit="gigawatts", period="2024", kind="actual")],
+        data_period="2024",
+    )
+    fields.update(overrides)
+    return SubTopicFindingsDraft(findings=[FindingDraft(**fields)])
+
+
+def _build(read, draft):
+    return build_findings(
+        draft, sub_topic=_topic(), extracted_at="2026-09-24T00:00:00+00:00",
+        known_urls=[read.resolved_url], known_reads={read.read_id: read},
+    )
+
+
+def test_build_findings_keeps_snippet_read_locator_and_figures() -> None:
+    read = make_read()
+    findings, rejected = _build(read, _draft(read))
+    assert rejected == []
+    [finding] = findings
+    assert (finding.snippet, finding.read_id, finding.locator) == (
+        _SNIPPET, read.read_id, "page-1-chunk-0"
+    )
+    assert finding.figures == [
+        FindingFigure(value="10.4", unit="gigawatts", period="2024", kind="actual")
+    ]
+
+
+def test_build_findings_refuses_a_snippet_the_locator_does_not_carry() -> None:
+    read = make_read()
+    findings, rejected = _build(read, _draft(read, snippet="EIA says 10.4 GW was added."))
+    assert findings == [] and "snippet was not admitted at locator" in rejected[0]
+
+
+def test_build_findings_refuses_a_snippet_over_the_cap() -> None:
+    long_text = "Battery storage grew. " * 40
+    read = make_read(long_text)
+    findings, rejected = _build(read, _draft(read, snippet=long_text.strip()))
+    assert findings == [] and f"longer than {MAX_SNIPPET_CHARS}" in rejected[0]
+
+
+def test_an_unusable_figure_is_dropped_but_the_finding_is_kept() -> None:
+    read = make_read()
+    draft = _draft(read, figures=[
+        FindingFigureDraft(value="", unit="GW"),
+        FindingFigureDraft(value="10.4", unit="GW", kind="estimate"),
+    ])
+    findings, rejected = _build(read, draft)
+    [finding] = findings
+    assert finding.figures == [FindingFigure(value="10.4", unit="GW", kind=None)]
+    assert any("figure 1 has no value or unit" in reason for reason in rejected)
+
+
+def test_planned_targets_render_their_structured_fields() -> None:
+    line = render_planned_targets([make_target(organisation="EIA")])
+    assert line.startswith("- topic-01-target-01 [topic-01]: How much")
+    assert "unit: power" in line and "period: 2024" in line and "organisation: EIA" in line

@@ -61,7 +61,11 @@ from deep_research.agents.report_review import (
     ReviewDimensionScores,
     StatementDispositionDraft,
 )
-from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
+from deep_research.agents.researcher import (
+    FindingDraft,
+    FindingFigureDraft,
+    SubTopicFindingsDraft,
+)
 from deep_research.agents.source_evaluator import (
     SourceScoreDraft,
     SourceScoresDraft,
@@ -178,6 +182,11 @@ class ReplaySource:
     # an artifact whose body is unstated is not an artifact at all.
     cache_artifact: Literal["", "valid", "stale", "forged"] = ""
     cached_text: str = ""
+    # The figures this source's excerpt states, each (value, unit, period,
+    # kind) exactly as ``FindingFigureDraft`` takes them. Empty is a source
+    # whose scripted claim carries no discrete figure for Figure Match to
+    # verify.
+    figures: tuple[tuple[str, str, str | None, str | None], ...] = ()
 
     def __post_init__(self) -> None:
         if self.excerpt not in self.text:
@@ -644,7 +653,11 @@ class ReplayCompleter(AgentCompleter):
                     confidence=source.confidence,
                     read_id=read_id,
                     locator=locator,
-                    excerpt=excerpt,
+                    snippet=source.excerpt,
+                    figures=[
+                        FindingFigureDraft(value=v, unit=u, period=p, kind=k)
+                        for v, u, p, k in source.figures
+                    ],
                     target_ids=list(planned),
                 )
             )
