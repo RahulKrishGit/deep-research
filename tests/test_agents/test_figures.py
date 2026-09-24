@@ -64,6 +64,15 @@ def test_value_and_unit_must_be_adjacent() -> None:
     assert not figure_in_text("15", "GW", "15 projects totalling several GW")
 
 
+def test_a_hyphen_may_join_the_value_and_the_unit() -> None:
+    assert figure_in_text("300", "MW", "a 300-MW battery")
+
+
+def test_an_ac_or_dc_suffix_on_the_unit_still_matches() -> None:
+    assert figure_in_text("300", "MW", "300 MWdc")
+    assert figure_in_text("300", "MW", "300 MWac")
+
+
 def test_percent_spellings_are_one_unit() -> None:
     assert figure_in_text("66", "%", "capacity increased 66 percent in 2024")
     assert figure_in_text("66", "percent", "capacity increased 66% in 2024")
@@ -98,4 +107,10 @@ def test_bare_numbers_skip_years_dates_labels_and_quantities() -> None:
     assert bare_numbers("released 2025-03-12; 12 March 2025; Q1 2025") == []     # F2
     assert "2025-03-12" in dates_in("released 2025-03-12 and 12 March 2025")
     assert len(dates_in("released 2025-03-12 and 12 March 2025")) == 2
-    assert "03" not in without_dates("released 2025-03-12") and "2025" not in without_dates("released 2025-03-12")
+    without_iso = without_dates("released 2025-03-12")
+    assert "03" not in without_iso
+    assert "2025" not in without_iso
+
+
+def test_a_day_before_a_month_name_is_a_date_label_not_a_number() -> None:
+    assert bare_numbers("on 12 March the grid") == []

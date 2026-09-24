@@ -8,7 +8,8 @@ report sentence states it:
 - unit spelling: ``GW`` equals ``gigawatt(s)``, ``MWh`` equals
   ``megawatt-hour(s)``, ``%`` equals ``percent``;
 - unit scale within one dimension: kW, MW, GW, TW; kWh, MWh, GWh, TWh;
-- value and unit are adjacent, or separated only by one parenthetical;
+- value and unit are adjacent, joined by a hyphen, or separated only by one
+  parenthetical; an ``ac``/``dc`` suffix on the abbreviated unit is ignored;
 - a single number word before a unit ("ten gigawatts") is its number.
 
 Callers pass a snippet, evidence words, or a report sentence. Nothing here
@@ -53,11 +54,11 @@ _MONTHS = (
 _UNIT = (
     r"(?:kilo|mega|giga|tera)watt[- ]?hours?"
     r"|(?:kilo|mega|giga|tera)watts?"
-    r"|[kmgt]wh\b|[kmgt]w\b|per ?cent\b|%"
+    r"|[kmgt]wh(?:ac|dc)?\b|[kmgt]w(?:ac|dc)?\b|per ?cent\b|%"
 )
 _NUMBER = r"\d{1,3}(?:[, ]\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?"
 _WORD = "|".join(sorted(_NUMBER_WORDS, key=len, reverse=True))
-_GAP = r"\s*(?:\([^()]{0,40}\)\s*)?"
+_GAP = r"[\s-]*(?:\([^()]{0,40}\)\s*)?"
 _QUANTITY = re.compile(
     rf"(?<![\w.,])(?P<value>{_NUMBER}|\b(?:{_WORD})\b){_GAP}"
     rf"\(?\s*(?P<unit>{_UNIT})\s*\)?"
@@ -65,6 +66,7 @@ _QUANTITY = re.compile(
 _ANY_NUMBER = re.compile(rf"(?<![\w.,])(?:{_NUMBER})(?!\w)")
 _YEAR = re.compile(r"(?:19|20)\d{2}")
 _DATE_DAY = re.compile(rf"\b(?:{_MONTHS})\.?\s+$")
+_DATE_DAY_FOLLOWS = re.compile(rf"\s+(?:{_MONTHS})\b")
 _ORDINAL = re.compile(r"(?:st|nd|rd|th)\b")
 _ISO_DATE = re.compile(r"\b(?:19|20)\d{2}-\d{1,2}(?:-\d{1,2})?\b")
 _DAY_FIRST_DATE = re.compile(rf"\b\d{{1,2}}\s+(?:{_MONTHS})\.?\s+(?:19|20)\d{{2}}\b")
@@ -91,6 +93,9 @@ def _canonical_unit(unit: str) -> str:
     spelled = re.fullmatch(r"(kilo|mega|giga|tera)watts?( ?hours?)?", text)
     if spelled:
         return _PREFIX[spelled.group(1)] + ("wh" if spelled.group(2) else "w")
+    abbreviated = re.fullmatch(r"([kmgt]wh?)(?:ac|dc)?", text.replace(" ", ""))
+    if abbreviated:
+        return abbreviated.group(1)
     return text
 
 
@@ -195,14 +200,21 @@ def bare_numbers(text: str) -> list[str]:
             continue
         if _ORDINAL.match(normalised, match.end()):
             continue
-        if int(float(digits)) <= 31 and _DATE_DAY.search(normalised[: match.start()]):
+        if int(float(digits)) <= 31 and (
+            _DATE_DAY.search(normalised[: match.start()])
+            or _DATE_DAY_FOLLOWS.match(normalised, match.end())
+        ):
             continue
         numbers.append(digits)
     return numbers
 
 
 def _date_spans(normalised: str) -> list[tuple[int, int]]:
-    return [found.span() for pattern in (_ISO_DATE, _DAY_FIRST_DATE) for found in pattern.finditer(normalised)]
+    return [
+        found.span()
+        for pattern in (_ISO_DATE, _DAY_FIRST_DATE)
+        for found in pattern.finditer(normalised)
+    ]
 
 
 def dates_in(text: str) -> list[str]:

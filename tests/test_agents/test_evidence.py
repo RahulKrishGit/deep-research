@@ -31,6 +31,7 @@ from deep_research.agents.evidence import (
     build_read_record,
     canonical_publisher_id,
     canonical_read_text,
+    cosmetic_text,
     eligible_independent_pair,
     excerpt_matches,
     merge_boundary_audits,
@@ -3166,9 +3167,6 @@ def test_a_partial_read_is_never_half_of_the_pair() -> None:
     assert not eligible_independent_pair(full, partial)
 
 
-from deep_research.agents.evidence import cosmetic_text, excerpt_matches
-
-
 def test_excerpt_matches_is_cosmetic_only() -> None:
     page = (
         "EIA said \u201cdevelopers plan to add 19.6 GW\u201d of bat\u00adtery "
@@ -3182,6 +3180,7 @@ def test_excerpt_matches_is_cosmetic_only() -> None:
     assert not excerpt_matches(page, "developers plan to add 19.7 GW")
     assert not excerpt_matches(page, "developers plan to add 19.6 GW of storage")
     assert not excerpt_matches(page, "   ")
+    assert not excerpt_matches("capacity of 10-\n12 GW", "capacity of 1012 GW")
 
 
 def test_cosmetic_text_keeps_digits_units_and_dashes() -> None:
