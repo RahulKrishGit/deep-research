@@ -3164,3 +3164,25 @@ def test_a_partial_read_is_never_half_of_the_pair() -> None:
     )
 
     assert not eligible_independent_pair(full, partial)
+
+
+from deep_research.agents.evidence import cosmetic_text, excerpt_matches
+
+
+def test_excerpt_matches_is_cosmetic_only() -> None:
+    page = (
+        "EIA said \u201cdevelopers plan to add 19.6 GW\u201d of bat\u00adtery "
+        "stor-\nage in 2025, and the grid-\nscale fleet keeps growing."
+    )
+    assert excerpt_matches(
+        page, 'EIA said "developers plan to add 19.6 GW" of battery storage in 2025'
+    )
+    assert excerpt_matches(page, "eia said \u201cDEVELOPERS plan to add 19.6 GW\u201d")
+    assert excerpt_matches(page, "the grid-scale fleet keeps growing")
+    assert not excerpt_matches(page, "developers plan to add 19.7 GW")
+    assert not excerpt_matches(page, "developers plan to add 19.6 GW of storage")
+    assert not excerpt_matches(page, "   ")
+
+
+def test_cosmetic_text_keeps_digits_units_and_dashes() -> None:
+    assert cosmetic_text("10,400\u2009MW \u2013 Q1") == "10,400 mw \u2013 q1"

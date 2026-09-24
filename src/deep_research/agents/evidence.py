@@ -152,17 +152,47 @@ def normalized_content_sha256(text: str) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def excerpt_matches(text: str, excerpt: str) -> bool:
-    """True when ``excerpt`` is exactly contained in ``text``, modulo layout.
+_SOFT_HYPHEN = "\u00ad"
+_QUOTE_TABLE = str.maketrans(
+    {
+        "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'",
+        "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2033": '"',
+    }
+)
+# A word broken across a line: "stor-\nage". Joined by default; kept as one
+# hyphenated word ("grid-\nscale" -> "grid-scale") in the second reading.
+_LINE_BREAK_HYPHEN = re.compile(r"(?<=\w)-[ \t]*\r?\n[ \t]*(?=\w)")
 
-    Membership is exact after canonicalization — no fuzzy ratio, no ellipsis
-    stitching, no prefix tolerance — because a near-miss excerpt is how a
-    paraphrase becomes "source text".
+
+def cosmetic_text(text: str, *, join_hyphenation: bool = True) -> str:
+    """Spec §5.1 step 1: the cosmetic normalisation, and nothing else.
+
+    Whitespace and line breaks, curly and straight quotes, soft hyphens and
+    line-break hyphenation, and case. Digits, units, dashes and words are
+    untouched, so a paraphrase never matches the page it paraphrases.
     """
-    candidate = canonical_read_text(excerpt)
+    if not isinstance(text, str):
+        raise EvidenceContractError("text must be a string")
+    value = unicodedata.normalize("NFC", text).replace(_SOFT_HYPHEN, "")
+    value = value.translate(_QUOTE_TABLE)
+    value = _LINE_BREAK_HYPHEN.sub("" if join_hyphenation else "-", value)
+    return " ".join(value.split()).casefold()
+
+
+def excerpt_matches(text: str, excerpt: str) -> bool:
+    """True when ``excerpt`` is contained in ``text`` after cosmetic normalisation.
+
+    Membership is exact after ``cosmetic_text`` -- no fuzzy ratio, no ellipsis
+    stitching -- because a near-miss excerpt is how a paraphrase becomes
+    "source text". A line-break hyphen is read both ways, as a broken word and
+    as a hyphenated compound, because the page cannot say which it was.
+    """
+    candidate = cosmetic_text(excerpt)
     if not candidate:
         return False
-    return candidate in canonical_read_text(text)
+    return candidate in cosmetic_text(text) or candidate in cosmetic_text(
+        text, join_hyphenation=False
+    )
 
 
 # ---------------------------------------------------------------------------
