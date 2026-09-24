@@ -6310,6 +6310,13 @@ def test_an_unknown_dimension_or_kind_is_stamped_empty() -> None:
     assert (target.unit_dimension, target.kind, target.organisation) == (None, None, None)
 
 
+def test_a_mixed_case_dimension_or_kind_is_folded_to_the_canonical_spelling() -> None:
+    [target] = _draft_targets(
+        _structured_draft(unit_dimension="Power", kind="Actual"), "topic-01"
+    )
+    assert (target.unit_dimension, target.kind) == ("power", "actual")
+
+
 def test_the_answer_contract_keeps_the_structured_fields() -> None:
     targets = _draft_targets(_structured_draft(), "topic-01")
     topic = SubTopic(
@@ -6326,4 +6333,18 @@ def test_the_answer_contract_keeps_the_structured_fields() -> None:
     )
     [stamped] = apply_answer_contract([topic], contract)
     [target] = stamped.evidence_targets
-    assert (target.unit_dimension, target.period, target.kind) == ("power", "2024", "actual")
+    assert (
+        target.measure,
+        target.unit_dimension,
+        target.period,
+        target.kind,
+        target.geography,
+        target.organisation,
+    ) == (
+        "battery storage power capacity added",
+        "power",
+        "2024",
+        "actual",
+        "United States",
+        "U.S. Energy Information Administration",
+    )
