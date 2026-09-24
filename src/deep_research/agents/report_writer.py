@@ -40,6 +40,7 @@ from deep_research.agents.steps import ReActRun
 from deep_research.agents.verified_facts import (
     VerifiedFigure,
     answered_target_ids,
+    canonical_scopes,
     citable_findings,
     fact_rows,
     not_found_targets,
@@ -51,7 +52,9 @@ from deep_research.agents.wording import (
     clause_around,
     hardened_modality,
     hedge_forecast,
+    hedge_marker,
     page_modal,
+    realized_outcome,
     stated_role,
     stated_scopes,
     stated_years,
@@ -90,11 +93,6 @@ _SECTION_TITLE_CHARS = 120
 # model_overrides.report_writer, the one effort source); a truncated draft is
 # asked once more at high, the synthesizer's measured retry.
 _WRITER_ATTEMPT_EFFORTS: tuple[str | None, ...] = (None, OUTPUT_LIMIT_RETRY_EFFORT)
-
-# R4: grid-scale and utility-scale name the same segment (verified_facts folds
-# them the same way for target answering); a sentence in either spelling is
-# supported by a finding stated in the other, and neither narrows the other.
-_SCOPE_EQUIVALENTS: dict[str, str] = {"grid-scale": "utility-scale"}
 
 REPORT_WRITER_SYSTEM_PROMPT = (
     "You write the reader-facing prose of a research report from verified findings. "
@@ -280,11 +278,6 @@ def _attested_corpus(cited: Sequence[Finding], geographies: Sequence[str],
     return "\n".join(part for part in parts if part)
 
 
-def _canonical_scopes(text: str) -> set[str]:
-    """R4: ``stated_scopes`` folded through the grid-scale/utility-scale equivalence."""
-    return {_SCOPE_EQUIVALENTS.get(term, term) for term in stated_scopes(text)}
-
-
 def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[str],
                 sources: Sequence[ScoredSource] = ()) -> PointCheck:
     """§6.2's guards for one sentence against the findings it cites."""
@@ -312,8 +305,11 @@ def check_point(text: str, cited: Sequence[Finding], *, geographies: Sequence[st
     figures = [f for f in verified_figures(cited) if f.quantity is not None]
     stated_figures = [(q, f) for q in stated for f in figures if same_quantity(q, f.quantity)]
     scope_sources = [f"{f.context.scope or ''} {_evidence_words(f)}" for _, f in stated_figures] or [corpus]
-    attested_scopes = _canonical_scopes(" ".join(scope_sources))
-    unsupported = [s for s in stated_scopes(text) if _SCOPE_EQUIVALENTS.get(s, s) not in attested_scopes]
+    # R4: grid-scale and utility-scale name the same segment (as verified_facts
+    # treats them for target answering); a sentence in either spelling is
+    # supported by a finding stated in the other, and neither narrows the other.
+    attested_scopes = canonical_scopes(" ".join(scope_sources))
+    unsupported = [s for s in stated_scopes(text) if not (canonical_scopes(s) & attested_scopes)]
     if unsupported:
         reasons.append("scope not carried by the cited figures: " + ", ".join(unsupported))
     as_fact: list[str] = []
@@ -347,6 +343,41 @@ def _evidence_words(figure: VerifiedFigure) -> str:
     return words or (figure.finding.snippet or "")
 
 
+def _forecast_rewrite_holds(
+    original: str, rewritten: str, organisation: str, forecasts: Sequence[VerifiedFigure],
+) -> bool:
+    """F3, checked positively rather than by filtering a reason away.
+
+    A reason filter let two real defects through: an unchanged rewrite
+    (``hedge_forecast`` found nothing to change and appended nothing,
+    because an unrelated clause already satisfied ``_forecast_role``), and a
+    rewrite that hedged one clause while the quantity's own clause still
+    reported it as settled fact ("14 GW was added, and more will follow"
+    becomes "...was added, and more is expected to follow" -- "was added"
+    is untouched). This checks every forecast quantity the rewritten text
+    still states: its own clause must carry a hedge or forecast-role marker
+    and no realised-outcome verb, or -- when ``hedge_forecast`` fell all the
+    way through to appending "according to <organisation>'s forecast." to
+    the whole text (proved by that literal suffix, not by position math,
+    since the append means no clause anywhere in the text was individually
+    touched) -- every remaining clause shares that one benefit.
+    """
+    if rewritten == original:
+        return False
+    used_append = rewritten.endswith(f", according to {organisation}'s forecast.")
+    normalised = cosmetic_text(rewritten)
+    matched = [(q, f) for q in quantities_in(rewritten) for f in forecasts if same_quantity(q, f.quantity)]
+    if not matched:
+        return False
+    for quantity, _figure in matched:
+        clause = clause_around(normalised, quantity.start)
+        if realized_outcome(clause):
+            return False
+        if not (used_append or hedge_marker(clause) or stated_role(clause) == "forecast"):
+            return False
+    return True
+
+
 def compose_written_report(task: ReportWriterTask, draft: ReportWriterDraft | None) -> ReportComposition:
     """Check every drafted point, rewrite a forecast-as-fact once, and compose (§6.1-6.2)."""
     by_label = dict(task.registry)
@@ -356,34 +387,41 @@ def compose_written_report(task: ReportWriterTask, draft: ReportWriterDraft | No
     numbers = iter(range(1, 10_000))
 
     def build(point: WriterPointDraft, where: str, summary: bool) -> ReportPoint | None:
-        text = " ".join(point.text.split())[:MAX_POINT_CHARS]
+        drafted = " ".join(point.text.split())
         wanted = [label.strip() for label in point.finding_labels]
 
         def refuse(reason: str) -> None:
-            rejected.append(RejectedDraftPoint(where=where, text=text, finding_labels=list(point.finding_labels), reason=reason))
+            rejected.append(RejectedDraftPoint(where=where, text=drafted, finding_labels=list(point.finding_labels), reason=reason))
 
-        if not text:
+        if not drafted:
             return refuse("empty text")
+        if len(drafted) > MAX_POINT_CHARS:
+            return refuse(f"longer than {MAX_POINT_CHARS} characters")
         unknown = [label for label in wanted if label not in by_label]
         if unknown:
             return refuse("unknown labels: " + ", ".join(unknown))
         cited = [by_label[label] for label in wanted]
+        text = drafted
         check = check_point(text, cited, geographies=task.geographies, sources=task.sources)
         if check.forecast_as_fact and check.organisation:
-            text = hedge_forecast(text, check.organisation, marker=check.marker)
-            # F3: the rewrite is the one-time, defined fix for exactly a
-            # forecast stated as fact and a hardened modality; the clause the
-            # rewritten "according to ...'s forecast" text (or a restored
-            # page modal such as "could") lands in is not always the clause
-            # the quantity itself sits in (a comma can split them), so
-            # re-deriving those two reasons from scratch on the rewritten
-            # text can spuriously re-flag the very defect the rewrite just
-            # repaired. Only a reason the rewrite itself introduced -- one
-            # outside the two the repair targets -- still refuses it.
+            rewritten = hedge_forecast(text, check.organisation, marker=check.marker)
+            forecasts = [f for f in verified_figures(cited)
+                        if f.quantity is not None and f.context.kind == "forecast"]
+            if not _forecast_rewrite_holds(text, rewritten, check.organisation, forecasts):
+                return refuse("a forecast stated as fact")
+            text = rewritten
+            # The positive check above already proved the rewrite sound;
+            # check_point's own clause-local stated_role still misreads the
+            # same repaired clause as "actual" ("could", or the appended
+            # "...'s forecast." suffix after a comma, is not a signal
+            # stated_role reads as a forecast), so only the one reason that
+            # check just cleared is dropped here. Any other reason the
+            # rewrite introduced -- an untraced number, an unattested name,
+            # a scope it no longer carries -- still refuses the point.
             reasons = tuple(
                 reason for reason in check_point(text, cited, geographies=task.geographies,
                                                  sources=task.sources).reasons
-                if not reason.startswith(("a forecast stated as fact", "asserts with '"))
+                if reason != "a forecast stated as fact"
             )
         else:
             reasons = check.reasons
@@ -554,6 +592,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         messages = writer_messages(task)
         errors: list[ResearchError] = []
         for attempt, effort in enumerate(_WRITER_ATTEMPT_EFFORTS, start=1):
+            self.fingerprint_call(ReportWriterDraft.__name__, reasoning_effort=effort)
             try:
                 if effort is None:
                     draft = await self.provider.complete_structured(

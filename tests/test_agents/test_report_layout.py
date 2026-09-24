@@ -147,6 +147,41 @@ def test_a_kept_forecast_finding_with_no_fact_row_falls_back_to_its_own_release(
     assert "release not stated on the page" not in log
 
 
+def test_two_revision_editions_show_their_own_release_and_label() -> None:
+    """Important 1 + the R2 ruling on the evidence log: two editions of one
+    page (same URL, sub-topic and content; a different figure and release)
+    share a ``finding_fingerprint``. Each must print its own release, never
+    the other edition's (Important 1), and each must keep its own label,
+    never collapse onto or drop the other's (R2).
+    """
+    same_text = "battery storage capacity growing by 40% in 2025"
+    edition_a = _finding("https://ent.news/2025/1/942.pdf", same_text, "13", "GW",
+                         organisation="U.S. Energy Information Administration",
+                         attribution="relayed", kind="forecast", period="2025")
+    edition_a = edition_a.model_copy(update={"release_date": "2025-01-10"})
+    edition_b = _finding("https://ent.news/2025/1/942.pdf", same_text, "14", "GW",
+                         organisation="U.S. Energy Information Administration",
+                         attribution="relayed", kind="forecast", period="2025")
+    edition_b = edition_b.model_copy(update={"release_date": "2025-02-14"})
+    fp = finding_fingerprint(edition_a)
+    assert fp == finding_fingerprint(edition_b)
+    # As ``_fold_revisions`` would produce: one row, the later edition
+    # primary, keyed by the fingerprint both editions share.
+    folded_row = FactRow(row_id="K001", organisation="U.S. Energy Information Administration",
+                         attribution="relayed", relay_host="ent.news",
+                         measure="battery storage power capacity added", period="2025",
+                         value="14 GW", kind="forecast", release="released 2025-02-14", finding_id=fp)
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[edition_a, edition_b], fact_rows=[folded_row],
+        finding_labels={"F01": fp, "F02": fp},
+    )
+    log = render_finding_log(composition)
+    assert log.count("### F01") == 1 and log.count("### F02") == 1
+    assert "13 GW: kept" in log and "14 GW: kept" in log
+    assert "forecast (released 2025-01-10)" in log   # edition_a's own release
+    assert "forecast (released 2025-02-14)" in log   # edition_b's own release
+
+
 def test_the_report_shows_unchecked_context_on_a_fact_row() -> None:
     base = _composition()
     unchecked_row = base.fact_rows[0].model_copy(update={"context_unchecked": True})
