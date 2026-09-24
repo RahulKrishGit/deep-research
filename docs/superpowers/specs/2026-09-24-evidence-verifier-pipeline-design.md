@@ -337,6 +337,12 @@ No prose is parsed.
 - Sub-topics run concurrently (D9). Each loop has its own scratchpad and
   acquisition context; the tool section (policy decision, fetch, admission)
   runs under one run-wide lock.
+- Prompt rule: read the organisation's own page (for example eia.gov or
+  woodmac.com) before relays; use a relay only when the original is not
+  reachable, and record it as a relay.
+- Emits `snippet`, `read_id`, `locator`, `figures` and `target_ids` (section 4).
+- A targeted extra pass receives only the missing target ids and their
+  dimensions.
 
 ### 7.3 Concurrency and budget telemetry (D9)
 
@@ -357,12 +363,6 @@ No prose is parsed.
   consider lowering <knob>" when N > 0, and "output within X% of the <op>
   cap; consider raising it" when a call used 90% or more of its cap or was
   truncated.
-- Prompt rule: read the organisation's own page (for example eia.gov or
-  woodmac.com) before relays; use a relay only when the original is not
-  reachable, and record it as a relay.
-- Emits `snippet`, `read_id`, `locator`, `figures` and `target_ids` (section 4).
-- A targeted extra pass receives only the missing target ids and their
-  dimensions.
 
 ## 8. Removed
 
