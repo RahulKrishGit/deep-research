@@ -44,6 +44,7 @@ were each judged NOT GREAT by an independent audit. The architecture audit of
 | D6 | Clean cutover on a new branch. No feature flag, no retained old path. |
 | D7 | Provenance reaches the reader as the code-built label on every figure (organisation, kind, release), from the Context Check's verified fields. |
 | D8 | The LLM replaces the code figure checks: the Context Check judges whether each figure is stated by its snippet, and the Statement Check (§5.4) judges each drafted sentence against its cited findings. Code keeps only "the quoted words are on the page" (snippet and evidence words) and mechanical rules. LLM calls are parallelised for latency: 5 items per call, at most 8 calls in flight. |
+| D9 | Latency: researcher sub-topics run concurrently (at most 5 in flight); tool calls stay serialised run-wide under one lock (one body, one download); findings and events fold in plan order. Source-evaluator scoring batches run concurrently (at most 3). Every concurrency cap and token budget is a config value (§7.3) and can be lowered from live results without a code change. |
 
 Honesty rules that stay binding:
 
@@ -333,6 +334,29 @@ No prose is parsed.
 ### 7.2 Researcher
 
 - Per-sub-topic tool budget rises from 10 to 20; the value is configurable.
+- Sub-topics run concurrently (D9). Each loop has its own scratchpad and
+  acquisition context; the tool section (policy decision, fetch, admission)
+  runs under one run-wide lock.
+
+### 7.3 Concurrency and budget telemetry (D9)
+
+- Knobs in `config.yaml`, each overridable by an environment variable:
+  `agents.sub_topic_concurrency` (default 5),
+  `agents.source_scoring_concurrency` (3),
+  `agents.verifier_batch_size` (5) and `agents.verifier_concurrency` (8). The
+  existing token budgets (`llm.max_tokens` and the per-operation caps) stay
+  where they are.
+- Every run records, in the quality JSON and in one CLI summary line:
+  - DeepSeek rate-limit errors (429s): the count, and how many a retry
+    recovered;
+  - the peak number of provider calls in flight;
+  - per-stage calls, total seconds and the slowest call;
+  - per-operation output tokens: the maximum used against the configured cap,
+    and the count of output-limit (truncation) errors.
+- The run summary advises, but never auto-tunes: "rate limits hit N times;
+  consider lowering <knob>" when N > 0, and "output within X% of the <op>
+  cap; consider raising it" when a call used 90% or more of its cap or was
+  truncated.
 - Prompt rule: read the organisation's own page (for example eia.gov or
   woodmac.com) before relays; use a relay only when the original is not
   reachable, and record it as a relay.
@@ -422,4 +446,5 @@ Fingerprint pins (`tests/test_evaluation/test_config.py`) and
 
 - Streamlit UI changes, beyond what compiles against the new types.
 - Other benchmark questions; they are exercised by the e2e matrix only.
-- Parallelising researcher sub-topics; that is a later optimisation.
+- Automatic adjustment of concurrency or budgets during a run (§7.3 only
+  advises).
