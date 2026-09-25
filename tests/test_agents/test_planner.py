@@ -1136,7 +1136,13 @@ def _assertion_plan() -> ResearchPlanDraft:
 
 
 def _stale_draft() -> ResearchPlanDraft:
-    """A usable draft whose only defect is an advisory stale anchor."""
+    """A usable draft whose only defect is an advisory stale anchor.
+
+    The anchor sits in the one target of the first sub-topic, so the shipped
+    plan loses that target *and* the sub-topic left without any: a plan does not
+    ship the defect its own repair was told about
+    (test_a_surviving_advisory_target_is_dropped_not_recorded).
+    """
     return ResearchPlanDraft(
         sub_topics=[
             _draft(
@@ -1246,7 +1252,10 @@ async def test_a_failed_lint_repair_keeps_a_usable_draft(tracker: Tracker) -> No
     Repairs are the heaviest plan request — live run 2 truncated on one — and a
     draft that is structurally researchable is worth more than no report at all.
     The failed repair is recorded against the repair, and the draft's own
-    advisory defect stays recorded against the draft.
+    advisory defect is removed with the target it named rather than recorded: a
+    plan does not ship the defect its own repair was told about. That is why the
+    first sub-topic is absent here — its only target carried the defect, and a
+    plan never ships a sub-topic with no obligations.
     """
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
@@ -1261,7 +1270,6 @@ async def test_a_failed_lint_repair_keeps_a_usable_draft(tracker: Tracker) -> No
 
     assert outcome.result is not None
     assert [sub_topic.title for sub_topic in outcome.result.sub_topics] == [
-        "Interconnection",
         "Queue totals",
         "Reforms",
     ]
@@ -1280,15 +1288,6 @@ async def test_a_failed_lint_repair_keeps_a_usable_draft(tracker: Tracker) -> No
                 "repair: the plan repair raised ProviderOutputLimitError",
                 "repair: the planner provider failed while requesting the "
                 "final plan draft",
-            ],
-        },
-        {
-            "stage": "plan_checks",
-            "plan": "draft",
-            "problems": [
-                "draft: topic-01-target-01 anchors currency to 2019 for a "
-                "session as of 2026-09-16; ask for the latest available "
-                "evidence instead"
             ],
         },
     ]
@@ -1908,8 +1907,14 @@ def test_targets_carry_locally_stamped_ids() -> None:
                     title,
                     priority=index,
                     evidence_targets=[
-                        _target(f"What does {title} report first?"),
-                        _target(f"What does {title} report second?"),
+                        _target(
+                            f"What does {title} report first?",
+                            measure="interconnection constraints",
+                        ),
+                        _target(
+                            f"What does {title} report second?",
+                            measure="interconnection constraints",
+                        ),
                     ],
                 )
                 for index, title in enumerate(
@@ -1929,7 +1934,7 @@ def test_targets_carry_locally_stamped_ids() -> None:
     assert first.coverage_id == "topic-01"
     assert first.required is True
     # The draft's own fields stand: the contract no longer adds a dimension.
-    assert first.measure == "benchmark result"
+    assert first.measure == "interconnection constraints"
     assert target_problems(stamped, contract) == []
 
 
@@ -2551,7 +2556,7 @@ def test_dated_legal_constraints_keep_their_historical_form(
                 _draft(
                     title,
                     priority=index,
-                    evidence_targets=[_target(question)],
+                    evidence_targets=[_target(question, measure=question)],
                 )
                 for index, title in enumerate(
                     ("Legal text", "Administrative record", "Implementation"),
@@ -3386,6 +3391,73 @@ async def test_a_scope_widening_target_is_named_by_the_review_and_is_recorded(
             f"target-01-01 widens the frozen scope: {widening}"
         ],
     }
+
+
+def _tolerance_plan() -> ResearchPlanDraft:
+    """One plan carrying exactly one advisory defect, and it names a target.
+
+    The tolerance is the one the last measured plan invented ("agree within
+    10%") and the question states none, so the plan's own repair is told about
+    exactly that target.
+    """
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft(
+                "Queue totals",
+                priority=1,
+                evidence_targets=[
+                    _target(
+                        "Do the two 2024 queue totals agree within 10%?",
+                        measure="queue totals agreement",
+                    ),
+                    _target(
+                        "What was the queue total in 2024?",
+                        measure="queue total",
+                    ),
+                ],
+            ),
+            _draft("Withdrawn capacity", priority=2),
+            _draft("Reforms", priority=3),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_surviving_advisory_target_is_dropped_not_recorded(
+    tracker: Tracker,
+) -> None:
+    """A plan does not ship the target its own repair was told about.
+
+    The live nine-question probe's P3, P4 and P6 plans ended with
+    planner_plan_defects_unresolved: an advisory naming a target the plan
+    kept anyway, so the shipped plan carried a defect a reader has to read and
+    the target it named stayed in the run's obligations. A plan that ignores the
+    one correction it was given loses the target instead, and the pass records
+    nothing about it — while a *structural* defect keeps today's behaviour
+    (test_an_infeasible_target_batch_is_repaired_once_then_refused).
+    """
+    draft = _tolerance_plan()
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        # The repair returns the plan unchanged: the advisory survives it.
+        outputs=[draft, draft, _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state("How much capacity was withheld in 2024?"))
+
+    assert outcome.result is not None
+    assert outcome.result.repair_attempted is True
+    shipped = [
+        (sub_topic.coverage_id, [target.question for target in sub_topic.evidence_targets])
+        for sub_topic in outcome.result.sub_topics
+    ]
+    assert shipped[0] == (
+        "topic-01",
+        ["What was the queue total in 2024?"],
+    )
+    assert _plan_defects(outcome.state_update["errors"]) == []
 
 
 @pytest.mark.asyncio
@@ -4649,6 +4721,163 @@ def test_a_draft_target_without_a_measure_is_a_plan_problem() -> None:
     assert any("check these fields: measure" in problem for problem in problems)
 
 
+# The live nine-question planning probe marked aims its questions never named
+# as required: "number of weeks in the fiscal year" in the P5 Apple plan (the
+# fiscal-year basis is what makes two fiscal years comparable — an aid the
+# planner added beside the revenue targets) and "TIOBE index rating increase" /
+# "year-over-year growth of the fastest-growing language" in the P8 plan
+# (attributes of indexes the question never names). A required target is what a
+# run's acceptance is judged on, so an aid nobody asked for must not gate it.
+_APPLE_QUESTION = (
+    "What was Apple's revenue by product category in fiscal 2025, and how did "
+    "it compare with fiscal 2024?"
+)
+_LANGUAGE_QUESTION = "Which programming languages grew fastest in popularity in 2025?"
+_BATTERY_QUESTION = (
+    "How much grid-scale battery storage capacity was added in the United "
+    "States in 2024, and what do the latest forecasts project for 2025?"
+)
+
+
+@pytest.mark.parametrize(
+    ("question", "measure"),
+    (
+        (_APPLE_QUESTION, "number of weeks in the fiscal year"),
+        (_LANGUAGE_QUESTION, "TIOBE index rating increase"),
+        (_LANGUAGE_QUESTION, "PYPL index share increase"),
+    ),
+)
+def test_a_measure_the_question_never_names_is_stamped_optional(
+    question: str, measure: str
+) -> None:
+    """An aid the planner added is never required, whatever the draft said.
+
+    Both shapes are the P8 plan's own: a named index's rating or share increase
+    is a magnitude from a body the question never named. The plan's third P8
+    measure, "year-over-year growth of the fastest-growing language", is *not*
+    in this list on purpose — the question asks which languages "grew fastest",
+    and a stem match reads growth/grew as the question's own word, so that
+    target keeps the draft's flag.
+    """
+    assert _stamped(question, _target(measure=measure)).required is False
+
+
+def test_a_measure_the_question_names_keeps_the_drafts_required_flag() -> None:
+    """The counterpart: a part of the question stays required.
+
+    The benchmark question names this measure's own words, so the plan's own
+    required flag stands — the rule demotes added aids, never the question's
+    own parts.
+    """
+    assert (
+        _stamped(
+            _BATTERY_QUESTION,
+            _target(
+                "What did grid-scale battery storage add in 2024?",
+                measure="grid-scale battery storage capacity added",
+            ),
+        ).required
+        is True
+    )
+
+
+# The grader's P6 item 4: the Roman Republic plan carried required count and
+# currency targets of kind actual on a why-question, so the run owed figures
+# nobody asked for while the reasons it did ask for were not what acceptance
+# measured. A question answered by an argument or a text plans no figure target
+# of its own.
+def test_a_reasons_question_plans_no_figure_target() -> None:
+    """A why-question's parts are reasons: its targets carry no unit or kind.
+
+    Any figure the researcher finds is evidence inside a reason's finding, never
+    an obligation the run must answer.
+    """
+    stamped = _stamped(
+        "Why did the Roman Republic fall?",
+        _target(
+            "How many legions did Rome field in 50 BC?",
+            measure="legions fielded",
+            unit_dimension="count",
+            kind="actual",
+        ),
+    )
+
+    assert (stamped.unit_dimension, stamped.kind) == (None, None)
+
+
+def test_a_rules_question_plans_no_figure_target_it_was_not_asked_for() -> None:
+    """The same for the other form answered by a text rather than a number."""
+    stamped = _stamped(
+        "What are the current interconnection constraints?",
+        _target(
+            "How much capacity did the 2019 rule set?",
+            measure="capacity threshold set by the rule",
+            unit_dimension="power",
+            kind="actual",
+        ),
+    )
+
+    assert (stamped.unit_dimension, stamped.kind) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        _BATTERY_QUESTION,
+        "How much energy did battery storage systems add to the grid in 2024?",
+    ),
+)
+def test_a_question_asking_for_a_quantity_still_carries_its_figure_target(
+    question: str,
+) -> None:
+    """The counterpart: a question that asks how much keeps its figures.
+
+    The quantity is the question's own ask, by a 'how much' phrase, a unit
+    token, or the words that name a measured magnitude.
+    """
+    stamped = _stamped(
+        question,
+        _target(
+            "How much capacity was added?",
+            measure="grid-scale battery storage capacity added",
+            unit_dimension="power",
+            kind="actual",
+        ),
+    )
+
+    assert (stamped.unit_dimension, stamped.kind) == ("power", "actual")
+
+
+def test_a_rules_question_that_names_a_unit_keeps_its_figure_target() -> None:
+    """A rule question that names the quantity it asks about keeps figures too."""
+    stamped = _stamped(
+        "What are the permitting constraints for a 12 GW storage connection?",
+        _target(
+            "How much capacity does the rule permit?",
+            measure="capacity permitted by the rule, in GW",
+            unit_dimension="power",
+            kind="actual",
+        ),
+    )
+
+    assert (stamped.unit_dimension, stamped.kind) == ("power", "actual")
+
+
+def test_an_optional_target_the_question_names_is_not_promoted() -> None:
+    """Required is the model's to grant: the rule only ever removes it."""
+    assert (
+        _stamped(
+            _BATTERY_QUESTION,
+            _target(
+                "What did grid-scale battery storage add in 2024?",
+                required=False,
+                measure="grid-scale battery storage capacity added",
+            ),
+        ).required
+        is False
+    )
+
+
 def test_the_answer_contract_adds_no_boilerplate_to_targets() -> None:
     targets = _draft_targets(_structured_draft(), "topic-01")
     topic = SubTopic(
@@ -4656,7 +4885,11 @@ def test_the_answer_contract_adds_no_boilerplate_to_targets() -> None:
         search_queries=["q"], success_criteria=["c"], priority=1,
         evidence_targets=targets,
     )
-    [stamped] = apply_answer_contract([topic], _contract())
+    # The contract's question names the measure, so the rule under test here
+    # (nothing is added to a target's fields) is the only thing that acts.
+    [stamped] = apply_answer_contract(
+        [topic], _contract("How much battery storage power capacity was added?")
+    )
     assert stamped.evidence_targets[0].model_dump() == targets[0].model_dump()
 
 
@@ -4678,16 +4911,21 @@ _QUESTION_NAMING_NO_BODY = (
     "How much did semaglutide sales grow in 2024, and what is projected for 2025?"
 )
 
-# A body the plan may only have *described*: a role named through what it makes,
-# owns, publishes or authors; a relative clause; or two bodies joined into one
-# label.
+# A body the plan may only have *described*: lower-case prose naming a role,
+# with or without a clause. The re-review's probe found the shapes a role-word
+# list missed — every one of them was still being stamped, so the target was
+# still pre-failed for the whole run.
 _DESCRIBED_BODIES = (
     "the manufacturer of semaglutide",
     "the drug's maker",
     "the manufacturer",
     "the body that publishes the primary record",
     "the company responsible for the trial",
-    "European Parliament and Council of the European Union",
+    "the regional health authority",
+    "the national public health agency",
+    "the national statistical agency",
+    "the regulator",
+    "the market monitor",
 )
 
 
@@ -4705,8 +4943,22 @@ def test_a_body_the_plan_can_only_describe_is_left_empty(organisation: str) -> N
         "U.S. Energy Information Administration",
         "EIA",
         "the European Chemicals Agency",
-        "the regional health authority",
         "Novo Nordisk",
+        # The names a role-word list emptied, which loosened a quantity
+        # target's provenance rather than tightening it: `_figure_answers`
+        # drops the organisation conjunct when a target carries none.
+        "Centers for Disease Control and Prevention",
+        "National Institute of Standards and Technology",
+        "Department of Health and Human Services",
+        "Department for Energy Security and Net Zero",
+        "WHO",
+        "WHO Europe",
+        # Two bodies joined by a capitalised conjunction are a name-shaped
+        # value, and the join alone therefore stays stamped: "Centers for
+        # Disease Control and Prevention" carries that conjunction inside one
+        # body's name, so refusing the shape emptied real names. Whether a join
+        # names one body or two is the plan review's judgement.
+        "European Parliament and Council of the European Union",
     ),
 )
 def test_a_body_the_plan_names_is_stamped_by_name(organisation: str) -> None:
@@ -4716,7 +4968,9 @@ def test_a_body_the_plan_names_is_stamped_by_name(organisation: str) -> None:
     plan's own inference of the body that publishes the primary record — which
     the plan instruction asks for and §6.6 is then able to match against a
     page's own label. A guard that emptied these would refuse that inference
-    and loosen every figure target's provenance.
+    and loosen every figure target's provenance: an emptied organisation drops
+    that conjunct from ``verified_facts._figure_answers``, so another body's
+    figure could answer the target.
     """
     assert (
         _stamped(_QUESTION_NAMING_NO_BODY, _target(organisation=organisation)).organisation

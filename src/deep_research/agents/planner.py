@@ -636,7 +636,7 @@ _PLAN_REPLY_EXAMPLES = (
         'authority report for 2024?","required":true,'
         '"measure":"MMR first-dose coverage","unit_dimension":"percent",'
         '"period":"2024","kind":"actual",'
-        '"geography":"the region","organisation":"the regional health authority"}]},'
+        '"geography":"the region","organisation":"the Regional Health Authority"}]},'
         '{"title":"outbreak investigation findings",'
         '"rationale":"The causes the investigating body itself identified.",'
         '"search_queries":["regional health authority measles outbreak report 2024 causes"],'
@@ -646,7 +646,7 @@ _PLAN_REPLY_EXAMPLES = (
         'authority\'s outbreak report identify?","required":true,'
         '"measure":"causes identified by the outbreak report","unit_dimension":"",'
         '"period":"2024","kind":"",'
-        '"geography":"the region","organisation":"the regional health authority"}]},'
+        '"geography":"the region","organisation":"the Regional Health Authority"}]},'
         '{"title":"immunity threshold",'
         '"rationale":"Background the reader needs to judge the coverage figure.",'
         '"search_queries":["national public health agency measles herd immunity threshold"],'
@@ -657,7 +657,7 @@ _PLAN_REPLY_EXAMPLES = (
         'public health agency state for measles?","required":false,'
         '"measure":"stated immunity threshold","unit_dimension":"percent",'
         '"period":"","kind":"",'
-        '"geography":"national","organisation":"the national public health agency"}]}'
+        '"geography":"national","organisation":"the National Public Health Agency"}]}'
         "]}",
     ),
 )
@@ -2040,58 +2040,37 @@ def target_problems(
     return [problem.text for problem in _plan_problems(sub_topics, contract)]
 
 
-# What a body is described *through* when the plan does not name it: the words
-# that name a body only by its relationship to the thing measured. The
-# vocabulary is explicit and small, like the currency, tolerance and widening
-# tables below, and it is deliberately made of relational words alone — a
-# statistical agency, a department or a ministry is a body a page carries as
-# itself ("the Department of Energy"), while "the manufacturer of semaglutide"
-# is a role, and no page's organisation label is one.
-_BODY_ROLE_WORDS = frozenset(
+# What a value has to look like to be a body's own name, and what a
+# *description* of a role looks like instead. The shape is the test, never a
+# list of words: a blacklist of role words refused real names that happened to
+# carry one ("Department of Health and Human Services" was emptied for its
+# "Department") — and emptying a name loosens the binding rather than
+# tightening it, because a quantity target with no organisation is answered by
+# any page's figure — while still stamping descriptions whose role word sat
+# outside the list ("the national statistical agency"). A centre-piece example
+# needed the opposite too: "WHO" was read as a relative clause.
+#
+# A value names a body when, after dropping a leading article, either
+#   * every significant token is capitalised (a token may be lower case only
+#     when it is a connector: "of", "for", "and", "the", "de", "van"), or
+#   * it carries an acronym shape: a token of two or more all-upper-case
+#     letters ("WHO", "WHO Europe", "US EIA").
+# A *lower-case* relative clause is a description ("the body that publishes
+# the record"), matched case-sensitively so an acronym is never caught by it.
+_BODY_NAME_CONNECTORS = frozenset(
     {
-        "maker", "makers", "manufacturer", "manufacturers", "producer",
-        "producers", "publisher", "publishers", "author", "authors", "issuer",
-        "issuers", "writer", "writers", "creator", "creators", "developer",
-        "developers", "owner", "owners", "operator", "operators", "supplier",
-        "suppliers", "vendor", "vendors", "seller", "sellers", "provider",
-        "providers", "distributor", "distributors", "importer", "importers",
-        "exporter", "exporters", "filer", "filers",
-        # A legal form on its own names no body either ("the company for its
-        # own filing"); beside a name's own word it is part of one ("Ford
-        # Motor Company"), which the identifying-word test below keeps.
-        "company", "companies", "firm", "firms", "business", "businesses",
-        "body", "bodies", "entity", "entities", "organisation",
-        "organisations", "organization", "organizations",
+        "a", "an", "the", "of", "for", "and", "or", "in", "on", "at", "by",
+        "to", "from", "with", "de", "del", "della", "di", "da", "van", "von",
+        "der", "den", "und", "y", "e", "et", "el", "la", "le",
     }
 )
 
-# The words that make a role word a description rather than a title: what the
-# body makes, owns, publishes or is responsible for.
-_BODY_DESCRIPTION_FRAME = re.compile(
-    r"(?i)\b(?:of|for|behind|responsible|making|manufacturing|producing|"
-    r"publishing|issuing|writing|authoring|developing|selling|supplying|"
-    r"operating|owning)\b"
-)
+# Lower case only, and compared against the raw token: "WHO" is a name, and
+# "who" in "the body who publishes it" is the relative clause that makes the
+# whole value a description.
+_BODY_DESCRIPTION_CLAUSES = frozenset({"that", "which", "who", "whose"})
 
-# A relative clause: a name never carries one, a description always may.
-_BODY_RELATIVE_CLAUSE = re.compile(r"(?i)\b(?:that|which|who|whose)\b")
-
-# Two bodies joined into one label. A single page's organisation label names
-# one body, and §6.6 matches one label against one label; a joined pair matches
-# neither of its halves ("European Parliament and Council of the European
-# Union" is two institutions, not a name).
-_BODY_JOINED_BODIES = re.compile(
-    r"(?i)\b[^\W\d_]{2,}\s+[^\W\d_]{2,}\s+(?:and|&)\s+[^\W\d_]{2,}"
-)
-
-# The words of a name that are not capitalised and carry no identity of their
-# own. A name's remaining words are what tell a name from a bare role: "the
-# Utility Regulator" keeps a body, "the regulator" is a role.
-_BODY_FILLER_WORDS = frozenset(
-    {"the", "a", "an", "its", "their", "this", "that", "these", "those", "own"}
-)
-
-_BODY_WORD = re.compile(r"[^\W\d_][\w'’-]*")
+_BODY_WORD = re.compile(r"[^\W\d_][\w'\u2019-]*")
 
 
 def _names_a_body(value: str) -> bool:
@@ -2102,42 +2081,36 @@ def _names_a_body(value: str) -> bool:
     host. A *description* of a body's role matches none of those, so a target
     stamped with one was reported Not found for the whole run while the report
     held its answer, and an extra pass was bought for it (live probe P3/P4 —
-    "the manufacturer of semaglutide" for a drug's maker, and two institutions
-    joined into one label for the bodies that enacted a rule).
+    "the manufacturer of semaglutide" for a drug's maker).
 
-    Four shapes are descriptions, and each is a shape no page's label has: a
-    relative clause ("the body that publishes the record"), two bodies joined
-    ("A and B"), a role word described through what it makes or publishes
-    ("the manufacturer **of** semaglutide"), and a role word left with nothing
-    that identifies it ("the manufacturer", "the drug's maker"). A role word
-    beside an identifying word is a name and stays ("Novo Nordisk
-    manufacturer" is legible, "the manufacturer" is not), which is what keeps
-    real names that carry one — "Association of British Insurers", "the
-    Utility Regulator" — untouched.
+    The shape decides, in both directions. A description is lower case prose
+    with a role or a relative clause in it ("the regional health authority",
+    "the national statistical agency", "the regulator", "the manufacturer of
+    semaglutide"), and a name is capitalised or an acronym ("Centers for
+    Disease Control and Prevention", "Department for Energy Security and Net
+    Zero", "WHO", "WHO Europe"). Refusing by *shape* is what keeps the guard
+    from emptying real names — an emptied name loosens a quantity target's
+    provenance instead of tightening it — and from stamping the descriptions a
+    word list misses.
 
-    The vocabulary is explicit and small, like the currency, tolerance and
-    widening tables: judging whether a *name* is the right publisher is the
-    plan review's, and this check only refuses a description the match can
-    never accept.
+    Two bodies joined by a capitalised conjunction stay stamped ("Wood
+    Mackenzie and the American Clean Power Association", "European Parliament
+    and Council of the European Union"): that shape is a name-shaped value, and
+    refusing it emptied real names that carry the conjunction too ("Centers for
+    Disease Control and Prevention"). Whether a join is one body or two is the
+    plan review's judgement, and a target bound to a label no page carries is
+    then a plan-quality defect rather than a shape this check can decide.
     """
-    if _BODY_RELATIVE_CLAUSE.search(value) or _BODY_JOINED_BODIES.search(value):
+    tokens = _BODY_WORD.findall(value)
+    if not tokens:
         return False
-    words = _BODY_WORD.findall(value)
-    roles = [word for word in words if word.casefold() in _BODY_ROLE_WORDS]
-    if not roles:
+    if any(token in _BODY_DESCRIPTION_CLAUSES for token in tokens):
+        return False
+    if any(len(token) >= 2 and token.isupper() for token in tokens):
         return True
-    # A lower-case role word with a frame is the description the live plans
-    # wrote. A capitalised one ("Organisation for Economic Co-operation and
-    # Development") is a name's own first word, and the identifying-word test
-    # below is what decides those.
-    if any(word.islower() for word in roles) and _BODY_DESCRIPTION_FRAME.search(value):
-        return False
-    return any(
-        index > 0
-        and any(character.isupper() for character in word)
-        and word.casefold() not in _BODY_ROLE_WORDS
-        and word.casefold() not in _BODY_FILLER_WORDS
-        for index, word in enumerate(words)
+    return all(
+        token.casefold() in _BODY_NAME_CONNECTORS or token[:1].isupper()
+        for token in tokens
     )
 
 
@@ -2160,20 +2133,225 @@ def _stamped_organisation(value: str | None) -> str | None:
     return name
 
 
+# The function words a measure shares with nearly every question, and which
+# therefore say nothing about whether the question asked for the measurement.
+# The list is deliberately small: a content word stays in the test even when a
+# question would rarely name it, which is the narrowing Main's ruling asks for.
+_MEASURE_FILLER_WORDS = frozenset(
+    {
+        "a", "an", "the", "of", "for", "in", "on", "at", "by", "to", "from",
+        "with", "and", "or", "as", "per", "its", "their", "this", "that",
+        "these", "those", "each", "any", "all", "over", "under", "between",
+        "during", "into", "than", "then", "when", "while", "is", "are", "was",
+        "were", "be", "been", "being",
+    }
+)
+
+_MEASURE_WORD = re.compile(r"[a-z0-9][a-z0-9'’-]*")
+
+# The four characters two words sharing a stem must agree on. Four is what
+# separates "growth" from "grow" and "increases" from "increase" without
+# reading "rating" as "rate": a derivational suffix is a shorter edit than an
+# unrelated word's opening.
+_MEASURE_STEM_CHARS = 4
+
+
+def _measure_traces_to_question(target: EvidenceTarget, *, contract: AnswerContract) -> bool:
+    """Whether the question names what this target measures (spec §7.1).
+
+    A required target is what a run's acceptance is judged on, so it has to be
+    a part of the question rather than something the planner added to make
+    another part checkable. The live nine-question probe planned exactly such
+    aids and marked them required: "number of weeks in the fiscal year" beside
+    a revenue comparison, and a named index's "index rating increase" beside a
+    question about which languages grew fastest — figures the question never
+    names, whose absence would fail acceptance for a report that answers it.
+
+    The test reads the measure's own content words against the frozen
+    contract: the question, its scope statement and its geography. A word traces when the haystack holds
+    the same word, or a word sharing its first four characters ("growth" /
+    "grow", "increases" / "increase"); function words are dropped, and a
+    measure that leaves no content word at all keeps the draft's flag, because
+    nothing there can be shown to be an addition.
+
+    Only the question's own words decide it, never a domain, a body or a
+    question: a measure that quotes the question stays exactly as the draft
+    said, and the energy-for-capacity rule stays beside this one.
+    """
+    measure = target.measure or ""
+    content = [
+        word
+        for word in _MEASURE_WORD.findall(_normalized_question(measure))
+        if word not in _MEASURE_FILLER_WORDS
+        and len(word) >= 3
+        # A unit token and the words that name a unit's family are the plan's
+        # own summary of what it measures, not the question's wording: the
+        # energy-for-capacity rule beside this one already decides that family,
+        # and reading "MWh" here would demote a target that rule exempts.
+        and not _POWER_UNIT.fullmatch(word)
+        and not _ENERGY_UNIT.fullmatch(word)
+        and word not in _ENERGY_MARKERS
+        and word not in _CAPACITY_MARKERS
+    ]
+    if not content:
+        return True
+    haystack = _MEASURE_WORD.findall(
+        _normalized_question(
+            " ".join(
+                filter(
+                    None,
+                    (
+                        contract.question,
+                        contract.scope_statement or "",
+                        contract.geographic_scope or "",
+                    ),
+                )
+            )
+        )
+    )
+    traced = sum(
+        1
+        for word in content
+        if any(
+            candidate == word
+            or (
+                len(candidate) >= _MEASURE_STEM_CHARS
+                and len(word) >= _MEASURE_STEM_CHARS
+                and candidate[: _MEASURE_STEM_CHARS]
+                == word[: _MEASURE_STEM_CHARS]
+            )
+            for candidate in haystack
+        )
+    )
+    # A majority, not every word: the question's own phrasing of a part it
+    # asks for rarely repeats the measure's whole wording ('annual battery
+    # storage energy additions, in MWh' against 'how much energy did battery
+    # storage systems add', where the measure's own unit token is the plan's
+    # summary rather than the question's word), while an aid the question
+    # never named traces almost nothing at all. Four of four and six of six
+    # stay required; one of four and two of seven do not.
+    return traced * 2 >= len(content)
+
+
+# The answer forms whose answer is an argument or a text rather than a
+# measured quantity: a why-question's mechanism, and a question about a list of
+# rules, provisions or dated changes. A target of such a question that carries
+# a unit dimension or a kind is a figure the plan added of its own accord — the
+# grader's P6 Roman Republic plan marked required count and currency targets of
+# kind actual on a why-question — so the run owed figures nobody asked for while
+# the reasons it did ask for were not what acceptance measured.
+_FIGURE_ANSWER_FORMS = frozenset({"explanation", "constraints"})
+
+# What says the question itself asks for a quantity to be measured: an ask for
+# a magnitude, a unit token, or a word that names a measured magnitude. The
+# vocabulary is general — how much/how many, a unit, a total, a rate — and never
+# names a question, a domain or a body.
+_QUANTITY_QUESTION_PHRASES = (
+    "how much",
+    "how many",
+    "how large",
+    "how big",
+    "how long",
+    "how high",
+    "how far",
+    "how fast",
+    "how quickly",
+    "how often",
+    "what share",
+    "what proportion",
+    "what percentage",
+    "what fraction",
+    "what amount",
+    "what rate",
+    "what price",
+    "what cost",
+    "what level",
+    "what total",
+)
+
+_MAGNITUDE_WORDS = (
+    "total",
+    "rate",
+    "share",
+    "percentage",
+    "proportion",
+    "fraction",
+    "amount",
+    "number",
+    "count",
+    "volume",
+    "price",
+    "cost",
+    "level",
+    "index",
+    "ratio",
+    "average",
+    "median",
+    "growth",
+    "size",
+    "value",
+    "revenue",
+    "sales",
+    "capacity",
+    "output",
+    "spending",
+    "expenditure",
+)
+
+
+def _question_asks_for_a_quantity(contract: AnswerContract) -> bool:
+    """Whether the question itself asks for a quantity to be measured (§7.1).
+
+    Read from the frozen question's own words: an ask for a magnitude ("how
+    much", "what share"), a unit token, or a word that names a measured
+    magnitude. This is the one condition under which a target of a
+    text-answered question may carry a figure of its own.
+    """
+    question = _normalized_question(contract.question)
+    return (
+        _mentions(question, _QUANTITY_QUESTION_PHRASES)
+        or _POWER_UNIT.search(question) is not None
+        or _ENERGY_UNIT.search(question) is not None
+        or _mentions(question, _MAGNITUDE_WORDS)
+    )
+
+
+def _figure_targets_are_planned(contract: AnswerContract) -> bool:
+    """Whether this question's own form lets a target carry a figure (§7.1).
+
+    A question answered by a mechanism or by a text plans no figure target of
+    its own: its parts are reasons, rules, provisions or dated changes, and any
+    figure the researcher later finds is evidence inside that finding rather
+    than an obligation the run must answer. A question that asks for a quantity
+    keeps its figures whatever its form — the audit question is answered by an
+    argument in part and still asks "how much capacity was added".
+    """
+    if contract.answer_kind not in _FIGURE_ANSWER_FORMS:
+        return True
+    return _question_asks_for_a_quantity(contract)
+
+
 def apply_answer_contract(
     sub_topics: Sequence[SubTopic],
     contract: AnswerContract,
 ) -> list[SubTopic]:
     """Re-stamp each target's id, organisation and ``required`` flag (spec §7.1).
 
-    The model marks a target required only when the question names it. One
-    bounded code rule remains for the flag (Fable C-d): a target that asks for
-    an energy figure (MWh) a capacity question never named is optional, whatever
-    the draft said. The organisation is the other: a body the plan can only
-    *describe* is emptied, so a target is never bound to a label §6.6 can never
-    match (``_stamped_organisation``). Nothing else is added to a target.
+    The model marks a target required only when the question names it. Two
+    bounded code rules enforce that reading: a target that asks for an energy
+    figure (MWh) a capacity question never named is optional whatever the draft
+    said (Fable C-d), and so is a target whose measure does not trace to the
+    question's own words — the aid a planner adds to make another target
+    checkable (``_measure_traces_to_question``). Two fields are corrected on the
+    way: a question answered by an argument or a text plans no figure of its own
+    (``_figure_targets_are_planned``), and a body the plan can only *describe*
+    is emptied so a target is never bound to a label §6.6 can never match
+    (``_stamped_organisation``). Nothing is ever promoted: required is the
+    model's to grant, and a figure the question did not ask for is not one the
+    run owes.
     """
     stamped: list[SubTopic] = []
+    figures_planned = _figure_targets_are_planned(contract)
     for sub_topic in sub_topics:
         targets = [
             EvidenceTarget(
@@ -2181,11 +2359,14 @@ def apply_answer_contract(
                 coverage_id=sub_topic.coverage_id,
                 question=target.question,
                 required=target.required
-                and not _unrequested_energy_measure(target, contract=contract),
+                and not _unrequested_energy_measure(target, contract=contract)
+                and _measure_traces_to_question(target, contract=contract),
                 measure=target.measure,
-                unit_dimension=target.unit_dimension,
+                unit_dimension=(
+                    target.unit_dimension if figures_planned else None
+                ),
                 period=target.period,
-                kind=target.kind,
+                kind=target.kind if figures_planned else None,
                 geography=target.geography,
                 organisation=_stamped_organisation(target.organisation),
             )
@@ -2994,6 +3175,62 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         except ProviderError as error:
             raise planning_provider_error("plan_review") from error
 
+    def _without_defective_targets(
+        self,
+        attempt: _PlanAttempt,
+        *,
+        contract: AnswerContract,
+    ) -> _PlanAttempt:
+        """The attempt with every target a surviving advisory defect names removed.
+
+        The one repair is what a plan's own local defects get. A plan that keeps
+        the very target its repair was told about has not taken the correction,
+        and the live nine-question probe's P3, P4 and P6 plans shipped a
+        planner_plan_defects_unresolved record for exactly that: an advisory
+        naming a target the plan kept anyway. Removing the target removes the
+        defect — the plan ships without it, its id leaves the frozen inventory
+        because ids are inventoried after this point, and the pass records
+        nothing about it.
+
+        Structural problems are untouched: they decide whether a plan can be
+        executed at all, and finalize's own branch is what judges them. A
+        plan whose last target is named, or whose sub-topic loses all of them, is
+        returned unchanged rather than emptied: a plan has to exist to be
+        researched, and an empty one is the replanning case rather than this one.
+        """
+        named = {problem.split(" ", 1)[0] for problem in attempt.advisory}
+        if not named:
+            return attempt
+        pruned: list[SubTopic] = []
+        for sub_topic in attempt.sub_topics:
+            kept = [
+                target
+                for target in sub_topic.evidence_targets
+                if target.target_id not in named
+            ]
+            if not kept:
+                continue
+            pruned.append(
+                sub_topic.model_copy(update={"evidence_targets": kept})
+            )
+        if not pruned:
+            return attempt
+        problems = _plan_problems(pruned, contract)
+        return _PlanAttempt(
+            plan=attempt.plan,
+            sub_topics=pruned,
+            structural=[
+                problem.text
+                for problem in problems
+                if problem.kind == "structural"
+            ],
+            advisory=[
+                problem.text
+                for problem in problems
+                if problem.kind == "advisory"
+            ],
+        )
+
     def _record_defects(
         self,
         run: ReActRun,
@@ -3139,6 +3376,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                         plan=reattempt.plan,
                         problems=reattempt.labelled,
                     )
+        attempt = self._without_defective_targets(attempt, contract=contract)
         self._record_defects(
             run,
             stage="plan_checks",
