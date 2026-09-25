@@ -81,7 +81,7 @@ MAX_POINT_CHARS = 600
 _SECTION_TITLE_CHARS = 120
 # F10: the first attempt runs at the resolved profile's effort (config.yaml
 # model_overrides.report_writer, the one effort source); a truncated draft is
-# asked once more at high, the synthesizer's measured retry.
+# asked once more at high, the retry this writer's own call makes.
 _WRITER_ATTEMPT_EFFORTS: tuple[str | None, ...] = (None, OUTPUT_LIMIT_RETRY_EFFORT)
 
 REPORT_WRITER_SYSTEM_PROMPT = (
