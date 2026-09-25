@@ -963,7 +963,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Review F2's remedy moved the writer once more: its instruction now asks a
     # point in the executive summary to state every required target the packet
     # names a label for (`1bfcd866e32f` -> `d6b723723629`).
-    "evidence_verifier": "a6205ea9c362",
+    # Prompt-fix wave (Fable's review VER-1..VER-4, EXTRA-3, EXTRA-4) rewrote the
+    # Evidence Verifier's four model-read blocks and added the reproduced-document
+    # credit: `a6205ea9c362` -> `90e57af30cd8`. No other agent's text changed, and
+    # the Judge pin is unchanged.
+    "evidence_verifier": "90e57af30cd8",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;

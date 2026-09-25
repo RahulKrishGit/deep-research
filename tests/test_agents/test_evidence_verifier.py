@@ -346,7 +346,7 @@ def _confirm_reply(messages: list, schema: type) -> ContextCheckDraft:
     figures = []
     for block in re.split(r"\n\n(?=## )", section):
         label = re.match(r"## (F\d+)", block).group(1)
-        snippet = re.search(r"snippet: (.*)", block).group(1)
+        snippet = _block_snippet(block)
         figures.append(FigureCheckDraft(
             finding=label, figure=1, attribution="own", kind="actual",
             evidence_words=snippet, verdict="confirm", reason="As stated.",
@@ -1248,10 +1248,21 @@ def test_the_page_date_comes_from_the_evaluated_source() -> None:
     assert evaluated_page_date([elsewhere], read) is None
 
 
+def _block_snippet(body: str) -> str:
+    """The snippet of the checked figure's own block, never the static example's.
+
+    The reply-format section prints an example whose input carries a snippet line
+    of its own, and the static sections come first, so the real block's snippet
+    is the request's last one (review VER-2 defect 8 put the block's own field
+    names into that example).
+    """
+    return re.findall(r"snippet: (.*)", body)[-1]
+
+
 def _relative_period_reply(messages: list, schema: type) -> ContextCheckDraft:
     """Answer the one figure with the period its page's stated date resolves "this year" to."""
     del schema
-    snippet = re.search(r"snippet: (.*)", messages[1].content).group(1)
+    snippet = _block_snippet(messages[1].content)
     return ContextCheckDraft(figures=[FigureCheckDraft(
         finding="F01", figure=1, period="2026", attribution="own", kind="actual",
         evidence_words=snippet, verdict="correct", reason="The page's own date resolves the year.",
