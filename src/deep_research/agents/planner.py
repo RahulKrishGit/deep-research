@@ -521,7 +521,10 @@ PLAN_INSTRUCTION = (
     "is reported Not found however much evidence the run collects. Name one body "
     "per target; never join two. Plan one target per organisation, measure, "
     "period and kind the question asks for.\n"
-    "A target is required only for what the question names. Read the question as "
+    "A target is required only for what the question names. A target you add "
+    "to make another target checkable — a magnitude, a definition, a supporting "
+    "statistic or a running total — is optional, even when the answer needs it. "
+    "Read the question as "
     "its parts: each figure, period, body, option, place or item it names, and "
     "each clause it asks, is a part a complete answer needs, and every part gets "
     "its own target. For each part, the evidence that settles it decides the "
@@ -2133,106 +2136,6 @@ def _stamped_organisation(value: str | None) -> str | None:
     return name
 
 
-# The function words a measure shares with nearly every question, and which
-# therefore say nothing about whether the question asked for the measurement.
-# The list is deliberately small: a content word stays in the test even when a
-# question would rarely name it, which is the narrowing Main's ruling asks for.
-_MEASURE_FILLER_WORDS = frozenset(
-    {
-        "a", "an", "the", "of", "for", "in", "on", "at", "by", "to", "from",
-        "with", "and", "or", "as", "per", "its", "their", "this", "that",
-        "these", "those", "each", "any", "all", "over", "under", "between",
-        "during", "into", "than", "then", "when", "while", "is", "are", "was",
-        "were", "be", "been", "being",
-    }
-)
-
-_MEASURE_WORD = re.compile(r"[a-z0-9][a-z0-9'’-]*")
-
-# The four characters two words sharing a stem must agree on. Four is what
-# separates "growth" from "grow" and "increases" from "increase" without
-# reading "rating" as "rate": a derivational suffix is a shorter edit than an
-# unrelated word's opening.
-_MEASURE_STEM_CHARS = 4
-
-
-def _measure_traces_to_question(target: EvidenceTarget, *, contract: AnswerContract) -> bool:
-    """Whether the question names what this target measures (spec §7.1).
-
-    A required target is what a run's acceptance is judged on, so it has to be
-    a part of the question rather than something the planner added to make
-    another part checkable. The live nine-question probe planned exactly such
-    aids and marked them required: "number of weeks in the fiscal year" beside
-    a revenue comparison, and a named index's "index rating increase" beside a
-    question about which languages grew fastest — figures the question never
-    names, whose absence would fail acceptance for a report that answers it.
-
-    The test reads the measure's own content words against the frozen
-    contract: the question, its scope statement and its geography. A word traces when the haystack holds
-    the same word, or a word sharing its first four characters ("growth" /
-    "grow", "increases" / "increase"); function words are dropped, and a
-    measure that leaves no content word at all keeps the draft's flag, because
-    nothing there can be shown to be an addition.
-
-    Only the question's own words decide it, never a domain, a body or a
-    question: a measure that quotes the question stays exactly as the draft
-    said, and the energy-for-capacity rule stays beside this one.
-    """
-    measure = target.measure or ""
-    content = [
-        word
-        for word in _MEASURE_WORD.findall(_normalized_question(measure))
-        if word not in _MEASURE_FILLER_WORDS
-        and len(word) >= 3
-        # A unit token and the words that name a unit's family are the plan's
-        # own summary of what it measures, not the question's wording: the
-        # energy-for-capacity rule beside this one already decides that family,
-        # and reading "MWh" here would demote a target that rule exempts.
-        and not _POWER_UNIT.fullmatch(word)
-        and not _ENERGY_UNIT.fullmatch(word)
-        and word not in _ENERGY_MARKERS
-        and word not in _CAPACITY_MARKERS
-    ]
-    if not content:
-        return True
-    haystack = _MEASURE_WORD.findall(
-        _normalized_question(
-            " ".join(
-                filter(
-                    None,
-                    (
-                        contract.question,
-                        contract.scope_statement or "",
-                        contract.geographic_scope or "",
-                    ),
-                )
-            )
-        )
-    )
-    traced = sum(
-        1
-        for word in content
-        if any(
-            candidate == word
-            or (
-                len(candidate) >= _MEASURE_STEM_CHARS
-                and len(word) >= _MEASURE_STEM_CHARS
-                and candidate[: _MEASURE_STEM_CHARS]
-                == word[: _MEASURE_STEM_CHARS]
-            )
-            for candidate in haystack
-        )
-    )
-    # A majority, not every word: the question's own phrasing of a part it
-    # asks for rarely repeats the measure's whole wording ('annual battery
-    # storage energy additions, in MWh' against 'how much energy did battery
-    # storage systems add', where the measure's own unit token is the plan's
-    # summary rather than the question's word), while an aid the question
-    # never named traces almost nothing at all. Four of four and six of six
-    # stay required; one of four and two of seven do not.
-    return traced * 2 >= len(content)
-
-
 # The answer forms whose answer is an argument or a text rather than a
 # measured quantity: a why-question's mechanism, and a question about a list of
 # rules, provisions or dated changes. A target of such a question that carries
@@ -2247,55 +2150,17 @@ _FIGURE_ANSWER_FORMS = frozenset({"explanation", "constraints"})
 # vocabulary is general — how much/how many, a unit, a total, a rate — and never
 # names a question, a domain or a body.
 _QUANTITY_QUESTION_PHRASES = (
-    "how much",
-    "how many",
-    "how large",
-    "how big",
-    "how long",
-    "how high",
-    "how far",
-    "how fast",
-    "how quickly",
-    "how often",
-    "what share",
-    "what proportion",
-    "what percentage",
-    "what fraction",
-    "what amount",
-    "what rate",
-    "what price",
-    "what cost",
-    "what level",
-    "what total",
+    "how much", "how many", "how large", "how big", "how long", "how high",
+    "how far", "how fast", "how quickly", "how often", "what share",
+    "what proportion", "what percentage", "what fraction", "what amount",
+    "what rate", "what price", "what cost", "what level", "what total",
 )
 
 _MAGNITUDE_WORDS = (
-    "total",
-    "rate",
-    "share",
-    "percentage",
-    "proportion",
-    "fraction",
-    "amount",
-    "number",
-    "count",
-    "volume",
-    "price",
-    "cost",
-    "level",
-    "index",
-    "ratio",
-    "average",
-    "median",
-    "growth",
-    "size",
-    "value",
-    "revenue",
-    "sales",
-    "capacity",
-    "output",
-    "spending",
-    "expenditure",
+    "total", "rate", "share", "percentage", "proportion", "fraction", "amount",
+    "number", "count", "volume", "price", "cost", "level", "index", "ratio",
+    "average", "median", "growth", "size", "value", "revenue", "sales",
+    "capacity", "output", "spending", "expenditure",
 )
 
 
@@ -2337,18 +2202,24 @@ def apply_answer_contract(
 ) -> list[SubTopic]:
     """Re-stamp each target's id, organisation and ``required`` flag (spec §7.1).
 
-    The model marks a target required only when the question names it. Two
-    bounded code rules enforce that reading: a target that asks for an energy
-    figure (MWh) a capacity question never named is optional whatever the draft
-    said (Fable C-d), and so is a target whose measure does not trace to the
-    question's own words — the aid a planner adds to make another target
-    checkable (``_measure_traces_to_question``). Two fields are corrected on the
-    way: a question answered by an argument or a text plans no figure of its own
-    (``_figure_targets_are_planned``), and a body the plan can only *describe*
-    is emptied so a target is never bound to a label §6.6 can never match
-    (``_stamped_organisation``). Nothing is ever promoted: required is the
-    model's to grant, and a figure the question did not ask for is not one the
-    run owes.
+    The model marks a target required only when the question names it, and that
+    reading is enforced by the instruction, not by a word test: the probe re-run
+    showed what a word test costs — a majority-of-distinctive-words rule removed
+    ``required`` from every target of a headphones question whose measures were
+    *paraphrases* of it ("sound quality rating (highest-ranked model)" against
+    "best audio quality"), so the plan owed nothing and a report could omit every
+    part and still pass. A word list cannot judge paraphrase, and the failure
+    mode of a wrong demotion is worse than a wrongly-required aid, which costs
+    one extra pass. The instruction therefore says which targets are optional
+    (``PLAN_INSTRUCTION``), and one bounded code rule remains (Fable C-d): a
+    target that asks for an energy figure (MWh) a capacity question never named
+    is optional whatever the draft said.
+
+    Two fields are corrected on the way: a question answered by an argument or a
+    text plans no figure of its own (``_figure_targets_are_planned``), and a body
+    the plan can only *describe* is emptied so a target is never bound to a label
+    §6.6 can never match (``_stamped_organisation``). Nothing is ever promoted:
+    required is the model's to grant.
     """
     stamped: list[SubTopic] = []
     figures_planned = _figure_targets_are_planned(contract)
@@ -2359,8 +2230,7 @@ def apply_answer_contract(
                 coverage_id=sub_topic.coverage_id,
                 question=target.question,
                 required=target.required
-                and not _unrequested_energy_measure(target, contract=contract)
-                and _measure_traces_to_question(target, contract=contract),
+                and not _unrequested_energy_measure(target, contract=contract),
                 measure=target.measure,
                 unit_dimension=(
                     target.unit_dimension if figures_planned else None
@@ -3201,6 +3071,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         named = {problem.split(" ", 1)[0] for problem in attempt.advisory}
         if not named:
             return attempt
+        owed = any(
+            target.required
+            for sub_topic in attempt.sub_topics
+            for target in sub_topic.evidence_targets
+        )
         pruned: list[SubTopic] = []
         for sub_topic in attempt.sub_topics:
             kept = [
@@ -3215,6 +3090,31 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             )
         if not pruned:
             return attempt
+        if owed and not any(
+            target.required
+            for sub_topic in pruned
+            for target in sub_topic.evidence_targets
+        ):
+            # The dropped targets were the whole of what the plan owed. A plan
+            # that owes nothing is the failure the probe re-run measured (every
+            # target optional), so the first obligation of every sub-topic that
+            # survived is required again: the plan keeps owing its dimensions
+            # and still ships without the target its repair was told about.
+            pruned = [
+                sub_topic.model_copy(
+                    update={
+                        "evidence_targets": [
+                            target.model_copy(update={"required": True})
+                            if position == 1
+                            else target
+                            for position, target in enumerate(
+                                sub_topic.evidence_targets, start=1
+                            )
+                        ]
+                    }
+                )
+                for sub_topic in pruned
+            ]
         problems = _plan_problems(pruned, contract)
         return _PlanAttempt(
             plan=attempt.plan,
