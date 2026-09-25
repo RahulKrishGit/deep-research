@@ -89,7 +89,7 @@ def test_every_trace_carries_the_tags_the_spec_lists(
     assert "repetition:2" in tags
     assert f"experiment:{runtime.experiment_name}" in tags
     assert "git:abc1234" in tags
-    assert "target_model:deepseek-v4-flash" in tags
+    assert "target_model:deepseek-flash" in tags
     assert "rubric_version:1" in tags
 
 
@@ -132,7 +132,7 @@ async def test_a_successful_target_returns_a_typed_redacted_output(
     assert output.agent_name == "planner"
     assert output.repetition == 1
     assert output.session_id.startswith("evaluation-")
-    assert output.target_model_requested == "deepseek-v4-flash"
+    assert output.target_model_requested == "deepseek-flash"
     assert output.target_reasoning_effort == "max"
     assert output.react is not None
 
@@ -420,7 +420,7 @@ async def test_the_output_records_both_model_identifiers(
                       "agent": "planner", "tier": "controlled"})
     )
 
-    assert output.target_model_requested == "deepseek-v4-flash"
+    assert output.target_model_requested == "deepseek-flash"
     assert output.target_model_returned == "deepseek-v4-flash-fake"
 
 

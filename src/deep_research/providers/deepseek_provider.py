@@ -161,6 +161,22 @@ def _json_instruction(schema: type[BaseModel]) -> ChatMessage:
     return ChatMessage(role="system", content=content)
 
 
+def _with_schema_instruction(
+    messages: list[dict[str, str]], instruction: ChatMessage
+) -> list[dict[str, str]]:
+    """The JSON-schema instruction right after the role prompt (D10, S2).
+
+    Static content first: every structured call of one kind then shares the
+    role prompt, the schema and the request's static sections as one prefix
+    that DeepSeek's context cache can reuse. A request with no leading system
+    message opens with the schema instruction.
+    """
+    schema = {"role": "system", "content": instruction.content}
+    if messages and messages[0]["role"] == "system":
+        return [messages[0], schema, *messages[1:]]
+    return [schema, *messages]
+
+
 class _StructuredValidationFailure(RuntimeError):
     """Carry validation diagnostics for the repair prompt and the trace.
 
@@ -397,6 +413,25 @@ def _responses_usage_from_response(response: Any) -> TokenUsage:
         output_tokens=output_tokens,
         total_tokens=total_tokens,
     )
+
+
+def _cached_count(value: object) -> int:
+    """A cache-hit count as the API reports it; 0 when absent or not a count."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _chat_cached_input_tokens(response: Any) -> int:
+    """Chat Completions: DeepSeek's ``usage.prompt_cache_hit_tokens``."""
+    usage = getattr(response, "usage", None)
+    return _cached_count(getattr(usage, "prompt_cache_hit_tokens", None))
+
+
+def _responses_cached_input_tokens(response: Any) -> int:
+    """Responses API: ``usage.input_tokens_details.cached_tokens``."""
+    details = getattr(getattr(response, "usage", None), "input_tokens_details", None)
+    return _cached_count(getattr(details, "cached_tokens", None))
 
 
 def _responses_finish_reason(response: Any) -> FinishReasonCategory:
@@ -772,6 +807,7 @@ class DeepSeekChatProvider:
         self,
         usage: TokenUsage,
         *,
+        cached_input_tokens: int,
         agent_name: str | None,
         operation: LLMOperation,
         seconds: float,
@@ -802,14 +838,16 @@ class DeepSeekChatProvider:
             output_tokens=usage.output_tokens,
             configured_cap=configured_cap,
             truncated=truncated,
+            input_tokens=usage.input_tokens,
+            cached_input_tokens=cached_input_tokens,
         )
 
     @property
     def last_model_returned(self) -> str | None:
         """The model identifier the last successful response reported.
 
-        ``deepseek-v4-flash`` is requested as a bare alias; the API may
-        answer as a dated snapshot such as ``DeepSeek-V4-Flash-0731``. The
+        ``deepseek-flash`` is requested as a bare name; the API may answer
+        with a more specific identifier, such as a dated snapshot. The
         evaluation harness records the requested alias *and* what was
         actually served, and never substitutes one for the other.
         """
@@ -919,6 +957,7 @@ class DeepSeekChatProvider:
                 )
                 self._record_tokens(
                     telemetry.usage,
+                    cached_input_tokens=_chat_cached_input_tokens(response),
                     agent_name=agent_name,
                     operation="chat",
                     seconds=perf_counter() - started_at,
@@ -1013,6 +1052,7 @@ class DeepSeekChatProvider:
             )
             self._record_tokens(
                 telemetry.usage,
+                cached_input_tokens=_chat_cached_input_tokens(response),
                 agent_name=agent_name,
                 operation="structured_output",
                 seconds=perf_counter() - started_at,
@@ -1064,10 +1104,9 @@ class DeepSeekChatProvider:
         )
         request = {**request, "max_tokens": resolved_max_tokens}
         instruction = _json_instruction(schema)
-        current_messages = [
-            *_translated_messages(messages),
-            {"role": "system", "content": instruction.content},
-        ]
+        current_messages = _with_schema_instruction(
+            _translated_messages(messages), instruction
+        )
 
         diagnostics: list[StructuredValidationDiagnostic] = []
         final_error: StructuredOutputError | None = None
@@ -1244,6 +1283,7 @@ class DeepSeekChatProvider:
             if failure is None:
                 self._record_tokens(
                     telemetry.usage,
+                    cached_input_tokens=_chat_cached_input_tokens(response),
                     agent_name=agent_name,
                     operation="react_tool_turn",
                     seconds=perf_counter() - started_at,
@@ -1431,6 +1471,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
             )
             self._record_tokens(
                 usage,
+                cached_input_tokens=_responses_cached_input_tokens(response),
                 agent_name=agent_name,
                 operation="structured_output",
                 seconds=perf_counter() - started_at,
@@ -1506,10 +1547,9 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
             self._config, agent_name, reasoning_effort=reasoning_effort
         )
         instruction = _json_instruction(schema)
-        current_messages = [
-            *_translated_messages(messages),
-            {"role": "system", "content": instruction.content},
-        ]
+        current_messages = _with_schema_instruction(
+            _translated_messages(messages), instruction
+        )
 
         diagnostics: list[StructuredValidationDiagnostic] = []
         final_error: StructuredOutputError | None = None

@@ -4,7 +4,7 @@
 
 llm:
   provider: deepseek
-  model: deepseek-v4-flash
+  model: deepseek-flash
   embedding_provider: local
   embedding_model: text-embedding-3-small
   thinking_mode: enabled
@@ -190,12 +190,12 @@ evaluation:
   controlled_repetition_floor: 0.65
   live_repetitions: 1
   live_threshold: 0.75
-  target_model: deepseek-v4-flash
+  target_model: deepseek-flash
   target_reasoning_effort: max
   target_reasoning_effort_overrides:
     researcher: high
     source_evaluator: high
-  judge_model: deepseek-v4-flash
+  judge_model: deepseek-flash
   judge_reasoning_effort: max
   judge_temperature: 0.0
   max_concurrency: 1

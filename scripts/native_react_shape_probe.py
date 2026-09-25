@@ -103,7 +103,7 @@ CASE_ID = "planner-live-scope"
 EXPERIMENT_PREFIX = "native-react-shape-probe"
 PROBE_SPAN_ID = "probe-shape"
 
-EXPECTED_MODEL = "deepseek-v4-flash"
+EXPECTED_MODEL = "deepseek-flash"
 EXPECTED_REASONING_EFFORT = "max"
 EXPECTED_THINKING = "enabled"
 EXPECTED_MAX_TOKENS = 32768

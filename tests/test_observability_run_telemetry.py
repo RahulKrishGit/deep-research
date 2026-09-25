@@ -359,3 +359,18 @@ def test_the_snapshot_carries_the_four_groups_of_the_spec() -> None:
     )
     [operation] = stage.operations
     assert operation.cap_key == "agents.react_decision_max_tokens"
+
+
+def test_the_line_reports_cache_hits_when_input_tokens_were_reported() -> None:
+    collector = RunTelemetryCollector()
+    for input_tokens, cached in ((4_000, 3_000), (6_000, 0)):
+        collector.record_call(
+            agent="evidence_verifier", operation="structured_output", seconds=2.0,
+            output_tokens=100, configured_cap=32_768, truncated=False,
+            input_tokens=input_tokens, cached_input_tokens=cached,
+        )
+    telemetry = collector.snapshot()
+    assert (telemetry.input_tokens, telemetry.cached_input_tokens) == (10_000, 3_000)
+    assert render_telemetry_line(telemetry).endswith(
+        "0 truncated; cache hits 3,000 of 10,000 input tokens (30%)"
+    )

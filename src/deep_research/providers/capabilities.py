@@ -71,7 +71,7 @@ def _capability(
 _CAPABILITIES: dict[ProviderName, tuple[ModelCapability, ...]] = {
     "deepseek": (
         _capability(
-            r"^deepseek-v4-(flash|pro)$",
+            r"^deepseek-(flash|v4-flash|v4-pro)$",
             modes="enabled,disabled",
             efforts="high,max",
             disabled_effort=None,

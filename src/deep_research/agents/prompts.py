@@ -239,10 +239,19 @@ def render_react_messages(
     sections = [f"## Task\n{task.instruction}"]
     if task.guidance.strip():
         sections.append(f"## Guidance\n{task.guidance}")
+    # D10 (S4): the notes grow oldest first and the acquisition context changes
+    # every turn, so the notes come first and each turn shares the last one's prefix.
+    sections.append(f"## Notes so far\n{render_scratchpad(scratchpad)}")
     if decision_context.strip():
         sections.append(f"## Acquisition context\n{decision_context}")
-    sections.append(f"## Notes so far\n{render_scratchpad(scratchpad)}")
-    sections.append(f"## Budget\nIteration {iteration} of {max_iterations}.")
+    budget = f"Iteration {iteration} of {max_iterations}."
+    if iteration == max_iterations:
+        # D10 (S3): a tool called on the last turn is never reasoned over.
+        budget += (
+            " This is the last iteration: return the final answer now without "
+            "calling a tool."
+        )
+    sections.append(f"## Budget\n{budget}")
     sections.append(f"## How to respond\n{NATIVE_REACT_RESPONSE_CONTRACT}")
 
     return [

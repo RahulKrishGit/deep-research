@@ -7,7 +7,9 @@ from deep_research.providers import (
 from deep_research.utils.config import EffectiveModelConfig
 
 
-@pytest.mark.parametrize("model", ["deepseek-v4-flash", "deepseek-v4-pro"])
+@pytest.mark.parametrize(
+    "model", ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"]
+)
 def test_deepseek_capabilities_enable_high_or_max(model: str) -> None:
     resolved = resolve_request_settings(
         "deepseek",

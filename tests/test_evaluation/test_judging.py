@@ -268,7 +268,7 @@ async def test_a_successful_judge_produces_scored_feedback(
     assert feedback.judge_quality == pytest.approx(0.8)
     assert feedback.prompt_id == JUDGE_PROMPT_ID
     assert feedback.rubric_version == 1
-    assert feedback.judge_model == "deepseek-v4-flash"
+    assert feedback.judge_model == "deepseek-flash"
     # The judge carries its own operation-specific budget, not the planner's
     # and not the global cap. The verdict holds six common dimensions, the
     # agent-specific dimensions, and a rationale; at the global cap the
