@@ -179,17 +179,17 @@ REPORT_WRITER_INSTRUCTION = (
 _WRITER_REPLY_EXAMPLES = (
     (
         "Example input: ## F01: Annual survey results (Example Statistical Agency) | "
-        "snippet: The Example Statistical Agency's survey recorded 12 percent more capacity "
+        "snippet: The Example Statistical Agency's survey recorded 12 percent more members "
         "in 2024. | F01 | figure 1: 12 percent | period 2024 | kind actual | organisation "
         "Example Statistical Agency | label: Example Statistical Agency's own figure; actual; "
         "released 2025-02-01",
         '{"executive_summary":[{"text":"The Example Statistical Agency\'s survey recorded 12 '
-        'percent more capacity in 2024.","finding_labels":["F01"]}],"sections":[]}',
+        'percent more members in 2024.","finding_labels":["F01"]}],"sections":[]}',
     ),
     (
         "Example input: ## F02: Example Standard (example-register.test) | snippet: The "
         "Example Standard requires a body to publish its accounts within six months of the "
-        "year's end. | F02 | statement | attributed to example-register.test | actual | "
+        "year's end. | F02 | statement | read at example-register.test | actual | "
         "dated 2026-09-16",
         '{"executive_summary":[{"text":"The Example Standard requires a body to publish its '
         'accounts within six months of the year\'s end, as reproduced at '
@@ -377,10 +377,20 @@ def registry_lines(label: str, finding: Finding) -> list[str]:
             + f" | label: {_figure_label_for(finding, context)}"
         )
     if number == 0:
-        name = finding.attributed_issuer or publisher_identity(finding.source_url)
+        # D1 (the prompt re-review): the writer's two phrases -- "the body the
+        # line attributes it to" (WRI-1) and "a host is where a statement was
+        # read" (WRI-2) -- map to two different words here, the same two the
+        # Statement Check's own block prints for the same fact. An admitted
+        # issuer is ``attributed to``; a page that names nobody is ``read at``,
+        # so the writer never has to guess a body from the shape of a domain.
+        admitted = finding.attributed_issuer
+        attribution = (
+            f"attributed to {admitted}" if admitted
+            else f"read at {publisher_identity(finding.source_url)}"
+        )
         date = finding.statement_date or finding.release_date or finding.data_period
         lines.append(
-            f"{label} | statement | attributed to {name} | "
+            f"{label} | statement | {attribution} | "
             f"{stated_role(finding.snippet or finding.content)}"
             + (f" | dated {date}" if date else "")
         )
