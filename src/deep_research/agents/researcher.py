@@ -955,6 +955,25 @@ def _admitted_period(value: object) -> str | None:
     return period if any(character.isdigit() for character in period) else None
 
 
+def _snippet_admitted_at(read: ReadRecord, locator: str, snippet: str) -> bool:
+    """Whether the read carries ``snippet`` at ``locator`` or beside it.
+
+    The excerpt's own passage is the locator's, and a passage cut at a clause
+    boundary can still leave a rule's words straddling the cut: its clause ends
+    one passage and its object opens the next, so a verbatim excerpt can span
+    the two. The immediate neighbour is read with the passage for that reason --
+    the same bounded window the attribution and relay checks read, never the
+    whole page, because a snippet three passages away is a different part of the
+    document.
+    """
+    passage = read.passages.get(locator)
+    if passage is None:
+        return False
+    if excerpt_matches(passage, snippet):
+        return True
+    return excerpt_matches(neighbouring_passage_text(read, locator), snippet)
+
+
 def build_findings(
     draft: SubTopicFindingsDraft,
     *,
@@ -1042,8 +1061,7 @@ def build_findings(
                     f"finding {index}: snippet longer than {MAX_SNIPPET_CHARS} characters"
                 )
                 continue
-            passage = read.passages.get(item.locator)
-            if passage is None or not excerpt_matches(passage, item.snippet):
+            if not _snippet_admitted_at(read, item.locator, item.snippet):
                 rejected.append(
                     f"finding {index}: snippet was not admitted at locator"
                 )

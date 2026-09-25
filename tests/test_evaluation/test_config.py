@@ -872,9 +872,17 @@ from deep_research.utils.config import (
 # bounded passage beside the snippet, so the verifier's prompt moved
 # `e8d10a516459` -> `fbad809c4414`. No other agent's prompt text changed, and
 # the Judge pin is unchanged.
+# Run-2 improvement 3 (passage cutting): the researcher's own module source moved
+# `3853aff7e02c` -> `90f46cf12b62` — a finding's snippet is now admitted when the
+# read carries it at the finding's locator *or* in the immediate neighbouring
+# passage (``_snippet_admitted_at``), because a passage cut at a sentence or
+# clause boundary can leave a rule's clause in one passage and the object it
+# attaches to in the next, and the excerpt drawn from the read then spans both.
+# No prompt string was edited, and ``agents.prompts`` was untouched, so the other
+# four target pins and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
-    "researcher": "3853aff7e02c",
+    "researcher": "90f46cf12b62",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read

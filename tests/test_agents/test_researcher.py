@@ -1498,6 +1498,72 @@ def test_an_attribution_only_in_a_far_passage_is_not_admitted() -> None:
     assert findings[0].attribution_quote is None
 
 
+SPAN_LEAD = (
+    "The operator shall file the annual return with the county office and "
+    "the district inspectorate"
+)
+SPAN_TAIL = (
+    " before the last day of the following quarter, and shall keep a copy "
+    "of the return in the register for three years."
+)
+# The excerpt spans the cut the passage bound made: both halves are the page's
+# own words, and neither passage alone carries the whole of it.
+SPAN_SNIPPET = "the county office and the district inspectorate before the last day"
+
+
+def test_a_snippet_spanning_its_passage_and_its_neighbour_is_admitted() -> None:
+    """A rule the bound cut in two is still one quote.
+
+    The passage bound can fall inside a sentence, so an excerpt drawn from
+    the read can straddle the cut: its words are all in the read at that
+    locator, but not inside either passage alone. Admitting a passage alone
+    dropped a quote the page states verbatim. The window is the same one the
+    attribution and relay checks read, never the whole page.
+    """
+    read = _multi_passage_read(
+        passages={
+            "chunk-1": SPAN_LEAD,
+            "chunk-2": SPAN_TAIL,
+            "chunk-3": "A third passage that carries nothing of the quote.",
+        },
+        url="https://example.test/spanning-snippet",
+    )
+
+    findings, rejected = _build_relay(read, "chunk-1", snippet=SPAN_SNIPPET)
+
+    assert rejected == []
+    [finding] = findings
+    assert finding.snippet == SPAN_SNIPPET
+    assert finding.locator == "chunk-1"
+
+
+def test_a_snippet_from_a_far_passage_is_still_refused() -> None:
+    """The window is the excerpt's passage and its immediate neighbour only.
+
+    A quote three passages away is a different part of the page, however
+    verbatim it is: admitting it would bind an excerpt to a locator the read
+    never placed it at.
+    """
+    read = _multi_passage_read(
+        passages={
+            "chunk-1": "The first passage states nothing a draft would quote.",
+            "chunk-2": "The second passage states nothing a draft would quote.",
+            "chunk-3": (
+                "The operator shall file the annual return with the county "
+                "office before the last day of the quarter."
+            ),
+        },
+        url="https://example.test/far-snippet",
+    )
+
+    findings, rejected = _build_relay(
+        read, "chunk-1", snippet="file the annual return with the county office"
+    )
+
+    assert findings == []
+    assert rejected == ["finding 1: snippet was not admitted at locator"]
+
+
 def test_a_tracker_figure_keeps_its_segment_and_release_date() -> None:
     """An all-segment total must travel as one, not as a grid-scale figure.
 
