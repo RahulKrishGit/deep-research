@@ -106,7 +106,11 @@ PROBE_SPAN_ID = "probe-shape"
 EXPECTED_MODEL = "deepseek-flash"
 EXPECTED_REASONING_EFFORT = "max"
 EXPECTED_THINKING = "enabled"
-EXPECTED_MAX_TOKENS = 32768
+# The reviewed decision-request cap is what the shipped configuration sends:
+# DeepSeek's documented max_tokens maximum (user decision 2026-09-25 lifted
+# every output limit but the owed-passage re-extraction's). The value is
+# DeepSeek's; a probe against another provider needs that provider's maximum.
+EXPECTED_MAX_TOKENS = 393216
 EXPECTED_TOOL_CHOICE = "auto"
 EXPECTED_NATIVE_TOOLS = ("query_memory", "web_search")
 

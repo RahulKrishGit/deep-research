@@ -5206,6 +5206,47 @@ async def test_a_failed_owed_batch_costs_only_that_batch(tracker: Tracker) -> No
     assert "researcher_sub_topic_without_findings" in recorded
 
 
+@pytest.mark.asyncio
+async def test_only_the_owed_re_extraction_carries_its_own_output_cap(
+    tracker: Tracker,
+) -> None:
+    """The one looping call keeps a bound; the first extraction does not.
+
+    The owed-passage re-extraction ran away to its output cap at both 32,768
+    and 49,152 tokens, so a larger cap only lengthened it: its request carries
+    ``agents.re_extraction_max_tokens``. The first extraction sends no
+    per-call cap, so the provider applies the global ``llm.max_tokens``.
+    """
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=_OWED_TITLE, url=_OWED_URL)]
+        ),
+        http=page_client(title=_OWED_TITLE, body=_OWED_BODY),
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, re_extraction_max_tokens=4321
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_state(sub_topics=[_owed_topic()]))
+
+    extraction_budgets = [
+        budget
+        for call, budget in zip(completer.calls, completer.budgets, strict=True)
+        if call[0] == "SubTopicFindingsDraft"
+    ]
+    assert extraction_budgets == [None, 4321]
+
+
 _SNIPPET = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"
 
 

@@ -815,41 +815,29 @@ def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
         assert value >= 32768, f"{name} is still pinned at {value}"
 
 
-def test_the_shipped_config_file_carries_the_uniform_token_budget() -> None:
-    """The shipped YAML raises the global cap and every budget that follows it.
+def test_every_shipped_output_budget_but_the_re_extraction_is_the_global_cap() -> None:
+    """The shipped file lifts every output budget but the one looping call's.
 
-    The planner-final budget is the one documented exception and carries its
-    own test below; every other operation still resolves to the global cap.
+    User decision 2026-09-25: no agent fails on an output-length limit, so
+    every operation budget is sent at the same value as ``llm.max_tokens``
+    (the provider's documented maximum). The researcher's owed-passage
+    re-extraction is the exception, because it ran away to whatever cap it
+    had: its budget stays below the global one.
     """
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    global_cap = raw["llm"]["max_tokens"]
 
-    assert raw["llm"]["max_tokens"] == 32768
-    assert raw["agents"]["judge_max_tokens"] == 32768
-    assert raw["agents"]["react_decision_max_tokens"] == 32768
+    names = (
+        "planner_final_max_tokens",
+        "report_review_max_tokens",
+        "judge_max_tokens",
+        "react_decision_max_tokens",
+    )
 
-
-def test_the_planner_final_budget_exceeds_the_global_cap(
-    config_path: Path,
-) -> None:
-    """The planner's final budget is the one budget above the global cap.
-
-    A live run truncated a plan request exactly at the global cap
-    (``finish_reason=length``, 32768 completion tokens) and the resulting
-    ``ProviderOutputLimitError`` is nonretryable by design, so the run stopped
-    before research began. The planner reasons at ``max`` effort and a
-    reasoning token is a completion token, so this operation needs headroom
-    the others do not.
-    """
-    settings = load_config(str(config_path))
-
-    assert settings.agents.planner_final_max_tokens == 65536
-    assert settings.agents.planner_final_max_tokens > settings.llm.max_tokens
-
-
-def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
-    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
-
-    assert raw["agents"]["planner_final_max_tokens"] == 65536
+    assert {name: raw["agents"][name] for name in names} == dict.fromkeys(
+        names, global_cap
+    )
+    assert raw["agents"]["re_extraction_max_tokens"] < global_cap
 
 
 @pytest.mark.parametrize(
@@ -948,27 +936,30 @@ def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
     agents while evaluation ran a per-agent profile."""
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["llm"]["model_overrides"] == {
-        # Their structured requests reason past the 60 s transport default,
-        # and a timed-out attempt restarts the whole generation.
-        "planner": {"reasoning_effort": "max", "timeout": 360.0},
-        "researcher": {"reasoning_effort": "high", "timeout": 240.0},
-        "source_evaluator": {"reasoning_effort": "high"},
-        # Review item 13 / F8: G2's live run measured a 75.9 s Context Check
-        # against the 60 s transport default.
-        "evidence_verifier": {"reasoning_effort": "high", "timeout": 240.0},
-        "report_writer": {"reasoning_effort": "high"},
+    efforts = {
+        role: override["reasoning_effort"]
+        for role, override in raw["llm"]["model_overrides"].items()
+    }
+    assert efforts == {
+        "planner": "max",
+        "researcher": "high",
+        "source_evaluator": "high",
+        "evidence_verifier": "high",
+        "report_writer": "high",
         # Task 10's terminal semantic reviewer, resolved as its own service
         # role: a separate call role with its own effort, not an agent.
-        "report_reviewer": {
-            "reasoning_effort": "max",
-            "timeout": 360.0,
-            "retry_count": 1,
-        },
+        "report_reviewer": "max",
     }
+    # A timed-out review gets one transport retry, not the global repeats.
+    assert raw["llm"]["model_overrides"]["report_reviewer"]["retry_count"] == 1
+    # No role times out before the transport default every other role
+    # inherits: the timeouts moved with the lifted output caps.
+    assert all(
+        override.get("timeout", raw["llm"]["timeout"]) >= raw["llm"]["timeout"]
+        for override in raw["llm"]["model_overrides"].values()
+    )
     # The snippet amends the ``llm`` mapping; the other fields stay.
     assert raw["llm"]["provider"] == "deepseek"
-    assert raw["llm"]["max_tokens"] == 32768
     assert raw["llm"]["reasoning_effort"] == "high"
 
 
@@ -1320,7 +1311,8 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     assert settings.agents.tool_budget_overrides["researcher"] == 20
     assert settings.llm.resolve_for("evidence_verifier").reasoning_effort == "high"
     assert settings.llm.resolve_for("report_writer").reasoning_effort == "high"   # F10: the one effort source
-    assert settings.llm.resolve_for("report_reviewer").timeout == 360.0
+    reviewer = settings.llm.resolve_for("report_reviewer")
+    assert reviewer.timeout >= settings.llm.timeout
     assert set(settings.agents.tool_budget_overrides) <= set(PRODUCTION_AGENT_NAMES)
     assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
     assert SERVICE_ROLE_NAMES == ("report_reviewer",)

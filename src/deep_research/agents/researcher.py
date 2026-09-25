@@ -2582,6 +2582,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                             ),
                             SubTopicFindingsDraft,
                             agent_name=self.name,
+                            # The one call whose cap was not lifted: it looped
+                            # to its cap at 32,768 and at 49,152 tokens, so a
+                            # larger cap only lengthened the runaway.
+                            max_tokens=self.config.re_extraction_max_tokens,
                         )
                     except ProviderError as error:
                         errors.append(owed_extraction_provider_error(run, error))
