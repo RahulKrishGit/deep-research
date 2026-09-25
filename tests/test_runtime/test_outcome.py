@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from deep_research.agents.events import agent_event
+from deep_research.agents.evidence import (
+    resolve_read_works,
+    resolve_retained_work_keys,
+)
+from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.report import render_written_report, written_citations
 from deep_research.agents.researcher import sub_topic_completed_event
 from deep_research.agents.steps import ReActRun
 from deep_research.graph.events import report_published_event
@@ -17,7 +24,6 @@ from deep_research.request_budget import (
 )
 from deep_research.runtime.outcome import (
     CoverageProgress,
-    EvidenceCounts,
     ResearchOutcome,
     ToolCallSummary,
     build_outcome,
@@ -33,6 +39,7 @@ from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     REVIEW_DIMENSIONS,
+    FactRow,
     FigureContext,
     FigureResult,
     Finding,
@@ -40,11 +47,13 @@ from deep_research.utils.types import (
     NotFoundTarget,
     ReadRecord,
     ReportComposition,
+    ReportPoint,
     ReportQualitySnapshot,
     ReportReview,
     ResearchError,
     ResearchEvent,
     ResearchState,
+    ScoredSource,
     SubTopic,
 )
 from tests.evidence_fakes import figure, make_finding, make_read
@@ -1121,3 +1130,306 @@ def test_coverage_progress_is_a_frozen_reading_of_ids() -> None:
         missing_required_target_ids=(MISSING_TARGET_ID,),
         not_found_target_ids=(MISSING_TARGET_ID,),
     )
+
+
+# --- work identity and citation counts (Task 4.10d) ---------------------------
+#
+# Three work-identity records the claim-era quality record published, restored
+# against the live counts. ``distinct_retention_counts`` (``agents/report.py``)
+# is the helper ``EvidenceCounts`` reads, and ``resolve_retained_work_keys`` is
+# the one keying its ``unique_works`` is the cardinality of — so a count that
+# resolved identity a second way, or a map that dropped a URL, fails here.
+
+GRID_URL = "https://grid.example.test/outlook-2024"
+MIRROR_URL = "https://repository.example.test/grid-outlook-2024"
+MIRROR_TWO_URL = "https://mirror.example.test/grid-outlook-2024"
+QUEUE_URL = "https://queue.example.test/interconnection-2024"
+KEY_FACTS_URL = "https://keyfacts.example.test/capacity"
+UNCITED_URL = "https://uncited.example.test/background"
+
+# The identity one assessment resolved for both copies of the outlook. The two
+# reads share no byte, so only this persisted key joins them.
+GRID_WORK_ID = "doi:10.1234/grid.2025"
+KEY_FACTS_WORK_ID = "doi:10.1234/keyfacts.2024"
+
+GRID_TEXT = "Grid Storage Outlook 2024: 10 GW in 2024."
+MIRROR_TEXT = "Grid Storage Outlook 2024, re-typeset: 10 GW in 2024."
+QUEUE_TEXT = "Interconnection Queue 2024: 800 MW."
+KEY_FACTS_TEXT = "Battery storage additions reached 10.4 GW in 2024."
+
+
+def assessed_source(
+    url: str,
+    *,
+    title: str,
+    work_id: str | None = None,
+    transport: str = "unknown",
+    status: str = "scored",
+) -> ScoredSource:
+    """One assessed source row: its full score set, and the work it resolved to."""
+    scores = (
+        {
+            "authority_score": 0.8,
+            "recency_score": 0.8,
+            "relevance_score": 0.8,
+            "overall_score": 0.8,
+        }
+        if status == "scored"
+        else {}
+    )
+    return ScoredSource(
+        url=url,
+        title=title,
+        rationale="Assessed from its own read.",
+        work_id=work_id,
+        transport_relation=transport,
+        evaluation_status=status,
+        **scores,
+    )
+
+
+def sourced_state(
+    sources: Sequence[ScoredSource],
+    reads: Sequence[ReadRecord],
+    **composition_fields: object,
+) -> ResearchState:
+    """A judged pass over exactly these reads, assessing exactly these sources."""
+    payload: dict[str, object] = {
+        "read_records": {read.read_id: read for read in reads},
+        "composition": judged_composition(
+            sources=list(sources), **composition_fields
+        ),
+    }
+    return verified_state(**payload)
+
+
+def work_keys(state: ResearchState) -> dict[str, str]:
+    """The keying the works count is the cardinality of, per retained URL."""
+    composition = state.composition
+    assert composition is not None
+    return resolve_retained_work_keys(
+        [source.url for source in composition.sources],
+        state.read_records.values(),
+        sources=composition.sources,
+    )
+
+
+def test_the_works_count_is_the_identity_the_work_map_publishes() -> None:
+    """The count and the map cannot disagree about a work.
+
+    An assessed source's ``work_id`` is resolved once per snapshot, with the
+    anchors the Source Evaluator validated, and that is what the count reads.
+    Counting the works a second way — from the reads alone, with no anchors —
+    resolves *less*: the DOI that joined a copy to its original was validated
+    as an anchor on the source, and a re-typeset mirror never shared the
+    original's bytes, so the two reads resolve to two works. The run would
+    then name one work and count two.
+    """
+    original = make_read(GRID_TEXT, url=GRID_URL, title="Grid Storage Outlook 2024")
+    mirror = make_read(
+        MIRROR_TEXT,
+        url=MIRROR_URL,
+        title="Grid Storage Outlook 2024 (repository copy)",
+    )
+    # The reads alone cannot see the join, which is why the count may not be
+    # re-derived from them: two reads, two keys.
+    assert len(set(resolve_read_works([original, mirror]).values())) == 2
+
+    state = sourced_state(
+        [
+            assessed_source(
+                GRID_URL, title="Grid Storage Outlook 2024", work_id=GRID_WORK_ID
+            ),
+            assessed_source(
+                MIRROR_URL,
+                title="Grid Storage Outlook 2024 (repository copy)",
+                work_id=GRID_WORK_ID,
+                transport="mirror",
+            ),
+        ],
+        [original, mirror],
+    )
+    keys = work_keys(state)
+    counts = outcome_of(state).evidence_counts
+
+    assert set(keys.values()) == {GRID_WORK_ID}
+    assert counts is not None
+    assert counts.unique_works == len(set(keys.values()))
+    # Two retained source URLs, one work.
+    assert counts.source_urls == 2
+    assert counts.unique_works == 1
+
+
+def test_the_work_map_accounts_for_every_retained_source_url() -> None:
+    """The map is the count's own keying, so the two cannot disagree.
+
+    Every retained URL has exactly one key — the persisted identity an
+    assessment established, or the key the URL's own read supports — so
+    ``unique_works`` is that map's distinct values by construction. Publishing
+    only the established identities, and reading a count off the reads, is how
+    an identity-less read once became a work the map never named.
+    """
+    original = make_read(GRID_TEXT, url=GRID_URL, title="Grid Storage Outlook 2024")
+    unlabelled = make_read(
+        MIRROR_TEXT,
+        url=MIRROR_URL,
+        title="Grid Storage Outlook 2024 (repository copy)",
+    )
+    state = sourced_state(
+        [
+            assessed_source(
+                GRID_URL, title="Grid Storage Outlook 2024", work_id=GRID_WORK_ID
+            ),
+            assessed_source(
+                MIRROR_URL,
+                title="Grid Storage Outlook 2024 (repository copy)",
+            ),
+        ],
+        [original, unlabelled],
+    )
+    keys = work_keys(state)
+    counts = outcome_of(state).evidence_counts
+
+    assert set(keys) == {GRID_URL, MIRROR_URL}
+    assert counts is not None
+    assert counts.unique_works == len(set(keys.values()))
+    # Two different documents and no shared alias, one of them assessed
+    # without an identity: one resolved work, one unresolved entry.
+    assert counts.unique_works == 2
+
+
+def test_a_source_no_assessment_covers_is_its_own_work_entry() -> None:
+    """An unresolved work stays its own entry; it is never folded into a peer.
+
+    The source the per-run cap left unscored has no persisted identity, so its
+    URL keeps the key its own read supports rather than the key of whatever
+    source sits beside it — and it stays accounted for: a source the run read
+    is a work it retains whether or not anyone assessed it.
+    """
+    reads = [
+        make_read(GRID_TEXT, url=GRID_URL, title="Grid Storage Outlook 2024"),
+        make_read(
+            MIRROR_TEXT,
+            url=MIRROR_URL,
+            title="Grid Storage Outlook 2024 (repository copy)",
+        ),
+        make_read(QUEUE_TEXT, url=QUEUE_URL, title="Interconnection Queue 2024"),
+    ]
+    state = sourced_state(
+        [
+            assessed_source(
+                GRID_URL, title="Grid Storage Outlook 2024", work_id=GRID_WORK_ID
+            ),
+            assessed_source(
+                MIRROR_URL,
+                title="Grid Storage Outlook 2024 (repository copy)",
+                work_id=GRID_WORK_ID,
+                transport="mirror",
+            ),
+            assessed_source(
+                QUEUE_URL,
+                title="Interconnection Queue 2024",
+                status="unscored_cap",
+            ),
+        ],
+        reads,
+    )
+    keys = work_keys(state)
+    counts = outcome_of(state).evidence_counts
+
+    # The map accounts for every retained URL, the unscored one included, so
+    # the count is exactly its distinct values.
+    assert set(keys) == {GRID_URL, MIRROR_URL, QUEUE_URL}
+    assert counts is not None
+    assert counts.unique_works == len(set(keys.values()))
+    # One joined work, plus the unassessed source's own unresolved entry.
+    assert counts.unique_works == 2
+    assert counts.assessed_sources == 3
+
+
+def test_the_cited_count_is_what_the_published_report_cites() -> None:
+    """P2-1: ``cited_assessed_sources`` is the report's own "N sources cited".
+
+    The count intersects the assessed URLs with exactly the pages the written
+    report cites: everything its points, its sections and its Key facts rows
+    reference, with mirror copies never merged. A source cited only through a
+    Key facts row therefore counts as cited, three URLs of one work are three
+    cited sources, and an assessed source the report never cites is not
+    counted at all.
+    """
+    key_read = make_read(
+        KEY_FACTS_TEXT, url=KEY_FACTS_URL, title="Battery capacity additions"
+    )
+    key_finding = make_finding(
+        key_read, KEY_FACTS_TEXT, figures=[figure("10.4", "GW", "2024", "actual")]
+    )
+    state = sourced_state(
+        [
+            assessed_source(
+                GRID_URL, title="Grid Storage Outlook 2024", work_id=GRID_WORK_ID
+            ),
+            assessed_source(
+                MIRROR_URL,
+                title="Grid Storage Outlook 2024 (repository copy)",
+                work_id=GRID_WORK_ID,
+                transport="mirror",
+            ),
+            assessed_source(
+                MIRROR_TWO_URL,
+                title="Grid Storage Outlook 2024 (second repository copy)",
+                work_id=GRID_WORK_ID,
+                transport="mirror",
+            ),
+            assessed_source(
+                KEY_FACTS_URL,
+                title="Battery capacity additions",
+                work_id=KEY_FACTS_WORK_ID,
+            ),
+            assessed_source(UNCITED_URL, title="Background"),
+        ],
+        [make_read(GRID_TEXT, url=GRID_URL, title="Grid Storage Outlook 2024"), key_read],
+        findings=[key_finding],
+        fact_rows=[
+            FactRow(
+                row_id="K001",
+                organisation="Example Laboratory",
+                attribution="own",
+                measure="battery storage power capacity added",
+                period="2024",
+                value="10.4 GW",
+                kind="actual",
+                finding_id=finding_fingerprint(key_finding),
+            )
+        ],
+        summary=[
+            ReportPoint(
+                text="Generators added 10 GW of battery storage capacity in 2024.",
+                source_urls=[GRID_URL, MIRROR_URL, MIRROR_TWO_URL],
+            )
+        ],
+    )
+    composition = state.composition
+    counts = outcome_of(state).evidence_counts
+
+    assert composition is not None
+    index = written_citations(composition)
+    assert [citation.url for citation in index] == [
+        GRID_URL,
+        MIRROR_URL,
+        MIRROR_TWO_URL,
+        KEY_FACTS_URL,
+    ]
+    assert counts is not None
+    assert counts.cited_assessed_sources == len(index)
+    assert counts.cited_assessed_sources == 4
+
+    # The report's own header prints that same number.
+    cited_line = re.search(r"\b(\d+) sources cited\b", render_written_report(composition))
+    assert cited_line is not None
+    assert int(cited_line.group(1)) == counts.cited_assessed_sources
+
+    # It is a citation count, not a works count and not the assessed total:
+    # the three mirror copies are one work, and the uncited source is counted
+    # only as assessed.
+    assert counts.unique_works == 3
+    assert counts.assessed_sources == 5
