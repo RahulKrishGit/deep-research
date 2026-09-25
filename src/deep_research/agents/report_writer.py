@@ -435,34 +435,62 @@ def writer_messages(task: ReportWriterTask) -> list[ChatMessage]:
 
 #: Where a drafted point too long for ``MAX_POINT_CHARS`` may be cut: after a
 #: sentence or clause end, and only where what follows starts a word. The cut is
-#: verbatim -- the pieces rejoined are the drafted text -- so a split never
+#: verbatim -- the pieces are the drafted text's own words -- so a split never
 #: invents, drops or reorders a word and every piece keeps the point's citations.
 _CLAUSE_BOUNDARY = re.compile(r"(?<=[.;!?])\s+(?=[\"“(\[]?\S)")
+
+
+def _lead_in(text: str, cuts: Sequence[re.Match[str]]) -> str:
+    """The point's own introduction, verbatim: up to its colon, else its first clause.
+
+    A piece cut after a ';' begins mid-sentence -- "… (c) keep track of …" with
+    no subject and none of the conditions the sentence opened with (F3) -- so
+    such a piece is printed with this introduction in front of it. The colon a
+    list hangs from is the list's own introduction, so everything up to and
+    including it is the lead; a clause-separated point with no colon is
+    introduced by its first clause. Empty only when the point has neither.
+    """
+    colon = text.find(":")
+    if colon != -1:
+        return text[:colon + 1]
+    return text[:cuts[0].start()] if cuts else ""
 
 
 def _split_oversize_point(text: str, limit: int = MAX_POINT_CHARS) -> list[str] | None:
     """``text`` as consecutive pieces under ``limit``, or ``None`` when one clause is over it.
 
     Improvement 2 (the run-2 audit): a drafted point longer than the bound used
-    to be refused whole, and the reader lost a verified obligation list that
-    way. Pieces are packed greedily, longest runs first, and every piece is
-    verbatim: ``" ".join(pieces) == text``. A point whose own clause is longer
-    than the bound cannot be cut honestly -- the only cut left would fall inside
-    a sentence, where prose is the model's to write -- so it is returned as
-    ``None`` and the caller refuses it as before.
+    to be refused whole, and the reader lost a verified obligation list that way.
+    A piece that begins mid-sentence -- after a ';' inside a list -- is printed
+    with the point's own introduction in front of it (F3), so no piece stands
+    without its subject or its conditions; that introduction is the same point's
+    verbatim text, repeated, and no piece is paraphrased. A point whose own
+    clause is longer than the bound, or whose introduction plus one clause is,
+    cannot be cut into pieces that stand alone: it returns ``None`` and the
+    caller refuses it as before, rather than print a fragment.
     """
+    cuts = list(_CLAUSE_BOUNDARY.finditer(text))
     clauses = _CLAUSE_BOUNDARY.split(text)
     if any(len(clause) > limit for clause in clauses):
         return None
+    lead = _lead_in(text, cuts)
+    marks = [text[cut.start() - 1] for cut in cuts]
     pieces: list[str] = []
     current = ""
-    for clause in clauses:
-        joined = f"{current} {clause}".strip()
-        if current and len(joined) > limit:
-            pieces.append(current)
-            current = clause
+    for index, clause in enumerate(clauses):
+        # A clause that followed a ';' starts mid-sentence: print it with the
+        # introduction, so it never stands without its subject.
+        mid_sentence = index > 0 and marks[index - 1] == ";"
+        opening = f"{lead} {clause}".strip() if (mid_sentence and lead) else clause
+        if not current:
+            current = opening
+        elif len(f"{current} {clause}") <= limit:
+            current = f"{current} {clause}"
         else:
-            current = joined
+            pieces.append(current)
+            current = opening
+        if len(current) > limit:
+            return None
     if current:
         pieces.append(current)
     return pieces or None
