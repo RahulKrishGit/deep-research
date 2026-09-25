@@ -1389,14 +1389,18 @@ def _is_referent_word(word: str, *, sentence_initial: bool) -> bool:
 def _content_names_a_referent(content: str) -> bool:
     """True when ``content`` itself names the judgement's subject.
 
-    Unlike the snippet's surrounding prose, ``content`` is the model's own
-    compact restatement: its first word is exactly as likely to be the named
-    subject as any other, so no sentence-initial word is excluded here.
+    Scanned the same way as the snippet's own prose: each sentence of
+    ``content`` excludes its own first word unless that word carries an
+    internal capital or a leading capital outside plain ASCII, because an
+    opening "Overall," or "According to reviewers," restates the nameless
+    judgement in different words and is exactly as uninformative as a
+    snippet's own sentence-initial word.
     """
-    return any(
-        _is_referent_word(word, sentence_initial=False)
-        for word in content.split()
-    )
+    for start, end in _sentence_spans(content):
+        for index, word in enumerate(content[start:end].split()):
+            if _is_referent_word(word, sentence_initial=index == 0):
+                return True
+    return False
 
 
 def _snippet_names_a_referent_before(snippet: str, sentence_start: int) -> bool:
