@@ -26,6 +26,7 @@ from deep_research.graph.events import (
     node_started_event,
     session_completed_event,
 )
+from deep_research.graph.state import graph_status
 from deep_research.main import run_research_sync
 from deep_research.observability import TokenUsage
 from deep_research.request_budget import (
@@ -614,12 +615,19 @@ def test_require_quality_exits_four_without_any_quality_pass() -> None:
 
 
 def test_require_quality_exits_zero_for_an_accepted_run() -> None:
-    """PD-23: passes spent, gates clear, reviewer accepts -> exit 0."""
-    runner = RecordingRunner(result=outcome(state=accepted_state()))
+    """PD-23: passes spent, gates clear, reviewer accepts -> exit 0.
+
+    The status is asserted from ``graph_status`` over the same judged state the
+    runner is handed, so the test fails if the router stops calling this run
+    ``completed``; the run's own status travels in the fixture's ``GraphRun``.
+    """
+    state = accepted_state()
+    runner = RecordingRunner(result=outcome(state=state))
     stream = io.StringIO()
 
     code = main([QUESTION, "--require-quality"], runner=runner, stream=stream)
 
+    assert graph_status(state) == "completed"
     assert code == EXIT_OK
     assert "Quality: accepted" in stream.getvalue()
     assert "Status: completed" in stream.getvalue()

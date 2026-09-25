@@ -9,6 +9,7 @@ from deep_research.agents.researcher import sub_topic_completed_event
 from deep_research.agents.steps import ReActRun
 from deep_research.graph.events import report_published_event
 from deep_research.graph.orchestrator import GraphRun
+from deep_research.graph.state import graph_status
 from deep_research.observability import TokenUsageMetric, ToolMetric
 from deep_research.request_budget import (
     ProviderCategory,
@@ -707,6 +708,10 @@ def test_a_spent_extra_pass_with_the_target_under_not_found_is_accepted() -> Non
     Not found, which §6.4 accepts — so the run finishes ``completed`` with an
     accepted report rather than ``max_iterations``. The budget running out is a
     fact about the machine, not a defect in the report.
+
+    The status asserted is ``graph_status``'s own reading of the judged state,
+    not the status a fixture was handed: the outcome carries the run's status
+    from its ``GraphRun``, so asking it here would assert the constructor.
     """
     judged = verified_state(
         iteration=1,
@@ -718,10 +723,10 @@ def test_a_spent_extra_pass_with_the_target_under_not_found_is_accepted() -> Non
 
     outcome = outcome_of(judged)
 
+    assert graph_status(judged) == "completed"
     assert outcome.quality_status == QUALITY_STATUS_ACCEPTED
     assert outcome.accepted is True
     assert outcome.failed is False
-    assert outcome.status == "completed"
     assert outcome.coverage is not None
     assert outcome.coverage.missing_required_target_ids == (MISSING_TARGET_ID,)
     assert outcome.coverage.not_found_target_ids == (MISSING_TARGET_ID,)
