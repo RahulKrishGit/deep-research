@@ -470,6 +470,108 @@ async def test_a_short_data_table_in_large_markup_keeps_its_table(tracker) -> No
     assert result.data["extraction_complete"] is True
 
 
+# Chrome carries prose of its own: a consent banner, a masthead tagline, a
+# legal footer. Long enough to pass the prose test, and never the page.
+_CHROME_PROSE = (
+    "We use cookies and similar technologies to run this site and to measure "
+    "how its pages are used."
+)
+_TAGLINE_PROSE = (
+    "Example Charts is the home of the survey that every reader can repeat."
+)
+
+
+@pytest.mark.asyncio
+async def test_a_shell_page_whose_only_prose_is_its_chrome_is_a_failed_read(
+    tracker,
+) -> None:
+    """A tagline or a legal footer is not the page's body.
+
+    Chrome carries prose, and reading it as the body is how a page whose
+    content the browser renders was recorded as a complete read: a shell whose
+    visible text is a masthead sentence and a cookie notice holds no document.
+    """
+    page = (
+        "<html><head><title>Example Charts</title>"
+        f"<script>{_SCRIPT_BUNDLE}</script></head><body>"
+        f"<header><p>{_TAGLINE_PROSE}</p></header>"
+        "<nav><a href='/charts'>Charts</a><a href='/methods'>Methods</a></nav>"
+        f"<footer><p>{_CHROME_PROSE}</p></footer>"
+        "</body></html>"
+    )
+    result = await _read_served_page(tracker, page)
+
+    _assert_failure_is_bounded(result, ("example.test", "https://", _SHELL_NAV))
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.type == "client_rendered_page"
+
+
+@pytest.mark.asyncio
+async def test_a_shell_page_whose_only_prose_is_a_dialog_is_a_failed_read(
+    tracker,
+) -> None:
+    """The landmark roles name the same chrome on markup that uses divs.
+
+    A consent dialog, a banner and an alert are chrome wherever a page puts
+    them, and their sentences are still not the page's document.
+    """
+    page = (
+        "<html><head><title>Example Charts</title>"
+        f"<script>{_SCRIPT_BUNDLE}</script></head><body>"
+        f"<div role='dialog'><p>{_CHROME_PROSE}</p></div>"
+        "<div id='app'></div>"
+        "</body></html>"
+    )
+    result = await _read_served_page(tracker, page)
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.type == "client_rendered_page"
+
+
+@pytest.mark.asyncio
+async def test_a_single_row_layout_table_is_not_a_body(tracker) -> None:
+    """One row is a layout wrapper, not a page's own figures.
+
+    Any ``td`` used to make the text a body, so a shell whose markup wraps its
+    chrome in a one-row table was read as complete: a layout says nothing
+    about where the page's content is.
+    """
+    page = (
+        "<html><head><title>Example Charts</title>"
+        f"<script>{_SCRIPT_BUNDLE}</script></head><body>"
+        "<nav><a href='/charts'>Charts</a><a href='/methods'>Methods</a></nav>"
+        f"<table><tr><td>{_SHORT_PROSE}</td><td>Loading</td></tr></table>"
+        "</body></html>"
+    )
+    result = await _read_served_page(tracker, page)
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.type == "client_rendered_page"
+
+
+@pytest.mark.asyncio
+async def test_a_two_row_table_is_a_body(tracker) -> None:
+    """Two rows are the page's own table, and its read keeps them."""
+    page = (
+        "<html><head><title>Example Gauges</title>"
+        f"<script>{_SCRIPT_BUNDLE}</script></head><body>"
+        "<nav><a href='/charts'>Charts</a><a href='/methods'>Methods</a></nav>"
+        "<table><tr><td>Gauge 1</td><td>7</td></tr>"
+        "<tr><td>Gauge 2</td><td>14</td></tr></table>"
+        "</body></html>"
+    )
+    result = await _read_served_page(
+        tracker, page, url="https://example.test/gauges"
+    )
+
+    assert result.success is True
+    assert "Gauge 1 7" in result.data["text"]
+    assert "Gauge 2 14" in result.data["text"]
+
+
 @pytest.mark.asyncio
 async def test_a_client_rendered_page_with_no_visible_text_reads_its_data(
     tracker,
