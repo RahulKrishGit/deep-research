@@ -13,6 +13,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 from bs4 import BeautifulSoup, Tag
+from bs4.element import NavigableString, PreformattedString
 
 from deep_research.agents.evidence import normalized_content_sha256
 from deep_research.observability import Tracker
@@ -56,6 +57,21 @@ _TAG_PATTERN = re.compile(r"<[^>]+>")
 
 # The script types that carry a page's data rather than its code.
 _JSON_SCRIPT_TYPES = frozenset({"application/json", "application/ld+json"})
+
+# Where a page's own chrome lives: its navigation, masthead and footer by tag,
+# and the landmark roles that carry the same regions on markup built from
+# ``div``s. Chrome carries prose of its own -- a tagline, a consent banner, a
+# legal footer -- and none of it is the page's body, however long a sentence
+# the banner holds.
+_CHROME_TAGS = frozenset({"nav", "header", "footer"})
+_CHROME_ROLES = frozenset(
+    {"navigation", "banner", "contentinfo", "dialog", "alert"}
+)
+
+# Rows a table needs before its cells are the page's own figures. One row is a
+# layout wrapper, and reading a layout as the body marked a client-rendered
+# shell a complete read.
+_MIN_BODY_TABLE_ROWS = 2
 
 
 class AsyncHttpClient(Protocol):
@@ -334,12 +350,11 @@ def _extract_html(html: str) -> tuple[str, str]:
     scripts = [element.extract() for element in soup("script")]
     for element in soup(["style", "noscript"]):
         element.decompose()
-    visible_strings = list(soup.stripped_strings)
-    visible = " ".join(visible_strings)
+    visible = " ".join(soup.stripped_strings)
     if len(visible) > _SHELL_CONTENT_MAX_CHARS or not _is_large_markup(html):
         return title, visible
     prose = _shell_prose(soup, scripts)
-    if not prose and _is_chrome(soup, visible_strings):
+    if not prose and _is_chrome(soup):
         return title, ""
     return title, " ".join([visible, *prose] if visible else prose)
 
@@ -349,17 +364,74 @@ def _is_large_markup(html: str) -> bool:
     return len(html) >= _SHELL_MARKUP_MIN_CHARS
 
 
-def _is_chrome(soup: BeautifulSoup, visible_strings: list[str]) -> bool:
+def _is_chrome(soup: BeautifulSoup) -> bool:
     """Whether a shell's visible text is the site's chrome, not a page body.
 
-    Chrome is navigation labels, menus and a footer: no single visible string
-    reaches prose length. A table cell makes the text a body whatever its
-    words measure, because a data page keeps its body in cells that carry
-    names, numbers and units rather than sentences.
+    Chrome is what the page's own shell says: its navigation, masthead, footer
+    and dialogs, by tag or by ARIA role, whatever its sentences measure. A
+    table is a body only when it sits outside that chrome and has at least
+    ``_MIN_BODY_TABLE_ROWS`` rows, because a single row is a layout. Anything
+    else the static read holds -- a paragraph, a list, a table of figures -- is
+    a body, however short it is.
     """
-    if soup.find(["td", "th"]) is not None:
+    chrome = _chrome_element_ids(soup)
+    if any(_is_body_table(table, chrome) for table in soup.find_all("table")):
         return False
-    return not any(_is_prose(" ".join(text.split())) for text in visible_strings)
+    return not any(_is_prose(text) for text in _body_strings(soup, chrome))
+
+
+def _chrome_element_ids(soup: BeautifulSoup) -> set[int]:
+    """The ids of the elements whose text is the page's chrome.
+
+    Ids, not the elements themselves: ``Tag`` equality is structural, so a set
+    of tags would read two identical menus as one node and could drop a body
+    that shares its markup.
+    """
+    ids: set[int] = set()
+    for element in soup.find_all(True):
+        if element.name in _CHROME_TAGS or _is_chrome_role(element):
+            ids.add(id(element))
+    return ids
+
+
+def _is_chrome_role(element: Tag) -> bool:
+    """Whether ``element``'s ``role`` attribute names a chrome landmark."""
+    role = element.get("role")
+    values = role if isinstance(role, list) else [role]
+    tokens = [
+        token.casefold()
+        for value in values
+        if isinstance(value, str)
+        for token in value.split()
+    ]
+    return any(token in _CHROME_ROLES for token in tokens)
+
+
+def _body_strings(soup: BeautifulSoup, chrome: set[int]) -> list[str]:
+    """The visible strings outside the page's chrome, whitespace collapsed.
+
+    Collected with their parents, unlike ``stripped_strings``, because whether
+    a string is chrome is a fact about where it sits. Comments and the other
+    preformatted nodes are not visible text and are skipped.
+    """
+    strings: list[str] = []
+    for node in soup.find_all(string=True):
+        if not isinstance(node, NavigableString) or isinstance(
+            node, PreformattedString
+        ):
+            continue
+        text = " ".join(str(node).split())
+        if not text or any(id(parent) in chrome for parent in node.parents):
+            continue
+        strings.append(text)
+    return strings
+
+
+def _is_body_table(table: Tag, chrome: set[int]) -> bool:
+    """Whether a table is the page's own figures, not chrome or a layout."""
+    if len(table.find_all("tr")) < _MIN_BODY_TABLE_ROWS:
+        return False
+    return not any(id(parent) in chrome for parent in table.parents)
 
 
 def _is_prose(text: str) -> bool:
