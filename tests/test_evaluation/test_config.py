@@ -909,8 +909,22 @@ from deep_research.utils.config import (
 # alone `90f46cf12b62`, and FixSelection's 1B+4, alone `e5bbfe3ede99`); the
 # merged module is `068c5fe435ef`. FF2's improvements 2 and 11 moved the
 # report writer `a3a73e32c3c0` -> `24ccad97fb9f`.
+# The prompt-fix wave (Fable's review of the 20 model-read blocks) moved the
+# planner, 852f96eefee7 -> 9f201233ac06: every planner block was rewritten to Fable's
+# Directions - the scoping loop states what its final answer must contain and
+# that it has one tool call; the plan instruction states each rule once in
+# field order (planner-chosen bodies, added sub-categories and aids are
+# optional; a target never asks for a verdict, a pick or a combination; a rule's
+# parameter is not a quantity; a query says where to look and never carries the
+# answer; a closed forecast period gets an optional outcome target) and its two
+# reply examples now obey it (names or empty organisations, criteria that name
+# the evidence and the measurement); the review instruction checks the fields
+# that decide Not found and names the list each finding belongs to; a repair
+# request prints the plan it repairs and the review request prints geography.
+# Module source and prompt strings of the planner's own; the researcher, the
+# other three and the judge are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "852f96eefee7",
+    "planner": "9f201233ac06",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required

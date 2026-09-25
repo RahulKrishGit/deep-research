@@ -1718,8 +1718,8 @@ def test_planner_regression_plan_instruction_scopes_benefits_to_the_question() -
     assert "when the question asks about them" in rendered
     # The lexical ban is gone, so what replaces it has to keep the terms it
     # permits out of the plan's assertions.
-    assert "Do not assert those terms as facts" in rendered
-    assert "use them only as search targets" in rendered
+    assert "Do not assert a search term as a fact" in rendered
+    assert "is a lead" in rendered
 
 
 def test_planner_regression_plan_instruction_names_no_support_policy() -> None:
@@ -1741,7 +1741,7 @@ def test_planner_regression_plan_instruction_names_no_support_policy() -> None:
     assert "support_policy" not in " ".join(
         part for example in _PLAN_REPLY_EXAMPLES for part in example
     )
-    assert "not a second publisher where one issuer settles the fact" in rendered
+    assert "any further body's evidence where the question asks for several without naming them" in rendered
     assert (
         "A target never asks for a publication date, retrieval date or "
         "edition as its measure" in rendered
@@ -4864,9 +4864,10 @@ def test_the_answer_contract_adds_no_boilerplate_to_targets() -> None:
 
 def test_the_plan_instruction_states_the_floor() -> None:
     for phrase in ("one target per organisation, measure, period and kind",
-                   "required only for what the question names",
-                   "optional", "paywalled",
-                   "A target you add to make another target checkable",
+                   "A target is required only when the question itself asks "
+                   "for that thing",
+                   "optional", "behind a paywall",
+                   "a target you add to make another target checkable",
                    "a running total"):
         assert phrase in PLAN_INSTRUCTION
 
@@ -5054,9 +5055,10 @@ def test_the_instruction_says_which_targets_are_optional_and_which_body_is_the_a
     """
     for phrase in (
         "A target is required only when the question itself asks for that thing",
-        "a sub-category, aspect, example, event or list item you introduce",
-        "never the maker",
-        "the body that adopted it, never the office that publishes it",
+        "a sub-category, aspect, example, event, item or attribute the "
+        "question does not name",
+        "a description of a role, or an author no page credits",
+        "stamp an adopting or enacting body",
         "every figure target for that window",
     ):
         assert phrase in PLAN_INSTRUCTION
@@ -5064,7 +5066,5 @@ def test_the_instruction_says_which_targets_are_optional_and_which_body_is_the_a
         AgentTask(instruction="Why did the Roman Republic fall?"), _run()
     )[1].content
     for phrase in (
-        "a sub-category, aspect, example, event or list item you introduce",
-        "never the maker",
     ):
         assert phrase in body
