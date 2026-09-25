@@ -19,10 +19,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from deep_research.agents.report import (
-    distinct_retention_counts,
-    evidence_status_counts,
-)
+from deep_research.agents.report import distinct_retention_counts
 from deep_research.graph.errors import (
     PUBLICATION_DOCUMENT_ARTIFACTS,
     PUBLICATION_MEMORY_ARTIFACT,
@@ -267,36 +264,38 @@ def total_token_usage(
 
 @dataclass(frozen=True, slots=True)
 class CoverageProgress:
-    """Target and topic progress, kept apart (Section 2.3).
+    """Required-target progress, and what the report could not answer.
 
-    Two denominators and two readings, because they fail differently: nine
-    tenths of the targets can be answered while one critical topic is
-    untouched, and one blended ratio hides exactly that. ``covered_topics``
-    counts topics whose every counted obligation is answered; an unanswered
-    critical target is listed whether or not its topic counted as covered.
+    Two readings of one denominator, kept apart because they answer different
+    questions: ``missing_required_target_ids`` is the gate's own reading —
+    every required target no verified finding answers — while
+    ``not_found_target_ids`` is the report's own account of what it searched
+    for and did not find. A missing target the report lists under Not found is
+    accounted for and published; a missing target no list names is the gate
+    failure. Reading only one of the two would either hide an unaccounted
+    obligation or report an accounted one as a defect.
     """
 
-    planned_topics: int
-    covered_topics: int
-    substantive_topic_ratio: float
-    planned_targets: int
     required_targets: int
     answered_targets: int
-    critical_targets: int
-    answered_critical_targets: int
-    unanswered_critical_target_ids: tuple[str, ...]
-    unaccounted_target_ids: tuple[str, ...]
+    missing_required_target_ids: tuple[str, ...]
+    not_found_target_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class EvidenceCounts:
     """Distinct quantities, each of a different thing (Section 2.5).
 
-    Ten counts of ten different things plus the four corroboration readings.
     A read call is not a work; a work is not a publisher; a source URL is not a
-    finding; "checked" is not "corroborated". Each field here answers a
-    question the others cannot, which is why none of them is an alias of
-    another and why a read-call count never stands in for unique works.
+    finding; "checked" is not "cited". Each field here answers a question the
+    others cannot, which is why none of them is an alias of another and why a
+    read-call count never stands in for unique works.
+
+    The five findings-side readings are the Evidence Verifier's own: how many
+    findings it confirmed as written, how many it kept with corrected context,
+    how many it dropped, how many it kept with an unchecked context, and how
+    many the reader report cites. A dropped finding is not a verified one, and
+    a cited one is not a checked one.
     """
 
     read_records: int = 0
@@ -308,11 +307,11 @@ class EvidenceCounts:
     findings: int = 0
     assessed_sources: int = 0
     cited_assessed_sources: int = 0
-    checked_claims: int = 0
-    corroborated: int = 0
-    primary_attributed: int = 0
-    contested: int = 0
-    not_established: int = 0
+    verified_findings: int = 0
+    corrected_findings: int = 0
+    dropped_findings: int = 0
+    context_unchecked_findings: int = 0
+    cited_findings: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,12 +379,13 @@ class ResearchOutcome:
 
     @property
     def failed(self) -> bool:
-        """True when the run ended without a judged report.
+        """True when the graph halted on a non-recoverable failure.
 
-        Two ways reach it: the graph halted on a non-recoverable failure, or
-        the Critic's review never validated, so the report was never accepted.
-        Both are ``failed`` rather than ``completed``-with-limitations, and
-        ``accepted`` is ``False`` for both.
+        A halted run publishes nothing, and every other ending does: an
+        exhausted extra-pass budget and a report the reviewer did not accept
+        are both published, honestly, as ``max_iterations`` or ``incomplete``.
+        ``accepted`` is ``False`` for all of them, and ``failed`` says which
+        one left no report at all.
         """
         return self.status == "failed"
 
@@ -460,58 +460,73 @@ class ResearchOutcome:
 
     @property
     def coverage(self) -> CoverageProgress | None:
-        """Target and topic progress, or ``None`` when nothing judged it.
+        """Required-target progress, or ``None`` when nothing judged it.
 
-        ``covered_topics`` is the substantive count — topics whose every
-        counted required target is answered — not the claimed one the snapshot
-        also carries for historical artifacts. A field named on
-        ``CoverageProgress`` as the measured reading must not publish a topic
-        the report never answered. A snapshot written before the numerator
-        existed falls back to the count it does carry
-        (``measured_covered_topics``), so an old record never reads as zero
-        beside its own nonzero ratio.
+        The counts are the length of the id lists the quality pass judged, not
+        the scalars beside them: inside this contract those scalars belong to
+        the retired reading and stay at zero, while the ids are what the gates
+        and the extra-pass router both read. Publishing a scalar would print
+        "0/0 required targets answered" above a missing-target list with an
+        entry in it.
+
+        The Not found reading is the composition's own — the report's account
+        of what it searched for and did not find. It is empty when no
+        composition was kept, and never re-derived from the missing ids: a
+        target no search reported on belongs in no Not found section.
         """
         quality = self.quality
         if quality is None:
             return None
-        answered_critical = max(
-            0,
-            quality.critical_targets
-            - len(quality.unanswered_critical_target_ids),
-        )
+        composition = self.state.composition
         return CoverageProgress(
-            planned_topics=quality.planned_topics,
-            covered_topics=quality.measured_covered_topics,
-            substantive_topic_ratio=quality.substantive_topic_ratio,
-            planned_targets=quality.planned_targets,
-            required_targets=quality.required_targets,
-            answered_targets=quality.answered_targets,
-            critical_targets=quality.critical_targets,
-            answered_critical_targets=answered_critical,
-            unanswered_critical_target_ids=tuple(
-                quality.unanswered_critical_target_ids
+            required_targets=len(quality.required_target_ids),
+            answered_targets=len(quality.answered_target_ids),
+            missing_required_target_ids=tuple(
+                quality.missing_required_target_ids
             ),
-            unaccounted_target_ids=tuple(quality.unaccounted_target_ids),
+            not_found_target_ids=(
+                ()
+                if composition is None
+                else tuple(row.target_id for row in composition.not_found)
+            ),
         )
 
     @property
     def evidence_counts(self) -> EvidenceCounts | None:
-        """The distinct counts, or ``None`` without a composition to count.
+        """The distinct counts, or ``None`` when the run measured neither.
 
-        ``None`` is the honest reading of a session whose Markdown predates the
-        composition contract: with no reader report to index, "how many sources
-        were cited" has no answer, and a zero would be a claim rather than an
-        absence.
+        Two records are needed, and each absence is honest on its own: without
+        a composition there is no reader report to index, and without a quality
+        snapshot no pass judged this run at all — in which case "how many
+        findings were verified" has no answer and a zero would be a claim
+        rather than an absence. A run that collected sources and was never
+        judged therefore reports both readings absent together, instead of
+        publishing one half of them as zeroes.
         """
         composition = self.state.composition
-        if composition is None:
+        quality = self.quality
+        if composition is None or quality is None:
             return None
+        # The retention helper answers the read-side counts this contract
+        # keeps; its remaining key belongs to the retired registry, so the
+        # fields are named here rather than splatted — a second copy of that
+        # reading is not a count this dataclass carries.
+        retention = distinct_retention_counts(self.state, composition)
         return EvidenceCounts(
-            **distinct_retention_counts(self.state, composition),
-            # ``composition.claims`` is the canonical registry: the type
-            # canonicalizes on construction, so re-merging here would only
-            # re-derive the same rows.
-            **evidence_status_counts(composition.claims),
+            read_records=retention["read_records"],
+            network_reads=retention["network_reads"],
+            cache_reads=retention["cache_reads"],
+            unique_works=retention["unique_works"],
+            publishers=retention["publishers"],
+            source_urls=retention["source_urls"],
+            findings=retention["findings"],
+            assessed_sources=retention["assessed_sources"],
+            cited_assessed_sources=retention["cited_assessed_sources"],
+            verified_findings=quality.verified_findings,
+            corrected_findings=quality.corrected_findings,
+            dropped_findings=quality.dropped_findings,
+            context_unchecked_findings=quality.context_unchecked_findings,
+            cited_findings=quality.cited_findings,
         )
 
     @property
@@ -555,11 +570,11 @@ class ResearchOutcome:
 
     @property
     def failed_memory_writes(self) -> int:
-        """How many writes of a claim to memory failed.
+        """How many writes of a finding to memory failed.
 
-        Counted rather than listed: two failed claims are two lost memory
-        records, and the artifact name repeated once per claim says nothing a
-        count does not.
+        Counted rather than listed: two failed writes are two lost memory
+        records, and the artifact name repeated once per finding says nothing
+        a count does not.
         """
         return sum(
             artifact == PUBLICATION_MEMORY_ARTIFACT

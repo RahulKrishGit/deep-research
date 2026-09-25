@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Sequence
 
-from deep_research.agents.critic import failed_critique
 from deep_research.agents.events import agent_event
+from deep_research.agents.evidence_verifier import evidence_verified_event
+from deep_research.agents.report_writer import WrittenReport, report_written_event
 from deep_research.agents.researcher import (
     sub_topic_completed_event,
     sub_topic_skipped_error,
@@ -38,9 +40,12 @@ from deep_research.request_budget import (
 from deep_research.runtime.outcome import ResearchOutcome, ToolCallSummary
 from deep_research.runtime.outcome import build_outcome as real_build_outcome
 from deep_research.utils.types import (
-    Claim,
-    Critique,
-    CritiqueGap,
+    REVIEW_DIMENSIONS,
+    FigureContext,
+    FigureResult,
+    Finding,
+    FindingVerification,
+    NotFoundTarget,
     ReadRecord,
     ReportComposition,
     ReportPoint,
@@ -49,16 +54,21 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchEvent,
     ResearchState,
+    ReviewDefect,
     ScoredSource,
     SubTopic,
 )
-from tests.graph_fakes import fake_report_review
+from tests.evidence_fakes import figure, make_finding, make_read
 
 QUESTION = "How mature is quantum error correction?"
 
 REPORT_PATH = "output/report-session-1-0.md"
 EVIDENCE_PATH = "output/report-session-1-0-evidence.md"
 QUALITY_PATH = "output/report-session-1-0-quality.json"
+
+ANSWERED_TARGET_IDS = ("topic-01-target-01", "topic-01-target-02")
+MISSING_TARGET_ID = "topic-02-target-01"
+OWNER = "U.S. Energy Information Administration"
 
 
 def build_outcome(**overrides) -> ResearchOutcome:
@@ -81,80 +91,156 @@ def build_outcome(**overrides) -> ResearchOutcome:
 
 def quality_state(
     *,
-    critique: Critique | None = None,
     quality: ReportQualitySnapshot | None = None,
-    with_critique: bool = True,
     report_review: ReportReview | None = None,
+    **overrides: object,
 ) -> ResearchState:
     """One composed, judged pass: the numbers the summary must print.
 
-    Carries a scored semantic review by default, because since Task 10 a pass
-    with no review is never accepted — a test that wants the unreviewed reading
-    passes ``report_review=None`` explicitly and says so.
+    Carries a scored review by default, because a pass with no review is never
+    accepted — a test that wants the unreviewed reading passes
+    ``report_review=None`` explicitly and says so.
     """
-    return ResearchState(
-        session_id="session-1",
-        original_question=QUESTION,
-        report_review=(
-            fake_report_review() if report_review is None else report_review
-        ),
-        quality=quality
-        if quality is not None
-        else quality_snapshot(),
-        critique=(
-            critique if critique is not None else gap_critique()
-        )
-        if with_critique
-        else None,
+    return ResearchState.model_validate(
+        {
+            "session_id": "session-1",
+            "original_question": QUESTION,
+            "composition": judged_composition(),
+            "report_review": scored_review()
+            if report_review is None
+            else report_review,
+            "quality": quality_snapshot() if quality is None else quality,
+            **overrides,
+        }
     )
 
 
 def quality_snapshot(**overrides: object) -> ReportQualitySnapshot:
+    """The pass's snapshot: the readings the summary prints, and their ids.
+
+    ``ReportQualitySnapshot`` still requires the readings of the retired
+    registry, which Task 4.10 removes. Every required field this fixture does
+    not name is filled with a zero, so this file names exactly the readings
+    this pipeline computes and keeps working when the rest go.
+    """
     payload: dict[str, object] = {
-        "coverage_ratio": 3 / 7,
-        "planned_topics": 7,
-        "covered_topics": 3,
-        "unresolved_topic_ids": [
-            "topic-03",
-            "topic-05",
-            "topic-06",
-            "topic-07",
-        ],
-        "unique_findings": 10,
-        "unique_sources": 14,
-        "cited_sources": 12,
-        "scored_cited_source_ratio": 10 / 12,
-        "verified_claims": 14,
-        "contradicted_claims": 1,
-        "duplicate_claims": 0,
-        "duplicate_source_rows": 0,
-        "uncited_settled_points": 0,
+        name: 0
+        for name, field in ReportQualitySnapshot.model_fields.items()
+        if field.is_required()
     }
+    payload.update(
+        {
+            "coverage_ratio": 1.0,
+            "planned_topics": 3,
+            "covered_topics": 2,
+            "unique_findings": 2,
+            "unique_sources": 3,
+            "cited_sources": 3,
+            "scored_cited_source_ratio": 1.0,
+            "required_target_ids": [*ANSWERED_TARGET_IDS, MISSING_TARGET_ID],
+            "answered_target_ids": list(ANSWERED_TARGET_IDS),
+            "missing_required_target_ids": [MISSING_TARGET_ID],
+            "verified_findings": 2,
+            "dropped_findings": 1,
+            "cited_findings": 2,
+            "unjudged_sentences": [],
+        }
+    )
     payload.update(overrides)
     return ReportQualitySnapshot.model_validate(payload)
 
 
-def gap_critique() -> Critique:
-    """A model review that asked for more work, so the run is partial."""
-    return Critique(
-        score=6,
-        gaps=[],
-        unsupported_claims=[],
-        recommended_queries=["qec cost 2025"],
-        should_continue=True,
-        rationale="Recorded for renderer tests.",
+def scored_review(**overrides: object) -> ReportReview:
+    """A scored terminal review, which is what the CLI's Review row reads."""
+    payload: dict[str, object] = {
+        "status": "scored",
+        "dimensions": {name: 0.9 for name in REVIEW_DIMENSIONS},
+        "reviewed_statement_ids": ["S001"],
+        "per_statement_dispositions": {"S001": "supported"},
+        "input_fingerprint": "packet-1",
+        "composition_fingerprint": "composition-1",
+    }
+    payload.update(overrides)
+    return ReportReview.model_validate(payload)
+
+
+def kept_finding(
+    snippet: str,
+    *,
+    value: str,
+    unit: str,
+    period: str,
+    kind: str,
+    target_ids: Sequence[str],
+) -> Finding:
+    """One finding the Evidence Verifier kept, figure and context included."""
+    read = make_read()
+    wanted = figure(value, unit, period, kind)
+    return make_finding(
+        read,
+        snippet,
+        figures=[wanted],
+        target_ids=list(target_ids),
+        verification=FindingVerification(
+            status="verified",
+            figure_results=[
+                FigureResult(
+                    figure=wanted,
+                    matched=True,
+                    context=FigureContext(
+                        period=period,
+                        attribution="own",
+                        organisation=OWNER,
+                        kind=kind,
+                    ),
+                    evidence_words=snippet,
+                )
+            ],
+        ),
     )
 
 
-def accepting_critique() -> Critique:
-    return Critique(
-        score=6,
-        gaps=[],
-        unsupported_claims=[],
-        recommended_queries=[],
-        should_continue=False,
-        rationale="Recorded for renderer tests.",
-    )
+def kept_findings() -> list[Finding]:
+    """The two findings the pass kept, each answering one required target."""
+    return [
+        kept_finding(
+            "Generators added 10.4 gigawatts (GW) of new battery storage "
+            "capacity in 2024",
+            value="10.4",
+            unit="GW",
+            period="2024",
+            kind="actual",
+            target_ids=["topic-01-target-01"],
+        ),
+        kept_finding(
+            "capacity growth from battery storage could set a record as "
+            "operators report plans to add 19.6 GW",
+            value="19.6",
+            unit="GW",
+            period="2025",
+            kind="forecast",
+            target_ids=["topic-01-target-02"],
+        ),
+    ]
+
+
+def judged_composition(**overrides: object) -> ReportComposition:
+    """The pass's composition: the kept findings, and what it could not find."""
+    payload: dict[str, object] = {
+        "question": QUESTION,
+        "session_id": "session-1",
+        "findings": kept_findings(),
+        "not_found": [
+            NotFoundTarget(
+                target_id=MISSING_TARGET_ID,
+                question="How much battery storage is planned for 2025?",
+                queries=["battery storage 2025 plans"],
+                searched=True,
+            )
+        ],
+    }
+    payload.update(overrides)
+    return ReportComposition.model_validate(payload)
 
 
 def error_state() -> ResearchState:
@@ -202,6 +288,8 @@ def progress_state() -> ResearchState:
                 message="agent.planner started.",
             ),
             node_started_event("researcher", iteration=0),
+            node_started_event("evidence_verifier", iteration=0),
+            node_started_event("report_writer", iteration=0),
             refinement_started_event(iteration=1, max_iterations=2),
             session_completed_event(
                 status="completed", iteration=1, error_count=0, has_report=True
@@ -284,9 +372,47 @@ def test_verbose_progress_streams_an_agents_own_completion() -> None:
     )
 
 
+def test_plain_progress_streams_the_pipeline_s_own_nodes() -> None:
+    """Every node of the shipped graph streams, named as the graph names it."""
+    for node in (
+        "source_evaluator",
+        "evidence_verifier",
+        "report_writer",
+        "report_reviewer",
+    ):
+        assert render_progress(
+            node_started_event(node, iteration=0), verbose=False
+        ) == f"  [0] Node {node} started."
+
+
+def test_verbose_progress_streams_the_verifier_and_the_writer() -> None:
+    """The two new agents' completion records, from their own producers."""
+    verification = evidence_verified_event(kept_findings())
+    written = report_written_event(
+        WrittenReport(
+            markdown="# Research report\n",
+            evidence_markdown="# Evidence ledger\n",
+            composition=judged_composition(),
+            statement_count=3,
+            citation_count=2,
+            refused_count=0,
+        )
+    )
+
+    assert render_progress(verification, verbose=False) is None
+    assert render_progress(verification, verbose=True) == (
+        "  [0] Verified 2 findings."
+    )
+    assert render_progress(written, verbose=False) is None
+    assert render_progress(written, verbose=True) == (
+        "  [0] Wrote 3 statement(s) citing 2 source(s); "
+        "0 drafted point(s) refused."
+    )
+
+
 def test_verbose_progress_streams_the_enumerated_provider_failure() -> None:
     failure = agent_event(
-        agent_name="critic",
+        agent_name="report_reviewer",
         event_type="agent.provider_failure",
         message="The model provider failed during the review.",
         metadata={"iteration": 0},
@@ -660,8 +786,8 @@ def _skip_error(coverage_id: str, reason: str) -> ResearchError:
 def test_a_memory_write_failure_does_not_withhold_the_artifact_paths() -> None:
     """Memory is a separate write; its failure is not an incomplete set.
 
-    Three document writes succeeded and two claim writes to memory failed. The
-    summary called the publication incomplete, said no artifact path was
+    Three document writes succeeded and two finding writes to memory failed.
+    The summary called the publication incomplete, said no artifact path was
     advertised, and then printed all three paths — and the failure list read
     "memory, memory". Memory is not part of the set whose completeness gates
     the paths (``nodes`` attempts it only for an accepted report, after the
@@ -702,7 +828,7 @@ def test_a_memory_write_failure_does_not_withhold_the_artifact_paths() -> None:
     assert f"Report: {REPORT_PATH}" in joined
     assert f"Evidence ledger: {EVIDENCE_PATH}" in joined
     assert f"Quality record: {QUALITY_PATH}" in joined
-    assert "Memory: 2 claim writes to memory failed" in joined
+    assert "Memory: 2 finding writes to memory failed" in joined
 
 
 def test_a_failed_document_write_withholds_every_artifact_path() -> None:
@@ -775,16 +901,16 @@ def test_the_summary_leads_with_the_quality_block() -> None:
     lines = render_summary(outcome, verbose=False)
     joined = "\n".join(lines)
 
-    assert "Quality: partial (critic 6/10)" in joined
+    assert "Quality: partial (review scored 0.90)" in joined
     assert (
-        "Evidence: 12 cited sources; 10 scored; 14 verified, 1 contradicted"
-        in joined
+        "Findings: 2 checked (0 with corrected context, 0 unchecked context), "
+        "1 dropped; 2 cited" in joined
     )
     assert (
-        "Integrity: 0 duplicate claims; 0 duplicate source rows; "
-        "0 uncited settled points" in joined
+        "Integrity: 0 duplicate fact rows; 0 uncited statements; "
+        "0 unjudged sentences; 0 forecasts without release" in joined
     )
-    assert "Open coverage: topic-03, topic-05, topic-06, topic-07" in joined
+    assert "Required targets: 2/3 answered" in joined
     assert f"Report: {REPORT_PATH}" in joined
     assert f"Evidence ledger: {EVIDENCE_PATH}" in joined
 
@@ -798,46 +924,149 @@ def test_the_summary_prints_identity_and_status_before_the_quality_block() -> No
 
     assert index_of(lines, "Session ID:") < index_of(lines, "Status:")
     assert index_of(lines, "Status:") < index_of(lines, "Quality:")
-    assert index_of(lines, "Quality:") < index_of(lines, "Evidence:")
-    assert index_of(lines, "Evidence:") < index_of(lines, "Integrity:")
-    assert index_of(lines, "Integrity:") < index_of(lines, "Open coverage:")
-    assert index_of(lines, "Open coverage:") < index_of(lines, "Report:")
+    assert index_of(lines, "Quality:") < index_of(lines, "Required targets:")
+    assert index_of(lines, "Required targets:") < index_of(lines, "Not found:")
+    assert index_of(lines, "Not found:") < index_of(lines, "Sources:")
+    assert index_of(lines, "Sources:") < index_of(lines, "Review:")
+    assert index_of(lines, "Review:") < index_of(lines, "Findings:")
+    assert index_of(lines, "Findings:") < index_of(lines, "Integrity:")
+    assert index_of(lines, "Integrity:") < index_of(lines, "Report:")
     assert index_of(lines, "Report:") < index_of(lines, "Evidence ledger:")
 
 
-def test_the_critic_fragment_is_omitted_without_a_model_review() -> None:
-    """Step 3: the critic fragment needs a model review to exist."""
+def test_the_summary_prints_findings_review_and_integrity_lines() -> None:
+    lines = render_summary(build_outcome(state=quality_state()), verbose=False)
+
+    assert any(l.startswith("Findings: 2 checked") for l in lines)
+    assert any(
+        l.startswith(
+            "Integrity: 0 duplicate fact rows; 0 uncited statements; "
+            "0 unjudged sentences; 0 forecasts without release"
+        )
+        for l in lines
+    )
+    assert not any(
+        "critic" in l.casefold() or "claims:" in l.casefold() for l in lines
+    )
+
+
+def test_the_findings_line_counts_the_verifier_s_own_readings_apart() -> None:
+    """Four readings of the findings, each its own number.
+
+    A finding kept with corrected context is not one kept as written, a
+    dropped one is not a verified one, and a cited one is not a checked one —
+    so the line prints each count beside the others rather than one blended
+    number that cannot be read back.
+    """
     outcome = build_outcome(
         state=quality_state(
-            with_critique=False,
             quality=quality_snapshot(
-                coverage_ratio=1.0,
-                planned_topics=2,
-                covered_topics=2,
-                unresolved_topic_ids=[],
-            ),
+                verified_findings=3,
+                corrected_findings=1,
+                context_unchecked_findings=4,
+                dropped_findings=2,
+                cited_findings=2,
+            )
         )
     )
 
     joined = "\n".join(render_summary(outcome, verbose=False))
 
-    assert "Quality: partial" in joined
     assert (
-        "Coverage claimed: 2/2 topics recorded as consumed by a checked "
-        "claim (100%)" in joined
+        "Findings: 3 checked (1 with corrected context, 4 unchecked context), "
+        "2 dropped; 2 cited" in joined
     )
-    assert "critic 6/10" not in joined
-    assert "/10" not in joined
 
 
-def test_an_accepted_run_says_accepted() -> None:
+def test_the_integrity_line_counts_the_unjudged_sentences_it_lists() -> None:
+    """The count and the list come from one field, so they cannot disagree."""
     outcome = build_outcome(
-        state=quality_state(critique=accepting_critique())
+        state=quality_state(
+            quality=quality_snapshot(
+                duplicate_fact_rows=1,
+                uncited_settled_points=2,
+                unjudged_sentences=["S003", "S007"],
+                forecasts_without_release=3,
+            )
+        )
     )
 
     joined = "\n".join(render_summary(outcome, verbose=False))
 
-    assert "Quality: accepted (critic 6/10)" in joined
+    assert (
+        "Integrity: 1 duplicate fact rows; 2 uncited statements; "
+        "2 unjudged sentences; 3 forecasts without release" in joined
+    )
+
+
+def test_the_verdict_carries_the_review_status_and_mean() -> None:
+    """What replaced the retired reviewer's score fragment.
+
+    The verdict is the terminal quality status the gates judged, and the
+    review's own status and mean are the judgement it rests on. A run with no
+    judgement at all prints its verdict alone: there is no score to print.
+    """
+    reviewed = "\n".join(
+        render_summary(build_outcome(state=quality_state()), verbose=False)
+    )
+    unscored = "\n".join(
+        render_summary(
+            build_outcome(
+                state=quality_state(
+                    quality=quality_snapshot(),
+                    report_review=ReportReview(status="incomplete"),
+                )
+            ),
+            verbose=False,
+        )
+    )
+    no_review = "\n".join(
+        render_summary(
+            build_outcome(
+                state=quality_state().model_copy(
+                    update={"report_review": None}
+                )
+            ),
+            verbose=False,
+        )
+    )
+
+    assert "Quality: partial (review scored 0.90)" in reviewed
+    assert "Quality: partial (review incomplete)" in unscored
+    assert "Quality: partial\n" in no_review
+    assert "/10" not in reviewed
+
+
+def test_the_review_row_names_the_packet_its_score_was_made_over() -> None:
+    """The mean is printed once, beside the verdict it earned.
+
+    This row carries the judgement's identity: the status, and the fingerprint
+    of the packet it was made over, so two runs' judgements can be told apart.
+    A review with no score says that, rather than printing a zero mean.
+    """
+    reviewed = "\n".join(
+        render_summary(build_outcome(state=quality_state()), verbose=False)
+    )
+    unreviewed = "\n".join(
+        render_summary(
+            build_outcome(
+                state=quality_state(
+                    quality=quality_snapshot(
+                        semantic_review_status="incomplete",
+                        semantic_review_score=None,
+                    ),
+                    report_review=ReportReview(status="incomplete"),
+                )
+            ),
+            verbose=False,
+        )
+    )
+
+    assert "Review: scored (fingerprint packet-1)" in reviewed
+    assert "Quality reasons:" not in reviewed
+    assert "Review: incomplete (no score was recorded)" in unreviewed
+    assert "Quality reasons: semantic review incomplete" in unreviewed
+    assert "Review: scored 0.00" not in unreviewed
 
 
 def test_the_quality_line_stands_alone_without_a_snapshot() -> None:
@@ -846,23 +1075,30 @@ def test_the_quality_line_stands_alone_without_a_snapshot() -> None:
     joined = "\n".join(lines)
 
     assert "Quality: partial" in joined
-    assert "Evidence:" not in joined
+    assert "Required targets:" not in joined
+    assert "Sources:" not in joined
+    assert "Findings:" not in joined
     assert "Integrity:" not in joined
-    assert "Open coverage:" not in joined
 
 
-def test_open_coverage_is_omitted_when_nothing_is_open() -> None:
+def test_a_missing_required_target_is_listed_as_not_found() -> None:
+    """The report's own account of what it could not answer is printed."""
+    lines = render_summary(build_outcome(state=quality_state()), verbose=False)
+
+    assert "Not found: topic-02-target-01" in lines
+
+
+def test_not_found_is_omitted_when_the_report_lists_nothing() -> None:
     outcome = build_outcome(
         state=quality_state(
-            quality=quality_snapshot(
-                coverage_ratio=1.0, covered_topics=7, unresolved_topic_ids=[]
-            )
+            composition=judged_composition(not_found=[]),
         )
     )
 
     joined = "\n".join(render_summary(outcome, verbose=False))
 
-    assert "Open coverage:" not in joined
+    assert "Required targets: 2/3 answered" in joined
+    assert "Not found:" not in joined
 
 
 def test_a_missing_evidence_ledger_file_says_so() -> None:
@@ -871,31 +1107,6 @@ def test_a_missing_evidence_ledger_file_says_so() -> None:
     joined = "\n".join(render_summary(outcome, verbose=False))
 
     assert "Evidence ledger: not written to disk" in joined
-
-
-def test_the_scored_count_comes_back_exactly() -> None:
-    """``scored_cited_source_ratio`` is ``scored / cited`` by construction."""
-    exact = build_outcome(
-        state=quality_state(
-            quality=quality_snapshot(
-                cited_sources=3, scored_cited_source_ratio=2 / 3
-            )
-        )
-    )
-    none_cited = build_outcome(
-        state=quality_state(
-            quality=quality_snapshot(
-                cited_sources=0, scored_cited_source_ratio=0.0
-            )
-        )
-    )
-
-    assert "3 cited sources; 2 scored;" in "\n".join(
-        render_summary(exact, verbose=False)
-    )
-    assert "0 cited sources; 0 scored;" in "\n".join(
-        render_summary(none_cited, verbose=False)
-    )
 
 
 def test_the_summary_names_the_session_status_and_report() -> None:
@@ -922,12 +1133,15 @@ def test_the_summary_is_explicit_when_no_report_reached_disk() -> None:
     assert "Report: not written to disk" in "\n".join(lines)
 
 
-def test_a_limited_run_says_so_without_calling_itself_a_failure() -> None:
+def test_an_exhausted_extra_pass_budget_says_what_it_means() -> None:
+    """PD-23: the status now means extra passes spent with targets missing."""
     lines = render_summary(build_outcome(status="max_iterations"), verbose=False)
 
     joined = "\n".join(lines)
     assert "Status: max_iterations" in joined
-    assert "refinement budget" in joined
+    assert "extra passes exhausted" in joined
+    assert "required targets still missing" in joined
+    assert "the report not accepted" in joined
 
 
 def test_verbose_summary_reports_tool_calls_and_tokens() -> None:
@@ -1187,7 +1401,7 @@ def test_a_scraper_failure_and_request_budget_render_no_urls_or_queries() -> Non
 # One composed pass, with a read registry the counts can be read from. The
 # fixture is shaped so that no two quantities on the summary happen to be
 # equal: three reads over two works, three assessed sources of which one is
-# cited, and three checked claims at three different corroboration badges.
+# cited, and the verifier's own readings at three different numbers.
 
 READ_URL = "https://network.example/report"
 MIRROR_URL = "https://mirror.example/report"
@@ -1234,50 +1448,26 @@ def _scored_source(
     )
 
 
-def _badged_claim(text: str, *, verdict: str, badge: str | None) -> Claim:
-    return Claim(
-        claim_id=f"claim-{abs(hash(text)) % 100000:05d}",
-        text=text,
-        source_urls=[READ_URL],
-        verdict=verdict,  # type: ignore[arg-type]
-        evidence_status=badge,  # type: ignore[arg-type]
-        confidence=0.8,
-        evidence=["A measured statement."],
-        contradictions=[],
-        verification_evidence=[],
-    )
-
-
 def composed_state(**overrides: object) -> ResearchState:
-    """A composed pass whose four counts are four different numbers."""
-    corroborated = _badged_claim(
-        "Independent corroboration was established.", verdict="verified",
-        badge="verified_pair",
-    )
-    attributed = _badged_claim(
-        "Only primary-source attribution was established.",
-        verdict="insufficient_evidence",
-        badge="source_supported",
-    )
-    unclassified = _badged_claim(
-        "No corroboration classification was recorded.",
-        verdict="unverified",
-        badge=None,
-    )
+    """A composed pass whose counts are all different numbers.
+
+    Three reads over two works, three assessed sources of which one is cited,
+    two kept findings and one dropped, and two of three required targets
+    answered with the third listed under Not found.
+    """
     composition = ReportComposition(
         question=QUESTION,
         session_id="session-1",
-        claims=[corroborated, attributed, unclassified],
         sources=[
             _scored_source(READ_URL, publisher_id="network.example"),
             _scored_source(MIRROR_URL, publisher_id="mirror.example"),
             _scored_source(OTHER_URL),
         ],
-        findings=[],
+        findings=kept_findings(),
+        not_found=judged_composition().not_found,
         summary=[
             ReportPoint(
-                text=corroborated.text,
-                claim_ids=[corroborated.claim_id],
+                text="Independent corroboration was established.",
                 source_urls=[READ_URL],
             )
         ],
@@ -1325,21 +1515,11 @@ def composed_state(**overrides: object) -> ResearchState:
             ),
         ],
         quality=quality_snapshot(
-            planned_topics=3,
-            covered_topics=2,
-            coverage_ratio=2 / 3,
-            substantive_covered_topics=2,
-            substantive_topic_ratio=2 / 3,
-            planned_targets=4,
-            required_targets=3,
-            answered_targets=2,
-            critical_targets=2,
-            unanswered_critical_target_ids=["t-2"],
             semantic_review_status="scored",
             semantic_review_score=0.86,
             semantic_review_fingerprint="abc123def456",
         ),
-        report_review=fake_report_review(),
+        report_review=scored_review(),
     )
     payload = overrides.pop("state_overrides", {})
     return state.model_copy(update={**payload, **overrides})
@@ -1359,20 +1539,21 @@ def composed_outcome(**overrides: object) -> ResearchOutcome:
     )
 
 
-def test_the_summary_counts_checked_claims_apart_from_corroborated_ones() -> None:
-    """Three checked claims are not three verified ones.
+def test_the_summary_counts_the_kept_findings_apart_from_the_dropped_ones() -> None:
+    """Two kept findings are not two verified findings and not two cited ones.
 
-    Each canonical claim is counted under the badge it actually recorded, and
-    the four counts add up to the number that was checked — so a check count
-    can never be printed as a corroboration count.
+    Each reading is printed under its own name, so a check count can never be
+    read as a citation count and a dropped finding never disappears into the
+    number of the ones that survived.
     """
     joined = "\n".join(render_summary(composed_outcome(), verbose=False))
 
     assert (
-        "Claims: 3 checked; 1 independently corroborated, "
-        "1 primary-source attributed, 0 contested, 1 not established" in joined
+        "Findings: 2 checked (0 with corrected context, 0 unchecked context), "
+        "1 dropped; 2 cited" in joined
     )
-    assert "3 verified" not in joined
+    assert "claims" not in joined.casefold()
+    assert "critic" not in joined.casefold()
 
 
 def test_the_summary_reports_assessed_cited_reads_works_and_publishers_apart() -> (
@@ -1389,105 +1570,36 @@ def test_the_summary_reports_assessed_cited_reads_works_and_publishers_apart() -
 
     assert (
         "Sources: 3 assessed, 1 cited; reads 3 (network 2, cache reuse 1), "
-        "works 2, publishers 2, findings 0" in joined
+        "works 2, publishers 2, findings 2" in joined
     )
 
 
-def test_the_coverage_line_reports_the_substantive_topic_count() -> None:
-    """The line says "substantive", so it prints the substantive numerator.
+def test_the_coverage_line_reports_the_required_targets_and_the_not_found_list() -> (
+    None
+):
+    """The count is the gate's reading; the Not found row is the report's own.
 
-    ``covered_topics`` on the snapshot is the claimed reading — topics some
-    claim recorded consuming — and the two disagree exactly when a topic was
-    claimed but never answered. Printing the claimed value next to a
-    substantive ratio published a topic as covered that the ratio itself
-    scored at zero.
+    A required target no finding answers is missing from the answer count
+    whatever else happens. When the report lists it under Not found the run has
+    accounted for it, and when nothing lists it the Unresolved row is where it
+    shows up — one number for both readings would either hide an unaccounted
+    obligation or report an accounted one as a defect.
     """
-    joined = "\n".join(
+    listed = "\n".join(render_summary(composed_outcome(), verbose=False))
+    unlisted = "\n".join(
         render_summary(
             composed_outcome(
-                quality=quality_snapshot(
-                    planned_topics=1,
-                    covered_topics=1,
-                    coverage_ratio=1.0,
-                    substantive_covered_topics=0,
-                    substantive_topic_ratio=0.0,
-                    planned_targets=1,
-                    required_targets=1,
-                    answered_targets=0,
-                )
+                composition=judged_composition(not_found=[]),
             ),
             verbose=False,
         )
     )
 
-    assert (
-        "Coverage: 0/1 topics covered (substantive, 0%); "
-        "0/1 required targets answered" in joined
-    )
-
-
-def test_the_quality_line_names_the_claimed_topic_count() -> None:
-    """Two topic readings, two rows, each one named.
-
-    The claimed count used to sit inside the headline ``Quality:`` line —
-    "4/4 topics claimed, 100%" — while the Coverage row below it printed
-    "0/4 topics covered": one run, one console, two answers under one name.
-    The claimed reading has its own labelled row now.
-    """
-    joined = "\n".join(render_summary(composed_outcome(), verbose=False))
-
-    quality_line = next(
-        line for line in joined.splitlines() if line.startswith("Quality: ")
-    )
-    assert "topics claimed" not in quality_line
-    assert (
-        "Coverage claimed: 2/3 topics recorded as consumed by a checked "
-        "claim (67%)" in joined
-    )
-    assert (
-        "Coverage: 2/3 topics covered (substantive, 67%); "
-        "2/3 required targets answered; 1/2 critical targets answered" in joined
-    )
-
-
-def test_a_failed_critic_review_prints_no_critic_score() -> None:
-    """The floor score is not a judgement, and must never print as one.
-
-    The audited run printed "Quality: partial (critic 1/10; …)" four lines
-    above the warning that said the critic's review never validated. The floor
-    exists so an outage cannot read as a low score; printing the number beside
-    "failed" put the judgement back.
-    """
-    critique, _ = failed_critique(iteration=0, max_iterations=3)
-    joined = "\n".join(
-        render_summary(
-            build_outcome(state=quality_state(critique=critique)),
-            verbose=False,
-        )
-    )
-
-    assert "Quality: partial" in joined
-    quality_line = next(
-        line for line in joined.splitlines() if line.startswith("Quality: ")
-    )
-    assert quality_line == "Quality: partial"
-    assert "/10" not in joined
-
-
-def test_a_reviewed_critique_still_prints_its_score() -> None:
-    """The guard is about the review's status, not about the number."""
-    joined = "\n".join(render_summary(build_outcome(state=quality_state()), verbose=False))
-
-    assert "Quality: partial (critic 6/10)" in joined
-
-
-def test_the_summary_keeps_topic_and_target_progress_apart() -> None:
-    joined = "\n".join(render_summary(composed_outcome(), verbose=False))
-
-    assert (
-        "Coverage: 2/3 topics covered (substantive, 67%); "
-        "2/3 required targets answered; 1/2 critical targets answered" in joined
-    )
+    assert "Required targets: 2/3 answered" in listed
+    assert "Not found: topic-02-target-01" in listed
+    assert "3/3" not in listed
+    assert "Required targets: 2/3 answered" in unlisted
+    assert "Not found:" not in unlisted
 
 
 def test_the_summary_names_the_semantic_review_and_never_invents_a_score() -> None:
@@ -1500,49 +1612,44 @@ def test_the_summary_names_the_semantic_review_and_never_invents_a_score() -> No
                         semantic_review_status="incomplete",
                         semantic_review_score=None,
                     ),
-                    "report_review": None,
+                    "report_review": ReportReview(status="incomplete"),
                 }
             ),
             verbose=False,
         )
     )
 
-    assert "Review: scored 0.86 (fingerprint abc123def456)" in reviewed
+    assert "Quality: partial (review scored 0.86)" in reviewed
+    assert "Review: scored (fingerprint abc123def456)" in reviewed
     assert "Quality reasons:" not in reviewed
     assert "Review: incomplete (no score was recorded)" in unreviewed
     assert "Quality reasons: semantic review incomplete" in unreviewed
     assert "Review: scored 0.00" not in unreviewed
 
 
-def test_the_summary_names_open_defects_with_their_scope() -> None:
+def test_the_summary_names_open_defects_with_their_scope_and_the_owed_targets() -> (
+    None
+):
     """A partial verdict names what is open, not that "limitations remain"."""
     state = composed_state(
         state_overrides={
-            "critique": Critique(
-                score=6,
-                gaps=[
-                    CritiqueGap(
-                        gap_id="gap-01",
-                        coverage_id="topic-01",
-                        target_ids=["t-1"],
+            "report_review": scored_review(
+                defects=[
+                    ReviewDefect(
+                        defect_id="review-01",
                         kind="coverage",
                         severity="major",
-                        repair_action="acquire",
-                        problem="The interconnection queue is not answered.",
+                        target_ids=[MISSING_TARGET_ID],
+                        problem="The 2025 plan is not answered.",
                     ),
-                    CritiqueGap(
-                        gap_id="gap-02",
-                        target_ids=["t-2"],
+                    ReviewDefect(
+                        defect_id="review-02",
                         kind="freshness",
                         severity="minor",
-                        repair_action="acquire",
+                        target_ids=["topic-01-target-01"],
                         problem="One passage is older than the others.",
                     ),
-                ],
-                unsupported_claims=[],
-                recommended_queries=[],
-                should_continue=True,
-                rationale="One material defect remains.",
+                ]
             )
         }
     )
@@ -1550,7 +1657,11 @@ def test_the_summary_names_open_defects_with_their_scope() -> None:
     joined = "\n".join(render_summary(build_outcome(state=state), verbose=False))
 
     # Only the material defect is open; the minor one is recorded, not open.
-    assert "Unresolved: 1 defect (coverage topic-01) (critic)" in joined
+    # The missing target is named by the gate's own reading, not the review's.
+    assert (
+        "Unresolved: 1 defect (coverage topic-02-target-01) (semantic review); "
+        "1 missing required target (topic-02-target-01)" in joined
+    )
     assert "freshness" not in joined
 
 

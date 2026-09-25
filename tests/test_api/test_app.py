@@ -63,7 +63,7 @@ def test_post_starts_a_session_and_forwards_every_request_field() -> None:
     call = runner.calls[0]
     assert call["session_id"] == body["session_id"]
     assert call["question"] == "Quantum error correction"
-    assert call["max_iterations"] == 2
+    assert call["max_extra_passes"] == 2
     assert call["output_format"] == "markdown"
     assert call["config_overrides"] == {
         "output": {"directory": "api-output/"}
@@ -75,12 +75,26 @@ def test_post_starts_a_session_and_forwards_every_request_field() -> None:
     assert metric.method == "POST"
 
 
+def test_post_accepts_zero_extra_passes() -> None:
+    """A request may ask for no extra pass at all (PD-15)."""
+    runner = ScriptedRunner()
+    app = create_app(runner=runner, preflight=valid_preflight)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/research", json={"query": "Question", "max_iterations": 0}
+        )
+
+    assert response.status_code == 202
+    assert runner.calls[0]["max_extra_passes"] == 0
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         {},
         {"query": "   "},
-        {"query": "Question", "max_iterations": 0},
+        {"query": "Question", "max_iterations": -1},
         {"query": "Question", "output_format": "pdf"},
         {
             "query": "Question",

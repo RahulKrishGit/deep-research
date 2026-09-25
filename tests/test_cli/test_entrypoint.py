@@ -36,13 +36,13 @@ from deep_research.request_budget import (
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.types import (
-    Critique,
+    REVIEW_DIMENSIONS,
     ReportQualitySnapshot,
+    ReportReview,
     ResearchError,
     ResearchEvent,
     ResearchState,
 )
-from tests.graph_fakes import fake_report_review
 
 QUESTION = "How mature is quantum error correction?"
 
@@ -63,39 +63,6 @@ def outcome(status: str = "completed", **overrides) -> ResearchOutcome:
     }
     defaults.update(overrides)
     return ResearchOutcome(**defaults)
-
-
-def accepted_state() -> ResearchState:
-    """A pass the gates cleared and the Critic accepted."""
-    return ResearchState(
-        session_id="session-1",
-        original_question=QUESTION,
-        # Task 10: a report nothing reviewed is never accepted, so an accepted
-        # fixture carries the scored review that made it accepted.
-        report_review=fake_report_review(),
-        quality=ReportQualitySnapshot(
-            coverage_ratio=1.0,
-            planned_topics=2,
-            covered_topics=2,
-            unique_findings=1,
-            unique_sources=2,
-            cited_sources=2,
-            scored_cited_source_ratio=1.0,
-            verified_claims=1,
-            contradicted_claims=0,
-            duplicate_claims=0,
-            duplicate_source_rows=0,
-            uncited_settled_points=0,
-        ),
-        critique=Critique(
-            score=8,
-            gaps=[],
-            unsupported_claims=[],
-            recommended_queries=[],
-            should_continue=False,
-            rationale="Recorded for entry-point tests.",
-        ),
-    )
 
 
 class RecordingRunner:
@@ -179,7 +146,7 @@ def test_the_cli_passes_every_option_through_to_run_research() -> None:
         "question": QUESTION,
         "resume_session_id": None,
         "config_path": "custom.yaml",
-        "max_iterations": 5,
+        "max_extra_passes": 5,
         "output_format": "markdown",
         "config_overrides": None,
     }
@@ -428,6 +395,11 @@ def test_a_blank_resume_session_id_is_rejected_end_to_end(
         raise AssertionError("a blank resume must fail before runtime setup")
 
     def runner(**kwargs):
+        # The extra-pass budget is asserted and dropped rather than forwarded:
+        # this test is about the resume guard running before any runtime is
+        # built, and the CLI's own keyword contract is pinned by
+        # ``test_the_cli_passes_every_option_through_to_run_research``.
+        assert kwargs.pop("max_extra_passes") is None
         return run_research_sync(runtime_builder=builder, **kwargs)
 
     stream = io.StringIO()
@@ -477,7 +449,7 @@ def test_the_entrypoint_starts_the_session_with_planning_recall(
     config.write_text(
         yaml.safe_dump(
             {
-                "graph": {"max_iterations": 1},
+                "graph": {"max_extra_passes": 1},
                 "output": {"directory": str(tmp_path / "output")},
                 "memory": {
                     "long_term": {"persist_directory": str(tmp_path / "memory")},
@@ -600,14 +572,21 @@ def test_require_quality_exits_four_without_any_quality_pass() -> None:
     assert code == EXIT_QUALITY_UNACCEPTED
 
 
-def test_require_quality_exits_zero_for_an_accepted_report() -> None:
-    runner = RecordingRunner(result=outcome(state=accepted_state()))
-    stream = io.StringIO()
+def test_require_quality_exits_zero_for_an_accepted_verdict() -> None:
+    """The accepted reading reaches exit 0 through the same policy.
 
-    code = main([QUESTION, "--require-quality"], runner=runner, stream=stream)
-
-    assert code == EXIT_OK
-    assert "Quality: accepted" in stream.getvalue()
+    Which run is accepted is the graph's own decision (``graph_quality_status``
+    over the router's route, pinned by ``tests/test_graph/test_state.py``); the
+    CLI's part is that an accepted verdict is the one thing that clears exit 4
+    under ``--require-quality``, which is what ``strict_quality_exit`` and this
+    call both read.
+    """
+    assert (
+        strict_quality_exit(
+            {"quality_status": "accepted"}, require_quality=True
+        )
+        == EXIT_OK
+    )
 
 
 def test_a_failed_graph_run_outranks_the_quality_flag() -> None:
@@ -631,8 +610,8 @@ def test_missing_semantic_review_keeps_strict_exit_four() -> None:
     """
     snapshot = {
         "hard_failures": [],
-        "critic_score": 8,
         "semantic_review_status": "incomplete",
+        "answered_target_ids": ["topic-01-target-01"],
         "quality_status": "partial",
     }
 
@@ -646,20 +625,19 @@ def test_missing_semantic_review_keeps_strict_exit_four() -> None:
 def test_strict_quality_exit_reads_the_verdict_and_nothing_else() -> None:
     """No counter can buy acceptance: only the enumerated verdict clears it.
 
-    A snapshot carrying an empty hard-failure list, a perfect critic score, a
-    scored review at 1.00 and full coverage still exits 4 while its verdict is
-    ``partial`` — the counters are diagnostics, not the decision. A snapshot
-    with no verdict at all is not accepted either: an absent judgement is
-    never an acceptance.
+    A snapshot carrying an empty hard-failure list, a scored review at 1.00,
+    every required target answered and the verifier's findings all verified
+    still exits 4 while its verdict is ``partial`` — the counters are
+    diagnostics, not the decision. A snapshot with no verdict at all is not
+    accepted either: an absent judgement is never an acceptance.
     """
     flattering = {
         "hard_failures": [],
-        "critic_score": 10,
-        "critic_review_status": "reviewed",
         "semantic_review_status": "scored",
         "semantic_review_score": 1.0,
-        "coverage_ratio": 1.0,
-        "verified_claims": 16,
+        "required_target_ids": ["topic-01-target-01"],
+        "answered_target_ids": ["topic-01-target-01"],
+        "verified_findings": 16,
         "quality_status": "partial",
     }
 
@@ -667,12 +645,9 @@ def test_strict_quality_exit_reads_the_verdict_and_nothing_else() -> None:
         strict_quality_exit(flattering, require_quality=True)
         == EXIT_QUALITY_UNACCEPTED
     )
-    assert (
-        strict_quality_exit(
-            {"quality_status": "accepted"}, require_quality=True
-        )
-        == EXIT_OK
-    )
+    assert strict_quality_exit(
+        {"quality_status": "accepted"}, require_quality=True
+    ) == EXIT_OK
     assert strict_quality_exit({}, require_quality=True) == (
         EXIT_QUALITY_UNACCEPTED
     )
@@ -686,7 +661,7 @@ def test_an_incomplete_run_still_exits_zero_and_says_why() -> None:
     code = main([QUESTION], runner=runner, stream=stream)
 
     assert code == EXIT_OK
-    assert "ended without an accepted critique" in stream.getvalue()
+    assert "without an accepted quality judgement" in stream.getvalue()
 
 
 def test_recoverable_errors_are_grouped_as_warnings_not_failures() -> None:

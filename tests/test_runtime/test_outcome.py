@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from deep_research.agents.events import agent_event
 from deep_research.agents.researcher import sub_topic_completed_event
 from deep_research.agents.steps import ReActRun
@@ -13,6 +15,8 @@ from deep_research.request_budget import (
     RequestBudgetSnapshot,
 )
 from deep_research.runtime.outcome import (
+    CoverageProgress,
+    EvidenceCounts,
     ResearchOutcome,
     ToolCallSummary,
     build_outcome,
@@ -27,20 +31,35 @@ from deep_research.utils.types import (
     QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
-    Critique,
+    REVIEW_DIMENSIONS,
+    FigureContext,
+    FigureResult,
+    Finding,
+    FindingVerification,
+    NotFoundTarget,
+    ReadRecord,
+    ReportComposition,
     ReportQualitySnapshot,
+    ReportReview,
     ResearchError,
     ResearchEvent,
     ResearchState,
     SubTopic,
 )
-from tests.graph_fakes import fake_report_review
+from tests.evidence_fakes import figure, make_finding, make_read
 
 QUESTION = "How mature is quantum error correction?"
 
 REPORT_PATH = "output/report-session-1-0.md"
 EVIDENCE_PATH = "output/report-session-1-0-evidence.md"
 QUALITY_PATH = "output/report-session-1-0-quality.json"
+
+# One answered target per sub-topic, and a third the pass could not answer.
+ANSWERED_TARGET_IDS = ("topic-01-target-01", "topic-01-target-02")
+MISSING_TARGET_ID = "topic-02-target-01"
+REQUIRED_TARGET_IDS = (*ANSWERED_TARGET_IDS, MISSING_TARGET_ID)
+
+OWNER = "U.S. Energy Information Administration"
 
 
 def base_state(**overrides: object) -> ResearchState:
@@ -52,18 +71,19 @@ def base_state(**overrides: object) -> ResearchState:
     return ResearchState.model_validate(payload)
 
 
-def legacy_synthesis_event(path: str | None) -> object:
-    """The per-pass event a refinement used to publish a report under.
+def per_pass_agent_event(path: str | None) -> object:
+    """A per-pass agent record that names a path in its own metadata.
 
-    Task 6 removed in-synthesis publication, so this record no longer names
-    the session's final artifact. The tests keep building it to prove the
-    outcome never falls back to an earlier pass's file.
+    The writer and the verifier announce what they produced, and neither
+    record is the terminal publication: only the finalizer publishes, so the
+    tests build this shape to prove the outcome never reads a path out of an
+    agent's own report of its work.
     """
     return agent_event(
-        agent_name="synthesizer",
-        event_type="synthesizer.synthesis.completed",
-        message="Report synthesis complete.",
-        metadata={"output_path": path, "section_count": 3},
+        agent_name="report_writer",
+        event_type="report_writer.report.written",
+        message="Wrote 3 statement(s) citing 2 source(s); 0 drafted point(s) refused.",
+        metadata={"statements": 3, "citations": 2, "output_path": path},
     )
 
 
@@ -85,41 +105,200 @@ def publication_event(
 
 
 def quality_snapshot(**overrides: object) -> ReportQualitySnapshot:
+    """The step-4 reading of one judged pass: ids and verified-finding counts.
+
+    The retired counts are deliberately absent: the gates of this pipeline
+    judge the required targets' ids and the Evidence Verifier's own findings,
+    and the target *scalars* stay at their defaults so a fixture cannot agree
+    with itself by accident — the readings below come from the id lists.
+
+    ``ReportQualitySnapshot`` still requires the readings of the retired
+    registry, which Task 4.10 removes. Every required field this fixture does
+    not name is therefore filled with a zero, so the file names exactly the
+    readings this pipeline computes and keeps working when the rest go.
+    """
     payload: dict[str, object] = {
-        "coverage_ratio": 1.0,
-        "planned_topics": 7,
-        "covered_topics": 7,
-        "unique_findings": 3,
-        "unique_sources": 12,
-        "cited_sources": 12,
-        "scored_cited_source_ratio": 1.0,
-        "verified_claims": 14,
-        "contradicted_claims": 1,
-        "duplicate_claims": 0,
-        "duplicate_source_rows": 0,
-        "uncited_settled_points": 0,
+        name: 0
+        for name, field in ReportQualitySnapshot.model_fields.items()
+        if field.is_required()
     }
+    payload.update({
+        "coverage_ratio": 1.0,
+        "planned_topics": 2,
+        "covered_topics": 2,
+        "unique_findings": 2,
+        "unique_sources": 1,
+        "cited_sources": 2,
+        "scored_cited_source_ratio": 1.0,
+        "required_target_ids": list(REQUIRED_TARGET_IDS),
+        "answered_target_ids": list(ANSWERED_TARGET_IDS),
+        "missing_required_target_ids": [MISSING_TARGET_ID],
+        "verified_findings": 2,
+        "dropped_findings": 1,
+        "cited_findings": 2,
+        "duplicate_fact_rows": 0,
+        "uncited_settled_points": 0,
+        "forecasts_without_release": 0,
+    })
     payload.update(overrides)
     return ReportQualitySnapshot.model_validate(payload)
 
 
-def accepted_critique() -> Critique:
-    return Critique(
-        score=6,
-        gaps=[],
-        unsupported_claims=[],
-        recommended_queries=[],
-        should_continue=False,
-        rationale="Recorded for outcome tests.",
+def kept_finding(
+    snippet: str,
+    *,
+    value: str,
+    unit: str,
+    period: str,
+    kind: str,
+    target_ids: Sequence[str],
+) -> Finding:
+    """One finding the Evidence Verifier kept, figure and context included."""
+    read = make_read()
+    wanted = figure(value, unit, period, kind)
+    return make_finding(
+        read,
+        snippet,
+        figures=[wanted],
+        target_ids=list(target_ids),
+        verification=FindingVerification(
+            status="verified",
+            figure_results=[
+                FigureResult(
+                    figure=wanted,
+                    matched=True,
+                    context=FigureContext(
+                        period=period,
+                        attribution="own",
+                        organisation=OWNER,
+                        kind=kind,
+                    ),
+                    evidence_words=snippet,
+                )
+            ],
+        ),
     )
 
 
-def outcome_of(state: ResearchState) -> ResearchOutcome:
+def verified_findings() -> list[Finding]:
+    """The two findings the pass kept, each answering one required target."""
+    return [
+        kept_finding(
+            "Generators added 10.4 gigawatts (GW) of new battery storage "
+            "capacity in 2024",
+            value="10.4",
+            unit="GW",
+            period="2024",
+            kind="actual",
+            target_ids=["topic-01-target-01"],
+        ),
+        kept_finding(
+            "capacity growth from battery storage could set a record as "
+            "operators report plans to add 19.6 GW",
+            value="19.6",
+            unit="GW",
+            period="2025",
+            kind="forecast",
+            target_ids=["topic-01-target-02"],
+        ),
+    ]
+
+
+def dropped_finding() -> Finding:
+    """One finding the verifier dropped, and why."""
+    read = make_read()
+    return make_finding(
+        read,
+        "Battery storage is the fastest-growing source on the grid.",
+        verification=FindingVerification(
+            status="dropped", dropped_reason="snippet_not_on_page"
+        ),
+    )
+
+
+def judged_composition(**overrides: object) -> ReportComposition:
+    """The pass's composition: the kept findings, and what it could not find."""
+    payload: dict[str, object] = {
+        "question": QUESTION,
+        "session_id": "session-1",
+        "findings": verified_findings(),
+        "not_found": [
+            NotFoundTarget(
+                target_id=MISSING_TARGET_ID,
+                question="How much battery storage is planned for 2025?",
+                queries=["battery storage 2025 plans"],
+                searched=True,
+            )
+        ],
+    }
+    payload.update(overrides)
+    return ReportComposition.model_validate(payload)
+
+
+def read_records(findings: Sequence[Finding]) -> dict[str, ReadRecord]:
+    """The reads those findings were extracted from, keyed by their own id."""
+    reads = {read.read_id: read for read in (make_read(),)}
+    for finding in findings:
+        reads.setdefault(finding.read_id, make_read())
+    return reads
+
+
+def verified_state(**overrides: object) -> ResearchState:
+    """One judged pass over verified findings: the numbers a summary prints.
+
+    Three findings — the two the verifier kept and the one it dropped — over a
+    composition that answers two of the three required targets and lists the
+    third under Not found. The pass spent no extra pass yet, so the run it
+    belongs to is not accepted whatever it is judged against.
+    """
+    findings = [*verified_findings(), dropped_finding()]
+    payload: dict[str, object] = {
+        "verified_findings": findings,
+        "read_records": read_records(findings),
+        "composition": judged_composition(),
+        "quality": quality_snapshot(),
+    }
+    payload.update(overrides)
+    return base_state(**payload)
+
+
+def counted_state(**overrides: object) -> ResearchState:
+    """The same pass with every verified-finding reading a distinct number."""
+    snapshot = quality_snapshot(
+        verified_findings=3,
+        corrected_findings=1,
+        dropped_findings=2,
+        context_unchecked_findings=4,
+        cited_findings=2,
+    )
+    return verified_state(quality=snapshot, **overrides)
+
+
+def scored_review(**overrides: object) -> ReportReview:
+    """A scored terminal review, which is what an accepted run carries.
+
+    Built here rather than imported from the shared graph fakes: the review
+    record is the API and CLI's own reading surface, and this file pins what
+    the outcome does with it.
+    """
+    payload: dict[str, object] = {
+        "status": "scored",
+        "dimensions": {name: 0.9 for name in REVIEW_DIMENSIONS},
+        "reviewed_statement_ids": ["S001"],
+        "per_statement_dispositions": {"S001": "supported"},
+        "input_fingerprint": "packet-1",
+        "composition_fingerprint": "composition-1",
+    }
+    payload.update(overrides)
+    return ReportReview.model_validate(payload)
+
+
+def outcome_of(state: ResearchState, *, status: str = "completed") -> ResearchOutcome:
     return build_outcome(
         GraphRun(
             session_id="session-1",
             state=state,
-            status="completed",
+            status=status,
             trace_url=None,
         ),
         metrics=[],
@@ -139,12 +318,12 @@ def test_report_path_is_none_when_no_report_was_published() -> None:
 def test_a_failed_terminal_report_write_never_falls_back() -> None:
     """The terminal event is the only record of the session's final report.
 
-    A refinement pass that wrote a file earlier must not be advertised once
-    the terminal write failed.
+    A pass that wrote a file earlier must not be advertised once the terminal
+    write failed.
     """
     state = base_state(
         events=[
-            legacy_synthesis_event(REPORT_PATH),
+            per_pass_agent_event(REPORT_PATH),
             publication_event(report_path=None),
         ]
     )
@@ -152,17 +331,17 @@ def test_a_failed_terminal_report_write_never_falls_back() -> None:
     assert report_path_from_state(state) is None
 
 
-def test_a_lone_legacy_synthesis_event_yields_no_report_path() -> None:
+def test_a_lone_per_pass_agent_record_yields_no_report_path() -> None:
     """The deleted compatibility fallback must not come back.
 
-    ``test_a_failed_terminal_report_write_never_falls_back`` pairs a legacy
-    synthesis event with a terminal ``publication_event(report_path=None)``,
+    ``test_a_failed_terminal_report_write_never_falls_back`` pairs a per-pass
+    agent record with a terminal ``publication_event(report_path=None)``,
     which returns ``None`` whether or not a fallback exists — the terminal
-    record is read first either way. A state carrying *only* the legacy event
-    is the shape that distinguishes the two: with no publication record at
-    all, the legacy metadata must not be consulted.
+    record is read first either way. A state carrying *only* the agent's own
+    record is the shape that distinguishes the two: with no publication record
+    at all, that record's metadata must not be consulted.
     """
-    state = base_state(events=[legacy_synthesis_event(REPORT_PATH)])
+    state = base_state(events=[per_pass_agent_event(REPORT_PATH)])
 
     assert report_path_from_state(state) is None
 
@@ -188,7 +367,7 @@ def test_a_failed_terminal_evidence_write_never_falls_back() -> None:
     """The two terminal writes fail independently, and neither leaks a path."""
     state = base_state(
         events=[
-            legacy_synthesis_event(EVIDENCE_PATH),
+            per_pass_agent_event(EVIDENCE_PATH),
             publication_event(evidence_path=None),
         ]
     )
@@ -477,7 +656,7 @@ def test_a_failed_terminal_evidence_write_yields_no_evidence_path() -> None:
         session_id="session-1",
         state=base_state(
             events=[
-                legacy_synthesis_event(EVIDENCE_PATH),
+                per_pass_agent_event(EVIDENCE_PATH),
                 publication_event(evidence_path=None),
             ]
         ),
@@ -503,49 +682,32 @@ def test_quality_is_the_typed_snapshot_from_state() -> None:
 
 
 def test_quality_status_names_the_terminal_verdict() -> None:
-    accepted = base_state(
-        quality=quality_snapshot(),
-        critique=accepted_critique(),
-        report_review=fake_report_review(),
-    )
-
-    assert outcome_of(accepted).quality_status == QUALITY_STATUS_ACCEPTED
+    """No quality pass judged this run, so no verdict claims it was accepted."""
     assert outcome_of(base_state()).quality_status == QUALITY_STATUS_PARTIAL
-
-
-def test_accepted_is_true_only_for_an_accepted_terminal_status() -> None:
-    """Acceptance needs a snapshot, the critic's satisfied route, and a review.
-
-    Task 10 adds the third: the Critic's own acceptance and a clean gate are
-    not a judgement of the report's substance, so a state that carries both and
-    no scored review is `partial` — the case this test's last line now pins.
-    """
-    accepted = base_state(
-        quality=quality_snapshot(),
-        critique=accepted_critique(),
-        report_review=fake_report_review(),
-    )
-    budget_spent = base_state(
-        quality=quality_snapshot(),
-        critique=accepted_critique(),
-        report_review=fake_report_review(),
-        iteration=1,
-        max_iterations=1,
-    )
-    hard_failure = base_state(
-        quality=quality_snapshot(hard_failures=["duplicate_claims"]),
-        critique=accepted_critique(),
-        report_review=fake_report_review(),
-    )
-    unreviewed = base_state(
-        quality=quality_snapshot(), critique=accepted_critique()
-    )
-
-    assert outcome_of(accepted).accepted is True
-    assert outcome_of(budget_spent).accepted is False
-    assert outcome_of(hard_failure).accepted is False
-    assert outcome_of(unreviewed).quality_status == QUALITY_STATUS_PARTIAL
     assert outcome_of(base_state()).accepted is False
+
+
+def test_a_gate_failure_is_never_accepted() -> None:
+    """A hard failure is a defect the report carries, whoever reviewed it."""
+    failing = verified_state(
+        quality=quality_snapshot(hard_failures=["unjudged_sentences"]),
+        report_review=scored_review(),
+    )
+
+    assert outcome_of(failing).quality_status == QUALITY_STATUS_PARTIAL
+    assert outcome_of(failing).accepted is False
+
+
+def test_accepted_is_false_for_a_pass_that_still_owes_a_required_target() -> None:
+    """The fixture run owes one target and has spent no extra pass on it.
+
+    Acceptance is the router's own decision (``graph_quality_status``), which
+    the outcome reads rather than re-derives; this pins the reading a run with
+    a missing target has under it, whatever edge the graph took to get there.
+    """
+    judged = verified_state(report_review=scored_review())
+
+    assert outcome_of(judged).accepted is False
 
 
 def test_build_outcome_ignores_metrics_from_other_sessions() -> None:
@@ -709,9 +871,9 @@ def test_a_failed_memory_write_is_counted_and_withholds_no_path() -> None:
 
     ``nodes`` attempts a memory write only for an accepted report and only
     after the three documents, and the paths do not depend on it. Reading a
-    failed claim write as an incomplete publication printed "Publication:
+    failed memory write as an incomplete publication printed "Publication:
     incomplete … No artifact path is advertised" above all three advertised
-    paths — and named ``memory`` once per failed claim.
+    paths — and named ``memory`` once per failed write.
     """
     state = base_state(
         events=[publication_event()],
@@ -781,7 +943,7 @@ def test_the_outcome_reports_the_session_span_the_events_cover() -> None:
     assert outcome_of(base_state()).duration_seconds is None
 
 
-def test_the_outcome_surfaces_the_semantic_review_beside_the_critic() -> None:
+def test_the_outcome_surfaces_the_semantic_review_without_the_old_reviewer() -> None:
     """The review's own status and mean, and never a zero for "no review"."""
     reviewed = base_state(
         quality=quality_snapshot(
@@ -789,7 +951,7 @@ def test_the_outcome_surfaces_the_semantic_review_beside_the_critic() -> None:
             semantic_review_score=0.86,
             semantic_review_fingerprint="abc123def456",
         ),
-        report_review=fake_report_review(),
+        report_review=scored_review(),
     )
     unreviewed = base_state(quality=quality_snapshot())
 
@@ -812,99 +974,111 @@ def test_the_outcome_carries_the_quality_contract_version() -> None:
     )
 
 
-def test_the_outcome_reports_target_progress_apart_from_topic_progress() -> None:
-    """Two denominators, two readings, never one blended ratio."""
-    state = base_state(
-        quality=quality_snapshot(
-            planned_topics=7,
-            covered_topics=3,
-            substantive_covered_topics=3,
-            substantive_topic_ratio=3 / 7,
-            planned_targets=12,
-            required_targets=9,
-            answered_targets=6,
-            critical_targets=4,
-            unanswered_critical_target_ids=["t-crit-1"],
-            unaccounted_target_ids=["t-req-2"],
-        )
-    )
+# --- the verified findings, the targets and the not-found list ---------------
 
-    coverage = outcome_of(state).coverage
+
+def test_coverage_and_evidence_counts_come_from_verified_findings() -> None:
+    outcome = outcome_of(verified_state())
+
+    assert (
+        outcome.coverage.required_targets,
+        outcome.coverage.answered_targets,
+    ) == (3, 2)
+    assert outcome.coverage.missing_required_target_ids == (
+        "topic-02-target-01",
+    )
+    assert (
+        outcome.evidence_counts.verified_findings,
+        outcome.evidence_counts.dropped_findings,
+    ) == (2, 1)
+
+
+def test_the_target_counts_are_the_ids_the_gates_judged() -> None:
+    """The snapshot's scalars are not the reading the outcome publishes.
+
+    The quality pass of this pipeline records the required and answered
+    target *ids*; the two scalars beside them default to zero and a record
+    inside the new contract leaves them there. Reading the scalars would
+    publish "0/0 required targets answered" above a missing-target list with
+    one entry in it, so the counts are taken from the id lists — the same
+    lists the gates and the extra-pass router read.
+    """
+    snapshot = quality_snapshot(required_targets=9, answered_targets=6)
+    coverage = outcome_of(verified_state(quality=snapshot)).coverage
 
     assert coverage is not None
-    assert coverage.planned_topics == 7
-    assert coverage.covered_topics == 3
-    assert coverage.substantive_topic_ratio == 3 / 7
-    assert coverage.planned_targets == 12
-    assert coverage.required_targets == 9
-    assert coverage.answered_targets == 6
-    assert coverage.critical_targets == 4
-    assert coverage.answered_critical_targets == 3
-    assert coverage.unanswered_critical_target_ids == ("t-crit-1",)
-    assert coverage.unaccounted_target_ids == ("t-req-2",)
-    # No quality pass judged this run, so no coverage is claimed for it.
+    assert coverage.required_targets == 3
+    assert coverage.answered_targets == 2
+
+
+def test_the_not_found_target_ids_come_from_the_composition() -> None:
+    """What the report could not answer is read from the report's own list."""
+    listed = outcome_of(verified_state()).coverage
+    unlisted = outcome_of(
+        verified_state(composition=judged_composition(not_found=[]))
+    ).coverage
+
+    assert listed is not None
+    assert listed.not_found_target_ids == ("topic-02-target-01",)
+    assert unlisted is not None
+    assert unlisted.not_found_target_ids == ()
+    # The missing target stays missing either way: Not found explains it, and
+    # does not answer it.
+    assert unlisted.missing_required_target_ids == ("topic-02-target-01",)
+
+
+def test_no_quality_pass_judged_is_no_coverage_at_all() -> None:
+    """A run nothing measured prints no counts rather than zeroes."""
     assert outcome_of(base_state()).coverage is None
 
 
-def test_the_outcome_reports_the_substantive_topic_count() -> None:
-    """``CoverageProgress.covered_topics`` is the measured reading.
+def test_the_evidence_counts_carry_the_verified_finding_readings() -> None:
+    counts = outcome_of(counted_state()).evidence_counts
 
-    The snapshot carries two numerators because historical artifacts carry the
-    claimed one; the outcome's field promises the substantive count — topics
-    whose every counted required target is answered — so it reads the field
-    that means that.
+    assert counts is not None
+    assert (
+        counts.verified_findings,
+        counts.corrected_findings,
+        counts.dropped_findings,
+        counts.context_unchecked_findings,
+        counts.cited_findings,
+    ) == (3, 1, 2, 4, 2)
+
+
+def test_the_evidence_counts_carry_the_reads_and_the_citations() -> None:
+    """Read calls, works, sources and findings stay four different numbers."""
+    counts = outcome_of(verified_state()).evidence_counts
+
+    assert counts is not None
+    assert counts.read_records == 1
+    assert counts.network_reads == 1
+    assert counts.cache_reads == 0
+    assert counts.unique_works == 0
+    assert counts.findings == 2
+    assert counts.cited_assessed_sources == 0
+
+
+def test_the_evidence_counts_are_absent_without_a_judged_composition() -> None:
+    """Two ways to have no counts, and both answer "not measured".
+
+    Without a composition there is no reader index to count citations from;
+    without a quality snapshot there is no verified-finding reading either.
+    Either absence is reported as ``None`` rather than as a row of zeroes.
     """
-    state = base_state(
-        quality=quality_snapshot(
-            planned_topics=1,
-            covered_topics=1,
-            substantive_covered_topics=0,
-            substantive_topic_ratio=0.0,
-            planned_targets=1,
-            required_targets=1,
-            answered_targets=0,
-            unaccounted_target_ids=[],
-        )
-    )
+    unjudged = verified_state(quality=None)
+    uncomposed = verified_state(composition=None)
 
-    coverage = outcome_of(state).coverage
-
-    assert coverage is not None
-    assert coverage.planned_topics == 1
-    assert coverage.covered_topics == 0
-    assert coverage.substantive_topic_ratio == 0.0
+    assert outcome_of(unjudged).evidence_counts is None
+    assert outcome_of(uncomposed).evidence_counts is None
 
 
-def test_a_snapshot_predating_the_substantive_field_reports_its_own_count() -> None:
-    """A record written before the numerator existed must not read as a zero.
+def test_coverage_progress_is_a_frozen_reading_of_ids() -> None:
+    """The dataclass publishes tuples, so a caller cannot edit the reading."""
+    coverage = outcome_of(verified_state()).coverage
 
-    ``substantive_covered_topics`` was added with a default of zero, so a
-    snapshot from the revision that already stamped ``substantive_topic_ratio``
-    but had no numerator published "0/4 topics covered (substantive, 87%)" —
-    a count and a ratio that contradict each other in the same sentence. The
-    readers fall back to the count the record does carry.
-    """
-    legacy = quality_snapshot(
-        coverage_ratio=0.75,
-        planned_topics=4,
-        covered_topics=3,
-        substantive_topic_ratio=0.75,
-        planned_targets=4,
-        required_targets=2,
+    assert coverage == CoverageProgress(
+        required_targets=3,
         answered_targets=2,
-        critical_targets=2,
-    ).model_copy(update={"substantive_covered_topics": None})
-
-    coverage = outcome_of(base_state(quality=legacy)).coverage
-
-    assert coverage is not None
-    assert coverage.planned_topics == 4
-    assert coverage.covered_topics == 3
-    assert coverage.substantive_topic_ratio == 0.75
-
-
-def test_the_outcome_counts_reads_works_and_citations_apart() -> None:
-    """Without a composition there is no reader index to count citations from."""
-    state = base_state(quality=quality_snapshot())
-
-    assert outcome_of(state).evidence_counts is None
+        missing_required_target_ids=(MISSING_TARGET_ID,),
+        not_found_target_ids=(MISSING_TARGET_ID,),
+    )
