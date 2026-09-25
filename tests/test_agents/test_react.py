@@ -222,6 +222,125 @@ async def _run_one_tool_failure(tracker: Tracker, tool: BaseTool) -> ReActRun:
         )
 
 
+class _RefusingPolicy:
+    """A policy that refuses every call, with the reason it is given."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        self.calls = 0
+
+    def __call__(
+        self, decision: ReActDecision, tool_input: Mapping[str, object]
+    ) -> ToolPolicyDecision:
+        del decision, tool_input
+        self.calls += 1
+        return ToolPolicyDecision(allowed=False, reason=self.reason)
+
+
+@pytest.mark.asyncio
+async def test_a_policy_refusal_records_the_reason_the_policy_gave(
+    tracker: Tracker,
+) -> None:
+    """Why a call was refused is the one fact a refusal can still publish.
+
+    The observation carries the reason to the model, and until now nothing
+    persisted it: the record held the tool and the iteration, so a run's
+    refusals could be counted but not classified — a whole session's blocked
+    searches looked identical to a whole session's rejected guesses. The reason
+    is the policy's own sentence (code-generated, never provider text), and it
+    is the value this record now keeps.
+    """
+    reason = "acquisition policy requires read before search"
+    policy = _RefusingPolicy(reason)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [
+                    use_tool("Search for another source.", "echo"),
+                    finish("Nothing else to try.", "No answer."),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=5,
+            tool_policy=policy,
+        )
+
+    assert policy.calls == 1
+    assert [error.error_type for error in run.errors] == [
+        "agent_tool_policy_rejected"
+    ]
+    assert run.errors[0].details == {
+        "tool": "echo",
+        "iteration": 1,
+        "policy_reason": reason,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_policy_refusal_without_a_reason_records_no_reason_key(
+    tracker: Tracker,
+) -> None:
+    """No reason is not an empty reason: the key is absent, not blank."""
+    policy = _RefusingPolicy("")
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [
+                    use_tool("Try it anyway.", "echo"),
+                    finish("Done.", "No answer."),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=5,
+            tool_policy=policy,
+        )
+
+    assert run.errors[0].details == {"tool": "echo", "iteration": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_policy_refusal_bounds_the_reason_it_records(
+    tracker: Tracker,
+) -> None:
+    """The published reason is clamped by the loop's own summary bound.
+
+    The record is public, so the one value here that is not the loop's own is
+    bounded the way every other observation text is: a policy that answered
+    with a wall of text cannot put that wall into the quality record.
+    """
+    policy = _RefusingPolicy("read first " * 40)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [
+                    use_tool("Try it anyway.", "echo"),
+                    finish("Done.", "No answer."),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=5,
+            summary_limit=40,
+            tool_policy=policy,
+        )
+
+    recorded = run.errors[0].details["policy_reason"]
+    assert isinstance(recorded, str)
+    assert len(recorded) <= 40
+    assert recorded.startswith("read first")
+
+
 @pytest.mark.asyncio
 async def test_one_step_loop_finishes_immediately(tracker: Tracker) -> None:
     async with agent_scope(tracker):

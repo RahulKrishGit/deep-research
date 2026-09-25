@@ -878,6 +878,49 @@ def test_the_quality_record_publishes_the_bounded_tool_failure_diagnosis() -> No
     assert rows["planner_plan_defects_unresolved"]["details"] == "—"
 
 
+def test_the_quality_record_publishes_the_policy_refusal_reason() -> None:
+    """A refusal's own sentence is the one thing it can publish.
+
+    A run's rejected calls are otherwise indistinguishable from one another:
+    the record said *that* a call was refused, never *why*, so a session whose
+    searches were blocked by the acquisition policy read exactly like one whose
+    guessed URLs were rejected. The reason is the policy's own code-generated
+    sentence, bounded by the loop's summary limit before it is stored, which is
+    the same evidence every other published key carries.
+    """
+    composition = _written_composition(
+        errors=[
+            ResearchError(
+                error_type="agent_tool_policy_rejected",
+                source="agent.researcher",
+                message=(
+                    "The acquisition policy rejected a requested tool action."
+                ),
+                recoverable=True,
+                details={
+                    "tool": "web_search",
+                    "iteration": 5,
+                    "policy_reason": (
+                        "acquisition policy requires read before search"
+                    ),
+                },
+            ),
+        ]
+    )
+    state = _record_state(composition, errors=list(composition.errors))
+
+    record = render_quality_record(state, composition, None)
+
+    (row,) = record["errors"]
+    assert row["error_type"] == "agent_tool_policy_rejected"
+    assert "tool=web_search" in row["details"]
+    assert "iteration=5" in row["details"]
+    assert (
+        "policy_reason=acquisition policy requires read before search"
+        in row["details"]
+    )
+
+
 def test_the_quality_record_names_the_skipped_sub_topic_and_its_reason() -> None:
     """A skipped sub-topic must publish *which* one and *why*.
 

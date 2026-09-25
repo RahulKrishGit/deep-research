@@ -302,6 +302,38 @@ def _policy_rejection_observation(
     )
 
 
+def _policy_rejection_details(
+    *,
+    tool_name: str,
+    iteration: int,
+    reason: str,
+    limit: int,
+) -> dict[str, JsonValue]:
+    """Build the details for one ``agent_tool_policy_rejected`` record.
+
+    Two bounded values and a count. ``tool`` is the name the toolset resolved —
+    this projection runs only after the loop found the tool, so it is never a
+    name the model invented — clamped by the same bound the loop already puts
+    on every other tool name it records. ``policy_reason`` is the refusing
+    policy's own sentence, which is project text rather than provider or model
+    output, and it is clamped exactly as the observation built from it is: the
+    record is public, and without a bound a policy could put an unbounded wall
+    of text into the quality record.
+
+    The reason is *persisted* because a refusal is otherwise unclassifiable:
+    the model is told why, and nothing that outlives the turn is. An empty
+    reason is no reason, and then the key is absent rather than blank — a
+    policy that refused without saying why records what it always recorded.
+    """
+    details: dict[str, JsonValue] = {
+        "tool": summarize_text(tool_name, limit=limit),
+        "iteration": iteration,
+    }
+    if reason:
+        details["policy_reason"] = summarize_text(reason, limit=limit)
+    return details
+
+
 async def run_react_loop(
     *,
     agent_name: str,
@@ -493,10 +525,12 @@ async def run_react_loop(
                                                     "The acquisition policy rejected "
                                                     "a requested tool action."
                                                 ),
-                                                details={
-                                                    "tool": tool_name,
-                                                    "iteration": iteration,
-                                                },
+                                                details=_policy_rejection_details(
+                                                    tool_name=tool_name,
+                                                    iteration=iteration,
+                                                    reason=policy_reason,
+                                                    limit=summary_limit,
+                                                ),
                                             )
                                         )
                                     elif (
