@@ -2413,18 +2413,18 @@ def test_a_verified_quote_is_recorded_at_the_precision_it_states() -> None:
 def test_a_date_the_document_spells_in_words_keeps_its_own_precision() -> None:
     """A page that writes its date in words dates itself by that day.
 
-    The audited run's EIA pages carry "In-brief analysis August 7, 2026" and
-    "March 12, 2025", and the evaluator's instruction reduced every one of
-    them to its year, so two releases of one series could not be ranked
+    The audited run's EIA pages carry a dated byline ("In-brief analysis,
+    published August 7, 2026"), and the evaluator's instruction reduced every
+    one of them to its year, so two releases of one series could not be ranked
     against each other. The quote states the day, so the day is what is
     recorded — and a day the words never name is still refused.
     """
     read = _dated(
-        "Battery storage capacity grew. In-brief analysis August 7, 2026 "
+        "Battery storage capacity grew. In-brief analysis, published August 7, 2026. "
         "Battery storage capacity averaged 70% growth over three years.",
         url="https://eia.gov/todayinenergy/detail.php?id=67925",
     )
-    quote = "In-brief analysis August 7, 2026"
+    quote = "In-brief analysis, published August 7, 2026"
 
     spelled = validated_temporal(
         read,
@@ -2525,7 +2525,9 @@ def test_a_bare_month_joined_to_a_dated_end_states_no_finer_than_the_year() -> N
     a year of its own, and "between June and August 2024" joins with "and",
     the one connective a digit period never uses. None of them states its
     end's own month as a fact by itself -- the words would have to write
-    "March 2025" or "August 2024" unjoined for that.
+    "March 2025" or "August 2024" unjoined for that. A period a page states
+    about its subject is a data period, so that is the field it is read on:
+    the publication date takes only a date the page states as its own.
     """
     to_read = _dated("Enrollment ran January to March 2025 for the pilot.")
     hyphen_read = _dated(
@@ -2539,43 +2541,43 @@ def test_a_bare_month_joined_to_a_dated_end_states_no_finer_than_the_year() -> N
 
     to_year = validated_temporal(
         to_read,
-        publication_date=_claim("2025", "January to March 2025"),
-        status="current",
+        data_period=_claim("2025", "January to March 2025"),
+        status="stale_data",
     )
     to_month = validated_temporal(
         to_read,
-        publication_date=_claim("2025-03", "January to March 2025"),
-        status="current",
+        data_period=_claim("2025-03", "January to March 2025"),
+        status="stale_data",
     )
     hyphen_year = validated_temporal(
         hyphen_read,
-        publication_date=_claim("2025", "Jan-Mar 2025"),
-        status="current",
+        data_period=_claim("2025", "Jan-Mar 2025"),
+        status="stale_data",
     )
     hyphen_month = validated_temporal(
         hyphen_read,
-        publication_date=_claim("2025-03", "Jan-Mar 2025"),
-        status="current",
+        data_period=_claim("2025-03", "Jan-Mar 2025"),
+        status="stale_data",
     )
     and_year = validated_temporal(
         and_read,
-        publication_date=_claim("2024", "between June and August 2024"),
-        status="current",
+        data_period=_claim("2024", "between June and August 2024"),
+        status="stale_data",
     )
     and_month = validated_temporal(
         and_read,
-        publication_date=_claim("2024-08", "between June and August 2024"),
-        status="current",
+        data_period=_claim("2024-08", "between June and August 2024"),
+        status="stale_data",
     )
 
-    assert to_year.publication_date == "2025"
-    assert to_year.status == "current"
-    assert to_month.publication_date is None
+    assert to_year.data_period == "2025"
+    assert to_year.status == "stale_data"
+    assert to_month.data_period is None
     assert to_month.status == "unknown"
-    assert hyphen_year.publication_date == "2025"
-    assert hyphen_month.publication_date is None
-    assert and_year.publication_date == "2024"
-    assert and_month.publication_date is None
+    assert hyphen_year.data_period == "2025"
+    assert hyphen_month.data_period is None
+    assert and_year.data_period == "2024"
+    assert and_month.data_period is None
 
 
 def test_the_modal_verb_may_is_not_read_as_the_month() -> None:
@@ -2591,19 +2593,19 @@ def test_the_modal_verb_may_is_not_read_as_the_month() -> None:
 
     modal = validated_temporal(
         lowercase,
-        publication_date=_claim("2025-05", "may 2025"),
-        status="current",
+        data_period=_claim("2025-05", "may 2025"),
+        status="stale_data",
     )
     month = validated_temporal(
         capitalised,
-        publication_date=_claim("2025-05", "May 2025"),
-        status="current",
+        data_period=_claim("2025-05", "May 2025"),
+        status="stale_data",
     )
 
-    assert modal.publication_date is None
+    assert modal.data_period is None
     assert modal.status == "unknown"
-    assert month.publication_date == "2025-05"
-    assert month.status == "current"
+    assert month.data_period == "2025-05"
+    assert month.status == "stale_data"
 
 
 
@@ -3020,12 +3022,12 @@ def test_a_real_leap_day_is_still_a_date() -> None:
 
     temporal = validated_temporal(
         read,
-        publication_date=_claim("2024-02-29", "The table reads 2024-02-29."),
-        status="current",
+        data_period=_claim("2024-02-29", "The table reads 2024-02-29."),
+        status="stale_data",
     )
 
-    assert temporal.publication_date == "2024-02-29"
-    assert temporal.status == "current"
+    assert temporal.data_period == "2024-02-29"
+    assert temporal.status == "stale_data"
     assert read_dated_tokens(read) == ["2024", "2024-02", "2024-02-29"]
 
 
@@ -3200,6 +3202,11 @@ def test_a_reporting_verb_after_the_name_is_an_attribution_cue() -> None:
         "BloombergNEF forecasts 15 GW of additions in 2025": "BloombergNEF",
         "Wood Mackenzie expects 15 GW of additions in 2025": "Wood Mackenzie",
         "Wood Mackenzie reports 15 GW of additions in 2025": "Wood Mackenzie",
+        # The slice-3 review's own verbs.
+        "ESA announced 5 GW of additions in 2025": "ESA",
+        "The EIA released 10 GW of additions in 2025": "The EIA",
+        "BloombergNEF published 15 GW of additions in 2025": "BloombergNEF",
+        "Wood Mackenzie stated 15 GW of additions in 2025": "Wood Mackenzie",
     }
     for sentence, name in credited.items():
         read = make_read(f"{sentence}.", url="https://www.utilitydive.com/news/x", title="x")
@@ -3249,3 +3256,40 @@ def test_an_evidence_unit_records_the_surviving_origin_only() -> None:
     assert unit.origin == "researcher"
     with pytest.raises(ValidationError):
         EvidenceUnit.model_validate({**unit.model_dump(), "origin": "fact_checker"})
+
+
+def test_a_date_counts_as_the_publication_date_only_when_the_page_says_so() -> None:
+    """The slice-3 review's Minor 13: a date the page states is not by itself
+    the page's publication date. The page has to state it as one — published,
+    released, updated, last modified — so a data year, a forecast horizon or a
+    copyright year is left to the field it belongs to (``data_period``) instead
+    of dating the run."""
+    published = _dated("Dated report. Published 2026-02-20. Capacity reached 42 GW in 2025.")
+    data_year = _dated("Capacity report. Capacity reached 42 GW in 2025. The series runs to 2026.")
+
+    stated = validated_temporal(
+        published,
+        publication_date=_claim("2026-02-20", "Published 2026-02-20"),
+        status="current",
+    )
+    bare_quote = validated_temporal(
+        published,
+        publication_date=_claim("2026-02-20", "2026-02-20"),
+        status="current",
+    )
+    unrelated = validated_temporal(
+        data_year,
+        publication_date=_claim("2026", "2026"),
+        status="current",
+    )
+
+    assert stated.publication_date == "2026-02-20" and stated.status == "current"
+    # The cue may sit beside the date on the page rather than in the quote: the
+    # same page states it as "Published 2026-02-20".
+    assert bare_quote.publication_date == "2026-02-20"
+    # A date the page states for something else is not the page's own date.
+    assert unrelated.publication_date is None and unrelated.status == "unknown"
+    # The data period keeps its own, cue-less rule: that is the field for it.
+    assert validated_temporal(
+        data_year, data_period=_claim("2025", "2025"), status="stale_data"
+    ).data_period == "2025"

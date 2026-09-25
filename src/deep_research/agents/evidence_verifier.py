@@ -49,6 +49,7 @@ from deep_research.agents.evidence import (
     _document_text,
     _identity_words,
     _opening_credits,
+    _opening_credits_organisation,
     _quote_states,
     _stated_dates,
     cosmetic_text,
@@ -426,10 +427,20 @@ def _page_date_basis(item: ContextItem) -> tuple[str | None, str]:
 
 
 def _owns_page(read: ReadRecord, organisation: str, issuer: str | None) -> bool:
-    """PD-25 first (the validated issuer names it), then PD-18 (code confirms it)."""
-    if issuer and _identity_words(issuer) == _identity_words(organisation):
+    """PD-18's own-page rule, then PD-25's validated issuer with the page's own word.
+
+    The page has to *be* this organisation's. PD-18 answers that from the read
+    itself: the organisation's own registrable host, or an institutional domain
+    whose label spells it while the page names it. The Source Evaluator's
+    validated issuer (PD-25) is a judgement about the read, so an identity-words
+    match with it counts only beside the page's own credit of itself -- a body
+    merely mentioned somewhere on the page is not its publisher.
+    """
+    if own_organisation_on_page(read, organisation):
         return True
-    return own_organisation_on_page(read, organisation)
+    if not issuer or _identity_words(issuer) != _identity_words(organisation):
+        return False
+    return _opening_credits_organisation(read, organisation)
 
 
 def resolve_attribution(

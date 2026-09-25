@@ -1126,7 +1126,8 @@ _REPORTING_NOUN = (
 _REPORTING_VERB = (
     r"(?:reports?|reported|finds?|found|estimates?|estimated|forecasts?|forecasted|"
     r"projects?|projected|shows?|showed|warns?|warned|reveals?|revealed|"
-    r"expects?|expected)"
+    r"expects?|expected|announces?|announced|releases?|released|"
+    r"publishes?|published|states?|stated)"
 )
 _REPORTING_CUE_PATTERN = re.compile(
     rf"\s*(?:{_REPORTING_NOUN}\s+)?(?:{_REPORTING_VERB})(?![A-Za-z0-9])",
@@ -1915,7 +1916,7 @@ def validated_temporal(
     read there is nothing to verify against, so nothing is recorded.
     """
     dates = {
-        "publication_date": _quoted_date(read, publication_date),
+        "publication_date": _quoted_date(read, publication_date, publication=True),
         "data_period": _quoted_date(read, data_period),
         "forecast_horizon": _quoted_date(read, forecast_horizon),
         "effective_date": _quoted_date(read, effective_date),
@@ -1927,7 +1928,8 @@ def validated_temporal(
     return SourceTemporal(**dates, status=claimed)  # type: ignore[arg-type]
 
 
-def _quoted_date(read: ReadRecord | None, claimed: object) -> str | None:
+def _quoted_date(read: ReadRecord | None, claimed: object, *,
+                 publication: bool = False) -> str | None:
     """The temporal value a verbatim quote in the read states, or ``None``.
 
     Containment is exact — the quote has to be the document's own words, not a
@@ -1935,6 +1937,11 @@ def _quoted_date(read: ReadRecord | None, claimed: object) -> str | None:
     admitted only when the quote states it. Nothing here scans the document for
     a date the model was expected to find, which is where a fabricated year
     came from.
+
+    ``publication`` adds the one rule the *publication* date needs on top of
+    that: the page has to state the date as its own publication date (Minor
+    13). The other fields keep the cue-less rule, which is what they are for —
+    a data year is the data period's business, not the page's own date.
     """
     claim = _temporal_claim(claimed)
     if read is None or claim is None:
@@ -1945,7 +1952,36 @@ def _quoted_date(read: ReadRecord | None, claimed: object) -> str | None:
         return None
     if not excerpt_matches(_document_text(read), quote):
         return None
+    if publication and not _states_it_as_the_publication_date(read, quote):
+        return None
     return _stated_value(quote, value)
+
+
+# A page states its own publication date with one of these words: "Published
+# 2026-02-20", "Updated 2026-02-20", "Last modified 2026-02-20". An "as of" is
+# not one of them — it dates a data series, which is what ``data_period`` is
+# for — and neither is a copyright year.
+_PUBLICATION_CUES = re.compile(
+    r"(?<![A-Za-z0-9])(?:publish(?:es|ed)?|releases?|released|updates?|updated|"
+    r"last\s+modified|modified|posted|issued)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# How much page either side of the date may carry the cue: a caption or a
+# byline sentence reaches it ("Published 2026-02-20", "Published by Example
+# Institute on 2026-02-20"), an unrelated paragraph does not.
+_PUBLICATION_CUE_CHARS = 200
+
+
+def _states_it_as_the_publication_date(read: ReadRecord, quote: str) -> bool:
+    """True when the page states the quoted date as its own publication date.
+
+    The cue may sit in the quote itself, or beside the date on the page, which
+    is where a model that quotes only the date leaves it.
+    """
+    if _PUBLICATION_CUES.search(quote):
+        return True
+    window = _windowed_passage(_document_text(read), quote, chars=_PUBLICATION_CUE_CHARS)
+    return bool(_PUBLICATION_CUES.search(window))
 
 
 def _temporal_claim(claimed: object) -> TemporalClaim | None:
