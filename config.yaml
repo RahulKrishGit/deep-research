@@ -22,30 +22,28 @@ llm:
   # measured to be at least as good, not proof that `max` is always better for
   # every question.
   model_overrides:
-    # Planner and researcher (2026-09-25): their structured requests reason
-    # well past the 60 s transport default -- a 19,346-token plan draft took
-    # 90 s, a 26,317-token extraction 289 s over four attempts -- and a
-    # timed-out attempt restarts the whole generation. The live smoke's plan
-    # requests timed out at 61-63 s and were re-run from scratch, and the
-    # planning probe spent up to 23 minutes on one plan. Same headroom as the
-    # roles below whose calls are this long.
+    # Planner and researcher: timeouts move with the output caps below. Output
+    # runs at about 225-255 tokens/s in our runs (run 2's planner: 59,064
+    # tokens in 263 s; audit-2's reviewer: 44,319 in 174 s), so 1800 s covers a
+    # full 393,216-token reply at ~225 tokens/s. A shorter timeout would be a
+    # second length limit, and a timed-out attempt restarts the whole
+    # generation up to retry_count times (user decision 2026-09-25: lift every
+    # output limit but the looping call's).
     planner:
       reasoning_effort: max
-      timeout: 360.0
+      timeout: 1800.0
     researcher:
       reasoning_effort: high
-      timeout: 240.0
+      timeout: 1800.0
     source_evaluator:
       reasoning_effort: high
     # The Context Check and Statement Check (spec 5.2, 5.4): batched, tool-free
     # calls, `agents.verifier_batch_size` items per call (Task 4.1).
     evidence_verifier:
       reasoning_effort: high
-      # Review item 13 / F8: Gate G2's live run recorded a Context Check call
-      # of 75.9 s against the 60 s transport default below. A timed-out batch
-      # leaves every figure in it unchecked, so this role gets more room; the
-      # source evaluator and the writer keep the transport default.
-      timeout: 240.0
+      # Timeout lifted with the caps for the same reason as the planner's: a
+      # batch cut off by a timeout leaves every figure in it unchecked.
+      timeout: 1800.0
     # The writer's first attempt runs at this effort; a truncated draft is asked
     # once more at high (Task 3.4). This entry is the only effort source (F10).
     report_writer:
@@ -55,18 +53,19 @@ llm:
     # and effort here like one, so the review that decides whether a report is
     # accepted is independently configured from every agent whose work it
     # judges (was report_judge). `max` because a wrong acceptance is more
-    # expensive than a slower review. The 65,536-token output cap includes
-    # thinking (DeepSeek Responses API); audit-2 returned 44,319 tokens in
-    # 174 s, or ~255 tokens/s. A full-cap response at that observed rate takes
-    # ~257 s, so 360 s leaves room for slower generations and network overhead.
-    # The transport default remains 60 s for other roles. A timed-out review
-    # gets one transport retry, not the global five full-size repeats; failed
-    # attempts still leave the terminal review unscored.
+    # expensive than a slower review. Its output cap includes thinking, and
+    # 1800 s covers a full-cap reply at the observed ~225-255 tokens/s. A
+    # timed-out review gets one transport retry, not the global five
+    # full-size repeats; failed attempts still leave the terminal review
+    # unscored.
     report_reviewer:
       reasoning_effort: max
-      timeout: 360.0
+      timeout: 1800.0
       retry_count: 1
-  timeout: 60.0
+  # The transport timeout every role not named above inherits (the source
+  # evaluator and the report writer): lifted with the caps, 1800 s covering a
+  # full 393,216-token reply at ~225 tokens/s.
+  timeout: 1800.0
   # Repo-owned retry policy: up to 5 retries with exponential backoff from
   # 1s doubling to a 16s cap (the openai SDK only exposes max_retries with a
   # fixed 0.5s/8s internal backoff, so the policy lives in providers/retry.py).
@@ -74,13 +73,15 @@ llm:
   retry_initial_delay: 1.0
   retry_max_delay: 16.0
   temperature: 0.7
-  # Default output budget. Most operations use 32768; the planner's plan
-  # requests and the terminal report review use 65536. Both reason at `max`
-  # effort, where thinking consumes completion tokens as well as the answer.
-  # The operation-specific bounds below are provider-tested headroom, not
-  # known provider maxima. A cap unused by the model costs no output tokens;
-  # a cap reached before the JSON reply costs a whole request.
-  max_tokens: 32768
+  # Default output budget: DeepSeek's documented maximum. DeepSeek's
+  # max_tokens "must be between 1 and 384K (393216)"; when it is not sent the
+  # default is 8K without thinking and 64K with it (128K at reasoning_effort
+  # max), so the cap is sent at the maximum rather than omitted, which would
+  # lower a plain call to 8K. User decision 2026-09-25: no agent fails on an
+  # output-length limit now; guardrails may come back later. These values are
+  # DeepSeek's: another provider needs its own maximum. A cap unused by the
+  # model costs no output tokens.
+  max_tokens: 393216
 
 langsmith:
   # On by default, per direct instruction. Two settings deliberately stay in
@@ -149,44 +150,36 @@ agents:
   evidence_packet_chars: 24000
   prompt_context_entries: 8
   observation_summary_chars: 200
-  # Operation-specific output budget for the planner's plan-side structured
-  # requests: the plan draft and its repairs, the plan review, and plan
-  # extensions. ReAct decisions and judge calls keep llm.max_tokens
-  # (AGENTS_PLANNER_FINAL_MAX_TOKENS overrides this).
+  # Operation-specific output budgets. Each is DeepSeek's documented maximum,
+  # 393,216 tokens, like llm.max_tokens (user decision 2026-09-25: no agent
+  # fails on an output-length limit now). They stay separate keys, each with
+  # its AGENTS_* override, so one operation can be bounded again later without
+  # touching the others. These values are DeepSeek's: another provider needs
+  # its own maximum.
   #
-  # This is the one budget that deliberately exceeds the global cap. The
-  # planner reasons at `max` effort, DeepSeek bills a reasoning token as a
-  # completion token, so a plan request shares this budget with its own
-  # thinking. A live run truncated a plan-side request exactly at the old cap
-  # -- finish_reason=length, 32768 completion tokens, ProviderOutputLimitError
-  # -- and that error is nonretryable by design, so the run stopped before
-  # research began. The provider accepts 65536: later live runs completed plan
-  # requests at this cap with thinking enabled. No larger value was tested, so
-  # this is not a known provider maximum, and no later run has yet needed the
-  # extra headroom. This buys headroom, it does not remove the class: a
-  # request that reasons past this cap still stops the run, and the durable
-  # fix is a bounded degraded retry, not a third larger number.
-  planner_final_max_tokens: 65536
-  # Operation-specific cap for the terminal reviewer's one request per review
-  # (AGENTS_REPORT_REVIEW_MAX_TOKENS overrides it).
-  # Pre-flight reported finish=length and exactly 32768 completion tokens on
-  # a whole-report call, including its thinking. A thinking-enabled planner
-  # request has completed at 65536 with this provider. This is headroom, not
-  # a known provider maximum; the bounded high-effort retry still applies.
-  report_review_max_tokens: 65536
-  # Operation-specific output budget for the judge's JudgeVerdict request
-  # (AGENTS_JUDGE_MAX_TOKENS overrides this). The verdict carries six common
-  # dimensions, the agent-specific dimensions, and a rationale; once the
-  # Critic began producing a real critique the judge hit the global cap and
-  # returned judge_output_limit with no score at all.
-  judge_max_tokens: 32768
-  # Output budget for every ReAct decision request
-  # (AGENTS_REACT_DECISION_MAX_TOKENS overrides this). A live Critic repetition
-  # recorded {kind: output_limit, operation: react_decision}: the spot-check
-  # decision hit the global cap and was truncated, which degrades the
-  # spot-check phase silently rather than failing the run. A decision carries
-  # the agent's reasoning, one tool call, and that call's arguments.
-  react_decision_max_tokens: 32768
+  # The planner's plan-side structured requests -- the plan draft and its
+  # repairs, the plan review, and plan extensions
+  # (AGENTS_PLANNER_FINAL_MAX_TOKENS). The planner reasons at `max` effort and
+  # a reasoning token is a completion token, so a plan request shares this
+  # budget with its own thinking; a live run once truncated a plan request at
+  # 32,768 tokens and stopped before research began.
+  planner_final_max_tokens: 393216
+  # The terminal reviewer's one request per review
+  # (AGENTS_REPORT_REVIEW_MAX_TOKENS); its thinking counts against it, and a
+  # pre-flight whole-report call stopped at exactly 32,768 completion tokens.
+  report_review_max_tokens: 393216
+  # The judge's JudgeVerdict request (AGENTS_JUDGE_MAX_TOKENS): six common
+  # dimensions, the agent-specific ones and a rationale.
+  judge_max_tokens: 393216
+  # Every ReAct decision request (AGENTS_REACT_DECISION_MAX_TOKENS): the
+  # agent's reasoning, one tool call and that call's arguments.
+  react_decision_max_tokens: 393216
+  # The one exception: the researcher's owed-passage re-extraction
+  # (AGENTS_RE_EXTRACTION_MAX_TOKENS). It is the call that loops: it ran away
+  # to its cap at 32,768 tokens and again at 49,152 in two live runs, so a
+  # larger cap only lengthens the runaway. Its input is bounded as well
+  # (researcher.py's MAX_OWED_PASSAGES_PER_BATCH x MAX_OWED_BATCHES).
+  re_extraction_max_tokens: 32768
 
 graph:
   max_extra_passes: 1

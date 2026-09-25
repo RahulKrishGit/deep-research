@@ -986,7 +986,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # `bce3b184f341` -> `cb4dd2d828c8`.
     # No other agent's module changed and ``agents.prompts`` was untouched,
     # so the other four target pins and the Judge pin are unchanged.
-    "researcher": "cb4dd2d828c8",
+    # Lift the output limits (user decision 2026-09-25): the owed-passage
+    # re-extraction now sends its own cap, agents.re_extraction_max_tokens,
+    # while every other call keeps the lifted global cap. The researcher's
+    # module source moved `cb4dd2d828c8` -> `449114f4b1ef`; no prompt string
+    # was edited, and the other four target pins and the Judge pin are
+    # unchanged.
+    "researcher": "449114f4b1ef",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read

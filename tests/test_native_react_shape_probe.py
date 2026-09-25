@@ -757,7 +757,9 @@ def test_the_dry_run_inventory_proves_request_construction(probe: Any) -> None:
     assert inventory["model"] == MODEL
     assert inventory["reasoning_effort"] == "max"
     assert inventory["thinking"] == "enabled"
-    assert inventory["max_tokens"] == 32768
+    # The request carried the reviewed cap the probe checks it against,
+    # not a number this test restates.
+    assert inventory["max_tokens"] == probe.EXPECTED_MAX_TOKENS
     assert inventory["tool_choice"] == "auto"
     assert inventory["response_format_present"] is False
     assert inventory["native_tool_names"] == ["query_memory", "web_search"]

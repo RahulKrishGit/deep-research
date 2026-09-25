@@ -1520,17 +1520,23 @@ async def test_an_invalid_retry_after_truncation_keeps_its_validation_fields() -
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("generation_seconds", "expected_status"),
-    [(240, "scored"), (400, "provider_failed")],
+    ("seconds_past_deadline", "expected_status"),
+    [(-60, "scored"), (60, "provider_failed")],
 )
 async def test_report_judge_generation_respects_its_own_request_deadline(
-    generation_seconds: int, expected_status: str
+    seconds_past_deadline: int, expected_status: str
 ) -> None:
-    """A long complete review must be scored; a later transport timeout cannot be."""
+    """A long complete review must be scored; a later transport timeout cannot be.
+
+    The deadline is the shipped reviewer's own: a generation that finishes
+    inside it is scored, and one that runs past it is a provider failure.
+    """
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
     config = LLMConfig.model_validate(raw["llm"]).model_copy(
         update={"retry_count": 0}
     )
+    deadline = config.resolve_for("report_reviewer").timeout
+    generation_seconds = deadline + seconds_past_deadline
 
     class TimedResponses:
         async def create(self, **kwargs):

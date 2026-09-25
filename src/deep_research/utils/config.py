@@ -211,13 +211,13 @@ class AgentRuntimeConfig(BaseModel):
     ``planner_final_max_tokens`` is the operation-specific output budget for
     the planner's plan-side structured requests -- the plan draft and its
     repairs, the plan review, and plan extensions; ReAct decisions and judge
-    calls keep the global ``llm.max_tokens`` cap. It is the one
-    budget that deliberately exceeds that cap: the planner reasons at ``max``
-    effort, a reasoning token is a completion token, and a live run truncated
-    a plan request at the global cap, which -- the error being nonretryable by
-    design -- stopped the run before research began. The larger cap buys
-    headroom, not immunity; a request that reasons past it still stops the
-    run.
+    calls have their own keys below. The planner reasons at ``max`` effort, a
+    reasoning token is a completion token, and a live run truncated a plan
+    request at 32,768 tokens, which -- the error being nonretryable by design
+    -- stopped the run before research began. The code default here is the
+    headroom a caller with no file gets; the shipped ``config.yaml`` sends
+    every operation budget at the provider's documented maximum (user
+    decision 2026-09-25), except ``re_extraction_max_tokens``.
 
     ``judge_max_tokens`` is the budget for the judge's ``JudgeVerdict``
     request. The judge hit the global cap scoring a researched question's
@@ -292,13 +292,21 @@ class AgentRuntimeConfig(BaseModel):
     report_review_max_tokens: int = Field(default=65536, ge=1)
     """Output headroom for the report reviewer's one request per review.
 
-    Completion tokens include reasoning: the 32768 cap truncated a live
+    Completion tokens include reasoning: a 32,768-token cap truncated a live
     whole-report review despite its comparatively small structured reply.
-    The configured provider has accepted 65536 for a thinking-enabled planner
-    request.
+    The shipped configuration sends the provider's documented maximum.
     """
     judge_max_tokens: int = Field(default=32768, ge=1)
     react_decision_max_tokens: int = Field(default=32768, ge=1)
+    re_extraction_max_tokens: int = Field(default=32768, ge=1)
+    """Output cap for the researcher's owed-passage re-extraction alone.
+
+    Every other call's cap was lifted to the provider maximum; this one keeps a
+    bound because it is the one call that loops: it ran away to its output cap
+    at 32,768 tokens and again at 49,152 in two live runs, so a larger cap only
+    lengthened the runaway. The first extraction and every other researcher
+    call keep ``llm.max_tokens``.
+    """
 
     @model_validator(mode="after")
     def validate_tool_budget_overrides(self) -> "AgentRuntimeConfig":
@@ -551,6 +559,10 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_REACT_DECISION_MAX_TOKENS": (
         "agents",
         "react_decision_max_tokens",
+    ),
+    "AGENTS_RE_EXTRACTION_MAX_TOKENS": (
+        "agents",
+        "re_extraction_max_tokens",
     ),
     "GRAPH_MAX_EXTRA_PASSES": ("graph", "max_extra_passes"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),
