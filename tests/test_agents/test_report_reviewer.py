@@ -316,60 +316,6 @@ def packet():
     return build_report_review_input(state_with_written_report())
 
 
-def context_statement_packet():
-    """``packet()``, plus one statement no review is asked to disposition.
-
-    A "not stated" cell is text the reader sees that asserts nothing about the
-    world, so a review that leaves it unjudged is still complete and a
-    disposition it records anyway derives no defect. The written pass no longer
-    prints one — the claim-era statement modes that let a non-asserting record
-    exist went with the claim machinery (step 4, D6), and
-    ``ReportStatement.substantive`` is now True for every statement a
-    composition renders — so the cell is added here and the packet *view* is
-    flagged, which is where the distinction lives now:
-    ``ReviewStatementView.substantive`` is the flag ``expected_statement_ids``
-    and the reviewer's own guards read.
-    """
-    sentinel = ReportStatement(statement_id="C001", text="not stated")
-    composition = _written_composition()
-    composition = composition.model_copy(
-        update={
-            "sections": [
-                *composition.sections,
-                ReportSection(
-                    title="Not stated",
-                    points=[
-                        ReportPoint(
-                            text=sentinel.text,
-                            source_urls=[EIA_URL],
-                            statement=sentinel,
-                        )
-                    ],
-                ),
-            ]
-        }
-    )
-    built = build_report_review_input(
-        state_with_written_report(composition=composition)
-    )
-    flagged = built.model_copy(
-        update={
-            "statements": [
-                statement.model_copy(update={"substantive": False})
-                if statement.statement_id == sentinel.statement_id
-                else statement
-                for statement in built.statements
-            ]
-        }
-    )
-    # The flag is part of what a review must cover, so it is part of the
-    # packet's own fingerprint: the digest is taken again rather than carried
-    # over from the packet the flag was set on.
-    return flagged.model_copy(
-        update={"fingerprint": report_review_input_fingerprint(flagged)}
-    )
-
-
 def _scores(value: float = 1.0) -> dict[str, float]:
     return {name: value for name in DIMENSION_NAMES}
 
@@ -608,10 +554,9 @@ def test_the_packet_carries_every_statement_and_no_claim_or_batch_field() -> Non
     ]
     assert built.statement("S002") is not None
     fields = set(type(built).model_fields)
+    assert not [name for name in fields if name.startswith("claim")]
     for forbidden in (
-        "claims",
         "verdicts",
-        "claim_clusters",
         "evidence_batches",
         "targets",
         "sources",
@@ -853,29 +798,6 @@ def test_a_late_contradiction_beyond_16000_characters_is_reviewed() -> None:
     assert late in _render(
         build_report_review_input(state_with_written_report(report=report))
     )
-
-
-def test_a_sentinel_or_context_statement_is_never_offered_for_disposition() -> None:
-    """A 'not stated' cell (or any context statement) asserts nothing.
-
-    The packet's ``substantive`` flag is exactly this distinction:
-    ``context`` is "framing this pass composed rather than a research finding",
-    so a review that asked the model to judge one "supported" or "unsupported"
-    would be asking a question the statement was never built to answer. It is
-    still visible in ``packet.statements`` — the reviewer can read it as
-    context — but it is not in ``expected_statement_ids``, so the review is
-    never marked incomplete for skipping it.
-    """
-    built = context_statement_packet()
-
-    assert [statement.statement_id for statement in built.statements] == [
-        "S001",
-        "S002",
-        "S003",
-        "C001",
-    ]
-    assert built.expected_statement_ids == ["S001", "S002", "S003"]
-    assert built.statement("C001") is not None
 
 
 def test_the_review_request_cannot_see_another_reviewers_score_or_the_threshold() -> None:
@@ -1822,39 +1744,6 @@ async def test_a_dropped_defect_note_names_only_the_field_that_failed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_defect_naming_a_context_statement_is_accepted() -> None:
-    """A defect may still name a context statement, unlike a disposition.
-
-    ``expected_statement_ids`` excludes a sentinel/context statement from what a
-    review must *disposition* — there is nothing to judge "supported" or
-    "unsupported" about a statement that asserts nothing. That is a different
-    question from whether a returned *defect* may reference it: a reviewer can
-    still observe a real problem with a context statement's own wording.
-    """
-    built = context_statement_packet()
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft(
-                defects=[
-                    _defect_draft(
-                        statement_ids=("C001",),
-                        kind="presentation",
-                        severity="minor",
-                        problem="The 'not stated' cell reads confusingly.",
-                    )
-                ]
-            )
-        ]
-    )
-
-    review = await review_report(completer, built)
-
-    assert review.status == "scored"
-    assert any(defect.statement_ids == ["C001"] for defect in review.defects)
-    assert semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
 async def test_a_disposition_outside_the_packet_is_refused() -> None:
     """A judgement about a record this packet does not carry is not a judgement."""
     built = packet()
@@ -1948,32 +1837,6 @@ async def test_a_minor_defect_cannot_suppress_the_derived_material_defect() -> N
     assert derived.target_ids == [TARGET_ID]
     assert derived.kind == "missing_support"
     assert not semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_a_disposition_on_a_sentinel_statement_derives_no_material_defect() -> None:
-    """A 'not stated' cell derives no defect, however it is dispositioned."""
-    built = context_statement_packet()
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft(
-                dispositions=[
-                    *[(sid, "supported") for sid in WRITTEN_SENTENCES],
-                    ("C001", "unsupported"),
-                ]
-            )
-        ]
-    )
-
-    review = await review_report(completer, built)
-
-    assert review.status == "scored"
-    assert review.per_statement_dispositions == {
-        statement_id: "supported" for statement_id in WRITTEN_SENTENCES
-    }
-    assert review.derived_defect_statement_ids == []
-    assert not review.material_defects
-    assert semantic_review_passes(review)
 
 
 @pytest.mark.asyncio

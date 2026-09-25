@@ -250,7 +250,6 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         normalize_source_url,
         parse_tool_input,
         react_decision_from_native_turn,
-        render_finding_digest,
         render_finding_log,
         render_memory_guidance,
         render_react_messages,

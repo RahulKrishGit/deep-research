@@ -649,10 +649,11 @@ def test_one_uncreditable_dimension_makes_the_obligation_uncheckable(
 ) -> None:
     """Every required dimension must be creditable, not merely one of them.
 
-    Production ``target_is_answered`` requires ``required.issubset(answered)``
-    and ``answered_dimensions`` can only hold dimensions this same helper
-    credits, so an obligation carrying one uncreditable dimension beside a
-    creditable one can never be answered by any statement. Reading the
+    A required target counts as answered only when
+    ``verified_facts.finding_answers`` holds for a verified finding, and this
+    helper credits only the dimensions such an answer can be checked against,
+    so an obligation carrying one uncreditable dimension beside a creditable
+    one is not checkable as a whole. Reading the
     helper's list as a truthy/falsey whole called that plan checkable and
     handed it the metric's weight.
     """

@@ -44,7 +44,7 @@ from deep_research.utils.types import (
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
-from tests.research_fakes import synthesizer_tools
+from tests.research_fakes import report_writer_tools
 
 EIA = "U.S. Energy Information Administration"
 
@@ -709,7 +709,7 @@ def _writer(
 
 @pytest.fixture
 def writer(tracker: Tracker, tmp_path: Path) -> ReportWriterAgent:
-    return _writer(tracker, ScriptedCompleter(), synthesizer_tools(tracker, output_root=tmp_path))
+    return _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
 
 
 @pytest.fixture
@@ -719,7 +719,7 @@ def writer_failing(tracker: Tracker, tmp_path: Path) -> ReportWriterAgent:
             "provider returned an HTTP error", retryable=True, failure_category="http",
             http_status_code=503, failure_origin="sdk",
         ),
-    ]), synthesizer_tools(tracker, output_root=tmp_path))
+    ]), report_writer_tools(tracker, output_root=tmp_path))
 
 
 @pytest.fixture
@@ -729,7 +729,7 @@ def writer_truncated_then_ok(tracker: Tracker, tmp_path: Path) -> tuple[ReportWr
         ReportWriterDraft(executive_summary=[WriterPointDraft(
             text="Generators added 10.4 GW of battery storage in 2024.", finding_labels=["F01"])], sections=[]),
     ])
-    return _writer(tracker, completer, synthesizer_tools(tracker, output_root=tmp_path)), completer
+    return _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path)), completer
 
 
 @pytest.mark.parametrize(

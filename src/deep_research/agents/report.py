@@ -64,7 +64,6 @@ __all__ = [
     "QUALITY_STATUS_ACCEPTED",
     "QUALITY_STATUS_NOT_GATED",
     "QUALITY_STATUS_PARTIAL",
-    "SATISFIED_SKIP_REASONS",
     "SUB_TOPIC_SKIP_MESSAGES",
     "Citation",
     "ReportComposition",
@@ -77,7 +76,6 @@ __all__ = [
     "distinct_retention_counts",
     "error_reading",
     "figure_label",
-    "is_prior_completion",
     "render_citations",
     "render_finding_log",
     "render_quality_json",
@@ -97,11 +95,11 @@ _CELL_EMPTY = "—"
 
 _SUB_TOPIC_SKIP_ERROR_TYPE = "researcher_sub_topic_skipped"
 
-# The enumerated reasons ``agents.researcher.sub_topic_skipped_error`` stamps
-# on a skip, and the reading each one gets. The producer writes one message
-# per cause: a sub-topic beyond the pass's cap, or a provider failure that
-# stopped the pass before its turn came up. A reason outside this map falls
-# back to the producer's own message rather than guessing.
+#: The enumerated reasons ``agents.researcher.sub_topic_skipped_error`` stamps
+#: on a skip, and the reading each one gets. The producer writes one message
+#: per cause: a sub-topic beyond the pass's cap, or a provider failure that
+#: stopped the pass before its turn came up. A reason outside this map falls
+#: back to the producer's own message rather than guessing.
 SUB_TOPIC_SKIP_MESSAGES: dict[str, str] = {
     "cap": (
         "This planned sub-topic was deferred: the pass reached its sub-topic "
@@ -112,14 +110,6 @@ SUB_TOPIC_SKIP_MESSAGES: dict[str, str] = {
         "the pass before it could run."
     ),
 }
-
-#: The skip reasons that are prior completion rather than lost coverage: the
-#: topic owed nothing, so nothing was lost by omitting it. The researcher no
-#: longer emits either reason a completed topic used to carry
-#: (``required_targets_completed``, ``interim_satisfaction``); the set stays
-#: empty rather than deleted so :func:`is_prior_completion` keeps its
-#: contract if a future reason ever earns the classification.
-SATISFIED_SKIP_REASONS: frozenset[str] = frozenset()
 
 _DETAILED_ERROR_TYPES = frozenset(
     {"agent_tool_failed", _SUB_TOPIC_SKIP_ERROR_TYPE}
@@ -316,19 +306,6 @@ def _sub_topic_skip_reason(error: ResearchError) -> str:
         return ""
     reason = error.details.get("reason")
     return reason.strip() if isinstance(reason, str) else ""
-
-
-def is_prior_completion(error: ResearchError) -> bool:
-    """True when a skipped sub-topic owed nothing rather than lost coverage.
-
-    Reads the enumerated reason against :data:`SATISFIED_SKIP_REASONS`, which
-    is empty now that the researcher only ever stamps ``cap`` or
-    ``provider_failure_stopped_processing`` — both real gaps, never a topic
-    already answered. A caller must not count such a record as a coverage
-    error, and must never print the never-researched message for one; today
-    every recorded skip is one, so this always reads as a real gap.
-    """
-    return _sub_topic_skip_reason(error) in SATISFIED_SKIP_REASONS
 
 
 def error_reading(error: ResearchError) -> str:

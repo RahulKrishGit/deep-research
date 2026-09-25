@@ -13,12 +13,15 @@ import json
 import os
 import unicodedata
 from collections.abc import Mapping, Sequence
+from time import perf_counter
 from types import SimpleNamespace, UnionType
 from typing import Annotated, Any, TypeVar, Union, cast, get_args, get_origin
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
+from deep_research.observability.metrics import LLMOperation
+from deep_research.observability.run_telemetry import RunTelemetryCollector
 from deep_research.providers.capabilities import (
     resolve_request_settings,
     with_reasoning_effort,
@@ -708,14 +711,16 @@ class DeepSeekChatProvider:
         api_key: str | None = None,
         client: Any | None = None,
         request_budget: RequestBudget | None = None,
+        telemetry: RunTelemetryCollector | None = None,
     ) -> None:
         self._config = config
         self._tracker = tracker
         self._client = _build_client(config, api_key=api_key, client=client)
         self._request_budget = request_budget
+        self._telemetry = telemetry or RunTelemetryCollector()
         self._last_model_returned: str | None = None
 
-    def _reserve_attempt(self) -> None:
+    def _reserve_attempt(self, agent_name: str | None) -> None:
         """Reserve one DeepSeek transport attempt before any network I/O.
 
         Called from *inside* the retried operation, because each retry is a
@@ -726,28 +731,77 @@ class DeepSeekChatProvider:
         hard run boundary -- escapes instead of being rewritten into an
         ordinary, retryable provider error.
 
-        A ``None`` budget reserves nothing: this is today's uncounted
-        behaviour, and every existing caller keeps it.
+        The caller is announced before the reservation because the budget's
+        update carries no agent, and the telemetry attributes the peak to the
+        call that set it. A ``None`` budget reserves nothing: this is today's
+        uncounted behaviour, and every existing caller keeps it.
         """
+        self._telemetry.note_call_starting(agent_name)
         budget = self._request_budget
         if budget is None:
             return
         budget.reserve("deepseek")
 
-    def _record_tokens(self, usage: TokenUsage) -> None:
+    def _read_telemetry(
+        self,
+        response: Any,
+        *,
+        configured_max_tokens: int,
+        request_attempt: int,
+        structured_attempt: int | None = None,
+    ) -> ProviderResponseTelemetry:
+        """Read a response's usage and finish reason, releasing on failure.
+
+        ``with_retries`` releases the attempts whose transport failed. A
+        response that arrived but carries no readable usage is the one failure
+        it cannot see: no token report follows, so the in-flight gauge would
+        stay a call high without this.
+        """
+        try:
+            return _response_telemetry(
+                response,
+                configured_max_tokens=configured_max_tokens,
+                request_attempt=request_attempt,
+                structured_attempt=structured_attempt,
+            )
+        except ProviderResponseError:
+            self._telemetry.note_attempt_finished()
+            raise
+
+    def _record_tokens(
+        self,
+        usage: TokenUsage,
+        *,
+        agent_name: str | None,
+        operation: LLMOperation,
+        seconds: float,
+        configured_cap: int,
+        truncated: bool,
+    ) -> None:
         """Record reported usage, and only for a response that arrived.
 
         Never called for a transport failure, and never for a response whose
         usage failed to parse: a token figure invented after a failed call
         would report spend that did not happen and hide spend that did.
+
+        The same rule is what makes the §7.3 per-call record honest: this call
+        is the run's slowest, its operation's largest reply and its truncation
+        count only when the response really carried the numbers.
         """
         budget = self._request_budget
-        if budget is None:
-            return
-        budget.record_tokens(
-            "deepseek",
-            input_tokens=usage.input_tokens,
+        if budget is not None:
+            budget.record_tokens(
+                "deepseek",
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+        self._telemetry.record_call(
+            agent=agent_name,
+            operation=operation,
+            seconds=seconds,
             output_tokens=usage.output_tokens,
+            configured_cap=configured_cap,
+            truncated=truncated,
         )
 
     @property
@@ -828,7 +882,7 @@ class DeepSeekChatProvider:
 
                 async def _request() -> Any:
                     nonlocal request_attempt
-                    self._reserve_attempt()
+                    self._reserve_attempt(agent_name)
                     request_attempt += 1
                     try:
                         return await self._client.chat.completions.create(
@@ -847,6 +901,7 @@ class DeepSeekChatProvider:
                             failure_origin="sdk",
                         ) from error
 
+                started_at = perf_counter()
                 response = await with_retries(
                     _request,
                     retry_count=(
@@ -855,13 +910,21 @@ class DeepSeekChatProvider:
                     ),
                     initial_delay=self._config.retry_initial_delay,
                     max_delay=self._config.retry_max_delay,
+                    telemetry=self._telemetry,
                 )
-                telemetry = _response_telemetry(
+                telemetry = self._read_telemetry(
                     response,
                     configured_max_tokens=self._config.max_tokens,
                     request_attempt=request_attempt,
                 )
-                self._record_tokens(telemetry.usage)
+                self._record_tokens(
+                    telemetry.usage,
+                    agent_name=agent_name,
+                    operation="chat",
+                    seconds=perf_counter() - started_at,
+                    configured_cap=self._config.max_tokens,
+                    truncated=telemetry.finish_reason_category == "length",
+                )
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
                     raise ProviderOutputLimitError(telemetry)
@@ -890,6 +953,7 @@ class DeepSeekChatProvider:
         model: str,
         request: dict[str, object],
         metadata: dict[str, JsonValue],
+        agent_name: str | None,
         configured_max_tokens: int,
         attempt: int,
         retry_count: int | None = None,
@@ -908,7 +972,7 @@ class DeepSeekChatProvider:
 
             async def _request() -> Any:
                 nonlocal request_attempt
-                self._reserve_attempt()
+                self._reserve_attempt(agent_name)
                 request_attempt += 1
                 try:
                     return await self._client.chat.completions.create(
@@ -931,6 +995,7 @@ class DeepSeekChatProvider:
                         failure_origin="sdk",
                     ) from error
 
+            started_at = perf_counter()
             response = await with_retries(
                 _request,
                 retry_count=(
@@ -938,14 +1003,22 @@ class DeepSeekChatProvider:
                 ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
+                telemetry=self._telemetry,
             )
-            telemetry = _response_telemetry(
+            telemetry = self._read_telemetry(
                 response,
                 configured_max_tokens=configured_max_tokens,
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
             )
-            self._record_tokens(telemetry.usage)
+            self._record_tokens(
+                telemetry.usage,
+                agent_name=agent_name,
+                operation="structured_output",
+                seconds=perf_counter() - started_at,
+                configured_cap=configured_max_tokens,
+                truncated=telemetry.finish_reason_category == "length",
+            )
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
                 raise ProviderOutputLimitError(telemetry)
@@ -1006,6 +1079,7 @@ class DeepSeekChatProvider:
                     model=effective.model,
                     request=request,
                     metadata=metadata,
+                    agent_name=agent_name,
                     configured_max_tokens=resolved_max_tokens,
                     attempt=attempt,
                     retry_count=effective.retry_count,
@@ -1109,7 +1183,7 @@ class DeepSeekChatProvider:
 
             async def _request() -> Any:
                 nonlocal request_attempt
-                self._reserve_attempt()
+                self._reserve_attempt(agent_name)
                 request_attempt += 1
                 try:
                     return await self._client.chat.completions.create(
@@ -1139,6 +1213,7 @@ class DeepSeekChatProvider:
                         failure_origin="sdk",
                     ) from error
 
+            started_at = perf_counter()
             response = await with_retries(
                 _request,
                 retry_count=(
@@ -1147,6 +1222,7 @@ class DeepSeekChatProvider:
                 ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
+                telemetry=self._telemetry,
             )
             telemetry: ProviderResponseTelemetry | None = None
             tool_calls: tuple[NativeToolCall, ...] = ()
@@ -1154,7 +1230,7 @@ class DeepSeekChatProvider:
             rejection: str | None = None
             failure: ProviderError | None = None
             try:
-                telemetry = _response_telemetry(
+                telemetry = self._read_telemetry(
                     response,
                     configured_max_tokens=resolved_max_tokens,
                     request_attempt=request_attempt,
@@ -1166,7 +1242,14 @@ class DeepSeekChatProvider:
                 # the frames that still hold the raw response.
                 failure = _fresh_provider_error(error)
             if failure is None:
-                self._record_tokens(telemetry.usage)
+                self._record_tokens(
+                    telemetry.usage,
+                    agent_name=agent_name,
+                    operation="react_tool_turn",
+                    seconds=perf_counter() - started_at,
+                    configured_cap=resolved_max_tokens,
+                    truncated=telemetry.finish_reason_category == "length",
+                )
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
                     failure = ProviderOutputLimitError(telemetry)
@@ -1271,6 +1354,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
         model: str,
         request: dict[str, object],
         metadata: dict[str, JsonValue],
+        agent_name: str | None,
         configured_max_tokens: int,
         attempt: int,
         retry_count: int | None = None,
@@ -1289,7 +1373,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
 
             async def _request() -> Any:
                 nonlocal request_attempt
-                self._reserve_attempt()
+                self._reserve_attempt(agent_name)
                 request_attempt += 1
                 try:
                     return await self._client.responses.create(
@@ -1319,6 +1403,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                         failure_origin="sdk",
                     ) from error
 
+            started_at = perf_counter()
             response = await with_retries(
                 _request,
                 retry_count=(
@@ -1326,15 +1411,32 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                 ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
+                telemetry=self._telemetry,
             )
+            finish_reason_category = _responses_finish_reason(response)
+            try:
+                usage = _responses_usage_from_response(response)
+            except ProviderResponseError:
+                # A response that arrived with no readable usage never reports
+                # tokens, so nothing else would release this attempt's
+                # reservation.
+                self._telemetry.note_attempt_finished()
+                raise
             telemetry = ProviderResponseTelemetry(
-                finish_reason_category=_responses_finish_reason(response),
+                finish_reason_category=finish_reason_category,
                 configured_max_tokens=configured_max_tokens,
-                usage=_responses_usage_from_response(response),
+                usage=usage,
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
             )
-            self._record_tokens(telemetry.usage)
+            self._record_tokens(
+                usage,
+                agent_name=agent_name,
+                operation="structured_output",
+                seconds=perf_counter() - started_at,
+                configured_cap=configured_max_tokens,
+                truncated=finish_reason_category == "length",
+            )
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
                 response = None
@@ -1419,6 +1521,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                     model=effective.model,
                     request=request,
                     metadata=metadata,
+                    agent_name=agent_name,
                     configured_max_tokens=resolved_max_tokens,
                     attempt=attempt,
                     retry_count=effective.retry_count,

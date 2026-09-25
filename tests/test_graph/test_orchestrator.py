@@ -67,7 +67,7 @@ from tests.graph_fakes import (
     fake_writer_update,
     verified_pass,
 )
-from tests.research_fakes import synthesizer_tools
+from tests.research_fakes import report_writer_tools
 
 QUESTION = "How mature is quantum error correction?"
 
@@ -169,7 +169,7 @@ def _real_writer(
         scratchpad=ScratchpadMemory(
             session_id="session-1", agent_name=REPORT_WRITER_NAME, max_entries=20
         ),
-        tools=synthesizer_tools(tracker, output_root=tmp_path),
+        tools=report_writer_tools(tracker, output_root=tmp_path),
         config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
     )
 

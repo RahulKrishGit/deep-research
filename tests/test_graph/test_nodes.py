@@ -69,7 +69,7 @@ from tests.graph_fakes import (
     halting_error,
     verified_pass,
 )
-from tests.research_fakes import FakeMemory, synthesizer_tools
+from tests.research_fakes import FakeMemory, report_writer_tools
 
 
 def _event_types(state: ResearchState) -> list[str]:
@@ -975,7 +975,7 @@ async def test_the_real_writer_publishes_three_artifacts_into_a_real_root(
         scratchpad=ScratchpadMemory(
             session_id="session-1", agent_name=REPORT_WRITER_NAME, max_entries=20
         ),
-        tools=synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
+        tools=report_writer_tools(tracker, output_root=tmp_path, memory=memory),
         config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
     )
 

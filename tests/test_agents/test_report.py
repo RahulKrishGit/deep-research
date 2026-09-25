@@ -80,7 +80,7 @@ from deep_research.utils.types import (
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
-from tests.research_fakes import synthesizer_tools
+from tests.research_fakes import report_writer_tools
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 SOURCE_URL = "https://example.org/a"
@@ -932,7 +932,7 @@ def written_state() -> ResearchState:
         ),
         # The writer declares these two; composing a report never publishes
         # through them, so the root only has to exist for the tool to be built.
-        tools=synthesizer_tools(
+        tools=report_writer_tools(
             tracker, output_root=Path(tempfile.mkdtemp(prefix="ev-t4-5-"))
         ),
         config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
@@ -978,7 +978,7 @@ def test_the_quality_record_carries_the_verified_findings_and_refusals() -> None
     assert record["refused_sentences"][0]["text"]
     assert record["refused_sentences"][0]["finding_labels"]
     assert all("verification" in row for row in record["findings"])
-    assert "claims" not in record and "claim_clusters" not in record
+    assert not [key for key in record if key.startswith("claim")]
 
 
 def test_the_quality_record_publishes_the_contract_version_the_state_carries() -> (

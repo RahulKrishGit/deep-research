@@ -76,16 +76,6 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def claim_fingerprint(text: str) -> str:
-    """Return the stable identity of one claim's text.
-
-    Two claims share a fingerprint exactly when they assert the same thing and
-    differ only in how it was written; materially different years, numbers,
-    units, comparisons, negation, or geography always differ.
-    """
-    return _digest(_normalized_text(text))
-
-
 def finding_fingerprint(finding: Finding) -> str:
     """Return the stable identity of one finding.
 

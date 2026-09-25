@@ -928,8 +928,6 @@ class ReportQualitySnapshot(ContractModel):
     # representable as incomplete rather than unconstructible. The bounds are
     # unchanged.
     cited_sources: int = Field(default=0, ge=0)
-    answered_targets: int = Field(default=0, ge=0)
-    """Read by the e2e invariant that an empty answer counted no obligation."""
     uncited_settled_points: int = Field(default=0, ge=0)
     hard_failures: list[str] = Field(default_factory=list)
     # --- Task 10: the semantic judgement, kept apart from the counts --------
@@ -1320,18 +1318,6 @@ class ReportStatement(ContractModel):
     target_ids: list[str] = Field(default_factory=list)
     finding_ids: list[str] = Field(default_factory=list)
 
-    @property
-    def substantive(self) -> bool:
-        """True when this statement asserts something about the world.
-
-        Every statement a written pass records does. The claim-era statement
-        modes that let a non-asserting record exist (the ``context`` sentences
-        a reader report used to print as framing) went with the claim
-        machinery, so the reader no longer offers one for judgement and the
-        reviewer's packet keeps the flag it reads as ``True``.
-        """
-        return True
-
 
 class ReportPoint(ContractModel):
     """One printed statement, with the sources it rests on.
@@ -1510,10 +1496,6 @@ class ReportComposition(ContractModel):
     limitations: list[str] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
     summary: list[ReportPoint] = Field(default_factory=list)
-    constraints: list[ReportPoint] = Field(default_factory=list)
-    """The ranked-constraint rows. Kept as a readable field, always empty: no
-    pass of this pipeline ranks, and the reviewer's label pass and the e2e
-    invariant that a non-constraint answer carries no ranked row both read it."""
     sections: list[ReportSection] = Field(default_factory=list)
     uncertainty_notes: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
@@ -1566,7 +1548,7 @@ class ReportComposition(ContractModel):
         stays the reader's.
         """
         rows: list[ReportStatement] = []
-        for point in [*self.summary, *self.constraints]:
+        for point in self.summary:
             if point.statement is not None:
                 rows.append(point.statement)
         for section in self.sections:
@@ -2006,3 +1988,70 @@ def advance_research_iteration(state: ResearchState) -> ResearchState:
     payload = state.model_dump(mode="python")
     payload["iteration"] = state.iteration + 1
     return ResearchState.model_validate(payload)
+
+
+# --- Task 4.14: run telemetry (spec 7.3) -------------------------------------
+#
+# What one run spent: its rate-limit errors, its peak number of provider calls
+# in flight, each stage's calls and seconds, and each operation's output tokens
+# against the cap that bounds it. These are measurements, never levers: nothing
+# in the run reads them back to change a cap or a concurrency limit (§7.3, §12),
+# and the advice lines rendered from them are for the operator between runs.
+#
+# The models live here rather than beside their collector because
+# ``observability`` already imports this module: importing the collector's types
+# from ``utils.types`` would close a cycle.
+
+
+class OperationTelemetry(ContractModel):
+    """One agent operation's output tokens against the cap that bounds it.
+
+    ``max_output_tokens`` is the largest single reply of that operation, and
+    ``configured_cap`` is the cap the call that produced it was configured
+    with -- not a re-read of the config, which may since have changed.
+    ``truncations`` counts the replies that hit that cap (the provider's
+    output-limit errors), and ``cap_key`` names the config key that bounds the
+    operation, so an operator knows exactly what to raise.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, validate_default=True, frozen=True
+    )
+
+    agent: str = Field(min_length=1)
+    max_output_tokens: int = Field(default=0, ge=0)
+    configured_cap: int = Field(ge=1)
+    truncations: int = Field(default=0, ge=0)
+    cap_key: str = Field(min_length=1)
+
+
+class StageTelemetry(ContractModel):
+    """One agent's provider calls in a run: how many, how long, and their caps.
+
+    ``seconds`` is the total wall time of those calls and ``slowest_seconds``
+    the longest one, which is the number a concurrent stage's runtime turns on.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, validate_default=True, frozen=True
+    )
+
+    agent: str = Field(min_length=1)
+    calls: int = Field(ge=0)
+    seconds: float = Field(ge=0.0)
+    slowest_seconds: float = Field(ge=0.0)
+    operations: tuple[OperationTelemetry, ...] = ()
+
+
+class RunTelemetry(ContractModel):
+    """One run's §7.3 telemetry, as the quality record and the CLI report it."""
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, validate_default=True, frozen=True
+    )
+
+    rate_limit_errors: int = Field(default=0, ge=0)
+    rate_limit_recovered: int = Field(default=0, ge=0)
+    peak_calls_in_flight: int = Field(default=0, ge=0)
+    peak_agent: str | None = Field(default=None, min_length=1)
+    stages: tuple[StageTelemetry, ...] = ()

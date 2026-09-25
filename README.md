@@ -911,15 +911,16 @@ Finding-to-memory writes are a *separate* write, attempted only for an accepted
 report, and they are outside that artifact set: a failed memory write is
 reported as its own count and leaves the three paths advertised.
 
-Both Markdown documents print an **As of** line read from the newest timestamp
+The reader report prints an **As of** line read from the newest timestamp
 the *recorded evidence* carries — the reads' retrieval times and the findings'
 extraction times, never a graph event and never a clock read — so the same
 session always renders the same date and a session with no dated evidence says
-so instead of printing when it happened to be printed. The reader report prints
-the run clock's own date separately, as **Generated on**. Sources are attributed
-where the report cites them; the ledger keeps the assessments of the sources
-the reader report does not cite, so "what was assessed" and "what was cited"
-stay separately answerable.
+so instead of printing when it happened to be printed. The ledger states the
+session and the pass instead, and neither document prints the run's own clock
+date: that date is carried as `generated_on` in the quality record. Sources are
+attributed where the report cites them; the ledger keeps the assessments of the
+sources the reader report does not cite, so "what was assessed" and "what was
+cited" stay separately answerable.
 
 ### Quality Semantics
 
@@ -1062,88 +1063,92 @@ The graph-level campaign is a separate CLI and package:
 one agent's contract in isolation; whole-report evaluation checks the
 five-agent handoff, the verified-finding snapshot, the reader labels and
 citations, the Not found list, the Statement Check's verdicts, the targeted
-extra pass, terminal publication, memory timing, and agreement between the
-typed state and the CLI summary. The package ships one controlled harness.
+extra pass, terminal publication, memory timing, and each row's declared
+result against the run that produced it. The package ships one controlled
+harness, and its CLI exposes exactly two commands: `list` and `suite`.
 
 ### Real-agent harness
 
-`suite` runs the real agents: the rows of the versioned replay manifest, each
-started through the production CLI entrypoint with the five production agent
-classes, the real graph, reviewer, renderer, and publisher, and only the
-external boundaries scripted. The socket layer is denied for every repetition
-and the attempts it records are carried into the result, so a suite that
-reached the network is not accepted however clean every row looked. A row
-passes when all three of its repetitions met its declared expected product
-result *and* produced one identical outcome — exit code, terminal quality,
-answered targets, and published report. The repetitions exist to check that
-order, identity resolution and state isolation are deterministic, so a row
-whose repetitions disagree fails as `NON-deterministic` rather than passing with
-a note beside it, and a suite holding such a row is not accepted. A repetition's
-dates come from the harness's own declared instant rather than from the wall
-clock, so a row's `Generated on` line is the same date on every run and a suite
-that straddles midnight UTC cannot fail a row on the clock instead of on the
-agents. This harness computes no judge score at all.
+`suite` runs the real agents: the 21 rows of the versioned replay manifest
+(manifest v3, case semantics v2), each started through the production
+`deep_research.cli` entrypoint with the five production agent classes, the real
+graph, reviewer, renderer, and publisher, and only the external boundaries
+scripted. The socket layer is denied for every repetition and the attempts it
+records are carried into the result, so a suite that reached the network is not
+accepted however clean every row looked. A row passes when all three of its
+repetitions met its declared expected product result *and* produced one
+identical outcome — exit code, terminal quality, answered targets, and published
+report. The repetitions exist to check that order, identity resolution and
+state isolation are deterministic, so a row whose repetitions disagree fails as
+`NON-deterministic` rather than passing with a note beside it, and a suite
+holding such a row is not accepted. A repetition's dates come from the
+harness's own declared instant rather than from the wall clock, so the `As of`
+stamp in the reader report is the same on every run and a suite that straddles
+midnight UTC cannot fail a row on the clock instead of on the agents. This
+harness computes no judge score at all.
 
 The rows cover the pipeline's own failure and recovery paths, including
 `broad-constraints`, `comparative-conflict`, `same-work-mirror`,
-`relay-labelled-as-relay`, `forecast-versus-actual-kept-apart`,
+`report-relay-labelled-as-relay`, `forecast-versus-actual-kept-apart`,
 `missing-target-triggers-one-extra-pass`, `extra-pass-recovers-missing-target`,
 `extra-pass-finds-nothing`, `blocked-html-pdf-fallback`, `unsupported-mechanism`,
 `review-unavailable`, `non-constraint-answer`, `empty-but-clean`,
 `memory-is-not-read`, `validated-cache-reuse`,
 `decision-context-late-candidate`, `figure-not-on-page-dropped`,
-`evidence-words-not-on-page-rejected`, `scope-corrected-to-all-segments` and
-`revision-noted`. Each row states its own sources, its Context Check and
-Statement Check overrides, its declared result (accepted or partial, and the
-exit code) and its invariants over production state — for example
-`scope-corrected-to-all-segments` requires the kept figure's scope to be
-"all segments", the finding to be `verified_corrected`, and no reader sentence
-to say "grid-scale".
+`evidence-words-not-on-page-rejected`, `report-scope-corrected-to-all-segments`,
+`revision-noted` and `statement-check-failure-keeps-sentences`. Each row states
+its own sources, its Context Check and Statement Check overrides, its declared
+result (accepted or partial, and the exit code) and its invariants over
+production state — for example `report-scope-corrected-to-all-segments`
+requires the kept figure's scope to be "all segments", the finding to be
+`verified_corrected`, and no reader sentence to say "grid-scale".
 
 ```
-Mode: real-agent (20 cases from replay manifest v1, case semantics v1)
+Mode: real-agent (21 cases from replay manifest v3, case semantics v2)
 Agents: production classes through the real graph
 ```
 
-The live tier is *declared only*: a live case exists as a typed definition for
-every controlled one, with `tier="live"` and `authorization_required=True`, and
-`run_case`/`run_suite` raise for `tier="live"` unconditionally — no live runner
-exists in this package. Live provider, search, judge, and LangSmith calls
+The live tier is *declared only*: `suite --tier live` parses and is then refused
+before anything runs (`run_replay_suite` raises "live tier is declared only and
+has no runner; running it requires a separately authorized canary"), and no live
+runner exists in this package. Live provider, search, judge, and LangSmith calls
 belong to a separately authorized canary.
 
-Whole-report gates are independent of the individual-agent gates: every
-integrity failure (including a duplicate fact row, a missing read provenance, an
-unresolved citation, an unjudged sentence, incomplete attempts, or publication
-timing) hard-fails the repetition. The production CLI `--require-quality` flag
-is a graph-run exit policy (exit 4 for a non-accepted terminal quality status);
-it does not replace these campaign gates.
+Whole-report gates are independent of the individual-agent gates: the quality
+pass's own hard failures (`unresolved_citations`, `uncited_settled_points`,
+`duplicate_fact_rows`, `missing_as_of`, `missing_scope`, `unjudged_sentences`,
+`unaccounted_required_targets`, `missing_reader_report`,
+`missing_evidence_ledger`) reach `suite` as `hard:<name>` gap kinds, and a row
+fails on any kind its case does not allow. No row's allow-list tolerates a hard
+failure, so an integrity failure is never a note beside a passing row. The
+production CLI `--require-quality` flag is a graph-run exit policy (exit 4 for a
+non-accepted terminal quality status); it does not replace these gates.
 
 ```powershell
-# List the harness's cases, and the live cases that have no runner.
+# List the 21 row ids, with the manifest and case-semantics versions.
 python -m deep_research.e2e_evaluation list
 
-# Run the campaign: 20 rows, three repetitions each, network-zero.
+# Run the campaign: 21 rows, three repetitions each, network-zero.
+# The controlled tier runs exactly three repetitions; any other count is refused.
 python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
-
-# Run one case three times.
-python -m deep_research.e2e_evaluation case broad-constraints --tier controlled --repetitions 3
 ```
 
 Each suite writes its own JSON artifact under `output/evaluations/e2e/`:
-`replay-suite.json`. It carries the campaign identity, the manifest and
-case-semantics versions, the graph revision, every row's repetitions (exit
-code, terminal quality, expectation failures, answered targets, recorded
-network attempts, and the published report's fingerprint), the suite's
-`accepted` verdict, and `rows_accepted`; each repetition's own published
-documents sit under `output/evaluations/e2e/replay/<case-id>/repetition-<n>/`.
-Controlled stdout prints case/suite quality summaries and paths, never report
-bodies or raw tool/model payloads. The manifests carry the graph revision, the
-target prompt fingerprints, the report/quality/case schema versions, the model
-settings and the request counts, and the typed deterministic metrics
-(`verified_findings`, `dropped_findings`, `context_unchecked_findings`,
-`duplicate_fact_rows`, `unjudged_sentences`, `missing_required_targets`,
-`extra_passes`) read from production state and from the CLI summary lines
-above.
+`replay-suite.json`. It carries the campaign identity, the tier and mode, the
+manifest and case-semantics versions, the graph revision, the suite's `accepted`
+and `rows_accepted` verdicts, and, for every row, every repetition's exit code,
+terminal quality, expectation failures, answered targets, recorded network
+attempts, published report fingerprint and the seven deterministic counts read
+from that run's own final state — `verified_findings`, `dropped_findings`,
+`context_unchecked_findings`, `duplicate_fact_rows`, `unjudged_sentences`,
+`missing_required_targets` and `extra_passes` (the extra passes the graph
+spent). The counts the quality snapshot holds are `null` only where the run
+stamped no snapshot, because a pass that composed no report judged nothing;
+`extra_passes` is `state.iteration` and is always recorded. Each repetition's
+own published documents sit under
+`output/evaluations/e2e/replay/<case-id>/repetition-<n>/`. Controlled stdout
+prints the mode header, one line per row, the suite verdict, the artifact path
+and the network line — never report bodies or raw tool/model payloads.
 
 ### Manual Live Verification
 

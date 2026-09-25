@@ -89,7 +89,7 @@ from tests.evaluation_fakes import (
     FakeLangSmithClient,
     FakeStructuredProvider,
 )
-from tests.research_fakes import synthesizer_tools
+from tests.research_fakes import report_writer_tools
 
 
 @pytest.fixture
@@ -3184,7 +3184,7 @@ def report_writer_output_for(tracker, tmp_path):
         checker: Callable[[Sequence[object], object], StatementCheckDraft]
         | None = None,
     ) -> "ReportWriterOutput":
-        tools = synthesizer_tools(
+        tools = report_writer_tools(
             tracker, output_root=tmp_path / case.case_id
         )
         return asyncio.run(
