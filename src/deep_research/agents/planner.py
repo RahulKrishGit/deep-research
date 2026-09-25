@@ -31,6 +31,7 @@ from deep_research.agents.prompts import (
     AgentTask,
     render_memory_guidance,
     render_structured_reply_format,
+    render_structured_request,
 )
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.toolset import AgentToolset
@@ -44,7 +45,7 @@ from deep_research.providers import (
 )
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
-from deep_research.utils.text import collapse_whitespace, unique_phrases
+from deep_research.utils.text import collapse_whitespace
 from deep_research.utils.types import (
     MAX_TARGETS_PER_TOPIC,
     AnswerContract,
@@ -57,14 +58,18 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     SubTopic,
-    UnitDimension,
     _ENERGY_UNIT,
     _POWER_UNIT,
     counted_evidence_targets,
 )
 
 PLANNER_NAME = "planner"
-MIN_SUB_TOPICS = 3
+# The floor is one sub-topic: a one-part question is one sub-topic, and
+# requiring three made a small question's size — not its content — the reason
+# a run reached ``graph_planning_failed`` (D11). Every reader of the bound
+# follows this constant, so the instruction, the plan validators and the
+# planning event's metadata all move together.
+MIN_SUB_TOPICS = 1
 MAX_SUB_TOPICS = 7
 MIN_TARGETS_PER_TOPIC = 1
 _COVERAGE_ID_WIDTH = 2
@@ -140,16 +145,17 @@ _ANSWER_FORM_REQUIREMENTS: dict[AnswerKind, str] = {
         "effect"
     ),
     "comparison": (
-        "answer form: the same measured dimension for every option in the "
-        "comparison, on one shared basis and unit"
+        "answer form: the same dimension, measured or described, for every "
+        "option compared, on one shared basis"
     ),
     "explanation": (
         "answer form: a causal mechanism with evidence for each step, not a "
         "correlation and not a restatement of the outcome"
     ),
     "factual": (
-        "answer form: the specific fact asked for, with its value, unit, and "
-        "the date the value applies to"
+        "answer form: the specific thing asked for, in the form its evidence "
+        "takes — a figure with its value, unit and date; items with their "
+        "attributes; dated events; reasons; a rule's provisions"
     ),
     "historical": (
         "answer form: the state of affairs in the period the question names, "
@@ -473,9 +479,10 @@ PLAN_INSTRUCTION = (
     # asked to write into its own queries, with no field of its own. It wrote
     # whatever year it believed was current — 2024, in a September 2026
     # session — and the stale anchor reached the reader as a hard limit
-    # (baseline TR-04). Both now come from the frozen answer contract printed
-    # above, and the plan may not restate them as its own assumption.
-    "The answer contract above fixes the as-of date, the geographic scope, "
+    # (baseline TR-04). Both now come from the frozen answer contract the
+    # request prints below these requirements, and the plan may not restate
+    # them as its own assumption.
+    "The answer contract below fixes the as-of date, the geographic scope, "
     "and the answer form. Do not restate them as your own assumptions and do "
     "not narrow or widen them; every sub-topic is answered within them.\n"
     "Give every sub-topic between 1 and 4 evidence_targets. Each target is one "
@@ -485,31 +492,65 @@ PLAN_INSTRUCTION = (
     "never require two sources to agree within a numeric tolerance unless the "
     "question itself states that tolerance.\n"
     "For every target also fill the fields a program checks answers against: "
-    "measure (what is measured, in words: \"battery storage power capacity "
-    "added\"), unit_dimension (power for a capacity in kW, MW or GW; energy for "
-    "MWh or GWh; percent for a share; empty when the answer is not a quantity), "
-    "period (the year or period the question names, or empty), kind "
-    "(actual for a measured outcome, forecast for a projection; empty when the "
-    "answer is not a quantity), geography, and organisation (the one body the "
-    "question names as the source of the figure, or empty otherwise). "
-    "Plan one target per organisation, measure, period and kind.\n"
-    "Mark a target critical when the question cannot be answered without it, "
-    "and give every target the dimensions a reader needs to judge it: the "
-    "measure, the period, the geography, and the kind of source that settles "
-    "it. Do not add a metadata dimension — a publication date, a retrieval "
-    "date, a data period, an effective date, a generation date — unless the "
-    "question itself asks for that date: metadata is context, not evidence, "
-    "and a target resting on it cannot be answered.\n"
+    "measure (what the target asks for, in the question's own words: a quantity, "
+    "a rule, a mechanism, a list); unit_dimension (for a quantity, one word for "
+    "the kind of quantity: power, energy, percent, currency, count, mass, volume, "
+    "distance, time, rate; empty when the answer is not a quantity); period (the "
+    "year or period the question names for it, or empty); kind (actual for a "
+    "measured or reported outcome, forecast for a projection or outlook; empty "
+    "when the answer is not a quantity); geography; and organisation (the body "
+    "the question names as its source; when it names none, the body that "
+    "publishes the primary or official record of that measure for that geography "
+    "— a statistical agency, a regulator, the company for its own filing — or "
+    "empty when no single body does). Plan one target per organisation, measure, "
+    "period and kind the question asks for.\n"
+    "A target is required only for what the question names. Read the question as "
+    "its parts: each figure, period, body, option, place or item it names, and "
+    "each clause it asks, is a part a complete answer needs, and every part gets "
+    "its own target. For each part, the evidence that settles it decides the "
+    "target's fields: a figure (measure, unit_dimension, period, kind); a set of "
+    "items with their attributes, such as options with a price and a rating per "
+    "criterion (one target per attribute, its measure naming the attribute, the "
+    "items found by the research when the question names none); dated changes or "
+    "events (a target whose measure is the change and whose period is the window); "
+    "reasons or mechanisms; or the text of a rule (empty unit_dimension and kind, "
+    "no figure added to make them measurable). The organisation of a target is "
+    "the body that produced, measured, judged or announced that evidence — the "
+    "statistical agency for a statistic, the maker for its own release notes or "
+    "prices, an independent tester or reviewer for a rating, the regulator for a "
+    "rule — named by the question or, when it names none, the body that publishes "
+    "the primary record; a page that repeats another body's evidence is a relay, "
+    "never the organisation. When the question asks for forecasts, outlooks, "
+    "rankings or recommendations without naming who gives them, plan one target "
+    "per body whose published, reachable evidence you expect, at least two when "
+    "the question is plural; a body whose evidence is paywalled is optional. A "
+    "period is a target's period only when the question bounds when the evidence "
+    "happened or applies (\"changes in 2026\", \"added in 2024\"); a year that "
+    "names when the reader will buy, decide or use (\"to buy in 2026\") is not a "
+    "period: leave it empty, the as-of date governs, and earlier evidence is "
+    "still current. "
+    "Targets you add yourself — a second unit of measure, a related "
+    "quantity, a type or category breakdown, a definition, background — are "
+    "optional. Optional targets never fail a run; a required target no source "
+    "can answer fails acceptance, so require nothing the question did not ask "
+    "for. A target never asks for a publication date, retrieval date or edition "
+    "as its measure: those are context the researcher records beside the "
+    "evidence. Keep the temporal contract: the latest available evidence, no "
+    "cutoff inferred from a year in the question, actuals labelled apart from "
+    "forecasts. The number of targets follows the question — as many as its "
+    "parts and named bodies need, and no more.\n"
     "Make every success criterion measurable, so a reader can tell from the "
     "evidence it names whether the sub-topic was answered.\n"
     "Two sub-topics must never share a title."
 )
 
-# One example, because there is no valid "empty plan" case to show: the plan
-# requirements already state the 3-7 sub-topic bound, and an empty list would
-# be a different failure mode rather than the opposite end of a scale.
+# Two examples, because one shape teaches a bias and the reply format is what
+# the model has to get right: the first compares two transport options, the
+# second traces a causal public-health question, and both name hypothetical
+# bodies, so the request teaches the format and the field relationships rather
+# than a domain's answer (Fable §2.3).
 #
-# The example is a plan the planner's own checks accept, which is the only
+# The examples are plans the planner's own checks accept, which is the only
 # property an example can teach: an earlier one modelled a "benefits and
 # risks" sub-topic for a comparison question (scope widening) and a target
 # asking two things at once ("Which documented risks does each option carry,
@@ -528,19 +569,13 @@ _PLAN_REPLY_EXAMPLES = (
         'options."],"priority":1,'
         '"evidence_targets":['
         '{"question":"What ridership did the bus option carry in the most '
-        'recent reported year?","required_dimensions":["measure: annual '
-        'ridership","period: most recent reported year","geography: the '
-        'city","source: the operator\'s published ridership report"],'
-        '"critical":true,'
-        '"measure":"annual ridership","unit_dimension":"",'
+        'recent reported year?","required":true,'
+        '"measure":"annual ridership","unit_dimension":"count",'
         '"period":"","kind":"actual",'
         '"geography":"the city","organisation":""},'
         '{"question":"What ridership did the rail option carry in the most '
-        'recent reported year?","required_dimensions":["measure: annual '
-        'ridership","period: most recent reported year","geography: the '
-        'city","source: the operator\'s published ridership report"],'
-        '"critical":true,'
-        '"measure":"annual ridership","unit_dimension":"",'
+        'recent reported year?","required":true,'
+        '"measure":"annual ridership","unit_dimension":"count",'
         '"period":"","kind":"actual",'
         '"geography":"the city","organisation":""}]},'
         '{"title":"cost and delivery",'
@@ -548,16 +583,12 @@ _PLAN_REPLY_EXAMPLES = (
         'option.",'
         '"search_queries":["city bus rail capital operating cost delivery '
         'time"],"success_criteria":['
-        '"Comparable cost estimates are available from two independent '
-        'sources."],"priority":2,'
+        '"Comparable cost estimates are available for both options."],'
+        '"priority":2,'
         '"evidence_targets":['
         '{"question":"What capital cost per route kilometre does each option '
-        'report?","required_dimensions":["measure: capital cost per route '
-        'kilometre","period: the most recent published estimate",'
-        '"geography: the city","source: the cost analysis each body '
-        'publishes"],'
-        '"critical":false,'
-        '"measure":"capital cost per route kilometre","unit_dimension":"",'
+        'report?","required":false,'
+        '"measure":"capital cost per route kilometre","unit_dimension":"currency",'
         '"period":"","kind":"",'
         '"geography":"the city","organisation":""}]},'
         '{"title":"service reliability",'
@@ -569,13 +600,47 @@ _PLAN_REPLY_EXAMPLES = (
         'option."],"priority":3,'
         '"evidence_targets":['
         '{"question":"What on-time performance did each option report?",'
-        '"required_dimensions":["measure: on-time performance, in percent",'
-        '"period: the most recent reported year","geography: the city",'
-        '"source: the operator\'s performance report"],'
-        '"critical":false,'
+        '"required":true,'
         '"measure":"on-time performance","unit_dimension":"percent",'
         '"period":"","kind":"actual",'
         '"geography":"the city","organisation":""}]}'
+        "]}",
+    ),
+    (
+        "Example input: why did measles cases rise in the region in 2024?",
+        '{"sub_topics":['
+        '{"title":"vaccination coverage",'
+        '"rationale":"Establish whether coverage fell before the rise.",'
+        '"search_queries":["regional health authority MMR first dose coverage 2024"],'
+        '"success_criteria":["A reported first-dose coverage figure for 2024 from '
+        'the regional health authority."],'
+        '"priority":1,"evidence_targets":['
+        '{"question":"What MMR first-dose coverage did the regional health '
+        'authority report for 2024?","required":true,'
+        '"measure":"MMR first-dose coverage","unit_dimension":"percent",'
+        '"period":"2024","kind":"actual",'
+        '"geography":"the region","organisation":"the regional health authority"}]},'
+        '{"title":"outbreak investigation findings",'
+        '"rationale":"The causes the investigating body itself identified.",'
+        '"search_queries":["regional health authority measles outbreak report 2024 causes"],'
+        '"success_criteria":["The outbreak report names the causes it identified."],'
+        '"priority":2,"evidence_targets":['
+        '{"question":"What causes of the 2024 rise did the regional health '
+        'authority\'s outbreak report identify?","required":true,'
+        '"measure":"causes identified by the outbreak report","unit_dimension":"",'
+        '"period":"2024","kind":"",'
+        '"geography":"the region","organisation":"the regional health authority"}]},'
+        '{"title":"immunity threshold",'
+        '"rationale":"Background the reader needs to judge the coverage figure.",'
+        '"search_queries":["national public health agency measles herd immunity threshold"],'
+        '"success_criteria":["A stated immunity threshold from the national public '
+        'health agency."],'
+        '"priority":3,"evidence_targets":['
+        '{"question":"What population immunity threshold does the national '
+        'public health agency state for measles?","required":false,'
+        '"measure":"stated immunity threshold","unit_dimension":"percent",'
+        '"period":"","kind":"",'
+        '"geography":"national","organisation":"the national public health agency"}]}'
         "]}",
     ),
 )
@@ -586,16 +651,20 @@ class EvidenceTargetDraft(ContractModel):
 
     No ``Field`` constraints, for the same reason ``SubTopicDraft`` has none:
     this model is converted to a strict JSON schema. The planner assigns the
-    id and the contract's own dimensions; the model supplies the question the
-    obligation answers, the dimensions a reader needs, and whether the
-    question can be answered without it.
+    id; the model supplies the question the obligation answers, whether the
+    question names it (``required``, spec §7.1), and the fields a program
+    checks an answer against — empty when the question does not name one.
     """
 
     question: str
-    required_dimensions: list[str]
-    critical: bool
-    # The fields a program checks an answer against; empty when the
-    # question does not name one.
+    # The model states whether the question names this obligation rather than
+    # the planner deriving it, because only the question's own wording says
+    # whether a part is one a complete answer needs (spec §7.1). It is
+    # required of every construction, provider reply and replay double alike.
+    required: bool
+    """Whether the question names this obligation, so its answer is required (spec §7.1)."""
+    # The fields a program checks an answer against; empty when the question
+    # does not name one.
     measure: str = ""
     unit_dimension: str = ""
     period: str = ""
@@ -733,8 +802,8 @@ class ResearchPlan(ContractModel):
     Never sent to the provider — ``ResearchPlanDraft`` is — so its size
     bounds are free to be real constraints. The lower bound is enforced in a
     validator rather than as a field keyword because an extension is a plan
-    of *additional* sub-topics and legitimately carries fewer than three;
-    every other plan carries the 3-7 the instruction asks for.
+    of *additional* sub-topics and is judged by its own rule; every other
+    plan carries the 1-7 the instruction asks for.
 
     ``answer_contract`` is the frozen contract the plan was written against.
     ``extension`` marks a plan that carries *only* the topics a later
@@ -1010,19 +1079,6 @@ def _mentions_ranking(normalized: str) -> bool:
     return _mentions(normalized, _RANKING_MARKERS) or (
         _MOST_RANKING_PATTERN.search(normalized) is not None
     )
-
-
-# An explicit request for a second, independent account. This is the one demand
-# the local rule may not lower: the user asked for a second *measurement*, and
-# whether one figure happens to have a second measurer cannot answer a request
-# the user made (user decision 1). Matched three ways, because the request is
-# written every way round: "independently confirm X", "verify X
-# independently", "an independent verification of X", "confirmed by a second
-# source", and "corroborated by another publisher" all ask for the same
-# account. "independent power producers" and "the independent system
-# operator" name a kind of body, not a request, so those two continuations
-# never count as the independence half of the demand.
-_INDEPENDENCE_MARKERS = ("independent", "independently")
 
 
 # plan itself writes for it, followed — within a few words — by one of the
@@ -1534,30 +1590,6 @@ def derive_answer_contract(
     )
 
 
-def latest_available_obligation(contract: AnswerContract) -> str:
-    """The one dimension every target carries about the evidence period.
-
-    It is built from the frozen contract, so it cannot become a hard-coded
-    older year: with a 2026 clock it asks for the latest evidence available as
-    of 2026-09-16, while a question about 2021 keeps 2021 as the period the
-    answer is *about* — the two are separate obligations, and only a date the
-    question states moves the first one.
-    """
-    return f"evidence period: {contract.evidence_period_requirement}"
-
-
-def geographic_obligation(contract: AnswerContract) -> str:
-    """The dimension that keeps a regional sample from supporting the world."""
-    if contract.geographic_scope == "unspecified":
-        return (
-            "geography: unspecified by the question, so state the geography "
-            "each piece of evidence covers and do not generalise beyond it"
-        )
-    if contract.geographic_scope == "global":
-        return "geography: global, with evidence that covers more than one region"
-    return f"geography: {contract.geographic_scope}"
-
-
 def frozen_contract_for(
     existing: AnswerContract,
     derived: AnswerContract,
@@ -1636,7 +1668,14 @@ def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
 
 
 def _structured_fields(target: EvidenceTargetDraft) -> dict[str, object]:
-    """The draft's checkable fields, blank ones and unknown values stamped empty."""
+    """The draft's checkable fields, blanks stamped empty and a free dimension kept.
+
+    ``unit_dimension`` is one lower-case word from the open vocabulary the
+    rule hands the model — ``count`` and ``currency`` are as real as ``power``
+    — so nothing but whitespace and case is normalized here (D10). ``kind`` is
+    still checked against the two values the figure rules read, because a
+    downstream check compares it to a vocabulary, not to prose.
+    """
 
     def text(value: str) -> str | None:
         return " ".join(value.split()) or None
@@ -1645,7 +1684,7 @@ def _structured_fields(target: EvidenceTargetDraft) -> dict[str, object]:
     kind = (text(target.kind) or "").casefold()
     return {
         "measure": text(target.measure),
-        "unit_dimension": dimension if dimension in get_args(UnitDimension) else None,
+        "unit_dimension": dimension or None,
         "period": text(target.period),
         "kind": kind if kind in get_args(FigureKind) else None,
         "geography": text(target.geography),
@@ -1660,19 +1699,17 @@ def _draft_targets(
 
     Provisional in exactly one way: the ids are positional within the draft
     (``_assign_coverage_ids`` re-stamps them once the plan is ordered).
-    Everything else — the question, the model's dimensions, ``critical`` — is
-    carried through, so a draft that omits a question, lists no dimensions, or
-    proposes more obligations than a sub-topic may carry fails validation here
-    and is reported as a repair problem.
+    Everything else — the question, ``required`` and the structured fields the
+    model supplied — is carried through as it stands, so a draft that omits a
+    question, states no measure, or proposes more obligations than a sub-topic
+    may carry fails validation here and is reported as a repair problem.
     """
     return [
         EvidenceTarget(
             target_id=target_id_for(coverage_id, position),
             coverage_id=coverage_id,
             question=target.question,
-            required_dimensions=list(target.required_dimensions),
-            required=True,
-            critical=target.critical,
+            required=target.required,
             **_structured_fields(target),
         )
         for position, target in enumerate(item.evidence_targets, start=1)
@@ -1866,89 +1903,6 @@ _DEMAND_MARKERS = (
 _CONJUNCTION = re.compile(r"(?i)\s+and\s+|,\s*and\s+")
 
 
-# The words that turn an independence demand into a demand for a *second body*:
-# "the agency's published data and, independently, a tracker" names two, while
-# "an independent analysis of the market" names one. The distinction is what
-# the source requirement is checked for — two bodies' figures are two
-# differently scoped measurements, which is one target per issuer, not one
-# target with two sources.
-_SECOND_BODY_MARKERS = (
-    "additional",
-    "and",
-    "another",
-    "both",
-    "plus",
-    "second",
-    "separate",
-    "separately",
-    "two",
-)
-
-# Analyst outlooks that are sold rather than published. The researcher cannot
-# read a subscription page, and an unanswered *required* obligation fails
-# acceptance unless the acquisition trail shows a denied URL or two empty
-# searches (``quality.unaccounted_required_targets``), so a required target
-# whose only named source is one of these is a plan defect the review owns
-# (review rank 4).
-_PAYWALLED_OUTLOOKS = ("s&p", "bloombergnef", "bloomberg nef")
-
-
-def _source_requirements(target: EvidenceTarget) -> list[str]:
-    """The target's own requirements about where its answer comes from."""
-    return [
-        requirement
-        for requirement in target.required_dimensions
-        if requirement.partition(":")[0].strip().casefold() == "source"
-    ]
-
-
-def _demanded_second_body(target: EvidenceTarget) -> str:
-    """The source requirement that demands a second body, or ``""``.
-
-    The run's plan asked one target for "the federal energy statistical
-    agency's published capacity data and, independently, an industry
-    energy-storage market tracker": two bodies, two scopes, and a pair that
-    cannot be verified, so the two demands have to become two targets.
-    """
-    for requirement in _source_requirements(target):
-        normalized = _normalized_question(requirement)
-        if _mentions(normalized, _INDEPENDENCE_MARKERS) and _mentions(
-            normalized, _SECOND_BODY_MARKERS
-        ):
-            return requirement
-    return ""
-
-
-# What separates one named source from another inside a single requirement:
-# "S&P Global's outlook, or the agency's published data" names two, and the
-# second is one the researcher can read.
-_SOURCE_CLAUSE_SPLIT = re.compile(r"\s*(?:;|,| and | or )\s*", re.IGNORECASE)
-
-
-def _paywalled_only_sources(target: EvidenceTarget) -> list[str]:
-    """The paywalled outlooks a target names, when they are all it names.
-
-    Read clause by clause, not requirement by requirement: a requirement that
-    names a public publication beside the sold outlook — or a second
-    requirement that names one — leaves the target reachable, and the
-    researcher can read that source.
-    """
-    names: list[str] = []
-    for source in _source_requirements(target):
-        for clause in _SOURCE_CLAUSE_SPLIT.split(source):
-            if not clause.strip():
-                continue
-            found = [
-                publisher
-                for publisher in _PAYWALLED_OUTLOOKS
-                if _mentions(_normalized_question(clause), (publisher,))
-            ]
-            if not found:
-                return []
-            names.extend(found)
-    return sorted(set(names))
-
-
 # What names the power/capacity family in a question's own prose, beside the
 # unit tokens ``_POWER_UNIT`` already matches. "How much ... capacity was
 # added" never spells "GW" or "MW", so the family has to be read from the
@@ -1972,10 +1926,10 @@ def _unrequested_energy_measure(
     question; a target that asks for MWh/GWh answers a different measure the
     question never asked for, and the researcher spends a whole acquisition
     loop on a figure nobody wanted (audit #3, C5). Read from the target's own
-    prose — its question and its required dimensions — because either can
-    carry the unit and neither is the whole obligation; the question's own
-    capacity wording is the anchor, so the check never has to guess what
-    family a unit-free question asks in.
+    prose — its question and its measure — because either can carry the unit
+    and neither is the whole obligation; the question's own capacity wording
+    is the anchor, so the check never has to guess what family a unit-free
+    question asks in.
 
     A question that itself names the energy family — a literal unit
     (``_ENERGY_UNIT``) or a word for it (``_ENERGY_MARKERS``: energy,
@@ -1989,7 +1943,7 @@ def _unrequested_energy_measure(
         _POWER_UNIT.search(question) or _mentions(question, _CAPACITY_MARKERS)
     ):
         return False
-    target_text = " ".join((target.question, *target.required_dimensions))
+    target_text = " ".join(filter(None, (target.question, target.measure)))
     return bool(_ENERGY_UNIT.search(target_text))
 
 
@@ -2014,10 +1968,7 @@ def _demanded_widening(sub_topic: SubTopic) -> list[str]:
             *(
                 text
                 for target in sub_topic.evidence_targets
-                for text in (
-                    target.question,
-                    *target.required_dimensions,
-                )
+                for text in (target.question, target.measure or "")
             ),
         ]
     )
@@ -2089,22 +2040,17 @@ def _unrequested_forecast_vintage(
 ) -> str:
     """A forecast's publication edition is not the projected data year.
 
-    A "period:" requirement states the data year or quarter a figure covers,
-    never the edition that published it -- "period: Q4 2025" beside a
-    question asking for "the fourth quarter of 2025" is one obligation
-    spelled two ways, not a planner-invented vintage -- so its own text is
-    never scanned for a candidate edition date. What survives that filter
-    still has to sit inside an edition phrase (see _in_edition_phrase): a
-    bare date elsewhere in the question or another requirement is still just
-    as likely to be the data period as the release.
+    A period states the data year or quarter a figure covers, never the
+    edition that published it — "Q4 2025" beside a question asking for "the
+    fourth quarter of 2025" is one obligation spelled two ways, not a
+    planner-invented vintage — so the ``period`` field is never scanned for a
+    candidate edition date. What the target's question and measure state still
+    has to sit inside an edition phrase (see _in_edition_phrase): a bare date
+    elsewhere in either is still just as likely to be the data period as the
+    release.
     """
-    non_period_dimensions = [
-        dimension
-        for dimension in target.required_dimensions
-        if "period" not in dimension.partition(":")[0].casefold()
-    ]
     wording = _normalize_month_of_year(
-        " ".join((target.question, *non_period_dimensions))
+        " ".join(filter(None, (target.question, target.measure)))
     )
     if not _FORECAST_CUE.search(wording):
         return ""
@@ -2204,69 +2150,16 @@ def _plan_problems(
                         "advisory",
                     )
                 )
-            second_body = _demanded_second_body(target)
-            if second_body:
-                problems.append(
-                    _PlanProblem(
-                        f"{target.target_id} asks one source requirement for "
-                        f"a second body beside the first ({second_body}); two "
-                        "bodies' figures are two differently scoped "
-                        "measurements, and no pair of them can be verified. "
-                        "Give each issuer its own target — one target per "
-                        "issuer, each naming its own source",
-                        "advisory",
-                    )
-                )
             unrequested_measure = _unrequested_energy_measure(
                 target, contract=contract
             )
             if unrequested_measure:
                 problems.append(
                     _PlanProblem(
-                        (
-                            f"{target.target_id} is planned optional: it "
-                            "asks for an energy figure (MWh) a capacity "
-                            "question never named, and no claim about "
-                            "capacity can discharge it"
-                        )
-                        if not target.required
-                        else (
-                            f"{target.target_id} is a required, critical "
-                            "target that asks for an energy figure (MWh) a "
-                            "capacity question never named; no claim about "
-                            "capacity can discharge it, and an unanswered "
-                            "required obligation fails acceptance. Restate "
-                            "it in the question's own measure, or "
-                            "reconsider whether this obligation is truly "
-                            "critical"
-                        ),
-                        "advisory",
-                    )
-                )
-            paywalled = _paywalled_only_sources(target)
-            if paywalled:
-                problems.append(
-                    _PlanProblem(
-                        (
-                            f"{target.target_id} is planned optional: its "
-                            "only named source is behind a paywall "
-                            f"({', '.join(paywalled)}), and the researcher "
-                            "cannot read a subscription page. Name a "
-                            "freely reachable publication of the same "
-                            "figures if one exists"
-                        )
-                        if not target.required
-                        else (
-                            f"{target.target_id} is a required, critical "
-                            "target whose only named source is behind a "
-                            f"paywall ({', '.join(paywalled)}); the "
-                            "researcher cannot read a subscription page, "
-                            "and an unanswered required obligation fails "
-                            "acceptance. Name a freely reachable "
-                            "publication of the same figures, or "
-                            "reconsider whether this obligation is truly "
-                            "critical"
-                        ),
+                        f"{target.target_id} is planned optional: it "
+                        "asks for an energy figure (MWh) a capacity "
+                        "question never named, and no claim about "
+                        "capacity can discharge it",
                         "advisory",
                     )
                 )
@@ -2352,34 +2245,13 @@ def apply_answer_contract(
     sub_topics: Sequence[SubTopic],
     contract: AnswerContract,
 ) -> list[SubTopic]:
-    """Attach the contract's binding dimensions, and decide ``required``.
+    """Re-stamp each target's id and decide ``required`` (spec §7.1).
 
-    Every target keeps the dimensions the model proposed and gains the three
-    the contract fixes: the answer form, the evidence period, and the
-    geography rule. ``required`` is set here rather than taken from the
-    draft: an obligation the planner stamped is required by definition,
-    *unless* the target's own prose asks for a measure the question never
-    named (an energy figure for a capacity question,
-    ``_unrequested_energy_measure``) or names only a paywalled-only source
-    (``_paywalled_only_sources``) — a required, unanswerable obligation
-    invented by the plan rather than asked for by the question. Both are
-    stamped optional here, at the one place ``required`` is decided, rather
-    than left for the §2.3 gate to discover a target nobody could ever finish
-    acquiring in a one-iteration run.
-
-    A ``critical`` target is never downgraded by either rule
-    (``required = target.critical or not (...)``): the model's own judgement
-    that the question cannot be answered without this obligation overrides a
-    hygiene heuristic, so a critical target stays required and the §2.3 gates
-    still see it as a hard obligation. The plan-problem advisory still names
-    the tension for a reviewer to act on, whichever way ``required`` lands. A
-    target that could be marked optional for any other reason is still a
-    target that can be dropped later without anyone deciding to drop it.
+    The model marks a target required only when the question names it. One
+    bounded code rule remains (Fable C-d): a target that asks for an energy
+    figure (MWh) a capacity question never named is optional, whatever the
+    draft said. Nothing else is added to a target.
     """
-    form = answer_form_requirement(contract.answer_kind)
-    period = latest_available_obligation(contract)
-    geography = geographic_obligation(contract)
-
     stamped: list[SubTopic] = []
     for sub_topic in sub_topics:
         targets = [
@@ -2387,20 +2259,8 @@ def apply_answer_contract(
                 target_id=target_id_for(sub_topic.coverage_id, position),
                 coverage_id=sub_topic.coverage_id,
                 question=target.question,
-                required_dimensions=unique_phrases(
-                    [
-                        *_plan_dimensions(target.required_dimensions),
-                        form,
-                        period,
-                        geography,
-                    ]
-                ),
-                required=target.critical
-                or not (
-                    _unrequested_energy_measure(target, contract=contract)
-                    or _paywalled_only_sources(target)
-                ),
-                critical=target.critical,
+                required=target.required
+                and not _unrequested_energy_measure(target, contract=contract),
                 measure=target.measure,
                 unit_dimension=target.unit_dimension,
                 period=target.period,
@@ -2408,40 +2268,10 @@ def apply_answer_contract(
                 geography=target.geography,
                 organisation=target.organisation,
             )
-            for position, target in enumerate(
-                sub_topic.evidence_targets, start=1
-            )
+            for position, target in enumerate(sub_topic.evidence_targets, start=1)
         ]
-        stamped.append(
-            sub_topic.model_copy(update={"evidence_targets": targets})
-        )
+        stamped.append(sub_topic.model_copy(update={"evidence_targets": targets}))
     return stamped
-
-
-def _checkable_plan_requirement(requirement: str) -> str:
-    """Spell publisher unit and qualitative-definition asks in atom vocabulary."""
-    head, separator, detail = requirement.partition(":")
-    if not separator:
-        return requirement
-    if head.strip().casefold() == "unit":
-        return "unit"
-    if head.strip().casefold() == "definition":
-        return f"measure: {detail.strip()}"
-    return requirement
-
-
-def _plan_dimensions(required_dimensions: Sequence[str]) -> list[str]:
-    """The obligations a stamped target owes, in the atom vocabulary.
-
-    The plan's own spellings are resolved into the form the later checks read:
-    only a ``measure: …`` requirement is matched as a quantity, so a publisher
-    ``Unit`` ask or a ``Definition: …`` ask is spelled that way here rather
-    than left for a stage that reads dimensions to fail to match.
-    """
-    return [
-        _checkable_plan_requirement(requirement)
-        for requirement in required_dimensions
-    ]
 
 
 def targets_requiring_replanning(
@@ -2486,7 +2316,7 @@ def extend_plan(
 
     Returns the *new* sub-topics with ids continuing after ``existing``, plus
     any problems. Nothing here can touch a topic that already exists: no
-    existing id is renumbered, no target is removed, no critical flag is
+    existing id is renumbered, no target is removed, no ``required`` flag is
     cleared, and the contract — question, scope, as-of date — is the one
     already frozen. A plan that no longer fits ``MAX_SUB_TOPICS`` is reported
     as an explicit capacity conflict naming the topics that cannot fit, which
@@ -2743,25 +2573,29 @@ def plan_messages(
 ) -> list[ChatMessage]:
     """Build the messages that request one structured plan draft.
 
+    Static first: the requirements and the reply format are the same text on
+    every request, so a provider's prefix cache can reuse them, and they are
+    what the model must read before the question they govern (PD-29).
+
     ``contract`` is the frozen answer contract. The planner always passes
     one; a caller that omits it gets the plan requirements without a frozen
     scope, which is what a replay of an older prompt looks like.
     """
-    sections = [f"# Research question\n{task.instruction}"]
+    static = [
+        f"# Plan requirements\n{PLAN_INSTRUCTION}",
+        f"# Reply format\n{render_structured_reply_format(_PLAN_REPLY_EXAMPLES)}",
+    ]
+    material = [f"# Research question\n{task.instruction}"]
     if contract is not None:
-        sections.append(f"# Answer contract\n{render_answer_contract(contract)}")
+        material.append(f"# Answer contract\n{render_answer_contract(contract)}")
     if task.guidance.strip():
-        sections.append(f"# Context\n{task.guidance}")
-    sections.append(f"# Scoping notes\n{_render_notes(run)}")
-    sections.append(f"# Plan requirements\n{PLAN_INSTRUCTION}")
+        material.append(f"# Context\n{task.guidance}")
+    material.append(f"# Scoping notes\n{_render_notes(run)}")
     if repair is not None:
-        sections.append(f"# Repair\n{repair}")
-    sections.append(
-        f"# Reply format\n{render_structured_reply_format(_PLAN_REPLY_EXAMPLES)}"
-    )
+        material.append(f"# Repair\n{repair}")
     return [
         ChatMessage(role="developer", content=PLANNER_PLAN_SYSTEM_PROMPT),
-        ChatMessage(role="user", content="\n\n".join(sections)),
+        ChatMessage(role="user", content=render_structured_request(static, material)),
     ]
 
 
@@ -2796,7 +2630,12 @@ PLAN_REVIEW_INSTRUCTION = (
 
 
 def render_plan_for_review(sub_topics: Sequence[SubTopic]) -> str:
-    """Print a plan as the review request sees it, ids and all."""
+    """Print a plan as the review request sees it, ids and all.
+
+    Each target prints its id, whether the question names it, its question,
+    and the fields a program checks an answer against — ``none`` for an empty
+    one, so a missing measure is visible to the reviewer rather than blank.
+    """
     lines: list[str] = []
     for sub_topic in sub_topics:
         lines.append(
@@ -2807,12 +2646,22 @@ def render_plan_for_review(sub_topics: Sequence[SubTopic]) -> str:
         lines.append(f"  queries: {'; '.join(sub_topic.search_queries)}")
         lines.append(f"  criteria: {'; '.join(sub_topic.success_criteria)}")
         for target in sub_topic.evidence_targets:
-            criticality = "critical" if target.critical else "supporting"
+            requiredness = "required" if target.required else "optional"
             lines.append(
-                f"  {target.target_id} [{criticality}]: {target.question}"
+                f"  {target.target_id} [{requiredness}]: {target.question}"
+            )
+            fields = (
+                ("measure", target.measure),
+                ("unit", target.unit_dimension),
+                ("period", target.period),
+                ("kind", target.kind),
+                ("organisation", target.organisation),
             )
             lines.append(
-                f"    dimensions: {'; '.join(target.required_dimensions)}"
+                "    fields: "
+                + "; ".join(
+                    f"{name} {value or 'none'}" for name, value in fields
+                )
             )
     return "\n".join(lines)
 
@@ -2989,7 +2838,7 @@ def _raised_problems(
 
 
 class PlannerAgent(BaseAgent[ResearchPlan]):
-    """Convert ``original_question`` into 3-7 distinct, prioritized sub-topics.
+    """Convert ``original_question`` into 1-7 distinct, prioritized sub-topics.
 
     The ReAct loop is for scoping only — the session's own startup recall is
     the planner's single procedural lookup, and ``web_search`` is available

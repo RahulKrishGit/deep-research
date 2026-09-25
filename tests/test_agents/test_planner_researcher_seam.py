@@ -131,6 +131,7 @@ def _plan_draft() -> ResearchPlanDraft:
                     EvidenceTargetDraft(
                         question="Which United States instrument settles "
                         f"{title.lower()}?",
+                        required=True,
                         measure=f"the binding rule for {title.lower()}",
                     )
                 ],

@@ -1610,8 +1610,12 @@ def _planner_draft(*titles: str) -> ResearchPlanDraft:
                         # cycle and the scripted replies would no longer line
                         # up with the calls.
                         question=f"What does {title} measure?",
-                        required_dimensions=[f"measure: {title}"],
-                        critical=index == 1,
+                        # The question names each of these three parts, so
+                        # every obligation is required (Task 5.2: the draft's
+                        # own flag replaces ``critical``, which never decided
+                        # ``required`` for a target no hygiene rule touched).
+                        required=True,
+                        measure=title,
                     )
                 ],
             )

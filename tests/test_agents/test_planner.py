@@ -40,7 +40,7 @@ from deep_research.agents.planner import (
     target_problems,
     validate_plan_draft,
 )
-from deep_research.agents.prompts import AgentTask
+from deep_research.agents.prompts import AgentTask, STRUCTURED_REQUEST_END
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
 from deep_research.cli import render_warnings
 from deep_research.graph.state import HALTING_ERROR_TYPES, is_halted
@@ -78,17 +78,12 @@ from tests.research_fakes import (
 def _target(
     question: str = "What benchmark result does Alpha report?",
     *,
-    dimensions: list[str] | None = None,
-    critical: bool = True,
+    required: bool = True,
+    measure: str = "benchmark result",
+    **fields: str,
 ) -> EvidenceTargetDraft:
     return EvidenceTargetDraft(
-        question=question,
-        required_dimensions=(
-            ["measure: benchmark result", "period: most recent reported year"]
-            if dimensions is None
-            else dimensions
-        ),
-        critical=critical,
+        question=question, required=required, measure=measure, **fields
     )
 
 
@@ -153,7 +148,7 @@ def _run(*, observation: str | None = None, answer: str | None = None) -> ReActR
 
 
 def test_plan_size_bounds_match_the_spec() -> None:
-    assert MIN_SUB_TOPICS == 3
+    assert MIN_SUB_TOPICS == 1
     assert MAX_SUB_TOPICS == 7
 
 
@@ -175,16 +170,14 @@ def test_an_empty_plan_is_rejected() -> None:
 
     assert sub_topics == []
     assert problems == [
-        "the plan has 0 valid sub-topics; produce between 3 and 7"
+        "the plan has 0 valid sub-topics; produce between 1 and 7"
     ]
 
 
-def test_a_plan_with_too_few_sub_topics_is_rejected() -> None:
-    _, problems = validate_plan_draft(_plan("Alpha", "Beta"))
+def test_a_one_part_plan_is_valid() -> None:
+    _, problems = validate_plan_draft(_plan("Alpha"))
 
-    assert problems == [
-        "the plan has 2 valid sub-topics; produce between 3 and 7"
-    ]
+    assert problems == []
 
 
 def test_a_plan_with_too_many_sub_topics_is_rejected() -> None:
@@ -193,7 +186,7 @@ def test_a_plan_with_too_many_sub_topics_is_rejected() -> None:
     )
 
     assert problems == [
-        "the plan has 8 valid sub-topics; produce between 3 and 7"
+        "the plan has 8 valid sub-topics; produce between 1 and 7"
     ]
 
 
@@ -228,7 +221,6 @@ def test_a_sub_topic_missing_its_queries_is_reported_by_field() -> None:
     assert [sub_topic.title for sub_topic in sub_topics] == ["Beta", "Gamma"]
     assert problems == [
         "sub-topic 1 is invalid: check these fields: search_queries",
-        "the plan has 2 valid sub-topics; produce between 3 and 7",
     ]
 
 
@@ -339,7 +331,7 @@ def test_a_repair_pass_produces_the_same_ids_for_the_same_ordered_titles() -> No
     repaired_sub_topics, repaired_problems = validate_plan_draft(repaired)
 
     assert rejected_problems == [
-        "the plan has 8 valid sub-topics; produce between 3 and 7"
+        "the plan has 8 valid sub-topics; produce between 1 and 7"
     ]
     assert repaired_problems == []
     kept = {
@@ -382,7 +374,7 @@ def test_plan_messages_carry_question_notes_and_requirements() -> None:
     assert "2 finding(s) recalled from previous sessions:" in body
     assert "- web_search succeeded: 3 results" in body
     assert "- Enough." in body
-    assert "between 3 and 7" in body
+    assert "between 1 and 7" in body
     assert "# Repair" not in body
 
 
@@ -404,11 +396,11 @@ def test_plan_messages_append_the_repair_section_only_when_given() -> None:
 
 
 def test_the_validated_plan_enforces_its_own_size_bounds() -> None:
-    sub_topics, _ = validate_plan_draft(_plan("Alpha", "Beta", "Gamma"))
+    one_part, _ = validate_plan_draft(_plan("Alpha"))
 
-    assert ResearchPlan(sub_topics=sub_topics).repair_attempted is False
+    assert ResearchPlan(sub_topics=one_part).repair_attempted is False
     with pytest.raises(ValidationError):
-        ResearchPlan(sub_topics=sub_topics[:1])
+        ResearchPlan(sub_topics=[])
 
 
 def _state(
@@ -538,8 +530,8 @@ def _raw_draft(**overrides: object) -> dict[str, object]:
         "evidence_targets": [
             {
                 "question": "What benchmark result does Alpha report?",
-                "required_dimensions": ["measure: benchmark result"],
-                "critical": True,
+                "required": True,
+                "measure": "benchmark result",
             }
         ],
     }
@@ -1084,7 +1076,6 @@ async def test_a_redundant_plan_is_repaired_once_and_then_accepted(
     repair_body = completer.calls[-2][2][1].content
     assert "# Repair" in repair_body
     assert "repeat the same title" in repair_body
-    assert "produce between 3 and 7" in repair_body
 
 
 @pytest.mark.asyncio
@@ -1100,7 +1091,10 @@ async def test_a_plan_that_stays_invalid_fails_the_session(
     """
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
-        outputs=[ResearchPlanDraft(sub_topics=[]), _plan("Only one")],
+        outputs=[
+            ResearchPlanDraft(sub_topics=[]),
+            _plan("A", "B", "C", "D", "E", "F", "G", "H"),
+        ],
     )
     agent = _planner(tracker, completer)
 
@@ -1109,8 +1103,8 @@ async def test_a_plan_that_stays_invalid_fails_the_session(
             await agent.run(_state())
 
     assert failure.value.problems == (
-        "draft: the plan has 0 valid sub-topics; produce between 3 and 7",
-        "repair: the plan has 1 valid sub-topics; produce between 3 and 7",
+        "draft: the plan has 0 valid sub-topics; produce between 1 and 7",
+        "repair: the plan has 8 valid sub-topics; produce between 1 and 7",
     )
 
 
@@ -1322,7 +1316,7 @@ async def test_the_lint_repair_request_carries_unlabelled_problems(
 
     repair_request = completer.calls[1][2][1].content
     assert repair_request.split("# Repair\n", 1)[1].split(
-        "\n\n# Reply format", 1
+        f"\n\n{STRUCTURED_REQUEST_END}", 1
     )[0] == (
         "The previous plan was rejected. Fix every problem listed below and "
         "return a corrected plan.\n"
@@ -1749,7 +1743,10 @@ def test_planner_regression_plan_instruction_names_no_support_policy() -> None:
         part for example in _PLAN_REPLY_EXAMPLES for part in example
     )
     assert "not a second publisher where one issuer settles the fact" in rendered
-    assert "unless the question itself asks for that date" in rendered
+    assert (
+        "A target never asks for a publication date, retrieval date or "
+        "edition as its measure" in rendered
+    )
 
 
 # --- Task 2: answer-shaped, scoped, feasible, production-configured plans ----
@@ -1882,7 +1879,7 @@ def test_a_naive_clock_is_rejected_at_construction(tracker: Tracker) -> None:
         )
 
 
-def test_targets_carry_locally_stamped_ids_and_the_contract_dimensions() -> None:
+def test_targets_carry_locally_stamped_ids() -> None:
     contract = _contract("What are the current interconnection constraints?")
     sub_topics, problems = validate_plan_draft(
         ResearchPlanDraft(
@@ -1911,79 +1908,9 @@ def test_targets_carry_locally_stamped_ids_and_the_contract_dimensions() -> None
     first = stamped[0].evidence_targets[0]
     assert first.coverage_id == "topic-01"
     assert first.required is True
-    assert first.critical is True
-    assert any(
-        dimension.startswith("evidence period:")
-        for dimension in first.required_dimensions
-    )
-    assert any(
-        dimension.startswith("geography:") for dimension in first.required_dimensions
-    )
-    assert any(
-        dimension.startswith("answer form:") for dimension in first.required_dimensions
-    )
+    # The draft's own fields stand: the contract no longer adds a dimension.
+    assert first.measure == "benchmark result"
     assert target_problems(stamped, contract) == []
-
-def test_audit_battery_plan_stamps_only_dischargeable_dimensions() -> None:
-    """A required published unit or facility definition must be dischargeable.
-
-    The plan's own ``Unit`` and ``Definition: …`` spellings are resolved into
-    the vocabulary the later checks read — a definition ask becomes a
-    ``measure: …`` obligation, and a publisher's unit ask stays ``unit`` — and
-    the contract's own three dimensions are appended, so no stamped obligation
-    is left in a spelling nothing can match.
-    """
-    contract = _contract(
-        "How much grid-scale battery storage capacity was added in the "
-        "United States in 2024, and what do the latest forecasts project for 2025?"
-    )
-    topic = SubTopic(
-        coverage_id="topic-01",
-        title="EIA 2024 utility-scale battery storage additions",
-        rationale="Use the statistical agency's own published count.",
-        search_queries=["EIA battery storage 2024"],
-        success_criteria=["Report the agency figure and definition."],
-        priority=1,
-        evidence_targets=[
-            EvidenceTarget(
-                target_id="topic-01-target-01",
-                coverage_id="topic-01",
-                question="What 2024 US utility-scale battery storage capacity additions does EIA report?",
-                required_dimensions=[
-                    "measure: annual utility-scale battery storage capacity additions",
-                    "period: calendar year 2024",
-                    "unit: as published by EIA",
-                ],
-                required=True,
-                critical=True,
-            ),
-            EvidenceTarget(
-                target_id="topic-01-target-02",
-                coverage_id="topic-01",
-                question="Which facility types does EIA include in its utility-scale count?",
-                required_dimensions=[
-                    "definition: facility types included in EIA's utility-scale battery storage count"
-                ],
-                required=True,
-                critical=True,
-            ),
-        ],
-    )
-    stamped = apply_answer_contract([topic], contract)[0].evidence_targets
-    assert stamped[0].required_dimensions.count("unit") == 1
-    assert stamped[1].required_dimensions[0] == (
-        "measure: facility types included in EIA's utility-scale battery "
-        "storage count"
-    )
-    for target in stamped:
-        assert any(
-            dimension.startswith("evidence period:")
-            for dimension in target.required_dimensions
-        )
-        assert any(
-            dimension.startswith("answer form:")
-            for dimension in target.required_dimensions
-        )
 
 
 def test_an_unrequested_forecast_edition_requires_plan_repair() -> None:
@@ -2008,13 +1935,9 @@ def test_an_unrequested_forecast_edition_requires_plan_repair() -> None:
                     "edition project for 2025 US utility-scale battery storage "
                     "capacity additions?"
                 ),
-                required_dimensions=[
-                    "measure: projected annual utility-scale battery storage capacity additions",
-                    "period: calendar year 2025 as projected in the January 2025 EIA Short-Term Energy Outlook",
-                    "source: EIA Short-Term Energy Outlook, January 2025 edition",
-                ],
                 required=True,
-                critical=True,
+                measure="projected annual utility-scale battery storage capacity additions",
+                period="calendar year 2025 as projected in the January 2025 EIA Short-Term Energy Outlook",
             )
         ],
     )
@@ -2053,13 +1976,9 @@ def test_a_non_forecast_target_naming_a_project_noun_is_not_flagged() -> None:
                     "additions, counting projects larger than 1 MW, does "
                     "EIA report?"
                 ),
-                required_dimensions=[
-                    "measure: annual utility-scale battery storage capacity additions",
-                    "period: December 2024",
-                    "source: EIA",
-                ],
                 required=True,
-                critical=True,
+                measure="annual utility-scale battery storage capacity additions",
+                period="December 2024",
             )
         ],
     )
@@ -2097,13 +2016,9 @@ def test_a_period_requirements_own_quarter_is_not_flagged_as_a_vintage() -> None
                     "What does EIA's outlook project for battery storage "
                     "additions in the fourth quarter of 2025?"
                 ),
-                required_dimensions=[
-                    "measure: projected quarterly battery storage capacity additions",
-                    "period: Q4 2025",
-                    "source: EIA Short-Term Energy Outlook",
-                ],
                 required=True,
-                critical=True,
+                measure="projected quarterly battery storage capacity additions",
+                period="Q4 2025",
             )
         ],
     )
@@ -2143,12 +2058,8 @@ def test_a_month_of_year_edition_the_question_already_names_is_not_flagged() -> 
                     "2025 edition project for battery storage additions in "
                     "2025?"
                 ),
-                required_dimensions=[
-                    "measure: projected annual battery storage capacity additions",
-                    "source: EIA Short-Term Energy Outlook, January 2025 edition",
-                ],
                 required=True,
-                critical=True,
+                measure="projected annual battery storage capacity additions",
             )
         ],
     )
@@ -2185,13 +2096,9 @@ def test_a_forecast_verb_naming_no_edition_is_not_flagged() -> None:
                     "What battery storage capacity does EIA project the "
                     "grid will add by the end of 2025?"
                 ),
-                required_dimensions=[
-                    "measure: annual battery storage capacity additions",
-                    "period: December 2025",
-                    "source: EIA",
-                ],
                 required=True,
-                critical=True,
+                measure="annual battery storage capacity additions",
+                period="December 2025",
             )
         ],
     )
@@ -2213,14 +2120,6 @@ def test_audit2_forecast_vintages_stay_flagged() -> None:
         "United States in 2024, and what do the latest forecasts project "
         "for 2025?"
     )
-    evidence_period = (
-        "evidence period: the period the question names (2024, 2025); "
-        "answer that period from the latest evidence available as of "
-        "2026-09-24 \u2014 a projection is reported as a forecast with its "
-        "issuer and release vintage and a published outcome as an actual "
-        "\u2014 and never substitute today's figures for the period the "
-        "question names"
-    )
     topic_02 = SubTopic(
         coverage_id="topic-02",
         title="EIA 2025 forecast vintage",
@@ -2238,16 +2137,9 @@ def test_audit2_forecast_vintages_stay_flagged() -> None:
                     "storage capacity additions, in the unit that edition "
                     "reports?"
                 ),
-                required_dimensions=[
-                    "measure: projected annual utility-scale battery storage capacity additions",
-                    "period: calendar year 2025 as projected in the January 2025 EIA Short-Term Energy Outlook",
-                    "geography: United States",
-                    "source: EIA Short-Term Energy Outlook, January 2025 edition",
-                    "answer form: the specific fact asked for, with its value, unit, and the date the value applies to",
-                    evidence_period,
-                ],
                 required=True,
-                critical=True,
+                measure="projected annual utility-scale battery storage capacity additions",
+                period="calendar year 2025 as projected in the January 2025 EIA Short-Term Energy Outlook",
             )
         ],
     )
@@ -2267,16 +2159,9 @@ def test_audit2_forecast_vintages_stay_flagged() -> None:
                     "edition project for 2025 US grid-scale battery storage "
                     "capacity additions, in the unit that edition reports?"
                 ),
-                required_dimensions=[
-                    "measure: projected annual grid-scale battery storage capacity additions",
-                    "period: calendar year 2025 as projected in the Q1 2025 US Energy Storage Monitor",
-                    "geography: United States",
-                    "source: freely reachable US Energy Storage Monitor Q1 2025 summary or press release published by the American Clean Power Association or Wood Mackenzie",
-                    "answer form: the specific fact asked for, with its value, unit, and the date the value applies to",
-                    evidence_period,
-                ],
                 required=True,
-                critical=True,
+                measure="projected annual grid-scale battery storage capacity additions",
+                period="calendar year 2025 as projected in the Q1 2025 US Energy Storage Monitor",
             )
         ],
     )
@@ -2309,13 +2194,13 @@ def test_a_threshold_question_is_not_a_comparison(
 ) -> None:
     """A bare inequality is a threshold, not a comparison.
 
-    The comparison answer form ("the same measured dimension for every option
-    in the comparison, on one shared basis and unit") is stamped into every
-    target's binding dimensions, and Section 2.3 judges a target answered only
-    when those dimensions are satisfied. Stamping it onto "how many projects
-    waited more than 5 years?" makes an ordinary quantity question
-    unsatisfiable, so an inequality counts as a comparison only when it names a
-    referent.
+    The comparison answer form — "the same dimension, measured or described,
+    for every option compared, on one shared basis" — is printed in the
+    answer contract every plan request carries, and Section 2.3 judges a
+    target answered only when the obligations that contract states are
+    satisfied. Applying it to "how many projects waited more than 5 years?"
+    makes an ordinary quantity question unsatisfiable, so an inequality counts
+    as a comparison only when it names a referent.
     """
     assert answer_kind_for(question, clock_year=2026) == expected
 
@@ -3183,7 +3068,8 @@ async def test_a_stale_anchor_in_a_plan_is_reported_and_repaired_not_accepted(
 
     The first plan is rejected for anchoring currency to 2024 in a September
     2026 session; the repair asks for the latest available evidence, and the
-    obligation the reader ends up bound by names the run clock's date.
+    session's frozen contract — printed into the plan request — is what names
+    the run clock's date.
     """
     stale = ResearchPlanDraft(
         sub_topics=[
@@ -3221,17 +3107,16 @@ async def test_a_stale_anchor_in_a_plan_is_reported_and_repaired_not_accepted(
     assert "anchors currency to 2024" in repair_request
     assert "ask for the latest available evidence instead" in repair_request
 
+    # What binds the reader is the contract the plan request prints, not a
+    # dimension stamped onto a target (Task 5.2 stamps only the id and
+    # ``required``): the session's own as-of date and evidence period.
+    plan_request = completer.calls[0][2][1].content
+    assert (
+        "- Evidence period: the latest available evidence as of 2026-09-16"
+        in plan_request
+    )
     for sub_topic in outcome.result.sub_topics:
         for target in sub_topic.evidence_targets:
-            period = [
-                dimension
-                for dimension in target.required_dimensions
-                if dimension.startswith("evidence period:")
-            ]
-            assert period == [
-                "evidence period: the latest available evidence as of "
-                "2026-09-16; a fixed earlier year is not a current answer"
-            ]
             assert "2024" not in target.question
 
 
@@ -3786,7 +3671,12 @@ async def test_the_planning_request_carries_the_frozen_contract_and_its_obligati
     assert "the period the question names (2021)" in plan_request
     assert "never substitute today's figures" in plan_request
     assert "between 1 and 4 evidence_targets" in plan_request
-    assert "2024" not in plan_request
+    # What the session plans from names the question's own year and the frozen
+    # contract's date, and nothing else. (The static sections quote "added in
+    # 2024" as an example of a bounded window and carry hypothetical reply
+    # examples, so only the material that follows them is read here.)
+    material = plan_request.split("# Research question\n", 1)[1]
+    assert "2024" not in material
 
 
 @pytest.mark.asyncio
@@ -4013,17 +3903,15 @@ def test_the_inventory_excludes_the_reserved_omission_reference() -> None:
         target_id="topic-03-target-01",
         coverage_id="topic-03",
         question=ORIGINAL_QUESTION_OMISSION_REFERENCE,
-        required_dimensions=["original question coverage"],
         required=True,
-        critical=True,
+        measure="original question coverage",
     )
     real = EvidenceTarget(
         target_id="topic-03-target-02",
         coverage_id="topic-03",
         question="What does the third topic report?",
-        required_dimensions=["fact"],
         required=True,
-        critical=False,
+        measure="fact",
     )
     sub_topic = SubTopic(
         coverage_id="topic-03",
@@ -4076,12 +3964,12 @@ async def test_a_second_planning_pass_cannot_re_anchor_the_frozen_contract(
     assert outcome.result.answer_contract == frozen
     assert outcome.result.answer_contract.geographic_scope == "United States"
     assert outcome.result.answer_contract.as_of_date == "2026-09-16"
-    # Every newly stamped obligation carries the frozen period and geography.
-    for sub_topic in outcome.result.sub_topics:
-        for target in sub_topic.evidence_targets:
-            assert "geography: United States" in target.required_dimensions
+    # Every newly stamped obligation is planned inside the frozen contract,
+    # which the request prints: the plan no longer restates its scope or date
+    # on a target (Task 5.2 stamps only the id and ``required``).
     plan_request = completer.calls[0][2][1].content
     assert "- Scope: United States" in plan_request
+    assert "- As of: 2026-09-16" in plan_request
 
 
 def test_a_frozen_contract_is_returned_unchanged_and_nothing_is_filled() -> None:
@@ -4302,36 +4190,14 @@ def _stamped(question: str, target: EvidenceTargetDraft) -> EvidenceTarget:
 
 
 # The target the run's plan gave the forecast's publication date. Its own
-# dimension is a metadata obligation the question never asks for, and
+# measure is a metadata obligation the question never asks for, and
 # ``dimension_is_answered`` refuses metadata the question did not ask about —
 # so no claim could ever be bound to it (replay C10).
 _FORECAST_DATE_TARGET = _target(
     "When was the latest forecast document published?",
-    dimensions=[
-        "measure: publication date of the forecast document",
-        "period: latest vintage available on or before 2025-12-31",
-        "source: the forecast publication's cover page or release notice",
-    ],
-    critical=True,
+    measure="publication date of the forecast document",
+    period="latest vintage available on or before 2025-12-31",
 )
-
-
-# The recorded ``topic-01-target-01`` from the 1-iteration run, verbatim: the
-# question, the four dimensions the model proposed, and the ``independent_pair``
-# it proposed with them. Its figure is one agency's own inventory — no second
-# body measures that addition on the same basis — and the policy stamped here
-# decided whether the whole run could be accepted (review rank 2).
-_RECORDED_ADDITION_QUESTION = (
-    "How much battery storage capacity, in megawatts, was added at grid "
-    "scale in the United States in 2024?"
-)
-_RECORDED_ADDITION_DIMENSIONS = [
-    "measure: battery storage capacity added, in megawatts",
-    "period: calendar year 2024",
-    "geography: United States",
-    "source: the federal energy statistical agency's published capacity data "
-    "and, independently, an industry energy-storage market tracker",
-]
 
 
 def _one_topic_plan(
@@ -4362,7 +4228,7 @@ def _one_topic_plan(
 
 _MEASURED_TARGET = _target(
     "How much capacity was added in 2024?",
-    dimensions=["measure: battery storage capacity added, in MW"],
+    measure="battery storage capacity added, in MW",
 )
 
 
@@ -4415,11 +4281,7 @@ def test_a_compound_target_question_is_named() -> None:
         target=_target(
             "Which documented risks does each option carry, and by which "
             "issuer?",
-            dimensions=[
-                "measure: documented risk",
-                "source: the issuing authority",
-                "geography: the city",
-            ],
+            measure="documented risk",
         ),
     )
 
@@ -4441,11 +4303,7 @@ def test_an_atomic_target_question_is_not_named() -> None:
         criteria=["A figure is quoted."],
         target=_target(
             "Which documented risks does each option carry?",
-            dimensions=[
-                "measure: documented risk",
-                "source: the issuing authority",
-                "geography: the city",
-            ],
+            measure="documented risk",
         ),
     )
 
@@ -4453,158 +4311,6 @@ def test_an_atomic_target_question_is_not_named() -> None:
         problem
         for problem in target_problems(stamped, _contract(question))
         if "questions at once" in problem
-    ] == []
-
-
-def test_a_source_requirement_that_names_two_bodies_is_named_for_a_split() -> None:
-    """The recorded source dimension: an official statistic *and* a tracker.
-
-    Two bodies publishing differently scoped figures are two measurements, and
-    the floor stamps the target ``primary_attribution`` — so one target cannot
-    carry both: the plan is told to give each issuer its own target (review
-    rank 2, user decision 1).
-    """
-    stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
-        title="Reported additions",
-        criteria=["The 2024 addition is stated with its issuer."],
-        target=_target(
-            _RECORDED_ADDITION_QUESTION,
-            dimensions=[
-                "measure: battery storage capacity added, in megawatts",
-                "period: calendar year 2024",
-                "geography: United States",
-                "source: the federal energy statistical agency's published "
-                "capacity data and, independently, an industry "
-                "energy-storage market tracker",
-            ],
-        ),
-    )
-
-    named = [
-        problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
-        if "one target per issuer" in problem
-    ]
-
-    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
-
-
-def test_a_source_requirement_that_names_one_body_is_not_named() -> None:
-    """The control: one body's own series is one source, and one target."""
-    stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
-        title="Reported additions",
-        criteria=["The 2024 addition is stated with its issuer."],
-        target=_target(
-            _RECORDED_ADDITION_QUESTION,
-            dimensions=[
-                "measure: battery storage capacity added, in megawatts",
-                "period: calendar year 2024",
-                "geography: United States",
-                "source: the federal energy statistical agency's published "
-                "capacity data",
-            ],
-        ),
-    )
-
-    assert [
-        problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
-        if "one target per issuer" in problem
-    ] == []
-
-
-def test_a_paywalled_only_target_is_planned_optional_with_an_advisory() -> None:
-    """A subscription page cannot be read, so the target is planned optional.
-
-    The plan added a target whose only named source is a sold analyst
-    outlook. Demanding it as required would leave a required, unanswerable
-    obligation on the frozen inventory — an unanswered required target fails
-    acceptance unless the acquisition trail shows a denied URL or two empty
-    searches (review rank 4) — so it is planned optional here, with an
-    advisory naming why (change 6).
-    """
-    stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
-        title="Analyst outlooks",
-        criteria=["A projected 2025 addition is stated with its issuer."],
-        target=_target(
-            "What 2025 addition does S&P Global's latest outlook project?",
-            dimensions=[
-                "measure: projected battery storage capacity additions, in "
-                "megawatts",
-                "period: forecast year 2025",
-                "source: S&P Global's latest published outlook",
-            ],
-            critical=False,
-        ),
-    )
-
-    (target,) = stamped[0].evidence_targets
-    assert target.required is False
-
-    named = [
-        problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
-        if "behind a paywall" in problem
-    ]
-
-    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
-
-
-def test_a_reachable_required_target_is_not_named() -> None:
-    """The control: a published outlook the researcher can actually read."""
-    stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
-        title="Published outlooks",
-        criteria=["A projected 2025 addition is stated with its issuer."],
-        target=_target(
-            "What 2025 addition does the agency's latest published outlook "
-            "project?",
-            dimensions=[
-                "measure: projected battery storage capacity additions, in "
-                "megawatts",
-                "period: forecast year 2025",
-                "source: the federal energy statistical agency's latest "
-                "published outlook",
-            ],
-        ),
-    )
-
-    (target,) = stamped[0].evidence_targets
-    assert target.required is True
-    assert [
-        problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
-        if "behind a paywall" in problem
-    ] == []
-
-
-def test_a_paywalled_outlook_beside_a_public_source_is_not_named() -> None:
-    """A source requirement that also names a free publication is reachable."""
-    stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
-        title="Analyst outlooks",
-        criteria=["A projected 2025 addition is stated with its issuer."],
-        target=_target(
-            "What 2025 addition is projected for battery storage?",
-            dimensions=[
-                "measure: projected battery storage capacity additions, in "
-                "megawatts",
-                "period: forecast year 2025",
-                "source: S&P Global's latest outlook, or the federal energy "
-                "statistical agency's published capacity data",
-            ],
-        ),
-    )
-
-    (target,) = stamped[0].evidence_targets
-    assert target.required is True
-    assert [
-        problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
-        if "behind a paywall" in problem
     ] == []
 
 
@@ -4616,9 +4322,8 @@ def test_an_energy_measure_the_capacity_question_never_named_is_optional() -> (
     ``_AUDIT_QUESTION`` asks "how much ... capacity was added"; a target that
     asks for MWh answers a measure the question never named, and no claim
     about capacity can discharge it. Demanding it as required would leave a
-    required, unanswerable obligation on the frozen inventory the same way a
-    paywalled-only source does, so it is planned optional here too, with an
-    advisory naming why (change 6).
+    required, unanswerable obligation on the frozen inventory, so it is
+    planned optional here, with an advisory naming why (change 6).
     """
     stamped = _one_topic_plan(
         _AUDIT_QUESTION,
@@ -4627,13 +4332,9 @@ def test_an_energy_measure_the_capacity_question_never_named_is_optional() -> (
         target=_target(
             "How much energy did EIA report added to battery storage in "
             "2024, in megawatt-hours?",
-            dimensions=[
-                "measure: annual battery storage energy additions, in MWh",
-                "period: calendar year 2024",
-                "source: the federal energy statistical agency's published "
-                "inventory",
-            ],
-            critical=False,
+            required=False,
+            measure="annual battery storage energy additions, in MWh",
+            period="calendar year 2024",
         ),
     )
 
@@ -4657,12 +4358,8 @@ def test_a_capacity_measure_the_question_asked_for_is_not_named() -> None:
         target=_target(
             "How much capacity did EIA report added to battery storage in "
             "2024, in megawatts?",
-            dimensions=[
-                "measure: annual battery storage capacity additions, in MW",
-                "period: calendar year 2024",
-                "source: the federal energy statistical agency's published "
-                "inventory",
-            ],
+            measure="annual battery storage capacity additions, in MW",
+            period="calendar year 2024",
         ),
     )
 
@@ -4690,12 +4387,8 @@ def test_an_energy_measure_an_energy_question_names_is_not_downgraded() -> (
         target=_target(
             "How much energy did EIA report added to battery storage in "
             "2024, in megawatt-hours?",
-            dimensions=[
-                "measure: annual battery storage energy additions, in MWh",
-                "period: calendar year 2024",
-                "source: the federal energy statistical agency's published "
-                "inventory",
-            ],
+            measure="annual battery storage energy additions, in MWh",
+            period="calendar year 2024",
         ),
     )
 
@@ -4730,13 +4423,8 @@ def test_a_question_naming_energy_duration_or_hours_in_words_is_not_downgraded(
         target=_target(
             "How much energy did EIA report added to battery storage in "
             "2024, in megawatt-hours?",
-            dimensions=[
-                "measure: annual battery storage energy additions, in MWh",
-                "period: calendar year 2024",
-                "source: the federal energy statistical agency's published "
-                "inventory",
-            ],
-            critical=False,
+            measure="annual battery storage energy additions, in MWh",
+            period="calendar year 2024",
         ),
     )
 
@@ -4749,87 +4437,13 @@ def test_a_question_naming_energy_duration_or_hours_in_words_is_not_downgraded(
     ] == []
 
 
-def test_a_critical_paywalled_target_stays_required_with_an_advisory() -> None:
-    """P2: a critical obligation is never silently downgraded to optional.
-
-    The model's own judgement that the question cannot be answered without
-    this obligation overrides the hygiene heuristic (``required = target.
-    critical or not (downgrade conditions)``); the advisory still names the
-    tension so a reviewer can act on it.
-    """
-    stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
-        title="Analyst outlooks",
-        criteria=["A projected 2025 addition is stated with its issuer."],
-        target=_target(
-            "What 2025 addition does S&P Global's latest outlook project?",
-            dimensions=[
-                "measure: projected battery storage capacity additions, in "
-                "megawatts",
-                "period: forecast year 2025",
-                "source: S&P Global's latest published outlook",
-            ],
-            critical=True,
-        ),
-    )
-
-    (target,) = stamped[0].evidence_targets
-    assert target.critical is True
-    assert target.required is True
-
-    named = [
-        problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
-        if "behind a paywall" in problem
-    ]
-    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
-
-
-def test_a_critical_unrequested_energy_measure_target_stays_required_with_an_advisory() -> (
-    None
-):
-    """P2, the energy-measure half: critical still wins over the hygiene rule."""
-    stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
-        title="EIA additions",
-        criteria=["The energy added in 2024 is stated with its issuer."],
-        target=_target(
-            "How much energy did EIA report added to battery storage in "
-            "2024, in megawatt-hours?",
-            dimensions=[
-                "measure: annual battery storage energy additions, in MWh",
-                "period: calendar year 2024",
-                "source: the federal energy statistical agency's published "
-                "inventory",
-            ],
-            critical=True,
-        ),
-    )
-
-    (target,) = stamped[0].evidence_targets
-    assert target.critical is True
-    assert target.required is True
-
-    named = [
-        problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
-        if "energy figure" in problem
-    ]
-    assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
-
-def test_the_plan_example_the_model_is_shown_passes_every_plan_check() -> None:
-    """The one-shot example is a plan the planner itself would accept.
-
-    An example the planner's own checks reject teaches the defect the check
-    exists to catch: this one modelled a scope-widening "benefits and risks"
-    sub-topic and a compound target no plan may carry.
-    """
-    label, payload = _PLAN_REPLY_EXAMPLES[0]
+@pytest.mark.parametrize(("label", "payload"), _PLAN_REPLY_EXAMPLES)
+def test_every_plan_example_the_model_is_shown_passes_every_plan_check(
+    label: str, payload: str
+) -> None:
+    """Each example is a plan the planner would accept (D10: two shapes, neither the benchmark's)."""
     question = label.split("Example input:", 1)[1].strip().rstrip(".")
-    draft = ResearchPlanDraft.model_validate_json(payload)
-
-    sub_topics, problems = validate_plan_draft(draft)
-
+    sub_topics, problems = validate_plan_draft(ResearchPlanDraft.model_validate_json(payload))
     assert problems == []
     assert target_problems(sub_topics, _contract(question)) == []
 
@@ -4844,11 +4458,10 @@ _LIVE_FORECAST_TARGET_QUESTION = (
 )
 
 
-def _structured_draft(**overrides: str) -> SubTopicDraft:
-    fields = dict(
+def _structured_draft(**overrides: object) -> SubTopicDraft:
+    fields: dict[str, object] = dict(
         question="How much battery storage capacity did EIA report added in the U.S. in 2024?",
-        required_dimensions=["measure: battery storage capacity added"],
-        critical=True,
+        required=True,
         measure="battery storage power capacity added",
         unit_dimension="power",
         period="2024",
@@ -4872,12 +4485,12 @@ def test_draft_targets_carry_the_structured_fields() -> None:
     assert target.organisation == "U.S. Energy Information Administration"
 
 
-def test_an_unknown_dimension_or_kind_is_stamped_empty() -> None:
+def test_an_unknown_kind_or_a_blank_organisation_is_stamped_empty() -> None:
     [target] = _draft_targets(
         _structured_draft(unit_dimension="volts", kind="estimate", organisation=" "),
         "topic-01",
     )
-    assert (target.unit_dimension, target.kind, target.organisation) == (None, None, None)
+    assert (target.unit_dimension, target.kind, target.organisation) == ("volts", None, None)
 
 
 def test_a_mixed_case_dimension_or_kind_is_folded_to_the_canonical_spelling() -> None:
@@ -4918,3 +4531,51 @@ def test_the_answer_contract_keeps_the_structured_fields() -> None:
         "United States",
         "U.S. Energy Information Administration",
     )
+
+
+def test_a_draft_target_without_a_measure_is_a_plan_problem() -> None:
+    draft = ResearchPlanDraft(
+        sub_topics=[
+            _draft("Topic 1", priority=1, evidence_targets=[_target(measure="")]),
+            _draft("Topic 2", priority=2),
+            _draft("Topic 3", priority=3),
+        ]
+    )
+    _, problems = validate_plan_draft(draft)
+    assert any("check these fields: measure" in problem for problem in problems)
+
+
+def test_the_answer_contract_adds_no_boilerplate_to_targets() -> None:
+    targets = _draft_targets(_structured_draft(), "topic-01")
+    topic = SubTopic(
+        coverage_id="topic-01", title="EIA 2024 additions", rationale="r",
+        search_queries=["q"], success_criteria=["c"], priority=1,
+        evidence_targets=targets,
+    )
+    [stamped] = apply_answer_contract([topic], _contract())
+    assert stamped.evidence_targets[0].model_dump() == targets[0].model_dump()
+
+
+def test_the_plan_instruction_states_the_floor() -> None:
+    for phrase in ("one target per organisation, measure, period and kind",
+                   "required only for what the question names",
+                   "optional", "paywalled"):
+        assert phrase in PLAN_INSTRUCTION
+
+
+def test_the_models_required_flag_is_what_the_plan_stamps() -> None:
+    [optional] = _draft_targets(_structured_draft(required=False), "topic-01")
+    [required] = _draft_targets(_structured_draft(), "topic-01")
+    assert (optional.required, required.required) == (False, True)
+
+
+def test_an_open_dimension_word_survives_stamping() -> None:
+    [target] = _draft_targets(_structured_draft(unit_dimension=" Currency "), "topic-01")
+    assert target.unit_dimension == "currency"
+
+
+def test_the_plan_request_puts_its_requirements_before_the_question() -> None:
+    body = plan_messages(AgentTask(instruction="Why did ferry fares rise?"), _run())[1].content
+    assert body.startswith("# Plan requirements\n")
+    assert body.index("# Reply format") < body.index("# Research question")
+    assert body.rstrip().endswith(STRUCTURED_REQUEST_END)
