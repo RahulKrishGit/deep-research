@@ -415,6 +415,39 @@ def test_short_access_shell_is_not_admitted_as_usable_evidence() -> None:
     )
 
 
+def test_a_scraped_page_date_is_threaded_onto_the_read_record() -> None:
+    """D14: the scraper's own ``page_date`` reaches the read record it builds."""
+    result = ToolResult(
+        tool_name="web_scraper",
+        success=True,
+        data={
+            "url": _EIA_PAGE_URL,
+            "requested_url": _EIA_PAGE_URL,
+            "resolved_url": _EIA_PAGE_URL,
+            "title": _EIA_PAGE_TITLE,
+            "text": _eia_page_body(),
+            "extraction_complete": True,
+            "page_date": "2026-09-17",
+        },
+        latency_ms=0,
+    )
+
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+
+    assert read is not None
+    assert read.page_date == "2026-09-17"
+
+
+def test_a_read_with_no_page_date_leaves_the_field_unset() -> None:
+    """Never invent a date: a payload that names none stores none."""
+    read = build_read_record_from_tool_result(
+        _eia_web_result(), session_id="session-1"
+    )
+
+    assert read is not None
+    assert read.page_date is None
+
+
 # The navigation block, the solar paragraph, and the battery-storage paragraph
 # of the EIA Today in Energy page the audited run read (detail.php?id=64586),
 # in the page's own order: site navigation and a headline first, the figure
@@ -1281,6 +1314,31 @@ def test_a_served_error_page_is_recorded_unusable_and_never_scored() -> None:
     assert policy.reads == {}
     assert policy.evidence == {}
     assert policy.state.candidate_records[_ERROR_PAGE_URL].status == "unusable"
+
+
+def test_an_unusable_candidate_records_its_denial_reason() -> None:
+    """I2: a candidate the run could not use names why it could not, not just
+    that it could not, so the report can disclose unreachable pages."""
+    policy = _gateway_policy(candidate_urls=[_ERROR_PAGE_URL], remaining_calls=2)
+
+    policy.after_action(_web_step(_error_page_result(), _ERROR_PAGE_URL))
+
+    assert (
+        policy.state.candidate_records[_ERROR_PAGE_URL].denial_reason
+        == "unusable_error_page"
+    )
+
+
+def test_a_denied_candidate_records_its_denial_reason() -> None:
+    """I2: an access-refused candidate names the refusal (401/403/451-shaped),
+    so the report can disclose which pages were unreachable and why."""
+    url = "https://agency.example/blocked-report"
+    policy = _gateway_policy(candidate_urls=[url], remaining_calls=2)
+
+    policy.after_action(_denied_step(url))
+
+    assert policy.state.candidate_records[url].status == "denied"
+    assert policy.state.candidate_records[url].denial_reason == "access_denied"
 
 
 def test_a_handler_that_pads_its_body_is_still_refused_its_read() -> None:

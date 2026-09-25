@@ -1386,20 +1386,44 @@ def _is_referent_word(word: str, *, sentence_initial: bool) -> bool:
     return not sentence_initial
 
 
+# F5 (controller decision, ReRevResearcherR3 final round): unlike the
+# snippet, content's own sentence-initial word usually *is* the subject
+# ("Sony is the model to beat."), so it is excluded only when it names
+# nothing on its own: a closed-class word, this specific introductory
+# word ("According", followed by "to" rather than a comma), or a word a
+# comma sets off as a sentence adverb or introductory phrase ("Overall,",
+# "However,", "Meanwhile,").
+_CONTENT_INTRODUCTORY_WORDS = frozenset({"according"})
+
+
 def _content_names_a_referent(content: str) -> bool:
     """True when ``content`` itself names the judgement's subject.
 
-    Scanned the same way as the snippet's own prose: each sentence of
-    ``content`` excludes its own first word unless that word carries an
-    internal capital or a leading capital outside plain ASCII, because an
-    opening "Overall," or "According to reviewers," restates the nameless
-    judgement in different words and is exactly as uninformative as a
-    snippet's own sentence-initial word.
+    A sentence's first word counts as a referent unless it is a
+    closed-class word, a known introductory word, or immediately followed
+    by a comma; every other word counts exactly as the snippet's own does:
+    an internal capital or a leading capital outside plain ASCII always
+    names something, and a plain ASCII leading capital counts everywhere
+    but that first, ambiguous position.
     """
     for start, end in _sentence_spans(content):
         for index, word in enumerate(content[start:end].split()):
-            if _is_referent_word(word, sentence_initial=index == 0):
+            stripped = word.strip(_WORD_PUNCTUATION)
+            if not stripped or stripped.lower() in _SENTENCE_STARTER_WORDS:
+                continue
+            if any(character.isupper() for character in stripped[1:]):
                 return True
+            first = stripped[0]
+            if not first.isupper():
+                continue
+            if first not in _ASCII_UPPERCASE:
+                return True
+            if index == 0 and (
+                stripped.lower() in _CONTENT_INTRODUCTORY_WORDS
+                or word.endswith(",")
+            ):
+                continue
+            return True
     return False
 
 

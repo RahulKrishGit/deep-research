@@ -1980,9 +1980,12 @@ def _quoted_date(read: ReadRecord | None, claimed: object, *,
         return None
     if not excerpt_matches(_document_text(read), quote):
         return None
-    if publication and not _states_it_as_the_publication_date(read, quote):
+    stated = _stated_value(quote, value)
+    if stated is None:
         return None
-    return _stated_value(quote, value)
+    if publication and not _states_it_as_the_publication_date(read, quote, stated):
+        return None
+    return stated
 
 
 # A page states its own publication date with one of these words: "Published
@@ -2000,16 +2003,36 @@ _PUBLICATION_CUES = re.compile(
 _PUBLICATION_CUE_CHARS = 200
 
 
-def _states_it_as_the_publication_date(read: ReadRecord, quote: str) -> bool:
+def _is_day_precision_date(value: str) -> bool:
+    """True when ``value`` names a specific day, not a coarser year or month."""
+    match = _VALUE_DATE_PATTERN.match(value)
+    return match is not None and match.group("atom").count("-") == 2
+
+
+def _states_it_as_the_publication_date(
+    read: ReadRecord, quote: str, stated: str | None = None
+) -> bool:
     """True when the page states the quoted date as its own publication date.
 
     The cue may sit in the quote itself, or beside the date on the page, which
-    is where a model that quotes only the date leaves it.
+    is where a model that quotes only the date leaves it. A day-precision date
+    the page's own opening states needs no such word at all (D14): a byline
+    dated "Sep 17, 2026" at the top of a page is that page's own date the same
+    way the opening credits an author with no "published by" cue beside their
+    name (``_opening_credits_organisation``) -- but only there, in the page's
+    own opening, never from a day-precision date the page merely happens to
+    mention well past it.
     """
     if _PUBLICATION_CUES.search(quote):
         return True
     window = _windowed_passage(_document_text(read), quote, chars=_PUBLICATION_CUE_CHARS)
-    return bool(_PUBLICATION_CUES.search(window))
+    if _PUBLICATION_CUES.search(window):
+        return True
+    return bool(
+        stated is not None
+        and _is_day_precision_date(stated)
+        and excerpt_matches(_opening_credits(read), quote)
+    )
 
 
 def _temporal_claim(claimed: object) -> TemporalClaim | None:
@@ -2513,6 +2536,7 @@ def build_read_record(
     extraction_complete: bool = True,
     declared_content_sha256: str | None = None,
     target_ids: Sequence[str] = (),
+    page_date: str | None = None,
 ) -> ReadRecord:
     """Build the one admissible read record for a successful read.
 
@@ -2529,6 +2553,12 @@ def build_read_record(
     a document outright would throw away evidence that Section 2.1 admits (an
     exact excerpt with a locator from a successful same-run read), while
     letting it keep a digest would identify a work nobody fully read.
+
+    ``page_date`` (D14) is the page's own date, already normalised by the
+    reader that scraped it; a value that is not a real calendar date at the
+    year, year-month, or year-month-day precision this contract dates
+    everything at is dropped here rather than stored, the same refusal
+    ``_is_date_atom`` gives an impossible date read from a document's body.
     """
     if reader not in ("web_scraper", "document_reader"):
         raise EvidenceContractError(
@@ -2577,6 +2607,10 @@ def build_read_record(
             )
         content_sha256 = INCOMPLETE_CONTENT_SHA256
 
+    normalized_page_date = (page_date or "").strip()
+    if not (normalized_page_date and _is_date_atom(normalized_page_date)):
+        normalized_page_date = None
+
     return ReadRecord(
         read_id=build_read_id(
             session_id=session_id,
@@ -2588,6 +2622,7 @@ def build_read_record(
         requested_url=requested,
         resolved_url=resolved,
         title=" ".join(title.split()) or resolved,
+        page_date=normalized_page_date,
         reader=reader,
         retrieved_at=retrieved_at,
         content_sha256=content_sha256,

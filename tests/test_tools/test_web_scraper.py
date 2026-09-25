@@ -1114,3 +1114,135 @@ def test_scraper_constructor_rejects_invalid_limits(tracker) -> None:
         WebScraperTool(tracker, timeout_s=0)
     with pytest.raises(ValueError, match="max_retries"):
         WebScraperTool(tracker, max_retries=3)
+
+
+# ---------------------------------------------------------------------------
+# D14: the page's own date, captured once at scrape time.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scraper_captures_the_page_date_from_article_published_time_meta(
+    tracker,
+) -> None:
+    """A page's own ``article:published_time`` meta names its date."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta property="article:published_time" content="2026-09-17T10:00:00Z">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_date"] == "2026-09-17"
+
+
+@pytest.mark.asyncio
+async def test_scraper_falls_back_to_modified_time_meta_when_no_published_time(
+    tracker,
+) -> None:
+    """A page that names only when it was last edited still dates itself."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta property="article:modified_time" content="2026-08-01">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_date"] == "2026-08-01"
+
+
+@pytest.mark.asyncio
+async def test_scraper_captures_the_page_date_from_json_ld_inside_a_graph(
+    tracker,
+) -> None:
+    """``datePublished`` reached only by walking a JSON-LD ``@graph`` array."""
+    ld_json = json.dumps(
+        {
+            "@context": "https://schema.org",
+            "@graph": [
+                {"@type": "Organization", "name": "Example Lab"},
+                {"@type": "NewsArticle", "datePublished": "2026-09-17"},
+            ],
+        }
+    )
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        f'<script type="application/ld+json">{ld_json}</script>'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_date"] == "2026-09-17"
+
+
+@pytest.mark.asyncio
+async def test_scraper_captures_a_byline_date_in_the_opening_text_with_no_metadata(
+    tracker,
+) -> None:
+    """A byline in the page's own opening text, with no meta or JSON-LD.
+
+    Fable's run-3 case: the page carried its date nowhere but a byline
+    sentence in its opening text, and no date was ever captured for it.
+    """
+    page = (
+        "<html><head><title>Grid Storage Outlook</title></head><body>"
+        "<p>By Jane Doe. Published September 17, 2026.</p>"
+        "<p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_date"] == "2026-09-17"
+
+
+@pytest.mark.asyncio
+async def test_scraper_omits_the_page_date_key_when_the_page_states_none(
+    tracker,
+) -> None:
+    """Never invent a date: a page that carries none gets no key at all."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title></head><body>"
+        "<p>Battery storage capacity grew across every region this decade.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert "page_date" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_scraper_keeps_only_the_precision_the_page_states(tracker) -> None:
+    """A month with no day is recorded at that precision, never a guessed day."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta property="article:published_time" content="2026-09">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_date"] == "2026-09"
+
+
+@pytest.mark.asyncio
+async def test_scraper_refuses_an_impossible_calendar_date(tracker) -> None:
+    """Never invent a date: an impossible day is not salvaged into a month."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta property="article:published_time" content="2026-02-30">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert "page_date" not in result.data

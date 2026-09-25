@@ -249,6 +249,13 @@ class CandidateRecord(ContractModel):
     discovered_via: CandidateDiscovery
     status: AcquisitionStatus = "queued"
     read_id: str | None = None
+    denial_reason: str | None = None
+    """Why this candidate could not be opened (I2): an access refusal
+    (401/403/451-shaped), a not-found (404/410-shaped), ``blocked`` or a
+    paywall/shell classification, in the same vocabulary the acquisition
+    disposition already records it in. ``None`` while the candidate is
+    queued or read, and cleared back to ``None`` if a later attempt reads it.
+    """
 
     @model_validator(mode="after")
     def normalize_identity(self) -> "CandidateRecord":
@@ -775,6 +782,15 @@ class ReadRecord(_VerbatimContractModel):
     resolved_url: str = Field(min_length=1)
     """The URL the content was served from, after any redirect."""
     title: str = Field(min_length=1)
+    page_date: str | None = None
+    """The page's own date, as it writes it (D14): ``article:published_time``
+    or ``article:modified_time`` metadata, a JSON-LD ``datePublished`` /
+    ``dateModified`` (including inside an ``@graph``), or a byline-shaped
+    date in the page's opening text — captured once at scrape time and
+    normalised to ``YYYY-MM-DD``, or coarser when that is all the page
+    gives. ``None`` when the page states no date of its own. Never a clock
+    read: this is the page's date, not when this run read it
+    (``retrieved_at``)."""
     reader: Literal["web_scraper", "document_reader"]
     retrieved_at: AwareISOString
     """When this body was observed — preserved across cache admission."""

@@ -1047,7 +1047,18 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # module source moved `e00e6218a22b` -> `0e92c7cf1206`; no other agent's
     # text changed, so the other four target pins and the Judge pin are
     # unchanged.
-    "researcher": "0e92c7cf1206",
+    # ReRevResearcherR3's final round on this guard (F5, controller
+    # decision): content's own sentence-initial word counts as a referent
+    # unless it is a closed-class word, the introductory word "According"
+    # (followed by "to", not a comma), or immediately followed by a comma
+    # ("Overall,", "However,", "Meanwhile,") -- a bare product name opening
+    # content's own sentence ("Sony is the model to beat.") now counts,
+    # where the previous round wrongly refused it too. Later heuristic edge
+    # cases on this guard are accepted residuals; the writer-side fix in
+    # the report-format spec is the main protection. The module source
+    # moved `0e92c7cf1206` -> `4245163b56a8`; no other agent's text changed,
+    # so the other four target pins and the Judge pin are unchanged.
+    "researcher": "4245163b56a8",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
