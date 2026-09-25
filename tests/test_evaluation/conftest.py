@@ -555,12 +555,10 @@ class PlannerOutput(TargetOutput):
             lambda topic: {**topic, "evidence_targets": []}
         )
 
-    def with_target_dimensions(
-        self, dimensions: Sequence[str]
-    ) -> "PlannerOutput":
-        """Rewrite every planned target's required dimensions."""
+    def with_target_measure(self, measure: str) -> "PlannerOutput":
+        """Rewrite every planned target's measure."""
         return self._map_targets(
-            lambda target: {**target, "required_dimensions": list(dimensions)}
+            lambda target: {**target, "measure": measure}
         )
 
     def _map_sub_topics(
@@ -1020,17 +1018,30 @@ def _stamped_target(
     position: int,
     *,
     question: str,
-    required_dimensions: Sequence[str],
-    critical: bool = True,
+    measure: str,
+    unit_dimension: str | None = None,
+    period: str | None = None,
+    kind: str | None = None,
+    geography: str | None = None,
+    organisation: str | None = None,
+    required: bool = True,
 ) -> dict[str, object]:
-    """One evidence target as the Planner's artifact carries it, id stamped."""
+    """One evidence target as the Planner's artifact carries it, id stamped.
+
+    The final shape (spec 7.1): the measure the obligation asks for beside the
+    question it answers, and the structured fields its evidence has to state.
+    """
     return {
         "target_id": target_id_for(coverage_id, position),
         "coverage_id": coverage_id,
         "question": question,
-        "required_dimensions": list(required_dimensions),
-        "required": True,
-        "critical": critical,
+        "measure": measure,
+        "unit_dimension": unit_dimension,
+        "period": period,
+        "kind": kind,
+        "geography": geography,
+        "organisation": organisation,
+        "required": required,
     }
 
 
@@ -1076,12 +1087,12 @@ def scoped_target_output(scoped_targets_case) -> PlannerOutput:
                             "topic-01",
                             1,
                             question=comparison,
-                            required_dimensions=[
-                                "comparison: median queue wait time in months "
-                                "for each technology",
-                                "period: the most recent reported year",
-                                "geography: the United States",
-                            ],
+                            measure=(
+                                "median queue wait time in months for each "
+                                "technology"
+                            ),
+                            period="the most recent reported year",
+                            geography="the United States",
                         )
                     ],
                 },
@@ -1107,13 +1118,13 @@ def scoped_target_output(scoped_targets_case) -> PlannerOutput:
                                 "interconnection rule require of "
                                 "utility-scale solar projects?"
                             ),
-                            required_dimensions=[
-                                "instrument: the issuing federal rule and its "
-                                "effective date",
-                                "period: the rule in force as of the latest "
-                                "revision",
-                                "geography: the United States",
-                            ],
+                            measure=(
+                                "the issuing federal rule and its "
+                                "effective date"
+                            ),
+                            period="the rule in force as of the latest "
+                            "revision",
+                            geography="the United States",
                         )
                     ],
                 },
@@ -1138,11 +1149,8 @@ def scoped_target_output(scoped_targets_case) -> PlannerOutput:
                                 "interconnection study fee schedule for "
                                 "utility-scale generators?"
                             ),
-                            required_dimensions=[
-                                "amount: the study fee in dollars",
-                                "instrument: the official fee schedule",
-                                "geography: the United States",
-                            ],
+                            measure="the study fee in dollars",
+                            geography="the United States",
                         )
                     ],
                 },
