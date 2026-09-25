@@ -1026,7 +1026,19 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # search returns only general pages. The module source moved
     # `449114f4b1ef` -> `3bbe364fcd0d`; no other agent's text changed, so
     # the other four target pins and the Judge pin are unchanged.
-    "researcher": "3bbe364fcd0d",
+    # RevResearcherR3's review of the run-3 content wave (agent://
+    # RevResearcherR3, D7/D12 P3): the bare-pronoun guard now triggers at a
+    # clause boundary as well as a sentence start, skips an impersonal "It
+    # is/was/has been ... that/to" construction and restricts "They" to
+    # true linking verbs, and a referent may come from an internal-capital
+    # or Unicode-aware-capital word named in an earlier sentence or from the
+    # finding's own content, never from a plain-ASCII word that is merely
+    # its own sentence's first word; RES-1 now also asks the loop to read
+    # the page the extra search returns, not only search once more. The
+    # module source moved `3bbe364fcd0d` -> `e00e6218a22b`; no other agent's
+    # text changed, so the other four target pins and the Judge pin are
+    # unchanged.
+    "researcher": "e00e6218a22b",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
