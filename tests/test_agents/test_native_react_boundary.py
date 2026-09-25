@@ -1,12 +1,12 @@
 """The one native tool boundary every model-directed agent crosses.
 
-A regression guard, not a unit test of one agent. Each of the three agents that
-ask a model to select a tool is run end to end through its own ``run`` — so an
-agent that reintroduced a local ``decide`` closure calling
+A regression guard, not a unit test of one agent. Each agent that asks a model
+to select a tool is run end to end through its own ``run`` — so an agent that
+reintroduced a local ``decide`` closure calling
 ``complete_structured(..., ReActDecision, ...)`` fails here, because
-``ScriptedCompleter.complete_structured`` raises for that schema. The Critic is
-no longer one of them: Task 8 removed its ReAct loop, and ``test_critic.py``
-pins that an injected tool and a generous budget still buy no ReAct turn.
+``ScriptedCompleter.complete_structured`` raises for that schema. The planner
+and the researcher are the two that remain: the Evidence Verifier plan removed
+the critic and the fact checker, ReAct loops included.
 """
 
 from __future__ import annotations
@@ -15,12 +15,6 @@ from collections.abc import Callable
 
 import pytest
 
-from deep_research.agents.fact_checker import (
-    ClaimDraft,
-    ClaimsDraft,
-    FactCheckerAgent,
-    PassageVerdictDraft,
-)
 from deep_research.agents.planner import (
     EvidenceTargetDraft,
     PlannerAgent,
@@ -37,10 +31,9 @@ from deep_research.observability import Tracker
 from deep_research.providers.deepseek_provider import DeepSeekChatProvider
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
-from deep_research.utils.types import Finding, ResearchState, SubTopic
+from deep_research.utils.types import ResearchState, SubTopic
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
 from tests.research_fakes import (
-    fact_checker_tools,
     planner_tools,
     research_tools,
 )
@@ -50,9 +43,6 @@ from tests.test_deepseek_provider import (
     chat_response,
     deepseek_config,
 )
-
-EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
-FINDING_URL = "https://example.test/qec"
 
 _PLAN = ResearchPlanDraft(
     sub_topics=[
@@ -80,22 +70,10 @@ _PLAN = ResearchPlanDraft(
 )
 
 
-def _finding() -> Finding:
-    return Finding(
-        content="Logical error rates fell below break-even.",
-        source_url=FINDING_URL,
-        source_title="QEC results",
-        extracted_at=EXTRACTED_AT,
-        confidence=0.8,
-        related_sub_topic="angle number 1",
-    )
-
-
 def _state(**updates: object) -> ResearchState:
     payload: dict[str, object] = {
         "session_id": "session-1",
         "original_question": "how much capacity can quantum computing reach",
-        "max_iterations": 2,
     }
     payload.update(updates)
     return ResearchState.model_validate(payload)
@@ -138,41 +116,12 @@ def _researcher_case() -> tuple[ResearchState, list, list]:
     )
 
 
-def _fact_checker_case() -> tuple[ResearchState, list, list]:
-    state = _state(raw_findings=[_finding()])
-    return (
-        state,
-        [finish("Nothing independent.", "Nothing independent was retrieved.")],
-        [
-            ClaimsDraft(
-                claims=[
-                    ClaimDraft(
-                        text="Logical error rates fell below break-even.",
-                        source_urls=[FINDING_URL],
-                    )
-                ]
-            ),
-            PassageVerdictDraft(
-                verdict="insufficient_evidence",
-                confidence=0.0,
-                passages=[],
-            ),
-        ],
-    )
-
-
 TOOL_SELECTING_AGENTS: tuple[
     tuple[type, Callable[[Tracker], list[BaseTool]], Callable[[], tuple]], ...
 ] = (
     (PlannerAgent, planner_tools, _planner_case),
     (ResearcherAgent, research_tools, _researcher_case),
-    (FactCheckerAgent, fact_checker_tools, _fact_checker_case),
 )
-
-# The Critic is deliberately absent: Task 8 removed its ReAct loop, so it has
-# no tool-selecting turn to exercise on this boundary. ``test_critic.py`` pins
-# the other half of that — a Critic handed tools and a budget still makes no
-# ``complete_react`` call at all.
 
 AGENT_IDS = [agent_class.name for agent_class, _, _ in TOOL_SELECTING_AGENTS]
 

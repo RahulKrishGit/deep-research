@@ -8,25 +8,11 @@ import pytest
 
 from deep_research.agents.evidence import (
     TemporalClaim,
-    build_evidence_unit,
     build_read_dossiers,
     build_read_record,
     compute_assessment_revision,
     read_assessment_revision,
     read_dated_tokens,
-    source_origin_id,
-)
-from deep_research.agents.fact_checker import (
-    evidenced_issuer,
-    AdjudicationPacket,
-    ClaimDraft,
-    ClaimVerdictDraft,
-    SupportAssessment,
-    _packet_has_pair,
-    adjudication_messages,
-    build_adjudication_packet,
-    claim_eligibility,
-    validate_adjudication,
 )
 from deep_research.agents.source_evaluator import (
     AUTHORITY_WEIGHT,
@@ -63,8 +49,6 @@ from deep_research.providers import (
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_CONTRACT_VERSION,
-    Claim,
-    EvidenceUnit,
     Finding,
     MemorySnapshot,
     ReadRecord,
@@ -1213,7 +1197,7 @@ def _lab_draft(**overrides: object) -> SourceScoreDraft:
 
 
 @pytest.mark.asyncio
-async def test_the_original_report_becomes_a_read_backed_origin() -> None:
+async def test_the_original_report_resolves_a_read_backed_identity() -> None:
     read = _read()
 
     sources, completer = await _assess([read], [_scores(_lab_draft())])
@@ -1229,7 +1213,6 @@ async def test_the_original_report_becomes_a_read_backed_origin() -> None:
     assert source.publisher_id == "example lab"
     assert source.work_id == "doi:10.1234/grid.2025"
     assert source.assessment_revision.startswith("assess-")
-    assert source_origin_id(source) == "work:doi:10.1234/grid.2025"
     assert source.cited_sub_topics == []
 
 
@@ -1283,15 +1266,15 @@ def _agency_draft(**overrides: object) -> SourceScoreDraft:
 
 
 @pytest.mark.asyncio
-async def test_a_first_party_read_becomes_an_origin_the_agency_stands_behind() -> None:
-    """The agency's own page contributes an origin; the relay quoting it does not.
+async def test_a_first_party_read_is_the_agency_while_a_relay_is_not() -> None:
+    """The agency's own page resolves the agency; the relay quoting it does not.
 
     Both records propose the same issuer and the same role, and only the host
     tells them apart: eia.gov is the domain the agency is named by, so its own
-    report resolves a publisher, an ``original_report`` role, and an origin it
-    can be a corroborating half of. Energy Global's article about that report
-    is not the agency's, and a version of this code that accepted its headline
-    would let one press release stand in as two independent origins.
+    report resolves a publisher and an ``original_report`` role. Energy Global's
+    article about that report is not the agency's, and a version of this code
+    that accepted its headline would let one press release stand in for the
+    agency that issued it.
     """
     agency = _read(AGENCY_URL, title=AGENCY_TITLE, text=AGENCY_TEXT)
     relay = _read(RELAY_URL, title=RELAY_TITLE, text=RELAY_TEXT)
@@ -1307,14 +1290,12 @@ async def test_a_first_party_read_becomes_an_origin_the_agency_stands_behind() -
     assert own.source_role == "original_report"
     assert own.serving_host == "eia.gov"
     assert own.publisher_id == "u s energy information administration"
-    assert source_origin_id(own) is not None
     assert quoted.source_role == "unknown"
     assert quoted.publisher_id == "energyglobal.com"
-    assert source_origin_id(quoted) is None
 
 
 @pytest.mark.asyncio
-async def test_the_official_mirror_is_usable_but_adds_no_origin() -> None:
+async def test_the_official_mirror_is_usable_and_shares_the_works_identity() -> None:
     """A mirror is evidence; it is not a second publisher or a second work."""
     original = _read(LAB_REPORT_URL)
     mirror = _read(MIRROR_REPORT_URL)
@@ -1335,8 +1316,6 @@ async def test_the_official_mirror_is_usable_but_adds_no_origin() -> None:
     # Still usable: it carries the same assessment as the document it serves.
     assert copied.evaluation_status == "scored"
     assert copied.overall_score == pytest.approx(first.overall_score)
-    # But it contributes exactly the origin its original already contributes.
-    assert source_origin_id(copied) == source_origin_id(first)
 
 
 # A report with no DOI and no report number: the only identity a read can
@@ -1350,14 +1329,13 @@ PLAIN_REPORT_TEXT = (
 
 
 @pytest.mark.asyncio
-async def test_a_re_typeset_mirror_adds_no_origin() -> None:
-    """A copy whose wrapper differs is not a second origin, and not an origin.
+async def test_a_re_typeset_mirror_keeps_the_publisher_but_not_the_bytes() -> None:
+    """A copy whose wrapper differs carries its own bytes and the same publisher.
 
     Two byte-different copies of one report share no content hash, so a bare
-    hash can never be the origin they are compared by. A copy's publisher is
-    no better: the repository's own name is its own claim, not the origin of
-    the figure it repeats (§2.2 rule 4), so a hash-only mirror contributes no
-    origin at all. The readable original keeps its publisher origin.
+    hash cannot be the identity they are compared by. The repository's own name
+    is its own claim rather than the origin of the figure it repeats (§2.2
+    rule 4), and the readable original keeps the publisher its host evidences.
     """
     original = _read(LAB_REPORT_URL, text=PLAIN_REPORT_TEXT)
     retypeset = _read(
@@ -1385,48 +1363,10 @@ async def test_a_re_typeset_mirror_adds_no_origin() -> None:
     assert first.work_id is not None and first.work_id.startswith("sha256:")
     assert copied.work_id.startswith("sha256:")
     assert copied.publisher_id == first.publisher_id == "example lab"
-    # One origin, not two: the readable original's, and the copy's none.
-    assert source_origin_id(first) == "publisher:example lab"
-    assert source_origin_id(copied) is None
 
 
 @pytest.mark.asyncio
-async def test_different_publishers_keep_distinct_origins() -> None:
-    """Folding the publisher in must not collapse everyone onto one origin.
-
-    Two genuinely independent documents from two publishers are exactly the
-    pair a corroboration check exists to allow.
-    """
-    first_read = _read(LAB_REPORT_URL, text=PLAIN_REPORT_TEXT)
-    second_read = _read(
-        REVIEW_URL,
-        title="We measured the queue ourselves",
-        text=(
-            "We measured the queue ourselves. Published by Review Weekly on "
-            "2026-02-10. This outlet ran its own measurement of 1,180 MW "
-            "during 2024."
-        ),
-    )
-    drafts = [
-        _lab_draft(doi=""),
-        _draft(
-            url=REVIEW_URL,
-            source_role="independent_research",
-            transport_relation="original",
-            issuer="Review Weekly",
-            rationale="Original measurement published by the outlet.",
-        ),
-    ]
-
-    sources, _ = await _assess([first_read, second_read], [_scores(*drafts)])
-
-    origins = [source_origin_id(source) for source in sources]
-    assert origins == ["publisher:example lab", "publisher:review weekly"]
-    assert origins[0] != origins[1]
-
-
-@pytest.mark.asyncio
-async def test_a_derivative_news_statistic_is_not_an_origin() -> None:
+async def test_a_derivative_news_statistic_keeps_its_own_publisher() -> None:
     """Repeating one report is not independent evidence for what it reports."""
     read = _read(
         NEWS_URL,
@@ -1453,40 +1393,6 @@ async def test_a_derivative_news_statistic_is_not_an_origin() -> None:
     assert source.source_role == "derivative"
     assert source.publisher_id == "news daily"
     assert source.evaluation_status == "scored"
-    # It is support for "News Daily reported this", never an independent origin
-    # for the measurement it repeats.
-    assert source_origin_id(source) is None
-
-
-@pytest.mark.asyncio
-async def test_an_independently_researched_article_is_an_origin() -> None:
-    read = _read(
-        REVIEW_URL,
-        title="We measured the queue ourselves",
-        text=(
-            "We measured the queue ourselves. Published by Review Weekly on "
-            "2026-02-10. This outlet ran its own measurement of 1,180 MW "
-            "during 2024."
-        ),
-    )
-    draft = _draft(
-        url=REVIEW_URL,
-        authority=0.75,
-        relevance=0.9,
-        rationale="Original measurement published by the outlet.",
-        source_role="independent_research",
-        transport_relation="original",
-        issuer="Review Weekly",
-    )
-
-    sources, _ = await _assess([read], [_scores(draft)])
-
-    source = sources[0]
-    assert source.source_role == "independent_research"
-    # Its identity rests on a bare content hash, so the origin it contributes
-    # is its publisher's: a hash names bytes, and a re-typeset copy of it
-    # would hash differently while still being the same origin.
-    assert source_origin_id(source) == "publisher:review weekly"
 
 
 @pytest.mark.asyncio
@@ -1544,13 +1450,13 @@ async def test_a_company_statement_cannot_lose_its_self_interest() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_mixed_role_article_cannot_claim_a_clean_origin() -> None:
+async def test_a_mixed_role_article_keeps_its_mixed_label() -> None:
     """Derivative statistics and original interviews in one article.
 
     The article really is partly original work, which is exactly why the
     source-level label may not decide it: it repeats someone else's figure
-    *and* adds its own reporting, so only the claim-specific assessment can
-    say which part supports what.
+    *and* adds its own reporting, so the record keeps the mixed label the
+    validation admitted rather than being cleaned up to one side.
     """
     read = _read(
         REVIEW_URL,
@@ -1575,13 +1481,17 @@ async def test_a_mixed_role_article_cannot_claim_a_clean_origin() -> None:
 
     source = sources[0]
     assert source.source_role == "mixed"
-    assert source_origin_id(source) is None
     assert source.evaluation_status == "scored"
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_issuer_records_no_origin() -> None:
-    """Unknown identity cannot establish independence."""
+async def test_an_unknown_issuer_leaves_only_the_host_and_the_bytes() -> None:
+    """Unknown identity is not the identity the model proposed.
+
+    The proposed issuer and DOI are nowhere in the read, so neither is taken:
+    the record keeps the serving host as its publisher and its own bytes as
+    its work.
+    """
     read = _read(
         "https://anonymous.test/post",
         title="A post about capacity",
@@ -1605,7 +1515,6 @@ async def test_an_unknown_issuer_records_no_origin() -> None:
     assert source.source_role == "unknown"
     assert source.work_id == f"sha256:{read.content_sha256}"
     assert source.publisher_id == "anonymous.test"
-    assert source_origin_id(source) is None
 
 
 @pytest.mark.asyncio
@@ -1822,8 +1731,12 @@ async def test_a_current_authority_that_does_not_answer_the_target() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_high_authority_score_cannot_override_unsupported_content() -> None:
-    """Quality and dependence are different fields, and neither substitutes."""
+async def test_a_high_authority_score_never_changes_the_role_label() -> None:
+    """A high score does not buy a cleaner role.
+
+    The record keeps the ``derivative`` label the validation admitted, however
+    authoritative, current, and on-topic the model judged it.
+    """
     read = _read(
         REVIEW_URL,
         title="Capacity withheld, and what operators say",
@@ -1852,9 +1765,6 @@ async def test_a_high_authority_score_cannot_override_unsupported_content() -> N
 
     source = sources[0]
     assert source.overall_score > 0.9
-    # The same record still cannot contribute an origin: the independence
-    # judgement is not a quality threshold that a high score can buy.
-    assert source_origin_id(source) is None
     assert source.source_role == "derivative"
     assert source.cited_sub_topics == ["Grid storage"]
 
@@ -1895,9 +1805,6 @@ def test_role_and_transport_never_change_the_overall_score() -> None:
     assert labelled.source_role == "derivative"
     assert labelled.transport_relation == "mirror"
     assert labelled.self_interest == "evidenced"
-    # The dependence judgement moved: one is an origin, the other is not.
-    assert source_origin_id(plain) is not None
-    assert source_origin_id(labelled) is None
 
     # And none of it moved a single number.
     assert plain.overall_score == pytest.approx(labelled.overall_score)
@@ -2029,8 +1936,6 @@ async def test_a_provider_failure_keeps_identity_and_an_unscored_status() -> Non
     assert source.work_id == f"sha256:{read.content_sha256}"
     assert source.assessment_revision.startswith("assess-")
     assert source.assessment_revision == read_assessment_revision(read)
-    # And an unscored source can never be half of an independent pair.
-    assert source_origin_id(source) is None
 
 
 @pytest.mark.asyncio
@@ -2065,7 +1970,6 @@ async def test_a_changed_read_that_reassesses_unscored_drops_the_old_score() -> 
     assert source.authority_score is None
     # The stale score is gone, and the record still names what it is about.
     assert source.work_id == f"sha256:{changed.content_sha256}"
-    assert source_origin_id(source) is None
 
 
 @pytest.mark.asyncio
@@ -2077,7 +1981,6 @@ async def test_a_missing_model_row_is_unscored_rather_than_invented() -> None:
 
     assert sources[0].evaluation_status == "unscored_missing"
     assert sources[0].overall_score is None
-    assert source_origin_id(sources[0]) is None
 
 
 @pytest.mark.asyncio
@@ -2105,7 +2008,6 @@ async def test_a_partial_read_is_assessed_but_never_an_identity_edge() -> None:
     assert source.serving_host == "lab.example"
     assert source.publisher_id is None
     assert source.work_id is None
-    assert source_origin_id(source) is None
 
 
 @pytest.mark.asyncio
@@ -2200,24 +2102,17 @@ async def test_the_total_cap_records_unscored_identity_not_a_dropped_source() ->
     # identity is that work — resolved across both reads, not from its own.
     assert first.content_sha256 == second.content_sha256
     assert sources[1].work_id == sources[0].work_id == "doi:10.1234/grid.2025"
-    assert source_origin_id(sources[1]) is None
 
 
 # --------------------------------------------------------------------------
-# Canonical identity: what the Source Evaluator resolves is what the Fact
-# Checker pairs on. Every test below goes through the real producers and the
-# real pair test — no hand-built eligibility.
+# Canonical identity: what the Source Evaluator resolves, and what its record
+# carries forward. Every test below goes through the real producers.
 # --------------------------------------------------------------------------
 
-IDENTITY_CLAIM = (
-    "Example Lab measured that 1,200 MW of interconnection capacity was "
-    "withheld during 2024."
-)
 MIRROR_HOST_URL = "https://mirror.example/grid-outlook"
 PDF_REPORT_URL = "https://lab.example/report.pdf"
 STORY_URL = "https://news.example/queue-story"
 REPORT_WORK = "doi:10.1234/grid.2025"
-REPORT_ORIGIN = f"work:{REPORT_WORK}"
 DATASET_DOI = "10.5555/queue.2024"
 
 # The same report, re-typeset by a repository on another host: the issuer is
@@ -2260,64 +2155,6 @@ def _review_draft(**overrides: object) -> SourceScoreDraft:
 
 def _by_url(sources: list[ScoredSource]) -> dict[str, ScoredSource]:
     return {normalize_source_url(source.url): source for source in sources}
-
-
-def _unit_for(read: ReadRecord) -> EvidenceUnit:
-    return build_evidence_unit(
-        read=read,
-        locator="chunk-0",
-        excerpt=read.passages["chunk-0"],
-        origin="researcher",
-        target_ids=["target-1"],
-    )
-
-
-def _identity_packet(
-    reads: list[ReadRecord], sources: list[ScoredSource]
-) -> AdjudicationPacket:
-    """The claim's packet over these reads, with the identity the checker resolves.
-
-    Eligibility comes from ``claim_eligibility`` over the read and the source
-    the Source Evaluator produced for it — exactly what the Fact Checker hands
-    the pair test.
-    """
-    by_url = _by_url(sources)
-    units = [_unit_for(read) for read in reads]
-    return build_adjudication_packet(
-        ClaimDraft(text=IDENTITY_CLAIM, source_urls=[reads[0].resolved_url]),
-        units,
-        eligibility={
-            unit.evidence_id: claim_eligibility(
-                unit,
-                read=read,
-                source=by_url[normalize_source_url(read.resolved_url)],
-                assessment=None,
-            )
-            for unit, read in zip(units, reads, strict=True)
-        },
-        # What the Fact Checker's own packet builder passes: the issuing body
-        # each candidate's source is *evidenced* to be, which is the passage
-        # side of the primary badge. Without it the claim could carry no badge
-        # however completely the report supports it.
-        passage_issuers={
-            unit.evidence_id: evidenced_issuer(
-                by_url[normalize_source_url(read.resolved_url)]
-            )
-            for unit, read in zip(units, reads, strict=True)
-        },
-    )
-
-
-def _may_pair(
-    left: ReadRecord, right: ReadRecord, sources: list[ScoredSource]
-) -> bool:
-    """Whether the local pair test lets these two reads corroborate a claim.
-
-    This is the test that decides, before any adjudication, whether a packet
-    already carries a qualifying pair — so a ``True`` here is a pair the model
-    would be allowed to certify.
-    """
-    return _packet_has_pair(_identity_packet([left, right], sources))
 
 
 async def _run_producer(
@@ -2367,19 +2204,17 @@ async def test_a_doi_original_and_its_identical_doi_less_mirror_are_one_work(
     by_url = _by_url(sources)
     assert by_url[LAB_REPORT_URL].work_id == REPORT_WORK
     assert by_url[MIRROR_HOST_URL].work_id == REPORT_WORK
-    assert not _may_pair(original, mirror, sources)
 
 
 @pytest.mark.asyncio
-async def test_a_re_typeset_mirror_on_another_host_never_corroborates_its_original() -> (
+async def test_a_re_typeset_mirror_on_another_host_keeps_the_validated_publisher() -> (
     None
 ):
-    """The reproduced false pair: two hosts, one publisher, one report.
+    """Two hosts, one publisher, one report: the host does not decide identity.
 
-    The Source Evaluator validated "Example Lab" on both copies. A pair test
-    that re-derived the publisher from the serving host would see two
-    publishers, two works, and two origins, and certify one report as two
-    independent accounts.
+    The Source Evaluator validated "Example Lab" on both copies, so the copy
+    keeps the publisher its own read evidences rather than the host that
+    served it.
     """
     original = _read(LAB_REPORT_URL)
     mirror = _read(
@@ -2403,18 +2238,15 @@ async def test_a_re_typeset_mirror_on_another_host_never_corroborates_its_origin
     by_url = _by_url(sources)
     assert by_url[MIRROR_HOST_URL].publisher_id == "example lab"
     assert by_url[LAB_REPORT_URL].publisher_id == "example lab"
-    assert not _may_pair(original, mirror, sources)
 
 
 @pytest.mark.asyncio
-async def test_a_pdf_and_html_of_one_doi_are_one_known_work_that_can_still_pair() -> (
-    None
-):
+async def test_a_pdf_and_html_of_one_doi_are_one_known_work() -> None:
     """Two renderings of one DOI hash differently and are still one work.
 
-    Distinct bytes under one DOI are the PDF and the HTML of one report, not
-    a conflict — and treating them as unresolved would stop the original from
-    ever pairing with a genuinely independent measurement.
+    Distinct bytes under one DOI are the PDF and the HTML of one report, not a
+    conflict: both records resolve the same known work, and both byte hashes
+    stay aliases of it.
     """
     html = _read(LAB_REPORT_URL)
     pdf = _read(
@@ -2442,17 +2274,16 @@ async def test_a_pdf_and_html_of_one_doi_are_one_known_work_that_can_still_pair(
             f"sha256:{html.content_sha256}",
             f"sha256:{pdf.content_sha256}",
         } <= set(identity.aliases)
-    assert not _may_pair(html, pdf, sources)
-    assert _may_pair(pdf, independent, sources)
 
 
 @pytest.mark.asyncio
-async def test_a_story_derived_from_the_report_cannot_corroborate_it() -> None:
-    """Section 2.2 rule 5: repeating one report is not a second account.
+async def test_a_story_derived_from_the_report_records_the_lineage_it_states() -> None:
+    """The story is its own work, and the lineage it states is recorded.
 
     The story is its own work from its own publisher, labelled as its own
     research — every identity field differs. What it states is where its figure
-    comes from, and that lineage is what refuses the pair.
+    comes from, and only that stated lineage is recorded: the DOI it never
+    prints is reported as an unevidenced anchor instead.
     """
     report = _read()
     story = _read(
@@ -2480,12 +2311,11 @@ async def test_a_story_derived_from_the_report_cannot_corroborate_it() -> None:
     # prints is reported as an unevidenced anchor instead.
     assert derived.work_identity.derives_from_work_ids == [REPORT_WORK]
     assert "derived_from" in derived.rationale
-    assert not _may_pair(report, story, sources)
 
 
 @pytest.mark.asyncio
-async def test_two_articles_on_one_dataset_cannot_corroborate_each_other() -> None:
-    """Section 2.2 rule 6: shared data is one origin however it is written up."""
+async def test_two_articles_on_one_dataset_record_that_shared_dataset() -> None:
+    """Shared data is recorded as one document, however it is written up."""
     first = _read(
         "https://first.example/analysis",
         title="Queue analysis",
@@ -2523,115 +2353,11 @@ async def test_two_articles_on_one_dataset_cannot_corroborate_each_other() -> No
     for source in sources:
         assert source.work_identity is not None
         assert source.work_identity.derives_from_work_ids == [f"doi:{DATASET_DOI}"]
-    assert not _may_pair(first, second, sources)
-
-
-async def _independent_packet() -> AdjudicationPacket:
-    """A report and a genuinely independent measurement, assessed for real."""
-    report = _read()
-    review = _review_read()
-    sources, _ = await _assess(
-        [report, review], [_scores(_lab_draft(), _review_draft())]
-    )
-    return _identity_packet([report, review], sources)
-
-
-def _support(evidence_id: str, **fields: object) -> SupportAssessment:
-    return SupportAssessment(
-        evidence_id=evidence_id,
-        stance="supports",
-        complete_support=True,
-        scope_compatible=True,
-        **fields,  # type: ignore[arg-type]
-    )
-
-
-def _adjudicate(
-    packet: AdjudicationPacket, right_fields: dict[str, object]
-) -> Claim:
-    left, right = (unit.evidence_id for unit in packet.units)
-    return validate_adjudication(
-        ClaimVerdictDraft(
-            verdict="verified",
-            confidence=0.9,
-            assessments=[
-                _support(left, dependence="primary", rationale="The report."),
-                _support(right, **right_fields),
-            ],
-            support_ids=[left, right],
-            contradiction_ids=[],
-            rationale="Both passages state the figure.",
-        ),
-        packet,
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("label", "right_fields", "flag"),
-    [
-        ("derivative", {"dependence": "derivative"}, None),
-        ("dependence-omitted", {}, None),
-        ("unrecognised-dependence", {"dependence": "independent"}, None),
-        (
-            "independent-analysis-of-the-report-origin",
-            {"dependence": "independent_analysis", "origin_group_id": REPORT_ORIGIN},
-            "shared_origin",
-        ),
-        (
-            "origin-not-in-the-packet",
-            {"dependence": "primary", "origin_group_id": "work:doi:10.9999/made-up"},
-            "model_disagreement",
-        ),
-    ],
-)
-async def test_only_primary_or_independent_analysis_rows_can_complete_a_pair(
-    label: str, right_fields: dict[str, object], flag: str | None
-) -> None:
-    """Section 2.2 rule 7 and the dependence contract, row by row.
-
-    The control proves the packet is a real pair: two primary rows on two
-    independent origins verify. Each case then changes only the model's
-    judgement of the second row, and none of them may verify.
-    """
-    packet = await _independent_packet()
-    control = _adjudicate(
-        packet, {"dependence": "primary", "rationale": "Its own measurement."}
-    )
-    assert control.evidence_status == "verified_pair"
-
-    claim = _adjudicate(packet, right_fields)
-
-    assert claim.verdict == "insufficient_evidence", label
-    assert claim.evidence_status == "source_supported", label
-    if flag is not None:
-        assert flag in claim.audit_flags, label
-
-
-@pytest.mark.asyncio
-async def test_the_adjudication_request_offers_each_candidate_origin() -> None:
-    """The model can only name an allowlisted origin if it was shown them."""
-    packet = await _independent_packet()
-
-    body = "\n".join(
-        message.content
-        for message in adjudication_messages(packet, evidence_chars=4000)
-    )
-
-    origins = {
-        eligibility.origin_group_id for eligibility in packet.eligibility.values()
-    }
-    assert origins == {REPORT_ORIGIN, "publisher:review weekly"}
-    for origin in origins:
-        assert origin in body
-    assert "independent_analysis" in body
 
 
 # --------------------------------------------------------------------------
-# What a copy may contribute: §2.2 rule 4. A mirror "contributes no additional
-# corroboration" but "can be the first primary support", so it is the *origin*
-# that a copy may not manufacture — its publisher is not the origin of the work
-# it copies, and a hash-only copy has no other origin to offer.
+# What a copy contributes: §2.2 rule 4. A copy's own publisher is not the
+# identity of the work it copies, and a hash-only copy has only its own bytes.
 # --------------------------------------------------------------------------
 
 REPOSITORY_MIRROR_URL = "https://repository.example/lab/grid-outlook"
@@ -2645,17 +2371,13 @@ REPOSITORY_MIRROR_TEXT = (
 
 
 @pytest.mark.asyncio
-async def test_a_hash_only_mirror_that_stamps_itself_publisher_contributes_no_origin() -> (
-    None
-):
-    """A mirror's publisher is not the origin of the work it mirrors.
+async def test_a_hash_only_mirror_keeps_the_publisher_it_states() -> None:
+    """A mirror states its own publisher, and hashes its own bytes.
 
     The repository states its own name, so the copy carries an evidenced
-    publisher and its own bytes: every identity field the pair test compares
-    differs from the original's. What it must not be able to do is call itself
-    the origin of a figure it is repeating — ``publisher:repository archive``
-    is the *host's* claim about itself, and a hash-only copy has no strong
-    alias to offer instead.
+    publisher and its own bytes rather than the identity of the work it
+    mirrors — ``publisher:repository archive`` is the *host's* claim about
+    itself, and a hash-only copy has no strong alias to offer instead.
     """
     original = _read(LAB_REPORT_URL)
     mirror = _read(
@@ -2685,20 +2407,14 @@ async def test_a_hash_only_mirror_that_stamps_itself_publisher_contributes_no_or
     assert copied.transport_relation == "mirror"
     assert copied.publisher_id == "repository archive"
     assert copied.work_id is not None and copied.work_id.startswith("sha256:")
-    assert source_origin_id(copied) is None
-    assert not _may_pair(original, mirror, sources)
 
 
 @pytest.mark.asyncio
-async def test_a_mirror_carrying_the_shared_doi_still_contributes_the_works_origin() -> (
-    None
-):
-    """An identifier-bearing copy is the first primary support, not a refusal.
+async def test_a_mirror_carrying_the_shared_doi_keeps_the_works_identity() -> None:
+    """An identifier-bearing copy is the same work however it was served.
 
-    The copy states the DOI, so it is the same work however it was served and
-    whoever served it: it refuses to pair with its own original by work
-    equality, and it still pairs with a genuinely independent third source —
-    which a blanket refusal of anything transported as a mirror would break.
+    The copy states the DOI, so it is the same work whoever served it — and
+    the third, independent source keeps its own.
     """
     original = _read(LAB_REPORT_URL)
     mirror = _read(
@@ -2727,13 +2443,10 @@ async def test_a_mirror_carrying_the_shared_doi_still_contributes_the_works_orig
 
     copied = _by_url(sources)[REPOSITORY_MIRROR_URL]
     assert copied.work_id == REPORT_WORK
-    assert source_origin_id(copied) == REPORT_ORIGIN
-    assert not _may_pair(original, mirror, sources)
-    assert _may_pair(mirror, independent, sources)
 
 
 @pytest.mark.asyncio
-async def test_a_syndicated_copy_carrying_the_report_number_keeps_the_works_origin() -> (
+async def test_a_syndicated_copy_carrying_the_report_number_keeps_the_works_identity() -> (
     None
 ):
     """A syndication is transport too, and the report number survives it."""
@@ -2759,23 +2472,18 @@ async def test_a_syndicated_copy_carrying_the_report_number_keeps_the_works_orig
         [original, syndicated, independent], [_scores(*drafts)]
     )
 
-    expected = f"work:report:example lab:{REPORT_NUMBER.casefold()}"
+    expected = f"report:example lab:{REPORT_NUMBER.casefold()}"
     by_url = _by_url(sources)
-    assert source_origin_id(by_url[WIRE_ECHO_URL]) == expected
-    assert source_origin_id(by_url[LAB_REPORT_URL]) == expected
-    assert not _may_pair(original, syndicated, sources)
-    assert _may_pair(syndicated, independent, sources)
+    assert by_url[WIRE_ECHO_URL].work_id == expected
+    assert by_url[LAB_REPORT_URL].work_id == expected
 
 
 @pytest.mark.asyncio
-async def test_a_hash_only_source_of_unknown_transport_keeps_its_publisher_origin() -> (
-    None
-):
-    """The control: only a copy loses the publisher fallback.
+async def test_a_hash_only_source_of_unknown_transport_keeps_its_publisher() -> None:
+    """A page nobody labelled as a copy keeps the publisher its host evidences.
 
-    A page nobody labelled as a copy is exactly the case ``publisher:`` was
-    written for — its own publisher is the most the identity evidence can
-    establish, and refusing it would drop sources the ledger depends on.
+    Its own publisher is the most the identity evidence can establish, and
+    refusing it would drop sources the ledger depends on.
     """
     original = _read(LAB_REPORT_URL, text=PLAIN_REPORT_TEXT)
 
@@ -2786,13 +2494,12 @@ async def test_a_hash_only_source_of_unknown_transport_keeps_its_publisher_origi
     source = sources[0]
     assert source.transport_relation == "unknown"
     assert source.publisher_id == "example lab"
-    assert source_origin_id(source) == "publisher:example lab"
 
 
 # --------------------------------------------------------------------------
 # Lineage and legacy snapshots: a citation of a report NUMBER names the work
 # that number keys, and a snapshot written before anchors were persisted keeps
-# the identity it already carries (§2.2 rules 3 and 5).
+# the identity it already carries (§2.2 rule 3).
 # --------------------------------------------------------------------------
 
 NUMBERED_REPORT_TEXT = (
@@ -2807,16 +2514,13 @@ NUMBERED_STORY_TEXT = (
 
 
 @pytest.mark.asyncio
-async def test_a_story_citing_the_reports_number_cannot_corroborate_it() -> None:
+async def test_a_story_citing_the_reports_number_records_the_cited_work() -> None:
     """A report number names a work, so citing one is citing that work.
 
     A number is unique inside its issuer's namespace, which is why the work key
     is ``report:<issuer>:<number>`` — and the issuer of the *cited* work is not
     something a citing document establishes, so the citation is recorded as the
-    number it printed and matched against the key it names. A citation a
-    comparison could never resolve would let a derivative story pass every
-    other test — different publisher, different work, different origin — while
-    repeating the report it cites (§2.2 rule 5).
+    number it printed and matched against the key it names.
     """
     from deep_research.agents.evidence import REPORT_NUMBER_LINEAGE
 
@@ -2847,38 +2551,6 @@ async def test_a_story_citing_the_reports_number_cannot_corroborate_it() -> None
     ]
     # The citation was evidenced: it is recorded, not reported unsupported.
     assert "derived_from" not in derived.rationale
-    assert not _may_pair(report, story, sources)
-
-
-@pytest.mark.asyncio
-async def test_a_story_citing_another_number_is_not_refused_by_lineage() -> None:
-    """The control: a citation of a *different* number is not that report.
-
-    Lineage reads the number a citation prints, never the shape of a citation,
-    so a story citing some other report is refused for whatever else is wrong
-    with it and not for this.
-    """
-    report = _read(LAB_REPORT_URL, text=NUMBERED_REPORT_TEXT)
-    story = _read(
-        STORY_URL,
-        title="Queue backlog, by the numbers",
-        text=NUMBERED_STORY_TEXT.replace(REPORT_NUMBER, "IR-1900-77"),
-    )
-    story_draft = _draft(
-        url=STORY_URL,
-        source_role="independent_research",
-        transport_relation="original",
-        issuer="News Daily",
-        rationale="An outlet's analysis of another report.",
-        derived_from=["IR-1900-77"],
-    )
-
-    sources, _ = await _assess(
-        [report, story],
-        [_scores(_lab_draft(doi="", report_number=REPORT_NUMBER), story_draft)],
-    )
-
-    assert _may_pair(report, story, sources)
 
 
 def _legacy_source(
@@ -2949,7 +2621,6 @@ def test_a_legacy_snapshot_keeps_the_identity_it_already_carries() -> None:
         "example lab",
     ]
     assert [source.identity_anchors for source in resolved] == [{}, {}]
-    assert not _may_pair(report, update, resolved)
 
 
 def test_a_legacy_strong_work_id_still_names_the_group_it_joins() -> None:
