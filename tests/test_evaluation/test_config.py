@@ -923,8 +923,21 @@ from deep_research.utils.config import (
 # request prints the plan it repairs and the review request prints geography.
 # Module source and prompt strings of the planner's own; the researcher, the
 # other three and the judge are unchanged.
+# Fable's prompt-fix round 2 (A1-A8, planner.py) moved the planner again,
+# 9f201233ac06 -> 7909a3fde554: a repair request now prints the plan under repair above
+# its repair list, with both wrappers saying so and the plan prompt tying the
+# list to that printed plan; the two reply examples obey the required rule
+# (the attributes the example question now names are required, the rest
+# optional, and the why-question's required target is the reasons as sources
+# state them, unbound to a body); the verdict rule is about who makes the
+# judgement; only an uncalled-for sub-topic or a required target widens scope;
+# geography comes from the question or the contract; the why/how clause and the
+# derived-total wording are in; the review checks a rule parameter's unit/kind
+# and a closed period's optional outcome target. Module source and prompt
+# strings of the planner's own; the researcher, the other three and the judge
+# are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "9f201233ac06",
+    "planner": "7909a3fde554",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1004,7 +1017,14 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # examples mirror registry entries. Prompt drift only, module code untouched:
     # `e81da5da252b` -> `80de0d1e2168`; the four other target pins and the Judge
     # pin are unchanged.
-    "report_writer": "80de0d1e2168",
+    # Fable's prompt re-review round 1 (WRI-3/EXTRA-5 and the writer half of its
+    # C1): the registry's statement line now prints `attributed to <issuer>` for
+    # an admitted issuer and `read at <host>` for a page that names nobody — the
+    # same two words the Statement Check's block uses — and the writer's first
+    # example drops the energy word ("12 percent more members"), so the writer
+    # value moved `80de0d1e2168` -> `08cad3d4d73f`. Code and example text only;
+    # the four other target pins and the Judge pin are unchanged.
+    "report_writer": "08cad3d4d73f",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

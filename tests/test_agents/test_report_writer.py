@@ -296,12 +296,12 @@ def test_the_writer_examples_mirror_a_registry_entry_and_invent_nothing() -> Non
     figure_input, figure_output = _WRITER_REPLY_EXAMPLES[0]
     assert "## F01:" in figure_input and "snippet:" in figure_input
     assert "figure 1:" in figure_input and "label:" in figure_input
-    assert "more capacity" in figure_input and "more capacity" in figure_output
-    assert "reduction" not in figure_output
+    assert "more members" in figure_input and "more members" in figure_output
+    assert "reduction" not in figure_output and "capacity" not in figure_input
     assert "Example Statistical Agency" in figure_output
 
     statement_input, statement_output = _WRITER_REPLY_EXAMPLES[1]
-    assert "statement | attributed to" in statement_input
+    assert "statement | read at" in statement_input
     assert "as reproduced at example-register.test" in statement_output
     assert "according to example-register.test" not in statement_output
 
@@ -1104,6 +1104,24 @@ def test_a_figure_line_labels_a_period_resolved_from_the_page_date() -> None:
                      [("4", "GW", {"period": "2026", "period_resolved_from": "2026-02-20"})])
     [line] = [line for line in registry_lines("F01", finding) if "| figure 1:" in line]
     assert line.endswith("; period resolved from the page date 2026-02-20")
+
+
+def test_a_statement_line_names_a_host_only_as_where_it_was_read() -> None:
+    """D1 of the prompt re-review (with C1): the line's two words are the checker's two lines.
+
+    A host is where a statement was read, never the body that made it, so a
+    finding with no admitted issuer prints ``read at <host>`` -- the phrase the
+    Statement Check's own block uses for the same fact -- and only an admitted
+    issuer prints ``attributed to <issuer>``. Without the split the writer could
+    only tell the two apart by the shape of a domain.
+    """
+    text = "The register reproduces the standard, and its own page names no body."
+    finding = make_finding(
+        make_read(text, url="https://example-register.test/standard", title="Standard"), text,
+    ).model_copy(update={"verification": FindingVerification(status="verified")})
+
+    assert registry_lines("F07", finding)[-1].startswith(
+        "F07 | statement | read at example-register.test | ")
 
 
 def test_a_statement_line_ends_with_the_date_the_finding_carries() -> None:
