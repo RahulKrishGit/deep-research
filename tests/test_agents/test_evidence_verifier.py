@@ -254,11 +254,10 @@ def test_an_admitted_attribution_makes_a_relay() -> None:
 
 def test_the_source_evaluators_issuer_names_the_pages_own_organisation() -> None:
     # PD-25: a .com page with no copyright line is Wood Mackenzie's own when the
-    # Source Evaluator validated that issuer for the read. Without it the host
-    # stands in as the owner, but not as the figure's *own* organisation: the
-    # verdict named a body the page does not evidence, and nothing on the page
-    # cues it beside the figure, so the figure is unattributed (F2 -- before that
-    # fix this read "Wood Mackenzie" as woodmac.com's own figure).
+    # Source Evaluator validated that issuer for the read; without it the verdict
+    # still names the page's own owner, which is the own-page reading (N3 widens
+    # F2's host guard to the identity: "Wood Mackenzie" on woodmac.com is that
+    # host's owner, and only a body the page is not goes unattributed).
     read = make_read("The U.S. storage market will install 15 GW in 2025, a record year.",
                      url="https://www.woodmac.com/press-releases/q1-2025", title="US storage outlook")
     finding = make_finding(read, "The U.S. storage market will install 15 GW in 2025, a record year.")
@@ -273,7 +272,7 @@ def test_the_source_evaluators_issuer_names_the_pages_own_organisation() -> None
                                finding=finding, read=read, issuer=issuer) == ("own", "Wood Mackenzie")
     assert resolve_attribution(proposed="own", organisation="Wood Mackenzie",
                                finding=finding, read=read, issuer=None) == (
-        "unattributed", "woodmac.com")
+        "own", "woodmac.com")
 
 
 # ---------------------------------------------------------------------------
@@ -1837,3 +1836,21 @@ def test_an_own_verdict_naming_the_pages_own_host_stands() -> None:
 
     assert same_host == ("own", "Example Tester")
     assert other_host == ("unattributed", "Example Tester")
+
+
+def test_an_own_verdict_naming_the_first_party_owner_stands() -> None:
+    """N3: the page's own host is the own-page reading PD-18 falls back to, so a
+    verdict that names the owner keeps it however the name is spelled -- the host
+    string or the owner's own name -- while a body the page is not stays
+    unattributed."""
+    text = "Revenue was 400 billion USD in 2025."
+    read = make_read(text, url="https://www.apple.com/newsroom/2026/01/x", title="Newsroom")
+    finding = make_finding(read, text,
+                           figures=[figure("400", "billion USD", "2025", "actual")])
+
+    for name in ("Apple", "Apple Inc.", "apple.com", "www.apple.com"):
+        assert resolve_attribution(proposed="own", organisation=name, finding=finding,
+                                   read=read, issuer=None) == ("own", "apple.com"), name
+
+    assert resolve_attribution(proposed="own", organisation="Some Other Body", finding=finding,
+                               read=read, issuer=None) == ("unattributed", "apple.com")

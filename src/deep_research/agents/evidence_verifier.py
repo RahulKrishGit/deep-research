@@ -551,12 +551,14 @@ def resolve_attribution(
             # PD-25: the body the Source Evaluator validated for this read is the
             # page's own organisation, which is what the verdict proposed.
             return "own", name
-        if _HOST_LABEL.fullmatch(name.casefold()) and (
-            publisher_identity(f"https://{name}") == publisher_identity(read.resolved_url)
+        page_host = publisher_identity(read.resolved_url)
+        if same_organisation(name, page_host) or (
+            _HOST_LABEL.fullmatch(name.casefold())
+            and publisher_identity(f"https://{name}") == page_host
         ):
-            # The verdict named this page's own host (the Context Check's block
-            # prints it as the page owner), which is not "a body the host does
-            # not own": the own-page reading stands.
+            # The verdict named this page's own owner -- as its name or as its
+            # host (the Context Check's block prints the host) -- which is not "a
+            # body the host does not own": the own-page reading stands (N3).
             return "own", owner
         # F2: otherwise the verdict named a body this page is not, so the page's
         # own cue beside the figure decides whether it is that body's relay;

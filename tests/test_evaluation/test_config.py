@@ -853,11 +853,17 @@ from deep_research.utils.config import (
 # otherwise (a verdict naming the page's own host still stands). No prompt string
 # was edited, and ``agents.prompts`` was untouched, so the other four target pins
 # and the Judge pin are unchanged.
+# FF1 round 8 (ReRevF2F4's N3): the Evidence Verifier's own module source moved
+# `6145aac27573` -> `e8d10a516459` — F2's host guard is widened to the identity,
+# so an "own" verdict naming the page's first-party owner (its name or its host)
+# keeps the own-page reading while a body the page is not stays unattributed. No
+# prompt string was edited, and ``agents.prompts`` was untouched, so the other
+# four target pins and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
     "researcher": "3853aff7e02c",
     "source_evaluator": "58c4e7d909ef",
-    "evidence_verifier": "6145aac27573",
+    "evidence_verifier": "e8d10a516459",
     "report_writer": "a3a73e32c3c0",
 }
 
