@@ -192,16 +192,19 @@ def _topic(
     index: int,
     title: str,
     question: str,
-    dimension: str,
+    measure: str,
     query: str,
     sources: tuple[ReplaySource, ...],
     *,
-    critical: bool = False,
     labels: tuple[str, str] | None = None,
     follow_up_queries: tuple[str, ...] = (),
     **target_fields: str,
 ) -> ReplayTopic:
     """One planned sub-topic, with the labels its answer row will carry.
+
+    ``measure`` is the obligation's own measured quantity, as the plan states
+    it; a row that spells the measure out in full passes ``measure=`` itself,
+    and the keyword wins over the positional word.
 
     The labels are published only if the row's evidence attests their words,
     so they are checked against the pages here rather than trusted: a fixture
@@ -215,11 +218,10 @@ def _topic(
                 raise ValueError(
                     f"answer label {label!r} appears on no page of {title!r}"
                 )
+    target_fields.setdefault("measure", measure)
     return ReplayTopic(
         title=title,
         question=question,
-        dimensions=(dimension,),
-        critical=critical,
         query=query,
         sources=sources,
         answer_labels=labels or ("", ""),
@@ -290,7 +292,6 @@ def _broad_constraints() -> ReplayScenario:
                 dimension,
                 f"{subject} United States 2024",
                 _pair(index, f"acme-{index}-2024", title, claim),
-                critical=index <= 2,
                 labels=("Acme widget", subject),
             )
         )
@@ -386,7 +387,6 @@ def _comparative_conflict() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption urban households 2024",
                 _pair(1, "urban-2024", "Urban household survey", urban),
-                critical=True,
                 labels=("Acme widget", "urban households"),
             ),
             _topic(
@@ -397,7 +397,6 @@ def _comparative_conflict() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rural households 2024",
                 _pair(2, "rural-2024", "Rural household survey", rural),
-                critical=True,
                 labels=("Acme widget", "rural households"),
             ),
             _topic(
@@ -479,7 +478,6 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
                         discovered_b=2,
                     ),
                 ),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
                 follow_up_queries=(
                     "Acme widget adoption rate United States 2024 second source",
@@ -580,7 +578,6 @@ def _blocked_html_pdf_fallback() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024",
                 (landing, official, corroborating, mirror),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
             _filler(
@@ -658,7 +655,6 @@ def _same_work_mirror() -> ReplayScenario:
                         text=same_text,
                     ),
                 ),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
             _filler(
@@ -722,7 +718,6 @@ def _extra_pass_finds_nothing() -> ReplayScenario:
                         context={"verdict": "reject"},
                     ),
                 ),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
                 # The obligation asks for a measurement, so a dropped finding
                 # cannot answer it by naming it (PD-7).
@@ -875,7 +870,6 @@ def _relay_labelled_as_relay() -> ReplayScenario:
             "value",
             f"Acme Institute Acme widget {label} official measurement",
             (sources[label],),
-            critical=index == 1,
             labels=(row_subject, row_dimension),
         )
         for index, (
@@ -944,7 +938,7 @@ def _forecast_versus_actual_kept_apart() -> ReplayScenario:
                 1,
                 "Current adoption",
                 "What was the Acme widget adoption rate in the United States in 2024?",
-                "rate",
+                "the Acme widget adoption rate",
                 "Acme widget adoption rate United States current",
                 (
                     _page(
@@ -959,11 +953,9 @@ def _forecast_versus_actual_kept_apart() -> ReplayScenario:
                 # The obligation is an actual for 2024: without these the
                 # target is qualitative (PD-7) and the 2030 projection would
                 # answer it, which is exactly the substitution the row tests.
-                measure="the Acme widget adoption rate",
                 unit_dimension="percent",
                 period="2024",
                 kind="actual",
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
             _filler(
@@ -977,7 +969,6 @@ def _forecast_versus_actual_kept_apart() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024 history",
                 _pair(3, "history-2024", "Adoption history", current),
-                critical=False,
                 labels=("Acme widget", "adoption rate"),
             ),
         ),
@@ -1034,7 +1025,6 @@ def _unsupported_mechanism() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024",
                 _pair(1, "adoption-2024", "Adoption survey", claim),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
             _topic(
@@ -1054,7 +1044,6 @@ def _unsupported_mechanism() -> ReplayScenario:
                 "measure: the mechanism behind the change",
                 "Acme widget adoption mechanism United States 2024",
                 _pair(2, "mechanism-2024", "Adoption mechanism note", claim),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
             _filler(
@@ -1212,7 +1201,6 @@ def _empty_but_clean() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024",
                 (_bare(1, "Adoption"),),
-                critical=True,
                 labels=("record", "publication date"),
                 # The obligation asks for a measurement. With no unit
                 # dimension (PD-7) a figureless finding would answer it, and
@@ -1225,17 +1213,15 @@ def _empty_but_clean() -> ReplayScenario:
             _topic(
                 2,
                 "Widget funding",
-                # A share question, because that is the only shape of a funding
-                # obligation this contract can dimension: ``UnitDimension`` has
-                # no money, so a "how much" question would have to stay
-                # qualitative (PD-7) and a register that states no value would
-                # answer it.
+                # A share question: the obligation asks for a measurement, so
+                # a register that states no value cannot answer it by naming
+                # the obligation the way a qualitative target (PD-7) lets a
+                # verified finding do.
                 "What share of the Acme widget programme's 2024 funding was "
                 "public?",
                 "share",
                 "Acme widget funding round United States 2024 public share",
                 (_bare(2, "Funding"),),
-                critical=True,
                 labels=("record", "publication date"),
                 unit_dimension="percent",
                 period="2024",
@@ -1248,7 +1234,6 @@ def _empty_but_clean() -> ReplayScenario:
                 "share",
                 "Acme widget export share Europe 2024",
                 (_bare(3, "Export"),),
-                critical=False,
                 labels=("record", "publication date"),
                 unit_dimension="percent",
                 period="2024",
@@ -1310,7 +1295,6 @@ def _memory_is_not_read() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024",
                 (),
-                critical=True,
                 labels=("", ""),
             ),
             _filler(
@@ -1431,7 +1415,6 @@ def _validated_cache_reuse() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024",
                 (shared, stale),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
             _topic(
@@ -1442,7 +1425,6 @@ def _validated_cache_reuse() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption survey reported rate 2024",
                 (shared,),
-                critical=False,
                 labels=("Acme widget", "adoption rate"),
             ),
             replace(funding, sources=(funding.sources[0], forged)),
@@ -1530,7 +1512,6 @@ def _decision_context_late_candidate() -> ReplayScenario:
                         issuer="Independent Bureau 12",
                     ),
                 ),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
             _filler(
@@ -1609,7 +1590,6 @@ def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
                         discovered=2,
                     ),
                 ),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
                 # The obligation asks for a measurement, so no register could
                 # answer it even if it had been read: only the page the second
@@ -1691,7 +1671,6 @@ def _figure_not_on_page_dropped() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024",
                 (honest, inflated),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
             _filler(
@@ -1758,7 +1737,6 @@ def _evidence_words_not_on_page_rejected() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024",
                 (honest, quoted),
-                critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
             _filler(
@@ -1836,7 +1814,6 @@ def _scope_corrected_to_all_segments() -> ReplayScenario:
                         },
                     ),
                 ),
-                critical=True,
                 labels=("energy storage market", "18.9 gigawatts"),
             ),
             _filler(
@@ -1885,7 +1862,7 @@ def _revision_noted() -> ReplayScenario:
                 1,
                 "Adoption rate",
                 "What was the Acme widget adoption rate in the United States in 2024?",
-                "rate",
+                "the Acme widget adoption rate",
                 "Acme widget adoption rate United States 2024",
                 (
                     _page(
@@ -1905,12 +1882,10 @@ def _revision_noted() -> ReplayScenario:
                         vintage="February 2025 edition",
                     ),
                 ),
-                critical=True,
-                # The obligation states the dimension, so each
+                # The obligation states the measure, so each
                 # edition's row is bound to it: PD-9's revision is
                 # two rows for one obligation, and a row the target
                 # never bound could not be one of them.
-                measure="the Acme widget adoption rate",
                 unit_dimension="percent",
                 period="2024",
                 kind="actual",

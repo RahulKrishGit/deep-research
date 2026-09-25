@@ -1879,94 +1879,12 @@ def _plan_still_valid_passes(output: TargetOutput, case: EvaluationCase) -> bool
 # that declares no obligation at all — Section 2.1 requires that a run which
 # produces nothing scores nothing.
 
-# The vocabulary a planner-declared dimension is checked against. The
-# claim-era version of this check filled every field of a probe object
-# representing one checkable assertion and asked the deleted claim-cluster
-# credit machinery whether a dimension matched one of its fields (D6/D8
-# deleted that machinery with the Fact Checker and the claim clusters). What
-# that reduced to for this caller — which always passed
-# ``match_qualifiers=False`` — was lexical, with one vocabulary kept whole: a
-# dimension is checkable when it starts with one of the three contract-wide
-# prefixes and does not ask for a metadata date, or when its own words overlap
-# one of the signal groups below.
-_METADATA_DIMENSION_PHRASES: tuple[str, ...] = (
-    # The six metadata dimensions the deleted claim-cluster registry named
-    # (``METADATA_DIMENSIONS``, underscores spelled as spaces). A ``measure:``
-    # requirement containing one of them asks *about* the evidence — when the
-    # document was published, what period its data covers — rather than about
-    # the world, so no page can ever state it and the planner prompt forbids
-    # planning it. The pre-sweep check refused these through the registry;
-    # this keeps that refusal.
-    "publication date",
-    "data period",
-    "forecast horizon",
-    "effective date",
-    "retrieval date",
-    "generation date",
-)
-_DIMENSION_SIGNAL_WORDS: tuple[frozenset[str], ...] = (
-    frozenset({"period", "time", "date", "year", "when", "horizon", "recency"}),
-    frozenset(
-        {"geography", "region", "place", "location", "country", "jurisdiction"}
-    ),
-    frozenset(
-        {
-            "scale", "magnitude", "quantity", "size", "capacity", "amount",
-            "value", "rate", "level",
-        }
-    ),
-    frozenset({"unit"}),
-    frozenset({"population", "subject", "entity", "who"}),
-    frozenset(
-        {"mechanism", "how", "cause", "driver", "method", "instrument"}
-    ),
-    frozenset({"attribution", "source", "issuer", "publisher"}),
-    frozenset({"share", "proportion", "percent", "denominator", "comparison"}),
-)
-
-
-def _dimension_is_checkable(dimension: str) -> bool:
-    """Whether a planner-declared dimension names a concept evidence could fill."""
-    folded = " ".join(dimension.split()).casefold()
-    if folded.startswith(("answer form:", "evidence period:")):
-        return True
-    if folded.startswith("measure:"):
-        return not any(
-            phrase in folded for phrase in _METADATA_DIMENSION_PHRASES
-        )
-    tokens = {
-        token.strip(".,:;()")
-        for token in dimension.replace("-", " ").replace("_", " ").casefold().split()
-    }
-    return any(tokens & signals for signals in _DIMENSION_SIGNAL_WORDS)
-
-
 def _reference_strings(case: EvaluationCase, key: str) -> list[str]:
     """The string entries of one declared reference list, if it is a list."""
     value = case.expectations.reference.get(key)
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str)]
-
-
-def _mentions_phrase(text: str, phrases: Sequence[str]) -> bool:
-    """True when ``text`` contains one of ``phrases`` as a whole phrase.
-
-    Whole phrase, never substring: the declared vocabularies hold ordinary
-    words ("details", "context") that a substring test would fire on inside a
-    longer word, and a dimension wrongly reported as vague fails a plan that
-    is fine.
-    """
-    normalized = _normalized_text(text)
-    if not normalized:
-        return False
-    for phrase in phrases:
-        marker = _normalized_text(phrase)
-        if marker and re.search(
-            rf"(?<!\w){re.escape(marker)}(?!\w)", normalized
-        ):
-            return True
-    return False
 
 
 def _planned_targets(
@@ -2029,49 +1947,21 @@ def _counted_targets(output: TargetOutput) -> list[EvidenceTarget] | None:
     return [target for targets in planned for target in targets]
 
 
-def _dimensions_are_checkable_passes(
+def _targets_have_measure_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    """Every obligation carries only dimensions the recorded evidence can credit.
+    """Every obligation names the measure it asks for.
 
-    The question is not whether a dimension is phrased well but whether any
-    evidence could ever answer it, so the check is made against the signal
-    vocabulary rather than against a list of acceptable wordings.
-
-    Every required dimension must be creditable, not merely one of them: an
-    obligation carrying one uncreditable dimension beside a creditable one can
-    never be answered by any statement, so reading the check as a truthy/falsey
-    whole would call that plan checkable and hand it the metric's weight.
+    D10 opens the unit vocabulary, so the gate does not judge the dimension
+    word: what a plan owes is the measure itself, which is the field an answer
+    is checked against. A target whose measure is empty is not a readable plan
+    at all — the contract's own ``measure`` is non-empty — so the gate fails
+    closed on it, as it does on a plan that declares no obligation.
     """
     targets = _counted_targets(output)
     if not targets:
         return False
-    return all(
-        all(_dimension_is_checkable(dimension) for dimension in target.required_dimensions)
-        for target in targets
-    )
-
-
-def _no_vague_dimensions_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    """No obligation rests on a dimension that names nothing answerable.
-
-    Fails closed on a plan that declares no obligation, like every other
-    scoping metric: an ``any()`` over a plan with no targets is false, so
-    reading it directly passed a plan that owes nothing.
-    """
-    targets = _counted_targets(output)
-    if not targets:
-        return False
-    phrases = _reference_strings(case, "vague_dimension_phrases")
-    if not phrases:
-        return True
-    return not any(
-        _mentions_phrase(dimension, phrases)
-        for target in targets
-        for dimension in target.required_dimensions
-    )
+    return all(target.measure for target in targets)
 
 
 def _failure_recorded_passes(output: TargetOutput, case: EvaluationCase) -> bool:
@@ -2596,8 +2486,7 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "failure_recorded": _failure_recorded_passes,
     "bounded_recovery": _bounded_recovery_passes,
     "targets_declared": _targets_declared_passes,
-    "dimensions_are_checkable": _dimensions_are_checkable_passes,
-    "no_vague_dimensions": _no_vague_dimensions_passes,
+    "targets_have_measure": _targets_have_measure_passes,
     # researcher
     "sub_topic_coverage": _sub_topic_covered_passes,
     "source_grounding": _source_grounding_passes,

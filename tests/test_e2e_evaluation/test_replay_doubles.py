@@ -98,8 +98,8 @@ def scenario(*sources: ReplaySource, **fields: object) -> ReplayScenario:
     topic = ReplayTopic(
         title="Battery storage additions",
         question=QUESTION,
-        dimensions=("power",),
-        critical=False,
+        measure="battery storage power capacity added",
+        unit_dimension="power",
         query="battery storage capacity additions 2024",
         sources=tuple(sources),
     )

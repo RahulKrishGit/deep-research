@@ -550,8 +550,7 @@ def test_a_scoped_plan_scores_its_metrics_one(
 ) -> None:
     for metric_id in (
         "targets_declared",
-        "dimensions_are_checkable",
-        "no_vague_dimensions",
+        "targets_have_measure",
     ):
         assert (
             metric_score(scoped_target_output, scoped_targets_case, metric_id)
@@ -564,6 +563,30 @@ def test_a_scoped_plan_scores_its_metrics_one(
             metric_functions=METRIC_FUNCTIONS,
         )
         == 1.0
+    )
+
+
+def test_targets_have_measure_gate(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """D10's single scoping gate: every target names the measure it asks for.
+
+    The dimension *word* is no longer judged — the unit vocabulary is open —
+    so what the plan owes is the measure itself. The fixture's plan, whose
+    three obligations each state one, passes; a plan carrying a target with an
+    empty measure is not a readable plan at all, so the gate fails closed.
+    """
+    assert (
+        metric_score(
+            scoped_target_output, scoped_targets_case, "targets_have_measure"
+        )
+        == 1.0
+    )
+
+    empty = scoped_target_output.with_target_measure("")
+    assert (
+        metric_score(empty, scoped_targets_case, "targets_have_measure")
+        == 0.0
     )
 
 
@@ -614,55 +637,20 @@ def test_a_plan_with_no_evidence_targets_scores_targets_declared_zero(
     assert metric_score(output, scoped_targets_case, "targets_declared") == 0.0
 
 
-def test_a_plan_declaring_nothing_fails_the_scoping_metrics_closed(
+def test_a_plan_declaring_nothing_fails_the_measure_gate_closed(
     scoped_targets_case, scoped_target_output
 ) -> None:
-    """No obligation means nothing is checkable and nothing is un-vague.
+    """No obligation means no measure is stated, and the gate fails closed.
 
-    Both metrics iterate the plan's targets and returned true when there were
-    none — one because ``all()`` over an empty sequence is true, the other
-    because its ``any()`` was false — so a plan that declared no obligation
-    collected their weight. A metric that checks obligations cannot pass a
+    The gate iterates the plan's targets, and ``all()`` over an empty
+    sequence is true, so a plan that declared no obligation would otherwise
+    collect the gate's weight. A metric that checks obligations cannot pass a
     plan that has none.
     """
     output = scoped_target_output.without_evidence_targets()
 
     assert (
-        metric_score(output, scoped_targets_case, "dimensions_are_checkable")
-        == 0.0
-    )
-    assert (
-        metric_score(output, scoped_targets_case, "no_vague_dimensions") == 0.0
-    )
-    assert (
-        deterministic_quality(
-            output,
-            scoped_targets_case,
-            metric_functions=METRIC_FUNCTIONS,
-        )
-        < 1.0
-    )
-
-
-def test_one_uncreditable_dimension_makes_the_obligation_uncheckable(
-    scoped_targets_case, scoped_target_output
-) -> None:
-    """Every required dimension must be creditable, not merely one of them.
-
-    A required target counts as answered only when
-    ``verified_facts.finding_answers`` holds for a verified finding, and this
-    helper credits only the dimensions such an answer can be checked against,
-    so an obligation carrying one uncreditable dimension beside a creditable
-    one is not checkable as a whole. Reading the
-    helper's list as a truthy/falsey whole called that plan checkable and
-    handed it the metric's weight.
-    """
-    output = scoped_target_output.with_target_dimensions(
-        ["period: the most recent year", "safety record"]
-    )
-
-    assert (
-        metric_score(output, scoped_targets_case, "dimensions_are_checkable")
+        metric_score(output, scoped_targets_case, "targets_have_measure")
         == 0.0
     )
     assert (
@@ -672,62 +660,6 @@ def test_one_uncreditable_dimension_makes_the_obligation_uncheckable(
             metric_functions=METRIC_FUNCTIONS,
         )
         < 1.0
-    )
-
-
-def test_an_explicit_year_and_unit_are_structurally_checkable(
-    scoped_targets_case, scoped_target_output
-) -> None:
-    """A plan is valid even when a generic probe uses a different year and unit."""
-    output = scoped_target_output.with_target_dimensions(
-        [
-            "measure: grid-scale battery storage capacity added, in MW",
-            "period: calendar year 2024",
-        ]
-    )
-
-    assert metric_score(
-        output, scoped_targets_case, "dimensions_are_checkable"
-    ) == 1.0
-
-
-def test_a_vague_dimension_scores_checkability_and_vagueness_zero(
-    scoped_targets_case, scoped_target_output
-) -> None:
-    """The scoping defect both metrics exist for: every obligation still
-    carries "required dimensions", and not one of them names anything a
-    recorded proposition can fill."""
-    output = scoped_target_output.with_target_dimensions(["relevant information"])
-
-    assert (
-        metric_score(output, scoped_targets_case, "dimensions_are_checkable")
-        == 0.0
-    )
-    assert (
-        metric_score(output, scoped_targets_case, "no_vague_dimensions") == 0.0
-    )
-
-
-def test_a_measure_dimension_naming_a_metadata_date_is_uncheckable(
-    scoped_targets_case, scoped_target_output
-) -> None:
-    """The C10 defect: an obligation for a date *about* the evidence.
-
-    ``measure: publication date of the forecast document`` names a metadata
-    dimension, not a fact any page states about the world, so no evidence can
-    ever credit it — that is the live replay C10 shape, and the planner prompt
-    forbids it. The pre-sweep check refused these through the claim-cluster
-    metadata vocabulary; the lexical replacement lost that clause, so this
-    pins it: a ``measure:`` dimension carrying a metadata phrase is not
-    checkable.
-    """
-    output = scoped_target_output.with_target_dimensions(
-        ["measure: publication date of the forecast document"]
-    )
-
-    assert (
-        metric_score(output, scoped_targets_case, "dimensions_are_checkable")
-        == 0.0
     )
 
 

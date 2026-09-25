@@ -580,11 +580,11 @@ def render_planned_targets(targets: Sequence[EvidenceTarget]) -> str:
     """One line per planned target a finding may be bound to, in plan order.
 
     The id is what the reply has to copy, so it leads the line; the question
-    is what decides the binding, so it follows in full, and any structured
+    is what decides the binding, so it follows in full, and the structured
     fields the plan set (measure, unit, period, kind, organisation) follow it
     so the model can bind a figure to the target it actually describes.
-    Criticality stays off the line: an extractor binds content to a question,
-    and whether an obligation is critical decides how coverage is judged, not
+    Whether an obligation is required stays off the line: an extractor binds
+    content to a question, and that flag decides how coverage is judged, not
     what a passage states.
     """
     lines: list[str] = []
@@ -613,6 +613,11 @@ _MEASURE_UNITS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("energy", _ENERGY_UNIT),
     ("power", _POWER_UNIT),
 )
+
+# The bases a structured ``unit_dimension`` can name: the units this parser
+# scales, and no others. A dimension outside them (``percent``, or an open
+# word a later plan uses) is a real obligation but owes no passage a figure.
+_MEASURE_BASES = frozenset(base for base, _pattern in _MEASURE_UNITS)
 
 # A numeral standing immediately before a unit, allowing the whitespace and
 # brackets a figure is written with: "37,143 megawatt hours", "12,314 (MW)".
@@ -648,18 +653,15 @@ def _unit_mentions(text: str) -> list[tuple[str, re.Match[str]]]:
 def _measure_bases(targets: Sequence[EvidenceTarget]) -> frozenset[str]:
     """The measure bases ("power", "energy") these targets ask for.
 
-    A target asks for a quantity when its own prose names a unit: "in MW" is
-    power, "in MWh" is energy. The question and the required dimensions are
-    read together, because either carries the unit and neither is the whole
-    obligation. A target that names no unit asks for no quantity, so no
-    passage can owe it one — "measure: inclusion rule and counting treatment"
-    must not turn every figure in the packet into extraction debt.
+    A target asks for a quantity when its structured ``unit_dimension`` names
+    one: the field is what the plan sets for a figure the answer has to state,
+    so a target carrying no unit dimension asks for no quantity, and no passage
+    can owe it one (PD-7).
     """
     return frozenset(
-        base
+        target.unit_dimension
         for target in targets
-        for text in (target.question, *target.required_dimensions)
-        for base, _match in _unit_mentions(text)
+        if target.unit_dimension in _MEASURE_BASES
     )
 
 

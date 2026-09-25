@@ -37,8 +37,7 @@ _METRICS = {
     "scoped-evidence-targets": (
         ("subtopic_count", 0.20),
         ("targets_declared", 0.30),
-        ("dimensions_are_checkable", 0.25),
-        ("no_vague_dimensions", 0.25),
+        ("targets_have_measure", 0.50),
     ),
     "planner-live-scope": (
         ("subtopic_count", 0.25),
@@ -48,20 +47,6 @@ _METRICS = {
         ("question_preserved", 0.15),
     ),
 }
-
-# The dimension wordings a plan may not rest on. Every entry names no atom
-# field the coverage machinery can credit, so a target whose only dimension is
-# one of these is a target no pass can ever answer.
-_SCOPED_VAGUE_DIMENSION_PHRASES = [
-    "relevant information",
-    "good sources",
-    "background",
-    "details",
-    "context",
-    "overview",
-    "key facts",
-    "general information",
-]
 
 _REFERENCES = {
     "focused-decomposition": {
@@ -93,7 +78,6 @@ _REFERENCES = {
         "maximum_sub_topics": 7,
         "minimum_targets_per_sub_topic": 1,
         "maximum_targets_per_sub_topic": 4,
-        "vague_dimension_phrases": _SCOPED_VAGUE_DIMENSION_PHRASES,
     },
 }
 
