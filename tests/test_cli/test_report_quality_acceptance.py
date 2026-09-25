@@ -473,6 +473,7 @@ def test_the_summary_agrees_with_the_records_it_describes() -> None:
         f"{snapshot.verified_findings + snapshot.corrected_findings} checked "
         f"({snapshot.corrected_findings} with corrected context, "
         f"{snapshot.context_unchecked_findings} unchecked context), "
+        f"{snapshot.quoted_findings} quoted (snippet on the page only), "
         f"{snapshot.dropped_findings} dropped; "
         f"{snapshot.cited_findings} cited" in joined
     )

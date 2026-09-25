@@ -934,9 +934,10 @@ def _written_point(point: ReportPoint, composition: ReportComposition, index: Se
 
 def _header_counts(composition: ReportComposition) -> str:
     statuses = [f.verification for f in composition.findings if f.verification is not None]
-    checked = sum(1 for v in statuses if v.status != "dropped")
+    checked = sum(1 for v in statuses if v.status in {"verified", "verified_corrected"})
     corrected = sum(1 for v in statuses if v.status == "verified_corrected")
     unchecked = sum(1 for v in statuses if v.status != "dropped" and v.context_unchecked)
+    quoted = sum(1 for v in statuses if v.status == "quoted")
     dropped = sum(1 for v in statuses if v.status == "dropped")
     # ``not_found`` holds the *required* targets no finding answered
     # (``verified_facts.not_found_targets``), so an empty list proves the
@@ -949,6 +950,7 @@ def _header_counts(composition: ReportComposition) -> str:
     )
     return (f"{len(written_citations(composition))} sources cited; {checked} findings checked against "
             f"their pages ({corrected} with corrected context, {unchecked} with unchecked context), "
+            f"{quoted} quoted (snippet found on the page; context not checked), "
             f"{dropped} dropped; {unanswered}")
 
 

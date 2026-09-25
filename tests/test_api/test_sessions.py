@@ -427,6 +427,25 @@ def test_session_response_reads_the_typed_measurements_a_pass_recorded() -> None
     assert response.evidence_counts.cited_assessed_sources == 1
 
 
+def test_session_response_counts_quoted_findings_apart() -> None:
+    """D21: a quoted finding is neither verified nor dropped; the API's
+    evidence counts must carry it as its own reading, not silently drop it."""
+    state = judged_state().model_copy(
+        update={"quality": quality_snapshot(quoted_findings=5)}
+    )
+    response = ResearchSessionResponse(
+        session_id="session-1",
+        status="completed",
+        iteration=1,
+        started_at=datetime.now(timezone.utc),
+        report_path=REPORT_PATH,
+        **outcome_response_fields(outcome_of(state)),
+    )
+
+    assert response.evidence_counts is not None
+    assert response.evidence_counts.quoted_findings == 5
+
+
 def test_session_response_fields_are_empty_without_an_outcome() -> None:
     """No outcome contributes nothing: no field is defaulted into the reply."""
     assert outcome_response_fields(None) == {}

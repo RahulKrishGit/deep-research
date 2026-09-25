@@ -120,6 +120,7 @@ def outcome_response_fields(
             cited_assessed_sources=counts.cited_assessed_sources,
             verified_findings=counts.verified_findings,
             corrected_findings=counts.corrected_findings,
+            quoted_findings=counts.quoted_findings,
             dropped_findings=counts.dropped_findings,
             context_unchecked_findings=counts.context_unchecked_findings,
             cited_findings=counts.cited_findings,

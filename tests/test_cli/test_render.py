@@ -916,7 +916,7 @@ def test_the_summary_leads_with_the_quality_block() -> None:
     assert "Quality: partial (review scored 0.90)" in joined
     assert (
         "Findings: 2 checked (0 with corrected context, 0 unchecked context), "
-        "1 dropped; 2 cited" in joined
+        "0 quoted (snippet on the page only), 1 dropped; 2 cited" in joined
     )
     assert (
         "Integrity: 0 duplicate fact rows; 0 uncited statements; "
@@ -989,8 +989,33 @@ def test_the_findings_line_counts_the_verifier_s_own_readings_apart() -> None:
 
     assert (
         "Findings: 4 checked (1 with corrected context, 4 unchecked context), "
-        "2 dropped; 2 cited" in joined
+        "0 quoted (snippet on the page only), 2 dropped; 2 cited" in joined
     )
+
+
+def test_the_findings_line_counts_quoted_findings_apart() -> None:
+    """D21: a quoted finding is neither checked nor dropped -- its own count
+    must appear beside the other four so the line's total still accounts for
+    every finding the pass judged, and a cited finding never outnumbers a
+    checked one."""
+    outcome = build_outcome(
+        state=quality_state(
+            quality=quality_snapshot(
+                verified_findings=17,
+                quoted_findings=19,
+                dropped_findings=2,
+                cited_findings=25,
+            )
+        )
+    )
+
+    joined = "\n".join(render_summary(outcome, verbose=False))
+
+    assert (
+        "Findings: 17 checked (0 with corrected context, 0 unchecked context), "
+        "19 quoted (snippet on the page only), 2 dropped; 25 cited" in joined
+    )
+
 
 
 def test_the_integrity_line_counts_the_unjudged_sentences_it_lists() -> None:
@@ -1710,7 +1735,7 @@ def test_the_summary_counts_the_kept_findings_apart_from_the_dropped_ones() -> N
 
     assert (
         "Findings: 2 checked (0 with corrected context, 0 unchecked context), "
-        "1 dropped; 2 cited" in joined
+        "0 quoted (snippet on the page only), 1 dropped; 2 cited" in joined
     )
     assert "claims" not in joined.casefold()
     assert "critic" not in joined.casefold()
