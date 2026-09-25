@@ -941,14 +941,14 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # point in the executive summary to state every required target the packet
     # names a label for (`1bfcd866e32f` -> `d6b723723629`).
     "evidence_verifier": "a6205ea9c362",
-    "report_writer": "d6b723723629",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
     # ``_split_oversize_point`` gained ``_lead_in`` and no prompt string was
     # edited, so the writer's value moved `1bfcd866e32f` -> `11dde57775b2` and
     # the other four pins and the Judge pin are unchanged.
-    "report_writer": "11dde57775b2",
+    # FF1 (review F2) and FF2 (review F3) both moved the writer; merged `9387d2a0d77a`.
+    "report_writer": "9387d2a0d77a",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
