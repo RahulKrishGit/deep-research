@@ -13,17 +13,26 @@ Nothing here performs I/O, so both artifacts are asserted directly.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
+import tempfile
+from collections.abc import Callable
+from pathlib import Path
 from typing import get_args
 
 import pytest
 
 from deep_research.agents.evidence import build_read_record, resolve_read_works
+from deep_research.agents.evidence_verifier import (
+    StatementCheckDraft,
+    StatementVerdictDraft,
+)
 from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
+    _QUALITY_RECORD_CONTRACT_VERSION,
     _vintage_key,
     DEFAULT_ANSWER_HEADING,
     DEFAULT_READER_WORD_LIMIT,
@@ -60,6 +69,7 @@ from deep_research.agents.report import (
     render_citations,
     render_evidence_ledger,
     render_limitations,
+    render_quality_json,
     render_quality_record,
     render_reader_report,
     render_statement_map,
@@ -70,7 +80,18 @@ from deep_research.agents.report import (
     terminal_report_state,
     validate_report_statements,
 )
+from deep_research.agents.report_writer import (
+    REPORT_WRITER_NAME,
+    ReportWriterAgent,
+    ReportWriterDraft,
+    WriterPointDraft,
+    WriterSectionDraft,
+    compose_written_report,
+)
 from deep_research.agents.researcher import sub_topic_skipped_error
+from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.observability import LangSmithRuntimeConfig, Tracker
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     EVIDENCE_BADGE_LABELS,
     ClaimProvenance,
@@ -84,14 +105,20 @@ from deep_research.utils.types import (
     EvidencePassage,
     EvidenceTarget,
     EvidenceUnit,
+    FigureContext,
+    FigureResult,
     Finding,
+    FindingVerification,
     ReadRecord,
     RejectedDraftPoint,
     ReportAnswerRow,
+    ReportQualitySnapshot,
+    ReportReview,
     ReportStatement,
     ReportTerminalState,
     ResearchError,
     ResearchState,
+    ReviewDefect,
     ScoredSource,
     SourceTemporal,
     StatementMode,
@@ -99,7 +126,10 @@ from deep_research.utils.types import (
     answered_atom_dimensions,
     statement_mode_for_claims,
 )
+from tests.agent_fakes import ScriptedCompleter
+from tests.evidence_fakes import figure, make_finding, make_read, make_target
 from tests.graph_fakes import fake_report_review
+from tests.research_fakes import synthesizer_tools
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 SOURCE_URL = "https://example.org/a"
@@ -5166,3 +5196,306 @@ def test_a_contradicted_claim_is_counted_the_way_the_reader_reads_it() -> None:
         evidence_status_bucket(settled.evidence_status, verdict=settled.verdict)
         == "corroborated"
     )
+
+
+# --- the quality record a written pass publishes (§6.2; Task 4.5) -------------
+#
+# The record is read from the composition the Report Writer produces -- built
+# here the way the writer's own tests build it -- never from a stand-in, so
+# these tests see what the terminal publication writes.
+
+BATTERY_QUESTION = (
+    "How much battery storage capacity was added in the United States in 2024, "
+    "and how much is expected in 2025?"
+)
+EIA = "U.S. Energy Information Administration"
+
+
+def _record_tracker() -> Tracker:
+    """The no-op tracker the writer needs to build a task and fingerprint calls."""
+    return Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=False, project="agent-tests", api_key=None
+        )
+    )
+
+
+def _verified_finding(
+    url: str,
+    snippet: str,
+    *,
+    value: str,
+    unit: str,
+    period: str,
+    kind: str,
+    organisation: str,
+    target: str,
+    attribution: str = "own",
+    release_date: str | None = None,
+) -> Finding:
+    """One finding the Evidence Verifier kept, with its verified figure."""
+    read = make_read(snippet, url=url, title=f"{organisation} page")
+    finding = make_finding(
+        read,
+        snippet,
+        figures=[figure(value, unit, period, kind)],
+        target_ids=[target],
+        release_date=release_date,
+    )
+    result = FigureResult(
+        figure=finding.figures[0],
+        matched=True,
+        evidence_words=snippet,
+        context=FigureContext(
+            period=period, attribution=attribution, organisation=organisation, kind=kind
+        ),
+    )
+    return finding.model_copy(
+        update={
+            "verification": FindingVerification(
+                status="verified", figure_results=[result]
+            )
+        }
+    )
+
+
+EIA_ACTUAL_2024 = _verified_finding(
+    "https://www.eia.gov/todayinenergy/detail.php?id=64705",
+    "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024.",
+    value="10.4",
+    unit="GW",
+    period="2024",
+    kind="actual",
+    organisation=EIA,
+    target="topic-01-target-01",
+    release_date="2025-03-12",
+)
+STEO_FORECAST_2025 = _verified_finding(
+    "https://ent.news/2025/1/940.pdf",
+    "Battery storage capacity grows by 14 GW in 2025.",
+    value="14",
+    unit="GW",
+    period="2025",
+    kind="forecast",
+    organisation=EIA,
+    target="topic-02-target-01",
+    attribution="relayed",
+    release_date="2025-01-15",
+)
+
+_WRITTEN_DRAFT = ReportWriterDraft(
+    executive_summary=[
+        WriterPointDraft(
+            text=(
+                "Generators added 10.4 GW of battery storage capacity in the "
+                "United States in 2024."
+            ),
+            finding_labels=["F01"],
+        )
+    ],
+    sections=[
+        WriterSectionDraft(
+            title="2025 outlook",
+            points=[
+                WriterPointDraft(
+                    text="Battery storage capacity grows by 14 GW in 2025.",
+                    finding_labels=["F02"],
+                )
+            ],
+        )
+    ],
+)
+
+
+def _statement_check_reply(messages: list, schema: type) -> StatementCheckDraft:
+    """Answer the Statement Check's batch, refusing the last sentence.
+
+    The labels are read out of the request the checker itself built, so the
+    kept sentence and the refused one are both exercised whichever batch the
+    real ``check_statements`` hands the provider; the refused sentence is a
+    section point, so its section has nothing left to publish.
+    """
+    del schema
+    labels = re.findall(r"## (S\d+)", messages[1].content)
+    refused = labels[-1]
+    return StatementCheckDraft(
+        statements=[
+            StatementVerdictDraft(
+                label=label,
+                verdict="inconsistent" if label == refused else "consistent",
+                reason=(
+                    "The sentence states a figure the cited finding does not state."
+                    if label == refused
+                    else "The sentence states only what its cited finding states."
+                ),
+            )
+            for label in labels
+        ]
+    )
+
+
+def _written_snapshot(composition: ReportComposition) -> ReportQualitySnapshot:
+    """The snapshot Task 4.3 takes of this pass, with the step-4 fields."""
+    return ReportQualitySnapshot(
+        coverage_ratio=1.0,
+        planned_topics=1,
+        covered_topics=1,
+        unique_findings=len(composition.findings),
+        unique_sources=1,
+        cited_sources=1,
+        scored_cited_source_ratio=1.0,
+        verified_claims=0,
+        contradicted_claims=0,
+        duplicate_claims=0,
+        duplicate_source_rows=0,
+        uncited_settled_points=0,
+        hard_failures=[],
+        unjudged_sentences=[],
+        forecasts_without_release=1,
+    )
+
+
+def written_state() -> ResearchState:
+    """A state whose composition is the one the Report Writer produces.
+
+    The scripted provider answers the writer's draft request and then the
+    Statement Check's batch, as the writer's own tests drive them, so the
+    composition holds one kept sentence, one refused sentence, the key facts
+    and one required target no finding answers.
+    """
+    targets = [
+        make_target(organisation=EIA),
+        make_target(
+            "topic-02-target-01",
+            kind="forecast",
+            period="2025",
+            organisation=EIA,
+        ),
+        make_target(
+            "topic-09-target-01", period="2026", organisation="Wood Mackenzie"
+        ),
+    ]
+    topics = [
+        SubTopic(
+            coverage_id=target.coverage_id,
+            title=target.target_id,
+            rationale="r",
+            search_queries=["q"],
+            success_criteria=["c"],
+            priority=number,
+            evidence_targets=[target],
+        )
+        for number, target in enumerate(targets, start=1)
+    ]
+    state = ResearchState(
+        session_id="session-1",
+        original_question=BATTERY_QUESTION,
+        sub_topics=topics,
+        verified_findings=[EIA_ACTUAL_2024, STEO_FORECAST_2025],
+    )
+    completer = ScriptedCompleter(outputs=[_WRITTEN_DRAFT, _statement_check_reply])
+    tracker = _record_tracker()
+    writer = ReportWriterAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id=state.session_id,
+            agent_name=REPORT_WRITER_NAME,
+            max_entries=20,
+        ),
+        # The writer declares these two; composing a report never publishes
+        # through them, so the root only has to exist for the tool to be built.
+        tools=synthesizer_tools(
+            tracker, output_root=Path(tempfile.mkdtemp(prefix="ev-t4-5-"))
+        ),
+        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
+    )
+
+    async def compose() -> ReportComposition:
+        task = writer.build_task(state)
+        draft, _ = await writer.draft(task)
+        return await compose_written_report(
+            task, draft, provider=completer, fingerprint=writer.fingerprint_call
+        )
+
+    composition = asyncio.run(compose())
+    return state.model_copy(
+        update={
+            "composition": composition,
+            "quality": _written_snapshot(composition),
+        }
+    )
+
+
+def test_the_quality_record_carries_the_verified_findings_and_refusals() -> None:
+    state = written_state()      # a ResearchState whose composition comes from compose_written_report
+    record = json.loads(render_quality_json(state, state.composition, None, quality_status="partial"))
+    assert {"quality", "review", "findings", "fact_rows", "not_found", "statements", "refused_sentences"} <= set(record)
+    assert record["refused_sentences"][0]["text"] and record["refused_sentences"][0]["finding_labels"]
+    assert all("verification" in f for f in record["findings"])
+    assert "claims" not in record and "claim_clusters" not in record
+
+
+def test_the_quality_record_stamps_the_step_four_contract_version() -> None:
+    """The record moves with its own shape.
+
+    A consumer that reads ``findings`` and ``refused_sentences`` has to be
+    able to tell this record from the claim-era one whose ``claims`` and
+    ``claim_clusters`` it replaced, so the version the record stamps is the
+    new one and not the version the claim-era contract wrote.
+    """
+    state = written_state()
+    record = json.loads(render_quality_json(state, state.composition, None))
+    assert record["quality_contract_version"] == _QUALITY_RECORD_CONTRACT_VERSION
+    assert _QUALITY_RECORD_CONTRACT_VERSION != QUALITY_CONTRACT_VERSION
+
+
+def test_the_quality_record_publishes_the_review_the_reviewer_recorded() -> None:
+    """The judgement block is the reviewer's own, never a re-derivation.
+
+    ``mean_score`` is the review's own property (the mean over the seven
+    dimensions, and ``None`` without a full set), each disposition is the
+    reviewer's reading of one statement, and each defect keeps the materiality
+    the acceptance helper reads -- so the record and the gate that judged the
+    same review cannot disagree about what was decided.
+    """
+    state = written_state()
+    review = ReportReview(
+        status="scored",
+        dimensions=dict.fromkeys(REVIEW_DIMENSIONS, 0.9),
+        defects=[
+            ReviewDefect(
+                defect_id="review-01",
+                kind="presentation",
+                severity="major",
+                statement_ids=["S001"],
+                problem="The summary repeats the table's own release wording.",
+            )
+        ],
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        missing_required_target_ids=["topic-09-target-01"],
+        input_fingerprint="packet-1",
+    )
+    record = json.loads(render_quality_json(state, state.composition, review))
+
+    published = record["review"]
+    assert published["mean_score"] == pytest.approx(0.9)
+    assert {key: value for key, value in published.items() if key != "mean_score"} == {
+        "status": "scored",
+        "dimensions": dict.fromkeys(REVIEW_DIMENSIONS, 0.9),
+        "defects": [
+            {
+                "defect_id": "review-01",
+                "kind": "presentation",
+                "severity": "major",
+                "material": True,
+                "target_ids": [],
+                "statement_ids": ["S001"],
+                "problem": "The summary repeats the table's own release wording.",
+            }
+        ],
+        "dispositions": {"S001": "supported"},
+        "missing_required_target_ids": ["topic-09-target-01"],
+    }
+
