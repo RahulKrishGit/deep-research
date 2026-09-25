@@ -131,11 +131,7 @@ def _plan_draft() -> ResearchPlanDraft:
                     EvidenceTargetDraft(
                         question="Which United States instrument settles "
                         f"{title.lower()}?",
-                        required_dimensions=[
-                            f"measure: the binding rule for {title.lower()}",
-                            "source: the issuing authority",
-                        ],
-                        critical=priority == 1,
+                        measure=f"the binding rule for {title.lower()}",
                     )
                 ],
             )

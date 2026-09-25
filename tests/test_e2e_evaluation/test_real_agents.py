@@ -313,8 +313,10 @@ def _cache_probe(declared: str) -> tuple[ReplayScenario, object]:
             ReplayTopic(
                 title="Adoption rate",
                 question="What was the Acme widget adoption rate in 2024?",
-                dimensions=("rate",),
-                critical=True,
+                measure="the Acme widget adoption rate",
+                unit_dimension="percent",
+                period="2024",
+                kind="actual",
                 query="Acme widget adoption rate 2024",
                 sources=(page,),
             ),

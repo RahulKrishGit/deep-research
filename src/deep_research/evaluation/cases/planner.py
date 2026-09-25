@@ -111,20 +111,6 @@ _SCOPED_RUBRIC = rubric(
     ),
 )
 
-# The dimension wordings the case refuses: each names no atom field the
-# coverage machinery can credit, so a target carrying only one of these
-# states an obligation no source can ever be shown to answer.
-_VAGUE_DIMENSION_PHRASES = (
-    "relevant information",
-    "good sources",
-    "background",
-    "details",
-    "context",
-    "overview",
-    "key facts",
-    "general information",
-)
-
 # `planner-scoped-targets` has no scripted search results and no memory
 # entries: a plan's scoping is decided from the question and the answer
 # contract, so the scenario exists only to make those dependencies available
@@ -137,8 +123,8 @@ _SCOPED = build_case(
     purpose=(
         "Decompose a comparative question that also carries an official-"
         "instrument component: every sub-topic must carry at least one "
-        "counted evidence target, every required dimension must name "
-        "something evidence can credit, and the comparative obligation must "
+        "counted evidence target, every target must name the measure it asks "
+        "for, and the comparative obligation must "
         "keep the independent-pair policy its own wording earns instead of "
         "being downgraded to a single-side lookup."
     ),
@@ -161,7 +147,6 @@ _SCOPED = build_case(
             # The contract's own ceiling, declared here as well so a reader
             # of the case sees the bound the metric polices.
             "maximum_targets_per_sub_topic": 4,
-            "vague_dimension_phrases": list(_VAGUE_DIMENSION_PHRASES),
         },
         known_source_urls=[],
         max_iterations=5,
@@ -179,16 +164,10 @@ _SCOPED = build_case(
                 "reserved omission marker is not an obligation.",
             ),
             (
-                "dimensions_are_checkable",
-                0.25,
-                "Every required dimension of every target is one a recorded "
-                "proposition can credit.",
-            ),
-            (
-                "no_vague_dimensions",
-                0.25,
-                "No target rests on a dimension that names nothing "
-                "answerable.",
+                "targets_have_measure",
+                0.50,
+                "Every target names the measure it asks for, so the answer "
+                "can be checked against it.",
             ),
         ),
     ),

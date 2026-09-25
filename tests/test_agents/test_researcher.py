@@ -1813,15 +1813,21 @@ FORECAST_TARGET_QUESTION = (
 )
 
 
-def _plan_target(target_id: str, question: str) -> EvidenceTarget:
-    """One planned obligation, named the way ``planner.target_id_for`` names it."""
+def _plan_target(
+    target_id: str, question: str, unit_dimension: str | None = None
+) -> EvidenceTarget:
+    """One planned obligation, named the way ``planner.target_id_for`` names it.
+
+    ``unit_dimension`` is the base the target's own question measures in, as
+    the planner stamps it: ``None`` for a question that names no unit.
+    """
     return EvidenceTarget(
         target_id=target_id,
         coverage_id=target_id.rsplit("-target-", 1)[0],
         question=question,
-        required_dimensions=["measure: battery storage capacity additions"],
+        measure="battery storage capacity additions",
+        unit_dimension=unit_dimension,
         required=True,
-        critical=True,
     )
 
 
@@ -1838,7 +1844,11 @@ def _plan_topics() -> list[SubTopic]:
         _sub_topic(TOPIC_02_TITLE, 2, coverage_id="topic-02").model_copy(
             update={
                 "evidence_targets": [
-                    _plan_target(FORECAST_TARGET_ID, FORECAST_TARGET_QUESTION)
+                    _plan_target(
+                        FORECAST_TARGET_ID,
+                        FORECAST_TARGET_QUESTION,
+                        unit_dimension="power",
+                    )
                 ]
             }
         ),
@@ -3590,12 +3600,12 @@ def _quantity_topic() -> SubTopic:
                     target_id=PLANNED_TARGET_ID,
                     coverage_id="topic-01",
                     question=_QUANTITY_TARGET_QUESTION,
-                    required_dimensions=[
-                        "measure: grid-scale battery storage energy capacity "
+                    measure=(
+                        "grid-scale battery storage energy capacity "
                         "deployed, in MWh"
-                    ],
+                    ),
+                    unit_dimension="energy",
                     required=True,
-                    critical=True,
                 )
             ]
         }

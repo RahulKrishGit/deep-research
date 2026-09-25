@@ -270,8 +270,6 @@ class ReplayTopic:
 
     title: str
     question: str
-    dimensions: tuple[str, ...]
-    critical: bool
     query: str
     sources: tuple[ReplaySource, ...]
     success_criteria: tuple[str, ...] = ("A figure is quoted.",)
@@ -287,10 +285,9 @@ class ReplayTopic:
     # The obligation's structured fields, exactly as the planner's draft
     # carries them (Task 1.4, ``EvidenceTargetDraft``): the measure it asks
     # for, the unit dimension, period and kind its evidence has to state, and
-    # the geography and organisation it names. Empty is a qualitative
-    # obligation (PD-7) -- answered by a verified finding that names it --
-    # which is what a topic whose dimension is prose ("measure: the mechanism
-    # behind the change") carries.
+    # the geography and organisation it names. An empty unit dimension is a
+    # qualitative obligation (PD-7) -- answered by a verified finding that
+    # names it -- which is what a topic whose measure states no unit carries.
     measure: str = ""
     unit_dimension: str = ""
     period: str = ""
@@ -817,8 +814,6 @@ class ReplayCompleter(AgentCompleter):
                     evidence_targets=[
                         EvidenceTargetDraft(
                             question=topic.question,
-                            required_dimensions=list(topic.dimensions),
-                            critical=topic.critical,
                             measure=topic.measure,
                             unit_dimension=topic.unit_dimension,
                             period=topic.period,

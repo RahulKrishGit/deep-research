@@ -160,21 +160,22 @@ def target(
     target_id: str,
     *,
     question: str,
-    measure: str | None = None,
+    measure: str,
     unit_dimension: str | None = None,
     period: str | None = None,
     kind: str | None = None,
     geography: str | None = None,
     organisation: str | None = None,
     required: bool = True,
-    critical: bool = False,
 ) -> EvidenceTarget:
     """One curated evidence target, under the id its own plan stamps.
 
     ``target_id`` is ``<coverage_id>-target-NN`` exactly as ``PlannerAgent``
     derives it, and the coverage id is read back out of it rather than
     supplied twice: a target whose two ids disagreed would bind to a topic
-    that does not own it.
+    that does not own it. ``measure`` is required, because it is the field the
+    answer is checked against: a target that states no measure is one no
+    finding can be shown to answer.
     """
     coverage_id, _, suffix = target_id.rpartition("-target-")
     if not coverage_id or not suffix:
@@ -185,13 +186,9 @@ def target(
         target_id=target_id,
         coverage_id=coverage_id,
         question=question,
-        required_dimensions=[
-            f"measure: {measure}" if measure else f"question: {question}"
-        ],
         required=required,
-        critical=critical,
         measure=measure,
-        unit_dimension=unit_dimension,  # type: ignore[arg-type]
+        unit_dimension=unit_dimension,
         period=period,
         kind=kind,  # type: ignore[arg-type]
         geography=geography,
