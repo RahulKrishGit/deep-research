@@ -693,12 +693,12 @@ Checkpointing uses an in-process `InMemorySaver`; a durable saver drops into
 
 | Event type | Emitted by | Key metadata |
 | --- | --- | --- |
-| `graph.session.started` | Runner | `session_id`, `max_iterations`, `checkpointing` |
+| `graph.session.started` | Runner | `session_id`, `max_extra_passes`, `checkpointing` |
 | `graph.node.started` | Every node | `node`, `iteration` |
 | `graph.node.completed` | Every node | `node`, `iteration`, `event_count`, `error_count` |
 | `graph.node.skipped` | Every node after a halt | `node`, `iteration`, `reason` |
-| `graph.route.decided` | Report Reviewer node | `destination`, `reason`, `iteration`, `max_iterations`, `missing_targets` |
-| `graph.refinement.started` | Extra-pass node | `iteration`, `max_iterations`, `target_ids` |
+| `graph.route.decided` | Report Reviewer node | `destination`, `reason`, `iteration`, `max_extra_passes`, `missing_required_target_ids` |
+| `graph.extra_pass.started` | Extra-pass node | `iteration`, `max_extra_passes`, `targets` |
 | `graph.session.completed` | Runner | `status`, `iteration`, `error_count`, `has_report` |
 
 The `graph.route.decided` fragment is always the router's own enumerated reason
