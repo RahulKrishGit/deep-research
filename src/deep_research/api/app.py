@@ -180,7 +180,7 @@ def create_app(
         session = store.start(
             session_id=request.state.session_id,
             query=payload.query,
-            max_iterations=payload.max_iterations,
+            max_extra_passes=payload.max_iterations,
             output_format=payload.output_format,
             config_overrides=payload.config_overrides,
             config_path=config_path,

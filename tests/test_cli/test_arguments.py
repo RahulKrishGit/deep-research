@@ -90,11 +90,28 @@ def test_no_arguments_at_all_is_a_usage_error() -> None:
     assert caught.value.code == 2
 
 
-def test_a_non_positive_iteration_budget_is_a_usage_error() -> None:
+def test_max_iterations_sets_the_extra_passes_and_accepts_zero() -> None:
+    assert parse_arguments(["q", "--max-iterations", "0"]).max_iterations == 0
+    assert parse_arguments([QUESTION, "--max-iterations", "1"]).max_iterations == 1
+    assert parse_arguments(
+        [QUESTION, "--max-iterations", "5"]
+    ).max_iterations == 5
+
+
+def test_a_negative_iteration_budget_is_a_usage_error() -> None:
+    """Zero is a legitimate ceiling; a negative count is not a count."""
     with pytest.raises(SystemExit) as caught:
-        parse_arguments([QUESTION, "--max-iterations", "0"])
+        parse_arguments([QUESTION, "--max-iterations", "-1"])
 
     assert caught.value.code == 2
+
+
+def test_the_iteration_help_says_what_the_budget_buys() -> None:
+    """PD-15: the flag keeps its name, and now sets the extra passes."""
+    help_text = build_parser().format_help()
+
+    assert "extra research passes for missing required targets" in help_text
+    assert "graph.max_extra_passes" in help_text
 
 
 def test_the_help_text_names_every_documented_option(capsys) -> None:

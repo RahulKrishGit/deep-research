@@ -99,18 +99,12 @@ def outcome_response_fields(
     coverage = outcome.coverage
     if coverage is not None:
         fields["coverage"] = CoverageProgressResponse(
-            planned_topics=coverage.planned_topics,
-            covered_topics=coverage.covered_topics,
-            substantive_topic_ratio=coverage.substantive_topic_ratio,
-            planned_targets=coverage.planned_targets,
             required_targets=coverage.required_targets,
             answered_targets=coverage.answered_targets,
-            critical_targets=coverage.critical_targets,
-            answered_critical_targets=coverage.answered_critical_targets,
-            unanswered_critical_target_ids=list(
-                coverage.unanswered_critical_target_ids
+            missing_required_target_ids=list(
+                coverage.missing_required_target_ids
             ),
-            unaccounted_target_ids=list(coverage.unaccounted_target_ids),
+            not_found_target_ids=list(coverage.not_found_target_ids),
         )
     counts = outcome.evidence_counts
     if counts is not None:
@@ -124,11 +118,11 @@ def outcome_response_fields(
             findings=counts.findings,
             assessed_sources=counts.assessed_sources,
             cited_assessed_sources=counts.cited_assessed_sources,
-            checked_claims=counts.checked_claims,
-            corroborated=counts.corroborated,
-            primary_attributed=counts.primary_attributed,
-            contested=counts.contested,
-            not_established=counts.not_established,
+            verified_findings=counts.verified_findings,
+            corrected_findings=counts.corrected_findings,
+            dropped_findings=counts.dropped_findings,
+            context_unchecked_findings=counts.context_unchecked_findings,
+            cited_findings=counts.cited_findings,
         )
     return fields
 
@@ -145,7 +139,7 @@ class SessionStore:
         *,
         session_id: str,
         query: str,
-        max_iterations: int | None,
+        max_extra_passes: int | None,
         output_format: str,
         config_overrides: dict[str, JsonValue],
         config_path: str,
@@ -155,6 +149,10 @@ class SessionStore:
         The record is visible (and its status is ``running``) before the
         background task gets its first chance to execute, so a caller can
         never observe a session that was started but not yet registered.
+
+        ``max_extra_passes`` is the extra-pass ceiling the request asked for,
+        never ``max_iterations``: the request field kept its name for existing
+        clients, and this is the graph's own vocabulary for what it sets.
         """
         if session_id in self._sessions:
             raise ValueError(f"a session already exists for {session_id!r}")
@@ -169,7 +167,7 @@ class SessionStore:
             self._run(
                 session=session,
                 query=query,
-                max_iterations=max_iterations,
+                max_extra_passes=max_extra_passes,
                 output_format=output_format,
                 config_overrides=config_overrides,
                 config_path=config_path,
@@ -237,7 +235,7 @@ class SessionStore:
         *,
         session: ResearchSession,
         query: str,
-        max_iterations: int | None,
+        max_extra_passes: int | None,
         output_format: str,
         config_overrides: dict[str, JsonValue],
         config_path: str,
@@ -253,7 +251,7 @@ class SessionStore:
             outcome = await self._runner(
                 question=query,
                 session_id=session.session_id,
-                max_iterations=max_iterations,
+                max_extra_passes=max_extra_passes,
                 output_format=output_format,
                 config_overrides=config_overrides,
                 config_path=config_path,
