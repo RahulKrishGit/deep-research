@@ -321,6 +321,40 @@ def test_one_passage_restated_twice_is_one_finding() -> None:
     assert kept.target_ids == ["topic-01-target-01", "topic-02-target-01"]
 
 
+def test_one_passage_extracted_in_several_loops_is_one_finding() -> None:
+    """D13: identity folds across sub-topics on (read, locator, figure set).
+
+    Three research loops each read the same page and mine the same passage,
+    each stamping its own sub-topic on what it extracted -- the shape that
+    published one page's chunk as three findings (F01/F19/F27) for one fact.
+    The URL, the read, the locator, the verbatim snippet and the figure are
+    identical; only the sub-topic and the prose differ, and neither is what
+    the evidence *is*.
+    """
+    read = make_read("Reported capacity rose to 12,314 MW in 2024.")
+    snippet = "Reported capacity rose to 12,314 MW in 2024."
+    figure_ = figure("12,314", "MW", "2024", "actual")
+    first = make_finding(
+        read, snippet, figures=[figure_],
+        content="Capacity rose to 12,314 MW in 2024.",
+        target_ids=["topic-01-target-01"],
+    ).model_copy(update={"related_sub_topic": "Grid-scale capacity"})
+    second = make_finding(
+        read, snippet, figures=[figure_],
+        content="In 2024 the reported capacity was 12,314 MW.",
+        target_ids=["topic-02-target-01"],
+    ).model_copy(update={"related_sub_topic": "Battery storage economics"})
+    third = make_finding(
+        read, snippet, figures=[figure_],
+        content="The monitor reported 12,314 MW of capacity for 2024.",
+    ).model_copy(update={"related_sub_topic": "Market outlook"})
+
+    folded = deduplicate_findings([first, second, third])
+
+    (kept,) = folded
+    assert kept.target_ids == ["topic-01-target-01", "topic-02-target-01"]
+
+
 def test_two_statements_of_one_passage_stay_two_findings() -> None:
     """The fold is on the sentence mined, not on the passage alone.
 

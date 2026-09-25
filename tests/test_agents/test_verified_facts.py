@@ -300,6 +300,45 @@ def test_figures_with_no_period_are_one_fact_only_on_a_shared_subject() -> None:
     assert row.value == "4.7 out of 5" and [e.value for e in row.earlier] == ["4.5 out of 5"]
 
 
+def _priced(subject, value, unit, *, url):
+    text = f"{subject} costs {value} {unit}."
+    read = make_read(text, url=url, title="Price guide")
+    finding = make_finding(read, text,
+                           figures=[figure(value, unit, None, "actual").model_copy(
+                               update={"subject": subject})],
+                           target_ids=["topic-01-target-01"])
+    return verified(finding, ctx(organisation="Example Test Lab", period=None, kind="actual",
+                                 subject=subject))
+
+
+def test_dollar_spellings_fold_into_one_fact_printed_as_the_page_wrote_it() -> None:
+    """D13: "$", "USD" and "dollars" are one unit when facts are compared, so
+    the same price extracted with two spellings is one row -- printed exactly
+    as its own page wrote it, never rewritten to the other page's spelling."""
+    target = make_target("topic-01-target-01", measure="price", unit_dimension="currency",
+                         period=None, kind=None, geography=None, organisation=None)
+    dollar_sign = _priced("Model X", "390", "$", url="https://a.example.test/x")
+    spelled_out = _priced("Model X", "390", "USD", url="https://b.example.test/x")
+
+    [row] = fact_rows([dollar_sign, spelled_out], [target])
+
+    assert row.value == "390 $"
+    assert len(row.duplicate_finding_ids) == 1
+
+
+def test_score_scales_fold_into_one_fact_printed_as_the_page_wrote_it() -> None:
+    """D13: "/5" and "out of 5" are one scale when facts are compared."""
+    target = make_target("topic-01-target-01", measure="rating", unit_dimension="rating",
+                         period=None, kind=None, geography=None, organisation=None)
+    slash = _priced("Model X", "4.8", "/5", url="https://a.example.test/x")
+    spelled_out = _priced("Model X", "4.8", "out of 5", url="https://b.example.test/x")
+
+    [row] = fact_rows([slash, spelled_out], [target])
+
+    assert row.value == "4.8 /5"
+    assert len(row.duplicate_finding_ids) == 1
+
+
 def test_a_subject_that_restates_the_target_names_nothing() -> None:
     target = make_target()
     words = subject_context([target.target_id], [target])
@@ -1377,9 +1416,9 @@ def when_sub_topics() -> list[SubTopic]:
 
 
 def dated_finding(*, sub_topic: str = WHEN_TITLE, target_ids: Sequence[str] = (),
-                  value: str = "2 August 2025", **fields):
+                  value: str = "2 August 2025", text: str | None = None, **fields):
     """One unbound finding of the third sub-topic, on the shape the run produced."""
-    text = f"The obligations apply from {value}."
+    text = text or f"The obligations apply from {value}."
     read = make_read(text, url="https://example-relay.example/law/12",
                      title="Article 12: Registration | Example Act | Example Relay")
     finding = make_finding(read, text, figures=[figure(value, "date", None, "actual")],
@@ -1488,10 +1527,16 @@ def test_the_fold_never_turns_an_extracted_fact_into_a_not_found() -> None:
 
 
 def test_an_unbound_finding_answers_its_own_sub_topics_targets() -> None:
-    """1A, on the run's shape: unbound findings of the third sub-topic answer both
-    of its required targets, so the report stops declaring them Not found."""
+    """1A, on the run's shape: unbound findings of the third sub-topic each answer
+    the one required target their own content states, so the report stops
+    declaring either Not found (D9: the fallback needs a content check, so the
+    two targets sharing "what date" are told apart by what each finding says)."""
     topics, targets = when_sub_topics(), when_targets()
-    findings = [dated_finding(), dated_finding(value="2 August 2027")]
+    applies = dated_finding()
+    complies = dated_finding(
+        value="2 August 2027",
+        text="An item already placed on the market before that date must comply by 2 August 2027.")
+    findings = [applies, complies]
 
     # Before the fallback is handed the plan, every target stays unanswered --
     # which is exactly what the run's own gate reported.
@@ -1500,10 +1545,24 @@ def test_an_unbound_finding_answers_its_own_sub_topics_targets() -> None:
         "topic-03-target-01", "topic-03-target-02"]
 
     answered = answered_target_ids(findings, targets, sub_topics=topics)
-    assert set(answered) == {"topic-03-target-01", "topic-03-target-02"}
-    assert sorted(answered["topic-03-target-01"]) == sorted(
-        finding_fingerprint(f) for f in findings)
+    assert answered == {
+        "topic-03-target-01": [finding_fingerprint(applies)],
+        "topic-03-target-02": [finding_fingerprint(complies)],
+    }
     assert not_found_targets(topics, answered, {}) == []
+
+
+def test_an_unbound_off_topic_finding_answers_no_target() -> None:
+    """D9: naming the sub-topic is not enough on its own -- the run's Shure
+    findings named the mic-quality sub-topic's coverage id and, with no check
+    on what they actually said, answered every required target it owned. A
+    finding whose content states neither target's question answers neither."""
+    topics, targets = when_sub_topics(), when_targets()
+    off_topic = dated_finding(text="The manufacturer offers a two-year limited warranty.")
+
+    assert answered_target_ids([off_topic], targets, sub_topics=topics) == {}
+    assert not any(finding_answers(off_topic, target, sub_topics=topics) for target in targets)
+
 
 
 def test_the_fallback_answers_only_the_findings_own_sub_topic() -> None:
@@ -1553,11 +1612,12 @@ def test_a_figure_target_is_answered_by_its_fields_not_by_the_sub_topic() -> Non
 
 
 def test_a_fallback_answer_reaches_the_row_it_builds() -> None:
-    """The row a writer cites carries the obligation the fallback answered."""
+    """The row a writer cites carries the obligation the fallback answered,
+    and only that obligation (D9): a finding's content states one target's
+    question, so its row carries that target alone."""
     topics, targets = when_sub_topics(), when_targets()
-    rows = fact_rows([dated_finding()], targets, sub_topics=topics)
-    assert [row.target_ids for row in rows] == [
-        ["topic-03-target-01", "topic-03-target-02"]]
+    [row] = fact_rows([dated_finding()], targets, sub_topics=topics)
+    assert row.target_ids == ["topic-03-target-01"]
     assert fact_rows([dated_finding()], targets)[0].target_ids == []
 
 

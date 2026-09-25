@@ -101,6 +101,39 @@ def test_same_quantity_compares_across_scales() -> None:
     assert ten_gw is not None and same_quantity(ten_gw, found)
 
 
+# ---------------------------------------------------------------------------
+# D13: currency and score spellings compare as one unit, unscaled
+# ---------------------------------------------------------------------------
+
+
+def test_currency_spellings_are_one_unit_for_comparison() -> None:
+    """"dollars", "USD", "$" and "US$" name one unit when two figures are
+    compared (D13), so the same price extracted with two spellings is one
+    fact. Never scaled: ``unit_dimension`` still reads ``None`` for either."""
+    dollars = parse_figure("390", "$")
+    assert dollars is not None
+    for spelling in ("USD", "US$", "dollars", "dollar"):
+        other = parse_figure("390", spelling)
+        assert other is not None
+        assert same_quantity(dollars, other), spelling
+        assert unit_dimension(spelling) is None
+    assert unit_dimension("$") is None
+
+
+def test_score_scales_are_one_unit_for_comparison() -> None:
+    """"/5" and "out of 5" name one scale when two figures are compared."""
+    slash = parse_figure("4.8", "/5")
+    spelled = parse_figure("4.8", "out of 5")
+    assert slash is not None and spelled is not None
+    assert same_quantity(slash, spelled)
+    assert unit_dimension("/5") is None and unit_dimension("out of 5") is None
+
+
+def test_different_score_denominators_are_not_one_scale() -> None:
+    out_of_5 = parse_figure("4.8", "/5")
+    out_of_10 = parse_figure("4.8", "/10")
+    assert out_of_5 is not None and out_of_10 is not None
+    assert not same_quantity(out_of_5, out_of_10)
 
 
 # ---------------------------------------------------------------------------
