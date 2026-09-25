@@ -153,6 +153,66 @@ async def test_an_oversize_point_is_split_at_a_sentence_boundary_keeping_its_cit
     assert composition.rejected_points == []
 
 
+_LIST_LEAD = "The example rule requires providers of the covered models to:"
+_LIST_ITEMS = (
+    "(a) perform the model evaluation the rule requires, including the adversarial testing it names "
+    "for every model the rule covers and for each version the provider has released;",
+    "(b) assess and mitigate the possible systemic risks the rule names, and document the assessment "
+    "the provider made for every model the rule covers, in the form the rule describes;",
+    "(c) keep track of the serious incidents the rule describes and report them to the office the rule "
+    "names, without the delay the rule sets and in the form the office asks for;",
+    "(d) ensure the level of cybersecurity protection the rule requires for the model and for the "
+    "physical infrastructure it runs on, at the level the rule describes for each of them.",
+)
+
+
+@pytest.mark.asyncio
+async def test_a_split_list_piece_carries_the_points_own_lead_in(writer, checker) -> None:
+    """F3: a piece cut after a ';' keeps the point's own introduction, so it stands alone.
+
+    Run 2's shape: the run refused a 775-character obligation list whole, and the
+    first split then handed the reader "(c) keep track of … and (d) ensure …" --
+    no subject, none of the conditions the sentence opened with. Each
+    continuation piece now carries that introduction verbatim; the words are the
+    drafted point's own, once, with the introduction repeated.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = " ".join([_LIST_LEAD, *_LIST_ITEMS])
+    assert len(drafted) > MAX_POINT_CHARS
+
+    draft = ReportWriterDraft(sections=[WriterSectionDraft(title="Basis", points=[
+        WriterPointDraft(text=drafted, finding_labels=[label]),
+    ])])
+    composition = await compose_written_report(task, draft, provider=writer.provider,
+                                               fingerprint=writer.fingerprint_call)
+
+    points = composition.sections[0].points
+    pieces = [point.text for point in points]
+    assert len(pieces) > 1
+    assert all(piece.startswith(_LIST_LEAD) for piece in pieces)
+    assert all(len(piece) <= MAX_POINT_CHARS for piece in pieces)
+    assert all(point.statement.finding_ids == [finding_fingerprint(EIA_2024)] for point in points)
+    assert " ".join([pieces[0], *(piece[len(_LIST_LEAD):].strip() for piece in pieces[1:])]) == drafted
+    assert composition.rejected_points == []
+
+    # A clause-separated point with no colon has no colon to lead with: its own
+    # first clause introduces the rest.
+    plain = ("The example rule requires providers to keep the records it names; "
+             + "and to report the incidents it names; " * 16
+             + "and to ensure the protection it requires for the model.")
+    assert len(plain) > MAX_POINT_CHARS
+    plain_draft = ReportWriterDraft(sections=[WriterSectionDraft(title="Basis", points=[
+        WriterPointDraft(text=plain, finding_labels=[label]),
+    ])])
+    plain_composition = await compose_written_report(task, plain_draft, provider=writer.provider,
+                                                     fingerprint=writer.fingerprint_call)
+    plain_pieces = [point.text for point in plain_composition.sections[0].points]
+    first_clause = plain.split(";")[0]
+    assert len(plain_pieces) > 1
+    assert all(piece.startswith(first_clause) for piece in plain_pieces)
+
+
 @pytest.mark.asyncio
 async def test_a_drafted_point_with_no_boundary_to_split_on_is_still_refused(writer, checker) -> None:
     """One clause over the bound cannot be split honestly, so it is refused as before."""

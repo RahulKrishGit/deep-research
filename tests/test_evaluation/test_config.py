@@ -931,8 +931,14 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # defects a re-draft is asked about). Neither item edited a prompt string
     # or ``agents.prompts``, so the other three target pins and the Judge pin
     # are unchanged.
+    # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
+    # ';' is now printed with the point's own introduction in front of it, so a
+    # list's later items no longer stand without their subject and conditions;
+    # ``_split_oversize_point`` gained ``_lead_in`` and no prompt string was
+    # edited, so the writer's value moved `1bfcd866e32f` -> `11dde57775b2` and
+    # the other four pins and the Judge pin are unchanged.
     "evidence_verifier": "a6205ea9c362",
-    "report_writer": "1bfcd866e32f",
+    "report_writer": "11dde57775b2",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
