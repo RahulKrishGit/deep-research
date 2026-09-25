@@ -140,65 +140,86 @@ CONTEXT_PASSAGE_CHARS = 3000
 
 CONTEXT_CHECK_SYSTEM_PROMPT = (
     "You check the context of figures that a research system copied from web "
-    "pages. For each figure you are shown the snippet it was copied from, the "
-    "surrounding passage of the same page, and the fields the extractor recorded. "
-    "You have no tools and no web access: judge only from the passage printed "
-    "for that figure, and reject a figure whose snippet or passage does not "
-    "actually state it."
+    "pages. For each figure the block prints the page's own title and owner, the "
+    "page's own stated date, the fields the extractor recorded, the snippet the "
+    "figure was copied from, and the surrounding passage of the same page. You "
+    "have no tools and no web access. The snippet and the passage are the page's "
+    "own words, and the only evidence any field may rest on; the page date is the "
+    "date a relative period may be resolved against; the title and the owner say "
+    "whose page this is, and the title may name the body whose document the page "
+    "reproduces; the recorded fields are the extractor's claims, which your reply "
+    "corrects. Reject a figure whose snippet or passage does not actually state "
+    "it. Only figures are checked here: a finding with no figure has nothing to "
+    "judge."
 )
 
 CONTEXT_CHECK_INSTRUCTION = (
     "Return one entry in figures for every figure listed, naming it by its "
     "finding label and figure number. For each figure give:\n"
     "- period: the period the page says the figure applies to, as the page "
-    "writes it (\"2024\", \"2025\", \"Q3 2025\"); repeat the recorded period when "
-    "the page confirms it; null when the page states none (a current price or "
-    "rating usually has none — never invent one).\n"
+    "writes it (\"2024\", \"Q3 2025\"); a level the page dates to a point in time "
+    "keeps that date as its period (\"at the end of Q1'25\"); repeat the recorded "
+    "period when the page confirms it; null when the page states none (a level or "
+    "a rate usually has none — never invent one).\n"
     "When the page dates a figure only relatively (\"this year\", \"last quarter\"), "
     "give the period that the page's own stated date resolves it to and quote the "
     "relative words in evidence_words; never resolve against today's date.\n"
     "- scope: the segment or basis the page says the figure covers, as the page "
-    "writes it (\"all segments\", \"households only\", \"firms with more than "
-    "250 employees\"), or null when the page states none.\n"
+    "writes it (\"all sites\", \"members only\"), or null when the page states none. "
+    "When the page counts things, the counted thing is the subject and this is the "
+    "basis the count covers.\n"
     "- subject: the thing the page says the figure is about, as the page names it "
-    "(a product model, a place, a version); repeat the recorded subject when the "
-    "page confirms it, correct it when the page names a different thing, null when "
-    "the page names none.\n"
+    "(a model, a place, a version, a named item); repeat the recorded subject when "
+    "the page confirms it; when the page names that same thing differently, give "
+    "the page's name under a correction; null when the page names none.\n"
     "- attribution: own when the page states the figure as its publisher's own; "
-    "relayed when the page credits another organisation for it (\"according "
-    "to\", \"reported by\", a possessive); unattributed when the page states it "
-    "without saying whose it is.\n"
+    "relayed when the page credits another organisation for it (\"according to\", "
+    "\"reported by\", a possessive) or when the page reproduces another body's "
+    "document and its own title or label names that body; unattributed when the "
+    "page states it without saying whose it is.\n"
     "- organisation: for own, the page's publisher as the page names itself; for "
-    "relayed, the organisation the page credits, exactly as the page names it; "
-    "null for unattributed.\n"
-    "- kind: actual for anything the page states as measured, reported, "
-    "observed, current or in force — a count, a price, a rating or score, a "
-    "rule's date; forecast for a projection, plan, expectation, target or "
-    "announced future change.\n"
-    "- evidence_words: the exact words of the passage that state this figure "
-    "with this period and scope, copied character for character, one sentence "
-    "or less. Words that are not on the page make the figure unusable.\n"
-    "- verdict: confirm when the recorded period, scope, subject and kind are right; "
-    "correct when you changed any of them; reject when the snippet or "
-    "passage does not actually state this figure, or states it for "
+    "relayed, the organisation the page credits, exactly as the page or its own "
+    "title names it; null for unattributed.\n"
+    "- kind: actual for a quantity the page states as measured, reported, observed "
+    "or in force; forecast for a projection, plan, expectation, target or announced "
+    "future change. A date is not a quantity: keep it in the period or in the words "
+    "you quote.\n"
+    "- evidence_words: the exact words of the page that state this figure with this "
+    "period and scope, copied character for character — the sentence that states "
+    "the figure and, when they appear nowhere else, the heading or preceding "
+    "sentence that carries the period or the scope. Words that are not on the page "
+    "make the figure unusable.\n"
+    "- verdict: confirm when the recorded period, scope, subject and kind are right "
+    "and you changed nothing; correct when you changed any of them; reject when the "
+    "snippet or passage does not actually state this figure, or states it for "
     "something else.\n"
     "- reason: one short sentence.\n"
-    "A correction is kept only when your corrected wording appears in "
-    "evidence_words. Never guess a period, a scope, a subject or an organisation "
-    "the passage does not state."
+    "What code does with this reply, so a wrong proposal is not merely ignored: a "
+    "correction is kept only when your wording appears in evidence_words; a period "
+    "neither your words nor the page date resolves, or a scope your words do not "
+    "carry, drops the whole figure; a null period or subject under correct clears "
+    "the recorded one, while under confirm the recorded value stands. Never guess "
+    "a period, a scope, a subject or an organisation the passage does not state."
 )
 
 _CONTEXT_CHECK_REPLY_EXAMPLES = (
     (
-        "Example input: F01, figure 1: 12 percent | recorded period 2024 | recorded "
-        "kind actual; passage \"The measured reduction was 12 percent in 2024, "
-        "according to the Example Statistical Agency, across all classes.\"",
+        # The block's own field names (review VER-2 defect 8), so the recorded
+        # scope is visible and a fill is not taught as a correction.
+        "Example input: page: Example report (Example Institute) | page date: "
+        "2025-03-12 (the finding's release date) | recorded fields: period: "
+        "2024; scope: none; attributed to: none | figure 1: 12 percent | "
+        "recorded period 2024 | recorded kind actual | snippet: \"The measured "
+        "reduction was 12 percent\" | passage: \"The measured reduction was 12 "
+        "percent in 2024, according to the Example Statistical Agency, measured "
+        "across all sites.\"",
         '{"figures":[{"finding":"F01","figure":1,"period":"2024","scope":"all '
-        'classes","subject":null,"attribution":"relayed","organisation":"Example Statistical '
-        'Agency","kind":"actual","evidence_words":"The measured reduction was 12 '
-        'percent in 2024, according to the Example Statistical Agency, across all '
-        'classes","verdict":"correct","reason":"The page states the '
-        'scope and credits the agency."}]}',
+        'sites","subject":null,"attribution":"relayed","organisation":"Example '
+        'Statistical Agency","kind":"actual","evidence_words":"The measured '
+        'reduction was 12 percent in 2024, according to the Example Statistical '
+        'Agency, measured across all sites","verdict":"correct","reason":"The '
+        'recorded scope was none and the page states one, and it credits the '
+        'agency."}]}',
     ),
 )
 
@@ -469,6 +490,17 @@ _NAME_BEFORE_CUE_PATTERN = re.compile(
 )
 
 
+def _title_names_the_body(read: ReadRecord, name: str) -> bool:
+    """Whether the page's own title carries this body's name (review VER-2 defect 2).
+
+    The reproduced-document case: a page serving another body's instrument needs
+    no attribution cue, because its own title says whose document it is
+    ("<document> | <body> | <site>"). Read from the title's own segments, so
+    nothing is credited that the page does not spell.
+    """
+    return any(same_organisation(segment, name) for segment in title_segments(read.title))
+
+
 def _body_credited_in_words(words: str | None) -> str | None:
     """The body a finding's own evidence words credit, or ``None``.
 
@@ -512,6 +544,13 @@ def resolve_attribution(
         if _owns_page(read, name, issuer):
             return "own", name
         if relay_attribution_on_page(read, finding.locator or "", finding.snippet or "", name):
+            return "relayed", name
+        if _title_names_the_body(read, name):
+            # A page that reproduces another body's document (an instrument, a
+            # standard, a recital) needs no cue beside the figure: the document's
+            # body is named in the page's own title, and the reply's credit is
+            # those words (review VER-2 defect 2). The page's own owner never
+            # arrives here -- _owns_page answered that above.
             return "relayed", name
     admitted = finding.attributed_issuer
     if admitted and not (
@@ -789,13 +828,15 @@ def context_check_messages(items: Sequence[ContextItem]) -> list[ChatMessage]:
     for item in items:
         finding = item.finding
         date, source = _page_date_basis(item)
+        # Only the fields this reply judges (review VER-2 defect 6): release
+        # date, vintage and statement date have no field to be judged against and
+        # were printed as if verified. The relative-period basis they may carry is
+        # still printed, on the page date line below, where code resolves from it.
         recorded = "; ".join(
             f"{name}: {value}"
             for name, value in (
                 ("period", finding.data_period), ("scope", finding.measure_scope),
                 ("attributed to", finding.attributed_issuer),
-                ("release date", finding.release_date), ("vintage", finding.vintage),
-                ("statement date", finding.statement_date),
             )
             if value
         ) or "none"
@@ -1012,54 +1053,69 @@ def evidence_verified_event(findings: Sequence[Finding]) -> ResearchEvent:
 
 STATEMENT_CHECK_SYSTEM_PROMPT = (
     "You check whether a drafted sentence states only what the findings it "
-    "cites actually verified. You have no tools and no web access: judge "
-    "only from the figures, evidence words, snippets and passages shown for "
-    "each sentence."
+    "cites actually verified. You have no tools and no web access: judge only "
+    "from what the block prints for each sentence. Its figures and its snippet "
+    "are the cited finding's own verified words; its passage is the page around "
+    "the snippet and may support a condition, an exception, a qualifier or the "
+    "object a reported rule attaches to, never a new fact; a line saying where a "
+    "statement was read names the site it was read on, not the body that made "
+    "it, so a sentence presenting that site as the author of a document is not "
+    "supported."
 )
 
 STATEMENT_CHECK_INSTRUCTION = (
     "Return one entry in statements for every sentence listed, naming it by "
-    "its label. For each sentence give:\n"
+    "its label. The question is context only: judge each sentence against its "
+    "cited findings, not against what you think the question should cover. For "
+    "each sentence give:\n"
     "- verdict: consistent when the sentence states only the numbers, "
     "dates, subject, scope, organisation, forecast-vs-actual distinction, "
     "and the conditions, exceptions and object a rule it reports attaches "
     "to, that its cited findings' figures, snippets and passages actually "
-    "state and — for a finding with no figure — the statement its verified "
-    "snippet makes; corrected when a minimal rewording would make it so; "
-    "inconsistent when it states a number, date, subject, scope, "
-    "organisation, forecast/actual distinction, condition, exception or "
-    "object those figures and words do not support, states a conditional "
-    "rule as unconditional, drops a condition or exception the cited words "
-    "carry, or invents anything. A judgement, ranking or recommendation "
-    "stated as fact rather than as the judgement of the source that made it "
-    "is not supported as written: correct it by attributing it to that "
-    "source.\n"
-    "- corrected_text: for corrected, the minimally reworded sentence; "
-    "otherwise empty.\n"
+    "state, and keeps every qualifier the words carry (\"about\", \"nearly\", "
+    "\"more than\"), every criterion a judgement was measured by, and every "
+    "body the words credit — never presenting the page it was read on as the "
+    "author of a document that page reproduces; corrected when a minimal "
+    "rewording from the cited words would make it so; inconsistent when it "
+    "states a number, date, subject, scope, organisation, forecast/actual "
+    "distinction, condition, exception or object those figures and words do "
+    "not support, drops a qualifier or a criterion their words carry, presents "
+    "the page it was read on as the author of a document that page reproduces, "
+    "states a conditional rule as unconditional, or invents anything. One rule "
+    "decides between those two: what the cited words carry — a condition, an "
+    "exception, a qualifier, a criterion, an issuer — is restored by a "
+    "correction, and a fact they do not carry makes the sentence "
+    "inconsistent. A judgement, ranking or recommendation stated as fact "
+    "rather than as the judgement of the source that made it is not supported "
+    "as written: correct it by attributing it to that source.\n"
+    "- corrected_text: for corrected, the minimally reworded sentence, built "
+    "only from the cited findings' own words (snippets, evidence words, "
+    "passages) and no more than 600 characters; a longer correction is "
+    "refused whole, so mark such a sentence inconsistent instead; otherwise "
+    "empty.\n"
     "- reason: one short sentence.\n"
     "Never invent a number, date, subject, scope, organisation, condition, "
-    "exception or object the cited findings do not state, and never drop one "
-    "their words carry."
+    "exception, qualifier or object the cited findings do not state, and never "
+    "drop one their words carry."
 )
 
 _STATEMENT_CHECK_REPLY_EXAMPLES = (
     (
-        "Example input: S01: \"The Example Statistical Agency forecasts that 4.1 "
-        "million households will have rooftop solar by the end of 2026.\" | F01: "
-        "4.1 million households | period 2025 | scope none | subject none | kind actual | own "
-        "(Example Statistical Agency) | evidence: \"by the end of 2025, 4.1 million "
-        "households had rooftop solar\"",
+        "Example input: S01: The Example Institute projects that 4.1 thousand "
+        "units will ship by the end of 2026. | F01: 4.1 thousand units | period "
+        "2025 | scope none | subject none | kind actual | own (Example "
+        "Institute) | evidence: \"by the end of 2025, 4.1 thousand units had "
+        "shipped\" | snippet: \"Shipments reached 4.1 thousand units in 2025.\"",
         '{"statements":[{"label":"S01","verdict":"corrected","corrected_text":'
-        '"The Example Statistical Agency reported that by the end of 2025, 4.1 '
-        'million households had rooftop solar.","reason":"The finding states an '
-        'actual for 2025, not a forecast."}]}',
+        '"The Example Institute reported that by the end of 2025, 4.1 thousand '
+        'units had shipped.","reason":"The finding states an actual for 2025, not '
+        'a forecast."}]}',
     ),
     (
-        "Example input: S02: \"The grant covers travel.\" | F02: (no kept "
-        "figures) | snippet: \"The grant covers travel when the visit is "
-        "approved in advance\" | passage: \"The grant covers travel when the "
-        "visit is approved in advance. It does not cover stays longer than "
-        "five days.\"",
+        "Example input: S02: The grant covers travel. | F02: (no kept figures) "
+        "| snippet: \"The grant covers travel when the visit is approved in "
+        "advance\" | passage: \"The grant covers travel when the visit is "
+        "approved in advance. It does not cover stays longer than five days.\"",
         '{"statements":[{"label":"S02","verdict":"corrected","corrected_text":'
         '"The grant covers travel when the visit is approved in advance, and not '
         'for stays longer than five days.","reason":"The cited words carry a '
