@@ -2160,18 +2160,121 @@ def _stamped_organisation(value: str | None) -> str | None:
     return name
 
 
+# The function words a measure shares with nearly every question, and which
+# therefore say nothing about whether the question asked for the measurement.
+# The list is deliberately small: a content word stays in the test even when a
+# question would rarely name it, which is the narrowing Main's ruling asks for.
+_MEASURE_FILLER_WORDS = frozenset(
+    {
+        "a", "an", "the", "of", "for", "in", "on", "at", "by", "to", "from",
+        "with", "and", "or", "as", "per", "its", "their", "this", "that",
+        "these", "those", "each", "any", "all", "over", "under", "between",
+        "during", "into", "than", "then", "when", "while", "is", "are", "was",
+        "were", "be", "been", "being",
+    }
+)
+
+_MEASURE_WORD = re.compile(r"[a-z0-9][a-z0-9'’-]*")
+
+# The four characters two words sharing a stem must agree on. Four is what
+# separates "growth" from "grow" and "increases" from "increase" without
+# reading "rating" as "rate": a derivational suffix is a shorter edit than an
+# unrelated word's opening.
+_MEASURE_STEM_CHARS = 4
+
+
+def _measure_traces_to_question(target: EvidenceTarget, *, contract: AnswerContract) -> bool:
+    """Whether the question names what this target measures (spec §7.1).
+
+    A required target is what a run's acceptance is judged on, so it has to be
+    a part of the question rather than something the planner added to make
+    another part checkable. The live nine-question probe planned exactly such
+    aids and marked them required: "number of weeks in the fiscal year" beside
+    a revenue comparison, and a named index's "index rating increase" beside a
+    question about which languages grew fastest — figures the question never
+    names, whose absence would fail acceptance for a report that answers it.
+
+    The test reads the measure's own content words against the frozen
+    contract: the question, its scope statement and its geography. A word traces when the haystack holds
+    the same word, or a word sharing its first four characters ("growth" /
+    "grow", "increases" / "increase"); function words are dropped, and a
+    measure that leaves no content word at all keeps the draft's flag, because
+    nothing there can be shown to be an addition.
+
+    Only the question's own words decide it, never a domain, a body or a
+    question: a measure that quotes the question stays exactly as the draft
+    said, and the energy-for-capacity rule stays beside this one.
+    """
+    measure = target.measure or ""
+    content = [
+        word
+        for word in _MEASURE_WORD.findall(_normalized_question(measure))
+        if word not in _MEASURE_FILLER_WORDS
+        and len(word) >= 3
+        # A unit token and the words that name a unit's family are the plan's
+        # own summary of what it measures, not the question's wording: the
+        # energy-for-capacity rule beside this one already decides that family,
+        # and reading "MWh" here would demote a target that rule exempts.
+        and not _POWER_UNIT.fullmatch(word)
+        and not _ENERGY_UNIT.fullmatch(word)
+        and word not in _ENERGY_MARKERS
+        and word not in _CAPACITY_MARKERS
+    ]
+    if not content:
+        return True
+    haystack = _MEASURE_WORD.findall(
+        _normalized_question(
+            " ".join(
+                filter(
+                    None,
+                    (
+                        contract.question,
+                        contract.scope_statement or "",
+                        contract.geographic_scope or "",
+                    ),
+                )
+            )
+        )
+    )
+    traced = sum(
+        1
+        for word in content
+        if any(
+            candidate == word
+            or (
+                len(candidate) >= _MEASURE_STEM_CHARS
+                and len(word) >= _MEASURE_STEM_CHARS
+                and candidate[: _MEASURE_STEM_CHARS]
+                == word[: _MEASURE_STEM_CHARS]
+            )
+            for candidate in haystack
+        )
+    )
+    # A majority, not every word: the question's own phrasing of a part it
+    # asks for rarely repeats the measure's whole wording ('annual battery
+    # storage energy additions, in MWh' against 'how much energy did battery
+    # storage systems add', where the measure's own unit token is the plan's
+    # summary rather than the question's word), while an aid the question
+    # never named traces almost nothing at all. Four of four and six of six
+    # stay required; one of four and two of seven do not.
+    return traced * 2 >= len(content)
+
+
 def apply_answer_contract(
     sub_topics: Sequence[SubTopic],
     contract: AnswerContract,
 ) -> list[SubTopic]:
     """Re-stamp each target's id, organisation and ``required`` flag (spec §7.1).
 
-    The model marks a target required only when the question names it. One
-    bounded code rule remains for the flag (Fable C-d): a target that asks for
-    an energy figure (MWh) a capacity question never named is optional, whatever
-    the draft said. The organisation is the other: a body the plan can only
-    *describe* is emptied, so a target is never bound to a label §6.6 can never
-    match (``_stamped_organisation``). Nothing else is added to a target.
+    The model marks a target required only when the question names it. Two
+    bounded code rules enforce that reading: a target that asks for an energy
+    figure (MWh) a capacity question never named is optional whatever the draft
+    said (Fable C-d), and so is a target whose measure does not trace to the
+    question's own words — the aid a planner adds to make another target
+    checkable (``_measure_traces_to_question``). The organisation is the third:
+    a body the plan can only *describe* is emptied, so a target is never bound
+    to a label §6.6 can never match (``_stamped_organisation``). Nothing is
+    ever promoted: required is the model's to grant.
     """
     stamped: list[SubTopic] = []
     for sub_topic in sub_topics:
@@ -2181,7 +2284,8 @@ def apply_answer_contract(
                 coverage_id=sub_topic.coverage_id,
                 question=target.question,
                 required=target.required
-                and not _unrequested_energy_measure(target, contract=contract),
+                and not _unrequested_energy_measure(target, contract=contract)
+                and _measure_traces_to_question(target, contract=contract),
                 measure=target.measure,
                 unit_dimension=target.unit_dimension,
                 period=target.period,
@@ -2994,6 +3098,62 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         except ProviderError as error:
             raise planning_provider_error("plan_review") from error
 
+    def _without_defective_targets(
+        self,
+        attempt: _PlanAttempt,
+        *,
+        contract: AnswerContract,
+    ) -> _PlanAttempt:
+        """The attempt with every target a surviving advisory defect names removed.
+
+        The one repair is what a plan's own local defects get. A plan that keeps
+        the very target its repair was told about has not taken the correction,
+        and the live nine-question probe's P3, P4 and P6 plans shipped a
+        planner_plan_defects_unresolved record for exactly that: an advisory
+        naming a target the plan kept anyway. Removing the target removes the
+        defect — the plan ships without it, its id leaves the frozen inventory
+        because ids are inventoried after this point, and the pass records
+        nothing about it.
+
+        Structural problems are untouched: they decide whether a plan can be
+        executed at all, and finalize's own branch is what judges them. A
+        plan whose last target is named, or whose sub-topic loses all of them, is
+        returned unchanged rather than emptied: a plan has to exist to be
+        researched, and an empty one is the replanning case rather than this one.
+        """
+        named = {problem.split(" ", 1)[0] for problem in attempt.advisory}
+        if not named:
+            return attempt
+        pruned: list[SubTopic] = []
+        for sub_topic in attempt.sub_topics:
+            kept = [
+                target
+                for target in sub_topic.evidence_targets
+                if target.target_id not in named
+            ]
+            if not kept:
+                continue
+            pruned.append(
+                sub_topic.model_copy(update={"evidence_targets": kept})
+            )
+        if not pruned:
+            return attempt
+        problems = _plan_problems(pruned, contract)
+        return _PlanAttempt(
+            plan=attempt.plan,
+            sub_topics=pruned,
+            structural=[
+                problem.text
+                for problem in problems
+                if problem.kind == "structural"
+            ],
+            advisory=[
+                problem.text
+                for problem in problems
+                if problem.kind == "advisory"
+            ],
+        )
+
     def _record_defects(
         self,
         run: ReActRun,
@@ -3139,6 +3299,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                         plan=reattempt.plan,
                         problems=reattempt.labelled,
                     )
+        attempt = self._without_defective_targets(attempt, contract=contract)
         self._record_defects(
             run,
             stage="plan_checks",

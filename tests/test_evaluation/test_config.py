@@ -753,7 +753,7 @@ from deep_research.utils.config import (
 # pins prove (source evaluator, evidence verifier and report writer are
 # unchanged), and the judge pin did not move.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "89b638901396",
+    "planner": "3a29cacf5d6c",
     "researcher": "c490b869021b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "21c413e91f94",
