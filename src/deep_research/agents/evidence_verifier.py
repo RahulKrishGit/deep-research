@@ -929,7 +929,13 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
             elif not match.snippet_on_page:
                 results[key] = FindingVerification(status="dropped", dropped_reason="snippet_not_on_page")
             elif not finding.figures:
-                results[key] = FindingVerification(status="verified")
+                # D21: only a figure ever reaches the Context Check (a
+                # finding with none "has nothing to judge"), and the
+                # Statement Check judges drafted report sentences, not raw
+                # findings -- so neither check ever judges this finding for
+                # relevance or attribution. Its snippet is on the page, and
+                # that is all this status may claim.
+                results[key] = FindingVerification(status="quoted")
             else:
                 read = reads[finding.read_id or ""]
                 items.append(ContextItem(label="", finding=finding, read=read,
@@ -1041,6 +1047,7 @@ def evidence_verified_event(findings: Sequence[Finding]) -> ResearchEvent:
         metadata={
             "verified": statuses.count("verified"),
             "verified_corrected": statuses.count("verified_corrected"),
+            "quoted": statuses.count("quoted"),
             "dropped": statuses.count("dropped"),
             "context_unchecked": sum(
                 1 for f in findings if f.verification and f.verification.context_unchecked
@@ -1094,7 +1101,9 @@ STATEMENT_CHECK_INSTRUCTION = (
     "misstated — and inconsistent when it states a fact the cited words neither "
     "state nor can replace. A judgement, ranking or recommendation stated as fact "
     "rather than as the judgement of the source that made it is not supported "
-    "as written: correct it by attributing it to that source.\n"
+    "as written: correct it by attributing it to that source. A page's "
+    "caption, player title or condition label is not a judgement the page "
+    "makes; a sentence presenting one as a rating is not supported.\n"
     "- corrected_text: for corrected, the minimally reworded sentence, built "
     "only from the cited findings' own words (snippets, evidence words, "
     "passages) and a document name as the page line's title names it, and no "

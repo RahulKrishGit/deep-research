@@ -117,6 +117,17 @@ def test_a_qualitative_target_is_answered_by_naming_it() -> None:
     assert finding_answers(finding, make_target(unit_dimension=None, organisation="eia.gov"))
 
 
+def test_a_quoted_finding_still_answers_a_qualitative_target() -> None:
+    """D21: "quoted" (a no-figure finding neither check judged for relevance
+    or attribution) is not "dropped" -- citable_findings and finding_answers
+    gate only on that, so a quoted finding still answers its target exactly
+    as a verified one does."""
+    read = make_read()
+    finding = make_finding(read, "Generators added 10.4 gigawatts", target_ids=["topic-01-target-01"])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="quoted")})
+    assert finding_answers(finding, make_target(unit_dimension=None, organisation="eia.gov"))
+
+
 def test_an_own_page_and_its_relay_are_one_row_citing_the_own_page() -> None:
     own = eia_2024()
     relay_read = make_read("According to EIA, generators added 10.4 GW in 2024.",

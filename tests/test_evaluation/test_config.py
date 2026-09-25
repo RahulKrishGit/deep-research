@@ -1036,7 +1036,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Fable's round-2 optional follow-ups 4-6 (VER-4's inconsistent list defers
     # to the one rule; corrected_text may take a document name from the page
     # line's title; EXTRA-4 shows the page line): `aacdca45c69f` -> `99faed0d857d`.
-    "evidence_verifier": "99faed0d857d",
+    # Run-3 content wave (Fable's audit run3-content-wave-brief.md, S4, D8
+    # VER-3/VER-4, D21): the Statement Check's instruction now refuses a
+    # page's caption, player title or condition label presented as a rating,
+    # and a no-figure finding is labelled `quoted` rather than `verified`
+    # (its completion event gained a matching count): `99faed0d857d` ->
+    # `8b1ad6b04834`.
+    "evidence_verifier": "8b1ad6b04834",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;

@@ -443,6 +443,23 @@ def test_the_snapshot_records_what_the_pipeline_measured() -> None:
     assert snapshot.refused_sentences == 0 and snapshot.unjudged_sentences == []
 
 
+def test_the_snapshot_counts_quoted_findings_separately() -> None:
+    """D21: a quoted finding (no figure; neither check judged it for
+    relevance or attribution) is counted in its own bucket, not folded into
+    verified_findings -- the published counts must not overstate what was
+    actually checked."""
+    quoted = make_finding(
+        make_read(), "Generators added 10.4 gigawatts", target_ids=[]
+    ).model_copy(update={"verification": FindingVerification(status="quoted")})
+    state, composition = _clean_pair(findings=[ACTUAL, FORECAST, quoted])
+
+    snapshot = compute_report_quality(state, composition)
+
+    assert snapshot.verified_findings == 2
+    assert snapshot.quoted_findings == 1
+
+
+
 def test_answered_targets_come_from_the_findings_not_the_statement_metadata() -> None:
     """The claim-era statement check is not what answers a target (R2).
 

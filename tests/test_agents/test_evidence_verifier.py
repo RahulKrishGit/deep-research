@@ -17,6 +17,7 @@ from deep_research.agents.evidence_verifier import (
     CONTEXT_CHECK_BATCH_SIZE,
     CONTEXT_CHECK_CONCURRENCY,
     EVIDENCE_VERIFIER_NAME,
+    STATEMENT_CHECK_INSTRUCTION,
     ContextCheckDraft,
     ContextItem,
     EvidenceVerifierAgent,
@@ -30,6 +31,7 @@ from deep_research.agents.evidence_verifier import (
     context_passage,
     evaluated_issuer,
     evaluated_page_date,
+    evidence_verified_event,
     figure_match,
     page_owner,
     resolve_attribution,
@@ -555,6 +557,48 @@ async def test_a_snippet_not_on_the_page_drops_the_finding_at_the_agent_level(
 
 
 @pytest.mark.asyncio
+async def test_a_no_figure_finding_is_labelled_quoted_not_verified(tracker: Tracker) -> None:
+    """D21: only a figure ever reaches the Context Check's relevance and
+    attribution judgement (a finding with none "has nothing to judge"), and
+    the Statement Check judges drafted report sentences, not raw findings.
+    A no-figure finding is therefore never judged for relevance or
+    attribution by either check: its snippet being on the page marks it
+    ``quoted``, not ``verified`` -- the evidence log must not overstate what
+    was checked.
+    """
+    read = make_read()
+    finding = make_finding(read, SNIPPET)
+    completer = ScriptedCompleter()
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=[finding], read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    [judged] = outcome.state_update["verified_findings"]
+    assert judged.verification.status == "quoted"
+    assert completer.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_verification_completed_event_counts_quoted_findings(tracker: Tracker) -> None:
+    """D21: the run's own event must count a quoted finding somewhere, or the
+    published buckets (verified/verified_corrected/dropped) would no longer
+    add up to every finding the pass judged."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET)
+    completer = ScriptedCompleter()
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=[finding], read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    [event] = outcome.state_update["events"]
+    assert event.metadata["quoted"] == 1
+
+
+@pytest.mark.asyncio
 async def test_a_batch_truncated_twice_gives_context_unchecked_and_two_errors(
     tracker: Tracker,
 ) -> None:
@@ -801,6 +845,19 @@ def test_page_owner_never_shortens_a_name_to_the_bare_host_label() -> None:
 # ---------------------------------------------------------------------------
 # check_statements (spec §6.2, D8): the Report Writer's sibling check
 # ---------------------------------------------------------------------------
+
+
+def test_the_statement_check_refuses_a_caption_as_a_rating() -> None:
+    """D8 (VER-3/VER-4): a page's caption, player title or condition label
+    beside a figure is not a judgement the page makes, so a sentence
+    presenting one as a rating must not be marked consistent."""
+    assert (
+        "A page's caption, player title or condition label is not a "
+        "judgement the page makes"
+    ) in STATEMENT_CHECK_INSTRUCTION
+    assert (
+        "a sentence presenting one as a rating is not supported"
+    ) in STATEMENT_CHECK_INSTRUCTION
 
 
 def _statement_finding(

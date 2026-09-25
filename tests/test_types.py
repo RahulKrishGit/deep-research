@@ -670,6 +670,13 @@ def test_a_verified_finding_keeps_at_least_one_figure() -> None:
         FindingVerification(status="verified_corrected", figure_results=[dropped])
 
 
+def test_a_quoted_finding_has_no_figure_to_verify() -> None:
+    """D21: a no-figure finding whose snippet is on the page is quoted, not
+    verified -- neither the Context Check nor the Statement Check ever
+    judges it for relevance or attribution."""
+    assert FindingVerification(status="quoted").status == "quoted"
+
+
 def test_verified_findings_are_replaced_not_appended() -> None:
     read = make_read()
     first = make_finding(read, "Generators added 10.4 gigawatts")

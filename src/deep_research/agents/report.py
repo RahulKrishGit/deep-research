@@ -1111,6 +1111,7 @@ def render_finding_log(composition: ReportComposition) -> str:
             status = "not checked"
         else:
             status = {"verified": "verified", "verified_corrected": "verified with corrections",
+                      "quoted": "quoted (snippet found on the page; not checked for context)",
                       "dropped": f"dropped ({verification.dropped_reason})"}[verification.status]
             if verification.context_unchecked:
                 status += "; context unchecked"

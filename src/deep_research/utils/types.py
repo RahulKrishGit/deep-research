@@ -337,11 +337,14 @@ class FindingFigure(ContractModel):
 
 
 # The Evidence Verifier's own vocabulary (spec §5). ``FigureAttribution`` is
-# who a kept figure credits; ``FindingStatus`` is the finding's outcome; the
-# two drop-reason aliases name why a figure or a whole finding did not
-# survive, so a dropped record always carries a reason a reader can print.
+# who a kept figure credits; ``FindingStatus`` is the finding's outcome --
+# ``quoted`` is a no-figure finding whose snippet is on the page but that
+# neither the Context Check nor the Statement Check ever judged for
+# relevance or attribution (D21); the two drop-reason aliases name why a
+# figure or a whole finding did not survive, so a dropped record always
+# carries a reason a reader can print.
 FigureAttribution: TypeAlias = Literal["own", "relayed", "unattributed"]
-FindingStatus: TypeAlias = Literal["verified", "verified_corrected", "dropped"]
+FindingStatus: TypeAlias = Literal["verified", "verified_corrected", "quoted", "dropped"]
 FigureDropReason: TypeAlias = Literal[
     "evidence_not_on_page",     # §5.2: evidence_words are not in the read
     "correction_not_on_page",   # §5.2: corrected period or scope not in evidence_words or passage
@@ -966,6 +969,8 @@ class ReportQualitySnapshot(ContractModel):
     """Required targets with neither an answer nor a recorded reason."""
     verified_findings: int = Field(default=0, ge=0)
     corrected_findings: int = Field(default=0, ge=0)
+    quoted_findings: int = Field(default=0, ge=0)
+    """D21: a no-figure finding neither check judged for relevance or attribution."""
     dropped_findings: int = Field(default=0, ge=0)
     context_unchecked_findings: int = Field(default=0, ge=0)
     dropped_figures: int = Field(default=0, ge=0)
