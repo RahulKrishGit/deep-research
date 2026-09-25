@@ -417,14 +417,19 @@ PLANNER_SYSTEM_PROMPT = (
     "You are the planner of a multi-agent research system. Your job is to "
     "turn one research question into a plan of distinct sub-topics that "
     "together answer it.\n"
-    "This session's startup memory recall has already run and its procedural "
-    "guidance is printed in the context below; it is the planner's single "
-    "memory lookup. Call query_memory only when that context carries no "
-    "guidance at all, and then once. Use web_search only to scope unfamiliar "
-    "terminology — a later agent gathers the evidence, so do not research "
-    "the question here.\n"
-    "If every term in the research question is familiar to you, finish "
-    "without searching.\n"
+    "You have one tool call in this loop and no more. Spend it on the one "
+    "thing the question cannot scope by itself: query_memory when the "
+    "recalled guidance below is empty, otherwise web_search for one term "
+    "you do not understand. A later agent gathers the evidence, so do not "
+    "research "
+    "the question here: do not look for what the question asks for. If every "
+    "term in the research question is familiar to you, finish without "
+    "searching.\n"
+    "Your final answer is the scoping note the plan call reads: name the "
+    "question's own parts, and any term your one lookup settled, in two or "
+    "three sentences. You cannot check whether a body's pages are reachable, "
+    "what a page prints, or whether a period has closed, so write nothing "
+    "here as though you had.\n"
     "Finish as soon as you understand the shape of the question."
 )
 
@@ -435,141 +440,101 @@ PLANNER_PLAN_SYSTEM_PROMPT = (
     "You are the planner of a multi-agent research system. Turn the research "
     "question, context, and completed scoping notes printed below into a final "
     "research plan. Everything needed for this structured plan is already in "
-    "the request. Do not propose or describe another lookup."
+    "the request. Do not propose or describe another lookup.\n"
+    "The scoping notes and the recalled memory below are leads, not facts: they "
+    "may shape scope and search wording, and no plan field carries an answer "
+    "they suggest."
 )
 
 PLAN_INSTRUCTION = (
     f"Produce a research plan of between {MIN_SUB_TOPICS} and "
     f"{MAX_SUB_TOPICS} distinct sub-topics that together answer the "
-    "research question.\n"
-    "Every sub-topic needs a title, a rationale explaining why answering it "
-    "is necessary, at least one concrete web search query, at least one "
-    "success criterion describing what evidence would settle it, and a "
-    "priority where 1 is the most important.\n"
-    "List the sub-topics in priority order, most important first.\n"
-    # The instruction used to require a benefits-and-risks sub-topic for any
-    # technology question, which is exactly the scope widening the plan review
-    # names as a defect ("Name any target that widens the scope"), so the
-    # planner's own instruction and its own review contradicted each other.
-    # Coverage is now conditional on the question, and the demand for content
-    # the question never made is named where it comes from: the run's plan
-    # asked for MWh beside a capacity question, for the agency's short-term
-    # outlook series by name, and for a second independent publisher beside
-    # figures only one agency issues (audit #3, C5).
-    "Cover benefits and risks (or harms) when the question asks about them "
-    "— 'is it good', 'what are the drawbacks' — and demand nothing the "
-    "question does not ask for: not a different unit of measure than the "
-    "one it names, not a named publication series, and not a second "
-    "publisher where one issuer settles the fact. A sub-topic the question "
-    "did not call for widens its scope, which the plan review names as a "
-    "defect.\n"
-    # A lexical ban used to forbid any capitalized word or four-digit year
-    # the question did not contain. Search cannot reach a named regulation,
-    # standard, jurisdiction, agency, or current-year primary source without
-    # those tokens, so the ban made a whole class of evidence unfindable.
-    # Its replacement permits the tokens and forbids asserting them.
-    "Search queries may introduce organizations, standards, laws, acronyms, "
-    "jurisdictions, and years needed to find authoritative current "
-    "evidence.\n"
-    "Do not assert those terms as facts in the plan; use them only as "
-    "search targets.\n"
-    "For an unqualified broad question, state the assumed scope and create "
-    "distinct sub-topics for materially different mechanisms rather than "
-    "bundling them.\n"
-    "Each success criterion must name the evidence type, geography, and "
-    "measurement or decision needed to consider the sub-topic answered.\n"
-    # A source behind a subscription cannot be read at all, and an unanswered
-    # required obligation fails acceptance however honest the report is, so a
-    # required target must not depend on one (review rank 4).
-    "Never make a required target depend on a source behind a paywall: name a "
-    "freely reachable publication of the same figures, or leave the "
-    "obligation out.\n"
-    "Aim the queries at primary sources — regulations, standards, filings, "
-    "and datasets that state the facts directly — and say which class of "
-    "source each query should reach.\n"
-    # The as-of date and the geographic scope used to be prose the model was
-    # asked to write into its own queries, with no field of its own. It wrote
-    # whatever year it believed was current — 2024, in a September 2026
-    # session — and the stale anchor reached the reader as a hard limit
-    # (baseline TR-04). Both now come from the frozen answer contract the
-    # request prints below these requirements, and the plan may not restate
-    # them as its own assumption.
-    "The answer contract below fixes the as-of date, the geographic scope, "
-    "and the answer form. Do not restate them as your own assumptions and do "
-    "not narrow or widen them; every sub-topic is answered within them.\n"
+    "research question. Every sub-topic needs a title, a rationale saying why "
+    "answering it is necessary, at least one concrete web search query, at "
+    "least one success criterion naming the evidence that would settle it, and "
+    "a priority where 1 is the most important; list the sub-topics in "
+    "priority order, most important first.\n"
     "Give every sub-topic between 1 and 4 evidence_targets. Each target is one "
-    "atomic obligation, written as a question whose answer is a fact or a "
-    "measurement, not as an assertion the plan already believes. Never combine "
-    "two measures, two rule dates, or two jurisdictions into one target, and "
-    "never require two sources to agree within a numeric tolerance unless the "
-    "question itself states that tolerance.\n"
-    "For every target also fill the fields a program checks answers against: "
-    "measure (what the target asks for, in the question's own words: a quantity, "
-    "a rule, a mechanism, a list); unit_dimension (for a quantity, one word for "
-    "the kind of quantity: power, energy, percent, currency, count, mass, volume, "
-    "distance, time, rate; empty when the answer is not a quantity); period (the "
-    "year or period the question names for it, or empty); kind (actual for a "
-    "measured or reported outcome, forecast for a projection or outlook; empty "
-    "when the answer is not a quantity); geography; and organisation (the body "
-    "the question names as its source; when it names none, the body that "
-    "publishes the primary or official record of that measure for that geography "
-    "— a statistical agency, a regulator, the company for its own filing — or "
-    "empty when no single body does). Write that body's own name, as a page "
-    "prints it — \"Siemens\", \"Eurostat\", \"the European Chemicals "
-    "Agency\" — and never a description of its role: \"the manufacturer of "
-    "the product\" names no body any page carries, and a target stamped that way "
-    "is reported Not found however much evidence the run collects. Name one body "
-    "per target; never join two. Plan one target per organisation, measure, "
-    "period and kind the question asks for.\n"
-    "A target is required only for what the question names. A target is "
-    "required only when the question itself asks for that thing: a "
-    "sub-category, aspect, example, event or list item you introduce to "
-    "organise the research is optional, even when you expect it to hold the "
-    "answer. A target you add "
-    "to make another target checkable — a magnitude, a definition, a supporting "
-    "statistic or a running total — is optional, even when the answer needs it. "
-    "Read the question as "
-    "its parts: each figure, period, body, option, place or item it names, and "
-    "each clause it asks, is a part a complete answer needs, and every part gets "
-    "its own target. For each part, the evidence that settles it decides the "
-    "target's fields: a figure (measure, unit_dimension, period, kind); a set of "
-    "items with their attributes, such as options with a price and a rating per "
-    "criterion (one target per attribute, its measure naming the attribute, the "
-    "items found by the research when the question names none); dated changes or "
-    "events (a target whose measure is the change and whose period is the window); "
-    "reasons or mechanisms; or the text of a rule (empty unit_dimension and kind, "
-    "no figure added to make them measurable). The organisation of a target is "
-    "the body that produced, measured, judged or announced that evidence — the "
-    "statistical agency for a statistic, the maker for its own release notes or "
-    "prices, an independent tester or reviewer for a rating, the regulator for a "
-    "rule — named by the question or, when it names none, the body that publishes "
-    "the primary record; a page that repeats another body's evidence is a relay, "
-    "never the organisation. For a product's or a drug's performance the "
-    "authority is the body that measured, tested or approved it — a regulator, a "
-    "trial or its publication, an independent tester — never the maker; for a "
-    "law or a regulation it is the body that adopted it, never the office that "
-    "publishes it. When the question asks for forecasts, outlooks, "
-    "rankings or recommendations without naming who gives them, plan one target "
-    "per body whose published, reachable evidence you expect, at least two when "
-    "the question is plural; a body whose evidence is paywalled is optional. A "
-    "period is a target's period only when the question bounds when the evidence "
-    "happened or applies (\"changes in 2026\", \"added in 2024\"); a year that "
-    "names when the reader will buy, decide or use (\"to buy in 2026\") is not a "
-    "period: leave it empty, the as-of date governs, and earlier evidence is "
-    "still current. When the question bounds the time window it asks about, "
-    "every figure target for that window carries it as its period. "
-    "Targets you add yourself — a second unit of measure, a related "
-    "quantity, a type or category breakdown, a definition, background — are "
-    "optional. Optional targets never fail a run; a required target no source "
-    "can answer fails acceptance, so require nothing the question did not ask "
-    "for. A target never asks for a publication date, retrieval date or edition "
-    "as its measure: those are context the researcher records beside the "
-    "evidence. Keep the temporal contract: the latest available evidence, no "
-    "cutoff inferred from a year in the question, actuals labelled apart from "
-    "forecasts. The number of targets follows the question — as many as its "
-    "parts and named bodies need, and no more.\n"
-    "Make every success criterion measurable, so a reader can tell from the "
-    "evidence it names whether the sub-topic was answered.\n"
+    "atomic obligation, written as a question whose answer is a fact, a "
+    "measurement or a statement the evidence makes, not as an assertion the "
+    "plan already believes. The text of a rule, a list, or a set of items the "
+    "question asks for in one clause is one atomic target; never combine two "
+    "measures, two periods or two jurisdictions into one target, and never "
+    "require two sources to agree within a numeric tolerance unless the "
+    "question itself states that tolerance. A target asks only for what a page "
+    "can state: never for a verdict, a pick, a ranking, a comparison the "
+    "question did not ask for, or a combination of other targets' answers.\n"
+    "For every target fill the fields a program checks answers against. "
+    "measure: the thing the evidence must state, in the question's own words "
+    "when the question has them, otherwise the attribute or dimension the "
+    "target asks for. unit_dimension: for a quantity, one word for the kind of "
+    "quantity — power, energy, percent, currency, count, mass, volume, "
+    "distance, time, rate; empty when the answer is not a quantity, and empty "
+    "for a rule's own parameters (a date, a deadline, a threshold, a duration) "
+    "unless the question asks for that quantity itself. period: the period the "
+    "question names for it, or empty. kind: actual for a measured or reported "
+    "outcome, forecast for a projection or outlook; empty when the answer is "
+    "not a quantity. geography: the scope the question or the evidence names, "
+    "or empty. organisation: the body the question names as its source; when "
+    "it names none, the body that publishes the primary or official record of "
+    "that measure — the name its pages will carry as the source, or empty when "
+    "no single body does. Never stamp an adopting or enacting body, a joined "
+    "pair of bodies, a description of a role, or an author no page credits: an "
+    "organisation a page will not print is a target nothing can answer.\n"
+    "A target is required only when the question itself asks for that thing. "
+    "Everything the plan adds is optional: a sub-category, aspect, example, "
+    "event, item or attribute the question does not name; a body the plan "
+    "chooses where the question names none; a target you add to make another "
+    "target checkable — a magnitude, a definition, a supporting statistic or a "
+    "running total; and any further body's evidence where the question asks "
+    "for several without naming them. Optional targets never fail a run, while "
+    "a required target no source answers fails acceptance, so require nothing "
+    "the question did not ask for and expect nothing of a page: a required "
+    "target is never a bet that one body's pages are reachable, or that they "
+    "credit the name you stamped. Read the question as its parts: each figure, "
+    "period, body, option, place or item it names, and each clause it asks, is "
+    "a part a complete answer needs, and every part gets its own target. An "
+    "item set with its attributes is one target per attribute, its measure "
+    "naming the attribute, over the items the research finds — never one item "
+    "selected by another target's answer. The number of targets follows the "
+    "question: as many as its parts need, and no more. Plan one target per "
+    "organisation, measure, period and kind the question asks for.\n"
+    "Search queries say where to look, never what the answer is: a query may "
+    "name an organisation, a standard, a jurisdiction or a year, and may not "
+    "carry the value, date, item or pick a target asks for. Keep the class of "
+    "source a query should reach in the criterion or the rationale, never "
+    "inside the query text. Aim the queries at primary sources — the record, "
+    "filing, dataset or text that states the facts directly. Do not assert a "
+    "search term as a fact in any plan "
+    "field: a term that came from a search, a scoping note or recalled memory "
+    "is a lead, and no plan field carries an answer it suggests.\n"
+    "Each success criterion must be measurable and name the evidence type and "
+    "the measurement the sub-topic's targets ask for, so a reader can tell "
+    "from the evidence it names whether the sub-topic was answered. Criteria and targets settle "
+    "the same thing: a criterion never owes evidence its targets do not ask "
+    "for.\n"
+    "Keep the temporal contract: the latest available evidence, no cutoff "
+    "inferred from a year in the question, actuals labelled apart from "
+    "forecasts. A period is a target's period only when the question bounds "
+    "when the evidence happened or applies; a year that names when the reader "
+    "will act is not a period: leave it empty, the as-of date governs, and "
+    "earlier evidence is still current. When the question bounds the time "
+    "window it asks about, every figure target for that window carries it as "
+    "its period. When the as-of date is past a period the question frames as a "
+    "forecast, add an optional target for that period's actual outcome. Never "
+    "make a required target depend on a source behind a paywall: name a freely "
+    "reachable publication of the same figures, or leave the obligation out. A "
+    "target never asks for a publication date, retrieval date or edition as "
+    "its measure: those are context the researcher records beside the "
+    "evidence.\n"
+    "The answer contract below fixes the as-of date, the geographic scope and "
+    "the answer form, and it is the scope of every sub-topic: do not restate "
+    "it, narrow it or widen it, and do not assert an assumption it does not "
+    "carry. Cover benefits and risks (or harms) only when the question asks "
+    "about them — 'is it good', 'what are the drawbacks' — and cover what "
+    "the question asks about and nothing else: a sub-topic, a criterion or a "
+    "target the question did not call for widens its scope, which the plan "
+    "review names as a defect.\n"
     "Two sub-topics must never share a title."
 )
 
@@ -594,8 +559,8 @@ _PLAN_REPLY_EXAMPLES = (
         '"rationale":"Establish which trips each option must serve.",'
         '"search_queries":["city bus rail travel demand route coverage"],'
         '"success_criteria":['
-        '"Measured demand and coverage estimates are available for both '
-        'options."],"priority":1,'
+        '"A published ridership figure for each option, in passengers per year, '
+        'with the year it covers."],"priority":1,'
         '"evidence_targets":['
         '{"question":"What ridership did the bus option carry in the most '
         'recent reported year?","required":true,'
@@ -612,7 +577,8 @@ _PLAN_REPLY_EXAMPLES = (
         'option.",'
         '"search_queries":["city bus rail capital operating cost delivery '
         'time"],"success_criteria":['
-        '"Comparable cost estimates are available for both options."],'
+        '"A published capital cost per route kilometre for each option, in the '
+        'currency its own statement uses."],'
         '"priority":2,'
         '"evidence_targets":['
         '{"question":"What capital cost per route kilometre does each option '
@@ -625,8 +591,8 @@ _PLAN_REPLY_EXAMPLES = (
         'timetable.",'
         '"search_queries":["city bus rail on-time performance reliability"],'
         '"success_criteria":['
-        '"A measured on-time performance figure is available for each '
-        'option."],"priority":3,'
+        '"A published on-time performance percentage for each option, with the '
+        'period it covers."],"priority":3,'
         '"evidence_targets":['
         '{"question":"What on-time performance did each option report?",'
         '"required":true,'
@@ -648,17 +614,17 @@ _PLAN_REPLY_EXAMPLES = (
         'authority report for 2024?","required":true,'
         '"measure":"MMR first-dose coverage","unit_dimension":"percent",'
         '"period":"2024","kind":"actual",'
-        '"geography":"the region","organisation":"the Regional Health Authority"}]},'
+        '"geography":"the region","organisation":""}]},'
         '{"title":"outbreak investigation findings",'
         '"rationale":"The causes the investigating body itself identified.",'
         '"search_queries":["regional health authority measles outbreak report 2024 causes"],'
-        '"success_criteria":["The outbreak report names the causes it identified."],'
+        '"success_criteria":["A published outbreak report naming the causes it identified, with its release date."],'
         '"priority":2,"evidence_targets":['
         '{"question":"What causes of the 2024 rise did the regional health '
         'authority\'s outbreak report identify?","required":true,'
         '"measure":"causes identified by the outbreak report","unit_dimension":"",'
         '"period":"2024","kind":"",'
-        '"geography":"the region","organisation":"the Regional Health Authority"}]},'
+        '"geography":"the region","organisation":""}]},'
         '{"title":"immunity threshold",'
         '"rationale":"Background the reader needs to judge the coverage figure.",'
         '"search_queries":["national public health agency measles herd immunity threshold"],'
@@ -669,7 +635,7 @@ _PLAN_REPLY_EXAMPLES = (
         'public health agency state for measles?","required":false,'
         '"measure":"stated immunity threshold","unit_dimension":"percent",'
         '"period":"","kind":"",'
-        '"geography":"national","organisation":"the National Public Health Agency"}]}'
+        '"geography":"national","organisation":""}]}'
         "]}",
     ),
 )
@@ -1147,9 +1113,10 @@ def geographic_scope_for(question: str) -> tuple[str, list[str]]:
     return (
         "unspecified",
         [
-            "The question names no geography, so the plan assumes none: every "
-            "target states the geography its evidence covers, and no regional "
-            "sample may support a global conclusion.",
+            "The question names no geography, so the plan assumes none: give a "
+            "target a geography only when the question or its evidence states "
+            "one, leave it empty otherwise, and no regional sample may support "
+            "a global conclusion.",
         ],
     )
 
@@ -1968,8 +1935,8 @@ def _plan_problems(
                 problems.append(
                     _PlanProblem(
                         f"{target.target_id} is planned optional: it "
-                        "asks for an energy figure (MWh) a capacity "
-                        "question never named, and no claim about "
+                        "asks for an energy figure the question "
+                        "never named, and no claim about "
                         "capacity can discharge it",
                         "advisory",
                     )
@@ -2625,6 +2592,7 @@ def plan_messages(
     *,
     contract: AnswerContract | None = None,
     repair: str | None = None,
+    plan_under_repair: Sequence[SubTopic] = (),
 ) -> list[ChatMessage]:
     """Build the messages that request one structured plan draft.
 
@@ -2655,41 +2623,57 @@ def plan_messages(
 
 
 PLAN_REVIEW_SYSTEM_PROMPT = (
-    "You are reviewing a research plan before any research starts. You have "
-    "no tools and need none: the question, the frozen answer contract, and "
-    "the plan are printed in the request. Judge the plan's meaning against "
-    "the question, not its formatting."
+    "You are reviewing a research plan before any research starts. You have no "
+    "tools and need none: the question, the frozen answer contract, and the "
+    "plan are printed in the request, every target field included. Judge the "
+    "plan's meaning against the question, not its formatting."
 )
 
 PLAN_REVIEW_INSTRUCTION = (
-    "Decide whether this plan, as written, would answer the original "
-    "question. Report `sound: true` only when all of the following hold.\n"
-    "- Every required dimension of the original question is covered by some "
-    "sub-topic; a plan that looks diverse but omits a dimension the question "
-    "asks for is not sound. Name each missing dimension you find.\n"
+    "Decide whether this plan, as written, would answer the original question. "
+    "Report `sound: true` only when all of the following hold, and name every "
+    "finding in the list it belongs to.\n"
+    "- Every part of the original question is covered by some sub-topic, and "
+    "every required flag matches the question: a target the question itself "
+    "asks for is required, while a target the plan added — a sub-category, an "
+    "aspect, an example, an item, an attribute the question does not name, a "
+    "body the plan chose where the question names none, or an aid that makes "
+    "another target checkable — is optional. Name each missing part of the "
+    "question in `missing_dimensions`, and each required target the question "
+    "does not ask for in `unsupported_premises`.\n"
+    "- Every target's organisation is a name the evidence pages will carry as "
+    "their source, or empty: never an adopting or enacting body, a joined pair "
+    "of bodies, a description of a role, or an author no page credits, and a "
+    "required target never rests on one chosen body's pages being reachable. "
+    "Name each such target in `unsupported_premises`.\n"
     "- Every evidence target is atomic: one measure, one rule date, one "
-    "jurisdiction. A target that requires two measures, two rule dates, or "
-    "two jurisdictions to be settled is compound even when it reads as one "
-    "sentence. Name each compound target.\n"
+    "jurisdiction. The text of a rule, a list or a set of items the question "
+    "asks for in one clause is one atomic target; a target that requires two "
+    "measures, two periods or two jurisdictions to be settled is compound even "
+    "when it reads as one sentence. Name each compound target in "
+    "`atomicity_defects`.\n"
+    "- No target asks for a verdict, a pick, a ranking, a comparison or a "
+    "combination the question did not ask for, or for an item selected by "
+    "another target's answer. Name each one in `atomicity_defects`.\n"
     "- No search query or success criterion assumes the answer, states a "
     "conclusion the plan has not established, or treats a recalled memory as "
-    "evidence. Name each such premise.\n"
-    "- The plan stays inside the frozen scope and as-of date. Name any target "
-    "that widens the scope or re-anchors the period.\n"
-    "- The batch is feasible: each sub-topic can be answered by a bounded "
-    "number of reads, and no sub-topic carries more than four obligations.\n"
-    "`repair_instruction` is the single correction that would make the plan "
-    "sound; leave it empty when sound is true. Name dimensions, never "
+    "evidence; a query says where to look, never the value, date, item or pick "
+    "a target asks for. Name each such premise in `unsupported_premises`.\n"
+    "- The plan stays inside the frozen scope and as-of date. Name a target "
+    "that widens the scope or re-anchors the period in `unsupported_premises`.\n"
+    "`repair_instruction` carries the corrections, one per defect you named; "
+    "leave it empty when sound is true. Name the question's own parts, never "
     "rephrase the original question."
 )
-
 
 def render_plan_for_review(sub_topics: Sequence[SubTopic]) -> str:
     """Print a plan as the review request sees it, ids and all.
 
     Each target prints its id, whether the question names it, its question,
-    and the fields a program checks an answer against — ``none`` for an empty
-    one, so a missing measure is visible to the reviewer rather than blank.
+    and every field a program checks an answer against — measure, unit,
+    period, kind, geography and organisation, ``none`` for an empty one — so
+    the reviewer judges the fields that decide an answer rather than a
+    summary of them.
     """
     lines: list[str] = []
     for sub_topic in sub_topics:
@@ -2710,6 +2694,7 @@ def render_plan_for_review(sub_topics: Sequence[SubTopic]) -> str:
                 ("unit", target.unit_dimension),
                 ("period", target.period),
                 ("kind", target.kind),
+                ("geography", target.geography),
                 ("organisation", target.organisation),
             )
             lines.append(
@@ -3057,6 +3042,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         contract: AnswerContract,
         plan: str,
         repair: str | None = None,
+        plan_under_repair: Sequence[SubTopic] = (),
     ) -> _PlanAttempt:
         try:
             self.fingerprint_call(
@@ -3064,7 +3050,13 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 output_limit=self.config.planner_final_max_tokens,
             )
             draft = await self.provider.complete_structured(
-                plan_messages(task, run, contract=contract, repair=repair),
+                plan_messages(
+                    task,
+                    run,
+                    contract=contract,
+                    repair=repair,
+                    plan_under_repair=plan_under_repair,
+                ),
                 ResearchPlanDraft,
                 agent_name=self.name,
                 max_tokens=self.config.planner_final_max_tokens,
@@ -3350,6 +3342,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     contract=contract,
                     repair=format_plan_problems(attempt.problems),
                     plan=_PLAN_REPAIR_LABEL,
+                    plan_under_repair=attempt.sub_topics,
                 )
             except PlanningError as error:
                 # A repair that cannot be produced is not a reason to end a run
@@ -3439,6 +3432,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 contract=contract,
                 repair=requested,
                 plan=_PLAN_REVIEW_REPAIR_LABEL,
+                plan_under_repair=attempt.sub_topics,
             )
         except PlanningError as error:
             # A repair that cannot be produced is not a reason to end the run:
