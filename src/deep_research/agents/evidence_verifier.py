@@ -1083,9 +1083,11 @@ STATEMENT_CHECK_INSTRUCTION = (
     "rewording from the cited words would make it so; inconsistent when it "
     "states a number, date, subject, scope, organisation, forecast/actual "
     "distinction, condition, exception or object those figures and words do "
-    "not support, drops a qualifier or a criterion their words carry, presents "
-    "the page it was read on as the author of a document that page reproduces, "
-    "states a conditional rule as unconditional, or invents anything. One rule "
+    "not support, presents the page it was read on as the author of a document "
+    "that page reproduces, or invents anything. A sentence that drops a "
+    "qualifier or a criterion their words carry, or states a conditional rule "
+    "as unconditional, is not consistent either, and the rule below decides "
+    "which of the two it gets. One rule "
     "decides between those two: a sentence is corrected when the cited words "
     "state what it should have said — a condition, an exception, a qualifier, a "
     "criterion or an issuer it dropped, or the number, date, kind or body it "
@@ -1095,7 +1097,8 @@ STATEMENT_CHECK_INSTRUCTION = (
     "as written: correct it by attributing it to that source.\n"
     "- corrected_text: for corrected, the minimally reworded sentence, built "
     "only from the cited findings' own words (snippets, evidence words, "
-    "passages) and no more than 600 characters; a longer correction is "
+    "passages) and a document name as the page line's title names it, and no "
+    "more than 600 characters; a longer correction is "
     "refused whole, so mark such a sentence inconsistent instead; otherwise "
     "empty.\n"
     "- reason: one short sentence.\n"
@@ -1110,7 +1113,8 @@ _STATEMENT_CHECK_REPLY_EXAMPLES = (
         "units will ship by the end of 2026. | F01: 4.1 thousand units | period "
         "2025 | scope none | subject none | kind actual | own (Example "
         "Institute) | evidence: \"by the end of 2025, 4.1 thousand units had "
-        "shipped\" | snippet: \"Shipments reached 4.1 thousand units in 2025.\"",
+        "shipped\" | page: Example report (example-institute.test) | snippet: "
+        "\"Shipments reached 4.1 thousand units in 2025.\"",
         '{"statements":[{"label":"S01","verdict":"corrected","corrected_text":'
         '"The Example Institute reported that by the end of 2025, 4.1 thousand '
         'units had shipped.","reason":"The finding states an actual for 2025, not '
@@ -1118,7 +1122,8 @@ _STATEMENT_CHECK_REPLY_EXAMPLES = (
     ),
     (
         "Example input: S02: The grant covers travel. | F02: (no kept figures) "
-        "| snippet: \"The grant covers travel when the visit is approved in "
+        "| page: Example report (example-institute.test) | snippet: \"The grant "
+        "covers travel when the visit is approved in "
         "advance\" | passage: \"The grant covers travel when the visit is "
         "approved in advance. It does not cover stays longer than five days.\"",
         '{"statements":[{"label":"S02","verdict":"corrected","corrected_text":'
