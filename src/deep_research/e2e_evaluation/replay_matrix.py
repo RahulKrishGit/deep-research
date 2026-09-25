@@ -1,4 +1,4 @@
-"""The versioned offline matrix: twenty-one real-agent scenarios.
+"""The versioned offline matrix: thirty-one real-agent scenarios.
 
 The manifest below is the *declared inventory* the release proof is measured
 against. Each row names a case id, the version of its semantics, the product
@@ -35,9 +35,17 @@ from deep_research.e2e_evaluation.replay import (
 )
 from deep_research.memory.entries import MemoryEntry
 
-REPLAY_CASE_MANIFEST_VERSION = 3
-# Bumped for the review's F4: two rows were renamed with the ``report-``
-# prefix (``report-relay-labelled-as-relay``,
+REPLAY_CASE_MANIFEST_VERSION = 4
+# Bumped for Task 5.9's ten rows: the other question shapes of Fable §8.8 --
+# subjects that keep equal values apart, versions, subject spellings, prose
+# with no figure, a count whose year decides it, a purchase year, a relative
+# period the page's date resolves, an unattributed figure, a one-part plan and
+# a maker's figure relayed by a news site. The version names the inventory a
+# recorded result was produced under, so a suite run over 31 rows is never
+# read as one over 21.
+#
+# Was 3 for the review's F4: two rows were renamed with the ``report-`` prefix
+# (``report-relay-labelled-as-relay``,
 # ``report-scope-corrected-to-all-segments``) because their old ids collided
 # with per-agent cases of the same name in ``evaluation.cases``, where a case
 # id keys a LangSmith dataset. A whole-report row and a per-agent case may
@@ -103,6 +111,8 @@ def _page(
     vintage: str = "",
     recorded_scope: str = "",
     figures: tuple[tuple[str, str, str | None, str | None], ...] | None = None,
+    figure_subjects: tuple[str | None, ...] = (),
+    publication_date: tuple[str, str] | None = None,
 ) -> ReplaySource:
     """One authored page, with the run's read of it scripted around it.
 
@@ -116,6 +126,12 @@ def _page(
     cache for this page, and ``cached_text`` is the body a ``stale`` or
     ``forged`` one stores. A page with no artifact is a page this run has to
     fetch itself.
+
+    ``figure_subjects`` names what each figure is about, position for position
+    (D11), and ``publication_date`` is the page's own stated date with the
+    words it states it in -- the date a relative period ("this year") is
+    resolved against, which has to be the page's text verbatim for the same
+    reason an excerpt does.
     """
     body = text or f"{title}. Published by {issuer}. The report states {claim}."
     if claim not in body:
@@ -140,6 +156,8 @@ def _page(
         vintage=vintage,
         recorded_scope=recorded_scope,
         figures=_claimed_figure(claim) if figures is None else figures,
+        figure_subjects=figure_subjects,
+        publication_date=publication_date,
     )
 
 
@@ -203,8 +221,7 @@ def _topic(
     """One planned sub-topic, with the labels its answer row will carry.
 
     ``measure`` is the obligation's own measured quantity, as the plan states
-    it; a row that spells the measure out in full passes ``measure=`` itself,
-    and the keyword wins over the positional word.
+    it.
 
     The labels are published only if the row's evidence attests their words,
     so they are checked against the pages here rather than trusted: a fixture
@@ -218,7 +235,6 @@ def _topic(
                 raise ValueError(
                     f"answer label {label!r} appears on no page of {title!r}"
                 )
-    target_fields.setdefault("measure", measure)
     return ReplayTopic(
         title=title,
         question=question,
@@ -226,20 +242,13 @@ def _topic(
         sources=sources,
         answer_labels=labels or ("", ""),
         follow_up_queries=follow_up_queries,
+        measure=measure,
         **target_fields,
     )
 
 
 def _filler(index: int, title: str, subject: str, figure: str) -> ReplayTopic:
-    """One ordinary answered topic, so a case's own subject can be the exception.
-
-    The measure is a *value* in the one vocabulary both of the contract's
-    tables read: the planning check that credits a claim with an obligation
-    and the composition check that reads an answer back out. A dimension in
-    neither table — "workforce", "supplier count" — is an obligation no
-    evidence can ever be credited for however plainly the pages state it, and
-    a fixture that declared one would be testing its own typo.
-    """
+    """One ordinary answered topic, so a case's own subject can be the exception."""
     claim = f"the {subject} in the United States was {figure} in 2024"
     measure = subject.removeprefix("Acme widget ")
     return _topic(
@@ -265,9 +274,8 @@ def _broad_constraints() -> ReplayScenario:
     supported pair, and the case names every figure in the published report,
     including the two that only a later batch can carry.
     """
-    # The dimension of each topic is a word the contract can check on both of
-    # its tables, and the figure is the one the page states: six ordinary
-    # measured facts, each independently published by two bodies.
+    # The figure each topic's pages state, six ordinary measured facts, each
+    # independently published by two bodies.
     authored = (
         ("rate", "Acme widget adoption rate", "was 40 percent"),
         ("amount", "Acme widget funding round", "raised 12 million dollars"),
@@ -1032,16 +1040,7 @@ def _unsupported_mechanism() -> ReplayScenario:
                 "Adoption mechanism",
                 "What mechanism increased Acme widget adoption in the United States in "
                 "2024?",
-                # The obligation is about a cause, so the dimension has to read
-                # as one to the composition table that decides whether the
-                # recorded propositions state it — but a dimension whose head
-                # *is* "mechanism" is one the planning table cannot credit to
-                # any claim at all, however plainly the pages state the cause.
-                # The planner's own dimensions are written "<kind>: <prose>"
-                # ("measure: annual ridership"), which is the phrasing that
-                # both tables read: the head names a measurable kind and the
-                # prose names the cause.
-                "measure: the mechanism behind the change",
+                "the mechanism behind the change",
                 "Acme widget adoption mechanism United States 2024",
                 _pair(2, "mechanism-2024", "Adoption mechanism note", claim),
                 labels=("Acme widget", "adoption rate"),
@@ -1957,6 +1956,712 @@ def _statement_check_failure_keeps_sentences() -> ReplayScenario:
     )
 
 
+# --- Task 5.9: the other question shapes (D11; Fable §8.8) -------------------
+#
+# Ten rows for the shapes the rest of the matrix does not reach: two subjects
+# keeping one value apart, two versions of one thing, three spellings of one
+# subject, a question whose pages state no figure at all, a counted measure
+# whose period decides which figure answers it, a purchase year whose
+# obligation states no period, a relative period the page's own date resolves,
+# prose that credits a body the page does not, a plan with one part, and a
+# maker's own figure beside a news relay of another of them.
+#
+# Every fixture here is hypothetical (*.example.test, "Example …", "Kettle
+# K1"): no row may be fitted to a question the live run might draw (D12).
+
+
+def _two_subjects_one_value() -> ReplayScenario:
+    """Two products, one tester, one rating: only the subject tells them apart.
+
+    D11: a rating is a number in a unit the parser does not scale and the
+    target states no period, so two figures equal in value, organisation,
+    period and kind are one fact unless their subjects differ. The two pages
+    differ in nothing else -- Kettle K1 and Kettle K2, both rated 4.5 out of 5
+    for 2026 by the same tester -- so a run that dropped the subject would
+    print one row for two products, or refuse the second sentence as a
+    restatement of the first.
+    """
+
+    def rated(model: str) -> ReplaySource:
+        return _page(
+            "tester.example.test",
+            f"kettle-{model.lower()}",
+            f"Kettle {model} noise test",
+            f"the Example Tester rated the Kettle {model} noise at 4.5 out of 5 "
+            "for 2026",
+            issuer="Example Tester",
+            figures=(("4.5", "out of 5", "2026", "actual"),),
+            figure_subjects=(f"Kettle {model}",),
+        )
+
+    return ReplayScenario(
+        case_id="two-subjects-one-value",
+        version=REPLAY_CASE_VERSION,
+        question=(
+            "What noise rating did the Example Tester give the Kettle models "
+            "for 2026?"
+        ),
+        topics=(
+            _topic(
+                1,
+                "Noise ratings",
+                "What noise rating did the Example Tester give the Kettle "
+                "models for 2026?",
+                "noise rating",
+                "Example Tester Kettle noise rating 2026",
+                (rated("K1"), rated("K2")),
+                unit_dimension="rating",
+                labels=("Example Tester", "noise"),
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01",),
+            # The Subject column exists because these rows need it, and both
+            # subjects are printed: a row that lost one would fail here.
+            required_report_phrases=("| Subject |", "Kettle K1", "Kettle K2"),
+            required_invariants=("subjects_stay_apart",),
+        ),
+    )
+
+
+def _two_versions_one_target() -> ReplayScenario:
+    """Two editions of one maker's notes answer one obligation, and stay two rows.
+
+    PD-9 folds two rows that answer one obligation, carry different releases
+    and describe the same thing in the same period. These two describe
+    *different* things -- version 10.02 and version 10.03, a month apart -- and
+    state the same value, so a run without the subject (D11) would fold them
+    into one row carrying an "earlier edition" the reader never earned. The
+    ``revision-noted`` row is the other half: the same measure with one subject
+    still folds.
+    """
+
+    def notes(version: str, edition: str) -> ReplaySource:
+        return _page(
+            "games.example.test",
+            f"notes-{version.replace('.', '-')}",
+            f"Kettle notes {version}",
+            "the Example Games patch notes list 12 changes for 2026",
+            issuer="Example Games",
+            vintage=edition,
+            figures=(("12", "changes", "2026", "actual"),),
+            figure_subjects=(f"version {version}",),
+        )
+
+    return ReplayScenario(
+        case_id="two-versions-one-target",
+        version=REPLAY_CASE_VERSION,
+        question="What changes do the Example Games patch notes list for 2026?",
+        topics=(
+            _topic(
+                1,
+                "Patch notes",
+                "What changes do the Example Games patch notes list for 2026?",
+                "the changes the notes list",
+                "Example Games patch notes changes 2026",
+                (
+                    notes("10.02", "January 2026 edition"),
+                    notes("10.03", "February 2026 edition"),
+                ),
+                unit_dimension="count",
+                period="2026",
+                kind="actual",
+                labels=("Example Games", "12 changes"),
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01",),
+            required_report_phrases=("version 10.02", "version 10.03"),
+            required_invariants=("versions_stay_apart",),
+        ),
+    )
+
+
+def _single_subject_spellings() -> ReplayScenario:
+    """Three spellings of one subject are one fact, not three rows.
+
+    Fable §8.6 step 3: a subject that only restates what its own target already
+    says names nothing, so "United States", "widget adoption" and no subject at
+    all are the same subject here -- the target asks for widget adoption in the
+    United States -- and three pages stating the same figure are one row. The
+    pages are three publishers' copies of one measurement, which is why the row
+    also exercises the corroboration path rather than only the fold.
+    """
+    claim = (
+        "the Example Institute measured widget adoption in the United States at "
+        "40 percent in 2025"
+    )
+
+    def survey(
+        host: str, slug: str, title: str, subject: str | None
+    ) -> ReplaySource:
+        return _page(
+            host,
+            slug,
+            title,
+            claim,
+            issuer="Example Institute",
+            figures=(("40", "percent", "2025", "actual"),),
+            figure_subjects=() if subject is None else (subject,),
+        )
+
+    return ReplayScenario(
+        case_id="single-subject-spellings",
+        version=REPLAY_CASE_VERSION,
+        question="What was widget adoption in the United States in 2025?",
+        topics=(
+            _topic(
+                1,
+                "Widget adoption",
+                "What was widget adoption in the United States in 2025?",
+                "widget adoption",
+                "widget adoption United States 2025",
+                (
+                    survey(
+                        "agency21.example.test",
+                        "adoption-2025",
+                        "Adoption survey",
+                        "United States",
+                    ),
+                    survey(
+                        "bureau21.example.test",
+                        "adoption-2025-panel",
+                        "Adoption survey (independent panel)",
+                        "widget adoption",
+                    ),
+                    survey(
+                        "panel21.example.test",
+                        "adoption-2025-note",
+                        "Adoption note",
+                        None,
+                    ),
+                ),
+                unit_dimension="percent",
+                period="2025",
+                kind="actual",
+                geography="United States",
+                labels=("Example Institute", "widget adoption"),
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01",),
+            required_invariants=("one_fact_row",),
+        ),
+    )
+
+
+def _prose_only_question() -> ReplayScenario:
+    """A why question whose answers state no figure at all.
+
+    A qualitative obligation (empty unit dimension and kind) is answered by a
+    finding that names it, and three reasons are three such findings. Nothing
+    in the run produces a figure, so the reader's Key facts section has to say
+    so rather than print an empty table -- and the Statement Check is shown the
+    figureless citation lines (``snippet:`` and the body it is ``attributed
+    to:``), which the double's own format check holds it to.
+    """
+    question = "Why did Acme widget adoption rise in the United States in 2024?"
+
+    def reason(host: str, slug: str, title: str, claim: str) -> ReplaySource:
+        return _page(host, slug, title, claim, issuer="Example Institute")
+
+    return ReplayScenario(
+        case_id="prose-only-question",
+        version=REPLAY_CASE_VERSION,
+        question=question,
+        topics=(
+            _topic(
+                1,
+                "Retail rollout",
+                "Why did Acme widget adoption rise in the United States in 2024?",
+                "the reason adoption rose",
+                "Acme widget adoption rise reason 2024",
+                (
+                    reason(
+                        "retail.example.test",
+                        "adoption-rise",
+                        "Adoption note",
+                        "the Example Institute attributes the rise in Acme widget "
+                        "adoption to a wider retail rollout",
+                    ),
+                ),
+                labels=("Example Institute", "adoption"),
+            ),
+            _topic(
+                2,
+                "Price",
+                "Did a lower price contribute to the rise in Acme widget adoption?",
+                "the price change behind the rise",
+                "Acme widget adoption price 2024",
+                (
+                    reason(
+                        "price.example.test",
+                        "adoption-price",
+                        "Price note",
+                        "the Example Bureau attributes the rise in Acme widget "
+                        "adoption to a lower unit price",
+                    ),
+                ),
+                labels=("Example Bureau", "adoption"),
+            ),
+            _topic(
+                3,
+                "Availability",
+                "Did availability contribute to the rise in Acme widget adoption?",
+                "the availability change behind the rise",
+                "Acme widget adoption availability 2024",
+                (
+                    reason(
+                        "stock.example.test",
+                        "adoption-stock",
+                        "Availability note",
+                        "the Example Panel attributes the rise in Acme widget "
+                        "adoption to wider availability",
+                    ),
+                ),
+                labels=("Example Panel", "adoption"),
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=(
+                "topic-01-target-01",
+                "topic-02-target-01",
+                "topic-03-target-01",
+            ),
+            required_report_phrases=("No figure passed the Evidence Verifier.",),
+        ),
+    )
+
+
+def _count_unit_period() -> ReplayScenario:
+    """The year a count belongs to is what decides that it answers the obligation.
+
+    The page states two counts of one measure -- 12,345 in 2025 and 10,000 in
+    2024 -- and the obligation asks for 2025, so only the 2025 figure may answer
+    it. Its own topic is starved in the opening round by six registers that
+    refuse the read, so ``topic-01-target-01`` is missing at the first review,
+    buys exactly one extra pass, and the page the second search surfaces is what
+    answers it.
+
+    The plan also declares a 2026 forecast obligation, and no page states a
+    2026 projection: the fixture declares it with ``required=False`` -- the
+    optional shape the plan's own vocabulary marks for a planner-added target --
+    because the extra pass is bought for *every* missing required target at once
+    (``graph/nodes.py``: ``review.missing_required_target_ids``). A required
+    obligation no page answers would therefore be a second job for the pass, and
+    ``missing_target_triggers_one_extra_pass`` -- the invariant this row
+    declares -- requires the pass to be bought for one obligation alone and to
+    turn it into an answer.
+    """
+    registers = tuple(
+        _page(
+            f"registry{position}.example.test",
+            f"record-{position}",
+            f"Kettle register {position}",
+            "the Kettle register lists a title and a publication date and "
+            "states no counted value",
+            issuer=f"Example Registry {position}",
+            # A register that refuses the read spends a turn and yields no
+            # finding, which is what leaves the turn budget to be exhausted
+            # before the second search can be issued.
+            status=403,
+        )
+        for position in range(1, 7)
+    )
+    return ReplayScenario(
+        case_id="count-unit-period",
+        version=REPLAY_CASE_VERSION,
+        question="How many Kettle units shipped in 2025?",
+        max_extra_passes=1,
+        topics=(
+            _topic(
+                1,
+                "Shipments",
+                "How many Kettle units shipped in 2025?",
+                "the number of Kettle units shipped",
+                "Kettle units shipped 2025 count",
+                (
+                    *registers,
+                    _page(
+                        "counts.example.test",
+                        "shipments",
+                        "Kettle shipment counts",
+                        "the number of Kettle units shipped was 12,345 units in "
+                        "2025 and 10,000 units in 2024",
+                        issuer="Example Tester",
+                        discovered=2,
+                        figures=(
+                            ("12,345", "units", "2025", "actual"),
+                            ("10,000", "units", "2024", "actual"),
+                        ),
+                    ),
+                ),
+                unit_dimension="count",
+                period="2025",
+                kind="actual",
+                follow_up_queries=("Kettle units shipped 2025 total",),
+                labels=("Kettle units", "12,345"),
+            ),
+            _topic(
+                2,
+                "2026 forecast",
+                "How many Kettle units are forecast to ship in 2026?",
+                "the number of Kettle units forecast to ship",
+                "Kettle units shipped 2026 forecast",
+                (
+                    _page(
+                        "outlook.example.test",
+                        "outlook",
+                        "Kettle outlook",
+                        "the Example Institute outlook discusses Kettle shipments "
+                        "and states no projection figure",
+                        issuer="Example Institute",
+                    ),
+                ),
+                unit_dimension="count",
+                period="2026",
+                kind="forecast",
+                required=False,
+            ),
+            _filler(
+                3, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01", "topic-03-target-01"),
+            # The period is what keeps the two counts apart: a run that bound
+            # the 2024 count to a 2025 obligation would print the answered
+            # obligation's measure beside the 2024 period, which is the row
+            # this phrase forbids.
+            forbidden_assertions=("| the number of Kettle units shipped | 2024 |",),
+            allowed_failure_classes=(
+                "error:agent_tool_failed",
+                "error:researcher_sub_topic_without_findings",
+            ),
+            required_invariants=("missing_target_triggers_one_extra_pass",),
+        ),
+    )
+
+
+def _purchase_year_empty_period() -> ReplayScenario:
+    """The year a reader is buying in is not a period the evidence must fall in.
+
+    Fable §8.9 item 6: a buy, use or decide year leaves the obligation's period
+    empty, and a rating the tester published in 2025 still answers it -- there
+    is no period for the figure to fail to match. The page carries its own
+    stated date, which is what the reader's label dates it from.
+    """
+    claim = "the Example Tester rated the Kettle K1 noise at 4.5 out of 5 in 2025"
+    return ReplayScenario(
+        case_id="purchase-year-empty-period",
+        version=REPLAY_CASE_VERSION,
+        question="Which Kettle should I buy in 2026?",
+        topics=(
+            _topic(
+                1,
+                "Noise rating",
+                "What noise rating does the Kettle K1 carry?",
+                "noise rating",
+                "Kettle K1 noise rating test",
+                (
+                    _page(
+                        "purchase.example.test",
+                        "kettle-k1-noise",
+                        "Kettle K1 noise test",
+                        claim,
+                        issuer="Example Tester",
+                        text=(
+                            "Kettle K1 noise test. Published by Example Tester on "
+                            f"2025-11-01. The report states {claim}."
+                        ),
+                        figures=(("4.5", "out of 5", "2025", "actual"),),
+                        publication_date=("2025-11-01", "2025-11-01"),
+                    ),
+                ),
+                unit_dimension="rating",
+                labels=("Example Tester", "noise"),
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01",),
+        ),
+    )
+
+
+def _relative_period_resolved() -> ReplayScenario:
+    """A relative period gets its year from the page's own date, or from nowhere.
+
+    D11 (Fable §8.7): "this year" states no year by itself, so the Context
+    Check's proposal of 2026 is kept only from a date the page really carries
+    (2026-02-20 here), and the kept figure records the date it came from, which
+    the reader's label names. The second topic is the same words on a page that
+    states no date at all: the proposal is refused (``correction_not_on_page``)
+    and the figure is dropped rather than published with a period no page
+    stated.
+    """
+    claim = (
+        "the Example Institute reports that 4 GW of Kettle capacity was added "
+        "this year"
+    )
+    return ReplayScenario(
+        case_id="relative-period-resolved",
+        version=REPLAY_CASE_VERSION,
+        question="How much Kettle capacity was added this year?",
+        topics=(
+            _topic(
+                1,
+                "Capacity added",
+                "How much Kettle capacity was added this year?",
+                "the capacity added",
+                "Kettle capacity added this year",
+                (
+                    _page(
+                        "dated.example.test",
+                        "capacity",
+                        "Kettle capacity note",
+                        claim,
+                        issuer="Example Institute",
+                        text=(
+                            "Kettle capacity note. Published by Example Institute. "
+                            "Published 2026-02-20. The report states " + claim + "."
+                        ),
+                        figures=(("4", "GW", None, "actual"),),
+                        context={"period": "2026"},
+                        publication_date=("2026-02-20", "Published 2026-02-20"),
+                    ),
+                ),
+                unit_dimension="power",
+                period="2026",
+                kind="actual",
+                labels=("Example Institute", "4 GW"),
+            ),
+            _topic(
+                2,
+                "Undated note",
+                "How much Kettle capacity does the undated note report?",
+                "the capacity the undated note reports",
+                "Kettle capacity undated note",
+                (
+                    _page(
+                        "undated.example.test",
+                        "capacity-note",
+                        "Kettle capacity note (undated)",
+                        claim,
+                        issuer="Example Institute",
+                        figures=(("4", "GW", None, "actual"),),
+                        context={"period": "2026"},
+                    ),
+                ),
+                unit_dimension="power",
+                period="2026",
+                kind="actual",
+                required=False,
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01",),
+            required_report_phrases=("period resolved from the page date 2026-02-20",),
+            required_invariants=("period_resolved_from_page_date",),
+        ),
+    )
+
+
+def _unattributed_relay_prose() -> ReplayScenario:
+    """A figure the page does not attribute is the site's, never a name it drops.
+
+    PD-8 and honesty rule 1: an unattributed figure is published as the site
+    that carries it, and prose that credits a body the page does not credit is
+    refused. The scripted writer drafts the page's own sentence, which credits
+    Example Institute; the Statement Check corrects it to the site's own words,
+    and the corrected sentence is what reaches the reader. "According to
+    Example Institute" is forbidden, because no page attributes the figure to
+    it.
+    """
+    prose = (
+        "According to Example Institute the Kettle K1 noise rating beats every "
+        "rival tested this year"
+    )
+    corrected = (
+        "The Example News test found the Kettle K1 noise rating beats every "
+        "rival tested this year."
+    )
+    return ReplayScenario(
+        case_id="unattributed-relay-prose",
+        version=REPLAY_CASE_VERSION,
+        question="How good is the Kettle K1 noise rating?",
+        topics=(
+            _topic(
+                1,
+                "Noise rating",
+                "How good is the Kettle K1 noise rating?",
+                "noise rating",
+                "Kettle K1 noise rating tested",
+                (
+                    _page(
+                        "news.example.test",
+                        "kettle-noise",
+                        "Kettle noise write-up",
+                        prose,
+                        issuer="Example News",
+                        figures=(),
+                        statement={"verdict": "corrected", "text": corrected},
+                    ),
+                    _page(
+                        "desk.example.test",
+                        "kettle-noise-test",
+                        "Kettle noise test results",
+                        "the Kettle K1 noise rating measured at 4.5 out of 5 in "
+                        "the Example News test",
+                        issuer="Example News",
+                        figures=(("4.5", "out of 5", "2026", "actual"),),
+                        context={"attribution": "unattributed"},
+                    ),
+                ),
+                unit_dimension="rating",
+                period="2026",
+                kind="actual",
+                labels=("Example News", "noise rating"),
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01",),
+            forbidden_assertions=("according to Example Institute",),
+            required_report_phrases=(corrected,),
+        ),
+    )
+
+
+def _one_part_question() -> ReplayScenario:
+    """A plan of one topic is not a structural defect, and the run completes.
+
+    Task 5.2 set ``MIN_SUB_TOPICS = 1``: a question with one part gets one
+    sub-topic, and the planner's own structural gate must not read that as a
+    defect to repair.
+    """
+    claim = (
+        "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    )
+    return ReplayScenario(
+        case_id="one-part-question",
+        version=REPLAY_CASE_VERSION,
+        question=(
+            "What was the Acme widget adoption rate in the United States in 2024?"
+        ),
+        topics=(
+            _topic(
+                1,
+                "Adoption rate",
+                "What was the Acme widget adoption rate in the United States in 2024?",
+                "the Acme widget adoption rate",
+                "Acme widget adoption rate United States 2024",
+                _pair(1, "adoption-2024", "Adoption survey", claim),
+                unit_dimension="percent",
+                period="2024",
+                kind="actual",
+                labels=("Acme widget", "adoption rate"),
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01",),
+        ),
+    )
+
+
+def _maker_notes_vs_relay() -> ReplayScenario:
+    """The maker's own figure and a news relay of another one of them.
+
+    Honesty rule 1 (D7): a relay is never presented as the issuer, and the
+    maker's own page is. Both rows carry the label the reader needs -- "Example
+    Games's own figure" and "relayed by news.example.test from Example Games" --
+    so a run that credited the relay site with the maker's figure, or the maker
+    with the relay's summary, fails the phrases this row asserts.
+    """
+    return ReplayScenario(
+        case_id="maker-notes-vs-relay",
+        version=REPLAY_CASE_VERSION,
+        question="What did the Example Games update change in 2026?",
+        topics=(
+            _topic(
+                1,
+                "Patch notes",
+                "What did the Example Games patch notes report for 2026?",
+                "the reduction the notes report",
+                "Example Games patch notes load times 2026",
+                (
+                    _page(
+                        "games.example.test",
+                        "notes-2026",
+                        "Patch notes 2026",
+                        "the Example Games patch notes report a 42 percent cut "
+                        "in load times for 2026",
+                        issuer="Example Games",
+                        figures=(("42", "percent", "2026", "actual"),),
+                        context={"organisation": "Example Games"},
+                    ),
+                ),
+                unit_dimension="percent",
+                period="2026",
+                kind="actual",
+                labels=("Example Games", "42 percent"),
+            ),
+            _topic(
+                2,
+                "News relay",
+                "What does the news report say the update cuts for 2026?",
+                "the reduction the news report relays",
+                "Example Games update matchmaking time 2026",
+                (
+                    _page(
+                        "news.example.test",
+                        "update-2026",
+                        "Example Games update",
+                        "According to Example Games the update cuts matchmaking "
+                        "time by 30 percent for 2026",
+                        issuer="Example News",
+                        figures=(("30", "percent", "2026", "actual"),),
+                        context={
+                            "attribution": "relayed",
+                            "organisation": "Example Games",
+                        },
+                    ),
+                ),
+                unit_dimension="percent",
+                period="2026",
+                kind="actual",
+                labels=("Example Games", "30 percent"),
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01", "topic-02-target-01"),
+            required_report_phrases=(
+                "Example Games's own figure",
+                "relayed by news.example.test from Example Games",
+            ),
+            required_invariants=("relay_labelled_as_relay", "no_false_verification"),
+        ),
+    )
+
+
 class ReplayCaseEntry:
     """One declared matrix row: identity, expectation, and its builder."""
 
@@ -2216,6 +2921,123 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "the error is the record, not a gate"
         ),
         build=_statement_check_failure_keeps_sentences,
+    ),
+    ReplayCaseEntry(
+        case_id="two-subjects-one-value",
+        version=REPLAY_CASE_VERSION,
+        title="Two products, one rating value, two rows",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "Two figures equal in value, organisation, period and kind stay "
+            "two rows because their subjects differ, and neither sentence is "
+            "refused as a restatement"
+        ),
+        build=_two_subjects_one_value,
+    ),
+    ReplayCaseEntry(
+        case_id="two-versions-one-target",
+        version=REPLAY_CASE_VERSION,
+        title="Two versions of one product are two facts, not one revision",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "Two editions answering one obligation with the same value and "
+            "different subjects stay two rows, and neither carries an earlier "
+            "edition"
+        ),
+        build=_two_versions_one_target,
+    ),
+    ReplayCaseEntry(
+        case_id="single-subject-spellings",
+        version=REPLAY_CASE_VERSION,
+        title="Three spellings of one subject are one fact row",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "A subject that restates its own target names nothing, so three "
+            "pages stating one figure produce exactly one Key Facts row"
+        ),
+        build=_single_subject_spellings,
+    ),
+    ReplayCaseEntry(
+        case_id="prose-only-question",
+        version=REPLAY_CASE_VERSION,
+        title="A why question whose pages state no figure",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "Qualitative obligations are answered by figureless findings, the "
+            "key facts section says no figure passed the verifier, and the "
+            "Statement Check is shown each finding's snippet and body"
+        ),
+        build=_prose_only_question,
+    ),
+    ReplayCaseEntry(
+        case_id="count-unit-period",
+        version=REPLAY_CASE_VERSION,
+        title="A count obligation is answered by its own year's count",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "Of two counts on one page only the 2025 one answers the 2025 "
+            "obligation, the missing obligation buys one extra pass, and the "
+            "page that pass reaches is what answers it"
+        ),
+        build=_count_unit_period,
+    ),
+    ReplayCaseEntry(
+        case_id="purchase-year-empty-period",
+        version=REPLAY_CASE_VERSION,
+        title="A purchase year leaves the obligation's period empty",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "A target for a year the reader is deciding in states no period, "
+            "so a rating the tester dated 2025 still answers it"
+        ),
+        build=_purchase_year_empty_period,
+    ),
+    ReplayCaseEntry(
+        case_id="relative-period-resolved",
+        version=REPLAY_CASE_VERSION,
+        title="A relative period is resolved from the page's own date, or refused",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "The kept figure's period is 2026 with the page date it came from, "
+            "the label says so, and the same words on an undated page are "
+            "refused with correction_not_on_page"
+        ),
+        build=_relative_period_resolved,
+    ),
+    ReplayCaseEntry(
+        case_id="unattributed-relay-prose",
+        version=REPLAY_CASE_VERSION,
+        title="Prose that credits a body the page does not is refused",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "The unattributed figure is the site's, the drafted sentence "
+            "crediting another body is corrected to credit the site, and no "
+            "reader sentence states the forbidden attribution"
+        ),
+        build=_unattributed_relay_prose,
+    ),
+    ReplayCaseEntry(
+        case_id="one-part-question",
+        version=REPLAY_CASE_VERSION,
+        title="A plan with one part is not a structural defect",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "A one-topic plan is accepted by the planner's own structural gate "
+            "and the run completes accepted"
+        ),
+        build=_one_part_question,
+    ),
+    ReplayCaseEntry(
+        case_id="maker-notes-vs-relay",
+        version=REPLAY_CASE_VERSION,
+        title="The maker's own figure and a relay of another one",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "The maker's own page is labelled as its own figure and the news "
+            "relay is labelled as the relay it is, naming both the relay and "
+            "the maker"
+        ),
+        build=_maker_notes_vs_relay,
     ),
 )
 

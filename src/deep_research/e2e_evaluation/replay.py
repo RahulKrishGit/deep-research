@@ -39,7 +39,7 @@ from deep_research.agents.acquisition import (
     build_read_record_from_tool_result,
 )
 from deep_research.agents.base import AgentCompleter
-from deep_research.agents.evidence import normalized_content_sha256
+from deep_research.agents.evidence import TemporalClaim, normalized_content_sha256
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.evidence_verifier import (
     ContextCheckDraft,
@@ -73,6 +73,7 @@ from deep_research.agents.source_evaluator import (
     SourceScoresDraft,
 )
 from deep_research.agents.sources import normalize_source_url, publisher_identity
+from deep_research.agents.verified_facts import subject_named_in
 from deep_research.graph.orchestrator import compile_research_graph
 from deep_research.memory.entries import MemoryEntry
 from deep_research.memory.long_term import LongTermMemory
@@ -121,11 +122,24 @@ class ReplayContractError(RuntimeError):
     """A scripted reply was asked for a packet the scenario did not author."""
 
 
-# The fields a fixture may script on a scripted reply. Both are exactly the
-# fields the reply type carries, so a scenario cannot write an override the
-# double has nowhere to put.
+# The fields a fixture may script on a scripted reply. Each is a field the
+# reply type carries and a page can evidence, so a scenario cannot write an
+# override the double has nowhere to put. ``finding``, ``figure`` and ``reason``
+# are not here: the request's own labels decide the first two and code decides
+# the last.
 CONTEXT_OVERRIDE_KEYS = frozenset(
-    {"scope", "attribution", "organisation", "kind", "evidence_words", "verdict"}
+    {
+        "scope",
+        "attribution",
+        "organisation",
+        "kind",
+        "evidence_words",
+        "verdict",
+        # D11's two proposals: a period (absolute, or one the page's own date
+        # resolves from the quoted words) and the subject the figure is about.
+        "period",
+        "subject",
+    }
 )
 STATEMENT_OVERRIDE_KEYS = frozenset({"verdict", "text", "reason"})
 
@@ -196,6 +210,21 @@ class ReplaySource:
     # whose scripted claim carries no discrete figure for Figure Match to
     # verify.
     figures: tuple[tuple[str, str, str | None, str | None], ...] = ()
+    # The subjects of ``figures``, position for position, exactly as the
+    # extraction records them (``FindingFigureDraft.subject``). A subject is
+    # the thing the figure is about as the page names it, and it is what keeps
+    # two figures equal in value, organisation, period and kind apart (D11),
+    # so a fixture that states none for a figure is declaring that the figure
+    # is about its topic as a whole rather than about a named thing.
+    figure_subjects: tuple[str | None, ...] = ()
+    # The date the page states for itself, as the Source Evaluator records it:
+    # the value and the page's own words for it (``TemporalClaim``). The words
+    # have to be the page's text verbatim, exactly as an excerpt does -- the
+    # real evaluator admits a date only from a quote the read carries -- and
+    # the value is what a relative period ("this year") is resolved against
+    # (D11), so a fixture that declared one its page does not state would be
+    # scripting a page date no reader could have earned.
+    publication_date: tuple[str, str] | None = None
     # The edition this page's figure belongs to, as the extraction records it
     # (``FindingDraft.vintage``): it is the release key PD-9 compares to tell a
     # revision of one fact from a second reading of it.
@@ -238,6 +267,19 @@ class ReplaySource:
             raise ValueError(f"excerpt not in text for {self.url}")
         if not self.excerpt.strip():
             raise ValueError(f"empty excerpt for {self.url}")
+        if self.figure_subjects and len(self.figure_subjects) != len(self.figures):
+            raise ValueError(
+                f"{self.url} declares {len(self.figure_subjects)} subject(s) "
+                f"({', '.join(repr(s) for s in self.figure_subjects)}) for "
+                f"{len(self.figures)} figure(s)"
+            )
+        if self.publication_date is not None and (
+            self.publication_date[1] not in self.text
+        ):
+            raise ValueError(
+                f"the page date of {self.url} quotes "
+                f"{self.publication_date[1]!r}, which its text does not state"
+            )
         if self.cached_text and self.cache_artifact in ("", "valid"):
             raise ValueError(
                 f"cached_text for {self.url} states a body only a stale or "
@@ -492,22 +534,33 @@ def _recorded_fields(body: str) -> dict[str, str]:
     return fields
 
 
-def _printed_figures(body: str) -> list[tuple[int, str, str | None, str]]:
-    """Every figure a Context Check block lists: ``(number, value, period, kind)``."""
-    figures: list[tuple[int, str, str | None, str]] = []
+def _printed_figures(
+    body: str,
+) -> list[tuple[int, str, str | None, str, str | None]]:
+    """Every figure a Context Check block lists.
+
+    ``(number, value, period, kind, subject)``, read from the shipped line
+    format: ``figure 1: 4.5 out of 5 | recorded period 2026 | recorded kind
+    actual``, with the `` | recorded subject …`` part present only when the
+    figure carries one (Task 5.7b). The kind is a single word, which is what
+    keeps it from swallowing the subject part a lazier group would take.
+    """
+    figures: list[tuple[int, str, str | None, str, str | None]] = []
     for match in re.finditer(
         r"(?m)^  figure (\d+): (\S+) (.+?) \| recorded period (.*?) \| "
-        r"recorded kind (.*)$",
+        r"recorded kind (\S+)(?: \| recorded subject (.*))?$",
         body,
     ):
         period = match.group(4).strip()
         kind = match.group(5).strip()
+        subject = match.group(6)
         figures.append(
             (
                 int(match.group(1)),
                 match.group(2),
                 None if period in ("", "none", "not stated") else period,
                 "actual" if kind in ("", "none") else kind,
+                None if subject is None else subject.strip(),
             )
         )
     return figures
@@ -515,18 +568,23 @@ def _printed_figures(body: str) -> list[tuple[int, str, str | None, str]]:
 
 def _registry_entries(
     text: str,
-) -> list[tuple[str, str, str, str, list[tuple[str, str, str, str, str]]]]:
+) -> list[tuple[str, str, str, str, list[tuple[str, str, str, str, str, str | None]]]]:
     """Every registry entry the writer's request lists.
 
     ``(label, title, host, snippet, figures)``, where each figure is
-    ``(value, unit, period, kind, organisation)``. Read from the registry's own
-    format, which is what the writer's prompt is built from. An entry with no
-    figure line is a finding whose page stated no figure: ``finding_registry``
-    still lists those, so the request really carries them and the double reads
-    them rather than refusing the packet.
+    ``(value, unit, period, kind, organisation, subject)``. Read from the
+    registry's own format, which is what the writer's prompt is built from: a
+    figure line carries its `` | subject …`` part after the unit only when the
+    Context Check resolved one (D11), so the unit group has to stop there
+    rather than run on to the next part. An entry with no figure line is a
+    finding whose page stated no figure: ``finding_registry`` still lists
+    those, so the request really carries them and the double reads them rather
+    than refusing the packet.
     """
     headers = list(re.finditer(r"(?m)^## (F\d+): (.*) \(([^()\n]*)\)$", text))
-    entries: list[tuple[str, str, str, str, list[tuple[str, str, str, str, str]]]] = []
+    entries: list[
+        tuple[str, str, str, str, list[tuple[str, str, str, str, str, str | None]]]
+    ] = []
     for position, header in enumerate(headers):
         end = (
             headers[position + 1].start()
@@ -538,13 +596,14 @@ def _registry_entries(
             (
                 match.group(1),
                 match.group(2),
-                match.group(3).strip(),
-                match.group(4),
-                match.group(5).strip(),
+                match.group(4).strip(),
+                match.group(5),
+                match.group(6).strip(),
+                None if match.group(3) is None else match.group(3).strip(),
             )
             for match in re.finditer(
-                r"(?m)^F\d+ \| figure \d+: (\S+) (.+?) \| period (.*?) \| "
-                r"kind (\w+) \| organisation (.*?) \| label: ",
+                r"(?m)^F\d+ \| figure \d+: (\S+) (.+?)(?: \| subject (.*?))? \| "
+                r"period (.*?) \| kind (\w+) \| organisation (.*?) \| label: ",
                 body,
             )
         ]
@@ -558,6 +617,17 @@ def _registry_entries(
             )
         )
     return entries
+
+
+def _cited_subline(body: str, label: str) -> str:
+    """One indented ``    label: value`` line under a cited finding.
+
+    The Statement Check packet indents a finding's own lines under its label
+    (``    snippet: …``, ``    attributed to: …``), which is what tells them
+    from the block's own unindented ``sentence:`` and ``cited findings:``.
+    """
+    match = re.search(rf"(?m)^    {re.escape(label)}: (.*)$", body)
+    return match.group(1).strip() if match else ""
 
 
 def _snippet_sentence(snippet: str) -> str:
@@ -575,7 +645,12 @@ def _snippet_sentence(snippet: str) -> str:
 
 
 def _written_sentence(
-    value: str, unit: str, period: str, kind: str, organisation: str
+    value: str,
+    unit: str,
+    period: str,
+    kind: str,
+    organisation: str,
+    subject: str | None = None,
 ) -> str:
     """The sentence one registry line becomes: the figure, and nothing else.
 
@@ -583,11 +658,16 @@ def _written_sentence(
     it is a forecast and, for a forecast, its release), because D8 moves the
     wording judgement to the Statement Check and the label to code. A line
     whose period the page did not state states no period rather than inventing
-    one.
+    one. A line with a subject names it first, as the thing the sentence is
+    about: two figures can be equal in value, organisation, period and kind
+    and still be two facts ("Kettle K1" rated the same as "Kettle K2"), and a
+    sentence that did not say which is which would be refused as a restatement
+    of the other row.
     """
     verb = "projects" if kind == "forecast" else "reports"
     stated = f" for {period}" if period and period != "not stated" else ""
-    return f"{organisation} {verb} {value} {unit}{stated}."
+    named = f"{subject}: " if subject else ""
+    return f"{named}{organisation} {verb} {value} {unit}{stated}."
 
 
 class ReplayCompleter(AgentCompleter):
@@ -894,13 +974,25 @@ class ReplayCompleter(AgentCompleter):
                     vintage=source.vintage or None,
                     measure_scope=source.recorded_scope or None,
                     figures=[
-                        FindingFigureDraft(value=v, unit=u, period=p, kind=k)
-                        for v, u, p, k in source.figures
+                        FindingFigureDraft(value=v, unit=u, period=p, kind=k, subject=s)
+                        for (v, u, p, k), s in zip(
+                            source.figures, self._subjects_of(source)
+                        )
                     ],
                     target_ids=list(planned),
                 )
             )
         return SubTopicFindingsDraft(findings=findings)
+
+    def _subjects_of(self, source: ReplaySource) -> tuple[str | None, ...]:
+        """One subject per figure, padded when the fixture declares none.
+
+        An empty ``figure_subjects`` is a page whose figures are about their
+        topic as a whole, which is the shape every figure carried before D11.
+        """
+        if not source.figure_subjects:
+            return (None,) * len(source.figures)
+        return source.figure_subjects
 
     def _planned_target_ids(self, text: str, coverage_id: str) -> list[str]:
         """One topic's target ids, read out of the request's target list.
@@ -943,6 +1035,14 @@ class ReplayCompleter(AgentCompleter):
                     source_role=source.source_role,
                     transport_relation=source.transport_relation,
                     report_number=source.report_number,
+                    publication_date=(
+                        TemporalClaim(
+                            value=source.publication_date[0],
+                            quote=source.publication_date[1],
+                        )
+                        if source.publication_date is not None
+                        else None
+                    ),
                 )
             )
         if not rows:
@@ -969,13 +1069,14 @@ class ReplayCompleter(AgentCompleter):
             recorded = _recorded_fields(body)
             snippet = _printed_line(body, "snippet")
             override = source.context
-            for number, _value, period, kind in _printed_figures(body):
+            for number, _value, period, kind, subject in _printed_figures(body):
                 figures.append(
                     FigureCheckDraft(
                         finding=label,
                         figure=number,
-                        period=period,
+                        period=override.get("period", period),
                         scope=override.get("scope", recorded.get("scope")),
+                        subject=override.get("subject", subject),
                         attribution=override.get("attribution", "own"),  # type: ignore[arg-type]
                         organisation=override.get(
                             "organisation", _printed_owner(body)
@@ -1039,6 +1140,7 @@ class ReplayCompleter(AgentCompleter):
         drafts: list[StatementVerdictDraft] = []
         for label, body in _packet_blocks(text, "S"):
             sentence = _printed_line(body, "sentence")
+            self._require_cited_findings(body, label)
             override = self._statement_override(sentence)
             if self.invented_prose and self.invented_prose in sentence:
                 # The case's whole subject: prose no page states. No page's
@@ -1072,6 +1174,31 @@ class ReplayCompleter(AgentCompleter):
                 "the Statement Check packet listed no sentence"
             )
         return StatementCheckDraft(statements=drafts)
+
+    def _require_cited_findings(self, body: str, label: str) -> None:
+        """A cited line that kept no figure is shown with the body it carries.
+
+        The shipped packet prints ``(no kept figures)`` for a finding whose
+        page stated none, and then the sentence's own ``snippet:`` and the body
+        it is ``attributed to:`` (Task 5.7a: that second line belongs to the
+        figureless case alone, because a kept figure's line already states its
+        attribution). Both are what the checker judges the sentence against, so
+        a packet that states neither is a request the production writer cannot
+        build -- a harness fault to refuse rather than to answer "consistent"
+        about a sentence whose evidence was never shown.
+        """
+        if "(no kept figures)" not in body:
+            return
+        missing = [
+            name
+            for name in ("snippet", "attributed to")
+            if not _cited_subline(body, name)
+        ]
+        if missing:
+            raise ReplayContractError(
+                f"the Statement Check block {label} cites a finding with no kept "
+                f"figure and prints no {' or '.join(missing)} line for it"
+            )
 
     def _statement_override(self, sentence: str) -> dict[str, str]:
         """The override of the page whose drafted sentence this is.
@@ -2367,6 +2494,154 @@ def _invariant_extra_pass_finds_nothing(run: ReplayRun) -> str | None:
     return None
 
 
+def _invariant_subjects_stay_apart(run: ReplayRun) -> str | None:
+    """Two things rated the same are two rows, and both sentences survive.
+
+    D11: a subject is what keeps two figures of equal value, organisation,
+    period and kind apart, so the row that lost it would be one row for two
+    products. The writer's own restatement guard counts a row only for the
+    subject the sentence names, so the second half is the same fact seen from
+    the reader's side: a sentence refused as a restatement it is not.
+    """
+    rows = _fact_rows(run)
+    twins = [
+        (left, right)
+        for position, left in enumerate(rows)
+        for right in rows[position + 1 :]
+        if left.value == right.value
+        and left.organisation == right.organisation
+        and left.period == right.period
+        and left.kind == right.kind
+    ]
+    if not twins:
+        return "no two fact rows share a value, organisation, period and kind"
+    for left, right in twins:
+        if not left.subject or not right.subject:
+            return (
+                f"{left.row_id} and {right.row_id} carry one value but not two "
+                "subjects"
+            )
+        if subject_named_in(left.subject, right.subject) or subject_named_in(
+            right.subject, left.subject
+        ):
+            return (
+                f"{left.row_id} and {right.row_id} name the same subject: "
+                f"{left.subject!r} and {right.subject!r}"
+            )
+    refused = [
+        point
+        for point in (
+            run.state.composition.rejected_points
+            if run.state.composition is not None
+            else []
+        )
+        if point.reason.casefold().startswith("restates")
+    ]
+    if refused:
+        return (
+            f"a point was refused as a restatement of a row it does not state: "
+            f"{refused[0].reason!r}"
+        )
+    return None
+
+
+def _invariant_versions_stay_apart(run: ReplayRun) -> str | None:
+    """Two editions of two different things are two rows, and no release history.
+
+    PD-9 folds two rows that answer one obligation and differ only in their
+    release, so a subject that names *which* version the figure is about is what
+    keeps a patch's notes from folding into the previous patch's. The row that
+    lost the subject folds them and prints an earlier edition nobody earned.
+    """
+    rows = _fact_rows(run)
+    for left in rows:
+        for right in rows:
+            if left is right:
+                continue
+            if not (set(left.target_ids) & set(right.target_ids)):
+                continue
+            if left.subject and right.subject and left.subject != right.subject:
+                if left.earlier or right.earlier:
+                    return (
+                        f"{left.row_id} and {right.row_id} about "
+                        f"{left.subject!r} and {right.subject!r} carry an earlier "
+                        "edition, which is a folded revision"
+                    )
+    apart = [
+        row
+        for row in rows
+        if row.subject and not row.earlier
+        and any(
+            other is not row
+            and set(other.target_ids) & set(row.target_ids)
+            and other.subject
+            and other.subject != row.subject
+            for other in rows
+        )
+    ]
+    if len(apart) < 2:
+        return (
+            "fewer than two rows answering one obligation carry their own "
+            "subject"
+        )
+    return None
+
+
+def _invariant_one_fact_row(run: ReplayRun) -> str | None:
+    """One measurement, however many spellings of its subject, is one row.
+
+    Fable §8.6 step 3: a subject that only restates what its own target already
+    says names nothing. A run that treated "United States" and "widget
+    adoption" as two subjects would print two rows for one figure.
+    """
+    rows = _fact_rows(run)
+    if len(rows) != 1:
+        return (
+            f"the run printed {len(rows)} fact rows for one figure: "
+            f"{[row.subject for row in rows]}"
+        )
+    return None
+
+
+def _invariant_period_resolved_from_page_date(run: ReplayRun) -> str | None:
+    """A relative period is kept only from a date its own page states.
+
+    D11 (§8.7): "this year" states no year by itself. The kept figure carries
+    the period the page's date resolved it to, records the date it came from,
+    and the same words on a page that states no date are refused outright --
+    never published with a period no page carried.
+    """
+    resolved = [
+        row
+        for row in _fact_rows(run)
+        if row.period_resolved_from == "2026-02-20"
+    ]
+    if not resolved:
+        return (
+            "no fact row records the page date 2026-02-20 as the period it "
+            "resolved"
+        )
+    for row in resolved:
+        if not row.period:
+            return f"{row.row_id} resolved a period but states none"
+    refused = [
+        result
+        for finding in run.state.verified_findings
+        for result in (
+            finding.verification.figure_results if finding.verification else []
+        )
+        if result.dropped_reason == "correction_not_on_page"
+    ]
+    if not refused:
+        return (
+            "the undated page's figure was not dropped for stating a period "
+            "its page does not carry"
+        )
+    if "2026-02-20" not in run.report:
+        return "the reader's report never names the date the period came from"
+    return None
+
+
 def _invariant_revision_noted(run: ReplayRun) -> str | None:
     """A revision is two editions of one fact, and the reader is told.
 
@@ -2650,6 +2925,10 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
     ),
     "extra_pass_finds_nothing": _invariant_extra_pass_finds_nothing,
     "revision_noted": _invariant_revision_noted,
+    "subjects_stay_apart": _invariant_subjects_stay_apart,
+    "versions_stay_apart": _invariant_versions_stay_apart,
+    "one_fact_row": _invariant_one_fact_row,
+    "period_resolved_from_page_date": _invariant_period_resolved_from_page_date,
     "scope_corrected_to_all_segments": _invariant_scope_corrected_to_all_segments,
     "figure_not_on_page_dropped": _invariant_figure_not_on_page_dropped,
     "evidence_words_not_on_page_rejected": (

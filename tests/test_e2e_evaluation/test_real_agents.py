@@ -67,6 +67,16 @@ DECLARED_CASE_IDS: tuple[str, ...] = (
     "report-scope-corrected-to-all-segments",
     "revision-noted",
     "statement-check-failure-keeps-sentences",
+    "two-subjects-one-value",
+    "two-versions-one-target",
+    "single-subject-spellings",
+    "prose-only-question",
+    "count-unit-period",
+    "purchase-year-empty-period",
+    "relative-period-resolved",
+    "unattributed-relay-prose",
+    "one-part-question",
+    "maker-notes-vs-relay",
 )
 
 REPETITIONS = 3
