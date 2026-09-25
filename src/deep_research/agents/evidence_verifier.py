@@ -57,7 +57,10 @@ from deep_research.agents.evidence import (
 )
 from deep_research.agents.figures import figure_in_text
 from deep_research.agents.identity import deduplicate_findings, finding_fingerprint
-from deep_research.agents.prompts import render_structured_reply_format
+from deep_research.agents.prompts import (
+    render_structured_reply_format,
+    render_structured_request,
+)
 from deep_research.agents.sources import publisher_identity
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.verified_facts import same_organisation
@@ -139,10 +142,11 @@ CONTEXT_CHECK_INSTRUCTION = (
     "finding label and figure number. For each figure give:\n"
     "- period: the period the page says the figure applies to, as the page "
     "writes it (\"2024\", \"2025\", \"Q3 2025\"); repeat the recorded period when "
-    "the page confirms it.\n"
+    "the page confirms it; null when the page states none (a current price or "
+    "rating usually has none — never invent one).\n"
     "- scope: the segment or basis the page says the figure covers, as the page "
-    "writes it (\"all segments\", \"utility-scale\", \"utility, C&I, and "
-    "residential\"), or null when the page states none.\n"
+    "writes it (\"all segments\", \"households only\", \"firms with more than "
+    "250 employees\"), or null when the page states none.\n"
     "- attribution: own when the page states the figure as its publisher's own; "
     "relayed when the page credits another organisation for it (\"according "
     "to\", \"reported by\", a possessive); unattributed when the page states it "
@@ -150,8 +154,10 @@ CONTEXT_CHECK_INSTRUCTION = (
     "- organisation: for own, the page's publisher as the page names itself; for "
     "relayed, the organisation the page credits, exactly as the page names it; "
     "null for unattributed.\n"
-    "- kind: actual for a measured or reported outcome; forecast for a "
-    "projection, plan, expectation or target.\n"
+    "- kind: actual for anything the page states as measured, reported, "
+    "observed, current or in force — a count, a price, a rating or score, a "
+    "rule's date; forecast for a projection, plan, expectation, target or "
+    "announced future change.\n"
     "- evidence_words: the exact words of the passage that state this figure "
     "with this period and scope, copied character for character, one sentence "
     "or less. Words that are not on the page make the figure unusable.\n"
@@ -538,18 +544,16 @@ def context_check_messages(items: Sequence[ContextItem]) -> list[ChatMessage]:
             f"recorded fields: {recorded}\nfigures:\n{figures}\n"
             f"snippet: {finding.snippet}\npassage: {item.passage}"
         )
+    static = [
+        f"# Response contract\n{CONTEXT_CHECK_INSTRUCTION}",
+        "# Reply format\n"
+        + render_structured_reply_format(_CONTEXT_CHECK_REPLY_EXAMPLES),
+    ]
+    material = ["# Figures to check\n" + "\n\n".join(blocks)]
     return [
         ChatMessage(role="developer", content=CONTEXT_CHECK_SYSTEM_PROMPT),
         ChatMessage(
-            role="user",
-            content="\n\n".join(
-                (
-                    "# Figures to check\n" + "\n\n".join(blocks),
-                    f"# Response contract\n{CONTEXT_CHECK_INSTRUCTION}",
-                    "# Reply format\n"
-                    + render_structured_reply_format(_CONTEXT_CHECK_REPLY_EXAMPLES),
-                )
-            ),
+            role="user", content=render_structured_request(static, material)
         ),
     ]
 
@@ -726,36 +730,41 @@ def evidence_verified_event(findings: Sequence[Finding]) -> ResearchEvent:
 STATEMENT_CHECK_SYSTEM_PROMPT = (
     "You check whether a drafted sentence states only what the findings it "
     "cites actually verified. You have no tools and no web access: judge "
-    "only from the figures and evidence words shown for each sentence."
+    "only from the figures, evidence words and verified snippets shown for "
+    "each sentence."
 )
 
 STATEMENT_CHECK_INSTRUCTION = (
     "Return one entry in statements for every sentence listed, naming it by "
     "its label. For each sentence give:\n"
     "- verdict: consistent when the sentence states only the numbers, "
-    "dates, scope, organisation and forecast-vs-actual distinction its "
-    "cited findings' figures actually state; corrected when a minimal "
-    "rewording would make it so; inconsistent when it states a number, "
-    "date, scope, organisation, or forecast/actual distinction those "
-    "figures do not support, or invents anything.\n"
+    "dates, subject, scope, organisation and forecast-vs-actual distinction "
+    "its cited findings' figures actually state and — for a finding with no "
+    "figure — the statement its verified snippet makes; corrected when a "
+    "minimal rewording would make it so; inconsistent when it states a "
+    "number, date, subject, scope, organisation, forecast/actual distinction "
+    "or statement those figures and snippets do not support, or invents "
+    "anything. A judgement, ranking or recommendation stated as fact rather "
+    "than as the judgement of the source that made it is not supported as "
+    "written: correct it by attributing it to that source.\n"
     "- corrected_text: for corrected, the minimally reworded sentence; "
     "otherwise empty.\n"
     "- reason: one short sentence.\n"
-    "Never invent a number, date, scope, or organisation the cited "
+    "Never invent a number, date, subject, scope, or organisation the cited "
     "findings do not state."
 )
 
 _STATEMENT_CHECK_REPLY_EXAMPLES = (
     (
-        "Example input: S01: \"EIA forecasts battery storage will reach 43.6 "
-        "GW by the end of 2025.\" | F01: 43.6 GW | period none | scope none | "
-        "kind actual | own (U.S. Energy Information Administration) | "
-        "evidence: \"the U.S. power system had 43.6 gigawatts (GW) of "
-        "operational utility-scale battery storage nameplate capacity\"",
+        "Example input: S01: \"The Example Statistical Agency forecasts that 4.1 "
+        "million households will have rooftop solar by the end of 2026.\" | F01: "
+        "4.1 million households | period 2025 | scope none | kind actual | own "
+        "(Example Statistical Agency) | evidence: \"by the end of 2025, 4.1 million "
+        "households had rooftop solar\"",
         '{"statements":[{"label":"S01","verdict":"corrected","corrected_text":'
-        '"EIA reported that by the end of 2025 the U.S. power system had 43.6 '
-        'GW of operational utility-scale battery storage capacity.",'
-        '"reason":"The finding states an actual, not a forecast."}]}',
+        '"The Example Statistical Agency reported that by the end of 2025, 4.1 '
+        'million households had rooftop solar.","reason":"The finding states an '
+        'actual for 2025, not a forecast."}]}',
     ),
 )
 
@@ -785,7 +794,8 @@ class StatementCheckDraft(ContractModel):
 
 
 def _statement_cited_lines(item: StatementCheckItem) -> str:
-    """Every cited finding's kept figures, as the prompt shows them."""
+    """Every cited finding's kept figures, then its verified snippet and the body it
+    is attributed to: the admitted issuer, else the page's publisher."""
     lines: list[str] = []
     for finding, label in zip(item.findings, item.labels):
         verification = finding.verification
@@ -802,30 +812,41 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
                     )
         body = "; ".join(figures) if figures else "(no kept figures)"
         lines.append(f"  {label}: {body}")
+        lines.append(f'    snippet: "{finding.snippet or finding.content}"')
+        name = finding.attributed_issuer or publisher_identity(finding.source_url)
+        quote = (
+            f' ("{finding.attribution_quote}")'
+            if finding.attributed_issuer and finding.attribution_quote else ""
+        )
+        lines.append(f"    attributed to: {name}{quote}")
     return "\n".join(lines)
 
 
 def statement_check_messages(
     items: Sequence[StatementCheckItem], *, question: str
 ) -> list[ChatMessage]:
-    """One batch's request: every sentence, its label, and its cited findings' figures."""
+    """One batch's request: every sentence, its label, its cited findings' figures.
+
+    Static first (PD-29): the response contract and the reply format lead, so
+    every batch of every sub-topic shares them as a cacheable prefix.
+    """
     blocks = [
         f"## {item.label}\nsentence: {item.text}\ncited findings:\n{_statement_cited_lines(item)}"
         for item in items
     ]
+    static = [
+        f"# Response contract\n{STATEMENT_CHECK_INSTRUCTION}",
+        "# Reply format\n"
+        + render_structured_reply_format(_STATEMENT_CHECK_REPLY_EXAMPLES),
+    ]
+    material = [
+        f"# Question\n{question}",
+        "# Statements to check\n" + "\n\n".join(blocks),
+    ]
     return [
         ChatMessage(role="developer", content=STATEMENT_CHECK_SYSTEM_PROMPT),
         ChatMessage(
-            role="user",
-            content="\n\n".join(
-                (
-                    f"# Question\n{question}",
-                    "# Statements to check\n" + "\n\n".join(blocks),
-                    f"# Response contract\n{STATEMENT_CHECK_INSTRUCTION}",
-                    "# Reply format\n"
-                    + render_structured_reply_format(_STATEMENT_CHECK_REPLY_EXAMPLES),
-                )
-            ),
+            role="user", content=render_structured_request(static, material)
         ),
     ]
 

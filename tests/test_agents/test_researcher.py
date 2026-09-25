@@ -15,7 +15,7 @@ import pytest
 from deep_research.agents.acquisition import UNMINED_QUANTITY_REASON
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.evidence import build_read_record
-from deep_research.agents.prompts import AgentTask
+from deep_research.agents.prompts import STRUCTURED_REQUEST_END, AgentTask
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
     HIGH_PRIORITY_THRESHOLD,
@@ -794,7 +794,8 @@ def test_extraction_messages_carry_the_sub_topic_criteria_and_evidence() -> None
     assert "# Sub-topic\nAlpha" in body
     assert "- A named source about Alpha." in body
     assert '- [web_scraper] {"url": "https://example.test/qec"' in body
-    assert body.rstrip().endswith(_FINDING_EXAMPLE_OUTPUT)
+    assert _FINDING_EXAMPLE_OUTPUT in body
+    assert body.rstrip().endswith(STRUCTURED_REQUEST_END)
 
 
 def test_extraction_evidence_keeps_search_payloads_out_of_the_evidence_block() -> None:

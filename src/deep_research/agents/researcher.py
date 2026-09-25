@@ -48,6 +48,7 @@ from deep_research.agents.prompts import (
     AgentTask,
     render_memory_guidance,
     render_structured_reply_format,
+    render_structured_request,
 )
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.sources import normalize_source_url, publisher_identity
@@ -128,9 +129,9 @@ RESEARCHER_SYSTEM_PROMPT = (
     "are met. If a search returned nothing worth reading, search again instead. "
     "One page you have read is worth more than several more queries.\n"
     "Read the organisation's own page first. When a figure belongs to an "
-    "organisation - an agency's inventory, a market monitor's release, a "
-    "company's filing - read that organisation's own page or document (for "
-    "example eia.gov or woodmac.com) before any story that repeats it. Use a "
+    "organisation - an agency's statistics, an institute's report, a "
+    "company's filing - read that organisation's own page or document (its own "
+    "site, report page or filing) before any story that repeats it. Use a "
     "relay only when the original is not reachable, and record it as a relay: "
     "cite the page where you read it and name the organisation it credits in "
     "attributed_issuer. Do not search for a second source to confirm a figure "
@@ -506,8 +507,8 @@ _FINDING_REPLY_EXAMPLES = (
         "https://evidence.example.test/report (fetched for topic-01); the "
         "passage reads \"The measured reduction was 12 percent, according to "
         "the Example Statistical Agency, across all classes.\"; the Planned "
-        "targets list names topic-01-target-01 (how much capacity was "
-        "added?).",
+        "targets list names topic-01-target-01 (what was the measured "
+        "reduction in 2024?).",
         '{"findings":[{"content":"The example report relays the Example '
         "Statistical Agency's measurement: a 12 percent reduction in 2024 "
         'across all classes, from the agency\'s January 2025 preliminary '
@@ -531,12 +532,13 @@ _FINDING_REPLY_EXAMPLES = (
 # acquisition-specific: a statement of a quantity with no date beside it
 # cannot be ranked against a later or earlier statement of the same quantity.
 _FINDING_DATES_CONTRACT = (
-    " For every figure you report, fill in data_period with the period the "
+    "\n- For every figure you report, fill in data_period with the period the "
     "figure applies to, statement_date with the date the source states or "
     "carries for it, and vintage with the dated edition of the data it rests "
     "on — each written as the source writes it (dates as YYYY, YYYY-MM, or "
-    "YYYY-MM-DD) and each null when the source does not state it. The vintage "
-    "is what tells the latest statement of a quantity from an older one."
+    "YYYY-MM-DD) and each null when the source does not state it.\n"
+    "- The vintage is what tells the latest statement of a quantity from an "
+    "older one."
 )
 
 # Who a figure belongs to, and what it is measured over. Both are properties
@@ -547,32 +549,35 @@ _FINDING_DATES_CONTRACT = (
 # the segment the release states. A relay's copy is that body's measurement,
 # and a total over every segment is not the segment a target asks about.
 _FINDING_PROVENANCE_CONTRACT = (
-    " Name the body the page attributes it to, separately from the page that "
-    "served it: a release, a news story, or a data dive that repeats another "
-    "organisation's figure credits that organisation, so put it in "
+    "\n- Name the body the page attributes it to, separately from the page "
+    "that served it: a release, a news story, or a data dive that repeats "
+    "another organisation's figure credits that organisation, so put it in "
     "attributed_issuer and the page's own words for the attribution in "
-    "attribution_quote — \"according to the U.S. Energy Information "
-    "Administration (EIA)\" — and never credit the host that repeated it. "
-    "The page's words for the attribution need not sit inside the excerpt you "
-    "copied: an excerpt is one passage of the page, the attribution is "
-    "another, and a sentence carrying on from an attributed one — \"the EIA "
-    "projects that solar capacity will grow by another 32.5 GW in 2025. And "
-    "... a record-breaking 18.2 GW ... are projected this year\" — is still "
-    "that body's figure. Quote the page's own words for it, copied from the "
-    "read rather than written in your own. "
-    "Leave both null when the page states the figure as its own publisher's, "
-    "and never state an attribution the passage does not carry, and keep the "
-    "page's own words for what the figure measures: \"energy storage\" does "
-    "not become \"battery storage\", and a count of installations does not "
-    "become a count of something else. When the page states the scope, "
-    "segment, or basis a figure covers, state the segment or basis the figure "
-    "covers in measure_scope — \"all segments\", \"grid-scale\", "
-    "\"utility-scale projects larger than 1 MW\" — and when the body the "
-    "figure belongs to released it on a date the page states, record that "
-    "date in release_date. A figure whose own scope differs from a target's "
-    "wording is still a finding for the target whose measure it matches: "
-    "record it with the scope the page states rather than dropping it, and "
-    "never restate it in the target's own terms."
+    "attribution_quote — \"according to the Example Statistical Agency "
+    "(ESA)\" — and never credit the host that repeated it.\n"
+    "- The page's words for the attribution need not sit inside the excerpt "
+    "you copied: an excerpt is one passage of the page, the attribution is "
+    "another, and a sentence carrying on from an attributed one — \"the "
+    "Example Statistical Agency projects that road freight will grow by "
+    "another 3.2 percent in 2027. And ... a record 41,000 new registrations "
+    "... are projected this year\" — is still that body's figure. Quote the "
+    "page's own words for it, copied from the read rather than written in "
+    "your own.\n"
+    "- Leave both null when the page states the figure as its own "
+    "publisher's, and never state an attribution the passage does not carry, "
+    "and keep the page's own words for what the figure measures: a broader "
+    "category on the page never becomes the narrower one a target asks for — "
+    "\"all vehicles\" does not become \"electric vehicles\" — and a count of "
+    "installations does not become a count of something else.\n"
+    "- When the page states the scope, segment, or basis a figure covers, "
+    "state the segment or basis the figure covers in measure_scope — \"all "
+    "segments\", \"households only\", \"firms above a stated size "
+    "threshold\" — and when the body the figure belongs to released it on a "
+    "date the page states, record that date in release_date.\n"
+    "- A figure whose own scope differs from a target's wording is still a "
+    "finding for the target whose measure it matches: record it with the "
+    "scope the page states rather than dropping it, and never restate it in "
+    "the target's own terms."
 )
 
 
@@ -608,7 +613,9 @@ def render_planned_targets(targets: Sequence[EvidenceTarget]) -> str:
 # A passage "states a figure in the target's own measure unit" when a numeral
 # stands beside a unit of the base that target names. The bases are power (W)
 # and energy (Wh), and the unit vocabulary is ``utils.types``' own, so what a
-# passage owes and what a target declares cannot drift apart.
+# passage owes and what a target declares cannot drift apart. Bounded: the
+# energy-market units only (Fable C-f); a target in any other unit owes no
+# passage, so the re-extraction is a no-op outside that domain.
 _MEASURE_UNITS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("energy", _ENERGY_UNIT),
     ("power", _POWER_UNIT),
@@ -733,36 +740,42 @@ def extraction_messages(
         f"- {criterion}" for criterion in task.sub_topic.success_criteria
     )
     registry_contract = (
-        "Return one finding per distinct, source-backed figure or fact. Every finding "
-        "MUST copy read_id and locator exactly as the acquisition context above prints "
-        "them, and MUST carry a snippet: one or two sentences copied character for "
-        "character from that passage, containing the finding's figures (at most "
-        f"{MAX_SNIPPET_CHARS} characters). List every figure the snippet states for "
-        "the finding in figures: value exactly as the snippet writes it (\"10.4\", "
-        "\"12,314\"), unit as the snippet writes it (\"GW\", \"megawatts\", \"%\"), the "
-        "period it applies to, and kind: actual for a measured or reported outcome, "
-        "forecast for a projection, plan or expectation. Figures that measure "
-        "different things - a yearly addition and a cumulative total - belong in "
-        "separate findings. A finding MUST name in target_ids every planned target "
-        "from the Planned targets list whose question its content answers — copy those ids from that "
+        "Return one finding per distinct, source-backed figure or fact.\n"
+        "- Every finding MUST copy read_id and locator exactly as the acquisition "
+        "context below prints them, and MUST carry a snippet: one or two sentences "
+        "copied character for character from that passage, containing the finding's "
+        f"figures (at most {MAX_SNIPPET_CHARS} characters).\n"
+        "- List every figure the snippet states for the finding in figures: value "
+        "exactly as the snippet writes it (\"7.25\", \"12,314\"), unit as the snippet "
+        "writes it (\"tonnes\", \"per cent\", \"USD million\", \"MW\"), the period it "
+        "applies to, and kind: actual for a measured or reported outcome, forecast for "
+        "a projection, plan or expectation.\n"
+        "- Figures that measure different things - a yearly addition and a cumulative "
+        "total - belong in separate findings.\n"
+        "- A finding MUST name in target_ids every planned target from the Planned "
+        "targets list whose question its content answers — copy those ids from that "
         "list, never the targets= line of a read, which names only the "
         "sub-topic that fetched it, and mine each passage for every planned "
-        "target rather than only the one that fetched it. A target id that is "
-        "not in that list is dropped from the finding, and a finding with no "
-        "planned target left is kept but can then be attributed only through "
-        "the sub-topic that fetched its read. A finding whose snippet the "
-        "locator does not contain is dropped. Copy source_url and source_title "
-        "from the same read record, never from memory, a search snippet, or "
-        "another finding's text; never substitute the URL or title the "
-        "document names as its origin — a copy served from another host is "
+        "target rather than only the one that fetched it.\n"
+        "- A finding names a planned target only when its content states the fact, "
+        "item, mechanism or provision the target asks for, not when it merely "
+        "concerns the topic.\n"
+        "- A target id that is not in that list is dropped from the finding, and a "
+        "finding with no planned target left is kept but can then be attributed only "
+        "through the sub-topic that fetched its read.\n"
+        "- A finding whose snippet the locator does not contain is dropped.\n"
+        "- Copy source_url and source_title from the same read record, never from "
+        "memory, a search snippet, or another finding's text; never substitute the URL "
+        "or title the document names as its origin — a copy served from another host is "
         "cited where you read it, and the body it came from belongs in "
         "attributed_issuer — and never rewrite the read's title, not to drop "
         "the reader's own markers and not to put the document's own headline "
-        "in their place. Never invent a content hash. Return an empty "
-        "list when the evidence supports nothing."
+        "in their place.\n"
+        "- Never invent a content hash.\n"
+        "- Return an empty list when the evidence supports nothing."
         if acquisition_context is not None
         else "Return one finding per distinct, source-backed claim. Use the "
-        "exact source_url and source_title from the evidence above. Return "
+        "exact source_url and source_title from the evidence below. Return "
         "an empty list when the evidence supports nothing."
     )
     sections = [
@@ -785,32 +798,29 @@ def extraction_messages(
             "of the planned targets asks for — the figure a target needs and "
             "the extraction walked past. Mine every passage here for every "
             "planned target whose question its content answers, in the same "
-            "registry shape and with the same target ids the contract below "
+            "registry shape and with the same target ids the contract above "
             "requires."
         )
-    sections.extend(
-        [
-            (
-                "# Retrieved evidence\n"
-                + (
-                    acquisition_context
-                    if acquisition_context is not None
-                    else render_evidence(
-                        run, limit=evidence_chars, discovery_payloads=False
-                    )
+    sections.append(
+        (
+            "# Retrieved evidence\n"
+            + (
+                acquisition_context
+                if acquisition_context is not None
+                else render_evidence(
+                    run, limit=evidence_chars, discovery_payloads=False
                 )
-            ),
-            f"# Response contract\n{registry_contract}{_FINDING_DATES_CONTRACT}"
-            f"{_FINDING_PROVENANCE_CONTRACT}",
-            (
-                "# Reply format\n"
-                f"{render_structured_reply_format(_FINDING_REPLY_EXAMPLES)}"
-            ),
-        ]
+            )
+        )
     )
+    static = [
+        f"# Response contract\n{registry_contract}{_FINDING_DATES_CONTRACT}"
+        f"{_FINDING_PROVENANCE_CONTRACT}",
+        "# Reply format\n" + render_structured_reply_format(_FINDING_REPLY_EXAMPLES),
+    ]
     return [
         ChatMessage(role="developer", content=EXTRACTION_SYSTEM_PROMPT),
-        ChatMessage(role="user", content="\n\n".join(sections)),
+        ChatMessage(role="user", content=render_structured_request(static, sections)),
     ]
 
 

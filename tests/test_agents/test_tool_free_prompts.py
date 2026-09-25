@@ -48,6 +48,7 @@ from deep_research.agents.planner import (
 from deep_research.agents.prompts import (
     STRUCTURED_EXAMPLE_NOTICE,
     STRUCTURED_REPLY_FORMAT,
+    STRUCTURED_REQUEST_END,
     AgentTask,
 )
 from deep_research.agents.report_reviewer import (
@@ -449,9 +450,6 @@ def test_every_tool_free_request_has_one_heading_level_and_one_reply_format(
     assert headings == []
     assert body.startswith("# ")
 
-    sections = [line for line in body.splitlines() if line.startswith("# ")]
-    assert sections[-1] == "# Reply format"
-
     # Exactly one output-shape sentence owns the literal phrase, and it is the
     # shared one.
     assert body.count("JSON object") == 1
@@ -544,19 +542,20 @@ def test_every_synthetic_url_uses_the_reserved_test_domain(examples, schema) -> 
 
 # The inventory verbatim: operation, owning agent, and the number of examples
 # the operation is allowed to carry. Two examples are allowed only where the
-# second demonstrates the opposite semantic case.
+# second shows what a rule cannot: the planner's two plan shapes, the source
+# evaluator's weak and strong ends of one scale, and the judge's pair.
 PLANNED_OPERATION_INVENTORY = {
-    "plan finalization": ("planner", 1),
+    "plan finalization": ("planner", 2),
     "finding extraction": ("researcher", 1),
     "source scoring": ("source_evaluator", 2),
     "evaluation verdict": ("judge", 2),
     # The evidence-verifier pipeline's four tool-free requests (Task 4.10d).
-    # The report review renders no example at all: that gap, and the two others
-    # its row carries, are recorded in CONVENTION_GAPS below.
+    # The report review renders one example like the rest of the pipeline: D10
+    # gave it the shared reply format, so its row holds every convention here.
     "context check": ("evidence_verifier", 1),
     "statement check": ("evidence_verifier", 1),
     "report drafting": ("report_writer", 1),
-    "report review": ("report_reviewer", 0),
+    "report review": ("report_reviewer", 1),
 }
 
 
@@ -594,6 +593,10 @@ class StructuredOperation:
     build_messages: Callable[[], list]
     schema: type[BaseModel]
     examples: Callable[[str], tuple[tuple[str, str], ...]]
+    # D10 (PD-29): the request-owned sections before "# Reply format", in order.
+    # None only for the evaluation judge, which keeps its reply contract last:
+    # it is not a pipeline request.
+    static_headings: tuple[str, ...] | None = None
     reply_heading: str = "# Reply format"
     heading_levels: tuple[int, ...] = (1,)
 
@@ -609,6 +612,7 @@ OPERATIONS = (
         build_messages=_planner_messages,
         schema=ResearchPlanDraft,
         examples=_labelled_examples,
+        static_headings=("# Plan requirements",),
     ),
     StructuredOperation(
         operation="finding extraction",
@@ -616,6 +620,7 @@ OPERATIONS = (
         build_messages=_extraction_messages,
         schema=SubTopicFindingsDraft,
         examples=_labelled_examples,
+        static_headings=("# Response contract",),
     ),
     StructuredOperation(
         operation="source scoring",
@@ -623,6 +628,7 @@ OPERATIONS = (
         build_messages=_scoring_messages,
         schema=SourceScoresDraft,
         examples=_labelled_examples,
+        static_headings=("# Scoring contract",),
     ),
     StructuredOperation(
         operation="evaluation verdict",
@@ -644,6 +650,7 @@ OPERATIONS = (
         build_messages=_context_check_messages,
         schema=ContextCheckDraft,
         examples=_labelled_examples,
+        static_headings=("# Response contract",),
         heading_levels=(1, 2),
     ),
     StructuredOperation(
@@ -652,6 +659,7 @@ OPERATIONS = (
         build_messages=_statement_check_messages,
         schema=StatementCheckDraft,
         examples=_labelled_examples,
+        static_headings=("# Response contract",),
         heading_levels=(1, 2),
     ),
     StructuredOperation(
@@ -660,6 +668,7 @@ OPERATIONS = (
         build_messages=_writer_messages,
         schema=ReportWriterDraft,
         examples=_labelled_examples,
+        static_headings=("# Rules",),
         heading_levels=(1, 2),
     ),
     StructuredOperation(
@@ -668,7 +677,7 @@ OPERATIONS = (
         build_messages=_review_messages,
         schema=ReportReviewDraft,
         examples=_labelled_examples,
-        reply_heading="# Response contract",
+        static_headings=("# Response contract", "# What each dimension means"),
         heading_levels=(1, 3),
     ),
 )
@@ -678,52 +687,6 @@ OPERATIONS_BY_NAME = {operation.operation: operation for operation in OPERATIONS
 
 def _operation_id(operation: StructuredOperation) -> str:
     return operation.operation.replace(" ", "-")
-
-
-# The conventions this matrix holds, and the one request that does not hold
-# two of them (Task 4.10d). Each entry is a real difference in the live
-# request, not a test problem: the Report Reviewer's request states its reply
-# in prose and carries no worked example, and neither gap is this task's to
-# close — the prompt-generality task aligns it. The rows are strict, so if the
-# request ever gains the missing piece the case fails and has to be re-read
-# rather than passing silently. Its fence, by contrast, is not a gap: it is the
-# request's own content delimiter and is asserted positively below.
-CONVENTION_GAPS: dict[tuple[str, str], str] = {
-    ("report-review", "reply-contract"): (
-        "The report review request states its reply in prose — its own "
-        "'Return one JSON object' sentence, unquoted field names, and no shared "
-        "reply-format notice — in a '# Response contract' section that its "
-        "manifest of what was shown follows, so it has no one-last-section "
-        "reply contract. Aligned in the prompt-generality task "
-        "(see SDD/fable-prompt-generality.md)."
-    ),
-    ("report-review", "examples"): (
-        "The report review request carries no worked example, so the "
-        "one-or-two-bounded-examples convention has nothing to check on it. "
-        "Aligned in the prompt-generality task "
-        "(see SDD/fable-prompt-generality.md)."
-    ),
-}
-
-
-def _operation_cases(convention: str) -> tuple:
-    """The matrix's rows, each carrying its documented convention gaps."""
-    cases = []
-    for operation in OPERATIONS:
-        case_id = _operation_id(operation)
-        reason = CONVENTION_GAPS.get((case_id, convention))
-        cases.append(
-            pytest.param(
-                operation,
-                id=case_id,
-                marks=(
-                    pytest.mark.xfail(strict=True, reason=reason)
-                    if reason
-                    else ()
-                ),
-            )
-        )
-    return tuple(cases)
 
 
 def _examples_for(operation_name: str) -> tuple[tuple[str, str], ...]:
@@ -772,9 +735,7 @@ def test_the_matrix_covers_exactly_the_planned_operation_inventory() -> None:
     assert rendered == PLANNED_OPERATION_INVENTORY
 
 
-@pytest.mark.parametrize(
-    "operation", _operation_cases("examples"), ids=_operation_id
-)
+@pytest.mark.parametrize("operation", OPERATIONS, ids=_operation_id)
 def test_every_rendered_example_is_valid_json_schema_valid_and_reserved(
     operation: StructuredOperation,
 ) -> None:
@@ -793,13 +754,47 @@ def test_every_rendered_example_is_valid_json_schema_valid_and_reserved(
             assert ".example.test" in url, url
 
 
-@pytest.mark.parametrize(
-    "operation", _operation_cases("reply-contract"), ids=_operation_id
+PIPELINE_OPERATIONS = tuple(
+    operation for operation in OPERATIONS if operation.static_headings is not None
 )
-def test_every_rendered_request_keeps_one_reply_contract(
+
+
+@pytest.mark.parametrize("operation", PIPELINE_OPERATIONS, ids=_operation_id)
+def test_every_pipeline_request_puts_its_static_sections_first(
     operation: StructuredOperation,
 ) -> None:
-    """Step 2: one reply contract, last, unfenced, with no tool section."""
+    """D10 (E2.4): the contract and the reply format lead, the material follows."""
+    envelope = _request_envelope(operation.body())
+    lines = envelope.rstrip().splitlines()
+
+    assert lines[-1] == STRUCTURED_REQUEST_END
+    assert envelope.count("JSON object") == 1
+    assert envelope.count("# Reply format") == 1
+    assert "```" not in envelope
+    assert "## Tools" not in envelope
+
+    sections = [line for line in lines if line.startswith("# ")]
+    reply = sections.index("# Reply format")
+    assert tuple(sections[:reply]) == operation.static_headings
+    assert reply < len(sections) - 1
+    levels = {len(line) - len(line.lstrip("#")) for line in lines if line.startswith("#")}
+    assert levels <= set(operation.heading_levels)
+
+    start = envelope.index("# Reply format")
+    reply_format = envelope[start : envelope.index("\n# ", start)]
+    for field in operation.schema.model_fields:
+        assert f'"{field}"' in reply_format, field
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [operation for operation in OPERATIONS if operation.static_headings is None],
+    ids=_operation_id,
+)
+def test_the_judge_request_keeps_its_reply_contract_last(
+    operation: StructuredOperation,
+) -> None:
+    """The evaluation judge is outside the pipeline, so D10's layout is not its own."""
     body = operation.body()
     envelope = _request_envelope(body)
 

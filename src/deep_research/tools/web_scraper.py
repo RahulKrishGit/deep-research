@@ -57,7 +57,12 @@ class WebScraperTool(BaseTool):
     # through ``document_reader``. The robots policy is still enforced by the
     # tool; this line only stops the description from steering the model away
     # from the page reader.
-    description = "Read a web page and extract its visible text."
+    description = (
+        "Read one web page by URL and return its visible text. Use it to read a "
+        "promising search result before reporting anything from it, and to read an "
+        "organisation's own page before a page that repeats it. A host that refused "
+        "automated access will refuse again: do not retry it."
+    )
     input_schema = {"url": "string"}
     required_arguments = ("url",)
     output_schema = {
