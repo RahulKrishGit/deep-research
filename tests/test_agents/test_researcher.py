@@ -23,6 +23,7 @@ from deep_research.agents.prompts import STRUCTURED_REQUEST_END, AgentTask
 from deep_research.agents.researcher import (
     _admitted_attribution,
     _admitted_figures,
+    _bare_pronoun_judgement,
     DEFAULT_MAX_SUB_TOPICS,
     HIGH_PRIORITY_THRESHOLD,
     MAX_FINDINGS_PER_SUB_TOPIC,
@@ -2914,6 +2915,7 @@ def test_the_researcher_prompt_requires_one_more_search_before_finishing_a_requi
 
     assert "answered only by a page about that obligation" in prompt
     assert "search once more in the obligation's own words" in prompt
+    assert "read the page it returns about that obligation" in prompt
 
 
 @pytest.mark.parametrize(
@@ -5474,6 +5476,83 @@ def test_build_findings_admits_a_judgement_snippet_that_carries_its_own_referent
     assert rejected == []
     [finding] = findings
     assert finding.snippet == text
+
+
+def test_bare_pronoun_judgement_refuses_the_run_3_snippet_with_nameless_content() -> None:
+    """RevResearcherR3: the verbatim run-3 snippet (evidence log F10) with
+    content that names no product must still be refused -- the guard's job
+    is the missing referent, not the snippet's own shape.
+    """
+    snippet = (
+        "If you want great ANC, good mic quality, and support for "
+        "high\u2011quality codecs like LDAC, SBC, AAC, and LC3, this is "
+        "the model to beat."
+    )
+    assert _bare_pronoun_judgement(snippet, "This is the model to beat.") is True
+
+
+def test_bare_pronoun_judgement_admits_the_run_3_snippet_when_content_names_the_product() -> None:
+    """The identical snippet is admitted once content names what "this" is."""
+    snippet = (
+        "If you want great ANC, good mic quality, and support for "
+        "high\u2011quality codecs like LDAC, SBC, AAC, and LC3, this is "
+        "the model to beat."
+    )
+    content = "The Sony WH-1000XM6 is the model to beat."
+    assert _bare_pronoun_judgement(snippet, content) is False
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "It is estimated that sales will double.",
+        "It was found that battery life exceeds expectations.",
+        "It has been shown that the results replicate.",
+        "They have discontinued the retro line entirely.",
+    ],
+)
+def test_bare_pronoun_judgement_never_triggers_on_a_dummy_or_impersonal_subject(
+    snippet: str,
+) -> None:
+    """An impersonal "It ... that/to" construction states somebody else's
+    finding, not a judgement about "it"; "They" with a non-linking verb
+    (possession, not a verdict) states no judgement either, so neither ever
+    reaches the referent check.
+    """
+    assert _bare_pronoun_judgement(snippet, "") is False
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "iPhone 15 launched in 2023. It is the best phone.",
+        "\u0160koda sales rose. It is the brand to beat.",
+    ],
+)
+def test_bare_pronoun_judgement_admits_a_referent_named_in_an_earlier_sentence(
+    snippet: str,
+) -> None:
+    """A referent an earlier sentence names -- by an internal capital or a
+    leading capital outside plain ASCII -- clears the judgement that
+    follows, even with no content at all.
+    """
+    assert _bare_pronoun_judgement(snippet, "") is False
+
+
+def test_bare_pronoun_judgement_refuses_an_ordinary_sentence_initial_word() -> None:
+    """An ordinary word capitalised only because it starts a sentence is not
+    a referent: English capitalises every sentence's first word regardless
+    of whether it names anything.
+    """
+    snippet = "Prices fell sharply. This is the one to buy."
+    assert _bare_pronoun_judgement(snippet, "This is the one to buy.") is True
+
+
+def test_bare_pronoun_judgement_triggers_at_a_clause_boundary() -> None:
+    """A judgement need not open its own sentence: "Overall, it is..."
+    states one exactly as much as a sentence-initial "It is...".
+    """
+    assert _bare_pronoun_judgement("Overall, it is the one to beat.", "") is True
 
 
 def test_an_unusable_figure_is_dropped_but_the_finding_is_kept() -> None:

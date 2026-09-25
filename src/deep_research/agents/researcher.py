@@ -168,7 +168,8 @@ RESEARCHER_SYSTEM_PROMPT = (
     "retrieving. A required obligation is answered only by a page about that "
     "obligation, not one that merely mentions it in passing: when your first "
     "search for a required obligation returns only general pages, search once "
-    "more in the obligation's own words before you finish. Write one line "
+    "more in the obligation's own words and read the page it returns about "
+    "that obligation before you finish. Write one line "
     "saying that you are stopping and why: no other text you write is read, "
     "because a separate extraction step reads the pages this loop read and "
     "its findings are what the run keeps."
@@ -1295,19 +1296,35 @@ def _snippet_admitted_at(read: ReadRecord, locator: str, snippet: str) -> bool:
 
 # RES-4's snippet rule: a verdict must carry the thing it judges. A bare
 # pronoun or demonstrative ("this", "that", "these", "those", "it", "they")
-# standing alone as a sentence's whole subject, immediately before a linking
+# standing alone as a clause's whole subject, immediately before a linking
 # verb, states a judgement about something the snippet never names — the
-# audited run reported "this is the model to beat" with no way for anything
-# downstream to say what "this" was. Deliberately structural, not a word
-# list about any one domain: a subject with its own noun ("this model")
-# already names a kind of thing, and a snippet that carries a capitalised
-# word outside the closed set of ordinary sentence-starters already names
-# its referent, wherever in the snippet that word sits.
+# audited run reported "..., this is the model to beat." with no way for
+# anything downstream to say what "this" was. The trigger fires at a clause
+# boundary as well as a sentence start, because that audited sentence put its
+# judgement after a comma, not at the sentence's own head. "They" is
+# restricted to true linking verbs ("have"/"has"/"had" state possession, not
+# a verdict), and "It" followed by an impersonal "is/was/has been ... that/to"
+# construction ("It is estimated that...") is never a judgement about "it" at
+# all, so neither ever reaches the referent check below.
 _BARE_JUDGEMENT_SUBJECT = re.compile(
-    r"(?:^|(?<=[.!?])\s+)(?:This|That|These|Those|It|They)\s+(?:is|are|was|"
-    r"were|has|have|had|remains?|stays?|becomes?|seems?|looks?|sounds?)\b",
+    r"(?:\A|(?<=[.!?,;:]))\s*("
+    r"(?:This|That|These|Those|It)\s+(?:is|are|was|were|has|have|had|"
+    r"remains?|stays?|becomes?|seems?|looks?|sounds?)"
+    r"|They\s+(?:is|are|was|were|remains?|stays?|becomes?|seems?|looks?|"
+    r"sounds?)"
+    r")\b",
     re.IGNORECASE,
 )
+# "It is estimated that...", "It was found that...", "It has been shown
+# that...": a passive report of somebody else's finding, not a judgement
+# about the pronoun "it". Two tokens ahead is enough to tell that shape from
+# a genuine verdict ("It is the model to beat" never reaches a bare "that" or
+# "to" at that distance).
+_IMPERSONAL_IT = re.compile(
+    r"It\s+(?:is|was|has been)\s+\S+\s+(?:that|to)\b", re.IGNORECASE
+)
+# Closed-class words that carry no identity of their own: excluded from
+# referent detection wherever they sit, capitalised or not.
 _SENTENCE_STARTER_WORDS = frozenset(
     {
         "this", "that", "these", "those", "it", "they", "the", "a", "an",
@@ -1315,31 +1332,108 @@ _SENTENCE_STARTER_WORDS = frozenset(
         "by", "of", "to", "from", "its", "their", "his", "her",
     }
 )
-_CAPITALIZED_WORD = re.compile(r"\b[A-Z][A-Za-z0-9&'-]*\b")
+_ASCII_UPPERCASE = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_WORD_PUNCTUATION = "\"'\u201c\u201d\u2018\u2019.,;:!?()[]"
+# A sentence boundary for the referent search: "." "!" "?" followed by
+# whitespace. Independent of the judgement trigger above, which also fires at
+# a clause boundary (comma, semicolon, colon) — a referent one clause over in
+# the *same* sentence is still inside "the pronoun's own sentence" and does
+# not count, only an earlier sentence does.
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+")
 
 
-def _names_a_referent(snippet: str) -> bool:
-    """True when a capitalised word in ``snippet`` could name its subject."""
+def _sentence_spans(text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of every sentence in ``text``, in order."""
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for boundary in _SENTENCE_BOUNDARY.finditer(text):
+        spans.append((start, boundary.start()))
+        start = boundary.end()
+    spans.append((start, len(text)))
+    return spans
+
+
+def _sentence_start_at(text: str, position: int) -> int:
+    """The start offset of the sentence that contains ``position``."""
+    start = 0
+    for span_start, _span_end in _sentence_spans(text):
+        if span_start > position:
+            break
+        start = span_start
+    return start
+
+
+def _is_referent_word(word: str, *, sentence_initial: bool) -> bool:
+    """True when ``word`` names something, whatever the pronoun stands for.
+
+    An internal capital ("iPhone") or a leading capital outside plain ASCII
+    ("\u0160koda") always counts, because neither is explained by English's
+    own rule of capitalising a sentence's first word. A plain ASCII leading
+    capital ("Sony", but also "Prices") counts only when it is *not* that
+    first word: sentence-initial position alone never distinguishes a name
+    from an ordinary word that simply opens a sentence.
+    """
+    stripped = word.strip(_WORD_PUNCTUATION)
+    if not stripped or stripped.lower() in _SENTENCE_STARTER_WORDS:
+        return False
+    if any(character.isupper() for character in stripped[1:]):
+        return True
+    first = stripped[0]
+    if not first.isupper():
+        return False
+    if first not in _ASCII_UPPERCASE:
+        return True
+    return not sentence_initial
+
+
+def _content_names_a_referent(content: str) -> bool:
+    """True when ``content`` itself names the judgement's subject.
+
+    Unlike the snippet's surrounding prose, ``content`` is the model's own
+    compact restatement: its first word is exactly as likely to be the named
+    subject as any other, so no sentence-initial word is excluded here.
+    """
     return any(
-        word.lower() not in _SENTENCE_STARTER_WORDS
-        for word in _CAPITALIZED_WORD.findall(snippet)
+        _is_referent_word(word, sentence_initial=False)
+        for word in content.split()
     )
 
 
-def _bare_pronoun_judgement(snippet: str) -> bool:
+def _snippet_names_a_referent_before(snippet: str, sentence_start: int) -> bool:
+    """True when a sentence of ``snippet`` before ``sentence_start`` names one."""
+    for start, end in _sentence_spans(snippet):
+        if start >= sentence_start:
+            break
+        for index, word in enumerate(snippet[start:end].split()):
+            if _is_referent_word(word, sentence_initial=index == 0):
+                return True
+    return False
+
+
+def _bare_pronoun_judgement(snippet: str, content: str) -> bool:
     """True when ``snippet`` states a judgement with no named subject.
 
-    Triggered only by a sentence whose whole subject is a bare pronoun or
-    demonstrative (``_BARE_JUDGEMENT_SUBJECT``); a snippet that never makes
-    that shape of claim is never refused here, whatever else it says. Once
-    triggered, the snippet is refused unless it also carries a referent — a
-    capitalised word the pronoun could stand for, from the same sentence or
-    from one beside it — because RES-4 asks the model to take that
-    neighbouring sentence into the snippet when the referent sits there.
+    Triggered only by a clause whose whole subject is a bare pronoun or
+    demonstrative (``_BARE_JUDGEMENT_SUBJECT``), minus the impersonal "It ...
+    that/to" shape and, for "They", every verb but a true linking one; a
+    snippet that never makes that shape of claim is never refused here,
+    whatever else it says. Once triggered, the finding is refused unless a
+    referent is named either by an earlier sentence of the snippet or by the
+    finding's own ``content`` — because RES-4 asks the model to take the
+    neighbouring sentence into the snippet, or to name the referent in
+    content, when the passage carries it.
     """
-    if _BARE_JUDGEMENT_SUBJECT.search(snippet) is None:
+    if _content_names_a_referent(content):
         return False
-    return not _names_a_referent(snippet)
+    for match in _BARE_JUDGEMENT_SUBJECT.finditer(snippet):
+        position = match.start(1)
+        if _IMPERSONAL_IT.match(snippet, position):
+            continue
+        sentence_start = _sentence_start_at(snippet, position)
+        if _snippet_names_a_referent_before(snippet, sentence_start):
+            continue
+        return True
+    return False
 
 
 def build_findings(
@@ -1434,7 +1528,7 @@ def build_findings(
                     f"finding {index}: snippet was not admitted at locator"
                 )
                 continue
-            if _bare_pronoun_judgement(item.snippet):
+            if _bare_pronoun_judgement(item.snippet, item.content):
                 rejected.append(
                     f"finding {index}: snippet's subject is a bare pronoun "
                     "with no referent"
