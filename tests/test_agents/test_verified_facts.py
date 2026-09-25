@@ -10,7 +10,10 @@ from deep_research.agents.evidence_verifier import (
     figure_match,
     verify_finding,
 )
-from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.identity import (
+    deduplicate_findings,
+    finding_fingerprint,
+)
 from deep_research.agents.verified_facts import (
     _answers_organisation,
     _period_stated_in,
@@ -1384,6 +1387,104 @@ def dated_finding(*, sub_topic: str = WHEN_TITLE, target_ids: Sequence[str] = ()
     finding = finding.model_copy(update={"related_sub_topic": sub_topic})
     return verified(finding, ctx(organisation="Example Relay", attribution="unattributed",
                                  period=None))
+
+
+MONITOR_URL = "https://example.test/monitor/report"
+MONITOR_TITLE = "Example capacity monitor"
+MONITOR_SENTENCE = (
+    "Reported capacity rose to 12,314 MW in 2024, and the agency forecasts "
+    "19,600 MW of additions in 2025."
+)
+
+
+def capacity_targets() -> list[EvidenceTarget]:
+    """Two required obligations one sentence answers: the actual, then the forecast."""
+    return [
+        make_target(
+            "topic-01-target-01",
+            question="How much capacity was added in 2024?",
+            measure="capacity added",
+            unit_dimension="power",
+            period="2024",
+            kind="actual",
+            organisation=None,
+        ),
+        make_target(
+            "topic-01-target-02",
+            question="How much capacity is forecast for 2025?",
+            measure="forecast additions",
+            unit_dimension="power",
+            period="2025",
+            kind="forecast",
+            organisation=None,
+        ),
+    ]
+
+
+def capacity_topic(topic_title: str = "Grid-scale capacity: what was added and what is forecast") -> SubTopic:
+    return SubTopic(
+        coverage_id="topic-01",
+        title=topic_title,
+        rationale="the run's first",
+        search_queries=["q"],
+        success_criteria=["c"],
+        priority=1,
+        evidence_targets=capacity_targets(),
+    )
+
+
+def capacity_findings(topic_title: str) -> list[Finding]:
+    """The two facts one sentence states, one record each, unbound."""
+    read = make_read(MONITOR_SENTENCE, url=MONITOR_URL, title=MONITOR_TITLE)
+    actual = make_finding(
+        read,
+        MONITOR_SENTENCE,
+        figures=[figure("12,314", "MW", "2024", "actual")],
+        content="Capacity rose to 12,314 MW in 2024.",
+    )
+    forecast = make_finding(
+        read,
+        MONITOR_SENTENCE,
+        figures=[figure("19,600", "MW", "2025", "forecast")],
+        content="The agency forecasts 19,600 MW in 2025.",
+    )
+    return [
+        verified(
+            finding.model_copy(update={"related_sub_topic": topic_title}),
+            ctx(organisation="Example Monitor", period=period, kind=kind),
+        )
+        for finding, period, kind in (
+            (actual, "2024", "actual"),
+            (forecast, "2025", "forecast"),
+        )
+    ]
+
+
+def test_the_fold_never_turns_an_extracted_fact_into_a_not_found() -> None:
+    """F1 (pre-run review): the passage fold may not decide what a sentence says.
+
+    The fold runs on raw findings before anything is verified (and on every
+    sub-topic's output), so a figure it drops is never verified and never
+    becomes a fact row: the obligation it answered reads Not found although
+    the run extracted it. Here the one sentence states an actual and a
+    forecast, the two required targets ask for one each, and the records differ
+    only in prose — the fold's own case, except the facts are not the same.
+    """
+    topic = capacity_topic()
+    topics, targets = [topic], capacity_targets()
+    findings = capacity_findings(topic.title)
+
+    # The premise, checked before the fold: each figure answers its own
+    # obligation while both records stand.
+    standing = answered_target_ids(findings, targets, sub_topics=topics)
+    assert set(standing) == {"topic-01-target-01", "topic-01-target-02"}
+
+    folded = deduplicate_findings(findings)
+
+    assert len(folded) == 2
+    answered = answered_target_ids(folded, targets, sub_topics=topics)
+    assert set(answered) == {"topic-01-target-01", "topic-01-target-02"}
+    assert not_found_targets(topics, answered, {}) == []
 
 
 def test_an_unbound_finding_answers_its_own_sub_topics_targets() -> None:

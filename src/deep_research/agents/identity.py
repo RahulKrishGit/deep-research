@@ -95,6 +95,64 @@ def finding_fingerprint(finding: Finding) -> str:
     )
 
 
+def _figure_keys(finding: Finding) -> tuple[tuple[str, str, str, str], ...]:
+    """The figures one finding carries, as ``(value, unit, period, kind)`` keys."""
+    return tuple(
+        sorted(
+            (
+                figure_.value,
+                figure_.unit,
+                figure_.period or "",
+                figure_.kind or "",
+            )
+            for figure_ in finding.figures
+        )
+    )
+
+
+def _verified_figure_keys(
+    finding: Finding,
+) -> tuple[tuple[str, str, str, str, str, str], ...] | None:
+    """How one finding's figures were judged, or ``None`` before any judgement."""
+    verification = finding.verification
+    if verification is None:
+        return None
+    return tuple(
+        sorted(
+            (
+                result.figure.value,
+                result.figure.unit,
+                result.figure.period or "",
+                result.figure.kind or "",
+                str(result.kept),
+                result.dropped_reason or "",
+            )
+            for result in verification.figure_results
+        )
+    )
+
+
+def _assertion_key(finding: Finding) -> tuple[object, ...]:
+    """What one finding asserts, as the key the passage fold may collapse on.
+
+    Two records mined from one passage are the same evidence only when this
+    matches. A sentence can state two facts — an actual and the forecast beside
+    it, a figure and the date it was released — and the fold would keep the
+    winner's figures and drop the loser's, so the dropped fact would never be
+    verified and the obligation it answered would read Not found.
+
+    A record's assertion is therefore its figures (value, unit, period, kind)
+    and, once a verification exists, each figure's own outcome, because a
+    figure kept and a figure dropped are not the same claim. A record with no
+    figures asserts only its content, so two different content-less-of-figures
+    restatements of one sentence stay two findings.
+    """
+    figures = _figure_keys(finding)
+    if not figures:
+        return ("prose", _normalized_text(finding.content))
+    return ("figures", figures, _verified_figure_keys(finding))
+
+
 def _passage_key(finding: Finding) -> tuple[str, str, str, str, str] | None:
     """The identity of the evidence one finding carries, or ``None``.
 
@@ -131,8 +189,13 @@ def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
     ``_passage_key`` then folds the records that are the same *evidence*: one
     passage of one page, quoted identically, restated twice — the shape a later
     pass produces when it re-reads a page the run already read and mines the
-    sentence it already holds. Two different sentences of one passage stay two
-    findings, because the fold is on the sentence and not on the passage alone.
+    sentence it already holds. That fold is gated on ``_assertion_key``, so it
+    collapses only records that assert the same thing: one sentence can carry
+    two facts (an actual and the forecast beside it), and merging those would
+    keep the winner's figures and drop the loser's *before anything is
+    verified*, which reports an extracted, verified fact as Not found. Two
+    different sentences of one passage stay two findings for the same reason —
+    the fold is on the sentence and on what it says, not on the passage alone.
 
     The fold keeps the record, and not its silences. ``raw_findings`` is
     append-only across research rounds, and a later extraction of the same
@@ -158,14 +221,18 @@ def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
             winner, loser = existing, finding
         kept[fingerprint] = _merge_duplicate_findings(winner, loser)
 
-    by_passage: dict[tuple[str, str, str, str, str], str] = {}
+    # One passage may carry several asserted facts, so the fold holds one
+    # survivor *per fact* rather than one per passage: a duplicate of any of
+    # them still collapses, and no fact loses its record to a sibling's.
+    by_passage: dict[tuple[str, str, str, str, str], dict[tuple[object, ...], str]] = {}
     for fingerprint, finding in list(kept.items()):
         key = _passage_key(finding)
         if key is None:
             continue
-        held = by_passage.get(key)
+        held_by_assertion = by_passage.setdefault(key, {})
+        held = held_by_assertion.get(_assertion_key(finding))
         if held is None:
-            by_passage[key] = fingerprint
+            held_by_assertion[_assertion_key(finding)] = fingerprint
             continue
         kept[held] = _merge_duplicate_findings(kept[held], finding)
         del kept[fingerprint]
