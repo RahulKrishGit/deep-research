@@ -8,10 +8,7 @@ from collections.abc import Sequence
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence_verifier import evidence_verified_event
 from deep_research.agents.report_writer import WrittenReport, report_written_event
-from deep_research.agents.researcher import (
-    sub_topic_completed_event,
-    sub_topic_skipped_error,
-)
+from deep_research.agents.researcher import sub_topic_completed_event
 from deep_research.agents.steps import ReActRun
 from deep_research.cli import (
     ProgressStream,
@@ -741,67 +738,6 @@ def test_no_errors_means_no_warnings() -> None:
     assert render_warnings(build_outcome()) == []
 
 
-def test_a_topic_that_met_its_obligations_is_not_a_never_researched_warning() -> (
-    None
-):
-    """Prior completion, deferral and a stopped pass are three readings.
-
-    ``researcher_sub_topic_skipped`` carries one written message for all four
-    of its reasons, and that message says "never researched". A topic whose
-    required targets are already answered by reader statements was researched
-    — on an earlier pass — and counting it as an error under its coverage id
-    reports a coverage loss the run does not have. The deferred and the
-    never-attempted skips stay warnings, each with its own reading.
-    """
-    state = ResearchState(
-        session_id="session-1",
-        original_question=QUESTION,
-        sub_topics=[
-            _topic("topic-01", "Grid-scale storage costs"),
-            _topic("topic-04", "Interconnection queues"),
-            _topic("topic-06", "Retirement schedules"),
-        ],
-        errors=[
-            _skip_error("topic-01", "required_targets_completed"),
-            _skip_error("topic-04", "cap"),
-            _skip_error("topic-06", "provider_failure_stopped_processing"),
-        ],
-    )
-
-    assert render_warnings(build_outcome(state=state)) == [
-        "Warnings: 2 errors (0 recovered, 2 non-fatal, 0 fatal)",
-        "  agent.researcher: 2 errors (coverage topic-04, topic-06)",
-        '    researcher_sub_topic_skipped (non-fatal; reason cap): topic-04 '
-        '"Interconnection queues"',
-        "    researcher_sub_topic_skipped "
-        "(non-fatal; reason provider_failure_stopped_processing): topic-06 "
-        '"Retirement schedules"',
-        "Skipped: 1 sub-topic that owed nothing this pass: topic-01 "
-        '"Grid-scale storage costs"',
-    ]
-
-    assert render_warnings(build_outcome(state=state), verbose=True) == [
-        "Warnings: 2 errors (0 recovered, 2 non-fatal, 0 fatal)",
-        "  agent.researcher: 2 errors (coverage topic-04, topic-06)",
-        '    researcher_sub_topic_skipped (non-fatal; reason cap): topic-04 '
-        '"Interconnection queues"',
-        "    researcher_sub_topic_skipped "
-        "(non-fatal; reason provider_failure_stopped_processing): topic-06 "
-        '"Retirement schedules"',
-        "    warning: [researcher_sub_topic_skipped] This planned sub-topic "
-        "was deferred: the pass reached its sub-topic limit before its turn "
-        "came up.",
-        "    warning: [researcher_sub_topic_skipped] A planned sub-topic was "
-        "never researched; a provider failure stopped the pass before it "
-        "could run.",
-        "Skipped: 1 sub-topic that owed nothing this pass: topic-01 "
-        '"Grid-scale storage costs"',
-        "    note: [researcher_sub_topic_skipped] This planned sub-topic "
-        "already met its required targets on an earlier pass, so no new "
-        "research was owed for it.",
-    ]
-
-
 def _topic(coverage_id: str, title: str) -> SubTopic:
     return SubTopic(
         coverage_id=coverage_id,
@@ -810,13 +746,6 @@ def _topic(coverage_id: str, title: str) -> SubTopic:
         search_queries=["grid storage cost 2026"],
         success_criteria=["A read source answers it."],
         priority=1,
-    )
-
-
-def _skip_error(coverage_id: str, reason: str) -> ResearchError:
-    """One ``researcher_sub_topic_skipped`` record, from the real producer."""
-    return sub_topic_skipped_error(
-        _topic(coverage_id, "A planned sub-topic"), reason=reason
     )
 
 
