@@ -790,6 +790,14 @@ from deep_research.utils.config import (
 # criterion it is measured by dropped -- so the writer's value moved
 # ``69b86b8b87a2`` -> ``a3a73e32c3c0``. This one *is* prompt drift, and the only
 # prompt edited; the four other target pins and the Judge pin are unchanged.
+# FF2 round 5 (the run-2 audit's improvements 2 and 11, PD-17): the writer's
+# instruction now states the point length bound and requires section titles in
+# the cited findings' own words with no page metadata as bullets, and the module
+# gained ``_split_oversize_point`` -- an over-length drafted point is split at a
+# sentence boundary keeping its citations instead of being refused whole
+# (improvement 2) -- so the writer's value moved ``a3a73e32c3c0`` ->
+# ``24ccad97fb9f``. Prompt drift and the module's own code; the four other pins
+# and the Judge pin are unchanged.
 # Task FF1 follow-up (reporting cues, the own-page host rule, a publication cue
 # for the quoted date; final review slice 1): the Evidence Verifier's own module
 # source moved `25e9124b78a1` -> `c24bfe646317` — `_owns_page` now takes PD-18's
@@ -874,6 +882,8 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # verdict. No other agent's text changed, and the Judge pin is unchanged.
     "evidence_verifier": "9f5515f04833",
     "report_writer": "a3a73e32c3c0",
+    "evidence_verifier": "e8d10a516459",
+    "report_writer": "24ccad97fb9f",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

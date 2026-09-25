@@ -105,6 +105,89 @@ def _labels(registry):
     return {finding.source_url.split("/")[2]: label for label, finding in registry}
 
 
+_LONG_SENTENCES = (
+    "The agency's own release records the capacity added in the period it states, and it prints "
+    "the figure beside the sample its laboratory measured for the market the release covers.",
+    "The same release names the series the laboratory updates each year, and it states the period "
+    "that series belongs to in the edition the agency published after the update.",
+    "A second page in the same release repeats the measurement for the market the page covers, and "
+    "it names the sample the laboratory recorded for the series the page updates.",
+    "The release's own table lists the periods it covers and the market each of them belongs to, "
+    "beside the series the laboratory measures for that market in every edition it publishes.",
+    "The agency states the basis of that measurement on every page of the release, and it names "
+    "the laboratory that recorded the sample the figure rests on for the market it covers.",
+)
+
+
+@pytest.mark.asyncio
+async def test_an_oversize_point_is_split_at_a_sentence_boundary_keeping_its_citations(
+    writer, checker
+) -> None:
+    """Improvement 2: an over-length drafted point is split, never silently dropped.
+
+    The live run lost a whole verified obligation list to the length bound: the
+    point was drafted, the bound refused it whole, and the reader never saw it.
+    The split is verbatim -- the pieces joined are the drafted point -- so no
+    word or citation is invented, and each piece is judged on its own.
+    """
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = " ".join(_LONG_SENTENCES)
+    assert len(drafted) > MAX_POINT_CHARS
+
+    draft = ReportWriterDraft(sections=[WriterSectionDraft(title="Basis", points=[
+        WriterPointDraft(text=drafted, finding_labels=[label]),
+    ])])
+    checker.verdicts = {"S001": _verdict("consistent"), "S002": _verdict("consistent")}
+    composition = await compose_written_report(task, draft, provider=writer.provider,
+                                               fingerprint=writer.fingerprint_call)
+
+    points = composition.sections[0].points
+    assert len(points) > 1
+    assert " ".join(point.text for point in points) == drafted
+    assert all(len(point.text) <= MAX_POINT_CHARS for point in points)
+    assert all(point.statement.finding_ids == [finding_fingerprint(EIA_2024)] for point in points)
+    assert composition.rejected_points == []
+
+
+@pytest.mark.asyncio
+async def test_a_drafted_point_with_no_boundary_to_split_on_is_still_refused(writer, checker) -> None:
+    """One clause over the bound cannot be split honestly, so it is refused as before."""
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = "The agency's own release records the capacity " + "and the sample it measured " * 30
+    assert len(drafted) > MAX_POINT_CHARS
+    assert re.search(r"[.;!?]\s+\S", drafted) is None  # no boundary the splitter could cut on
+
+    draft = ReportWriterDraft(sections=[WriterSectionDraft(title="Basis", points=[
+        WriterPointDraft(text=drafted, finding_labels=[label]),
+    ])])
+    composition = await compose_written_report(task, draft, provider=writer.provider,
+                                               fingerprint=writer.fingerprint_call)
+
+    assert composition.sections == []
+    assert [(r.where, r.reason) for r in composition.rejected_points] == [
+        ("sections[0].points[0]", f"longer than {MAX_POINT_CHARS} characters"),
+    ]
+
+
+def test_the_writer_instruction_states_the_point_length_bound() -> None:
+    """Improvement 2: the model is told the bound it is judged by, not left to discover it."""
+    assert f"under {MAX_POINT_CHARS} characters" in REPORT_WRITER_INSTRUCTION
+
+
+def test_the_writer_rules_keep_titles_in_the_cited_words_and_metadata_out_of_the_prose() -> None:
+    """Improvement 11: an own-voice heading ("pending") and a page's own disclaimer are not the report.
+
+    The live run printed a "pending amendments" heading no cited page supported
+    and two filler bullets -- a document's own entry-into-force line and a site
+    disclaimer.
+    """
+    assert "A section title names its subject in the cited findings' own words" in REPORT_WRITER_INSTRUCTION
+    assert "never states the report's own judgement or status" in REPORT_WRITER_INSTRUCTION
+    assert "Never print a page's own metadata or disclaimer as a point" in REPORT_WRITER_INSTRUCTION
+
+
 def test_the_writer_rules_require_additive_sections_and_a_criterion_for_a_judgement() -> None:
     """Two reader-facing rules the ev-1 audit's A6 and A2/A3 findings earned.
 
@@ -169,16 +252,22 @@ async def test_an_unknown_label_is_refused_without_calling_the_checker(writer, c
 
 
 @pytest.mark.asyncio
-async def test_a_point_over_the_character_limit_is_refused_whole_not_cut(writer, checker) -> None:
-    """A too-long point is refused, never cut; ``RejectedDraftPoint.text``
-    carries the whole whitespace-collapsed draft, and never reaches the
-    Statement Check (the length limit is still code's own job, §6.2).
+async def test_a_point_whose_own_clause_is_over_the_limit_is_refused_whole(writer, checker) -> None:
+    """A too-long point with no boundary to cut on is refused, never cut mid-sentence.
+
+    Improvement 2 splits an over-length point at a sentence boundary; a point
+    that is one clause already over the bound has no honest cut left inside it
+    (prose is the model's to write), so it is refused whole.
+    ``RejectedDraftPoint.text`` carries the whole whitespace-collapsed draft, and
+    it never reaches the Statement Check (the length limit is still code's own
+    job, §6.2).
     """
     task = writer.build_task(_task_state())
     label = _labels(task.registry)["eia.gov"]
-    drafted = "Generators added 10.4 GW of battery storage in 2024. " * 15
+    drafted = "Generators added 10.4 GW of battery storage in 2024 " + "and the agency states the sample " * 20
     collapsed = " ".join(drafted.split())
     assert len(collapsed) > 600
+    assert re.search(r"[.;!?]\s+\S", collapsed) is None  # no boundary the splitter could cut on
     draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
     composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
     assert composition.summary == []

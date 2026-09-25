@@ -12,6 +12,7 @@ scope, organisation, forecast or actual -- is the Statement Check's job
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -130,6 +131,15 @@ REPORT_WRITER_INSTRUCTION = (
     "findings hold more items than the summary can carry, give the ones the "
     "findings themselves rank or emphasise most and say the list is partial. "
     "Never state the same figure twice.\n"
+    f"- Keep every point under {MAX_POINT_CHARS} characters. A longer point is split "
+    "at a sentence boundary and every piece kept with the same citations, so a "
+    "sentence that long on its own is refused: write one fact per point.\n"
+    "- A section title names its subject in the cited findings' own words and never "
+    "states the report's own judgement or status (\"pending\", \"confirmed\", "
+    "\"verified\"): a title claims nothing the findings do not.\n"
+    "- Never print a page's own metadata or disclaimer as a point: a copyright, "
+    "revision or legal line, or the date the document or page itself takes effect, "
+    "belongs to the evidence log and answers no question.\n"
     "- Never state a judgement while dropping the criterion it is measured by: a "
     "judgement the finding measures by a criterion the snippet does not name is "
     "not an answer, so state the criterion with it or leave the judgement out.\n"
@@ -326,6 +336,41 @@ def writer_messages(task: ReportWriterTask) -> list[ChatMessage]:
             ChatMessage(role="user", content=render_structured_request(static, material))]
 
 
+#: Where a drafted point too long for ``MAX_POINT_CHARS`` may be cut: after a
+#: sentence or clause end, and only where what follows starts a word. The cut is
+#: verbatim -- the pieces rejoined are the drafted text -- so a split never
+#: invents, drops or reorders a word and every piece keeps the point's citations.
+_CLAUSE_BOUNDARY = re.compile(r"(?<=[.;!?])\s+(?=[\"“(\[]?\S)")
+
+
+def _split_oversize_point(text: str, limit: int = MAX_POINT_CHARS) -> list[str] | None:
+    """``text`` as consecutive pieces under ``limit``, or ``None`` when one clause is over it.
+
+    Improvement 2 (the run-2 audit): a drafted point longer than the bound used
+    to be refused whole, and the reader lost a verified obligation list that
+    way. Pieces are packed greedily, longest runs first, and every piece is
+    verbatim: ``" ".join(pieces) == text``. A point whose own clause is longer
+    than the bound cannot be cut honestly -- the only cut left would fall inside
+    a sentence, where prose is the model's to write -- so it is returned as
+    ``None`` and the caller refuses it as before.
+    """
+    clauses = _CLAUSE_BOUNDARY.split(text)
+    if any(len(clause) > limit for clause in clauses):
+        return None
+    pieces: list[str] = []
+    current = ""
+    for clause in clauses:
+        joined = f"{current} {clause}".strip()
+        if current and len(joined) > limit:
+            pieces.append(current)
+            current = clause
+        else:
+            current = joined
+    if current:
+        pieces.append(current)
+    return pieces or None
+
+
 class _Verdict(Protocol):
     """Structural shape of ``evidence_verifier.StatementVerdictDraft`` (D8).
 
@@ -397,7 +442,15 @@ async def compose_written_report(
     numbers = iter(range(1, 10_000))
     rejected: list[RejectedDraftPoint] = []
 
-    def consider(point: WriterPointDraft, where: str) -> _Candidate | None:
+    def consider(point: WriterPointDraft, where: str) -> list[_Candidate]:
+        """Every candidate one drafted point yields: itself, or its split pieces.
+
+        Improvement 2: a drafted point over ``MAX_POINT_CHARS`` is split at a
+        sentence boundary into pieces that keep its citations, rather than
+        dropped -- the run-2 audit lost a whole verified obligation list that
+        way. A point whose own clause is over the bound is refused as before,
+        since the only cut left would fall inside a sentence.
+        """
         drafted = " ".join(point.text.split())
         wanted = [label.strip() for label in point.finding_labels]
 
@@ -408,26 +461,34 @@ async def compose_written_report(
 
         if not drafted:
             refuse("empty text")
-            return None
-        if len(drafted) > MAX_POINT_CHARS:
-            refuse(f"longer than {MAX_POINT_CHARS} characters")
-            return None
+            return []
         unknown = [label for label in wanted if label not in by_label]
         if unknown:
             refuse("unknown labels: " + ", ".join(unknown))
-            return None
+            return []
         if not wanted:
             refuse("cites no checked finding")
-            return None
-        return _Candidate(key=f"S{next(numbers):03d}", where=where, text=drafted,
-                          finding_labels=wanted, findings=[by_label[label] for label in wanted])
+            return []
+        pieces = [drafted] if len(drafted) <= MAX_POINT_CHARS else _split_oversize_point(drafted)
+        if pieces is None:
+            refuse(f"longer than {MAX_POINT_CHARS} characters")
+            return []
+        return [
+            _Candidate(key=f"S{next(numbers):03d}",
+                       where=where if len(pieces) == 1 else f"{where} part {n}",
+                       text=piece, finding_labels=wanted,
+                       findings=[by_label[label] for label in wanted])
+            for n, piece in enumerate(pieces, start=1)
+        ]
 
-    summary_candidates = [c for n, d in enumerate(draft.executive_summary if draft else [])
-                          if (c := consider(d, f"summary[{n}]")) is not None]
+    summary_candidates: list[_Candidate] = []
+    for n, drafted_point in enumerate(draft.executive_summary if draft else []):
+        summary_candidates.extend(consider(drafted_point, f"summary[{n}]"))
     section_candidates: list[tuple[str, list[_Candidate]]] = []
     for s, section in enumerate((draft.sections if draft else [])[:DEFAULT_MAX_SECTIONS]):
-        points = [c for n, d in enumerate(section.points)
-                  if (c := consider(d, f"sections[{s}].points[{n}]")) is not None]
+        points: list[_Candidate] = []
+        for n, drafted_point in enumerate(section.points):
+            points.extend(consider(drafted_point, f"sections[{s}].points[{n}]"))
         section_candidates.append((" ".join(section.title.split())[:_SECTION_TITLE_CHARS], points))
 
     all_candidates = summary_candidates + [c for _, points in section_candidates for c in points]
