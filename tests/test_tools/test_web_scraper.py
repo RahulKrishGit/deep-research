@@ -344,8 +344,8 @@ async def test_a_client_rendered_page_with_no_recoverable_body_is_a_failed_read(
     assert result.error is not None
     assert result.error.type == "client_rendered_page"
     assert result.error.message == (
-        "the page served its navigation but not its body; read the same "
-        "material from another source"
+        "the page served no readable body; read the same material from "
+        "another source"
     )
     assert result.error.details == {}
 
@@ -410,6 +410,63 @@ async def test_a_short_page_in_small_markup_is_read_unchanged(tracker) -> None:
         "Harbour Notice The harbour ferry moves to its winter timetable on "
         "the first Sunday of next month."
     )
+    assert result.data["extraction_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_short_real_page_in_large_markup_keeps_its_body(tracker) -> None:
+    """A page whose few visible words are a paragraph is not a shell.
+
+    Large markup alone does not make a page client-rendered. A page can serve
+    a framework bundle and still render a real body of a few hundred
+    characters, and that body can be a single paragraph: refusing it a read
+    would lose a short authoritative page, the very page the shell gate
+    exists to protect.
+    """
+    paragraph = (
+        "The Example Institute measured every bracket in the survey and "
+        "published the loading limits beside each one."
+    )
+    page = (
+        "<html><head><title>Example Charts</title>"
+        f"<script>{_SCRIPT_BUNDLE}</script>"
+        "</head><body><nav><a href='/charts'>Charts</a>"
+        f"<a href='/methods'>Methods</a></nav><p>{paragraph}</p></body></html>"
+    )
+    result = await _read_served_page(tracker, page)
+
+    assert result.success is True
+    assert result.data["text"] == f"Example Charts Charts Methods {paragraph}"
+    assert result.data["extraction_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_short_data_table_in_large_markup_keeps_its_table(tracker) -> None:
+    """A page whose body is a table is not chrome, whatever its labels say.
+
+    A data page carries its body as short cells — names, numbers, units —
+    that no prose test accepts, and its markup can be large because of a
+    script bundle. The table is the page, so the read keeps it.
+    """
+    rows = "".join(
+        f"<tr><td>Gauge {index}</td><td>{index * 7}</td><td>cubic metres</td></tr>"
+        for index in range(1, 31)
+    )
+    page = (
+        "<html><head><title>Example Gauges</title>"
+        f"<script>{_SCRIPT_BUNDLE}</script>"
+        "</head><body><table><thead><tr><th>Gauge</th><th>Flow</th>"
+        f"<th>Unit</th></tr></thead><tbody>{rows}</tbody></table></body></html>"
+    )
+    result = await _read_served_page(
+        tracker, page, url="https://example.test/gauges"
+    )
+
+    assert result.success is True
+    text = result.data["text"]
+    assert "Gauge 1 7 cubic metres" in text
+    assert "Gauge 30 210 cubic metres" in text
+    assert text.count("cubic metres") == 30
     assert result.data["extraction_complete"] is True
 
 

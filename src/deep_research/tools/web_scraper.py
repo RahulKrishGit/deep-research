@@ -176,13 +176,14 @@ class WebScraperTool(BaseTool):
         title, text = _extract_html(response.text)
         if not text.strip():
             if _is_large_markup(response.text):
-                # A shell whose data held no prose: everything the static read
-                # saw was the site's chrome. Admitting that as the page is how
-                # a menu becomes evidence, and the same HTML comes back on a
-                # retry, so the useful move is another source.
+                # A chrome-shaped shell whose data held no prose: everything
+                # the static read saw was navigation, menus and a footer, or
+                # nothing at all. Admitting that as the page is how a menu
+                # becomes evidence, and the same HTML comes back on a retry,
+                # so the useful move is another source.
                 raise ToolExecutionError(
-                    "the page served its navigation but not its body; read the "
-                    "same material from another source",
+                    "the page served no readable body; read the same material "
+                    "from another source",
                     error_type="client_rendered_page",
                     recoverable=True,
                 )
@@ -318,12 +319,14 @@ def _bounded_content_type(content_type: str) -> str:
 def _extract_html(html: str) -> tuple[str, str]:
     """The page's title and its readable text.
 
-    The readable text is the visible text, unless the page is a shell: visible
-    text within ``_SHELL_CONTENT_MAX_CHARS`` in markup of at least
-    ``_SHELL_MARKUP_MIN_CHARS``. A shell's visible text is its chrome, so the
-    prose its own data carries (``_shell_prose``) is appended to it; a shell
-    whose data holds no prose has no readable text at all, since chrome is not
-    the page's text. A page with a body of its own is read exactly as before.
+    The readable text is the visible text, unless the page is a *shell*:
+    visible text within ``_SHELL_CONTENT_MAX_CHARS`` in markup of at least
+    ``_SHELL_MARKUP_MIN_CHARS``. A shell's prose is whatever its own data
+    carries (``_shell_prose``), and that prose is appended to the visible text
+    the page has. Only a shell whose visible text is chrome-shaped
+    (``_is_chrome``) and whose data holds no prose has no readable text at all,
+    since chrome is not the page: a short paragraph or a table in large markup
+    is a body, and is read as before.
     """
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(strip=True) if soup.title else ""
@@ -331,11 +334,12 @@ def _extract_html(html: str) -> tuple[str, str]:
     scripts = [element.extract() for element in soup("script")]
     for element in soup(["style", "noscript"]):
         element.decompose()
-    visible = " ".join(soup.stripped_strings)
+    visible_strings = list(soup.stripped_strings)
+    visible = " ".join(visible_strings)
     if len(visible) > _SHELL_CONTENT_MAX_CHARS or not _is_large_markup(html):
         return title, visible
     prose = _shell_prose(soup, scripts)
-    if not prose:
+    if not prose and _is_chrome(soup, visible_strings):
         return title, ""
     return title, " ".join([visible, *prose] if visible else prose)
 
@@ -343,6 +347,24 @@ def _extract_html(html: str) -> tuple[str, str]:
 def _is_large_markup(html: str) -> bool:
     """Whether ``html`` is large enough to hold a body its visible text lacks."""
     return len(html) >= _SHELL_MARKUP_MIN_CHARS
+
+
+def _is_chrome(soup: BeautifulSoup, visible_strings: list[str]) -> bool:
+    """Whether a shell's visible text is the site's chrome, not a page body.
+
+    Chrome is navigation labels, menus and a footer: no single visible string
+    reaches prose length. A table cell makes the text a body whatever its
+    words measure, because a data page keeps its body in cells that carry
+    names, numbers and units rather than sentences.
+    """
+    if soup.find(["td", "th"]) is not None:
+        return False
+    return not any(_is_prose(" ".join(text.split())) for text in visible_strings)
+
+
+def _is_prose(text: str) -> bool:
+    """Whether ``text``, already plain and whitespace-collapsed, is prose."""
+    return len(text) >= _PROSE_MIN_CHARS and text.count(" ") >= _PROSE_MIN_SPACES
 
 
 def _shell_prose(soup: BeautifulSoup, scripts: list[Tag]) -> list[str]:
@@ -422,11 +444,7 @@ def _add_prose(value: object, found: list[str]) -> None:
     if not isinstance(value, str):
         return
     text = " ".join(unescape(_TAG_PATTERN.sub(" ", value)).split())
-    if (
-        len(text) >= _PROSE_MIN_CHARS
-        and text.count(" ") >= _PROSE_MIN_SPACES
-        and not text.startswith(("{", "["))
-    ):
+    if _is_prose(text) and not text.startswith(("{", "[")):
         found.append(text)
 
 
