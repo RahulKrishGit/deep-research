@@ -794,8 +794,16 @@ class StatementCheckDraft(ContractModel):
 
 
 def _statement_cited_lines(item: StatementCheckItem) -> str:
-    """Every cited finding's kept figures, then its verified snippet and the body it
-    is attributed to: the admitted issuer, else the page's publisher."""
+    """Every cited finding's kept figures, then its verified snippet.
+
+    A finding that kept no figure also carries the body it is attributed to:
+    the admitted issuer, else the page's publisher. A finding whose figure the
+    Context Check kept does not: its figure line already carries that verdict
+    (``own``/``relayed``/``unattributed`` and the organisation named for it),
+    and a second line built from the extraction-time issuer could credit a
+    different body — the relay site beside a figure the page credits to its
+    originator — so one page states its attribution once.
+    """
     lines: list[str] = []
     for finding, label in zip(item.findings, item.labels):
         verification = finding.verification
@@ -813,6 +821,8 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
         body = "; ".join(figures) if figures else "(no kept figures)"
         lines.append(f"  {label}: {body}")
         lines.append(f'    snippet: "{finding.snippet or finding.content}"')
+        if figures:
+            continue
         name = finding.attributed_issuer or publisher_identity(finding.source_url)
         quote = (
             f' ("{finding.attribution_quote}")'
