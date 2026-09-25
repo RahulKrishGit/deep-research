@@ -1076,3 +1076,97 @@ def test_a_request_limit_graph_failure_exits_three_before_require_quality() -> N
     assert "Status: failed" in printed
     assert "Request budget:" in printed
     assert "--require-quality" not in printed
+
+
+def test_a_halted_run_s_summary_still_prints_the_telemetry_line(
+    tmp_path, monkeypatch
+) -> None:
+    """The §7.3 line survives a halt — the outcome an operator most needs it for.
+
+    A run the graph halted is the run whose rate-limit advice matters, and it
+    publishes no quality record for the finalizer to stamp: without the entry
+    point's own reading the summary would go silent exactly when the figures
+    are worth reading. This drives the real ``main`` and the real
+    ``run_research`` over a graph that halts on its first node.
+    """
+    from deep_research.graph.orchestrator import compile_research_graph
+    from deep_research.observability import (
+        LangSmithRuntimeConfig,
+        RunTelemetryCollector,
+        Tracker,
+    )
+    from deep_research.request_budget import RequestBudget
+    from deep_research.runtime.assembly import ResearchRuntime
+    from tests.graph_fakes import FakeAgent, fake_research_agents
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "graph": {"max_extra_passes": 1},
+                "output": {"directory": str(tmp_path / "output")},
+                "memory": {
+                    "long_term": {"persist_directory": str(tmp_path / "memory")},
+                    "procedural": {
+                        "strategies_path": str(tmp_path / "strategies.json")
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    # The planner's update is one the state model refuses, which is how a graph
+    # halt is expressed without a provider: the node records the enumerated
+    # error and every later node skips, finalizer included.
+    halting_planner = FakeAgent("planner", [{"iteration": 2}])
+
+    async def builder(settings, *, session_id, **_ignored):
+        return ResearchRuntime(
+            session_id=session_id,
+            settings=settings,
+            tracker=Tracker(
+                LangSmithRuntimeConfig(
+                    tracing_enabled=False,
+                    project="entrypoint-halt",
+                    api_key=None,
+                )
+            ),
+            request_budget=budget,
+            graph=compile_research_graph(
+                fake_research_agents(planner=halting_planner),
+                checkpointer=None,
+                run_telemetry=collector,
+            ),
+            long_term=None,
+            procedural=None,
+            run_telemetry=collector,
+        )
+
+    def runner(**kwargs) -> ResearchOutcome:
+        event_handler = kwargs["event_handler"]
+
+        def handler(event: ResearchEvent) -> None:
+            event_handler(event)
+            if event.event_type == "graph.session.started":
+                collector.note_call_starting("researcher")
+                budget.reserve("deepseek")
+
+        kwargs["event_handler"] = handler
+        return run_research_sync(runtime_builder=builder, **kwargs)
+
+    stream = io.StringIO()
+    code = main([QUESTION, "--config", str(config)], runner=runner, stream=stream)
+
+    printed = stream.getvalue()
+    assert code == EXIT_GRAPH_FAILED
+    assert printed.count("Telemetry: ") == 1
+    assert (
+        "Telemetry: peak 1 provider calls in flight (researcher); "
+        "0 rate limits (0 recovered); 0 truncated" in printed
+    )

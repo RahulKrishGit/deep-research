@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import Any, TypeAlias
 from uuid import uuid4
 
@@ -317,6 +318,22 @@ async def run_research(
     finally:
         if observer is not None:
             budget.set_observer(None)
+
+    # The terminal finalizer takes the collector's reading for a run that
+    # reaches publication, and stamps it into the state it publishes from. A
+    # halted run reaches none of that -- the finalizer is skipped, and a halted
+    # run publishes nothing -- so without this the run that hit repeated 429s
+    # or spent its attempt budget, which is precisely the run the rate-limit
+    # advice is about, would report no telemetry at all. The same snapshot is
+    # therefore taken here for the outcome, and taken only when the finalizer
+    # did not already take it: one reading per run, never two.
+    if run.state.run_telemetry is None and runtime.run_telemetry is not None:
+        run = replace(
+            run,
+            state=run.state.model_copy(
+                update={"run_telemetry": runtime.run_telemetry.snapshot()}
+            ),
+        )
 
     return build_outcome(
         run,

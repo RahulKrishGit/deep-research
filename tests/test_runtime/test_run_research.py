@@ -619,6 +619,53 @@ async def test_run_research_installs_the_collector_alone_and_detaches_it(
 
 
 @pytest.mark.asyncio
+async def test_a_halted_run_still_carries_the_run_telemetry(
+    config_file, tracker
+) -> None:
+    """A halted run is still a run that was measured.
+
+    The terminal finalizer stamps the collector for a run that reaches
+    publication, and a halted run reaches none — the node is skipped and
+    publishes nothing. That is exactly the run whose telemetry matters most:
+    one killed by repeated 429s or a spent attempt budget is the run the
+    "rate limits hit N times" advice is for. So the entry point takes the same
+    reading for the pass that had no publication step, and takes it only when
+    the finalizer did not.
+    """
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    planner = FakeAgent("planner", [{"iteration": 2}])
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=budget,
+            agents=fake_research_agents(planner=planner),
+            telemetry=collector,
+        )
+
+    def event_handler(event: ResearchEvent) -> None:
+        if event.event_type == "graph.session.started":
+            collector.note_call_starting("researcher")
+            budget.reserve("deepseek")
+
+    outcome = await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        event_handler=event_handler,
+    )
+
+    assert outcome.failed is True
+    assert outcome.state.run_telemetry is not None
+    assert outcome.state.run_telemetry.peak_calls_in_flight == 1
+    assert outcome.state.run_telemetry.peak_agent == "researcher"
+    assert outcome.quality_path is None
+
+
+@pytest.mark.asyncio
 async def test_run_research_installs_the_request_budget_handler_before_the_graph(
     config_file, tracker
 ) -> None:
