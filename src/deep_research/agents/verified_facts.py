@@ -281,28 +281,93 @@ def subject_context(target_ids: Iterable[str], targets: Iterable[EvidenceTarget]
     return shared or frozenset()
 
 
-def _names_one_thing(left: frozenset[str], right: frozenset[str]) -> bool:
-    """Fable §8.6 steps 4-5: either side names nothing, or one set contains the other."""
-    if not left or not right:
+def _own_fields(target_ids: Iterable[str],
+                targets: Iterable[EvidenceTarget]) -> tuple[frozenset[str], frozenset[str]]:
+    """The words these targets state as their own measure and as their geography.
+
+    Task 5.6c's exemption reads them: a subject that is a target's measure and a
+    subject that is its geography are one topic the target describes, not two
+    options it names. Intersected across the targets given, like
+    ``subject_context``, and empty when there are none.
+    """
+    wanted = set(target_ids)
+    measure: frozenset[str] | None = None
+    geography: frozenset[str] | None = None
+    for target in targets:
+        if target.target_id not in wanted:
+            continue
+        stated_measure = _stated_words(target.measure)
+        stated_geography = _stated_words(target.geography)
+        measure = stated_measure if measure is None else measure & stated_measure
+        geography = stated_geography if geography is None else geography & stated_geography
+    return measure or frozenset(), geography or frozenset()
+
+
+def _names_one_thing(left: frozenset[str], right: frozenset[str], *,
+                     context_words: frozenset[str] = frozenset()) -> bool:
+    """Fable §8.6 steps 4-5: either side names nothing beyond the context, or one contains the other.
+
+    The comparison ``_subject_fits`` makes -- one subject against the words a
+    target spells its own subject with -- is this rule alone. Two *subjects*
+    against each other also get Task 5.6c's distinguishing test first, in
+    ``same_subject``, which is where a target that names both options is seen.
+    """
+    left_words = left - context_words
+    right_words = right - context_words
+    if not left_words or not right_words:
         return True
-    return left <= right or right <= left
+    return left_words <= right_words or right_words <= left_words
+
+
+def _told_apart(left: frozenset[str], right: frozenset[str], *,
+                context_words: frozenset[str] = frozenset(),
+                own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
+    """Task 5.6c: whether the target states a give-away of each side that the other lacks.
+
+    ``left`` and ``right`` are the raw subject token sets, ``context_words`` the
+    words of the targets the two share, and ``own_fields`` those targets' own
+    measure and geography words. A target that names both options ("the Kettle
+    K1 and the Kettle K2") states a word only the one side carries and a word
+    only the other does, so the two are different things however much of either
+    subject it also restates -- unless the two sides are that target's own
+    measure and its own geography, which are one topic the target describes, not
+    two options it names (the committed ``single-subject-spellings`` row).
+    An article never counts as evidence that the target named only *one* side:
+    articles are dropped from the target's own words, and counting them here is
+    what keeps "Model A" and "Model B" apart when the question names both.
+    """
+    measure, geography = own_fields
+    if ((left <= measure and right <= geography)
+            or (left <= geography and right <= measure)):
+        return False
+    stated = context_words | _ARTICLE
+    return bool((left - right) & stated and (right - left) & stated)
 
 
 def same_subject(left: str | None, right: str | None, *,
-                 context_words: frozenset[str] = frozenset()) -> bool:
+                 context_words: frozenset[str] = frozenset(),
+                 own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
     """Fable §8.6 steps 1-5: whether two subjects can name one thing.
 
     Compatible when either names nothing beyond the context, or when one set of
     words contains the other ("X200" and "Acme X200"). Overlap is not enough:
-    "version 10.02" and "version 10.03" share "version" and stay apart.
+    "version 10.02" and "version 10.03" share "version" and stay apart. A
+    target that names both sides' distinguishing words tells the two subjects
+    apart even though it restates both of them (Task 5.6c), unless the two
+    sides are that target's own measure and geography, which are one topic
+    (``own_fields``).
     """
-    return _names_one_thing(_subject_words(left) - context_words,
-                            _subject_words(right) - context_words)
+    left_words = _subject_words(left)
+    right_words = _subject_words(right)
+    if _told_apart(left_words, right_words, context_words=context_words, own_fields=own_fields):
+        return False
+    return _names_one_thing(left_words, right_words, context_words=context_words)
 
 
 def _periods_match(left_period: str | None, right_period: str | None,
                    left_subject: str | None, right_subject: str | None, *,
-                   context_words: frozenset[str] = frozenset()) -> bool:
+                   context_words: frozenset[str] = frozenset(),
+                   own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
     """PD-9's period test, plus controller ruling N1.
 
     Two figures that both state no period (a current price, a product rating)
@@ -313,7 +378,7 @@ def _periods_match(left_period: str | None, right_period: str | None,
     """
     if _period_key(left_period) is None and _period_key(right_period) is None:
         return bool(left_subject and right_subject) and same_subject(
-            left_subject, right_subject, context_words=context_words)
+            left_subject, right_subject, context_words=context_words, own_fields=own_fields)
     return same_period(left_period, right_period)
 
 
@@ -329,6 +394,53 @@ def subject_named_in(text: str, subject: str | None, *,
         return True
     words = tuple(word for word in _subject_tokens(text) if word not in context_words)
     return any(words[i:i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
+
+
+def subject_distinguishes(text: str, subject: str | None, rival: str | None, *,
+                          context_words: frozenset[str] = frozenset(),
+                          own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
+    """Whether ``text`` names what tells ``subject`` from ``rival`` (Task 5.6c).
+
+    A target that names both options ("the Kettle K1 and the Kettle K2") strips
+    what either subject would say alone, so ``subject_named_in`` cannot tell the
+    two apart. The words that distinguish one from the other are then the
+    target's own give-away ("K1"), and a sentence about one of them states them.
+    Two subjects that are the same thing have nothing to distinguish, so they
+    are never refused here.
+    """
+    if same_subject(subject, rival, context_words=context_words, own_fields=own_fields):
+        return True
+    distinctive = _subject_words(subject) - _subject_words(rival)
+    wanted = tuple(word for word in _subject_tokens(subject) if word in distinctive)
+    if not wanted:
+        return True
+    words = _subject_tokens(text)
+    return any(words[i:i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
+
+
+def subject_names_row(text: str, row: FactRow, rows: Sequence[FactRow],
+                      targets: Iterable[EvidenceTarget]) -> bool:
+    """Whether ``text`` is about ``row``: it names the row's subject, and tells it from each rival.
+
+    The one rule both the reader's labels (``report._point_labels``) and the
+    writer's restatement guard ask of a sentence (Task 5.6c). A row with no
+    subject is named by any sentence. Where the candidate rows' subjects are
+    different things -- a target that names both options, say -- a sentence
+    counts for a row only when it states what distinguishes that row from every
+    rival, so "Kettle K1 scored 4.5" is never taken for Kettle K2.
+    """
+    if not subject_named_in(text, row.subject,
+                            context_words=subject_context(row.target_ids, targets)):
+        return False
+    for other in rows:
+        if other is row:
+            continue
+        shared = set(row.target_ids) & set(other.target_ids)
+        if not subject_distinguishes(text, row.subject, other.subject,
+                                     context_words=subject_context(shared, targets),
+                                     own_fields=_own_fields(shared, targets)):
+            return False
+    return True
 
 
 def _asks_the_same(left: EvidenceTarget, right: EvidenceTarget) -> bool:
@@ -357,10 +469,9 @@ def _subject_fits(figure: VerifiedFigure, target: EvidenceTarget,
     shared = frozenset.intersection(
         *(_stated_words(t.question, t.geography) for t in (target, *siblings))
     )
-    return _names_one_thing(
-        _subject_words(figure.context.subject) - shared,
-        _stated_words(target.question, target.geography) - shared,
-    )
+    return _names_one_thing(_subject_words(figure.context.subject),
+                            _stated_words(target.question, target.geography),
+                            context_words=shared)
 
 
 def canonical_scopes(text: str | None) -> set[str]:
@@ -534,7 +645,9 @@ def _figures_share_a_subject(left: VerifiedFigure, right: VerifiedFigure,
     """Whether two figures are about the same thing (their shared targets' words)."""
     return same_subject(left.context.subject, right.context.subject,
                         context_words=_shared_target_words(left.finding.target_ids,
-                                                          right.finding.target_ids, by_id))
+                                                          right.finding.target_ids, by_id),
+                        own_fields=_own_fields(set(left.finding.target_ids) & set(right.finding.target_ids),
+                                               by_id.values()))
 
 
 def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
@@ -542,10 +655,14 @@ def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
     if left.context.kind != right.context.kind:
         return False
     words = _shared_target_words(left.finding.target_ids, right.finding.target_ids, by_id)
-    if not same_subject(left.context.subject, right.context.subject, context_words=words):
+    fields = _own_fields(set(left.finding.target_ids) & set(right.finding.target_ids),
+                         by_id.values())
+    if not same_subject(left.context.subject, right.context.subject,
+                        context_words=words, own_fields=fields):
         return False
     if not _periods_match(left.context.period, right.context.period,
-                          left.context.subject, right.context.subject, context_words=words):
+                          left.context.subject, right.context.subject,
+                          context_words=words, own_fields=fields):
         return False
     if not same_organisation(left.context.organisation, right.context.organisation):
         return False
@@ -628,9 +745,11 @@ def _same_period_and_subject(left: FactRow, right: FactRow,
     under ``_same_fact`` — they just do not earn a release history.
     """
     words = _shared_target_words(left.target_ids, right.target_ids, by_id)
+    fields = _own_fields(set(left.target_ids) & set(right.target_ids), by_id.values())
     if _subject_words(left.subject) - words != _subject_words(right.subject) - words:
         return False
-    return _periods_match(left.period, right.period, left.subject, right.subject, context_words=words)
+    return _periods_match(left.period, right.period, left.subject, right.subject,
+                          context_words=words, own_fields=fields)
 
 
 def _fold_revisions(rows: Sequence[tuple[FactRow, Finding]],

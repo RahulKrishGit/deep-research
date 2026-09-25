@@ -6,6 +6,7 @@ import pytest
 
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.verified_facts import (
+    _own_fields,
     answered_target_ids,
     fact_rows,
     finding_answers,
@@ -289,9 +290,11 @@ def test_figures_with_no_period_are_one_fact_only_on_a_shared_subject() -> None:
 def test_a_subject_that_restates_the_target_names_nothing() -> None:
     target = make_target()
     words = subject_context([target.target_id], [target])
+    fields = _own_fields([target.target_id], [target])
     assert not subject_named_in("Model B scored a 4.5.", "Model A")
-    assert same_subject("United States", "battery storage", context_words=words)
-    assert not same_subject("Spain", "Italy", context_words=words)
+    assert same_subject("United States", "battery storage", context_words=words,
+                        own_fields=fields)
+    assert not same_subject("Spain", "Italy", context_words=words, own_fields=fields)
     assert subject_named_in("The Acme X200 scored 4.5.", "Acme X200")
     assert not subject_named_in("Model B scored 4.5.", "Model A")
     assert subject_named_in("Anything at all.", None)
@@ -422,3 +425,70 @@ def test_an_article_in_sibling_questions_does_not_mix_the_subjects() -> None:
                                              organisation="Example Test Lab", kind="actual",
                                              subject="Model A"))
     assert set(answered_target_ids([scored], [a_lab, b_lab])) == {a_lab.target_id}
+
+
+# Task 5.6c: a comparison target names both options, and must not erase either subject.
+COMPARISON_RATING = {**RATING, "question": ("How do the Kettle K1 and the Kettle K2 compare "
+                                            "on the Example Tester noise rating for 2026?")}
+
+
+def test_a_comparison_target_naming_both_products_keeps_them_apart() -> None:
+    """Task 5.6c: the target that names both options must not erase either subject."""
+    target = make_target(**COMPARISON_RATING)
+    rows = fact_rows([_rated("Kettle K1", period="2026"),
+                      _rated("Kettle K2", page="news", period="2026")], [target])
+    assert [row.subject for row in rows] == ["Kettle K1", "Kettle K2"]
+    assert all(not row.duplicate_finding_ids for row in rows)
+
+
+def test_a_combined_target_naming_two_places_keeps_them_apart() -> None:
+    """Task 5.6c: "Spain and Italy" in one target's question tells the two subjects apart."""
+    target = make_target(question="How did Spain and Italy compare on unemployment in 2024?",
+                         measure="unemployment rate", unit_dimension="percent", geography=None,
+                         organisation="Example Statistical Agency")
+    figures = [_unemployment_figure("Spain", "lab", [target]),
+               _unemployment_figure("Italy", "news", [target])]
+    rows = fact_rows(figures, [target])
+    assert [row.subject for row in rows] == ["Spain", "Italy"]
+
+
+def test_an_alias_the_target_never_names_still_matches() -> None:
+    """Task 5.6c pin (ruling check 1): the target names "United States", never "US"."""
+    target = make_target(question="What was battery storage capacity in the United States?")
+    words = subject_context([target.target_id], [target])
+    assert same_subject("US battery storage", "battery storage in the United States",
+                        context_words=words)
+
+
+def test_a_subject_that_restates_a_field_of_its_target_still_matches() -> None:
+    """Task 5.6c: the target's own measure and geography are its topic, not two options.
+
+    The committed e2e row ``single-subject-spellings`` pins this shape: three
+    pages about widget adoption in the United States -- subject "United States",
+    subject "widget adoption", and no subject at all -- are one fact, so the
+    distinguishing rule stands down when each subject is a whole field of the
+    target the two findings share.
+    """
+    target = make_target(question="What was widget adoption in the United States in 2025?",
+                         measure="widget adoption", unit_dimension="percent", period="2025",
+                         geography="United States")
+    words = subject_context([target.target_id], [target])
+    fields = _own_fields([target.target_id], [target])
+    assert same_subject("United States", "widget adoption", context_words=words,
+                        own_fields=fields)
+
+    def survey(subject, page):
+        text = "The institute measured widget adoption in the United States at 40 percent in 2025."
+        read = make_read(text, url=f"https://{page}.example.test/adoption", title="Adoption survey")
+        finding = make_finding(read, text,
+                               figures=[figure("40", "percent", "2025", "actual").model_copy(
+                                   update={"subject": subject})],
+                               target_ids=[target.target_id])
+        return verified(finding, FigureContext(period="2025", scope=None, attribution="own",
+                                               organisation="Example Institute", kind="actual",
+                                               subject=subject))
+
+    rows = fact_rows([survey("United States", "agency21"),
+                      survey("widget adoption", "bureau21"),
+                      survey(None, "panel21")], [target])
+    assert [(row.subject, len(row.duplicate_finding_ids)) for row in rows] == [("United States", 2)]

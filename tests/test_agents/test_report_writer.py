@@ -880,3 +880,49 @@ async def test_a_summary_point_about_another_subject_is_not_a_restatement(writer
     assert [point.text for point in composition.summary] == [
         "Model A added 4 GW in 2024.", "Model B added 4 GW in 2024."]
     assert [(r.where, r.reason) for r in composition.rejected_points] == [("summary[2]", "restates K002")]
+
+
+def _comparison_state() -> ResearchState:
+    """One page reporting two named products adding the same capacity (Task 5.6c's comparison target).
+
+    The question names **both** products, which is what strips either subject's
+    words from the context the guard tests a sentence against.
+    """
+    target = make_target(question=("How do the Kettle K1 and the Kettle K2 compare on battery "
+                                   "storage capacity added in 2024?"))
+    topic = SubTopic(coverage_id=target.coverage_id, title="Capacity", rationale="r", search_queries=["q"],
+                     success_criteria=["c"], priority=1, evidence_targets=[target])
+    finding = _about("https://grid.example.test/kettles",
+                     "The Kettle K1 added 4 GW of capacity in 2024, and the Kettle K2 added 4 GW.",
+                     [("4", "GW", {"subject": "Kettle K1"}),
+                      ("4", "GW", {"subject": "Kettle K2"})])
+    return ResearchState(session_id="s", original_question=target.question,
+                         sub_topics=[topic], verified_findings=[finding])
+
+
+@pytest.mark.asyncio
+async def test_a_comparison_target_counts_a_restatement_only_for_the_subject_it_names(
+    writer, checker
+) -> None:
+    """Task 5.6c: the guard follows the distinguishing words when the target names both options.
+
+    The question names the Kettle K1 and the Kettle K2, so ``subject_context``
+    strips either product's words and the subject test alone counts both rows
+    as restated by either sentence: the second sentence is refused and the
+    reader loses a product. A sentence counts for a row only when it states what
+    tells that row from its rival.
+    """
+    task = writer.build_task(_comparison_state())
+    assert [row.subject for row in task.facts] == ["Kettle K1", "Kettle K2"]
+    [(label, _)] = task.registry
+    draft = ReportWriterDraft(executive_summary=[
+        WriterPointDraft(text="The Kettle K1 added 4 GW of capacity in 2024.", finding_labels=[label]),
+        WriterPointDraft(text="The Kettle K2 added 4 GW of capacity in 2024.", finding_labels=[label]),
+        WriterPointDraft(text="For 2024, the Kettle K2 added 4 GW.", finding_labels=[label]),
+    ], sections=[])
+    composition = await compose_written_report(task, draft, provider=writer.provider,
+                                               fingerprint=writer.fingerprint_call)
+    assert [point.text for point in composition.summary] == [
+        "The Kettle K1 added 4 GW of capacity in 2024.",
+        "The Kettle K2 added 4 GW of capacity in 2024."]
+    assert [(r.where, r.reason) for r in composition.rejected_points] == [("summary[2]", "restates K002")]
