@@ -350,7 +350,7 @@ class ReplayScenario:
     topics: tuple[ReplayTopic, ...]
     expectation: CaseExpectation
     version: int = 1
-    max_extra_passes: int = 2
+    max_extra_passes: int = 1
     # What a scripted reply may assert about the packets it is handed. Empty
     # means "the defaults the completer always enforces".
     expected_request_ids: tuple[str, ...] = ()
@@ -2277,34 +2277,43 @@ def _invariant_public_summary_stayed_short(run: ReplayRun) -> str | None:
 
 
 def _invariant_missing_target_triggers_one_extra_pass(run: ReplayRun) -> str | None:
-    """The obligation, and not the opening round's material, sends the run back.
+    """The missing obligation buys one extra pass, and the pass answers it.
 
-    Two halves. The opening round's pages state no figure, so nothing that
-    round could acquire answers a figure-shaped obligation -- that is what
-    makes the target missing rather than already met. And the page that
-    answers it is only acquired by a second discovery round for that topic,
-    which the outstanding obligation is what buys.
-
-    The pass count is asserted by ``extra-pass-finds-nothing``, the fixture
-    that observes a bought extra pass. This row's second discovery round
-    happens inside the first pass, because the harness's scripted acquisition
-    consumes a topic's planned queries in one loop; claiming a graph pass here
-    would assert the harness's turn accounting rather than the obligation.
+    Three halves, all readable from the run. The opening round ends with
+    ``topic-01-target-01`` missing -- code chose it, not a judgement -- and
+    spends exactly one extra pass for it (D4, §6.5). The page that answers it
+    was not read before that pass: the opening round's search surfaced the
+    topic's records and ran out of turns before reaching the page that states
+    the figure, so the answering page was still an unread candidate when the
+    pass began. And the pass is what turns the obligation into an answer.
     """
+    extra = list(run.state.extra_pass_target_ids)
+    if extra != ["topic-01-target-01"]:
+        return (
+            "the extra pass was not bought for the missing obligation alone: "
+            f"{extra}"
+        )
+    if run.state.iteration != 1:
+        return (
+            f"the run spent {run.state.iteration} extra passes, where D4's cap "
+            "and the product default are one"
+        )
     late = _late_pages(run)
     if not late:
-        return "the scenario declared no page only a second round could find"
+        return "the scenario declared no page the opening round could not reach"
     for source in late:
         if source.url not in run.replay.http.fetched:
-            return f"the second-round page was never read: {source.url}"
-    rounds = run.replay.search.rounds
-    if not rounds or max(rounds.values()) < 2:
-        return "the run never issued a second discovery round"
+            return (
+                f"the page the extra pass was bought for was never read: "
+                f"{source.url}"
+            )
+    if "topic-01-target-01" not in run.answered_target_ids():
+        return "the extra pass did not turn the obligation into an answer"
     for source in _opening_pages(run, late):
         if source.figures:
             return (
                 f"the opening round's page {source.url} states a figure, so the "
-                "obligation was met before the second round"
+                "obligation was met before the extra pass"
             )
     return None
 
@@ -2320,8 +2329,11 @@ def _invariant_extra_pass_finds_nothing(run: ReplayRun) -> str | None:
     extra = list(run.state.extra_pass_target_ids)
     if not extra:
         return "the run never chose a target for an extra pass"
-    if len(extra) > 1:
-        return f"the run bought {len(extra)} extra passes, where the cap is one"
+    if run.state.iteration != 1:
+        return (
+            f"the run spent {run.state.iteration} extra passes, where D4's cap "
+            "and the product default are one"
+        )
     answered = set(run.answered_target_ids())
     still_missing = [target_id for target_id in extra if target_id not in answered]
     if not still_missing:
