@@ -232,8 +232,10 @@ def test_the_line_renders_the_four_parts_of_the_spec() -> None:
 def test_the_advice_names_the_knob_and_the_cap() -> None:
     """N × 429 prints "rate limits hit N times; consider lowering
     agents.verifier_concurrency" (the knob of the agent at the peak); a call at
-    93% of its cap prints "output within 93% of the report_writer cap; consider
-    raising it"; with neither, no advice line is added."""
+    93% of its cap prints "output within 93% of the report_writer cap
+    (llm.max_tokens); consider raising it" — the key, because one agent can
+    hold several caps and only the key says which one to raise; with neither,
+    no advice line is added."""
     rate_limited = RunTelemetry(
         rate_limit_errors=3,
         rate_limit_recovered=1,
@@ -265,10 +267,43 @@ def test_the_advice_names_the_knob_and_the_cap() -> None:
         ),
     )
     assert render_telemetry_advice(near_cap) == (
-        "output within 93% of the report_writer cap; consider raising it",
+        "output within 93% of the report_writer cap (llm.max_tokens); "
+        "consider raising it",
     )
 
     assert render_telemetry_advice(RunTelemetry()) == ()
+
+
+def test_the_cap_advice_names_the_key_of_the_operation_that_is_full() -> None:
+    """One agent can hold two caps, so the key is what makes the line usable.
+
+    A researcher at 94 % of its ReAct decision cap needs
+    ``agents.react_decision_max_tokens`` raised; raising that same agent's
+    other cap (``llm.max_tokens``, which bounds its structured calls) would do
+    nothing for the call that hit its ceiling.
+    """
+    collector = RunTelemetryCollector()
+    collector.record_call(
+        agent="researcher",
+        operation="react_tool_turn",
+        seconds=19.0,
+        output_tokens=31_000,
+        configured_cap=32_768,
+        truncated=False,
+    )
+    collector.record_call(
+        agent="researcher",
+        operation="structured_output",
+        seconds=4.0,
+        output_tokens=100,
+        configured_cap=32_768,
+        truncated=False,
+    )
+
+    assert render_telemetry_advice(collector.snapshot()) == (
+        "output within 94% of the researcher cap "
+        "(agents.react_decision_max_tokens); consider raising it",
+    )
 
 
 @pytest.mark.parametrize(

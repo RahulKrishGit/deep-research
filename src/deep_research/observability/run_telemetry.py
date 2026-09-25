@@ -326,6 +326,12 @@ def render_telemetry_advice(telemetry: RunTelemetry) -> tuple[str, ...]:
     Advice only: the run never acts on it, and nothing is auto-tuned (§12).
     A run with no rate limits and no operation near or over its cap produces
     no lines at all.
+
+    The cap line names the config key that bounds the operation
+    (``OperationTelemetry.cap_key``) as well as the agent, because one agent
+    can hold several caps at once: the researcher's ReAct turns are bounded by
+    ``agents.react_decision_max_tokens`` and its structured calls by
+    ``llm.max_tokens``, and only the key tells the operator which one to raise.
     """
     advice: list[str] = []
     if telemetry.rate_limit_errors > 0:
@@ -341,7 +347,7 @@ def render_telemetry_advice(telemetry: RunTelemetry) -> tuple[str, ...]:
         _cap_share(fullest) >= _NEAR_CAP_PERCENT or fullest.truncations > 0
     ):
         advice.append(
-            f"output within {_cap_share(fullest)}% of the {fullest.agent} cap; "
-            "consider raising it"
+            f"output within {_cap_share(fullest)}% of the {fullest.agent} cap "
+            f"({fullest.cap_key}); consider raising it"
         )
     return tuple(advice)
