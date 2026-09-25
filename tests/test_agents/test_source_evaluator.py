@@ -2733,9 +2733,8 @@ def test_a_scoring_dossier_shows_the_passages_that_serve_the_plan() -> None:
                     "How much battery storage capacity is projected for the "
                     "first half of 2025, and in Texas?"
                 ),
-                required_dimensions=["value"],
+                measure="battery storage capacity additions",
                 required=True,
-                critical=True,
             )
         ],
     )
@@ -2834,10 +2833,9 @@ def test_a_scoring_dossier_shows_each_obligations_figures_behind_navigation() ->
                     target_id=f"{coverage_id}-target-01",
                     coverage_id=coverage_id,
                     question=question,
-                    required_dimensions=["value"],
+                    measure="battery storage capacity additions",
                     required=True,
-                    critical=False,
-                    )
+                )
             ],
         )
 

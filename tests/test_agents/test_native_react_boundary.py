@@ -60,8 +60,8 @@ _PLAN = ResearchPlanDraft(
                     # this case exists to measure the native tool boundary, not
                     # to carry a plan the planner would repair.
                     question=f"What does angle number {index} report?",
-                    required_dimensions=[f"measure: angle number {index}"],
-                    critical=index == 1,
+                    required=True,
+                    measure=f"angle number {index}",
                 )
             ],
         )
