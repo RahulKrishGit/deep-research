@@ -1508,6 +1508,16 @@ class ReportComposition(ContractModel):
     the Report Writer as it keeps, corrects, or refuses each sentence, and
     gated on by the quality pass (Task 4.3, PD-10).
     """
+
+    statement_passages: dict[str, str] = Field(default_factory=dict)
+    """Finding id to the bounded passage the Statement Check read for it.
+
+    The same words the checker's request carried (review F5): a snippet is cut
+    at its passage's boundary, so a verdict can rest on the sentence just past
+    the cut, and the evidence log prints this passage beside the snippet so a
+    reader can check exactly the words the verdict was made on. Empty for a
+    composition whose writer had no reads in hand, which prints no passage.
+    """
     limitations: list[str] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
     summary: list[ReportPoint] = Field(default_factory=list)

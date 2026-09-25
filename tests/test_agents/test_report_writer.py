@@ -1305,3 +1305,37 @@ async def test_the_packet_names_the_label_that_answers_a_required_target(writer)
     body = writer_messages(task)[1].content
 
     assert "- topic-03-target-01: From what date do the obligations apply? (F01)" in body
+
+
+@pytest.mark.asyncio
+async def test_the_published_record_carries_the_passage_the_checker_was_given(
+    writer, checker
+) -> None:
+    """Review F5: the evidence log prints exactly the words each verdict rests
+    on, so the record keeps the same map the Statement Check's items carried."""
+    snippet = "The grant covers travel when the visit is approved"
+    page = snippet + " in advance. It does not cover stays longer than five days."
+    read = make_read(page, url="https://example.test/grant", title="Example Lab page")
+    finding = make_finding(read, snippet, figures=[figure("5", "days", "2025", "actual")],
+                           target_ids=["topic-01-target-01"])
+    finding = finding.model_copy(update={"verification": FindingVerification(
+        status="verified",
+        figure_results=[FigureResult(
+            figure=finding.figures[0], matched=True, evidence_words=snippet,
+            context=FigureContext(period="2025", scope=None, attribution="own",
+                                  organisation="Example Lab", kind="actual"))])})
+    state = _task_state().model_copy(update={
+        "verified_findings": [finding], "read_records": {read.read_id: read}})
+    task = writer.build_task(state)
+    label = _labels(task.registry)["example.test"]
+
+    draft = ReportWriterDraft(
+        executive_summary=[WriterPointDraft(text="The grant covers travel.",
+                                            finding_labels=[label])], sections=[])
+    composition = await compose_written_report(task, draft, provider=writer.provider,
+                                               fingerprint=writer.fingerprint_call)
+
+    item = checker.calls[0][0]
+    assert composition.statement_passages == item.passages
+    passage = composition.statement_passages[finding_fingerprint(finding)]
+    assert "It does not cover stays longer than five days." in passage

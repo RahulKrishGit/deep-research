@@ -1292,3 +1292,21 @@ def test_a_run_without_a_collector_publishes_no_telemetry_figures() -> None:
     record = render_quality_record(state, state.composition, None)
 
     assert record["telemetry"] is None
+
+
+def test_the_finding_log_shows_the_passage_the_statement_check_read() -> None:
+    """Review F5: the checker reads the snippet's passage and its neighbours, so
+    a verdict can rest on a sentence the snippet does not carry. The ledger
+    prints the same bounded passage beside the snippet, and prints none for a
+    composition whose writer had no reads in hand."""
+    eia_id = finding_fingerprint(EIA_ACTUAL_2024)
+    passage = ("Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024, "
+               "and the agency expects 14 GW in 2025, its report states.")
+    log = render_finding_log(_written_composition(statement_passages={eia_id: passage}))
+
+    assert f'- Snippet: "{EIA_ACTUAL_2024.snippet}"' in log
+    assert f'- Passage: "{passage}"' in log
+    assert "its report states." in log
+
+    plain = render_finding_log(_written_composition())
+    assert "- Passage:" not in plain
