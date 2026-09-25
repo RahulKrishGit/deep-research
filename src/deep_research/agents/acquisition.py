@@ -203,14 +203,21 @@ def next_acquisition_action(state: AcquisitionState) -> AcquisitionAction:
         return "extract"
     if state.remaining_calls <= 0:
         return "finish"
+    if state.remaining_model_turns <= 0:
+        # The loop's last tool turn: the counter is the turns left *after* this
+        # one, so zero is the turn nothing follows. A search here queues
+        # candidates no turn is left to read — whether or not candidates are
+        # already waiting, which is why this bound is read before the queue's own
+        # guard: with candidates the last turn is a read, and with an empty queue
+        # there is nothing left that could be finished, so the loop stops. At one
+        # turn left a search is still admissible (the next turn can read it), and
+        # beside a queued read ``search_is_admissible`` is the stricter bound.
+        return "read" if state.candidate_urls else "finish"
     if state.candidate_urls and (
         state.consecutive_searches >= 2
+        # The call budget's last call is a read for the same reason the last
+        # turn is: a search there queues candidates nothing is left to drain.
         or state.remaining_calls == 1
-        # The turn cap is what binds in the shipped configuration: the
-        # researcher's call budget is 20 and its ReAct loop runs six
-        # tool-bearing turns, so a search on the last turn would queue
-        # candidates no turn is left to read. The last turn is a read.
-        or state.remaining_model_turns <= 1
     ):
         return "read"
     if not state.candidate_urls and state.empty_searches >= 2:
