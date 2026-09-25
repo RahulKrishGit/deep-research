@@ -752,8 +752,18 @@ from deep_research.utils.config import (
 # the shared ``agents.prompts`` library was not edited, which the other three
 # pins prove (source evaluator, evidence verifier and report writer are
 # unchanged), and the judge pin did not move.
+# The same task's probe-driven rules, continued: the planner moved again,
+# 3a29cacf5d6c -> 07d3633895c1, for a question answered by an argument or a text
+# planning no figure target of its own (a why-question's parts are reasons), and
+# for the organisation guard's test becoming a *name shape*: a lower-case
+# description is emptied while a capitalised or acronym body - including one a
+# role-word list used to empty, and including two bodies joined by a capitalised
+# conjunction - stays stamped. The plan instruction's two reply examples now
+# spell their bodies as names for the same reason. Module source and two
+# instruction strings of the planner's own; the researcher, the other three and
+# the judge are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "3a29cacf5d6c",
+    "planner": "07d3633895c1",
     "researcher": "c490b869021b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "21c413e91f94",

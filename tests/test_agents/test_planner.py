@@ -4781,6 +4781,88 @@ def test_a_measure_the_question_names_keeps_the_drafts_required_flag() -> None:
     )
 
 
+# The grader's P6 item 4: the Roman Republic plan carried required count and
+# currency targets of kind actual on a why-question, so the run owed figures
+# nobody asked for while the reasons it did ask for were not what acceptance
+# measured. A question answered by an argument or a text plans no figure target
+# of its own.
+def test_a_reasons_question_plans_no_figure_target() -> None:
+    """A why-question's parts are reasons: its targets carry no unit or kind.
+
+    Any figure the researcher finds is evidence inside a reason's finding, never
+    an obligation the run must answer.
+    """
+    stamped = _stamped(
+        "Why did the Roman Republic fall?",
+        _target(
+            "How many legions did Rome field in 50 BC?",
+            measure="legions fielded",
+            unit_dimension="count",
+            kind="actual",
+        ),
+    )
+
+    assert (stamped.unit_dimension, stamped.kind) == (None, None)
+
+
+def test_a_rules_question_plans_no_figure_target_it_was_not_asked_for() -> None:
+    """The same for the other form answered by a text rather than a number."""
+    stamped = _stamped(
+        "What are the current interconnection constraints?",
+        _target(
+            "How much capacity did the 2019 rule set?",
+            measure="capacity threshold set by the rule",
+            unit_dimension="power",
+            kind="actual",
+        ),
+    )
+
+    assert (stamped.unit_dimension, stamped.kind) == (None, None)
+
+
+@pytest.mark.parametrize(
+    "question",
+    (
+        _BATTERY_QUESTION,
+        "How much energy did battery storage systems add to the grid in 2024?",
+    ),
+)
+def test_a_question_asking_for_a_quantity_still_carries_its_figure_target(
+    question: str,
+) -> None:
+    """The counterpart: a question that asks how much keeps its figures.
+
+    The quantity is the question's own ask, by a 'how much' phrase, a unit
+    token, or the words that name a measured magnitude.
+    """
+    stamped = _stamped(
+        question,
+        _target(
+            "How much capacity was added?",
+            measure="grid-scale battery storage capacity added",
+            unit_dimension="power",
+            kind="actual",
+        ),
+    )
+
+    assert (stamped.unit_dimension, stamped.kind) == ("power", "actual")
+
+
+def test_a_rules_question_that_names_a_unit_keeps_its_figure_target() -> None:
+    """A rule question that names the quantity it asks about keeps figures too."""
+    stamped = _stamped(
+        "What are the permitting constraints for a 12 GW storage connection?",
+        _target(
+            "How much capacity does the rule permit?",
+            measure="capacity permitted by the rule, in GW",
+            unit_dimension="power",
+            kind="actual",
+        ),
+    )
+
+    assert (stamped.unit_dimension, stamped.kind) == ("power", "actual")
+
+
 def test_an_optional_target_the_question_names_is_not_promoted() -> None:
     """Required is the model's to grant: the rule only ever removes it."""
     assert (
@@ -4829,16 +4911,21 @@ _QUESTION_NAMING_NO_BODY = (
     "How much did semaglutide sales grow in 2024, and what is projected for 2025?"
 )
 
-# A body the plan may only have *described*: a role named through what it makes,
-# owns, publishes or authors; a relative clause; or two bodies joined into one
-# label.
+# A body the plan may only have *described*: lower-case prose naming a role,
+# with or without a clause. The re-review's probe found the shapes a role-word
+# list missed — every one of them was still being stamped, so the target was
+# still pre-failed for the whole run.
 _DESCRIBED_BODIES = (
     "the manufacturer of semaglutide",
     "the drug's maker",
     "the manufacturer",
     "the body that publishes the primary record",
     "the company responsible for the trial",
-    "European Parliament and Council of the European Union",
+    "the regional health authority",
+    "the national public health agency",
+    "the national statistical agency",
+    "the regulator",
+    "the market monitor",
 )
 
 
@@ -4856,8 +4943,22 @@ def test_a_body_the_plan_can_only_describe_is_left_empty(organisation: str) -> N
         "U.S. Energy Information Administration",
         "EIA",
         "the European Chemicals Agency",
-        "the regional health authority",
         "Novo Nordisk",
+        # The names a role-word list emptied, which loosened a quantity
+        # target's provenance rather than tightening it: `_figure_answers`
+        # drops the organisation conjunct when a target carries none.
+        "Centers for Disease Control and Prevention",
+        "National Institute of Standards and Technology",
+        "Department of Health and Human Services",
+        "Department for Energy Security and Net Zero",
+        "WHO",
+        "WHO Europe",
+        # Two bodies joined by a capitalised conjunction are a name-shaped
+        # value, and the join alone therefore stays stamped: "Centers for
+        # Disease Control and Prevention" carries that conjunction inside one
+        # body's name, so refusing the shape emptied real names. Whether a join
+        # names one body or two is the plan review's judgement.
+        "European Parliament and Council of the European Union",
     ),
 )
 def test_a_body_the_plan_names_is_stamped_by_name(organisation: str) -> None:
@@ -4867,7 +4968,9 @@ def test_a_body_the_plan_names_is_stamped_by_name(organisation: str) -> None:
     plan's own inference of the body that publishes the primary record — which
     the plan instruction asks for and §6.6 is then able to match against a
     page's own label. A guard that emptied these would refuse that inference
-    and loosen every figure target's provenance.
+    and loosen every figure target's provenance: an emptied organisation drops
+    that conjunct from ``verified_facts._figure_answers``, so another body's
+    figure could answer the target.
     """
     assert (
         _stamped(_QUESTION_NAMING_NO_BODY, _target(organisation=organisation)).organisation
