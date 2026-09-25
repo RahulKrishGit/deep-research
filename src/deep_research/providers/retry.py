@@ -14,13 +14,17 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from deep_research.providers.contracts import (
     ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
 )
+from deep_research.request_budget import RequestAttemptLimitError
+
+if TYPE_CHECKING:  # pragma: no cover - import cost only, never a cycle
+    from deep_research.observability.run_telemetry import RunTelemetryCollector
 
 T = TypeVar("T")
 
@@ -63,6 +67,7 @@ async def with_retries(
     retry_count: int,
     initial_delay: float,
     max_delay: float,
+    telemetry: RunTelemetryCollector | None = None,
 ) -> T:
     """Run ``operation`` with exponential-backoff retries for transient errors.
 
@@ -72,17 +77,41 @@ async def with_retries(
     errors propagate immediately; a transient error that persists past the
     last retry is re-raised as the final typed error, with no SDK exception
     chained behind it.
+
+    ``telemetry`` receives this loop's two contributions to §7.3. Each
+    :class:`~deep_research.providers.contracts.ProviderRateLimitError` is one
+    429, and a call whose later attempt succeeds has each of its 429s marked
+    recovered — recovery is a property of the call, not of an attempt, because
+    the caller is what got its answer. Every failed attempt also releases the
+    reservation it made: nothing else can, since a failed attempt never reports
+    tokens. A refused attempt is the exception — the budget refused it before
+    any I/O, so it holds nothing to release. ``None`` counts nothing, which is
+    what every caller that predates the telemetry gets.
     """
     failure: BaseException | None = None
+    rate_limits = 0
     for attempt in range(retry_count + 1):
         try:
-            return await operation()
+            result = await operation()
         except Exception as error:
+            if isinstance(error, RequestAttemptLimitError):
+                failure = error
+                break
+            if isinstance(error, ProviderRateLimitError):
+                rate_limits += 1
+                if telemetry is not None:
+                    telemetry.note_rate_limit()
+            if telemetry is not None:
+                telemetry.note_attempt_finished()
             if not _is_transient(error) or attempt >= retry_count:
                 failure = error
                 break
             delay = min(initial_delay * (2**attempt), max_delay)
             await asyncio.sleep(delay)
+        else:
+            if telemetry is not None and rate_limits:
+                telemetry.note_rate_limit_recovered(rate_limits)
+            return result
     if failure is None:
         raise AssertionError("retry loop did not return")
     # Outside the handler on purpose: see ``_drop_chained_provider_state``.
