@@ -21,6 +21,7 @@ from deep_research.evaluation.evaluators import (
     evaluate_target_with_metrics,
 )
 from deep_research.evaluation.models import (
+    AGENT_NAMES,
     DependencyLedger,
     EvaluationCase,
     EvidenceContext,
@@ -163,53 +164,36 @@ def _production_target_output(
             "evaluated_sources",
         ),
         (
-            "fact_checker",
-            {"claims": []},
-            {"verified_claims": []},
-            "verified_claims",
+            # The verifier answers with the snapshot it judged, in the result
+            # (its state update carries ``verified_findings`` under that name).
+            "evidence_verifier",
+            {"findings": []},
+            {},
+            "findings",
         ),
         (
-            "synthesizer",
+            # The writer composes both artifacts into the result and mirrors
+            # them into the state update; the required fields are the result's
+            # own names.
+            "report_writer",
             {
                 "markdown": "",
-                "path": None,
                 "evidence_markdown": "",
-                "evidence_path": "report-session-1-0-evidence.md",
-                "section_count": 0,
+                "composition": {
+                    "question": "A question?",
+                    "session_id": "evaluation-complete-cited-report",
+                    "summary": [],
+                    "sections": [],
+                },
+                "statement_count": 0,
                 "citation_count": 0,
-                "unique_source_count": 0,
-                "unique_claim_count": 0,
+                "refused_count": 0,
             },
             {
                 "report": "",
                 "report_evidence": "",
-                "evidence_path": "report-session-1-0-evidence.md",
-                "unique_source_count": 0,
-                "unique_claim_count": 0,
             },
-            "report",
-        ),
-        (
-            "critic",
-            {
-                "score": 1,
-                "gaps": [],
-                "unsupported_claims": [],
-                "recommended_queries": [],
-                "should_continue": False,
-                "rationale": "No report gaps found.",
-            },
-            {
-                "critique": {
-                    "score": 1,
-                    "gaps": [],
-                    "unsupported_claims": [],
-                    "recommended_queries": [],
-                    "should_continue": False,
-                    "rationale": "No report gaps found.",
-                }
-            },
-            "critique",
+            "markdown",
         ),
         (
             "researcher",
@@ -220,9 +204,8 @@ def _production_target_output(
     ],
     ids=[
         "source-evaluator-state-update",
-        "fact-checker-state-update",
-        "synthesizer-state-update",
-        "critic-state-update",
+        "evidence-verifier-result",
+        "report-writer-result",
         "researcher-result-control",
     ],
 )
@@ -233,6 +216,9 @@ def test_required_field_presence_accepts_production_output_boundaries(
     state_update,
     required_field,
 ) -> None:
+    # A row naming an agent that does not exist must fail, not skip: a skip
+    # here would hide exactly the stale row this matrix keeps collecting.
+    assert agent_name in AGENT_NAMES, f"unknown agent row: {agent_name}"
     case = controlled_case_for(agent_name)
     output = _production_target_output(
         case, result=result, state_update=state_update
@@ -287,7 +273,7 @@ def test_merged_loops_each_inside_their_budget_pass_the_gate(
 ) -> None:
     """A whole-case sum is not a per-loop budget.
 
-    The fact-checker runs one bounded loop per claim and merges them, summing
+    The researcher runs one bounded loop per sub-topic and merges them, summing
     ``tool_calls`` and ``iterations``. Every loop respects its own budget, yet
     the sum can exceed the per-loop ceiling the case declares -- which is
     exactly what failed a live canary with ``tool_calls 11 exceed 10`` where

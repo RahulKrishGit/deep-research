@@ -22,17 +22,11 @@ from deep_research.evaluation.evaluators import (
 )
 from deep_research.evaluation.models import (
     AGENT_NAMES,
-    CaseExpectations,
     DependencyLedger,
-    DeterministicMetric,
-    EvaluationCase,
-    JudgeRubric,
-    TargetOutput,
 )
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
     ORIGINAL_QUESTION_OMISSION_REFERENCE,
-    ResearchState,
 )
 
 
@@ -241,6 +235,80 @@ def test_the_source_evaluator_gate_requires_the_expected_low_confidence_flag(
         evaluate_agent_gates(output, source_evaluator_case),
         "low_confidence_flagged",
     ).passed is False
+
+
+# --- Read-bearing provenance ------------------------------------------------
+#
+# Task 5 review, Important 2: the evidence checks validated passage fields and
+# publisher independence but never bound a passage URL to the run's
+# read-bearing tool results, so a search-only or invented URL could still pass
+# the quality gates. These tests drive the REAL classifier over typed steps —
+# the same one ``targets._success_output`` records the artifact with, and the
+# field the researcher's kept ``findings_are_read_bearing`` metric reads.
+
+SEARCH_RESULT_URL = "https://third.test/x"
+DOCUMENT_URL = "https://fourth.test/d.csv"
+MEMORY_URL = "https://fifth.test/m"
+
+
+def _typed_step(
+    iteration: int, tool_name: str, data: dict[str, object]
+) -> ReActStep:
+    return ReActStep(
+        iteration=iteration,
+        thought=f"Call {tool_name}.",
+        action="use_tool",
+        tool_name=tool_name,
+        observation=ReActObservation(
+            tool_name=tool_name, success=True, summary=f"{tool_name} ran"
+        ),
+        tool_result=ToolResult(
+            tool_name=tool_name, success=True, data=data, latency_ms=1.0
+        ),
+    )
+
+
+SEARCH_STEP = _typed_step(
+    1,
+    "web_search",
+    {"results": [{"title": "T", "url": SEARCH_RESULT_URL}]},
+)
+SCRAPE_STEP = _typed_step(
+    2, "web_scraper", {"url": SEARCH_RESULT_URL, "text": "Body."}
+)
+DOCUMENT_STEP = _typed_step(
+    3, "document_reader", {"source": DOCUMENT_URL, "chunks": ["a"]}
+)
+MEMORY_STEP = _typed_step(
+    4,
+    "query_memory",
+    {"matches": [{"content": "A remembered passage.", "source_url": MEMORY_URL}]},
+)
+
+
+def test_the_read_provenance_classifier_excludes_search_only_hits() -> None:
+    """A search result list is discovery: it proves no read."""
+    fingerprints, complete = read_url_fingerprints([SEARCH_STEP])
+
+    assert (fingerprints, complete) == ([], True)
+
+
+def test_the_read_provenance_classifier_keeps_every_read_bearing_tool() -> None:
+    """A page scrape and a document read are reads; a memory match is not.
+
+    The positive half of the classifier's contract, and the half the
+    researcher's ``findings_are_read_bearing`` metric depends on: counting a
+    recall as a read (or dropping a document read) would move that metric's
+    score with no other test able to see it.
+    """
+    fingerprints, complete = read_url_fingerprints(
+        [SEARCH_STEP, SCRAPE_STEP, DOCUMENT_STEP, MEMORY_STEP]
+    )
+    recorded, _ = bounded_url_fingerprints([SEARCH_RESULT_URL, DOCUMENT_URL])
+
+    assert complete is True
+    assert set(fingerprints) == set(recorded)
+    assert MEMORY_URL not in fingerprints
 
 
 # --- Evidence Verifier -----------------------------------------------------
@@ -1008,7 +1076,9 @@ def _derived_reference_urls(case) -> list[str]:
         normalize_source_url(finding.source_url)
         for finding in case.state.verified_findings
     ]
-    return collapse_mirror_urls(list(dict.fromkeys(derived)), case.state.evaluated_sources)
+    return collapse_mirror_urls(
+        list(dict.fromkeys(derived)), case.state.evaluated_sources
+    )
 
 
 def test_a_canonically_cited_report_scores_its_metrics_one(

@@ -1291,6 +1291,35 @@ def test_changing_the_target_transport_never_touches_the_dataset_or_judge(
     assert judge_prompt_fingerprint(rubric_version=1) == "74b9cddfbbee"
 
 
+def test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift() -> None:
+    """Step 5: every agent's fingerprint, not one agent's.
+
+    The matrix is a conformance test, so the fingerprints are checked before any
+    prompt edit is accepted. Pinning all of them means a change to the shared
+    ``agents.prompts`` module — which moves every value at once — is visible in
+    one assertion rather than one fifth of it. PD-17: this alarm and the judge
+    pin below it stay; only a test that asserts a *past* value for a deleted
+    module is deleted.
+    """
+    assert set(AGENT_NAMES) == set(PINNED_TARGET_PROMPT_FINGERPRINTS)
+    assert {
+        name: agent_prompt_fingerprint(name) for name in AGENT_NAMES
+    } == PINNED_TARGET_PROMPT_FINGERPRINTS
+
+
+def test_the_judge_fingerprint_is_pinned_beside_the_target_pins() -> None:
+    """Step 5: both halves of the structured contract, pinned in one place.
+
+    The judge fingerprint is a distinct identity from every target's, because it
+    covers the judge system prompt, template, schema, weights, and rubric version
+    rather than an agent prompt module.
+    """
+    judge = judge_prompt_fingerprint(rubric_version=1)
+
+    assert judge == PINNED_JUDGE_PROMPT_FINGERPRINT
+    assert judge not in set(PINNED_TARGET_PROMPT_FINGERPRINTS.values())
+
+
 def test_the_target_fingerprint_covers_the_shared_prompt_module() -> None:
     """Record why the pin above cannot attribute a change to one agent.
 
