@@ -17,7 +17,7 @@ from typing import Any
 from pydantic import JsonValue
 
 from deep_research.agents.base import AgentRun
-from deep_research.agents.evidence import build_evidence_unit, build_read_record
+from deep_research.agents.evidence import build_read_record
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import (
     QUALITY_STATUS_NOT_GATED,
@@ -279,39 +279,23 @@ def fake_writer_composition(
     """The composition one writer pass renders from the verified snapshot.
 
     Built from the state it is handed, so every point carries the exact
-    finding identity the state already holds and one evidence unit per cited
-    snippet: that is what makes the deterministic quality gates *pass* rather
-    than merely exist, so a test asserting a clean snapshot is asserting the
-    real gate list.
+    finding identity the state already holds: that is what makes the
+    deterministic quality gates *pass* rather than merely exist, so a test
+    asserting a clean snapshot is asserting the real gate list.
     """
     findings = list(state.verified_findings)
     targets = [target for topic in state.sub_topics for target in topic.evidence_targets]
     answered = answered_target_ids(findings, targets)
-    evidence: dict[str, Any] = {}
     points: list[ReportPoint] = []
     labels: dict[str, str] = {}
     verdicts: dict[str, str] = {}
     for number, finding in enumerate(findings, start=1):
         finding_id = finding_fingerprint(finding)
         labels[f"F{number:02d}"] = finding_id
-        read = state.read_records.get(finding.read_id or "")
-        evidence_ids: list[str] = []
-        if read is not None and finding.locator in read.passages:
-            unit = build_evidence_unit(
-                read=read,
-                locator=finding.locator or "",
-                excerpt=finding.snippet or "",
-                origin="researcher",
-                target_ids=finding.target_ids,
-            )
-            evidence[unit.evidence_id] = unit
-            evidence_ids = [unit.evidence_id]
         statement_id = f"S{number:03d}"
         statement = ReportStatement(
             statement_id=statement_id,
             text=finding.snippet or finding.content,
-            mode="settled",
-            evidence_ids=evidence_ids,
             target_ids=list(finding.target_ids),
             finding_ids=[finding_id],
         )
@@ -343,7 +327,6 @@ def fake_writer_composition(
         finding_labels=labels,
         statement_verdicts=verdicts,
         summary=points,
-        evidence_units=evidence,
         generated_on="2026-08-01",
     )
 
