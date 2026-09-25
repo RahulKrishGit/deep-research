@@ -178,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
             "examples:\n"
             f'  {PROGRAM_NAME} "What are the security implications of '
             'quantum computing?"\n'
-            f'  {PROGRAM_NAME} "AI in healthcare" --max-iterations 5 '
+            f'  {PROGRAM_NAME} "AI in healthcare" --max-iterations 1 '
             "--output-format markdown --verbose\n"
             f"  {PROGRAM_NAME} --interactive\n"
             f"  {PROGRAM_NAME} --resume <session_id>"
@@ -1098,8 +1098,8 @@ def _artifact_lines(outcome: ResearchOutcome) -> list[str]:
     left a file on disk. A run that never attempted a publication keeps the
     older wording, which is true of it.
 
-    A memory-claim write is outside the set: its failures are counted, and the
-    three artifact lines are unaffected by them.
+    A memory write of a cited finding is outside the set: its failures are
+    counted, and the three artifact lines are unaffected by them.
     """
     failed = outcome.failed_publication_artifacts
     lines: list[str] = []

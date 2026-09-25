@@ -1059,6 +1059,38 @@ def test_the_target_counts_are_the_ids_the_gates_judged() -> None:
     assert coverage.answered_targets != 0
 
 
+def test_the_answered_count_is_a_count_of_required_targets() -> None:
+    """An answer to an optional target is not an answer to a required one.
+
+    ``answered_target_ids`` is every target a verified finding answers, and the
+    plan's optional targets are answered by the same findings. Counting that
+    list published more answered targets than the plan required —
+    ``Required targets: 3/2 answered`` — and, worse, a satisfied count on the
+    same summary as a target still owed. The reading is the gate's own two
+    lists: the required ids, minus the ones the same gate recorded as missing.
+    """
+    snapshot = quality_snapshot(
+        required_target_ids=[ANSWERED_TARGET_IDS[0], MISSING_TARGET_ID],
+        answered_target_ids=[
+            "topic-07-target-01",
+            "topic-07-target-02",
+            ANSWERED_TARGET_IDS[0],
+        ],
+        missing_required_target_ids=[MISSING_TARGET_ID],
+    )
+
+    coverage = outcome_of(verified_state(quality=snapshot)).coverage
+
+    assert coverage is not None
+    assert (coverage.required_targets, coverage.answered_targets) == (2, 1)
+    assert coverage.answered_targets <= coverage.required_targets
+    assert (
+        coverage.answered_targets
+        + len(coverage.missing_required_target_ids)
+        == coverage.required_targets
+    )
+
+
 def test_the_not_found_target_ids_come_from_the_composition() -> None:
     """What the report could not answer is read from the report's own list."""
     listed = outcome_of(verified_state()).coverage

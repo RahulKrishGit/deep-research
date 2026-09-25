@@ -117,7 +117,7 @@ _EPILOG = (
     "regardless of config.yaml.\n"
     f"  {PROGRAM_NAME} agent researcher --production-parity\n"
     "\n"
-    "  # Run controlled experiments for all six agents.\n"
+    "  # Run controlled experiments for all five agents.\n"
     f"  {PROGRAM_NAME} suite"
 )
 
@@ -259,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_shared_options(agent_parser)
 
     suite_parser = subparsers.add_parser(
-        "suite", help="run controlled experiments for all six agents"
+        "suite", help="run controlled experiments for all five agents"
     )
     _add_shared_options(suite_parser)
 

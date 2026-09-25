@@ -159,9 +159,11 @@ _AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
 
 # The three agents whose constructors read the run's clock: the planner dates
 # the answer contract from it, the researcher stamps every read and finding
-# from it, and the report writer stamps the reader's ``Generated on`` line from
-# it. A caller that injects one clock therefore gets one run with one clock in
-# it, and a run whose dates must not move with the machine's can be pinned. The
+# from it, and the report writer records the composition's own
+# ``generated_on`` from it. The reader report's own date line is its ``As of``,
+# which comes from the plan rather than from a clock read. A caller that
+# injects one clock therefore gets one run with one clock in it, and a run
+# whose dates must not move with the machine's can be pinned. The
 # other two hold no clock at all — handing one a clock would be a keyword no
 # constructor accepts. An agent that grows a ``clock`` parameter belongs here.
 _CLOCK_AWARE_AGENTS = frozenset({"planner", "researcher", "report_writer"})

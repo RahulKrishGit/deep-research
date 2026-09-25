@@ -144,29 +144,24 @@ def dump_state(state: ResearchState) -> ResearchGraphState:
     """Render one research state as the channel a node returns.
 
     Acquisition queues, candidate records, read registries, and pending
-    passage IDs are deliberately part of this single JSON snapshot. Keeping
-    the check here prevents a future channel serializer from silently
-    dropping the state that makes a resumed run auditable.
+    passage IDs are deliberately part of this single JSON snapshot: the whole
+    state is dumped, so a serializer cannot silently drop the records that make
+    a resumed run auditable, and ``load_state`` gets them all back.
     """
-    serialized = state.model_dump(mode="json")
-    if "acquisition_state_by_target" not in serialized:
-        raise ValueError("research state must persist acquisition state")
-    return {"state": serialized}
+    return {"state": state.model_dump(mode="json")}
 
 
 def load_state(channel: ResearchGraphState) -> ResearchState:
     """Validate the channel back into a research state.
 
     Validation is not ceremony: it is what makes a checkpoint written by an
-    older build fail loudly here rather than silently half-populate a node.
+    older build fail loudly here rather than silently half-populate a node. A
+    payload missing a field this build defaults is read with that default —
+    the honest empty registry rather than a synthesized one — and a payload
+    carrying a field this build does not define is refused by the contract
+    model's ``extra='forbid'``.
     """
-    payload = channel["state"]
-    # Older checkpoints predate the acquisition registry; loading them keeps
-    # the honest empty default rather than synthesizing evidence or rejecting
-    # an otherwise valid legacy snapshot.
-    if "acquisition_state_by_target" not in payload:
-        payload = {**payload, "acquisition_state_by_target": {}}
-    return ResearchState.model_validate(payload)
+    return ResearchState.model_validate(channel["state"])
 
 
 def initial_graph_state(

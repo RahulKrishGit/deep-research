@@ -95,6 +95,12 @@ async def recall_memory_context(
     else — no finding query, no reputation lookup, and therefore no
     ``similar_findings`` — because the session's own startup recall is the
     planner's single procedural lookup, and remembered prose is not evidence.
+
+    The production run recalls for planning only: the CLI's startup call is the
+    one live caller, and it passes ``"planning"``. The ``"research"`` branch is
+    kept because it is the contract's default purpose and the entry point for a
+    caller outside this CLI — memory is queried for findings there, not here —
+    so its tests guard a supported call rather than a path a live run takes.
     """
     findings: list[Finding] = []
     reputations: dict[str, float] = {}

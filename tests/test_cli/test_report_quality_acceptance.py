@@ -459,7 +459,8 @@ def test_the_summary_agrees_with_the_records_it_describes() -> None:
     joined = "\n".join(render_summary(outcome, verbose=False))
 
     assert (
-        f"Required targets: {len(snapshot.answered_target_ids)}/"
+        f"Required targets: "
+        f"{len(set(snapshot.required_target_ids) - set(snapshot.missing_required_target_ids))}/"
         f"{len(snapshot.required_target_ids)} answered" in joined
     )
     assert (

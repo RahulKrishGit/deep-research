@@ -194,10 +194,6 @@ async def run_research(
     built: the collector is notified first and this handler after it for
     every update, so neither the caller's stream nor the run's telemetry
     goes blind (see ``_budget_observer``).
-    That guarantee holds today only because ``build_checkpointer`` returns an
-    in-memory saver; a rebuilt agent's own audit-sequence counters are now
-    seeded from the restored state's manifests too, so a durable checkpointer
-    would be safer than before this change.
 
     Inputs are normalized and validated before any configuration or runtime
     setup: outer whitespace is stripped, and blank questions and session ids

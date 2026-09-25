@@ -44,6 +44,7 @@ from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     REVIEW_DIMENSIONS,
+    AcquisitionState,
     MemorySnapshot,
     ReportQualitySnapshot,
     ReportReview,
@@ -155,6 +156,49 @@ def test_the_channel_round_trips_reads_and_boundary_manifests() -> None:
     assert reloaded.boundary_audits == {audit.audit_id: audit}
     # The manifest a replay looks for is resolvable after the round trip.
     assert require_boundary_manifest(reloaded.boundary_audits, audit.audit_id) == audit
+
+
+def test_the_acquisition_registry_survives_the_channel_and_is_optional_in_it() -> (
+    None
+):
+    """The registry is part of the snapshot, and a channel without one is empty.
+
+    Two halves of one reading. ``dump_state`` renders the whole research state,
+    so a checkpoint carries each target's acquisition queue and the round trip
+    returns the same records — that is the guarantee the channel itself owns,
+    and it is why the dump exists at all. A payload that names no registry is
+    the honest empty one rather than a rejection, exactly as a pre-contract
+    snapshot loads as legacy rather than as provenance.
+
+    Neither half needs a compatibility branch in the loader: the contract
+    model's own default answers the absent key, and a snapshot carrying fields
+    this build does not define is refused by ``extra='forbid'`` before any
+    default can apply — so no "older checkpoint" can ever reach a shim there.
+    """
+    queued = AcquisitionState(
+        target_id="topic-01-target-01",
+        candidate_urls=["https://lab.example/queue"],
+        remaining_calls=2,
+    )
+    state = fake_research_state(
+        acquisition_state_by_target={"topic-01-target-01": queued}
+    )
+
+    channel = dump_state(state)
+
+    assert isinstance(channel["state"]["acquisition_state_by_target"], dict)
+    assert load_state(channel) == state
+    assert (
+        load_state(channel).acquisition_state_by_target["topic-01-target-01"]
+        == queued
+    )
+
+    without_registry = {
+        key: value
+        for key, value in channel["state"].items()
+        if key != "acquisition_state_by_target"
+    }
+    assert load_state({"state": without_registry}).acquisition_state_by_target == {}
 
 
 def test_the_initial_channel_defaults_to_an_empty_memory_snapshot() -> None:

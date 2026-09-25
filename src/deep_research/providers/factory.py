@@ -158,7 +158,7 @@ def validate_agent_model_configs(
 
     Runs before any memory, tool, provider, or graph construction so an
     unsupported model, thinking mode, or reasoning effort for any of the
-    six agents fails the run before a single collaborator exists. Each
+    named roles fails the run before a single collaborator exists. Each
     agent is resolved exactly once and the validated settings are returned
     in agent order, so a caller can see exactly what the run would send.
     """

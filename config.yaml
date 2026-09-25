@@ -154,8 +154,8 @@ agents:
   # request that reasons past this cap still stops the run, and the durable
   # fix is a bounded degraded retry, not a third larger number.
   planner_final_max_tokens: 65536
-  # Operation-specific cap for the terminal reviewer (whole-report and
-  # evidence-batch requests; AGENTS_REPORT_REVIEW_MAX_TOKENS overrides it).
+  # Operation-specific cap for the terminal reviewer's one request per review
+  # (AGENTS_REPORT_REVIEW_MAX_TOKENS overrides it).
   # Pre-flight reported finish=length and exactly 32768 completion tokens on
   # a whole-report call, including its thinking. A thinking-enabled planner
   # request has completed at 65536 with this provider. This is headroom, not

@@ -691,7 +691,12 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
       partial — never as accepted, and never as a graph failure;
     * a review that a previous pass already made over the identical semantic
       fingerprint is reused, at no provider cost, because the report it judged
-      is the report this pass produced.
+      is the report this pass produced;
+    * a reviewer that could not be asked at all — a spent request ceiling, or a
+      provider this run cannot reach — is recorded as an unreviewed report
+      rather than allowed to end the run: the report is already composed by the
+      writer node, and publishing it is what makes a refusal a missing
+      judgement instead of a lost report.
 
     PD-5: ``missing_required_target_ids`` is computed by code — the writer
     node's quality pass measures it — and stamped onto the record here
@@ -837,7 +842,38 @@ async def _review_report(
             ],
             False,
         )
-    review = await reviewer.review(packet, previous=previous)
+    try:
+        review = await reviewer.review(packet, previous=previous)
+    except (RequestAttemptLimitError, ProviderConfigurationError) as error:
+        # The one collaborator refusal that is not a judgement: a spent
+        # request ceiling, or a provider this run cannot reach at all. Both are
+        # raised before any review exists, and both arrive here only because
+        # the provider and tool layers deliberately re-raise them instead of
+        # translating them.
+        #
+        # They are recorded as a judgement that was not made, never as a run
+        # failure. The report is already composed — the writer node before this
+        # one had to succeed for there to be a packet at all — and publishing
+        # it spends nothing, so a refusal here must not cost a finished report.
+        # Recording the ceiling as its own enumerated halt would do exactly
+        # that: ``graph_request_attempt_limit_exceeded`` is a halting type, so
+        # ``graph_route`` would return ROUTE_END and the finalizer would skip
+        # publication. The ceiling itself stays visible where it belongs, in
+        # the budget's own snapshots, and the reason below names it.
+        reason, rationale = _unavailable_review_reading(error)
+        review = _unreviewed(packet, rationale, status="incomplete")
+        return (
+            review,
+            [
+                *reviewer.review_records,
+                report_review_unavailable_error(
+                    node=REPORT_REVIEWER_NODE,
+                    review_status=review.status,
+                    reason=reason,
+                ),
+            ],
+            False,
+        )
     errors: list[ResearchError] = list(reviewer.review_records)
     if review.status != "scored":
         errors.append(
@@ -881,6 +917,36 @@ def _unreviewed(packet: ReportReviewInput, reason: str, *, status: str) -> Repor
         composition_fingerprint=packet.composition_fingerprint,
         rubric_version=packet.rubric_version,
         rationale=reason,
+    )
+
+
+def _unavailable_review_reading(
+    error: RequestAttemptLimitError | ProviderConfigurationError,
+) -> tuple[str, str]:
+    """One unaskable review's enumerated reason, and the sentence it records.
+
+    Two halves of one event: ``reason`` is the machine-readable value the error
+    record carries beside the review status, and the rationale is the sentence
+    the review record itself keeps. Both are project-generated — the ceiling
+    refusal's own message is static project text and is still not copied,
+    because the reason names the event rather than repeating its wording — and
+    neither carries a provider name, a ceiling, or a count.
+    """
+    if isinstance(error, RequestAttemptLimitError):
+        return (
+            "report_review_request_attempt_limit",
+            (
+                "The request budget refused the terminal review: this run's "
+                "declared attempt ceiling for the provider is spent, so no "
+                "judgement of the report exists."
+            ),
+        )
+    return (
+        "report_review_provider_unconfigured",
+        (
+            "The provider the terminal review needs is not configured for "
+            "this run, so no judgement of the report exists."
+        ),
     )
 
 
