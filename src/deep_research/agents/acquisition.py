@@ -170,7 +170,13 @@ def next_acquisition_action(state: AcquisitionState) -> AcquisitionAction:
     if state.remaining_calls <= 0:
         return "finish"
     if state.candidate_urls and (
-        state.consecutive_searches >= 2 or state.remaining_calls == 1
+        state.consecutive_searches >= 2
+        or state.remaining_calls == 1
+        # The turn cap is what binds in the shipped configuration: the
+        # researcher's call budget is 20 and its ReAct loop runs six
+        # tool-bearing turns, so a search on the last turn would queue
+        # candidates no turn is left to read. The last turn is a read.
+        or state.remaining_model_turns <= 1
     ):
         return "read"
     if not state.candidate_urls and state.empty_searches >= 2:
@@ -187,17 +193,21 @@ def search_is_admissible(state: AcquisitionState) -> bool:
     be able to search again while those wait, or its turns go on forced reads
     and its remaining searches never happen.
 
-    Two bounds keep the queue's discipline. ``consecutive_searches < 2`` is the
-    anti-search-spam guard ``next_acquisition_action`` already enforced: after
-    two searches in a row the next call is a read. ``remaining_calls > 1`` is
-    the last call of the budget, and that call is always a read — a search
-    there could queue candidates the target has no call left to drain, which is
-    how a target ends with candidates and no evidence.
+    Three bounds keep the queue's discipline. ``consecutive_searches < 2`` is
+    the anti-search-spam guard ``next_acquisition_action`` already enforced:
+    after two searches in a row the next call is a read. ``remaining_calls > 1``
+    is the last call of the budget, and ``remaining_model_turns > 1`` is the
+    last turn of the loop — either one is a read, because a search there could
+    queue candidates nothing is left to drain, which is how a target ends with
+    candidates and no evidence. The turn bound is the one that binds in the
+    shipped configuration (``agents.max_iterations`` 7 against a call budget of
+    20), which is why the call bound alone never fired live.
     """
     return (
         bool(state.candidate_urls)
         and state.consecutive_searches < 2
         and state.remaining_calls > 1
+        and state.remaining_model_turns > 1
     )
 
 

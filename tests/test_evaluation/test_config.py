@@ -838,9 +838,17 @@ from deep_research.utils.config import (
 # ("Siemens"; "the manufacturer of the product"); the planner moved
 # `3e987c934fae` -> `852f96eefee7`. The other four target pins and the Judge
 # pin are unchanged.
+# ev-1 fix A, follow-up (F6; the expert final review's Minor): the researcher's
+# own module source moved `c490b869021b` -> `3853aff7e02c` — ``_policy_for_task``
+# resets ``remaining_model_turns`` to the loop's ``max_iterations`` when a
+# target's persisted acquisition state is reused for a new loop, so the packet
+# cannot print a zero turn count beside "Iteration 1 of N" while the new loop
+# has all of them; ``remaining_calls`` stays the run's. No prompt string was
+# edited, and ``agents.prompts`` was untouched, so the other four target pins
+# and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
-    "researcher": "c490b869021b",
+    "researcher": "3853aff7e02c",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "2a68e627d577",
     "report_writer": "a3a73e32c3c0",

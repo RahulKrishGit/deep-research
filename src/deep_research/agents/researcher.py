@@ -1872,7 +1872,18 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 remaining_model_turns=self.config.max_iterations,
             )
         else:
-            acquisition_state = existing
+            # The turn cap is per loop; the call budget is the run's.
+            # ``start_turn`` decrements ``remaining_model_turns`` once per model
+            # turn, so the state this pass resumed carries the *previous* loop's
+            # countdown — zero, for a target an earlier pass worked through —
+            # while the packet renders it beside "Iteration 1 of N". The model
+            # then reads a loop with no turns left over a loop that has all of
+            # them, which invites it to stop before spending the budget the pass
+            # was bought for. The calls are deliberately kept: that an earlier
+            # pass spent them is a fact ``merge_acquisition_states`` preserves.
+            acquisition_state = existing.model_copy(
+                update={"remaining_model_turns": self.config.max_iterations}
+            )
         return AcquisitionPolicy(
             state=acquisition_state,
             session_id=(
