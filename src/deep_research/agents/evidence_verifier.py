@@ -67,6 +67,7 @@ from deep_research.agents.verified_facts import (
     resolve_relative_period,
     same_organisation,
     same_period,
+    same_subject,
 )
 from deep_research.agents.wording import stated_role
 from deep_research.providers import (
@@ -399,6 +400,23 @@ def evaluated_page_date(sources: Sequence[ScoredSource], read: ReadRecord) -> st
     return None
 
 
+def _page_date_basis(item: ContextItem) -> tuple[str | None, str]:
+    """The date a relative period resolves against, and where it came from (D11, D12).
+
+    The block prints what ``_checked`` resolves from, so one helper gives both
+    of them the same basis and the same words for it: a batch reads the date
+    that decides the figure, whichever date that is.
+    """
+    if item.page_date:
+        return item.page_date, "from the Source Evaluator"
+    finding = item.finding
+    if finding.release_date:
+        return finding.release_date, "the finding's release date"
+    if finding.statement_date:
+        return finding.statement_date, "the finding's statement date"
+    return None, ""
+
+
 def _owns_page(read: ReadRecord, organisation: str, issuer: str | None) -> bool:
     """PD-25 first (the validated issuer names it), then PD-18 (code confirms it)."""
     if issuer and _identity_words(issuer) == _identity_words(organisation):
@@ -474,9 +492,11 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     A period or scope correction is kept only when ``evidence_words`` carry
     it, except a period the words date relatively that the page's own stated
     date resolves to (D11), which is kept with the date it came from. A
-    subject is adopted only when the evidence words or the passage name it
-    (ruling N2); an unnamed proposal is ignored for a figure with no recorded
-    subject and drops only a figure whose recorded subject it disputes.
+    period the words state themselves is never resolved relatively (fix round
+    1). A subject is adopted only when the evidence words or the passage name
+    it (ruling N2). An unnamed proposal never drops a figure for a subject it
+    restates or a subject the page itself backs; it drops only a figure whose
+    recorded subject nothing backs (fix round 1).
     """
     words = reply.evidence_words.strip()
 
@@ -493,9 +513,13 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     corrected = False
     resolved_from: str | None = None   # the page date a relative period came from (D11)
     if reply.period and _differs(reply.period, period):
-        page_date = item.page_date or finding.release_date or finding.statement_date
+        page_date, _ = _page_date_basis(item)
         if not excerpt_matches(words, reply.period):
-            resolved = resolve_relative_period(words, page_date)
+            # An explicit period the words themselves state beats a relative
+            # reading (fix round 1): only a page that dates the figure
+            # relatively lets code resolve one.
+            dated_explicitly = bool(period) and excerpt_matches(words, period)
+            resolved = None if dated_explicitly else resolve_relative_period(words, page_date)
             if resolved is None or not same_period(resolved, reply.period):
                 return drop("correction_not_on_page")
             resolved_from = page_date
@@ -508,7 +532,12 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     if proposed and _differs(proposed, subject):
         if excerpt_matches(words, proposed) or excerpt_matches(item.passage, proposed):
             subject, corrected = proposed, True
-        elif subject is not None:
+        elif subject and not (
+            same_subject(proposed, subject)
+            or excerpt_matches(words, subject) or excerpt_matches(item.passage, subject)
+        ):
+            # Neither subject is on the page: the proposal cannot displace the
+            # recorded one, and the recorded one is unbacked (fix round 1).
             return drop("correction_not_on_page")
     attribution, organisation = resolve_attribution(
         proposed=reply.attribution, organisation=reply.organisation,
@@ -572,6 +601,7 @@ def context_check_messages(items: Sequence[ContextItem]) -> list[ChatMessage]:
     blocks: list[str] = []
     for item in items:
         finding = item.finding
+        date, source = _page_date_basis(item)
         recorded = "; ".join(
             f"{name}: {value}"
             for name, value in (
@@ -591,8 +621,9 @@ def context_check_messages(items: Sequence[ContextItem]) -> list[ChatMessage]:
         )
         blocks.append(
             f"## {item.label}\npage: {item.read.title} ({page_owner(item.read)})\n"
-            + (f"page date: {item.page_date} (from the Source Evaluator)\n"
-               if item.page_date else "page date: not stated\n")
+            + (
+                f"page date: {date} ({source})\n" if date else "page date: not stated\n"
+            )
             + f"recorded fields: {recorded}\nfigures:\n{figures}\n"
             f"snippet: {finding.snippet}\npassage: {item.passage}"
         )
