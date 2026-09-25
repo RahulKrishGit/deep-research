@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import io
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -130,29 +130,42 @@ def _statement_check_reply(messages: list, schema: type) -> StatementCheckDraft:
     )
 
 
-def _writer_agents(
+def _drafts(count: int = 1) -> list[ReportWriterDraft]:
+    """One scripted draft per pass, each citing the pass's finding by label.
+
+    ``F01`` is the label ``finding_registry`` stamps on the one verified
+    finding these fixtures carry, so a draft written here is exactly what the
+    writer's own registry offers the model.
+    """
+    return [
+        ReportWriterDraft(
+            executive_summary=[
+                WriterPointDraft(text=SNIPPET, finding_labels=["F01"])
+            ],
+            sections=[],
+        )
+        for _ in range(count)
+    ]
+
+
+def _real_writer(
     tracker: Tracker,
     tmp_path: Path,
     *,
-    publisher: ReportPublisher | None = None,
-    **overrides: object,
-):
-    """A run whose five agents are the real writer and the given doubles."""
-    one = verified_pass()
-    output_labels = ["F01"]
-    completer = ScriptedCompleter(
-        outputs=[
-            ReportWriterDraft(
-                executive_summary=[
-                    WriterPointDraft(text=SNIPPET, finding_labels=output_labels)
-                ],
-                sections=[],
-            ),
-            _statement_check_reply,
-        ]
-    )
-    writer = ReportWriterAgent(
-        provider=completer,
+    drafts: Sequence[ReportWriterDraft],
+) -> ReportWriterAgent:
+    """The production Report Writer, scripted: one draft and one check reply per pass.
+
+    ``ScriptedCompleter`` consumes ``outputs`` in call order, so each pass's
+    draft is followed by the reply its Statement Check asks for — the real
+    writer calls ``check_statements`` after drafting, and a scripted
+    ``consistent`` verdict keeps the sentence as drafted.
+    """
+    outputs: list[object] = []
+    for draft in drafts:
+        outputs.extend([draft, _statement_check_reply])
+    return ReportWriterAgent(
+        provider=ScriptedCompleter(outputs=outputs),
         tracker=tracker,
         scratchpad=ScratchpadMemory(
             session_id="session-1", agent_name=REPORT_WRITER_NAME, max_entries=20
@@ -160,14 +173,38 @@ def _writer_agents(
         tools=synthesizer_tools(tracker, output_root=tmp_path),
         config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
     )
-    return fake_research_agents(
-        evidence_verifier=FakeAgent(
-            EVIDENCE_VERIFIER_NAME, [{"verified_findings": [one.finding]}]
+
+
+def _writer_agents(
+    tracker: Tracker,
+    tmp_path: Path,
+    *,
+    publisher: ReportPublisher | None = None,
+    drafts: Sequence[ReportWriterDraft] | None = None,
+    pass_: object | None = None,
+    **overrides: object,
+):
+    """A run whose writing slot is the real Report Writer, everything else a double.
+
+    The writer drafts through its own prompt path, composes through
+    ``compose_written_report`` and runs the Statement Check; the other four
+    agents and the reviewer are scripted so the test needs no provider. Every
+    slot is overridable, which is how a test replaces the verifier with the
+    real agent or makes the researcher find nothing on its second pass.
+    """
+    one = pass_ or verified_pass()
+    defaults: dict[str, object] = {
+        "researcher": FakeAgent("researcher", [one.update()]),  # type: ignore[attr-defined]
+        "evidence_verifier": FakeAgent(
+            EVIDENCE_VERIFIER_NAME, [one.verified_update()]  # type: ignore[attr-defined]
         ),
-        report_writer=writer,
-        publisher=publisher,
-        **overrides,
-    ), one
+        "report_writer": _real_writer(
+            tracker, tmp_path, drafts=list(drafts or _drafts())
+        ),
+        "publisher": publisher,
+    }
+    defaults.update(overrides)
+    return fake_research_agents(**defaults), one
 
 
 @pytest.mark.asyncio
@@ -177,12 +214,14 @@ async def test_run_publishes_when_the_context_check_fails(
     """Review Focus 2: a failed Context Check batch never stops a run.
 
     The verifier's only batch raises ``ProviderError`` inside the real
-    ``EvidenceVerifierAgent``. D8's keep rule then decides each figure on the
-    finding's own snippet: a figure its snippet states is kept as *unchecked
-    context* — visible to the reader in the key facts table and to the ledger
-    in the finding's own record — and the run publishes. An outage is never a
-    graph failure, and never an acceptance of anything the check did not
-    judge.
+    ``EvidenceVerifierAgent``, and the report is written by the real
+    ``ReportWriterAgent`` — drafting through a scripted completer and having
+    its drafted sentence checked. D8's keep rule then decides each figure on
+    the finding's own snippet: a figure its snippet states is kept as
+    *unchecked context* — visible to the reader in the key facts table and to
+    the ledger in the finding's own record — and the run publishes. An outage
+    is never a graph failure, and never an acceptance of anything the check
+    did not judge.
     """
     one = verified_pass()
     publisher = FakePublisher()
@@ -207,13 +246,13 @@ async def test_run_publishes_when_the_context_check_fails(
         tools=(),
         config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
     )
-    agents = fake_research_agents(
+    agents, _ = _writer_agents(
+        tracker,
+        tmp_path,
+        pass_=one,
+        publisher=publisher,
         researcher=FakeAgent("researcher", [one.update()]),
         evidence_verifier=verifier,
-        report_writer=FakeAgent(
-            REPORT_WRITER_NAME, [], update_factory=fake_writer_update
-        ),
-        publisher=publisher,
     )
 
     # Production's ``run_research_graph`` opens this span around
@@ -238,6 +277,12 @@ async def test_run_publishes_when_the_context_check_fails(
     quality = publisher.document_named("-quality.json")[1]
     assert "unchecked context" in reader
     assert "context unchecked" in ledger
+    # The sentence the report prints is the one the real writer's scripted
+    # draft composed, and it is there because the real Statement Check judged
+    # it: a double running neither path could not produce either fact.
+    assert SNIPPET in reader
+    assert state.composition is not None
+    assert set(state.composition.statement_verdicts.values()) == {"consistent"}
     assert quality
     assert state.report_path == "report-session-1-0.md"
     assert state.quality is not None
@@ -245,30 +290,33 @@ async def test_run_publishes_when_the_context_check_fails(
 
 
 @pytest.mark.asyncio
-async def test_extra_pass_that_finds_nothing_publishes_with_not_found() -> None:
+async def test_extra_pass_that_finds_nothing_publishes_with_not_found(
+    tracker: Tracker, tmp_path: Path
+) -> None:
     """Review Focus 3: one extra pass, then the target under Not found.
 
     A required target no finding answers: the reviewer node stamps it missing,
     the graph buys exactly one extra pass confined to that target, the second
     pass finds nothing, the second review still names it, and no gate fails —
     the target is listed under Not found. So the run finalizes once, accepted
-    (PD-23), and the researcher was called exactly twice.
+    (PD-23), and the researcher was called exactly twice. Both passes' reports
+    are composed by the real ``ReportWriterAgent``, which is what makes the
+    published "## Not found" section a real writer's output rather than a
+    fixture's.
     """
     one = verified_pass()
     publisher = FakePublisher()
     researcher = FakeAgent(
         "researcher", [one.update(), {"raw_findings": []}]
     )
-    agents = fake_research_agents(
+    agents, _ = _writer_agents(
+        tracker,
+        tmp_path,
+        pass_=one,
+        drafts=_drafts(2),
+        publisher=publisher,
         planner=FakeAgent("planner", [{"sub_topics": [_two_target_topic()]}]),
         researcher=researcher,
-        evidence_verifier=FakeAgent(
-            "evidence_verifier", [one.verified_update()]
-        ),
-        report_writer=FakeAgent(
-            REPORT_WRITER_NAME, [], update_factory=fake_writer_update
-        ),
-        publisher=publisher,
         report_reviewer=FakeReviewer(
             [
                 fake_report_review(),
@@ -277,7 +325,10 @@ async def test_extra_pass_that_finds_nothing_publishes_with_not_found() -> None:
         ),
     )
 
-    state = await _run(agents)
+    # The real writer's own API calls need the active session span the
+    # orchestrator always runs a graph inside.
+    async with tracker.session_span("session-1", QUESTION):
+        state = await _run(agents)
 
     assert len(researcher.calls) == 2
     assert researcher.calls[1].extra_pass_target_ids == ["topic-01-target-02"]
@@ -307,6 +358,7 @@ async def test_extra_pass_that_finds_nothing_publishes_with_not_found() -> None:
     assert state.report is not None
     assert "## Not found" in state.report
     assert "What did it cost?" in state.report
+    assert SNIPPET in state.report
     # One publication: three documents, whatever the loop did before it.
     assert publisher.report_writes == 3
     assert state.report_path == "report-session-1-1.md"
