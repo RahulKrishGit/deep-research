@@ -38,11 +38,8 @@ from deep_research.agents.identity import (
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import summarize_text
 from deep_research.agents.verified_facts import (
-    _own_fields,
-    _subject_distinguishes,
     release_text,
-    subject_context,
-    subject_named_in,
+    subject_names_row,
 )
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
@@ -795,14 +792,7 @@ def _point_labels(point: ReportPoint, composition: ReportComposition) -> list[st
     ]
     labels: list[str] = []
     for row in candidates:
-        if not subject_named_in(point.text, row.subject,
-                               context_words=subject_context(row.target_ids, targets)):
-            continue
-        if not all(_subject_distinguishes(
-            point.text, row.subject, other.subject,
-            context_words=subject_context(set(row.target_ids) & set(other.target_ids), targets),
-            own_fields=_own_fields(set(row.target_ids) & set(other.target_ids), targets),
-        ) for other in candidates if other is not row):
+        if not subject_names_row(point.text, row, candidates, targets):
             continue
         label = _row_label(row)
         if label not in labels:

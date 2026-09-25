@@ -425,7 +425,9 @@ from deep_research.agents.verified_facts import (
     same_period,
     same_subject,
     subject_context,
+    subject_distinguishes,
     subject_named_in,
+    subject_names_row,
     verified_figures,
 )
 from deep_research.agents.wording import (
@@ -826,7 +828,9 @@ __all__ = [
     "same_period",
     "same_subject",
     "subject_context",
+    "subject_distinguishes",
     "subject_named_in",
+    "subject_names_row",
     "verified_figures",
     "SCOPE_TERMS",
     "clause_around",

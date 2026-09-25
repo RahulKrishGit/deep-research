@@ -50,8 +50,7 @@ from deep_research.agents.verified_facts import (
     fact_rows,
     not_found_targets,
     release_text,
-    subject_context,
-    subject_named_in,
+    subject_names_row,
 )
 from deep_research.agents.wording import stated_role
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -520,11 +519,13 @@ async def compose_written_report(
                 return None
         cited_ids = {ids[label] for label in candidate.finding_labels}
         stated = quantities_in(text)
-        rows = {row.row_id for row in task.facts
-                if (row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids))
-                and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)
-                and subject_named_in(text, row.subject,
-                                     context_words=subject_context(row.target_ids, task.targets))}
+        candidate_rows = [
+            row for row in task.facts
+            if (row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids))
+            and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)
+        ]
+        rows = {row.row_id for row in candidate_rows
+                if subject_names_row(text, row, candidate_rows, task.targets)}
         if dedup and rows and rows <= stated_rows:
             reject("restates " + ", ".join(sorted(rows)))
             return None

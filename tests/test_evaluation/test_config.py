@@ -728,12 +728,17 @@ from deep_research.utils.config import (
 # Evidence Verifier plan, Task 5.4 (D10, D11): planner, researcher, source
 # evaluator, evidence verifier and report writer prompts and the shared prompts
 # module changed; one re-pin for the phase.
+# Task 5.6c fix round 2 (same round, PD-17): the Report Writer's restatement
+# guard now asks ``verified_facts.subject_names_row`` instead of
+# ``subject_named_in``/``subject_context`` directly, so its module source moved
+# ``c58bc58d74fe`` -> ``5ed194fd4a41``; no prompt string was edited and the other
+# four pins are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "46a9cddd0896",
     "researcher": "f9ad12ff184b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "21c413e91f94",
-    "report_writer": "c58bc58d74fe",
+    "report_writer": "5ed194fd4a41",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

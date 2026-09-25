@@ -304,35 +304,44 @@ def _own_fields(target_ids: Iterable[str],
 
 
 def _names_one_thing(left: frozenset[str], right: frozenset[str], *,
-                     context_words: frozenset[str] = frozenset(),
-                     own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
-    """Fable §8.6 steps 4-5, plus Task 5.6c's distinguishing test.
+                     context_words: frozenset[str] = frozenset()) -> bool:
+    """Fable §8.6 steps 4-5: either side names nothing beyond the context, or one contains the other.
 
-    ``left`` and ``right`` are the raw token sets (filler dropped, articles
-    kept), ``context_words`` the words of the targets the two sides share, and
-    ``own_fields`` those targets' own measure words and geography words. When
-    each side has a word the other lacks *and* the target itself states that
-    word ("Kettle K1" and "Kettle K2" against a question naming both), the
-    target is naming two things and telling them apart, so they are different
-    however much of either subject it also restates. The target's own measure
-    and its own geography are the exception the committed
-    ``single-subject-spellings`` row pins: a subject that is one of them is
-    what the target is about, not a second option, so "United States" and
-    "widget adoption" on a target asking for widget adoption in the United
-    States still name one thing. Otherwise Fable's rule stands: either side
-    names nothing beyond the context, or one set contains the other.
+    The comparison ``_subject_fits`` makes -- one subject against the words a
+    target spells its own subject with -- is this rule alone. Two *subjects*
+    against each other also get Task 5.6c's distinguishing test first, in
+    ``same_subject``, which is where a target that names both options is seen.
     """
-    measure, geography = own_fields
-    described = ((left <= measure and right <= geography)
-                 or (left <= geography and right <= measure))
-    if (not described and (left - right) & context_words
-            and (right - left) & context_words):
-        return False
     left_words = left - context_words
     right_words = right - context_words
     if not left_words or not right_words:
         return True
     return left_words <= right_words or right_words <= left_words
+
+
+def _told_apart(left: frozenset[str], right: frozenset[str], *,
+                context_words: frozenset[str] = frozenset(),
+                own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
+    """Task 5.6c: whether the target states a give-away of each side that the other lacks.
+
+    ``left`` and ``right`` are the raw subject token sets, ``context_words`` the
+    words of the targets the two share, and ``own_fields`` those targets' own
+    measure and geography words. A target that names both options ("the Kettle
+    K1 and the Kettle K2") states a word only the one side carries and a word
+    only the other does, so the two are different things however much of either
+    subject it also restates -- unless the two sides are that target's own
+    measure and its own geography, which are one topic the target describes, not
+    two options it names (the committed ``single-subject-spellings`` row).
+    An article never counts as evidence that the target named only *one* side:
+    articles are dropped from the target's own words, and counting them here is
+    what keeps "Model A" and "Model B" apart when the question names both.
+    """
+    measure, geography = own_fields
+    if ((left <= measure and right <= geography)
+            or (left <= geography and right <= measure)):
+        return False
+    stated = context_words | _ARTICLE
+    return bool((left - right) & stated and (right - left) & stated)
 
 
 def same_subject(left: str | None, right: str | None, *,
@@ -348,8 +357,11 @@ def same_subject(left: str | None, right: str | None, *,
     sides are that target's own measure and geography, which are one topic
     (``own_fields``).
     """
-    return _names_one_thing(_subject_words(left), _subject_words(right),
-                            context_words=context_words, own_fields=own_fields)
+    left_words = _subject_words(left)
+    right_words = _subject_words(right)
+    if _told_apart(left_words, right_words, context_words=context_words, own_fields=own_fields):
+        return False
+    return _names_one_thing(left_words, right_words, context_words=context_words)
 
 
 def _periods_match(left_period: str | None, right_period: str | None,
@@ -384,9 +396,9 @@ def subject_named_in(text: str, subject: str | None, *,
     return any(words[i:i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
 
 
-def _subject_distinguishes(text: str, subject: str | None, rival: str | None, *,
-                           context_words: frozenset[str] = frozenset(),
-                           own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
+def subject_distinguishes(text: str, subject: str | None, rival: str | None, *,
+                          context_words: frozenset[str] = frozenset(),
+                          own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
     """Whether ``text`` names what tells ``subject`` from ``rival`` (Task 5.6c).
 
     A target that names both options ("the Kettle K1 and the Kettle K2") strips
@@ -404,6 +416,31 @@ def _subject_distinguishes(text: str, subject: str | None, rival: str | None, *,
         return True
     words = _subject_tokens(text)
     return any(words[i:i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
+
+
+def subject_names_row(text: str, row: FactRow, rows: Sequence[FactRow],
+                      targets: Iterable[EvidenceTarget]) -> bool:
+    """Whether ``text`` is about ``row``: it names the row's subject, and tells it from each rival.
+
+    The one rule both the reader's labels (``report._point_labels``) and the
+    writer's restatement guard ask of a sentence (Task 5.6c). A row with no
+    subject is named by any sentence. Where the candidate rows' subjects are
+    different things -- a target that names both options, say -- a sentence
+    counts for a row only when it states what distinguishes that row from every
+    rival, so "Kettle K1 scored 4.5" is never taken for Kettle K2.
+    """
+    if not subject_named_in(text, row.subject,
+                            context_words=subject_context(row.target_ids, targets)):
+        return False
+    for other in rows:
+        if other is row:
+            continue
+        shared = set(row.target_ids) & set(other.target_ids)
+        if not subject_distinguishes(text, row.subject, other.subject,
+                                     context_words=subject_context(shared, targets),
+                                     own_fields=_own_fields(shared, targets)):
+            return False
+    return True
 
 
 def _asks_the_same(left: EvidenceTarget, right: EvidenceTarget) -> bool:
