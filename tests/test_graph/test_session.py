@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,13 +23,20 @@ from deep_research.graph.state import (
     PLANNER_NODE,
     ResearchGraphState,
     dump_state,
+    is_halted,
 )
 from deep_research.observability import AgentMetric, Tracker
 from deep_research.observability.context import LangSmithRuntimeConfig
+from deep_research.providers import ProviderConfigurationError
+from deep_research.request_budget import (
+    RequestAttemptLimitError,
+    RequestBudgetSnapshot,
+)
 from deep_research.utils.config import GraphConfig
-from deep_research.utils.types import MemorySnapshot, ResearchState
+from deep_research.utils.types import MemorySnapshot, ResearchError, ResearchState
 from tests.graph_fakes import (
     FakeAgent,
+    FakePublisher,
     FakeReviewer,
     fake_research_agents,
     fake_research_state,
@@ -58,6 +66,36 @@ class SpanningFakeAgent(FakeAgent):
     async def run(self, state: ResearchState) -> AgentRun[Any]:
         async with self._tracker.agent_span(self.name):
             return await super().run(state)
+
+
+class RefusingReviewer:
+    """A reviewer whose provider refused an attempt past the declared ceiling.
+
+    The refusal is the one failure the production ``ReportReviewer`` cannot
+    translate into a review status: the request budget raises it before the
+    transport is asked, and the provider and tool layers deliberately re-raise
+    it rather than converting it. The terminal review node therefore has to
+    record it, because the report it was handed is already composed — which is
+    why the ceiling is tripped here on purpose.
+    """
+
+    def __init__(self, error: RequestAttemptLimitError) -> None:
+        self._error = error
+        self.packets: list[object] = []
+        self.review_records: tuple[ResearchError, ...] = ()
+
+    @property
+    def calls(self) -> int:
+        return len(self.packets)
+
+    async def review(
+        self,
+        packet: object,
+        *,
+        previous: Any | None = None,
+    ) -> Any:
+        self.packets.append(packet)
+        raise self._error
 
 
 class EmptyValuesGraph:
@@ -604,6 +642,96 @@ async def test_a_failed_run_still_returns_its_state(tracker: Tracker) -> None:
     assert run.status == "failed"
     assert run.state.original_question == QUESTION
     assert run.state.events[-1].metadata["status"] == "failed"
+
+
+def _deepseek_ceiling_refusal() -> RequestAttemptLimitError:
+    """One refusal, as the budget raises it: static message plus snapshot."""
+    return RequestAttemptLimitError(
+        RequestBudgetSnapshot(
+            provider="deepseek",
+            attempts=4,
+            ceiling=4,
+            effective_limit=4,
+            input_tokens=0,
+            output_tokens=0,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("refusal", "reason"),
+    [
+        (
+            _deepseek_ceiling_refusal(),
+            "report_review_request_attempt_limit",
+        ),
+        (
+            ProviderConfigurationError(
+                "the deepseek provider has no api key configured"
+            ),
+            "report_review_provider_unconfigured",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_an_unaskable_reviewer_still_publishes_the_report(
+    tracker: Tracker,
+    refusal: Exception,
+    reason: str,
+) -> None:
+    """A refusal at the reviewer is an unmade judgement, never a lost report.
+
+    Two failures reach this node instead of a judgement: the run's declared
+    request ceiling, spent, and a provider this run cannot reach at all. Both
+    are raised before any review exists — the provider and tool layers
+    deliberately re-raise them rather than translating them — and the report is
+    already composed by the writer node before this one runs, so publishing it
+    spends nothing.
+
+    Left unhandled, the refusal escaped ``run_research_graph`` as an uncaught
+    error: the run published nothing although its report was finished, the CLI
+    died on a traceback with the exit code its own contract reserves for a
+    configuration error, and the API recorded the same event as a failed
+    session.
+    """
+    publisher = FakePublisher()
+    reviewer = RefusingReviewer(refusal)
+    agents = fake_research_agents(
+        publisher=publisher, report_reviewer=reviewer
+    )
+
+    run = await run_research_graph(
+        graph=compile_research_graph(agents),
+        tracker=tracker,
+        session_id="session-1",
+        question=QUESTION,
+    )
+
+    assert reviewer.calls == 1
+    # The finished report is published, and nothing about it is claimed to be
+    # judged: the run is incomplete, not failed, and not accepted.
+    assert len(publisher.written_paths) == 3
+    assert run.state.report
+    assert run.status == "incomplete"
+    assert run.state.report_review is not None
+    assert run.state.report_review.status == "incomplete"
+    assert run.state.report_review.mean_score is None
+    assert not is_halted(run.state)
+    assert [
+        error.error_type for error in run.state.errors
+    ] == ["graph_report_review_unavailable"]
+    assert run.state.errors[0].recoverable is True
+    assert run.state.errors[0].details == {
+        "review_status": "incomplete",
+        "reason": reason,
+    }
+    # Neither the refusal's own text nor its numbers reach the record, exactly
+    # as the enumerated halt paths keep them out.
+    serialized = json.dumps(run.state.model_dump(mode="json"))
+    assert str(refusal) not in serialized
+    assert "input_tokens" not in serialized
+    assert run.state.quality is not None
+    assert run.state.quality.semantic_review_status == "incomplete"
 
 
 def test_the_graph_config_default_matches_the_graph_module_default() -> None:

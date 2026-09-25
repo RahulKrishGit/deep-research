@@ -98,12 +98,12 @@ OBSERVATION_SUMMARY_CHARS = 200
 # The instant every replay run stamps its dates from. A replay reproduces one
 # declared run rather than printing a document today, so the harness pins the
 # clock the run's own agents read instead of letting the wall clock reach them:
-# the reader's ``Generated on`` line then states the day the harness printed
-# the report, the plan's as-of date and the evidence timestamps follow the same
-# instant, and three repetitions of a row are the same document however many
-# times, and whenever, the row is run. Without it a suite that straddled
-# 00:00 UTC published three differently dated reports and failed the row on a
-# fact about the clock rather than about the agents.
+# the composed report's own ``generated_on`` then states the day the harness
+# printed the report, the plan's as-of date and the evidence timestamps follow
+# the same instant, and three repetitions of a row are the same document
+# however many times, and whenever, the row is run. Without it a suite that
+# straddled 00:00 UTC published three differently dated reports and failed the
+# row on a fact about the clock rather than about the agents.
 #
 # Midday of the day the real-agent rows were certified (see
 # ``docs/validation/2026-09-16-real-agent-controlled-validation.md``), so the

@@ -220,19 +220,18 @@ class AgentRuntimeConfig(BaseModel):
     run.
 
     ``judge_max_tokens`` is the budget for the judge's ``JudgeVerdict``
-    request. Once the Critic began producing a real critique, the judge hit
-    the global cap scoring it and returned ``judge_output_limit`` with no
-    quality score at all. The verdict carries six common dimensions, the
-    agent-specific dimensions, and a rationale, so it is not a small reply.
+    request. The judge hit the global cap scoring a researched question's
+    finished report and returned ``judge_output_limit`` with no quality score
+    at all. The verdict carries six common dimensions, the agent-specific
+    dimensions, and a rationale, so it is not a small reply.
 
     ``react_decision_max_tokens`` is the budget for every ReAct decision
-    request. A live Critic repetition recorded ``{kind: output_limit,
+    request. A recorded live repetition returned ``{kind: output_limit,
     operation: react_decision}``: the spot-check decision hit the global cap
     and was truncated, which silently degrades the spot-check phase instead of
     failing the run. A decision is not a small reply either — it must carry the
-    agent's reasoning, one tool call, and that call's arguments. The Critic
-    itself no longer makes decision requests at all; the agents that do are the
-    planner and the researcher.
+    agent's reasoning, one tool call, and that call's arguments. The agents
+    that make decision requests are the planner and the researcher.
 
     ``max_sub_topics`` is how many planned sub-topics one Researcher pass
     attempts. It defaults to the Planner's own ceiling of seven, so the
@@ -265,6 +264,15 @@ class AgentRuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_evaluator: SourceEvaluatorConfig = SourceEvaluatorConfig()
+    # The two code defaults below are deliberately *not* config.yaml's shipped
+    # values: the shipped file raises the ReAct turn cap to 7 (spec §7.2) and
+    # bounds each production agent's tool budget (planner 1, researcher 20, the
+    # other three 0), and every production run reads that file —
+    # ``prepare_research_settings`` refuses to run without it. They are what a
+    # caller that builds this model with no file gets: a test double, or the
+    # API's path validation. Stated here because the difference is a
+    # configuration fact, not something to discover by reading a shipped run's
+    # numbers beside a bare ``AgentRuntimeConfig()``.
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
     tool_budget_overrides: dict[str, int] = Field(default_factory=dict)
@@ -282,11 +290,12 @@ class AgentRuntimeConfig(BaseModel):
     verifier_concurrency: int = Field(default=8, ge=1)
     planner_final_max_tokens: int = Field(default=65536, ge=1)
     report_review_max_tokens: int = Field(default=65536, ge=1)
-    """Output headroom for the report reviewer's whole-report and batch requests.
+    """Output headroom for the report reviewer's one request per review.
 
     Completion tokens include reasoning: the 32768 cap truncated a live
     whole-report review despite its comparatively small structured reply.
-    DeepSeek has accepted 65536 for a thinking-enabled planner request.
+    The configured provider has accepted 65536 for a thinking-enabled planner
+    request.
     """
     judge_max_tokens: int = Field(default=32768, ge=1)
     react_decision_max_tokens: int = Field(default=32768, ge=1)
@@ -319,7 +328,7 @@ class AgentRuntimeConfig(BaseModel):
 
         The global ``tool_budget`` is the default and is never rewritten:
         resolving an override returns a number for one agent, so the same
-        ``AgentRuntimeConfig`` can bound six agents differently without six
+        ``AgentRuntimeConfig`` can bound five agents differently without five
         configurations.
         """
         return self.tool_budget_overrides.get(agent_name, self.tool_budget)
@@ -357,9 +366,10 @@ class OutputConfig(BaseModel):
 
 EVALUATION_AGENT_KEYS = PRODUCTION_AGENT_NAMES
 
-# DeepSeek V4 Flash supports exactly two enabled efforts: high and max. The
-# original OpenAI baseline's low/medium levels map onto them as approved in
-# the cutover spec: the two cheapest agents to high, everything else to max.
+# The configured DeepSeek model supports exactly two enabled efforts: high and
+# max. The original OpenAI baseline's low/medium levels map onto them as
+# approved in the cutover spec: the two cheapest agents to high, everything
+# else to max.
 # Production parity (on by default) resolves the target from
 # ``llm.model_overrides`` instead; this profile is what an experiment uses.
 _DEFAULT_TARGET_EFFORTS: dict[str, ReasoningEffort] = {

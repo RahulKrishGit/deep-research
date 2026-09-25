@@ -1762,6 +1762,47 @@ def test_the_coverage_line_reports_the_required_targets_and_the_not_found_list()
     assert "Not found:" not in unlisted
 
 
+def test_the_coverage_line_never_counts_an_optional_answer_as_required() -> None:
+    """§6.4: the count is *required* targets answered, so it cannot exceed them.
+
+    The plan's optional targets are answered by the same verified findings, and
+    ``answered_target_ids`` holds every target a finding answers. Counting that
+    list printed ``Required targets: 3/2 answered`` — and, when the answered
+    targets were the optional ones, a satisfied ``2/2 answered`` directly above
+    ``Unresolved: 1 missing required target``. The 6.4 audit reads this line out
+    of ``cli.log`` as the run's own answer to "every part of the question
+    answered", so a numerator of answers is a false statement about the run.
+    """
+    joined = "\n".join(
+        render_summary(
+            composed_outcome(
+                state_overrides={
+                    "quality": quality_snapshot(
+                        required_target_ids=[
+                            ANSWERED_TARGET_IDS[0],
+                            MISSING_TARGET_ID,
+                        ],
+                        answered_target_ids=[
+                            "topic-07-target-01",
+                            "topic-07-target-02",
+                            ANSWERED_TARGET_IDS[0],
+                        ],
+                        missing_required_target_ids=[MISSING_TARGET_ID],
+                    )
+                }
+            ),
+            verbose=False,
+        )
+    )
+
+    assert "Required targets: 1/2 answered" in joined
+    assert "Required targets: 3/2" not in joined
+    assert "Required targets: 2/2" not in joined
+    # The count and the row that names a still-owed target are two readings of
+    # one run, so they can never contradict each other.
+    assert "Unresolved: 1 missing required target (topic-02-target-01)" in joined
+
+
 def test_the_summary_names_the_semantic_review_and_never_invents_a_score() -> None:
     reviewed = "\n".join(render_summary(composed_outcome(), verbose=False))
     unreviewed = "\n".join(

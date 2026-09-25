@@ -46,7 +46,7 @@ from deep_research.utils.types import (
 # The terminal event the finalizer emits, and the only record of where the
 # session's final artifacts were written. It carries *all three* paths, each
 # ``None`` unless the whole set was published, so a reader is never pointed at
-# an earlier refinement pass's file and never at an incomplete set. Emitted by
+# an earlier pass's file and never at an incomplete set. Emitted by
 # ``graph.events.report_published_event``.
 REPORT_WRITTEN_EVENT = "graph.report.published"
 
@@ -115,7 +115,12 @@ def _terminal_artifact_path(
     The *last* terminal publication record wins over it: a resumed run can
     publish more than once, and a record that carries no path (a failed write)
     clears the previous one — a caller must never be pointed at an earlier
-    refinement pass's artifact.
+    pass's artifact.
+
+    A metadata key this reader does not find reads as ``None`` rather than
+    raising, and that tolerance lives here, on the reading side: a default on
+    an event field cannot make an already-written record readable, and this is
+    where the record's own fields are read.
     """
     path = stamped if isinstance(stamped, str) and stamped else None
     for event in events:
@@ -415,10 +420,10 @@ class ResearchOutcome:
 
         The quality snapshot's stamped field is the primary source — that is
         the record the gates judged. A snapshot that carries no status at all
-        falls back to the stored review record, which is where Task 10 fills it
-        from: reading the same vocabulary from its own source is not a second
-        vocabulary, and answering "no review" while the state holds a scored
-        one would be a false statement about the run.
+        falls back to the stored review record: reading the same vocabulary
+        from its own source is not a second vocabulary, and answering "no
+        review" while the state holds a scored one would be a false statement
+        about the run.
         """
         quality = self.quality
         status = quality.semantic_review_status if quality is not None else ""
@@ -462,12 +467,21 @@ class ResearchOutcome:
     def coverage(self) -> CoverageProgress | None:
         """Required-target progress, or ``None`` when nothing judged it.
 
-        The counts are the length of the id lists the quality pass judged, not
-        the scalars beside them: inside this contract those scalars belong to
-        the retired reading and stay at zero, while the ids are what the gates
-        and the extra-pass router both read. Publishing a scalar would print
+        The counts are lengths of the id lists the quality pass judged, not the
+        ``required_targets``/``answered_targets`` scalars of the composition's
+        terminal record: nothing fills those, so reading them would print
         "0/0 required targets answered" above a missing-target list with an
-        entry in it.
+        entry in it, while the ids are what the gates and the extra-pass
+        router both read.
+
+        The numerator is answered *required* targets, which is not the length
+        of ``answered_target_ids``: that list holds every target a verified
+        finding answers, the plan's optional targets included. Counting it
+        published more answers than the plan required — "3/2 answered" — and,
+        where the answered targets were the optional ones, a satisfied count
+        directly above the target still owed. The two readings printed together
+        are therefore complements over one denominator: the required ids minus
+        the ones the same gate recorded as missing, plus that missing list.
 
         The Not found reading is the composition's own — the report's account
         of what it searched for and did not find. It is empty when no
@@ -478,9 +492,11 @@ class ResearchOutcome:
         if quality is None:
             return None
         composition = self.state.composition
+        required = set(quality.required_target_ids)
+        missing = set(quality.missing_required_target_ids)
         return CoverageProgress(
-            required_targets=len(quality.required_target_ids),
-            answered_targets=len(quality.answered_target_ids),
+            required_targets=len(required),
+            answered_targets=len(required - missing),
             missing_required_target_ids=tuple(
                 quality.missing_required_target_ids
             ),
@@ -508,9 +524,9 @@ class ResearchOutcome:
         if composition is None or quality is None:
             return None
         # The retention helper answers the read-side counts this contract
-        # keeps; its remaining key belongs to the retired registry, so the
-        # fields are named here rather than splatted — a second copy of that
-        # reading is not a count this dataclass carries.
+        # keeps; its fields are named here rather than splatted, so a new key
+        # the helper grows is a decision about this dataclass rather than a
+        # count that appears in it unannounced.
         retention = distinct_retention_counts(self.state, composition)
         return EvidenceCounts(
             read_records=retention["read_records"],
@@ -557,10 +573,10 @@ class ResearchOutcome:
 
         The set is the reader report, its evidence ledger and the quality
         record: the three files advertised together or not at all. A failed
-        memory-claim write is recorded under the same error type but is not
-        part of the set, so it never withholds a path — reading it as one
-        printed "Publication: incomplete … No artifact path is advertised"
-        above all three advertised paths.
+        memory write of a cited finding is recorded under the same error type
+        but is not part of the set, so it never withholds a path — reading it
+        as one printed "Publication: incomplete … No artifact path is
+        advertised" above all three advertised paths.
         """
         return tuple(
             artifact
@@ -602,7 +618,7 @@ def build_outcome(
 
     ``request_budget_snapshots`` defaults to the empty tuple so every existing
     injected and unit caller stays source-compatible: an outcome built without
-    a budget simply records none. The same holds for every field Task 11 adds:
+    a budget simply records none. The same holds for each additive field:
     an outcome assembled before them still reads, and the session span is read
     from the run's own recorded events rather than from a clock.
     """

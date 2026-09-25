@@ -231,9 +231,8 @@ def report_published_event(
     *or* when any other required write failed — the set is published whole or
     advertised not at all, so a front-end reading this event is never pointed
     at an earlier pass's file, and never at two thirds of a set.
-    ``quality_path`` defaults to ``None`` so a record written before the third
-    artifact existed stays readable. ``quality_status`` is an enumerated
-    ``QUALITY_STATUS_*`` value; the counts are write outcomes, never content.
+    ``quality_status`` is an enumerated ``QUALITY_STATUS_*`` value; the counts
+    are write outcomes, never content.
     """
     return graph_event(
         event_type="graph.report.published",
