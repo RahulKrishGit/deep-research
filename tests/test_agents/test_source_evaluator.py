@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from deep_research.agents.evidence import (
@@ -369,9 +371,16 @@ async def test_scoring_batches_unique_sources_and_stops_at_the_total_cap(
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_marks_only_the_failed_and_remaining_batches(
+async def test_a_failing_source_scoring_batch_leaves_the_other_batches_scored(
     tracker: Tracker,
 ) -> None:
+    """One batch's ProviderError marks that batch `unscored_provider`; the other
+    batches are scored, keyed by URL, in `task.groups` order.
+
+    The batches run concurrently and each stands alone (D9): a failed batch
+    marks only its own groups, and a later batch still reaches the provider
+    instead of being marked on the strength of an earlier batch's failure.
+    """
     findings = [
         _eval_finding(f"https://source-{index}.test/page")
         for index in range(5)
@@ -382,12 +391,20 @@ async def test_provider_failure_marks_only_the_failed_and_remaining_batches(
             _draft(url="https://source-1.test/page"),
         ]
     )
-    completer = ScriptedCompleter(outputs=[first_batch, _output_limit_error()])
+    last_batch = SourceScoresDraft(
+        sources=[_draft(url="https://source-4.test/page")]
+    )
+    completer = ScriptedCompleter(
+        outputs=[first_batch, _output_limit_error(), last_batch]
+    )
     agent = _evaluator(
         tracker,
         completer,
         batch_size=2,
         max_total_sources=5,
+        config=AgentRuntimeConfig(
+            max_iterations=2, tool_budget=0, source_scoring_concurrency=1
+        ),
     )
 
     task, _, _ = await agent.lookup_reputations(
@@ -396,15 +413,91 @@ async def test_provider_failure_marks_only_the_failed_and_remaining_batches(
     sources, errors, provider_failed = await agent.score_sources(task)
 
     assert provider_failed is True
-    assert errors[0].error_type == "source_evaluator_scoring_provider_error"
+    assert len(completer.calls) == 3
+    assert [source.url for source in sources] == [
+        f"https://source-{index}.test/page" for index in range(5)
+    ]
     assert [source.evaluation_status for source in sources] == [
         "scored",
         "scored",
         "unscored_provider",
         "unscored_provider",
-        "unscored_provider",
+        "scored",
     ]
-    assert all(source.overall_score is None for source in sources[2:])
+    assert all(source.overall_score is None for source in sources[2:4])
+    assert [error.error_type for error in errors] == [
+        "source_evaluator_scoring_provider_error"
+    ]
+    assert errors[0].details["sources"] == 2
+
+
+class _ScoringConcurrencyProbe:
+    """A completer that records the peak concurrent scoring calls in flight.
+
+    ``ScriptedCompleter`` never yields, so it cannot show overlap; this fake
+    sleeps in the call, which is the only way a test can observe the cap.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self._in_flight = 0
+        self.max_in_flight = 0
+
+    async def complete_structured(
+        self,
+        messages: object,
+        schema: type[object],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+    ) -> SourceScoresDraft:
+        del messages, agent_name, max_tokens, reasoning_effort
+        assert schema is SourceScoresDraft
+        self.calls.append(schema.__name__)
+        self._in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        try:
+            await asyncio.sleep(0.01)
+            return SourceScoresDraft(sources=[])
+        finally:
+            self._in_flight -= 1
+
+    async def complete_react(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("the Source Evaluator runs no ReAct loop")
+
+
+@pytest.mark.asyncio
+async def test_scoring_batches_run_at_the_configured_concurrency(
+    tracker: Tracker,
+) -> None:
+    """`agents.source_scoring_concurrency` bounds the scoring calls in flight:
+    five batches of one source, at most two calls at a time (PD-27)."""
+    findings = [
+        _eval_finding(f"https://source-{index}.test/page")
+        for index in range(5)
+    ]
+    probe = _ScoringConcurrencyProbe()
+    agent = _evaluator(
+        tracker,
+        probe,  # type: ignore[arg-type]
+        batch_size=1,
+        max_total_sources=5,
+        config=AgentRuntimeConfig(
+            max_iterations=2, tool_budget=0, source_scoring_concurrency=2
+        ),
+    )
+
+    task, _, _ = await agent.lookup_reputations(
+        agent.build_task(_eval_state(findings))
+    )
+    sources, _, _ = await agent.score_sources(task)
+
+    assert len(probe.calls) == 5
+    assert probe.max_in_flight == 2
+    assert [source.url for source in sources] == [
+        f"https://source-{index}.test/page" for index in range(5)
+    ]
 
 
 @pytest.mark.asyncio
@@ -518,6 +611,7 @@ def _evaluator(
     max_sources: int | None = None,
     batch_size: int | None = None,
     max_total_sources: int | None = None,
+    config: AgentRuntimeConfig | None = None,
 ) -> SourceEvaluatorAgent:
     return SourceEvaluatorAgent(
         provider=completer,
@@ -527,7 +621,7 @@ def _evaluator(
             agent_name="source_evaluator",
             max_entries=20,
         ),
-        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
+        config=config or AgentRuntimeConfig(max_iterations=2, tool_budget=0),
         reputation=reputation,
         max_sources=max_sources,
         batch_size=batch_size,
@@ -2970,7 +3064,6 @@ def test_a_scoring_dossier_shows_the_passages_that_serve_the_plan() -> None:
                 required_dimensions=["value"],
                 required=True,
                 critical=True,
-                support_policy="primary_attribution",
             )
         ],
     )
@@ -3072,8 +3165,7 @@ def test_a_scoring_dossier_shows_each_obligations_figures_behind_navigation() ->
                     required_dimensions=["value"],
                     required=True,
                     critical=False,
-                    support_policy="primary_attribution",
-                )
+                    )
             ],
         )
 

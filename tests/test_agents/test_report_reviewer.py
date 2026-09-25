@@ -926,8 +926,12 @@ async def test_a_real_written_report_builds_the_same_packet(
             self.corrected_text = ""
             self.reason = "the finding states it"
 
-    async def consistent(provider, items, *, question, fingerprint=None):
-        del provider, question, fingerprint
+    async def consistent(
+        provider, items, *, question, fingerprint=None,
+        batch_size=None, concurrency=None,
+    ):
+        # The bounds are part of the call the real checker accepts (PD-12).
+        del provider, question, fingerprint, batch_size, concurrency
         return {item.label: _Verdict(item.label) for item in items}, []
 
     monkeypatch.setattr(

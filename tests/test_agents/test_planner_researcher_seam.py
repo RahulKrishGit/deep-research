@@ -236,6 +236,12 @@ def _researcher_for(
             search=FakeSearchClient([search_response() for _ in decisions]),
         ),
         config=AgentRuntimeConfig(max_iterations=4, tool_budget=4),
+        # Order-pinned (rule R3 of Task 4.13): both tests below script one
+        # loop's decisions in plan order under the order-based
+        # ScriptedCompleter, which is only unambiguous while one loop is in
+        # flight (D9). The other remedy R3 allows -- the target-keyed
+        # completer -- would be a rewrite of these fixtures, not a re-pin.
+        sub_topic_concurrency=1,
     )
 
 

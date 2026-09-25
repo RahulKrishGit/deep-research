@@ -641,12 +641,13 @@ class BudgetAgent(SummaryAgent):
 
     ``tool_budget_overrides`` is keyed by the six production agent names, so
     only an agent that *is* one of them can look up an override. Declaring a
-    test double under ``synthesizer`` is what makes the base loop's budget
+    test double under ``report_writer`` is what makes the base loop's
+    budget
     lookup observable: with the override in place the loop must stop after
     one executed tool call even though the global budget is three.
     """
 
-    name = "synthesizer"
+    name = "report_writer"
 
 
 @pytest.mark.asyncio
@@ -669,7 +670,7 @@ async def test_the_base_loop_uses_the_agent_specific_budget(
         config=AgentRuntimeConfig(
             max_iterations=4,
             tool_budget=3,
-            tool_budget_overrides={"synthesizer": 1},
+            tool_budget_overrides={"report_writer": 1},
         ),
     )
 
@@ -684,7 +685,7 @@ async def test_the_base_loop_uses_the_agent_specific_budget(
 async def test_a_zero_budget_override_lets_an_agent_think_without_tools(
     tracker: Tracker,
 ) -> None:
-    """``tool_budget_overrides={"synthesizer": 0}`` is a real bound, not a
+    """``tool_budget_overrides={"report_writer": 0}`` is a real bound, not a
     fallback to the global default."""
     completer = ScriptedCompleter([finish("Nothing to look up.", "Rayleigh.")])
     agent = BudgetAgent(
@@ -695,7 +696,7 @@ async def test_a_zero_budget_override_lets_an_agent_think_without_tools(
         config=AgentRuntimeConfig(
             max_iterations=3,
             tool_budget=3,
-            tool_budget_overrides={"synthesizer": 0},
+            tool_budget_overrides={"report_writer": 0},
         ),
     )
 
@@ -710,7 +711,7 @@ async def test_a_zero_budget_override_lets_an_agent_think_without_tools(
 async def test_another_agents_budget_override_does_not_apply_here(
     tracker: Tracker,
 ) -> None:
-    """A planner override must not narrow the synthesizer's own loop."""
+    """A planner override must not narrow the report writer's own loop."""
     completer = ScriptedCompleter(
         [
             use_tool("Echo once.", "echo", '{"value": "one"}'),

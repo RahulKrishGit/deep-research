@@ -298,8 +298,13 @@ def with_recorded_writer_failure() -> tuple[ResearchState, ReportComposition]:
     call failed before it could return per-batch accounting, so the writer
     records ``report_writer_statement_check_failed`` and keeps every sentence.
     """
-    async def _raise(provider, items, *, question, fingerprint=None):
-        del provider, items, question, fingerprint
+    async def _raise(
+        provider, items, *, question, fingerprint=None,
+        batch_size=None, concurrency=None,
+    ):
+        # The two bounds are part of the call the real checker accepts
+        # (PD-12); this stand-in fails the call whatever they are.
+        del provider, items, question, fingerprint, batch_size, concurrency
         raise PROVIDER_FAILURE
 
     with patch.object(evidence_verifier, "check_statements", _raise):
