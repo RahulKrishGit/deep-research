@@ -89,6 +89,7 @@ from tests.evidence_fakes import make_read, make_target
 from tests.research_fakes import (
     QEC_PASSAGE,
     QEC_SOURCE_URL,
+    QEC_TITLE,
     FakeMemory,
     FakeSearchClient,
     page_client,
@@ -3253,33 +3254,74 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
     two distinct claims over the six-finding cap. An operator reading only the
     event stream has to be able to see both, and see that the six came from a
     single source.
+
+    The seven distinct claims are distinct *statements* — one sentence each of
+    the page — because that is what makes a finding its own evidence: three
+    drafts that mine the one sentence already mined are restatements, whatever
+    their content says (``identity.deduplicate_findings``).
     """
+    restated = "The measured error rate fell by 50 percent in 2025."
+    sentences = [
+        *(
+            f"Claim {index}: the measured error rate fell by {index}0 percent in 2025."
+            for index in range(1, 8)
+        ),
+        restated,
+    ]
+    # One passage per statement, and the run reads them from its own registry:
+    # a read the session already holds is a cache reuse, so the drafts below
+    # name the same read and locators the loop works from.
+    passages = {f"chunk-{index}": sentence for index, sentence in enumerate(sentences)}
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=QEC_SOURCE_URL,
+        resolved_url=QEC_SOURCE_URL,
+        title=QEC_TITLE,
+        retrieved_at=EXTRACTED_AT,
+        text=" ".join(sentences),
+        passages=passages,
+        extraction_complete=True,
+    ).model_copy(update={"target_ids": ["topic-01"]})
+    def claim_draft(
+        *,
+        snippet: str,
+        locator: str,
+        content: str,
+        confidence: float,
+        read: ReadRecord = read,
+    ) -> FindingDraft:
+        return FindingDraft(
+            content=content,
+            source_url=QEC_SOURCE_URL,
+            source_title=QEC_TITLE,
+            confidence=confidence,
+            read_id=read.read_id,
+            locator=locator,
+            snippet=snippet,
+            target_ids=["topic-01"],
+        )
+
     draft = SubTopicFindingsDraft(
         findings=[
-            FindingDraft(
+            # Three restatements of the first claim: one sentence, three
+            # confidences, so two are dropped as duplicates.
+            claim_draft(
+                snippet=restated,
+                locator=f"chunk-{len(sentences) - 1}",
                 content="Duplicated claim.",
-                source_url="https://example.test/qec",
-                source_title=QEC_READ.title,
                 confidence=confidence,
-                read_id=QEC_READ.read_id,
-                locator="chunk-0",
-                snippet=QEC_PASSAGE,
-                target_ids=["topic-01"],
             )
             for confidence in (0.4, 0.9, 0.6)
         ]
         + [
-            FindingDraft(
+            claim_draft(
+                snippet=sentence,
+                locator=f"chunk-{index}",
                 content=f"Distinct claim {index}.",
-                source_url="https://example.test/qec",
-                source_title=QEC_READ.title,
                 confidence=0.5,
-                read_id=QEC_READ.read_id,
-                locator="chunk-0",
-                snippet=QEC_PASSAGE,
-                target_ids=["topic-01"],
             )
-            for index in range(7)
+            for index, sentence in enumerate(sentences[:-1])
         ]
     )
     completer = ScriptedCompleter(
@@ -3289,7 +3331,12 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
     agent = _researcher(tracker, completer)
 
     async with tracker.session_span("session-1", "q"):
-        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+        outcome = await agent.run(
+            _state(
+                sub_topics=[_sub_topic("Alpha", 1)],
+                read_records={read.read_id: read},
+            )
+        )
 
     completed = next(
         event
@@ -4306,6 +4353,54 @@ def _extraction_requests(completer: ScriptedCompleter) -> list[str]:
         for call in completer.calls
         if call[0] == "SubTopicFindingsDraft"
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_passage_an_earlier_pass_mined_is_not_owed_again(
+    tracker: Tracker,
+) -> None:
+    """The re-extraction is spent on passages the *run* has not mined.
+
+    ``_units_owing_a_figure`` asks for the selected passages no admitted finding
+    used — and a later pass started from an empty admitted-key set, so the
+    passage an earlier pass had already mined off the same read looked unmined
+    and bought the pass's one re-extraction a second time. The keys the run
+    already admitted travel into the extraction, so "no admitted finding used
+    it" is read against the run's whole record rather than against this pass.
+    """
+    completer = ScriptedCompleter(
+        decisions=_quantity_decisions(),
+        outputs=[SubTopicFindingsDraft(findings=[]), _quantity_retry_reply],
+    )
+    agent = _quantity_agent(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        first = await agent.run(_state(sub_topics=[_quantity_topic()]))
+
+    # The fixture's premise: pass 0 mined the sentence with its one re-ask.
+    assert len(_extraction_requests(completer)) == 2
+    (earlier,) = first.state_update["raw_findings"]
+    assert earlier.locator not in ("", None)
+
+    resumed_completer = ScriptedCompleter(
+        decisions=_quantity_decisions(),
+        outputs=[SubTopicFindingsDraft(findings=[]), _quantity_retry_reply],
+    )
+    resumed = _quantity_agent(tracker, resumed_completer)
+
+    async with tracker.session_span("session-2", "q"):
+        await resumed.run(
+            _state(
+                sub_topics=[_quantity_topic()],
+                raw_findings=[earlier],
+                evidence_units=first.state_update["evidence_units"],
+                read_records=first.state_update["read_records"],
+            )
+        )
+
+    # One request: the extraction that runs, and no owed re-extraction for a
+    # passage the run already has a finding from.
+    assert len(_extraction_requests(resumed_completer)) == 1
 
 
 @pytest.mark.asyncio

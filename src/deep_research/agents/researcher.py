@@ -1990,6 +1990,39 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             return planned
         return [target for target in planned if target.target_id in wanted]
 
+    def _recorded_findings(self) -> tuple[Finding, ...]:
+        """The findings the run already holds, for the packet's own steering.
+
+        Read from the run's incoming state, which is where every earlier pass's
+        record lives: a later pass that re-reads a page should see that the
+        sentence it is about to mine is already a finding, instead of mining it
+        and letting the fold collapse the duplicate afterwards.
+        """
+        state = self._run_source_state
+        if state is None:
+            return ()
+        return tuple(state.verified_findings)
+
+    def _admitted_evidence_keys(self) -> list[tuple[str, str]]:
+        """The ``(read_id, locator)`` passages the run has already mined.
+
+        ``raw_findings`` is append-only across research rounds, so it is the
+        run's whole record of what an extraction admitted, in order. The keys
+        are what the owed-passage re-extraction reads: a later pass asks for
+        the passages *the run* has no finding from, not for the passages this
+        pass alone has no finding from.
+        """
+        state = self._run_source_state
+        if state is None:
+            return []
+        return list(
+            dict.fromkeys(
+                (finding.read_id, finding.locator)
+                for finding in state.raw_findings
+                if finding.read_id and finding.locator
+            )
+        )
+
     def _policy_for_task(self, task: SubTopicTask) -> AcquisitionPolicy:
         target_id = task.sub_topic.coverage_id
         existing = (
@@ -2031,6 +2064,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             origin="researcher",
             reads=self._run_reads,
             evidence=self._run_evidence,
+            findings=self._recorded_findings(),
             dispositions=self._run_dispositions,
             boundary_audits=self._run_boundary_audits,
             audit_sequence=self._run_audit_sequence,
@@ -2152,6 +2186,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             return [], [extraction_provider_error(run, error)], "provider", False
 
         admitted_keys: list[tuple[str, str]] = []
+        # The passages earlier passes mined. They are kept out of
+        # ``admitted_keys`` itself — that list is this pass's own admissions,
+        # and the sub-topic's "the obligation was completed" reading comes from
+        # it — but the owed-passage re-extraction must not spend a passage the
+        # run already has a finding from, so it is gated on both.
+        mined_earlier = self._admitted_evidence_keys()
         unplanned_target_ids: list[str] = []
         dropped_figures: list[str] = []
         known_reads = (
@@ -2201,7 +2241,13 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     () if policy.target_id is None else (policy.target_id,)
                 ),
                 bases=_measure_bases(own_targets),
-                used=admitted_keys,
+                # The run's keys as well as this pass's: a passage an earlier
+                # pass already mined is not *owed* a figure extraction here.
+                # The words-owed re-ask below deliberately keeps this pass's
+                # keys alone — its whole purpose is to bind a target from a
+                # passage the run has read, so a passage an earlier pass mined
+                # without that binding must stay eligible for it.
+                used=[*mined_earlier, *admitted_keys],
             )
             # The same bounded re-ask for a required obligation this pass left
             # unanswered: a target with no unit of measure has no figure to

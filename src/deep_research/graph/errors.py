@@ -182,6 +182,28 @@ def invalid_route_error(
     )
 
 
+def redraft_limit_error(
+    *,
+    node: str,
+    redrafts: int,
+    max_redrafts: int,
+) -> ResearchError:
+    """Record that a writer re-run was attempted with its own bound spent.
+
+    The same enumerated type as the extra-pass overrun — a route reached
+    without the budget its ceiling allows — and the same second lock on the
+    same door: the router refuses to send the hop once the re-run is spent, and
+    a run that arrives anyway records the halt rather than paying for a draft
+    its bound forbids. The details name *this* bound, so the record cannot be
+    misread as an iteration overrun.
+    """
+    return graph_error(
+        error_type="graph_invalid_route",
+        node=node,
+        details={"redrafts": redrafts, "max_redrafts": max_redrafts},
+    )
+
+
 def request_attempt_limit_error(
     error: RequestAttemptLimitError,
     *,

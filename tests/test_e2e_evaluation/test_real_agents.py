@@ -725,7 +725,16 @@ def _manifest_from_the_public_summary(real):
 
     urls_in_line = re.compile(r"https?://\S+")
 
-    def context(state, reads, evidence, *, limit, target_id=None, dispositions=()):
+    def context(
+        state,
+        reads,
+        evidence,
+        *,
+        limit,
+        target_id=None,
+        dispositions=(),
+        findings=(),
+    ):
         text = real(
             state,
             reads,
@@ -733,6 +742,7 @@ def _manifest_from_the_public_summary(real):
             limit=limit,
             target_id=target_id,
             dispositions=dispositions,
+            findings=findings,
         )
         carried = summarize_text(
             json.dumps(

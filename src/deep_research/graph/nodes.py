@@ -58,6 +58,7 @@ from deep_research.graph.errors import (
     provider_configuration_error,
     publication_unavailable_error,
     publication_write_error,
+    redraft_limit_error,
     report_review_unavailable_error,
     request_attempt_limit_error,
 )
@@ -67,6 +68,7 @@ from deep_research.graph.events import (
     node_skipped_event,
     node_started_event,
     quality_assessed_event,
+    redraft_requested_event,
     report_published_event,
     report_review_completed_event,
     route_decided_event,
@@ -74,6 +76,8 @@ from deep_research.graph.events import (
 from deep_research.graph.state import (
     EXTRA_PASS_NODE,
     FINALIZE_NODE,
+    MAX_WRITER_REDRAFTS,
+    REDRAFT_NODE,
     REPORT_REVIEWER_NODE,
     REPORT_WRITER_NODE,
     ResearchGraphState,
@@ -1023,6 +1027,65 @@ async def extra_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
                 node_completed_event(
                     EXTRA_PASS_NODE,
                     iteration=advanced.iteration,
+                    event_count=1,
+                    error_count=0,
+                ),
+            ],
+        },
+    )
+
+
+async def writer_redraft_node(channel: ResearchGraphState) -> ResearchGraphState:
+    """Hand a scored review's material defects back to the writer, once.
+
+    ``semantic_review_passes`` refuses to accept a report whose review carries
+    a material defect, and the graph could not act on that: the run published a
+    report its own reviewer had just named as wrong, and the only continuation
+    it had — an extra research pass — cannot fix a self-contradiction or an
+    omission the evidence already supports. The defect list is addressed to the
+    writer, so this hop buys one more draft: no research, no re-verification,
+    the same evidence and a request that carries what the review said.
+
+    It is its own node for the same reason ``extra_pass`` is: a conditional
+    edge routes but cannot write, and the counter that bounds this re-run has
+    to be written somewhere the graph and a test can both see. One re-run is
+    the bound (``MAX_WRITER_REDRAFTS``) — a reviewer that keeps naming defects
+    must not be able to loop the writer — and the guard is the second lock on
+    that door: a run that somehow arrives with the re-run spent records
+    ``graph_invalid_route`` rather than paying for a draft its bound forbids.
+    """
+    state = load_state(channel)
+    if is_halted(state):
+        return _skipped(state, REDRAFT_NODE)
+    started = merge_research_state(
+        state,
+        {"events": [node_started_event(REDRAFT_NODE, iteration=state.iteration)]},
+    )
+    if state.writer_redrafts >= MAX_WRITER_REDRAFTS:
+        return _halt(
+            started,
+            redraft_limit_error(
+                node=REDRAFT_NODE,
+                redrafts=state.writer_redrafts,
+                max_redrafts=MAX_WRITER_REDRAFTS,
+            ),
+        )
+
+    review = state.report_review
+    defects = len(review.material_defects) if review is not None else 0
+    return _with(
+        started,
+        {
+            "writer_redrafts": state.writer_redrafts + 1,
+            "events": [
+                redraft_requested_event(
+                    iteration=state.iteration,
+                    redrafts=state.writer_redrafts + 1,
+                    material_defects=defects,
+                ),
+                node_completed_event(
+                    REDRAFT_NODE,
+                    iteration=state.iteration,
                     event_count=1,
                     error_count=0,
                 ),

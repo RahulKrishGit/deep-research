@@ -22,9 +22,11 @@ from deep_research.graph.nodes import (
     report_reviewer_node,
     report_writer_node,
     route_after_review,
+    writer_redraft_node,
 )
 from deep_research.graph.state import (
     EXTRA_PASS_NODE,
+    REDRAFT_NODE,
     ROUTE_END,
     ROUTE_EXTRA_PASS,
     ROUTE_FINALIZE,
@@ -54,6 +56,7 @@ from deep_research.utils.types import (
     REVIEW_DIMENSIONS,
     ResearchError,
     ResearchState,
+    ReviewDefect,
 )
 from deep_research.agents.report_writer import REPORT_WRITER_NAME
 from tests.agent_fakes import ScriptedCompleter
@@ -789,6 +792,96 @@ async def test_the_extra_pass_hop_skips_a_halted_run() -> None:
     assert skipped.extra_pass_target_ids == []
     assert _event_types(skipped) == ["graph.node.skipped"]
     assert skipped.events[-1].source == f"graph.{EXTRA_PASS_NODE}"
+
+
+def _defect_state(**overrides: object) -> ResearchState:
+    """One judged pass whose review named a material defect."""
+    state = _writer_state()
+    payload: dict[str, object] = {
+        "report_review": fake_report_review(
+            defects=[_material_defect()],
+            missing_required_target_ids=[],
+        )
+    }
+    payload.update(overrides)
+    return state.model_copy(update=payload)
+
+
+def _material_defect() -> object:
+    return ReviewDefect(
+        defect_id="review-01",
+        kind="contradiction",
+        severity="major",
+        statement_ids=["S001"],
+        problem="The report states a rule its own findings qualify.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_redraft_hop_spends_its_one_rerun_and_records_it() -> None:
+    """The hop buys the writer re-run a material defect justifies, once.
+
+    A conditional edge can route but cannot write, and the bound has to be
+    recorded somewhere the graph and a reader can both see: the hop is that
+    place, so the second review reads a state that says the re-run was spent
+    and routes to the terminal verdict instead of drafting a third time.
+    """
+    state = _defect_state()
+
+    spent = load_state(await writer_redraft_node(dump_state(state)))
+
+    assert spent.writer_redrafts == 1
+    # The hop writes its own counter and nothing else: no research state, no
+    # report, no composition. (``report`` is compared modulo surrounding
+    # whitespace because the merge re-validates the state and the report
+    # field's own normalizer strips it — a property of every node's write
+    # path, not of this hop.)
+    assert spent.report.strip() == state.report.strip()
+    assert spent.composition == state.composition
+    assert spent.verified_findings == state.verified_findings
+    assert spent.iteration == state.iteration
+    assert spent.extra_pass_target_ids == state.extra_pass_target_ids
+    assert _event_types(spent)[-3:] == [
+        "graph.node.started",
+        "graph.report.redraft_requested",
+        "graph.node.completed",
+    ]
+    requested = spent.events[-2]
+    assert requested.metadata == {
+        "iteration": state.iteration,
+        "redrafts": 1,
+        "material_defects": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_redraft_hop_refuses_to_spend_a_rerun_it_lacks() -> None:
+    """The router never sends the hop past its ceiling; the hop still guards it.
+
+    The second lock on the door: a run that somehow reached the hop with its
+    re-run already spent records an enumerated halt — with details naming
+    *this* bound, so the record cannot be misread as an iteration overrun —
+    rather than paying for a draft its declared ceiling forbids.
+    """
+    state = _defect_state(writer_redrafts=1)
+
+    halted = load_state(await writer_redraft_node(dump_state(state)))
+
+    assert [error.error_type for error in halted.errors] == ["graph_invalid_route"]
+    assert halted.errors[0].details == {"redrafts": 1, "max_redrafts": 1}
+    assert is_halted(halted)
+    assert halted.writer_redrafts == 1
+
+
+@pytest.mark.asyncio
+async def test_the_redraft_hop_skips_a_halted_run() -> None:
+    state = _defect_state(errors=[halting_error()])
+
+    skipped = load_state(await writer_redraft_node(dump_state(state)))
+
+    assert skipped.writer_redrafts == 0
+    assert _event_types(skipped) == ["graph.node.skipped"]
+    assert skipped.events[-1].source == f"graph.{REDRAFT_NODE}"
 
 
 # --- the terminal publication ------------------------------------------------

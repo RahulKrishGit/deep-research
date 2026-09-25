@@ -31,11 +31,12 @@ from deep_research.agents.evidence import (
     validate_cached_read,
 )
 from deep_research.agents.sources import normalize_source_url
-from deep_research.agents.steps import ReActDecision, ReActStep
+from deep_research.agents.steps import ReActDecision, ReActStep, summarize_text
 from deep_research.tools.base import ToolResult
 from deep_research.tools.passage_selection import select_relevant_passages
 from deep_research.utils.types import (
     AcquisitionState,
+    Finding,
     CandidateRecord,
     EvidenceDisposition,
     EvidenceUnit,
@@ -172,6 +173,12 @@ _DISCOVERED_VIA = frozenset({"search", "memory", "document_link"})
 # The bound is what makes the local extract handoff terminate instead of
 # growing a pending list acquisition can never leave.
 _DEFAULT_PASSAGE_BATCH_LIMIT = 2
+
+# One already-recorded finding's statement, as the packet's steering row
+# carries it: long enough to recognize the sentence a later pass is about to
+# mine again, short enough that the row never crowds out the evidence the
+# packet is for.
+_RECORDED_STATEMENT_CHARS = 200
 
 # The disposition a selected unit gets when it states a figure in a measure
 # unit the active target asks for and no finding was extracted from it — not
@@ -1027,6 +1034,14 @@ class AcquisitionPolicy:
     reads: dict[str, ReadRecord] = field(default_factory=dict)
     evidence: dict[str, EvidenceUnit] = field(default_factory=dict)
     dispositions: list[EvidenceDisposition] = field(default_factory=list)
+    findings: Sequence[Finding] = ()
+    """The findings this run has already recorded, for the packet's steering.
+
+    The decision packet lists them beside the evidence, so a later pass is not
+    asked to mine a passage the run already holds a finding from. They are the
+    run's record and the caller that has the state supplies them; the packet
+    renders only those whose read is in the packet's own scope.
+    """
     boundary_audits: dict[str, Any] = field(default_factory=dict)
     retrieved_at: Callable[[], str] = _utc_now_iso
     selected_passages_per_read: int = 4
@@ -2069,7 +2084,21 @@ class AcquisitionPolicy:
             limit=limit,
             target_id=self.target_id,
             dispositions=self.dispositions,
+            findings=self.findings,
         )
+
+
+def _recorded_statement(finding: Finding) -> str:
+    """One finding's own statement, clamped for the packet's steering row.
+
+    The snippet is the page's verbatim sentence and the content is the model's
+    restatement: the snippet is what tells a later pass "this exact sentence is
+    already mined", so it is preferred, and the content stands in for a record
+    that carries none. Bounded because the packet spends characters on it and
+    the row exists to be recognized, not to be read closely.
+    """
+    statement = finding.snippet or finding.content
+    return summarize_text(statement, limit=_RECORDED_STATEMENT_CHARS)
 
 
 def _render_candidate(record: CandidateRecord) -> str:
@@ -2102,6 +2131,7 @@ def build_acquisition_context(
     target_id: str | None = None,
     dispositions: Sequence[EvidenceDisposition] = (),
     focus_ids: Sequence[str] = (),
+    findings: Sequence[Finding] = (),
 ) -> str:
     """Render complete acquisition records, with explicit continuation IDs.
 
@@ -2243,6 +2273,29 @@ def build_acquisition_context(
                 f"evidence:{evidence_id}",
                 f"evidence_id={evidence_id} read_id={unit.read_id} "
                 f"locator={unit.locator} targets={targets} excerpt={unit.excerpt}",
+            )
+        )
+    # What the run already mined, after the evidence and before the passage
+    # dumps: the rows are what stop a later pass re-mining a sentence it already
+    # holds, and putting them ahead of the dumps means a bounded packet keeps
+    # them — the dumps are the bulk, and the whole point of the steering is that
+    # those passages need not be mined again. One row per (read, locator,
+    # statement); a repeated identifier is the same passage saying the same
+    # thing, which the fold has already collapsed in state.
+    recorded_ids: set[str] = set()
+    for finding in findings:
+        if finding.read_id not in selected_reads:
+            continue
+        identifier = f"recorded:{finding.read_id}/{finding.locator or '-'}"
+        if identifier in recorded_ids:
+            continue
+        recorded_ids.add(identifier)
+        rows.append(
+            (
+                identifier,
+                f"recorded finding read_id={finding.read_id} "
+                f"locator={finding.locator or '-'} "
+                f"statement={_recorded_statement(finding)}",
             )
         )
     for candidate in state.candidate_records.values():

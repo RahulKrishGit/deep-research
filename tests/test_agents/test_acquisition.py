@@ -52,6 +52,7 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 from tests.agent_fakes import EchoTool, agent_scope, finish, use_tool
+from tests.evidence_fakes import make_finding, make_read
 from tests.graph_fakes import FakeAgent, fake_research_state
 from tests.research_fakes import (
     FakeSearchClient,
@@ -760,6 +761,69 @@ def test_acquisition_context_keeps_ids_when_a_complete_record_overflows() -> Non
     # The packet carries no heading of its own: the decision prompt's renderer
     # adds "## Acquisition context" exactly once.
     assert "## Acquisition context" not in context
+
+
+def test_the_context_lists_the_findings_the_run_already_recorded() -> None:
+    """The packet says which passages already produced a finding, and where.
+
+    A later pass re-reads the same pages — the reads are the run's, so its
+    packets are built from the same records — and without this row the model
+    has no way to know a passage was mined already: it mines it again, and the
+    run records the same sentence twice under a second label. The row names the
+    read, the locator and the statement, so "already have it" is legible at the
+    point of decision rather than in a dedup layer after the fact.
+    """
+    from deep_research.agents.identity import finding_fingerprint
+
+    statement = "Reported capacity rose to 12,314 MW in 2024."
+    read = make_read(statement).model_copy(update={"target_ids": ["target-1"]})
+    recorded = make_finding(
+        read,
+        statement,
+        content=statement,
+        target_ids=["target-1"],
+    )
+    state = AcquisitionState(
+        target_id="target-1",
+        candidate_urls=["https://example.test/other"],
+        remaining_calls=5,
+        remaining_model_turns=7,
+    )
+
+    context = build_acquisition_context(
+        state, {read.read_id: read}, {}, limit=24000, target_id="target-1",
+        findings=(recorded,),
+    )
+
+    assert (
+        f"recorded finding read_id={read.read_id} locator={recorded.locator} "
+        in context
+    )
+    assert statement in context
+
+    # A read the packet does not carry brings no finding row with it: the rows
+    # are scoped by the same selection the reads are, so a page another target
+    # fetched never advertises its own findings here.
+    outside = make_read(
+        "A different page entirely.", url="https://example.test/outside"
+    ).model_copy(update={"target_ids": ["target-9"]})
+    irrelevant = make_finding(
+        outside,
+        "A different page entirely.",
+        target_ids=["target-9"],
+    )
+
+    unscoped = build_acquisition_context(
+        state,
+        {read.read_id: read, outside.read_id: outside},
+        {},
+        limit=24000,
+        target_id="target-1",
+        findings=(irrelevant,),
+    )
+
+    assert "recorded finding" not in unscoped
+    assert finding_fingerprint(recorded) not in unscoped
 
 
 @pytest.mark.asyncio

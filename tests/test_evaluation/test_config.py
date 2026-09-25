@@ -846,6 +846,22 @@ from deep_research.utils.config import (
 # ("Siemens"; "the manufacturer of the product"); the planner moved
 # `3e987c934fae` -> `852f96eefee7`. The other four target pins and the Judge
 # pin are unchanged.
+# Run-2 improvement 5 (FF4Orch; the run-2 audit's extra-pass duplicates):
+# ``_recorded_findings`` hands the run's findings to each sub-topic's policy so
+# the decision packet can list what is already mined, and
+# ``_admitted_evidence_keys`` seeds the figure-owed re-extraction with the
+# passages the run has already mined rather than with this pass's alone. (On
+# this item's own base the researcher hashed `ba937bd6c817`; resolved onto the
+# run-2 wave's researcher the merged source is `7314b246b217`, below.)
+# Run-2 improvement 6 (FF4Orch; the run-2 audit's "the graph cannot act on
+# material defects"): ``ReportWriterTask`` carries the material defects the
+# graph's writer re-run was bought for, ``build_task`` reads them off the stored
+# review, and ``writer_messages`` renders them as one more bounded section, so a
+# re-draft is asked about the defects it exists to fix. (On this item's own base
+# the writer hashed `22e4e86d5f42`; resolved onto the wave's writer the merged
+# source is `1bfcd866e32f`, below.) Neither item edited a prompt string, and
+# ``agents.prompts`` was untouched, so the other three target pins and the Judge
+# pin are unchanged.
 # ev-1 fix A, follow-up (F6; the expert final review's Minor): the researcher's
 # own module source moved `c490b869021b` -> `3853aff7e02c` — ``_policy_for_task``
 # resets ``remaining_model_turns`` to the loop's ``max_iterations`` when a
@@ -895,7 +911,7 @@ from deep_research.utils.config import (
 # report writer `a3a73e32c3c0` -> `24ccad97fb9f`.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
-    "researcher": "068c5fe435ef",
+    "researcher": "7314b246b217",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
@@ -903,12 +919,20 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # verdict.
     # The caller wiring moved both of them once more: the verifier's
     # cited-figure line no longer names a body an unattributed figure cannot
-    # claim (`9f5515f04833` -> `a6205ea9c362`), and the writer now hands the
-    # plan to the coverage gate and the Statement Check its cited findings'
-    # bounded passages (`24ccad97fb9f` -> `7972a1f48129`). No other agent's text
+    # claim (`9f5515f04833` -> `a6205ea9c362`), and the writer handed the plan
+    # to the coverage gate and the Statement Check its cited findings' bounded
+    # passages (`24ccad97fb9f` -> `7972a1f48129`). No other agent's text
     # changed, and the Judge pin is unchanged.
+    # FF4Orch's run-2 items 5 and 6 were resolved onto this head: the merged
+    # researcher source is `7314b246b217` (the wave's re-ask, caps and
+    # neighbour-snippet rule plus the recorded findings and the run-scoped
+    # mined keys) and the merged writer source is `1bfcd866e32f` (the wave's
+    # oversize-point split and its plan/passage wiring plus the material
+    # defects a re-draft is asked about). Neither item edited a prompt string
+    # or ``agents.prompts``, so the other three target pins and the Judge pin
+    # are unchanged.
     "evidence_verifier": "a6205ea9c362",
-    "report_writer": "7972a1f48129",
+    "report_writer": "1bfcd866e32f",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

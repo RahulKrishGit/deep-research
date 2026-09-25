@@ -276,6 +276,72 @@ def test_legacy_records_without_a_revision_keep_the_prior_behavior() -> None:
 # --- finding de-duplication ----------------------------------------------
 
 
+def test_one_passage_restated_twice_is_one_finding() -> None:
+    """The same passage stating the same thing is one finding, however restated.
+
+    Two passes re-read one page and mine one passage: the first pass restated
+    it one way, the later pass another. The URL, the sub-topic, the read, the
+    locator and the verbatim snippet are identical, so this is one piece of
+    evidence — but the prose differs, and a content-keyed identity published it
+    twice. The recorded run's own log shows exactly that shape: two labels, one
+    read, one locator, one snippet, two restatements.
+
+    Identity is what the evidence *is*. The passage and the sentence mined from
+    it are the record's identity; the restatement is the model's prose about it.
+    """
+    read = make_read("Reported capacity rose to 12,314 MW in 2024.")
+    snippet = "Reported capacity rose to 12,314 MW in 2024."
+    first = make_finding(
+        read,
+        snippet,
+        content="Capacity rose to 12,314 MW in 2024.",
+        target_ids=["topic-01-target-01"],
+    )
+    second = make_finding(
+        read,
+        snippet,
+        content="In 2024 the reported capacity was 12,314 MW.",
+        target_ids=["topic-02-target-01"],
+    )
+
+    folded = deduplicate_findings([first, second])
+
+    (kept,) = folded
+    assert kept.content == first.content
+    # Both bindings survive the fold: a later restatement that names another
+    # target must not lose that target's evidence.
+    assert kept.target_ids == ["topic-01-target-01", "topic-02-target-01"]
+
+
+def test_two_statements_of_one_passage_stay_two_findings() -> None:
+    """The fold is on the sentence mined, not on the passage alone.
+
+    One paragraph can state two things — a figure and the date it was released
+    — and an extraction that returns both is carrying two findings. Merging
+    them would lose one of the two, which is the failure mode a passage-only
+    identity would introduce.
+    """
+    read = make_read(
+        "Reported capacity rose to 12,314 MW in 2024. "
+        "The release was published on 4 March 2025."
+    )
+    figure_statement = make_finding(
+        read,
+        "Reported capacity rose to 12,314 MW in 2024.",
+        content="Capacity rose to 12,314 MW in 2024.",
+    )
+    date_statement = make_finding(
+        read,
+        "The release was published on 4 March 2025.",
+        content="The release was published on 4 March 2025.",
+        release_date="2025-03-04",
+    )
+
+    assert figure_statement.locator == date_statement.locator
+
+    assert len(deduplicate_findings([figure_statement, date_statement])) == 2
+
+
 def test_deduplicate_findings_keeps_the_higher_confidence_record() -> None:
     weak = finding("Adoption rose.", confidence=0.4, source_title="First")
     strong = finding(

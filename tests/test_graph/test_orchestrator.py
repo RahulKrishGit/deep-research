@@ -35,6 +35,7 @@ from deep_research.graph.state import (
     FINALIZE_NODE,
     NODE_NAMES,
     PLANNER_NODE,
+    REDRAFT_NODE,
     REPORT_REVIEWER_NODE,
     REPORT_WRITER_NODE,
     RESEARCHER_NODE,
@@ -374,11 +375,12 @@ def test_the_agent_node_order_matches_the_designed_sequence() -> None:
     )
     # Order matters, not just membership: the graph's real edges read
     # ``AGENT_NODE_ORDER``, so it must be exactly the head of ``NODE_NAMES``,
-    # with the reviewer, the extra-pass hop and the finalizer after it.
+    # with the reviewer, the two hops and the finalizer after it.
     assert NODE_NAMES == (
         *AGENT_NODE_ORDER,
         REPORT_REVIEWER_NODE,
         EXTRA_PASS_NODE,
+        REDRAFT_NODE,
         FINALIZE_NODE,
     )
 
