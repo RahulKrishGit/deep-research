@@ -25,6 +25,21 @@ _CLAUSE_SPLIT = re.compile(
 )
 
 
+# Separators a page's own title uses between its headline and its site or
+# publisher name ("Article Title | Site Name", "Article Title - Publisher").
+TITLE_SEPARATOR = re.compile(r"\s*[|\u2013\u2014]\s*|\s+-\s+")
+
+
+def title_segments(title: str) -> list[str]:
+    """A page's own title, split on its own separators, in the order it writes them.
+
+    "Article Title | Work | Site" gives the three segments a reader sees, so a
+    caller can tell the title's headline, the body it serves and the site label
+    apart without guessing at anything the title does not itself spell.
+    """
+    return [part.strip() for part in TITLE_SEPARATOR.split(title) if part.strip()]
+
+
 def clause_around(text: str, position: int) -> str:
     """The clause of ``text`` containing the character at ``position``."""
     start = 0

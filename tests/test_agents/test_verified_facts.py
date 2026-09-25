@@ -1458,3 +1458,50 @@ def test_a_fallback_answer_reaches_the_row_it_builds() -> None:
     assert [row.target_ids for row in rows] == [
         ["topic-03-target-01", "topic-03-target-02"]]
     assert fact_rows([dated_finding()], targets)[0].target_ids == []
+
+
+# ---------------------------------------------------------------------------
+# Improvement 7: a relay-shaped page's unattributed row claims no organisation
+# ---------------------------------------------------------------------------
+#
+# The live run published an unattributed figure of a page that reproduces
+# another body's document as "the site states…", because the row's organisation
+# column was the page's owner. The page's own title carries the work it serves
+# beside its own site label, and that is what the row must respect.
+
+def relay_shaped_finding(*, title: str, url: str = "https://example-relay.example/law/12"):
+    """One unattributed figure whose page's own title is ``title``."""
+    text = "The obligations apply from 2 August 2025."
+    read = make_read(text, url=url, title=title)
+    finding = make_finding(read, text,
+                           figures=[figure("2 August 2025", "date", None, "actual")],
+                           target_ids=[])
+    return verified(finding, ctx(organisation="Example Relay", attribution="unattributed",
+                                 period=None))
+
+
+def test_an_unattributed_row_of_a_relay_shaped_page_claims_no_organisation() -> None:
+    """Improvement 7, on the run's shape: the serving site is not the issuer."""
+    pages = {
+        # the run's shape: headline | the work it serves | its own site label
+        "relayed": "Article 12: Registration | Example Act | Example Relay",
+        # a title naming only its headline and its own site: unchanged
+        "first_party": "Article 12: Registration | Example Relay",
+        # the middle segment is the page's own name: unchanged
+        "own_middle": "Article 12: Registration | Example Relay | example-relay.example",
+    }
+    rows = {name: fact_rows([relay_shaped_finding(title=title)], [make_target()])[0]
+            for name, title in pages.items()}
+
+    assert rows["relayed"].organisation == ""
+    assert rows["relayed"].attribution == "unattributed"
+    assert rows["first_party"].organisation == "Example Relay"
+    assert rows["own_middle"].organisation == "Example Relay"
+
+
+def test_a_relay_shaped_page_keeps_the_context_the_verifier_resolved() -> None:
+    """The row claims nothing; the figure's own resolved context is untouched."""
+    finding = relay_shaped_finding(title="Article 12: Registration | Example Act | Example Relay")
+    context = finding.verification.figure_results[0].context
+    assert context is not None and context.organisation == "Example Relay"
+    assert fact_rows([finding], [make_target()])[0].organisation == ""

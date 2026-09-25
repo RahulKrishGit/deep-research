@@ -73,7 +73,7 @@ from deep_research.agents.verified_facts import (
     same_period,
     same_subject,
 )
-from deep_research.agents.wording import stated_role
+from deep_research.agents.wording import stated_role, title_segments
 from deep_research.providers import (
     ChatMessage,
     ProviderConfigurationError,
@@ -244,10 +244,6 @@ class VerifiedFindings(ContractModel):
     findings: list[Finding] = Field(default_factory=list)
 
 
-# Separators a page's own title uses between its headline and its site or
-# publisher name ("Article Title | Site Name", "Article Title - Publisher").
-_TITLE_CREDIT_SEPARATOR = re.compile(r"\s*[|\u2013\u2014]\s*|\s+-\s+")
-
 # One word of a cued run: a capitalised word carrying no full stop at all
 # ("Utility Dive" -- the stop after "Dive" ends the sentence, it does not
 # continue the name), or an initialism such as "U.S.", whose own dots sit
@@ -284,7 +280,7 @@ def _title_credit_candidates(title: str) -> list[str]:
     anything the title does not itself spell; every segment is offered as a
     candidate because a title can name its publisher either first or last.
     """
-    return [part.strip() for part in _TITLE_CREDIT_SEPARATOR.split(title) if part.strip()]
+    return title_segments(title)
 
 
 def _cued_name_candidates(text: str, cues: Sequence[str]) -> list[str]:

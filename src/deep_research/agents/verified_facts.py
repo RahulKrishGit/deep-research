@@ -21,7 +21,7 @@ from deep_research.agents.figures import (
 )
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.sources import publisher_identity
-from deep_research.agents.wording import SCOPE_TERMS, stated_scopes
+from deep_research.agents.wording import SCOPE_TERMS, stated_scopes, title_segments
 from deep_research.utils.types import (
     AcquisitionState,
     EarlierEdition,
@@ -1272,7 +1272,7 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
         rows.append(
             FactRow(
                 row_id="pending",
-                organisation=primary.context.organisation,
+                organisation=_row_organisation(primary),
                 attribution=primary.context.attribution,
                 relay_host=publisher_identity(primary.finding.source_url)
                 if primary.context.attribution == "relayed" else None,
@@ -1293,6 +1293,65 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
         row_findings.append(primary.finding)
     folded = _fold_revisions(list(zip(rows, row_findings)), by_id)
     return [row.model_copy(update={"row_id": f"K{n:03d}"}) for n, row in enumerate(folded, start=1)]
+
+
+_NAME_WORD = re.compile(r"[A-Z][\w'\u2019&.-]*")
+
+
+def _body_shaped(segment: str) -> bool:
+    """Whether a title segment reads as a body or a work's name, not a nav label.
+
+    Two words or more, each opening with a capital: "EU AI Act" and "Example
+    Widgets Council" name bodies, while "Products", "News" and "2026 Edition"
+    do not.
+    """
+    words = segment.split()
+    return len(words) > 1 and all(_NAME_WORD.fullmatch(word) for word in words)
+
+
+def _serves_another_body(finding: Finding, owner: str) -> str | None:
+    """The body or work a page's own title serves, when it serves another one.
+
+    A title names its own site first or last ("Battery report | EIA"), so a
+    three-segment title carries a *middle* segment matching neither the page's
+    own organisation nor its host: that segment is the work the page presents.
+    The live run's page wrote its own site label beside the act it reproduces,
+    and the figure it served was then published as the serving site's own
+    statement (improvement 7). ``None`` for every title that names nothing but
+    its headline and its site.
+    """
+    segments = title_segments(finding.source_title)
+    if len(segments) < 3:
+        return None
+    host = publisher_identity(finding.source_url)
+    for segment in segments[1:-1]:
+        if not _body_shaped(segment):
+            continue
+        if same_organisation(segment, owner) or same_organisation(segment, host):
+            continue
+        return segment
+    return None
+
+
+def _row_organisation(figure: VerifiedFigure) -> str:
+    """The organisation a row claims, or "" when it claims none (improvement 7).
+
+    An ``unattributed`` row's organisation is the page's owner, and a page
+    serving another body's work is not the figure's organisation however the
+    page's name reads: the row would name the relaying site beside the reader's
+    "source does not attribute it" label, which is the run's
+    "<the site> states…" sentence. Such a row claims no organisation. Every
+    other attribution keeps the context's own organisation, which the verifier
+    resolved and the reader's label prints.
+    """
+    context = figure.context
+    if context is None:
+        return ""
+    if context.attribution == "unattributed" and _serves_another_body(
+        figure.finding, context.organisation
+    ):
+        return ""
+    return context.organisation
 
 
 def _same_period_and_subject(left: FactRow, right: FactRow,

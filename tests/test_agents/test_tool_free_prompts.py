@@ -553,7 +553,11 @@ PLANNED_OPERATION_INVENTORY = {
     # The report review renders one example like the rest of the pipeline: D10
     # gave it the shared reply format, so its row holds every convention here.
     "context check": ("evidence_verifier", 1),
-    "statement check": ("evidence_verifier", 1),
+    # Run-2 improvement 8 gave the statement check its second example: the
+    # first shows a wrong forecast/actual distinction, the second a conditional
+    # rule stated without its condition or exception, judged against the
+    # passage beside the snippet. Two failure classes, one example each.
+    "statement check": ("evidence_verifier", 2),
     "report drafting": ("report_writer", 1),
     "report review": ("report_reviewer", 1),
 }
