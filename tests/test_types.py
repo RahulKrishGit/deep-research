@@ -5,18 +5,12 @@ from datetime import datetime
 import pytest
 from pydantic import ValidationError
 
-from deep_research.agents.identity import claim_fingerprint
+from deep_research.agents.verified_facts import release_key, release_text
 from deep_research.utils.types import (
     INCOMPLETE_CONTENT_SHA256,
-    MAX_CONSUMED_COVERAGE_IDS,
-    MAX_CONSUMED_FINDING_FINGERPRINTS,
     ORIGINAL_QUESTION_OMISSION_REFERENCE,
     AnswerContract,
     BoundaryAudit,
-    Claim,
-    ClaimProvenance,
-    Critique,
-    EvidencePassage,
     EvidenceTarget,
     Finding,
     MemorySnapshot,
@@ -396,19 +390,6 @@ def scored_source(**overrides: object) -> ScoredSource:
     return ScoredSource.model_validate(values)
 
 
-def critique(**overrides: object) -> Critique:
-    values = {
-        "score": 7,
-        "gaps": [],
-        "unsupported_claims": [],
-        "recommended_queries": [],
-        "should_continue": False,
-        "rationale": "The report meets the threshold.",
-    }
-    values.update(overrides)
-    return Critique.model_validate(values)
-
-
 def test_domain_models_preserve_required_fields() -> None:
     topic = SubTopic(
         coverage_id="topic-01",
@@ -426,25 +407,6 @@ def test_domain_models_preserve_required_fields() -> None:
         confidence=0.8,
         related_sub_topic="Adoption",
     )
-    claim = Claim(
-        claim_id=claim_fingerprint("Adoption increased year over year."),
-        text="Adoption increased year over year.",
-        source_urls=["https://example.com/a", "https://example.org/b"],
-        verdict="verified",
-        evidence_status="verified_pair",
-        confidence=0.9,
-        evidence=["Two independent surveys report an increase."],
-        contradictions=["One regional survey reported flat adoption."],
-        verification_evidence=[
-            EvidencePassage(
-                source_url="https://independent.org/survey",
-                source_title="Independent survey",
-                locator="p. 3",
-                excerpt="Two independent surveys report an increase.",
-                stance="supports",
-            )
-        ],
-    )
     memory = MemorySnapshot(
         similar_findings=[finding],
         known_source_reputations={"example.com": 0.85},
@@ -453,139 +415,13 @@ def test_domain_models_preserve_required_fields() -> None:
 
     assert topic.priority == 1
     assert finding.source_url == "not-validated-at-this-boundary"
-    assert claim.contradictions == ["One regional survey reported flat adoption."]
     assert memory.similar_findings == [finding]
-
-
-def test_a_claim_identity_is_the_canonical_fingerprint_of_its_text() -> None:
-    """Task 5, Minor 1: a ``Claim`` fixture must not invent an id.
-
-    ``merge_claim_snapshot`` recomputes the fingerprint from ``text``, so an
-    arbitrary id passes every merge test while guarding nothing about the
-    public identity field. Fixtures therefore derive it, and this asserts the
-    contract they derive it against.
-    """
-    text = "Adoption increased year over year."
-    fixture = Claim(
-        claim_id=claim_fingerprint(text),
-        text=text,
-        source_urls=["https://example.com/a"],
-        verdict="verified",
-        evidence_status="verified_pair",
-        confidence=0.9,
-        evidence=["An independent survey reports an increase."],
-        contradictions=[],
-        verification_evidence=[
-            EvidencePassage(
-                source_url="https://independent.org/survey",
-                source_title="Independent survey",
-                locator="p. 3",
-                excerpt="An independent survey reports an increase.",
-                stance="supports",
-            )
-        ],
-    )
-
-    assert fixture.claim_id == claim_fingerprint(fixture.text)
-    # Provenance is additive: a fixture that carries none claims none, which
-    # suppresses nothing and therefore costs extra work rather than skipping
-    # evidence.
-    assert fixture.consumed_finding_fingerprints == []
-    assert fixture.consumed_coverage_ids == []
-
-
-def test_claim_provenance_is_bounded() -> None:
-    """Both provenance lists are bounded, so a claim cannot grow forever."""
-    with pytest.raises(ValidationError):
-        Claim(
-            claim_id="fingerprint",
-            text="A claim.",
-            source_urls=["https://example.com/a"],
-            verdict="insufficient_evidence",
-            evidence_status="source_supported",
-            confidence=0.0,
-            evidence=[],
-            contradictions=[],
-            verification_evidence=[],
-            consumed_finding_fingerprints=[
-                f"fingerprint-{index}"
-                for index in range(MAX_CONSUMED_FINDING_FINGERPRINTS + 1)
-            ],
-        )
-
-    with pytest.raises(ValidationError):
-        Claim(
-            claim_id="fingerprint",
-            text="A claim.",
-            source_urls=["https://example.com/a"],
-            verdict="insufficient_evidence",
-            evidence_status="source_supported",
-            confidence=0.0,
-            evidence=[],
-            contradictions=[],
-            verification_evidence=[],
-            consumed_coverage_ids=[
-                f"topic-{index}"
-                for index in range(MAX_CONSUMED_COVERAGE_IDS + 1)
-            ],
-        )
-
-
-def _claim_snapshot() -> dict[str, object]:
-    """One persisted claim record, in the shape a snapshot serialises to."""
-    text = "Logical error rates fell below break-even in 2025."
-    return {
-        "claim_id": claim_fingerprint(text),
-        "text": text,
-        "source_urls": ["https://example.com/a"],
-        "verdict": "insufficient_evidence",
-        "confidence": 0.0,
-        "evidence": [],
-        "contradictions": [],
-        "verification_evidence": [],
-        "consumed_finding_fingerprints": [],
-        "consumed_coverage_ids": [],
-    }
-
-
-def test_a_claim_snapshot_without_an_insufficient_reason_still_validates() -> None:
-    """The new field is additive, so a snapshot written before it validates.
-
-    ``Claim`` is a shared contract read back from persisted state, so a field
-    added for one agent's audit cannot make an older record unreadable. The
-    omission has to mean the same thing it means on the record: no reason was
-    recorded, which is not the same as a reason of "unknown".
-    """
-    claim = Claim.model_validate(_claim_snapshot())
-
-    assert claim.insufficient_reason is None
-
-
-def test_a_claim_snapshot_keeps_an_unenumerated_insufficient_reason() -> None:
-    """The field is a bounded string, not a closed enumeration.
-
-    ``Claim`` must not import the fact checker's ``INSUFFICIENT_REASONS`` to
-    constrain this value: the contract layer cannot depend on an agent, and a
-    reason coined by a later release than the reader's would otherwise turn a
-    readable snapshot into a validation failure.
-    """
-    snapshot = {**_claim_snapshot(), "insufficient_reason": "a_later_reason"}
-
-    claim = Claim.model_validate(snapshot)
-
-    assert claim.insufficient_reason == "a_later_reason"
 
 
 @pytest.mark.parametrize("value", [-0.01, 1.01])
 def test_unit_scores_reject_out_of_range_values(value: float) -> None:
     with pytest.raises(ValidationError):
         scored_source(authority_score=value)
-
-
-@pytest.mark.parametrize("value", [0, 11])
-def test_critic_score_rejects_out_of_range_values(value: int) -> None:
-    with pytest.raises(ValidationError):
-        critique(score=value)
 
 
 def test_finding_rejects_timezone_naive_timestamp() -> None:
@@ -740,35 +576,48 @@ def test_unscored_source_accepts_null_quality_scores_and_explicit_status() -> No
     assert source.evaluation_status == "unscored_cap"
 
 
+def _release_finding(**overrides: object) -> Finding:
+    """A finding whose recorded dates are the only varying part."""
+    fields: dict[str, object] = {
+        "content": "U.S. battery capacity increased 66% in 2024.",
+        "source_url": "https://relay.example/story",
+        "source_title": "Relaying the battery figures",
+        "extracted_at": "2026-07-25T12:00:00+00:00",
+        "confidence": 0.8,
+        "related_sub_topic": "Adoption",
+        "attributed_issuer": "EIA",
+    }
+    fields.update(overrides)
+    return Finding.model_validate(fields)
+
+
 def test_a_relays_own_date_never_prints_or_orders_as_the_issuers_release() -> (
     None
 ):
-    """``release`` and ``as_text`` read only what was recorded as a release.
+    """``release_text`` and ``release_key`` read only a recorded release.
 
     ``release_date`` is what the attributed issuer released the figure on;
     ``statement_date`` is only the date the citing page itself carries. A
     relay that names no release must not have its own article date printed
     as if it were one, nor used to order or label revisions of a series.
     """
-    relay = ClaimProvenance(attributed_issuer="EIA", statement_date="2025-03-13")
-    assert relay.release == ""
-    assert relay.as_text() == "EIA, stated 2025-03-13"
+    relay = _release_finding(statement_date="2025-03-13")
+    assert relay.release_date is None
+    assert release_text(relay) == "stated 2025-03-13"
 
-    released = ClaimProvenance(
-        attributed_issuer="EIA",
-        statement_date="2025-03-13",
-        release_date="2025-03-12",
+    released = _release_finding(
+        statement_date="2025-03-13", release_date="2025-03-12"
     )
-    assert released.release == "2025-03-12"
-    assert released.as_text() == "EIA, released 2025-03-12"
+    assert released.release_date == "2025-03-12"
+    assert release_text(released) == "released 2025-03-12"
+    # The released edition orders by its release, never by the copy's day.
+    assert release_key(released) == (2025, 3, 12)
 
-    silent = ClaimProvenance(attributed_issuer="EIA")
-    assert silent.release == ""
-    assert silent.as_text() == "EIA"
+    silent = _release_finding()
+    assert silent.release_date is None
+    assert silent.statement_date is None
+    assert release_text(silent) is None
 
-
-import pytest
-from pydantic import ValidationError
 
 from deep_research.utils.types import FindingFigure
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
@@ -814,8 +663,6 @@ from deep_research.utils.types import (
     FigureContext,
     FigureResult,
     FindingVerification,
-    ResearchState,
-    merge_research_state,
 )
 
 
@@ -915,17 +762,23 @@ def test_a_bare_quality_snapshot_constructs_with_zeroed_readings() -> None:
     """
     snapshot = ReportQualitySnapshot()
 
-    assert snapshot.coverage_ratio == 0.0
-    assert snapshot.scored_cited_source_ratio == 0.0
-    assert (snapshot.planned_topics, snapshot.covered_topics) == (0, 0)
-    assert (snapshot.unique_findings, snapshot.unique_sources) == (0, 0)
-    assert (snapshot.verified_claims, snapshot.contradicted_claims) == (0, 0)
-    assert (snapshot.duplicate_claims, snapshot.duplicate_source_rows) == (0, 0)
-    # The step-4 readings a bare record has nothing to say about.
+    assert (snapshot.cited_sources, snapshot.uncited_settled_points) == (0, 0)
+    assert snapshot.semantic_review_score is None
+    assert snapshot.semantic_review_status == ""
+    assert snapshot.forecasts_without_release == 0
+    assert (
+        snapshot.verified_findings,
+        snapshot.corrected_findings,
+        snapshot.dropped_findings,
+        snapshot.context_unchecked_findings,
+        snapshot.dropped_figures,
+    ) == (0, 0, 0, 0, 0)
+    assert (snapshot.cited_findings, snapshot.duplicate_fact_rows) == (0, 0)
+    assert (snapshot.unresolved_citations, snapshot.refused_sentences) == (0, 0)
+    # The readings a bare record has nothing to say about.
     assert snapshot.required_target_ids == []
     assert snapshot.answered_target_ids == []
     assert snapshot.missing_required_target_ids == []
+    assert snapshot.unaccounted_target_ids == []
     assert snapshot.unjudged_sentences == []
     assert snapshot.hard_failures == []
-    assert (snapshot.verified_findings, snapshot.dropped_figures) == (0, 0)
-    assert snapshot.forecasts_without_release == 0
