@@ -210,8 +210,10 @@ def report_scope(sub_topics: Sequence[SubTopic]) -> str:
 
     The plan's sub-topics are the only scope the system was given, so naming
     them is the honest declaration a reader needs before reading a ranking as
-    advice. Everything else the report prints is bounded by the sources its
-    points cite.
+    advice. They are named by their titles alone: a coverage id ("topic-01") and
+    the plan's own count of its sub-topics are the run's bookkeeping, which the
+    reader never needs and the reader report never prints (ev-1 audit A6).
+    Everything else the report prints is bounded by the sources its points cite.
     """
     topics = list(sub_topics)
     assumed = (
@@ -219,10 +221,8 @@ def report_scope(sub_topics: Sequence[SubTopic]) -> str:
         "state is assumed."
     )
     if not topics:
-        return f"No sub-topic plan was recorded. {assumed}"
-    listed = "; ".join(f"{topic.coverage_id} {topic.title}" for topic in topics)
-    plan = _sentence(f"{len(topics)} planned sub-topic(s), in priority order: {listed}")
-    return f"{plan} {assumed}"
+        return assumed
+    return f"{_sentence('; '.join(topic.title for topic in topics))} {assumed}"
 
 
 def _lookup(index: Sequence[Citation]) -> dict[str, int]:
@@ -938,9 +938,19 @@ def _header_counts(composition: ReportComposition) -> str:
     corrected = sum(1 for v in statuses if v.status == "verified_corrected")
     unchecked = sum(1 for v in statuses if v.status != "dropped" and v.context_unchecked)
     dropped = sum(1 for v in statuses if v.status == "dropped")
+    unanswered = (
+        _counted(len(composition.not_found), "planned question", "planned questions")
+        + " unanswered, listed under Not found."
+        if composition.not_found else "every planned question is answered."
+    )
     return (f"{len(written_citations(composition))} sources cited; {checked} findings checked against "
             f"their pages ({corrected} with corrected context, {unchecked} with unchecked context), "
-            f"{dropped} dropped; {len(composition.not_found)} required targets not found.")
+            f"{dropped} dropped; {unanswered}")
+
+
+def _counted(count: int, singular: str, plural: str) -> str:
+    """``count`` with the noun it counts, in the form that count takes."""
+    return f"{count} {singular if count == 1 else plural}"
 
 
 def _sentence(text: str) -> str:
@@ -999,14 +1009,20 @@ def render_written_report(composition: ReportComposition) -> str:
     lines += [_written_point(p, composition, index) for p in composition.summary] or [
         "No summary statement could be printed from the checked findings; the key facts follow."
     ]
-    lines += ["", "## Key facts", ""]
-    if composition.fact_rows:
-        with_subjects = any(row.subject for row in composition.fact_rows)
+    # The table is the answer's own facts, so only a row that answers a planned
+    # question prints (ev-1 audit A6: its five rows were four copies of a
+    # site-wide page counter that answered nothing). A figure that answers no
+    # question stays citable in prose and whole in the evidence log, and when no
+    # verified figure exists at all the section says so rather than vanishing.
+    answered = [row for row in composition.fact_rows if row.target_ids]
+    if answered:
+        lines += ["", "## Key facts", ""]
+        with_subjects = any(row.subject for row in answered)
         lines += (
             [_FACTS_HEADER_WITH_SUBJECT, "|---|---|---|---|---|---|---|---|---|"]
             if with_subjects else [_FACTS_HEADER, "|---|---|---|---|---|---|---|---|"]
         )
-        for row in composition.fact_rows:
+        for row in answered:
             source = citation_markers(
                 [by_id[fingerprint].source_url for fingerprint in _row_finding_ids(row)
                  if fingerprint in by_id],
@@ -1025,20 +1041,24 @@ def render_written_report(composition: ReportComposition) -> str:
                      row.kind + (" (unchecked context)" if row.context_unchecked else ""),
                      row.scope or "not stated", release, source]
             lines.append("| " + " | ".join(_table_cell(c) for c in cells) + " |")
-    else:
-        lines.append("No figure passed the Evidence Verifier.")
+    elif not composition.fact_rows:
+        lines += ["", "## Key facts", "", "No figure passed the Evidence Verifier."]
     for section in composition.sections:
         lines += ["", f"## {section.title}", ""]
         lines += [_written_point(p, composition, index) for p in section.points]
     if composition.not_found:
-        lines += ["", "## Not found", ""]
+        lines += [
+            "", "## Not found", "",
+            "Each entry is a planned question that no checked finding answers. What the search "
+            "did for it is recorded in full in the evidence log.",
+        ]
         for target in composition.not_found:
             if target.searched:
-                trail = "Searched: " + "; ".join(f'"{q}"' for q in target.queries) + f". Pages read: {len(target.pages_read)}"
-                trail += (" (" + ", ".join(target.pages_read[:5]) + ")." if target.pages_read else ".")
+                trail = (f"{_counted(len(target.queries), 'search', 'searches')} made, "
+                         f"{_counted(len(target.pages_read), 'page', 'pages')} read.")
             else:
-                trail = "Not searched in this run."
-            lines.append(f"- **{target.question}** No checked finding answers it. {trail}")
+                trail = "not searched in this run."
+            lines.append(f"- **{target.question}** No checked finding answers it: {trail}")
     lines += ["", "## Sources", "", render_citations(index)]
     return "\n".join(lines) + "\n"
 
@@ -1112,6 +1132,22 @@ def render_finding_log(composition: ReportComposition) -> str:
                 line = f"  - {text}: dropped ({result.dropped_reason})" + (f": {result.reason}" if result.reason else "")
             lines.append(line)
         lines.append("")
+    if composition.not_found:
+        # The reader report states each unanswered question and how the search
+        # went, without the log; the log is where the log belongs (ev-1 audit A6).
+        lines += ["## Not found", "",
+                  "Each planned question no checked finding answers, with every query made and "
+                  "every page read for it.", ""]
+        for target in composition.not_found:
+            lines.append(f"### {target.question}")
+            if target.searched:
+                lines.append("- Searched: "
+                             + ("; ".join(f'"{query}"' for query in target.queries) or "(none)"))
+                lines.append("- Pages read: "
+                             + (", ".join(target.pages_read) or "(none)"))
+            else:
+                lines.append("- Not searched in this run.")
+            lines.append("")
     if composition.rejected_points:
         lines += ["## Refused sentences", ""]
         for rejected in composition.rejected_points:

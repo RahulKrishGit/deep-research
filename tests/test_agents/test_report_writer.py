@@ -14,6 +14,7 @@ from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import render_finding_log, render_written_report
 from deep_research.agents.report_writer import (
     MAX_POINT_CHARS,
+    REPORT_WRITER_INSTRUCTION,
     REPORT_WRITER_NAME,
     ReportWriterAgent,
     ReportWriterDraft,
@@ -102,6 +103,25 @@ def _task_state():
 
 def _labels(registry):
     return {finding.source_url.split("/")[2]: label for label, finding in registry}
+
+
+def test_the_writer_rules_require_additive_sections_and_a_criterion_for_a_judgement() -> None:
+    """Two reader-facing rules the ev-1 audit's A6 and A2/A3 findings earned.
+
+    (a) that pass printed "Scope of the findings" and "Attribution" sections
+    that only restated the summary; (b) its headline sentence kept the page's
+    judgement ("pretty much unbeatable") while dropping the metric that
+    measured it ("sound-per-pound value"), so the judgement read as a
+    sound-quality ranking it was not. Both rules are general: they name no
+    question, organisation or figure.
+    """
+    assert ("Every section adds something the executive summary does not carry: "
+            "never write a section that only lists, restates or re-attributes "
+            "the findings." in REPORT_WRITER_INSTRUCTION)
+    assert ("Never state a judgement while dropping the criterion it is measured by: a "
+            "judgement the finding measures by a criterion the snippet does not name is "
+            "not an answer, so state the criterion with it or leave the judgement out."
+            in REPORT_WRITER_INSTRUCTION)
 
 
 def test_the_registry_labels_citable_findings_answers_first() -> None:
