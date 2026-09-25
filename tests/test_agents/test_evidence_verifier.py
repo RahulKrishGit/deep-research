@@ -10,6 +10,7 @@ import pytest
 
 from deep_research.agents.evidence_verifier import (
     _CONTEXT_CHECK_REPLY_EXAMPLES,
+    _checked,
     CONTEXT_CHECK_BATCH_SIZE,
     CONTEXT_CHECK_CONCURRENCY,
     EVIDENCE_VERIFIER_NAME,
@@ -21,12 +22,15 @@ from deep_research.agents.evidence_verifier import (
     StatementCheckItem,
     StatementVerdictDraft,
     check_statements,
+    context_check_messages,
     context_passage,
     evaluated_issuer,
+    evaluated_page_date,
     figure_match,
     page_owner,
     resolve_attribution,
     statement_check_messages,
+    unchecked_context,
     verify_finding,
 )
 from deep_research.agents.prompts import STRUCTURED_REQUEST_END
@@ -45,6 +49,7 @@ from deep_research.utils.types import (
     FindingVerification,
     ResearchState,
     ScoredSource,
+    SourceTemporal,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read
@@ -1120,8 +1125,155 @@ def test_a_kept_figure_states_its_attribution_on_its_own_line_only() -> None:
     assert not [line for line in lines if line.startswith("    attributed to:")]
     assert any(
         line.startswith(
-            "  F01: 7 percent | period 2025 | scope none | kind actual | "
+            "  F01: 7 percent | period 2025 | scope none | subject none | kind actual | "
             "relayed (Example Institute) | evidence: "
         )
         for line in lines
+    )
+
+
+# ---------------------------------------------------------------------------
+# D11/D12: the figure subject, and relative periods resolved from the page date
+#
+# ``_figure_item`` is named apart from ``_item(read, finding)`` above because
+# this one takes the page's own text and the figure under it -- the shape the
+# subject and relative-period rules read.
+# ---------------------------------------------------------------------------
+
+
+def _figure_item(text, figure_, *, page_date=None) -> ContextItem:
+    read = make_read(text)
+    finding = make_finding(read, text, figures=[figure_], target_ids=["topic-01-target-01"])
+    return ContextItem(label="F01", finding=finding, read=read, passage=text,
+                       match=figure_match(finding, {read.read_id: read}), page_date=page_date)
+
+
+def _check(item, **reply):
+    fields = {"finding": "F01", "figure": 1, "period": None, "scope": None,
+              "attribution": "own", "organisation": None, "kind": "actual",
+              "evidence_words": item.finding.snippet, "verdict": "confirm",
+              "reason": "Stated."} | reply
+    return _checked(item, item.finding.figures[0], FigureCheckDraft(**fields))
+
+
+def test_a_relative_period_is_resolved_from_the_page_date() -> None:
+    """Spec §5.2, D11 (Gate G4 finding (a)): 'this year' on a page dated 2026-02-20."""
+    text = "Operators installed 4 GW this year."
+    kept = _check(_figure_item(text, figure("4", "GW"), page_date="2026-02-20"),
+                  period="2026", verdict="correct")
+    assert kept.kept and (kept.context.period, kept.context.period_resolved_from) == ("2026", "2026-02-20")
+    undated = _check(_figure_item(text, figure("4", "GW")), period="2026", verdict="correct")
+    assert undated.dropped_reason == "correction_not_on_page"
+
+
+def test_a_subject_is_adopted_only_as_the_page_names_it() -> None:
+    """Ruling N2: an off-page subject never drops a figure unless it disputes a recorded one."""
+    text = "Model B scored 4.5 out of 5 for noise."
+    named = _check(_figure_item(text, figure("4.5", "out of 5")), subject="Model B")
+    assert named.kept and named.context.subject == "Model B"
+    unverified = _check(_figure_item(text, figure("4.5", "out of 5")), subject="Model C", verdict="correct")
+    assert unverified.kept and unverified.context.subject is None
+    recorded = figure("4.5", "out of 5").model_copy(update={"subject": "Model B"})
+    disputed = _check(_figure_item(text, recorded), subject="Model C", verdict="correct")
+    assert disputed.dropped_reason == "correction_not_on_page"
+    misread = figure("4.5", "out of 5").model_copy(update={"subject": "Model A"})
+    corrected = _check(_figure_item(text, misread), subject="Model B", verdict="correct")
+    assert corrected.kept and corrected.context.subject == "Model B"
+    us = _check(_figure_item("U.S. operators installed 4 GW in 2024.",
+                             figure("4", "GW", "2024", "actual")),
+                subject="United States", period="2024")
+    assert us.kept and us.context.subject is None
+    item = _figure_item(text, recorded)
+    assert unchecked_context(item.finding, item.finding.figures[0], item.read, None).subject == "Model B"
+
+
+def test_the_context_check_block_shows_the_page_date_and_the_recorded_subject() -> None:
+    item = _figure_item("Model B scored 4.5 out of 5 this year.",
+                        figure("4.5", "out of 5").model_copy(update={"subject": "Model B"}),
+                        page_date="2026-02-20")
+    body = context_check_messages([item])[1].content
+    assert "page date: 2026-02-20 (from the Source Evaluator)" in body.splitlines()
+    assert "| recorded subject Model B" in body
+
+
+def test_a_block_with_no_page_date_says_so() -> None:
+    """§8.7-D12: every block states its resolution basis, and says when it has none."""
+    body = context_check_messages(
+        [_figure_item("Operators installed 4 GW in 2024.", figure("4", "GW", "2024", "actual"))]
+    )[1].content
+    assert "page date: not stated" in body.splitlines()
+
+
+def _dated_source(read, publication_date: str | None) -> ScoredSource:
+    return ScoredSource(url=read.resolved_url, title=read.title, rationale="Dated.",
+                        authority_score=0.8, recency_score=0.8, relevance_score=0.8,
+                        overall_score=0.8,
+                        temporal=SourceTemporal(publication_date=publication_date))
+
+
+def test_the_page_date_comes_from_the_evaluated_source() -> None:
+    """D11: the one date a relative period may resolve against is the read's validated one."""
+    read = make_read()
+    assert evaluated_page_date([_dated_source(read, "2026-02-20")], read) == "2026-02-20"
+    assert evaluated_page_date([_dated_source(read, None)], read) is None
+    elsewhere = _dated_source(read, "2026-02-20").model_copy(update={"url": "https://other.example.test/x"})
+    assert evaluated_page_date([elsewhere], read) is None
+
+
+def _relative_period_reply(messages: list, schema: type) -> ContextCheckDraft:
+    """Answer the one figure with the period its page's stated date resolves "this year" to."""
+    del schema
+    snippet = re.search(r"snippet: (.*)", messages[1].content).group(1)
+    return ContextCheckDraft(figures=[FigureCheckDraft(
+        finding="F01", figure=1, period="2026", attribution="own", kind="actual",
+        evidence_words=snippet, verdict="correct", reason="The page's own date resolves the year.",
+    )])
+
+
+@pytest.mark.asyncio
+async def test_a_relative_period_resolves_against_the_evaluated_page_date(tracker: Tracker) -> None:
+    """D11/D12 wire-up: the verifier carries the Source Evaluator's date to the figure's check."""
+    text = "Operators installed 4 GW this year."
+    read = make_read(text, url="https://operators.example.test/report", title="Operators")
+    finding = make_finding(read, text, figures=[figure("4", "GW")])
+    completer = ScriptedCompleter(outputs=[_relative_period_reply])
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=[finding], read_records={read.read_id: read},
+                   evaluated_sources=[_dated_source(read, "2026-02-20")])
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    [judged] = outcome.state_update["verified_findings"]
+    [result] = judged.verification.figure_results
+    assert result.kept
+    assert (result.context.period, result.context.period_resolved_from) == ("2026", "2026-02-20")
+
+
+def test_a_statement_check_figure_line_names_its_subject() -> None:
+    """D11: a sentence about one subject is judged against the subject its figure is about."""
+    text = "Model B scored 4.5 out of 5 for noise."
+    wanted = figure("4.5", "out of 5")
+    finding = make_finding(
+        make_read(text, url="https://lab.example.test/kettles", title="Kettles"), text,
+        figures=[wanted],
+    ).model_copy(update={"verification": FindingVerification(
+        status="verified",
+        figure_results=[FigureResult(
+            figure=wanted, matched=True, evidence_words=text,
+            context=FigureContext(attribution="own", organisation="Example Test Lab",
+                                  kind="actual", subject="Model B"),
+        )],
+    )})
+    body = statement_check_messages(
+        [StatementCheckItem(label="S001", text="Model B scored 4.5 out of 5.",
+                            findings=[finding], labels=["F01"])],
+        question="Which kettle is the quietest?",
+    )[1].content
+    assert any(
+        line.startswith(
+            "  F01: 4.5 out of 5 | period none | scope none | subject Model B | kind actual | "
+            "own (Example Test Lab) | evidence: "
+        )
+        for line in body.splitlines()
     )

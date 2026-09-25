@@ -17,6 +17,7 @@ from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.evidence import build_read_record
 from deep_research.agents.prompts import STRUCTURED_REQUEST_END, AgentTask
 from deep_research.agents.researcher import (
+    _admitted_figures,
     DEFAULT_MAX_SUB_TOPICS,
     HIGH_PRIORITY_THRESHOLD,
     MAX_FINDINGS_PER_SUB_TOPIC,
@@ -186,7 +187,7 @@ QEC_READ = qec_read_record()
 
 _FINDING_EXAMPLE_OUTPUT = (
     "Example JSON output:\n"
-    """{"findings":[{"attributed_issuer":"Example Statistical Agency","attribution_quote":"according to the Example Statistical Agency","confidence":0.8,"content":"The example report relays the Example Statistical Agency's measurement: a 12 percent reduction in 2024 across all classes, from the agency's January 2025 preliminary inventory.","data_period":"2024","figures":[{"kind":"actual","period":"2024","unit":"percent","value":"12"}],"locator":"page-4-chunk-0","measure_scope":"all classes","read_id":"read-111111111111111111111111","release_date":"2025-03-12","snippet":"The measured reduction was 12 percent, according to the Example Statistical Agency, across all classes.","source_title":"Example report","source_url":"https://evidence.example.test/report","statement_date":"2025-03-12","target_ids":["topic-01-target-01"],"vintage":"January 2025 preliminary inventory"}]}"""
+    """{"findings":[{"attributed_issuer":"Example Statistical Agency","attribution_quote":"according to the Example Statistical Agency","confidence":0.8,"content":"The example report relays the Example Statistical Agency's measurement: a 12 percent reduction in 2024 across all classes, from the agency's January 2025 preliminary inventory.","data_period":"2024","figures":[{"kind":"actual","period":"2024","subject":null,"unit":"percent","value":"12"}],"locator":"page-4-chunk-0","measure_scope":"all classes","read_id":"read-111111111111111111111111","release_date":"2025-03-12","snippet":"The measured reduction was 12 percent, according to the Example Statistical Agency, across all classes.","source_title":"Example report","source_url":"https://evidence.example.test/report","statement_date":"2025-03-12","target_ids":["topic-01-target-01"],"vintage":"January 2025 preliminary inventory"}]}"""
 )
 
 
@@ -4606,3 +4607,14 @@ async def test_an_exception_in_one_loop_stops_the_queued_sub_topics(
     assert [call.key for call in completer.react_calls] == ["topic-01"]
     assert completer.remaining("topic-02") == 1
     assert completer.remaining("topic-03") == 1
+
+
+def test_a_figure_draft_keeps_its_subject() -> None:
+    """D11: the thing a figure is about travels from the draft, as the page names it."""
+    figures, dropped = _admitted_figures(
+        [FindingFigureDraft(value="4.5", unit="out of 5", subject=" Model B "),
+         FindingFigureDraft(value="4.2", unit="out of 5", subject="  ")],
+        index=1,
+    )
+    assert dropped == []
+    assert [figure.subject for figure in figures] == ["Model B", None]

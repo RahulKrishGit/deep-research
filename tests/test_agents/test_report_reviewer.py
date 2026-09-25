@@ -34,6 +34,7 @@ from deep_research.agents.report import (
     render_written_report,
 )
 from deep_research.agents.report_reviewer import (
+    _fact_row_line,
     REPORT_REVIEWER_ROLE,
     REVIEW_DIMENSIONS,
     REVIEW_RUBRIC_VERSION,
@@ -1998,3 +1999,10 @@ async def test_a_reused_review_records_no_retry() -> None:
     assert second is first
     assert len(completer.calls) == 2
     assert reviewer.review_records == ()
+
+
+def test_a_fact_row_line_names_its_subject() -> None:
+    """D11: the reviewer reads which thing each key fact is about, as the reader does."""
+    row = _fact_row("finding-1")
+    assert "| subject Model B |" in _fact_row_line(row.model_copy(update={"subject": "Model B"}))
+    assert "| subject not stated |" in _fact_row_line(row)

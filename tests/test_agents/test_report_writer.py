@@ -784,3 +784,99 @@ def test_a_finding_with_no_figure_is_listed_with_its_attribution_and_its_role() 
         f"snippet: {text}",
         "F07 | statement | attributed to Example Institute | forecast",
     ]
+
+
+# --- D11: subjects and page-dated periods in the registry and the guard ---
+
+
+def _about(url, text, specs, *, target_ids=("topic-01-target-01",)):
+    """A verified finding whose kept figures carry ``specs``: ``(value, unit, context fields)``."""
+    figs = [figure(value, unit, "2024", "actual") for value, unit, _ in specs]
+    finding = make_finding(make_read(text, url=url, title="Example page"), text, figures=figs,
+                           target_ids=list(target_ids))
+    base = {"period": "2024", "attribution": "own", "organisation": "Example Test Lab", "kind": "actual"}
+    results = [FigureResult(figure=fig, matched=True, evidence_words=text,
+                            context=FigureContext(**(base | fields)))
+               for fig, (_, _, fields) in zip(figs, specs)]
+    return finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=results)})
+
+
+def test_a_figure_line_names_its_subject() -> None:
+    finding = _about("https://lab.example.test/kettles", "Model B scored 4.5 out of 5 for noise.",
+                     [("4.5", "out of 5", {"subject": "Model B"})])
+    [line] = [line for line in registry_lines("F01", finding) if "| figure 1:" in line]
+    assert "| figure 1: 4.5 out of 5 | subject Model B | period " in line
+
+
+def test_a_figure_line_labels_a_period_resolved_from_the_page_date() -> None:
+    """D11: the writer sees that the year is the page's date, not the page's words."""
+    finding = _about("https://operators.example.test/report", "Operators installed 4 GW this year.",
+                     [("4", "GW", {"period": "2026", "period_resolved_from": "2026-02-20"})])
+    [line] = [line for line in registry_lines("F01", finding) if "| figure 1:" in line]
+    assert line.endswith("; period resolved from the page date 2026-02-20")
+
+
+def test_a_statement_line_ends_with_the_date_the_finding_carries() -> None:
+    """The statement's own date first, then its release, then the period its data cover."""
+    text = "The Example Institute forecasts that rents will keep rising next year."
+
+    def statement_line(**dates: str) -> str:
+        finding = make_finding(
+            make_read(text, url="https://gazette.example.test/rents", title="Rents"), text,
+            attributed_issuer="Example Institute", **dates,
+        ).model_copy(update={"verification": FindingVerification(status="verified")})
+        return registry_lines("F07", finding)[-1]
+
+    assert statement_line(statement_date="2025-12-31", release_date="2026-01-15", data_period="2025") == (
+        "F07 | statement | attributed to Example Institute | forecast | dated 2025-12-31")
+    assert statement_line(release_date="2026-01-15", data_period="2025").endswith(" | dated 2026-01-15")
+    assert statement_line(data_period="2025").endswith(" | dated 2025")
+
+
+def test_a_finding_answering_only_an_optional_sibling_is_not_ranked_as_a_required_answer() -> None:
+    """F11: the registry's answers are resolved against the whole plan, then kept for required targets.
+
+    The first finding's figure is about Italy, whose target is optional, yet it
+    names the required Spain target too. Only with the optional sibling in view
+    does the subject rule refuse it Spain's target; the Spain finding is then
+    the one required answer, and it is labelled first.
+    """
+    spain = make_target("topic-01-target-01", question="How much capacity was added in Spain in 2024?",
+                        geography="Spain")
+    italy = make_target("topic-02-target-01", question="How much capacity was added in Italy in 2024?",
+                        geography="Italy", required=False)
+    italian = _about("https://grid.example.test/italy", "Italy added 4 GW of capacity in 2024.",
+                     [("4", "GW", {"subject": "Italy"})], target_ids=(spain.target_id, italy.target_id))
+    spanish = _about("https://grid.example.test/spain", "Spain added 5 GW of capacity in 2024.",
+                     [("5", "GW", {"subject": "Spain"})], target_ids=(spain.target_id,))
+    registry = finding_registry([italian, spanish], [spain, italy])
+    assert [finding.source_url for _, finding in registry] == [spanish.source_url, italian.source_url]
+
+
+def _two_subject_state() -> ResearchState:
+    """One review page rating two products with the same value (Fable §8.8's two-subjects-one-value)."""
+    target = make_target()
+    topic = SubTopic(coverage_id=target.coverage_id, title="Ratings", rationale="r", search_queries=["q"],
+                     success_criteria=["c"], priority=1, evidence_targets=[target])
+    finding = _about("https://lab.example.test/storage",
+                     "Model A added 4 GW in 2024, and Model B also added 4 GW in 2024.",
+                     [("4", "GW", {"subject": "Model A"}), ("4", "GW", {"subject": "Model B"})])
+    return ResearchState(session_id="s", original_question="How much did each model add in 2024?",
+                         sub_topics=[topic], verified_findings=[finding])
+
+
+@pytest.mark.asyncio
+async def test_a_summary_point_about_another_subject_is_not_a_restatement(writer, checker) -> None:
+    """D11: a restatement is counted only for the subject the sentence names."""
+    task = writer.build_task(_two_subject_state())
+    assert [row.subject for row in task.facts] == ["Model A", "Model B"]
+    [(label, _)] = task.registry
+    draft = ReportWriterDraft(executive_summary=[
+        WriterPointDraft(text="Model A added 4 GW in 2024.", finding_labels=[label]),
+        WriterPointDraft(text="Model B added 4 GW in 2024.", finding_labels=[label]),
+        WriterPointDraft(text="In 2024, Model B added 4 GW.", finding_labels=[label]),
+    ], sections=[])
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert [point.text for point in composition.summary] == [
+        "Model A added 4 GW in 2024.", "Model B added 4 GW in 2024."]
+    assert [(r.where, r.reason) for r in composition.rejected_points] == [("summary[2]", "restates K002")]

@@ -63,7 +63,11 @@ from deep_research.agents.prompts import (
 )
 from deep_research.agents.sources import publisher_identity
 from deep_research.agents.steps import ReActRun
-from deep_research.agents.verified_facts import same_organisation
+from deep_research.agents.verified_facts import (
+    resolve_relative_period,
+    same_organisation,
+    same_period,
+)
 from deep_research.agents.wording import stated_role
 from deep_research.providers import (
     ChatMessage,
@@ -144,9 +148,16 @@ CONTEXT_CHECK_INSTRUCTION = (
     "writes it (\"2024\", \"2025\", \"Q3 2025\"); repeat the recorded period when "
     "the page confirms it; null when the page states none (a current price or "
     "rating usually has none — never invent one).\n"
+    "When the page dates a figure only relatively (\"this year\", \"last quarter\"), "
+    "give the period that the page's own stated date resolves it to and quote the "
+    "relative words in evidence_words; never resolve against today's date.\n"
     "- scope: the segment or basis the page says the figure covers, as the page "
     "writes it (\"all segments\", \"households only\", \"firms with more than "
     "250 employees\"), or null when the page states none.\n"
+    "- subject: the thing the page says the figure is about, as the page names it "
+    "(a product model, a place, a version); repeat the recorded subject when the "
+    "page confirms it, correct it when the page names a different thing, null when "
+    "the page names none.\n"
     "- attribution: own when the page states the figure as its publisher's own; "
     "relayed when the page credits another organisation for it (\"according "
     "to\", \"reported by\", a possessive); unattributed when the page states it "
@@ -161,14 +172,14 @@ CONTEXT_CHECK_INSTRUCTION = (
     "- evidence_words: the exact words of the passage that state this figure "
     "with this period and scope, copied character for character, one sentence "
     "or less. Words that are not on the page make the figure unusable.\n"
-    "- verdict: confirm when the recorded period, scope and kind are right; "
+    "- verdict: confirm when the recorded period, scope, subject and kind are right; "
     "correct when you changed any of them; reject when the snippet or "
     "passage does not actually state this figure, or states it for "
     "something else.\n"
     "- reason: one short sentence.\n"
     "A correction is kept only when your corrected wording appears in "
-    "evidence_words. Never guess a period, a scope or an organisation the "
-    "passage does not state."
+    "evidence_words. Never guess a period, a scope, a subject or an organisation "
+    "the passage does not state."
 )
 
 _CONTEXT_CHECK_REPLY_EXAMPLES = (
@@ -177,7 +188,7 @@ _CONTEXT_CHECK_REPLY_EXAMPLES = (
         "kind actual; passage \"The measured reduction was 12 percent in 2024, "
         "according to the Example Statistical Agency, across all classes.\"",
         '{"figures":[{"finding":"F01","figure":1,"period":"2024","scope":"all '
-        'classes","attribution":"relayed","organisation":"Example Statistical '
+        'classes","subject":null,"attribution":"relayed","organisation":"Example Statistical '
         'Agency","kind":"actual","evidence_words":"The measured reduction was 12 '
         'percent in 2024, according to the Example Statistical Agency, across all '
         'classes","verdict":"correct","reason":"The page states the '
@@ -193,6 +204,7 @@ class FigureCheckDraft(ContractModel):
     figure: int
     period: str | None = None
     scope: str | None = None
+    subject: str | None = None
     attribution: FigureAttribution
     organisation: str | None = None
     kind: FigureKind
@@ -217,6 +229,7 @@ class ContextItem:
     passage: str
     match: FigureMatch
     issuer: str | None = None   # evaluated_issuer(...) for the read (PD-25)
+    page_date: str | None = None   # evaluated_page_date(...) for the read (D11, D12)
 
 
 class VerifiedFindings(ContractModel):
@@ -371,6 +384,21 @@ def evaluated_issuer(sources: Sequence[ScoredSource], read: ReadRecord) -> str |
     return None
 
 
+def evaluated_page_date(sources: Sequence[ScoredSource], read: ReadRecord) -> str | None:
+    """D11: the publication date the Source Evaluator validated for this read, if any.
+
+    The one date a relative period ("this year") may be resolved against, and
+    the one every Context Check block prints (D12), so every batch a figure
+    lands in resolves it from the same basis.
+    """
+    urls = {read.requested_url, read.resolved_url}
+    for source in sources:
+        if source.url in urls:
+            date = source.temporal.publication_date
+            return date.strip() if date and date.strip() else None
+    return None
+
+
 def _owns_page(read: ReadRecord, organisation: str, issuer: str | None) -> bool:
     """PD-25 first (the validated issuer names it), then PD-18 (code confirms it)."""
     if issuer and _identity_words(issuer) == _identity_words(organisation):
@@ -430,6 +458,7 @@ def unchecked_context(finding: Finding, figure: FindingFigure, read: ReadRecord,
         attribution=attribution,
         organisation=organisation,
         kind=kind,
+        subject=figure.subject,
     )
 
 
@@ -440,6 +469,15 @@ def _differs(proposed: str | None, recorded: str | None) -> bool:
 
 
 def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) -> FigureResult:
+    """§5.2's enforcement of one reply: the page decides every correction.
+
+    A period or scope correction is kept only when ``evidence_words`` carry
+    it, except a period the words date relatively that the page's own stated
+    date resolves to (D11), which is kept with the date it came from. A
+    subject is adopted only when the evidence words or the passage name it
+    (ruling N2); an unnamed proposal is ignored for a figure with no recorded
+    subject and drops only a figure whose recorded subject it disputes.
+    """
     words = reply.evidence_words.strip()
 
     def drop(reason: FigureDropReason) -> FigureResult:
@@ -451,17 +489,27 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     if not words or not excerpt_matches(read_text(item.read), words):
         return drop("evidence_not_on_page")
     finding = item.finding
-    period, scope, corrected = figure.period or finding.data_period, finding.measure_scope, False
-    for proposed, current, field in ((reply.period, period, "period"), (reply.scope, scope, "scope")):
-        if not _differs(proposed, current):
-            continue
-        if not excerpt_matches(words, proposed):
+    period, scope, subject = figure.period or finding.data_period, finding.measure_scope, figure.subject
+    corrected = False
+    resolved_from: str | None = None   # the page date a relative period came from (D11)
+    if reply.period and _differs(reply.period, period):
+        page_date = item.page_date or finding.release_date or finding.statement_date
+        if not excerpt_matches(words, reply.period):
+            resolved = resolve_relative_period(words, page_date)
+            if resolved is None or not same_period(resolved, reply.period):
+                return drop("correction_not_on_page")
+            resolved_from = page_date
+        period, corrected = reply.period, True
+    if reply.scope and _differs(reply.scope, scope):
+        if not excerpt_matches(words, reply.scope):
             return drop("correction_not_on_page")
-        corrected = True
-        if field == "period":
-            period = proposed
-        else:
-            scope = proposed
+        scope, corrected = reply.scope, True
+    proposed = (reply.subject or "").strip()
+    if proposed and _differs(proposed, subject):
+        if excerpt_matches(words, proposed) or excerpt_matches(item.passage, proposed):
+            subject, corrected = proposed, True
+        elif subject is not None:
+            return drop("correction_not_on_page")
     attribution, organisation = resolve_attribution(
         proposed=reply.attribution, organisation=reply.organisation,
         finding=finding, read=item.read, issuer=item.issuer,
@@ -470,8 +518,9 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     return FigureResult(
         figure=figure, matched=True, evidence_words=words, corrected=corrected,
         reason=reply.reason or None,
-        context=FigureContext(period=period, scope=scope, attribution=attribution,
-                              organisation=organisation, kind=reply.kind),
+        context=FigureContext(period=period, scope=scope, subject=subject, attribution=attribution,
+                              organisation=organisation, kind=reply.kind,
+                              period_resolved_from=resolved_from),
     )
 
 
@@ -537,11 +586,14 @@ def context_check_messages(items: Sequence[ContextItem]) -> list[ChatMessage]:
             f"  figure {number}: {figure.value} {figure.unit} | recorded period "
             f"{figure.period or finding.data_period or 'none'} | recorded kind "
             f"{figure.kind or 'none'}"
+            + (f" | recorded subject {figure.subject}" if figure.subject else "")
             for number, figure in enumerate(finding.figures, start=1)
         )
         blocks.append(
             f"## {item.label}\npage: {item.read.title} ({page_owner(item.read)})\n"
-            f"recorded fields: {recorded}\nfigures:\n{figures}\n"
+            + (f"page date: {item.page_date} (from the Source Evaluator)\n"
+               if item.page_date else "page date: not stated\n")
+            + f"recorded fields: {recorded}\nfigures:\n{figures}\n"
             f"snippet: {finding.snippet}\npassage: {item.passage}"
         )
     static = [
@@ -636,7 +688,8 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
                 read = reads[finding.read_id or ""]
                 items.append(ContextItem(label="", finding=finding, read=read,
                                          passage=context_passage(read, finding.locator, finding.snippet),
-                                         match=match, issuer=evaluated_issuer(sources, read)))
+                                         match=match, issuer=evaluated_issuer(sources, read),
+                                         page_date=evaluated_page_date(sources, read)))
         batches = [items[i : i + self.config.verifier_batch_size]
                    for i in range(0, len(items), self.config.verifier_batch_size)]
         gate = asyncio.Semaphore(self.config.verifier_concurrency)
@@ -758,7 +811,7 @@ _STATEMENT_CHECK_REPLY_EXAMPLES = (
     (
         "Example input: S01: \"The Example Statistical Agency forecasts that 4.1 "
         "million households will have rooftop solar by the end of 2026.\" | F01: "
-        "4.1 million households | period 2025 | scope none | kind actual | own "
+        "4.1 million households | period 2025 | scope none | subject none | kind actual | own "
         "(Example Statistical Agency) | evidence: \"by the end of 2025, 4.1 million "
         "households had rooftop solar\"",
         '{"statements":[{"label":"S01","verdict":"corrected","corrected_text":'
@@ -815,6 +868,7 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
                     figures.append(
                         f"{result.figure.value} {result.figure.unit} | period "
                         f"{ctx.period or 'none'} | scope {ctx.scope or 'none'} | "
+                        f"subject {ctx.subject or 'none'} | "
                         f"kind {ctx.kind} | {ctx.attribution} ({ctx.organisation}) | "
                         f"evidence: {result.evidence_words or ''}"
                     )

@@ -729,7 +729,8 @@ def _fact_row_line(row: FactRow) -> str:
     figure that the reader does.
     """
     return (
-        f"- {row.value} ({row.measure}) | period {row.period or 'not stated'} "
+        f"- {row.value} ({row.measure}) | subject {row.subject or 'not stated'} "
+        f"| period {row.period or 'not stated'} "
         f"| kind {row.kind} | scope {row.scope or 'not stated'} "
         f"| release or edition {row.release or 'not stated'} "
         f"| {_row_label(row)}"
