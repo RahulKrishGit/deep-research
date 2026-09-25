@@ -65,13 +65,17 @@ llm:
   retry_initial_delay: 1.0
   retry_max_delay: 16.0
   temperature: 0.7
-  # Default output budget. Most operations use 32768; the planner's plan
-  # requests and the terminal report review use 65536. Both reason at `max`
-  # effort, where thinking consumes completion tokens as well as the answer.
+  # Default output budget: 49152. A live researcher call reached the former
+  # 32768 exactly (pre-flight, 2026-09-25: 'researcher output 32,768 of
+  # 32,768 tokens, 1 truncated'), so the default and the ReAct decision bound
+  # below carry more headroom. The planner's plan requests and the terminal
+  # report review use 65536; both reason at `max` effort, where thinking
+  # consumes completion tokens as well as the answer. The judge keeps 32768.
+  #
   # The operation-specific bounds below are provider-tested headroom, not
   # known provider maxima. A cap unused by the model costs no output tokens;
   # a cap reached before the JSON reply costs a whole request.
-  max_tokens: 32768
+  max_tokens: 49152
 
 langsmith:
   # On by default, per direct instruction. Two settings deliberately stay in
@@ -173,7 +177,7 @@ agents:
   # decision hit the global cap and was truncated, which degrades the
   # spot-check phase silently rather than failing the run. A decision carries
   # the agent's reasoning, one tool call, and that call's arguments.
-  react_decision_max_tokens: 32768
+  react_decision_max_tokens: 49152
 
 graph:
   max_extra_passes: 1

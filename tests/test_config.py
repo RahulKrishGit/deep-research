@@ -816,16 +816,16 @@ def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
 
 
 def test_the_shipped_config_file_carries_the_uniform_token_budget() -> None:
-    """The shipped YAML raises the global cap and every budget that follows it.
+    """The shipped YAML carries the default cap and the budgets beside it.
 
-    The planner-final budget is the one documented exception and carries its
-    own test below; every other operation still resolves to the global cap.
+    The ReAct decision bound follows the default cap; the judge keeps its own
+    smaller bound; the planner-final budget carries its own test below.
     """
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["llm"]["max_tokens"] == 32768
+    assert raw["llm"]["max_tokens"] == 49152
     assert raw["agents"]["judge_max_tokens"] == 32768
-    assert raw["agents"]["react_decision_max_tokens"] == 32768
+    assert raw["agents"]["react_decision_max_tokens"] == 49152
 
 
 def test_the_planner_final_budget_exceeds_the_global_cap(
@@ -966,7 +966,7 @@ def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
     }
     # The snippet amends the ``llm`` mapping; the other fields stay.
     assert raw["llm"]["provider"] == "deepseek"
-    assert raw["llm"]["max_tokens"] == 32768
+    assert raw["llm"]["max_tokens"] == 49152
     assert raw["llm"]["reasoning_effort"] == "high"
 
 
