@@ -1213,3 +1213,35 @@ async def test_the_statement_check_is_handed_the_cited_findings_bounded_passage(
     passage = item.passages[finding_fingerprint(finding)]
     assert "It does not cover stays longer than five days." in passage
     assert passage.startswith(snippet)
+
+
+@pytest.mark.asyncio
+async def test_the_packet_names_the_label_that_answers_a_required_target(writer) -> None:
+    """Review F2's remedy: with the fallback (1A) an unbound finding answers a
+    required target of its own sub-topic, and the packet tells the writer which
+    label to cite for it -- so the answer can be stated rather than left silent."""
+    when = make_target("topic-03-target-01", question="From what date do the obligations apply?",
+                       measure="application date", unit_dimension=None, period=None,
+                       kind=None, geography=None)
+    text = "The obligations apply from 2 August 2025."
+    read = make_read(text, url="https://example-relay.example/law/12",
+                     title="Article 12: Registration | Example Act | Example Relay")
+    finding = make_finding(read, text, figures=[figure("2 August 2025", "date", None, "actual")])
+    finding = finding.model_copy(update={"related_sub_topic": "Obligations start date"})
+    finding = finding.model_copy(update={"verification": FindingVerification(
+        status="verified",
+        figure_results=[FigureResult(
+            figure=finding.figures[0], matched=True, evidence_words=text,
+            context=FigureContext(period=None, scope=None, attribution="unattributed",
+                                  organisation="Example Relay", kind="actual"))])})
+    state = ResearchState(
+        session_id="s", original_question="When do the obligations apply?",
+        sub_topics=[SubTopic(coverage_id="topic-03", title="Obligations start date",
+                             rationale="r", search_queries=["q"], success_criteria=["c"],
+                             priority=1, evidence_targets=[when])],
+        verified_findings=[finding], read_records={read.read_id: read})
+
+    task = writer.build_task(state)
+    body = writer_messages(task)[1].content
+
+    assert "- topic-03-target-01: From what date do the obligations apply? (F01)" in body
