@@ -45,6 +45,9 @@ were each judged NOT GREAT by an independent audit. The architecture audit of
 | D7 | Provenance reaches the reader as the code-built label on every figure (organisation, kind, release), from the Context Check's verified fields. |
 | D8 | The LLM replaces the code figure checks: the Context Check judges whether each figure is stated by its snippet, and the Statement Check (§5.4) judges each drafted sentence against its cited findings. Code keeps only "the quoted words are on the page" (snippet and evidence words) and mechanical rules. LLM calls are parallelised for latency: 5 items per call, at most 8 calls in flight. |
 | D9 | Latency: researcher sub-topics run concurrently (at most 5 in flight); tool calls stay serialised run-wide under one lock (one body, one download); findings and events fold in plan order. Source-evaluator scoring batches run concurrently (at most 3). Every concurrency cap and token budget is a config value (§7.3) and can be lowered from live results without a code change. |
+| D10 | **Generic prompts.** Accuracy across the variety of question types comes before fit to the benchmark question. The prompts serve every question shape: a single figure, a figure with forecasts, a comparison, a ranking, a causal explanation, a list of main items, a definition or rule, recent developments, a historical state, a multi-part question, and a recommendation (which option is best, the options not named, judged on the criteria the question names). No text a model reads (system prompts, instructions, reply examples, tool descriptions, schema descriptions) quotes the benchmark question, names a benchmark organisation, host or figure, or states an expected number of targets; examples are hypothetical and of shapes other than the benchmark's. The planner's floor is a general rule (§7.1), and a target's unit dimension is open vocabulary (§6.6, §7.1). The Statement Check, the Report Writer and the Report Reviewer see each cited finding's verified snippet and attribution, so a sentence resting on a finding with no figure is judged against its words (§5.4). Structured requests put their static rules and example before the per-call material, so the provider's prefix cache can reuse them. Code vocabulary measured on the benchmark's domain (scope terms, the unit parser, the MWh plan check, the owed-figure re-extraction) stays: it is a bounded no-op for other questions. Proof: the step-5 probe plans the benchmark and eight questions of other domains and shapes from the general rule (§9), and the live run `ev-1`, on one of those eight picked at random at launch (D12), is the generality signal; the user tests other questions after the work is finalised. D10 is the prompt-level part of D11. |
+| D11 | **Domain- and shape-agnostic.** Any question from any domain and of any type produces a useful report. Prompts state general principles, not per-type branches. The code, data model and checks carry no single-subject, numeric-only or domain assumption. It binds every agent and the code they share: the planner; the researcher, with its acquisition policy, source handling and tool descriptions; the source evaluator; the Evidence Verifier (Figure Match, Context Check and Statement Check); the Report Writer and the Report Reviewer; and the shared code (`figures`, `verified_facts`, `wording`, `identity` and the quality gates). |
+| D12 | **The live-run question.** `ev-1` runs one of the eight probe questions, picked at random at launch time. The audit of section 10 uses a short generic rubric, because the question is not the benchmark. The capped pre-flight stays on the benchmark question. Fable's §8.7 rows are cited as "§8.7-D11" and so on; a bare D10, D11 or D12 is one of these decisions. |
 
 Honesty rules that stay binding:
 
@@ -193,7 +196,9 @@ in flight), reasoning effort high, no tools and no web search.
 
 Input, per sentence: its text, and for each cited finding its verified
 figures (value, unit, period, kind, scope), organisation, attribution, reader
-label and evidence words.
+label and evidence words, plus the finding's verified snippet and the body it
+is attributed to when the Researcher admitted one (D10), so a sentence that
+rests on a finding with no figure is judged against that finding's words.
 
 Output, per sentence, schema-validated:
 
@@ -306,7 +311,9 @@ A verified finding answers target T when:
 
 - T is among the finding's `target_ids`, named by the Researcher;
 - the unit dimension of one of its verified figures fits T's measure (power
-  for capacity, energy for MWh, percent for share);
+  for capacity, energy for MWh, percent for share); for any other dimension
+  word (currency, count, mass, and so on: D10) the figure must state a number
+  in a unit the figure parser does not scale;
 - that figure's verified period matches T's period;
 - that figure's verified kind matches T's kind (actual or forecast);
 - T's organisation, when T names one, equals the figure's organisation.
@@ -318,15 +325,48 @@ No prose is parsed.
 ### 7.1 Planner
 
 - One target per (organisation, measure, period, kind) that the question asks
-  for. Dimensions: measure, period, geography, organisation. The
-  answer-form and evidence-period boilerplate is removed.
-- `required` only for what the question names. Targets the planner adds itself
-  (for example MWh for a capacity question, facility types or definitions) are
-  optional, and so are paywalled-only issuers. Optional targets never fail a
-  run.
-- About five targets are expected for the benchmark: EIA 2024 actual; EIA,
-  Wood Mackenzie and BNEF latest 2025 forecasts; optionally other published
-  2025 outlooks.
+  for. Fields: measure, unit_dimension, period, kind, geography,
+  organisation. The answer-form and evidence-period boilerplate is removed.
+- `required` only for what the question names (D11: one general rule, no
+  per-type branch). The planner reads the question as its parts (each
+  figure, period, body, option, place or item it names, and each clause it
+  asks) and gives every part its own target. The evidence that settles a
+  part decides the target's fields: a figure (measure, unit_dimension,
+  period, kind); items with their attributes (one target per attribute, the
+  items found by the research when the question names none); dated changes
+  or events (the change as the measure, the window as the period); reasons
+  or mechanisms; or a rule's text (empty unit_dimension and kind, no figure
+  added). Targets the planner adds itself (a second unit of measure, a
+  related quantity, a type or category breakdown, a definition, background)
+  are optional. Optional targets never fail a run.
+- Organisation: the body that produced, measured, judged or announced the
+  evidence (the statistical agency for a statistic, the maker for its own
+  release notes or prices, an independent tester or reviewer for a rating,
+  the regulator for a rule), named by the question or, when it names none,
+  the body that publishes the primary record; a relay is never the
+  organisation.
+- Forecasts, outlooks, rankings or recommendations asked for without naming
+  who gives them: one target per body whose published, reachable evidence is
+  expected, at least two when the question is plural; a body whose evidence
+  is paywalled is optional.
+- A period is a target's period only when the question bounds when the
+  evidence happened or applies ("changes in 2026"); a year that names when
+  the reader will buy, decide or use ("to buy in 2026") leaves it empty, and
+  the as-of date governs.
+- One sub-topic is a valid plan (`MIN_SUB_TOPICS = 1`). No answer kind is
+  added; the `factual` and `comparison` answer forms name the form the
+  evidence takes rather than a measured value.
+- `unit_dimension` is one word for the kind of quantity (power, energy,
+  percent, currency, count, mass, volume, distance, time, rate), empty when
+  the answer is not a quantity. Code scales power, energy and percent; any
+  other word is kept, and §6.6 checks it as a number in a unit the figure
+  parser does not scale.
+- The prompt states no target count and quotes no question (D10): the number
+  of targets follows the question. For the benchmark question the step-5
+  probe expects EIA's 2024 actual (its organisation by the primary-publisher
+  rule) and the latest 2025 forecasts of at least two publishers whose
+  outlooks are reachable, with five or fewer required targets in all (§9);
+  a paywalled outlook such as BNEF's is optional.
 - The existing temporal contract is kept: latest forecasts, no inferred
   cutoff, actuals separately labelled.
 - `support_policy` and `independent_pair` are removed (D2).
@@ -339,7 +379,8 @@ No prose is parsed.
   runs under one run-wide lock.
 - Prompt rule: read the organisation's own page (for example eia.gov or
   woodmac.com) before relays; use a relay only when the original is not
-  reachable, and record it as a relay.
+  reachable, and record it as a relay. The prompt itself names no host (D10):
+  the examples in this bullet are the spec's, not the prompt's.
 - Emits `snippet`, `read_id`, `locator`, `figures` and `target_ids` (section 4).
 - A targeted extra pass receives only the missing target ids and their
   dimensions.
@@ -406,27 +447,39 @@ plan in `%TEMP%/audit3/runs.jsonl`.
 | 2 | Evidence Verifier (section 5) | Unit tests for each normalisation case and each enforcement rule (invented `evidence_words` rejected, unsupported correction dropped); a replay labels audit-2's 18.9 GW as all-segment |
 | 3 | Report Writer on findings; labels; Not found; duplicates and revisions (sections 5.3 and 6.1-6.2) | Offline composition from replayed findings: the summary carries the 2024 actual and at least two 2025 forecasts with organisation and release; no duplicate figure line; no verdict wording |
 | 4 | Remove the fact checker, claim clusters and critic; Report Reviewer; gates; `max_extra_passes`; graph, API and evaluation cutover (sections 6.3-6.5 and 8) | Full test suite green; the reworked e2e replay matrix green |
-| 5 | Planner (section 7.1) | The benchmark question plans five or fewer required targets, with no MWh, facility-type or definition requirements |
-| 6 | One capped live pre-flight, then one live run (default one extra pass) | Success criteria in section 10, plus an independent audit |
+| 5 | Planner (section 7.1), generic prompts (D10) and the domain- and shape-agnostic changes (D11: figure subjects, page-dated relative periods, one-part plans, per-agent prompt fixes) | The benchmark question plans five or fewer required targets, with no MWh, facility-type or definition requirements, from a prompt that quotes no benchmark fact; eight questions of other domains and shapes plan to a generic check list graded by an independent reviewer; ten offline e2e rows of other shapes pass; no text a model reads names a benchmark organisation, host or figure |
+| 6 | One capped live pre-flight on the benchmark question, then one live run on one of the eight probe questions picked at random at launch (D12; default one extra pass) | Section 10, audited by an independent reviewer |
 
 Fingerprint pins (`tests/test_evaluation/test_config.py`) and
 `agents/__init__.py` re-exports are updated where the agent set changes.
 
 ## 10. Success criteria for the live run
 
-1. Wall time ≤ 45 minutes (target about 30).
-2. The executive summary answers both halves:
-   - EIA's 2024 figure (10.4 GW), with its release;
-   - at least two organisations' latest 2025 forecasts, each with its
-     release;
-   - 2025 actuals, where present, labelled as actuals.
-3. Every number in the report traces to a verified figure on its cited page,
-   and no relay is presented as the originating organisation.
-4. No figure carries a wrong scope, period or kind. In particular, an
-   all-segment figure is never labelled grid-scale, and an actual is never
-   presented as a forecast.
-5. The Report Reviewer accepts, with no gate failure.
-6. An independent audit rates the report GREAT.
+The live run's question is not the benchmark (D12), so its audit uses a
+short generic rubric:
+
+1. **A1** Every part of the question is answered, in the question's order,
+   in the form its evidence takes (figures, items with attributes, dated
+   events, reasons, rule text).
+2. **A2** Every key figure and claim, and a sample of the rest, traces to
+   its cited page.
+3. **A3** The honesty rules hold: no relay presented as the issuer; no
+   provenance, scope or date the page does not carry; forecasts carry issuer
+   and release; actuals are labelled; no inferred as-of cutoff; no verdict of
+   the report's own.
+4. **A4** Source authority fits the domain: the primary publisher where one
+   exists; relays labelled.
+5. **A5** Completeness and currency: the auditor's own quick research finds
+   no major, readily available fact the report misses or contradicts; gaps
+   are disclosed under Not found.
+6. **A6** Structure and readability: items grouped or ordered sensibly; no
+   filler; no benchmark leakage.
+7. **A7** Mechanics: wall time ≤ 45 minutes (target about 30), no crash, at
+   most one extra pass, the reviewer's status recorded.
+
+Rating: GREAT means no material defect and at most cosmetic issues; GOOD,
+minor defects only; POOR, any material defect. The run passes when the
+independent audit rates it GREAT.
 
 ## 11. Risks
 
@@ -441,10 +494,26 @@ Fingerprint pins (`tests/test_evaluation/test_config.py`) and
   steps.
 - **Loss of the e2e safety net during rework.** Matrix cases are rewritten
   before the old ones are deleted, in the same step.
+- **Generic prompts plan the benchmark less tightly (D10).** Without a quoted
+  example the planner may leave an organisation empty or require a target
+  the question did not name. The step-5 probe checks the benchmark plan; a
+  failure is fixed by tightening the general rule (for example the
+  primary-publisher sentence), never by quoting the benchmark again.
+- **A subject the page does not carry drops its figure (D11).** Like a
+  period or scope correction, a Context Check subject that is not in the
+  figure's `evidence_words` refuses the figure; the pre-flight's Findings line
+  shows whether that costs figures.
+- **Known limits (D11, deferred).** The researcher reads at most four unique
+  sources per sub-topic, so a shortlist that needs more pages is thinner
+  (reported honestly); organisation matching knows English legal suffixes
+  only, so a maker on a country-code host may be named by its host.
 
 ## 12. Out of scope
 
 - Streamlit UI changes, beyond what compiles against the new types.
-- Other benchmark questions; they are exercised by the e2e matrix only.
+- Other benchmark questions; they are exercised by the e2e matrix only. The
+  eight probe questions are planned only (step 5), and one of them, picked at
+  random at launch, is the live run (D12); the user tests other questions
+  after the work is finalised.
 - Automatic adjustment of concurrency or budgets during a run (§7.3 only
   advises).

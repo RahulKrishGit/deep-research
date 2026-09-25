@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python (repo venv), Pydantic v2, LangGraph, DeepSeek V4 Flash through the repo's provider layer, pytest.
 
-**Spec:** `docs/superpowers/specs/2026-09-24-evidence-verifier-pipeline-design.md` (approved 2026-09-24). Read it with this plan. Evidence behind it: `agent://ArchAudit`, `agent://FableAudit3`, `agent://Audit3Report`, `agent://Preflight4`.
+**Spec:** `docs/superpowers/specs/2026-09-24-evidence-verifier-pipeline-design.md` (approved 2026-09-24; its decision D10, generic prompts, was added the same day and amends Phase 5 and Gate G5). Read it with this plan. Evidence behind it: `agent://ArchAudit`, `agent://FableAudit3`, `agent://Audit3Report`, `agent://Preflight4`; for D10, `SDD/fable-prompt-generality.md`.
 
 ## Global Constraints
 
@@ -28,10 +28,11 @@
 - Researcher sub-topics run concurrently (D9, §7.2): at most `agents.sub_topic_concurrency` (5) in flight, each with its own scratchpad and acquisition context, while the tool section (policy decision, fetch, admission) runs under one run-wide lock so a page two loops request is downloaded once; findings and events fold in plan order. Source-evaluator scoring batches run at most `agents.source_scoring_concurrency` (3) in flight, each batch standing alone. Every cap is config (§7.3), never a module constant; Task 4.13 sets them and the telemetry of Task 4.14 reports them.
 - Snippet: one or two sentences copied verbatim, enforced as at most 600 characters (`MAX_SNIPPET_CHARS`).
 - Report Reviewer acceptance: mean ≥ 0.80 over the seven dimensions, no material defect, no gate failure (§6.3).
-- Out of scope (§12): UI changes (README line 747 records that the Streamlit app was removed; there is no UI code to compile), other benchmark questions (they are exercised by the e2e matrix only), and automatic adjustment of concurrency or budgets during a run (§7.3 only advises; Task 4.14 prints the advice and never tunes).
+- Out of scope (§12): UI changes (README line 747 records that the Streamlit app was removed; there is no UI code to compile), other benchmark questions (they are exercised by the e2e matrix only; under D10 the user tests other questions after the work is finalised), and automatic adjustment of concurrency or budgets during a run (§7.3 only advises; Task 4.14 prints the advice and never tunes).
 - Never read `.env`. Live model calls happen off-peak only: never start one if any minute of the next 50 minutes falls inside Mon–Fri 01:00–04:00 or 06:00–10:00 UTC. A started live run is never hard-stopped.
 - New public names in `src/deep_research/agents/*.py` are imported by `src/deep_research/agents/__init__.py` and listed in its `__all__` (`tests/test_imports.py::test_agent_submodule_public_names_all_reach_all`). Public names in `src/deep_research/utils/types.py` that other packages use are re-exported from `src/deep_research/utils/__init__.py` the way `Finding` is today.
 - No formatter, linter, or whole-suite run inside a task. Whole-suite runs happen only at the phase gates that name them.
+- Generic prompts (D10, PD-28): no text a model reads (system prompts, instructions, reply examples, tool descriptions, schema docstrings) quotes the benchmark question, names a benchmark organisation, host or figure (EIA, Wood Mackenzie, Utility Dive, BNEF, `eia.gov`, `woodmac.com`, 10.4, 18.2, 43.6 and the like), or states a target count; examples use hypothetical bodies and shapes other than the benchmark's; text pasted from `SDD/fable-prompt-generality.md` uses ASCII apostrophes (its transport printed them typographic). Gate G5's PROMPT GENERALITY CHECK enforces it.
 
 ## Review Focus
 
@@ -69,7 +70,13 @@ Named commands used by the gates:
 
 # IMPORT SMOKE (every package a user or a harness imports)
 "$PY" -c "import deep_research.agents, deep_research.graph, deep_research.runtime, deep_research.api, deep_research.cli, deep_research.main, deep_research.evaluation, deep_research.e2e_evaluation"
+
+# PROMPT GENERALITY CHECK (D10, D11, PD-28; Task 5.5 writes the script; the grep must print nothing)
+"$PY" scratch/ev_prompt_text.py
+grep -IinwE "batter(y|ies)|grid-scale|utility-scale|Wood Mackenzie|woodmac|Energy Information Administration|EIA|eia\.gov|Utility Dive|BNEF|10\.4|43\.6|18\.2|32\.5" scratch/ev-prompt-text.txt
 ```
+
+The PROMPT GENERALITY CHECK greps the one text file its script writes: every string literal of every module under `src/deep_research/` except the evaluation harness (`evaluation/`, `e2e_evaluation/`), so it covers every agent's model-facing text wherever it lives (D11): the six agents' prompts, instructions and reply examples, the tool descriptions, the ReAct observations and acquisition context (`agents/react.py`, `agents/acquisition.py`), the providers' schema instruction and repair text, the recalled-memory guidance (`runtime/recall.py`), the report text the reviewer reads (`agents/report.py`), and every schema class's docstring, which travels as its JSON schema's description. It skips what no model reads: comments (never in the AST), every string that is a statement by itself (a module, function or attribute docstring; pydantic sends only the class docstring, since no model sets `use_attribute_docstrings`), and, by name, the two code-vocabulary constants Fable ruled "keep" that name benchmark scopes (`SCOPE_TERMS` in `agents/wording.py`, C-a; `_SCOPE_EQUIVALENTS` in `agents/verified_facts.py`, C-b), which code matches against and never sends. The evaluation harness is excluded because its cases carry the benchmark question and expected facts as data, and no pipeline agent reads them. The script writes every newline, tab, NUL or other control character as one space, so the dump is plain text: a raw NUL (the `"\x00"` separator at `planner.py:831`) made `grep -I` treat an earlier dump as binary and drop every match after the first, and a newline written as `\n` would glue its `n` to the word after it, which `-w` then cannot match. `-I` stays, as in the Caller-inventory grep, and never skips this file; `-i` and `-w` match the benchmark's names and figures case-blind and as whole words. On the tree before Phase 5 the grep prints 8 lines, all in prompt constants Tasks 5.2 and 5.7 rewrite (`PLAN_INSTRUCTION`; `RESEARCHER_SYSTEM_PROMPT`, `_FINDING_PROVENANCE_CONTRACT` and `registry_contract`; `CONTEXT_CHECK_INSTRUCTION` and `_STATEMENT_CHECK_REPLY_EXAMPLES`; `REPORT_WRITER_INSTRUCTION`).
 
 Task worktrees (see "Execution model", rule R1). The controller creates one per implementation task; the implementer runs every command of its task from inside it:
 
@@ -116,6 +123,9 @@ cd "$W/../ev-$ID" && export PYTHONPATH='src;.'
 - **PD-25 The page's own organisation comes from the Source Evaluator first (F13; decided).** Spec §3 keeps the Source Evaluator's owning-organisation identification. When the evaluated source for a read carries a validated `identity_anchors["issuer"]`, the Evidence Verifier uses it as the page's own organisation (before PD-18's host rule), and the Report Writer adds the evaluated source's title and issuer to its attested corpus, so "Wood Mackenzie projects …" on `woodmac.com` is attested.
 - **PD-26 An unchecked finding keeps its Figure Match status (F9).** A finding whose Context Check reply is missing or whose batch failed keeps status `verified` or `verified_corrected` from Figure Match and carries `context_unchecked`; it is never promoted by a Context Check it did not get, and its reader label says "unchecked context". The label is the reader's signal (§5.2).
 - **PD-27 Concurrency is config with module defaults (D9, §7.3; from `agent://FableParallel`).** `agents.sub_topic_concurrency: 5`, `agents.source_scoring_concurrency: 3`, `agents.verifier_batch_size: 5` and `agents.verifier_concurrency: 8` (each with its `AGENTS_*` environment override) are the only caps; the module constants Task 2.1 left stay as defaults, and the researcher takes `sub_topic_concurrency=` as a constructor argument defaulting to the configured value, so a test that pins order can pin 1. The tool section of a turn (policy decision, fetch, admission) runs under one run-wide lock, and sub-topic findings and events fold in plan order, never completion order. (Listed in the review section; Task 4.13 implements it, Task 4.14 reports it.)
+- **PD-28 Generic prompts (D10; from `SDD/fable-prompt-generality.md`, adopted whole by the user).** No text a model reads quotes the benchmark question, names a benchmark organisation, host or figure, or states a target count; examples use hypothetical bodies ("Example Statistical Agency", "Example Institute", "Example Gazette") and shapes other than the benchmark's. Where each piece lands: Task 5.2 (the planner rule, its two examples, `required` on the draft, C-e step 2, C-c, the static-first plan request), 5.6 (C-e steps 1 and 3), 5.7 (Fable §3 rows B5–B23, gaps 1, 3 and 4, the tool descriptions, the static-first builders, the reviewer's reply format), 5.8 (S1–S5) and 5.4 (one re-pin for the phase). Code vocabulary measured on the benchmark's domain stays as bounded no-ops (C-a, C-b, C-d, C-f, C-g). Proof: Gate G5 (Q1–Q4 on the benchmark question, which only the probe supplies, and the PROMPT GENERALITY CHECK), then `ev-1` on the generic prompts. There is no typed planning probe and no other full run (user decision); the user tests other questions after finalisation. (Listed in the review section, items 27–38.)
+- **PD-29 Static-first structured requests (D10; Fable E2.4, E2.5).** Every tool-free pipeline request body is `render_structured_request(static, material)` (Task 5.1): the operation's contract section(s) and `# Reply format` first, the per-call material after them in its existing order, and `STRUCTURED_REQUEST_END` last. Fable's closing line "Return the JSON object for the material above." becomes "Return the reply for the material above.", because the shared convention reserves the phrase "JSON object" for `STRUCTURED_REPLY_FORMAT` (the conformance matrix counts it). The provider puts the JSON-schema system message right after the role prompt (S2, Task 5.8), so role prompt, schema, contract and example form one prefix per operation that DeepSeek's context cache can reuse. Prompt text that pointed at material "above" or "below" is turned round (the plan instruction's answer contract; the extraction contract's acquisition context and owed passages). The evaluation judge keeps its reply-last layout: it is not a pipeline request, and its prompt fingerprint is pinned. `tests/test_agents/test_tool_free_prompts.py` holds the convention (Task 5.7).
+- **PD-30 The model id and the cache telemetry (S1, S5).** The shipped model is `deepseek-flash`, the name DeepSeek gives the model that serves every Flash request (its pricing page, as Fable §6.0 quotes it). The capability pattern accepts `deepseek-flash`, `deepseek-v4-flash` and `deepseek-v4-pro`, since the API still accepts the v4 names and test fixtures and user overrides use them: what the run requests changes, what it accepts does not narrow. Cached input tokens are read from `usage.prompt_cache_hit_tokens` (Chat Completions) and `usage.input_tokens_details.cached_tokens` (Responses API), summed by the run's telemetry collector and printed on the Telemetry line; an absent or malformed count is 0 and never fails a call. `TokenUsage` is unchanged: its three-key dump is pinned across provider telemetry, evaluation records and API outcomes, and the Telemetry line is where the measurement is read.
 
 ## Shared interfaces
 
@@ -336,7 +346,79 @@ class EvidenceTarget(ContractModel):        # Task 4.1 removes support_policy (P
     ...
 ```
 
-`ReportStatement` final fields: `statement_id`, `text`, `finding_ids` (at least one), `target_ids`. `ReportPoint` final fields: `text`, `finding_ids`, `source_urls`, `statement`. `EvidenceTarget` final fields (Task 5.1): `target_id`, `coverage_id`, `question`, `measure` (required), `unit_dimension`, `period`, `kind`, `geography`, `organisation`, `required`.
+`ReportStatement` final fields: `statement_id`, `text`, `finding_ids` (at least one), `target_ids`. `ReportPoint` final fields: `text`, `finding_ids`, `source_urls`, `statement`. `EvidenceTarget` final fields (Task 5.1): `target_id`, `coverage_id`, `question`, `measure` (required), `unit_dimension`, `period`, `kind`, `geography`, `organisation`, `required`; Task 5.6 then opens `unit_dimension` to free text (D10, "Phase 5 additions (D10)" below).
+
+### Phase 5 additions (D10; Tasks 5.1, 5.2, 5.6, 5.7 and 5.8)
+
+```python
+# utils/types.py (Task 5.6). UnitDimension stays Literal["power", "energy",
+# "percent"]: the words figures.py scales and Quantity.dimension carries.
+class EvidenceTarget(ContractModel):
+    unit_dimension: str | None = Field(default=None, min_length=1)   # one lower-case word; None: qualitative
+
+# utils/types.py (Task 5.8)
+class RunTelemetry(ContractModel):                # plus:
+    input_tokens: int = Field(default=0, ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
+
+# agents/prompts.py (Task 5.1; Task 5.4 re-exports both)
+STRUCTURED_REQUEST_END = "Return the reply for the material above."
+def render_structured_request(static_sections: Sequence[str], material_sections: Sequence[str]) -> str: ...
+
+# agents/planner.py (Task 5.2)
+class EvidenceTargetDraft(ContractModel):
+    question: str
+    required: bool
+    measure: str = ""
+    unit_dimension: str = ""
+    period: str = ""
+    kind: str = ""
+    geography: str = ""
+    organisation: str = ""
+
+# observability/run_telemetry.py (Task 5.8)
+class RunTelemetryCollector:
+    def record_call(self, *, agent: str | None, operation: LLMOperation, seconds: float,
+                    output_tokens: int, configured_cap: int, truncated: bool,
+                    input_tokens: int = 0, cached_input_tokens: int = 0) -> None: ...
+```
+
+Request line formats (Tasks 5.7a and 5.7b; the e2e doubles need no change until Task 5.9 parses the optional subject parts):
+
+- Statement Check, under each cited finding's `  <label>: <figures or (no kept figures)>` line: `    snippet: "<snippet>"`, then `    attributed to: <attributed_issuer or publisher_identity(source_url)>`, with ` ("<attribution_quote>")` appended only when the Researcher admitted an issuer and set `attribution_quote`.
+- Writer registry, for a finding with no kept figure, after its `snippet:` line: `<label> | statement | attributed to <attributed_issuer or publisher_identity(source_url)> | <stated_role(snippet)>`.
+- Context Check block (Task 5.7b): under `page:`, `page date: <date> (from the Source Evaluator)`, or `page date: not stated`; a figure line whose figure has a subject ends ` | recorded subject <subject>`.
+- Statement Check figure part (Task 5.7b): ` | subject <subject or none>` after the scope part.
+- Writer registry (Task 5.7b): a figure line carries ` | subject <subject>` after its unit when the context has one; the statement line ends ` | dated <statement_date or release_date or data_period>` when the finding has one.
+- Reviewer key-facts line (Task 5.7b): ` | subject <subject or not stated>` after the value and measure.
+
+### Phase 5 additions (D11; Tasks 5.6a, 5.6b and 5.7b)
+
+```python
+# utils/types.py (Task 5.6a)
+class FigureContext(ContractModel):   # plus:
+    period_resolved_from: str | None = None   # the page date a relative period was resolved from
+class FactRow(ContractModel):         # plus:
+    period_resolved_from: str | None = None
+
+# utils/types.py (Task 5.6b): FindingFigure, FigureContext and FactRow each gain
+    subject: str | None = None                # the thing the figure is about, as the page names it
+
+# agents/verified_facts.py (Task 5.6a, then 5.6b)
+def resolve_relative_period(evidence_words: str, page_date: str | None) -> str | None: ...
+def subject_context(target_ids: Iterable[str], targets: Iterable[EvidenceTarget]) -> frozenset[str]: ...
+def same_subject(left: str | None, right: str | None, *, context_words: frozenset[str] = frozenset()) -> bool: ...
+def subject_named_in(text: str, subject: str | None, *, context_words: frozenset[str] = frozenset()) -> bool: ...
+def finding_answers(finding: Finding, target: EvidenceTarget, *, plan_targets: Sequence[EvidenceTarget] = ()) -> bool: ...
+
+# agents/report.py (Task 5.6a): figure_label(..., period_resolved_from: str | None = None) -> str
+
+# agents/researcher.py, agents/evidence_verifier.py (Task 5.7b)
+class FindingFigureDraft(ContractModel):  # plus: subject: str | None = None
+class FigureCheckDraft(ContractModel):    # plus: subject: str | None = None
+class ContextItem:                         # plus: page_date: str | None = None
+def evaluated_page_date(sources: Sequence[ScoredSource], read: ReadRecord) -> str | None: ...
+```
 
 ### `src/deep_research/agents/evidence.py` (Tasks 1.2 and 2.1)
 
@@ -541,10 +623,10 @@ CLI and API (PD-15): the flag `--max-iterations N` and the request field `max_it
 | 2 | `agents/verified_facts.py` and `tests/test_agents/test_verified_facts.py` (Task 3.1), `tests/test_agents/test_report_layout.py` (Task 3.2), `scratch/ev_verify_audit2.py` | `agents/evidence.py`, `agents/researcher.py`, `agents/evidence_verifier.py`, `agents/report.py` (Task 3.2), `agents/__init__.py`, tests | — |
 | 3 | `agents/report_writer.py`, `tests/test_agents/test_report_writer.py`, `scratch/ev_compose_audit2.py` | `agents/__init__.py` | — |
 | 4 | `agents/report_reviewer.py` and `tests/test_agents/test_report_reviewer.py` (git mv), `evaluation/cases/evidence_verifier.py`, `evaluation/cases/report_writer.py` (git mv), `tests/test_evaluation/test_cases_evidence_verifier.py`, `tests/test_evaluation/test_cases_report_writer.py` (git mv), `tests/test_e2e_evaluation/test_replay_doubles.py`, `observability/run_telemetry.py` and `tests/test_observability_run_telemetry.py` | `utils/*`, `config.yaml`, `agents/{quality,report,report_writer,researcher,planner,evidence,identity,prompts,__init__}.py`, `graph/*`, `runtime/*`, `main.py`, `cli.py`, `api/*`, `providers/*`, `evaluation/*`, `e2e_evaluation/*`, `README.md`, tests | `agents/fact_checker.py`, `agents/claim_clusters.py`, `agents/critic.py`, `agents/synthesizer.py`, `utils/claims.py`, `evaluation/cases/fact_checker.py`, `evaluation/cases/critic.py`…
-| 5 | `scratch/ev_plan_probe.py` | `utils/types.py`, `tests/evidence_fakes.py`, `agents/planner.py`, `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/{replay,replay_matrix}.py`, `agents/__init__.py`, tests | — |
+| 5 | `scratch/ev_plan_probe.py`, `scratch/ev_prompt_text.py`, `scratch/ev-plan-probe.md` | `utils/types.py`, `utils/config.py`, `config.yaml`, `tests/evidence_fakes.py`, `agents/{prompts,planner,researcher,source_evaluator,evidence_verifier,report_writer,report_reviewer,verified_facts,quality,report,wording,__init__}.py`, `tools/{web_search,web_scraper,document_reader,memory_tools}.py`, `providers/{deepseek_provider,capabilities}.py`, `observability/run_telemetry.py`, `evaluation/cases/{__init__,planner}.py`, `evaluation/evaluators.py`, `e2e_evaluation/{replay,replay_matrix}.py`, `README.md`, tests | — |
 | 6 | — | `scratch/run_live_proof.py` | — |
 
-(`agents/` means `src/deep_research/agents/`; likewise for `utils/`, `graph/`, `runtime/`, `api/`, `evaluation/`, `e2e_evaluation/`.)
+(`agents/` means `src/deep_research/agents/`; likewise for `utils/`, `graph/`, `runtime/`, `api/`, `evaluation/`, `e2e_evaluation/`, `tools/`, `providers/`, `observability/`.)
 
 ## Caller inventory (what step 4 must migrate)
 
@@ -558,10 +640,10 @@ Grepped in this worktree on 2026-09-24 (`(from|import) … (fact_checker|claim_c
 | `agents/synthesizer.py` | `agents/__init__.py:616-660`; `graph/nodes.py:49-55`; `e2e_evaluation/cases.py:39`; `e2e_evaluation/replay.py:70`; `evaluation/dependencies.py:47`; `runtime/assembly.py:26`; tests: `test_agents/test_fact_checker.py:110`, `test_agents/test_synthesis_seam.py:45`, `test_agents/test_synthesizer.py:39`, `test_agents/test_tool_free_prompts.py:74`, `test_e2e_evaluation/test_real_agents.py:872`, `test_evaluation/test_config.py:11`, `test_graph/test_nodes.py:15`, `test_graph/test_orchestrator.py:16` | 3.3 (wording rules move out), 4.1 (filename helpers move out), 4.7 (evaluation), 4.8 (graph, assembly), 4.9 and 4.11 (e2e), 4.10 (the rest, and the module) |
 | `agents/report_review.py` (renamed `report_reviewer.py`) | `agents/__init__.py:477`; `agents/report.py:3690`; `graph/nodes.py:44`; `graph/state.py:31`; `runtime/assembly.py:20`; `utils/types.py:4134`; `e2e_evaluation/evaluators.py:21`; `e2e_evaluation/replay.py:58`; tests: `test_agents/test_quality.py:681`, `test_agents/test_report_review.py` (whole file), `test_cli/test_report_quality_acceptance.py:80`, `test_graph/test_nodes.py:14`, `test_graph/test_orchestrator.py:1090` | 4.1 (the rename and every import line) |
 
-Deleted `utils/types.py` symbols and their acceptance grep. Task 4.10 runs it over everything except `src/deep_research/e2e_evaluation` and `tests/test_e2e_evaluation` (Task 4.11 runs it over those two); Gate G4 runs it over everything. It must print nothing:
+Deleted `utils/types.py` symbols and their acceptance grep. Task 4.10 runs it over everything except `src/deep_research/e2e_evaluation` and `tests/test_e2e_evaluation` (Task 4.11 runs it over those two); Gate G4 runs it over everything. It must print nothing. `-I` skips binary files: without it, stale untracked `__pycache__/*.pyc` bytecode of the deleted modules matched at Gate G4 and failed the check falsely:
 
 ```bash
-grep -rnwE "Claim|ClaimVerdict|ClaimProvenance|ClaimCluster|AtomicProposition|ConflictAssessment|EvidencePassage|SubjectState|StatementMode|SUBSTANTIVE_STATEMENT_MODES|ANSWERING_STATEMENT_MODES|EVIDENCE_BADGE_LABELS|statement_mode_for_claims|clusters_for_claims|derive_statement|statement_for_point|statement_claims|statement_claims_by_cluster|statement_satisfies_support_policy|answering_statement_for|target_is_answered|unanswered_required_targets|qualifier_matches_requirement|answered_atom_dimensions|answered_required_dimensions|required_dimensions_for_targets|dimensions_by_target|SubstantiveCoverage|Critique|CritiqueGap|CritiqueReviewStatus|CriticScore|RepairAction|REPAIR_ACTIONS|QUERY_BEARING_REPAIR_ACTION|gap_contract_problem|RefinementTarget|RefinementOrigin|RepairStopReason|REPAIR_STOP_REASONS|ResearchProgress|progress_improved|sub_topic_owes_evidence|ReportConstraint|ReportAnswerRow|MAX_CONSUMED_FINDING_FINGERPRINTS|MAX_CONSUMED_COVERAGE_IDS|verified_claims|claim_clusters|refinement_targets|repair_stop_reason|progress_history|unique_claim_count" src tests
+grep -rInwE "Claim|ClaimVerdict|ClaimProvenance|ClaimCluster|AtomicProposition|ConflictAssessment|EvidencePassage|SubjectState|StatementMode|SUBSTANTIVE_STATEMENT_MODES|ANSWERING_STATEMENT_MODES|EVIDENCE_BADGE_LABELS|statement_mode_for_claims|clusters_for_claims|derive_statement|statement_for_point|statement_claims|statement_claims_by_cluster|statement_satisfies_support_policy|answering_statement_for|target_is_answered|unanswered_required_targets|qualifier_matches_requirement|answered_atom_dimensions|answered_required_dimensions|required_dimensions_for_targets|dimensions_by_target|SubstantiveCoverage|Critique|CritiqueGap|CritiqueReviewStatus|CriticScore|RepairAction|REPAIR_ACTIONS|QUERY_BEARING_REPAIR_ACTION|gap_contract_problem|RefinementTarget|RefinementOrigin|RepairStopReason|REPAIR_STOP_REASONS|ResearchProgress|progress_improved|sub_topic_owes_evidence|ReportConstraint|ReportAnswerRow|MAX_CONSUMED_FINDING_FINGERPRINTS|MAX_CONSUMED_COVERAGE_IDS|verified_claims|claim_clusters|refinement_targets|repair_stop_reason|progress_history|unique_claim_count" src tests
 ```
 
 (`claim_fingerprint` in `agents/identity.py` survives only if a surviving module still reads it after Task 4.10; Task 4.10 checks with `grep -rn claim_fingerprint src tests`.)
@@ -589,20 +671,25 @@ The user asked for maximum parallel dispatch of implementation and review. Run t
 
 | Shared file | Its single owner in each phase | Contract fixed before the wave |
 |---|---|---|
-| `src/deep_research/utils/types.py`, `src/deep_research/utils/__init__.py` | 1.1; 4.1 (additions and renames), then 4.10 (removals) and 4.14 (`ResearchState.run_telemetry`); 5.1 | "Shared interfaces", `utils/types.py` blocks |
+| `src/deep_research/utils/types.py`, `src/deep_research/utils/__init__.py` | 1.1; 4.1 (additions and renames), then 4.10 (removals) and 4.14 (`ResearchState.run_telemetry`); 5.1, then 5.6a (`EvidenceTarget.unit_dimension`, `period_resolved_from`), 5.6b (the subject fields) and 5.8 (two `RunTelemetry` fields) | "Shared interfaces", `utils/types.py` blocks and "Phase 5 additions" (D10, D11) |
 | `tests/evidence_fakes.py` | 1.1; 4.1; 5.1 | the builders in Task 1.1 |
-| `src/deep_research/agents/__init__.py` (re-exports) | 1.5; 2.2; 3.5; 4.10; 5.4 | none needed: names are exported after the wave that creates them |
-| `tests/test_evaluation/test_config.py` (fingerprint pins) | 1.5 (researcher, planner, synthesizer); 2.2; 4.7 (agent names), then 4.10 (pins); 5.4 | PD-17 |
-| `config.yaml`, `src/deep_research/utils/config.py`, `tests/test_config.py` | 1.3; 4.1 | the config block in Task 4.1 (the four §7.3 caps included) |
+| `src/deep_research/agents/__init__.py` (re-exports) | 1.5; 2.2; 3.5; 4.10; 5.2 (two deleted planner names), then 5.4 | none needed: names are exported after the wave that creates them |
+| `tests/test_evaluation/test_config.py` (fingerprint pins) | 1.5 (researcher, planner, synthesizer); 2.2; 4.7 (agent names), then 4.10 (pins); 5.8 (the shipped model id's assertions and one docstring), then 5.4 (pins) | PD-17 |
+| `config.yaml`, `src/deep_research/utils/config.py`, `tests/test_config.py` | 1.3; 4.1; 5.8 (the model id, S1), then 5.4 (`agents.max_sub_topics`) | the config block in Task 4.1 (the four §7.3 caps included); PD-30 |
 | Graph wiring: `graph/*.py`, `runtime/assembly.py`, `runtime/__init__.py`, `main.py` | 4.8, then 4.14 (the telemetry collector only) | node names, routes, `ReportPublisher`, `run_research` in "Shared interfaces" |
-| `src/deep_research/providers/*.py` | 4.14 | `RunTelemetryCollector`, the retry loop's 429 accounting and `_record_tokens` |
+| `src/deep_research/providers/*.py` | 4.14; 5.8 (S1, S2, S5) | `RunTelemetryCollector`, the retry loop's 429 accounting and `_record_tokens`; PD-29, PD-30 |
 | `src/deep_research/cli.py` | 4.6, then 4.14 (one summary line) | Task 4.14's Telemetry line and advice format |
-| `src/deep_research/e2e_evaluation/replay.py`, `replay_matrix.py` | 1.3; 4.9, then 4.11; 5.3 | request formats: Task 2.1 (Context Check), Task 3.4 (writer registry lines), Task 4.2 (reviewer) |
-| `src/deep_research/agents/report.py` | 3.2 (wave 2A); 4.5, then 4.10 and 4.14 (the telemetry block) | |
+| `src/deep_research/e2e_evaluation/replay.py`, `replay_matrix.py` | 1.3; 4.9, then 4.11; 5.3, then 5.9 | request formats: Task 2.1 (Context Check), Task 3.4 (writer registry lines), Task 4.2 (reviewer), "Phase 5 additions" (D10, D11) |
+| `src/deep_research/agents/report.py` | 3.2 (wave 2A); 4.5, then 4.10 and 4.14 (the telemetry block); 5.6a (the resolved-period label), then 5.6b (the Subject column, `_point_labels`) | "Phase 5 additions (D11)" |
 | `src/deep_research/agents/synthesizer.py` | 3.3 (wave 1B); 4.1 (filename helpers out); 4.10 (deletes it) | the `wording.py` block of "Shared interfaces" |
-| `src/deep_research/agents/evidence_verifier.py` | 1.2; 2.1; 4.13 (its two config reads) | the `evidence_verifier.py` block of "Shared interfaces"; PD-12 |
-| `src/deep_research/agents/researcher.py` | 1.3; 2.1; 4.4, then 4.13 and 4.10; 5.3 | |
-| `README.md` | 4.6 | the node, route, flag and case names in "Shared interfaces" and Task 4.9 |
+| `src/deep_research/agents/evidence_verifier.py` | 1.2; 2.1; 4.13 (its two config reads); 5.7a, then 5.7b | the `evidence_verifier.py` block of "Shared interfaces"; PD-12; PD-29; "Phase 5 additions (D11)" |
+| `src/deep_research/agents/researcher.py` | 1.3; 2.1; 4.4, then 4.13 and 4.10; 5.3, then 5.7a, then 5.7b | |
+| `README.md` | 4.6; 5.6a (one limitation paragraph), then 5.8 (the model id) | the node, route, flag and case names in "Shared interfaces" and Task 4.9 |
+| `src/deep_research/agents/prompts.py` | 4.10; 5.1 (the static-first helper), then 5.7a (`SOURCE_SCORING_INSTRUCTION`), then 5.8 (`render_react_messages`) | PD-29; "Phase 5 additions (D10)" |
+| `src/deep_research/agents/report_reviewer.py` | 4.1 (the rename), then 4.2 and 4.10; 5.3, then 5.7a, then 5.7b | the reviewer request of Task 4.2; PD-29 |
+| `tests/test_agents/test_tool_free_prompts.py` (the request conventions) | 2.1; 4.10; 5.7a | PD-29 |
+| `src/deep_research/agents/verified_facts.py`, `src/deep_research/agents/quality.py` | 3.1 (`verified_facts.py`); 4.3 (`quality.py`); 5.6a, then 5.6b | "Phase 5 additions (D11)" |
+| `src/deep_research/agents/report_writer.py` (Phase 5) | 5.7a, then 5.7b | "Phase 5 additions" (D10, D11) |
 
 ### Waves
 
@@ -640,11 +727,18 @@ Sizes: S about 20 minutes of implementation, M 45, L 75, XL 120.
 | 4D | 4.11 E2E matrix green; graph-historical harness retired | sp-hard-implementer | 4.8 and 4.9 merged; waits (R5) for the review of 4.9 | `e2e_evaluation/{cases,evaluators,models,runner,replay,replay_matrix}.py`, `tests/test_e2e_evaluation/*` | L |
 | 4D | 4.12 Reviewer acceptance probe | sp-implementer; `--live` by the operator | 4.2, 4.3 and 4.8 merged | `scratch/ev_review_audit2.py` | M |
 | 4D | 4.14 Concurrency and budget telemetry (spec §7.3) | sp-implementer | 4.5, 4.6, 4.8 and 4.10 merged and their reviews clean (R5: their files) | `observability/run_telemetry.py` (new), `observability/__init__.py`, `providers/{retry,deepseek_provider,openai_provider,factory}.py`, `utils/types.py` (one field), `agents/report.py` (the telemetry block), `cli.py` (one summary line), `runtime/assembly.py`, `graph/nodes.py`, `tests/test_observability_run_telemetry.py` (new), `tests/test_retry_policy.py`, `tests/test_cli/test_render.py`, `tests/test_agents/test_report.py` | M |
-| 5A | 5.1 Contract: the final target fields | sp-implementer | G4 | `utils/types.py`, `utils/__init__.py`, `tests/evidence_fakes.py`, `tests/test_types.py` | M |
-| 5B | 5.2 Planner: the question's targets only | sp-hard-implementer | 5.1 merged | `agents/planner.py`, `tests/test_agents/test_planner.py` | L |
-| 5B | 5.3 Target consumers | sp-implementer | 5.1 merged | `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_report_reviewer.py`, `tests/test_agents/test_planner_researcher_seam.py`, `tests/test_evaluation/test_cases_planner.py`, `tests/test_evaluation/test_evaluators_agents.py`, `tests/test_e2e_evaluation/test_real_agents.py` | M |
-| 5C | 5.4 Phase-5 integration | sp-implementer | 5.2, 5.3 merged | `agents/__init__.py`, `tests/test_evaluation/test_config.py` | S |
-| 5C | 5.5 Step-5 proof: plan probe | sp-implementer; `--live` by the operator | 5.2 merged | `scratch/ev_plan_probe.py` | M |
+| 5A | 5.1 Contract: the final target fields; the static-first helper (D10) | sp-implementer | G4 | `utils/types.py`, `utils/__init__.py`, `tests/evidence_fakes.py`, `tests/test_types.py`, `agents/prompts.py` (two names), `tests/test_agents/test_prompts.py` | M |
+| 5B | 5.3 Target consumers | sp-implementer | 5.1 merged | `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/__init__.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_report_reviewer.py`, `tests/test_agents/test_planner_researcher_seam.py`, `tests/test_evaluation/test_cases_planner.py`, `tests/test_evaluation/test_evaluators_agents.py`, `tests/test_e2e_evaluation/test_real_agents.py` | M |
+| 5B | 5.3b Unowned test files to the final target shape | sp-implementer (mechanical) | 5.3 merged | `tests/graph_fakes.py`, `tests/test_graph/*`, `tests/test_runtime/*`, `tests/test_cli/test_entrypoint.py`, `tests/test_openai_provider.py`, `tests/test_native_react_shape_probe.py`, `tests/test_agents/test_source_evaluator.py`, `tests/test_agents/test_native_react_boundary.py`, `tests/test_e2e_evaluation/test_runner.py` | S |
+| 5B | 5.6a Open unit vocabulary and the relative-period fields (D10, D11) | sp-implementer | 5.1 merged and its review clean (R5: same files) | `utils/types.py`, `agents/verified_facts.py`, `agents/report.py` (the label), `tests/test_types.py`, `tests/test_agents/{test_verified_facts,test_report_layout}.py`, `README.md` (one paragraph) | M |
+| 5C | 5.2 Planner: the general rule (D10, D11) | sp-hard-implementer | 5.1 and 5.6a merged | `agents/planner.py`, `tests/test_agents/test_planner.py`, two entries of `agents/__init__.py` | L |
+| 5C | 5.6b The figure subject (D11) | sp-hard-implementer | 5.6a merged and its review clean (R5: same files) | `utils/types.py`, `agents/{verified_facts,quality,report}.py`, `tests/test_agents/{test_verified_facts,test_quality,test_report_layout}.py` | L |
+| 5D | 5.7a Prompt-generality sweep (D10, D11) | sp-hard-implementer | 5.2 merged; 5.3 merged and its review clean (R5: its files) | `agents/{researcher,evidence_verifier,report_writer,report_reviewer}.py`, `agents/source_evaluator.py` (`scoring_messages`), `agents/prompts.py` (`SOURCE_SCORING_INSTRUCTION`), `agents/wording.py` (one comment), `tools/{web_search,web_scraper,document_reader,memory_tools}.py`, `tests/test_agents/{test_researcher,test_evidence_verifier,test_report_writer,test_report_reviewer,test_tool_free_prompts,test_source_evaluator}.py` | XL |
+| 5E | 5.7b Subjects and relative periods through the pipeline (D11) | sp-hard-implementer | 5.7a merged and its review clean; 5.6a and 5.6b merged | `agents/{researcher,evidence_verifier,report_writer,report_reviewer}.py`, `tests/test_agents/{test_researcher,test_evidence_verifier,test_report_writer,test_report_reviewer}.py` | L |
+| 5E | 5.8 Provider settings S1–S5 (D10) | sp-implementer | 5.7a merged and its review clean (R5: `agents/prompts.py`); the reviews of 5.6a and 5.6b clean (R5: `utils/types.py`, `README.md`) | `providers/{deepseek_provider,capabilities}.py`, `config.yaml`, `utils/config.py`, `utils/types.py` (two fields), `agents/prompts.py` (`render_react_messages`), `observability/run_telemetry.py`, `README.md` (model id), `tests/test_deepseek_provider.py`, `tests/test_provider_capabilities.py`, `tests/test_agents/test_prompts.py`, `tests/test_observability_run_telemetry.py`, `tests/test_config.py`, `tests/test_evaluation/{test_config,test_judge_visibility,test_targets,test_judging}.py` (model-id assertions), `tests/test_runtime/test_assembly.py`, `tests/test_cli/test_render.py` and `tests/test_agents/test_report.py` (a `RunTelemetry` dump, if pinned) | M |
+| 5F | 5.9 Offline e2e rows for other shapes (D11) | sp-implementer | 5.2, 5.6b and 5.7b merged; 5.3's review clean (R5: its files) | `e2e_evaluation/{replay,replay_matrix}.py`, `tests/test_e2e_evaluation/{test_real_agents,test_replay_doubles}.py` | L |
+| 5G | 5.4 Phase-5 integration: exports, the sub-topic cap, one re-pin | sp-implementer | every other Phase-5 implementation task merged; the reviews of 5.2 and 5.8 clean (R5) | `agents/__init__.py`, `tests/test_evaluation/test_config.py`, `config.yaml` (`agents.max_sub_topics`), `tests/test_config.py` (two assertions) | S |
+| 5H | 5.5 Step-5 proof: the planning probe on nine questions (graded by an independent reviewer) and the prompt-text dump | sp-implementer; `--live` by the operator; a fresh read-only reviewer grades | 5.4 merged | `scratch/ev_plan_probe.py`, `scratch/ev_prompt_text.py`, `scratch/ev-plan-probe.md` | M |
 | 6A | 6.1 Live-proof labels | sp-implementer | G5 | `scratch/run_live_proof.py` | S |
 | 6A | Final whole-branch review (the skill's final review) | most capable reviewer, read-only | G5 | — | |
 | 6B | 6.2 Capped live pre-flight | operator | 6.1 done, off-peak | — | |
@@ -664,11 +758,11 @@ Assumptions: the sizes above; a task review takes 15 minutes (S, M) or 25 (L, XL
 | 2 | 2.1 (120; 3.1 and 3.2 beside it, the R8 exception) → 2.3 (45; 2.2 beside it) → last review 15 → fix round 25 → G2 30 | 235 | 305 |
 | 3 | 3.4 (120; 3.1 and 3.2 merged just after G2) → 3.6 (75; 3.5 beside it) → last review 25 → fix round 25 → G3 25 | 270 | 340 |
 | 4 | 4.1 (75) → 4.2 (120; 4.3–4.7 beside it) → 4.8 (120; 4.9 and 4.13 beside it) → 4.11 (75; 4.10, 4.12 and 4.14 beside it; 4.14 starts after 4.10's review) → last review 25 → fix round 25 → G4 (the matrix once, and the reviewer probe) 42 | 517 | 767 |
-| 5 | 5.1 (45) → 5.2 (75; 5.3 beside it) → 5.5 (45; 5.4 beside it) → last review 15 → fix round 25 → G5 25 | 230 | 270 |
-| 6 | the final review and its fixes (90; 6.1 beside them) → 6.2 (25) → 6.3 (45) → 6.4 (40) | 200 | 260 |
-| **Total** | | **1,772 ≈ 29.5 hours** | **2,302 ≈ 38 hours** |
+| 5 | 5.1 (45) → its review 15 → 5.6a (30; 5.3, then 5.3b, beside it) → its review 15 → 5.2 (75; 5.6b beside it) → 5.7a (120) → its review 25 → 5.7b (75; 5.8 beside it) → 5.9 (60) → 5.4 (20) → 5.5 (45: the nine-question live run and its grading) → last review 25 → fix round 25 → G5 25 | 600 | 775 |
+| 6 | the final review and its fixes (90; 6.1 beside them) → 6.2 (25) → 6.3 (45) → 6.4 (60: the generic rubric, with the auditor's own quick research) | 220 | 280 |
+| **Total** | | **2,162 ≈ 36 hours** | **2,827 ≈ 47 hours** |
 
-Plan with the realistic figure: **36–40 hours of agent wall time** (two extra rounds instead of three on 4.8 and 4.11 give about 36 hours; one more round on each XL task, about 40), **plus off-peak waits**: the live steps of G1 (researcher probe), G2, G3, G4 (reviewer probe), G5, 6.2 and 6.3 each wait up to 3 hours if they meet a peak window (Mon–Fri 01:00–04:00 and 06:00–10:00 UTC), so schedule them off-peak in advance. The approved R8 exception (Task 3.3 in wave 1B; Tasks 3.1 and 3.2 in wave 2A) takes about 75 minutes off Phase 3. Run one task at a time with no review overlapping any implementation, the planned figures come to about 3,300 minutes (55 hours); the waves save about half.
+Plan with the realistic figure: **45–49 hours of agent wall time** (two extra rounds instead of three on 4.8 and 4.11 give about 45 hours; one more round on each XL task, about 49; D10 and D11's Phase 5 accounts for about 10 planned and 13 realistic hours of that, mostly Tasks 5.7a and 5.7b on the critical path), **plus off-peak waits**: the live steps of G1 (researcher probe), G2, G3, G4 (reviewer probe), 5.5 (the planning probe), 6.2 and 6.3 each wait up to 3 hours if they meet a peak window (Mon–Fri 01:00–04:00 and 06:00–10:00 UTC), so schedule them off-peak in advance. The approved R8 exception (Task 3.3 in wave 1B; Tasks 3.1 and 3.2 in wave 2A) takes about 75 minutes off Phase 3. Run one task at a time with no review overlapping any implementation, the planned figures come to about 3,850 minutes (64 hours); the waves save about half.
 
 ## Runtime budget: how one report takes about 30 minutes (45 at most)
 
@@ -676,7 +770,7 @@ Measured baseline (audit-3, `output/live-proof/audit-3/cli.log`, first pass): pl
 
 | Stage | Pass-0 work | Budget | What bounds it |
 |---|---|---|---|
-| Planner | 1 plan request plus at most 2 plan-review calls | 3 min | `MAX_PLAN_REVIEW_CALLS = 2`; `planner_final_max_tokens` 65,536; five or fewer required targets (step 5) |
+| Planner | 1 plan request plus at most 2 plan-review calls | 3 min | `MAX_PLAN_REVIEW_CALLS = 2`; `planner_final_max_tokens` 65,536; five or fewer required targets for the benchmark (Gate G5 Q1; the prompt states no count, D10) |
 | Researcher | at most 5 planned sub-topics, run concurrently (§7.2, D9: at most `agents.sub_topic_concurrency` = 5 in flight, one run-wide tool lock), each ≤ 7 model turns and ≤ 20 tool calls | 4 min | the slowest sub-topic, not the sum: ≈ 8 attempts × 13–18 s + ≈ 9 s tools ≈ 1.9–2.6 min, plus whatever 5 in-flight decision calls add (unmeasured; bounded by Task 6.2's per-turn mean ≤ 27 s); `agents.max_iterations: 7`, `agents.max_sub_topics: 5`, `agents.tool_budget_overrides.researcher: 20` (F1) |
 | Source Evaluator | 1–3 batched calls (batch 12, at most 36 sources), run concurrently (D9: at most `agents.source_scoring_concurrency` = 3) | 1 min | `agents.source_evaluator.batch_size` 12 and `max_total_sources` 36; each batch's failure stands alone (Task 4.13) |
 | Evidence Verifier | Figure Match (milliseconds), then about 30 findings in 6 Context Check batches of `agents.verifier_batch_size` (5), at most `agents.verifier_concurrency` (8) in flight | 2 min | the batch size and the concurrency are config (§7.3, PD-12); a truncated batch is asked once more in two halves; a failed batch marks its findings `context_unchecked` and the run goes on |
@@ -688,6 +782,8 @@ Measured baseline (audit-3, `output/live-proof/audit-3/cli.log`, first pass): pl
 | **With the extra pass** | | **≈ 24–28 min** | under the 30-minute target even when a pass fires; if Task 6.2 projects a first pass over 30 minutes or a researcher per-turn mean over 27 s, lower `agents.sub_topic_concurrency` to 3 before `ev-1` without re-running the pre-flight (the sequential budget already fits 45 min); `agents.max_iterations: 6` (review item 15) is the last resort |
 
 Failures never add a pass and never stop a run: a failed Context Check batch leaves its findings citable as "unchecked context"; a failed writer draft still publishes the code-built key facts table, Not found and sources; an unscored review publishes as `partial` with status `incomplete` (PD-13). Task 6.1 reads each stage's duration from `cli.log` and the researcher's slowest sub-topic and per-turn mean from the `sub_topic.completed` events' `elapsed_s` (Task 4.13); the live run starts only if the capped pre-flight passes Task 6.2's criteria: quality accepted, a projected first pass of at most 30 minutes, a researcher per-turn mean of at most 27 s, the Evidence Verifier, Report Writer and Report Reviewer each within 1.5 times their budget above, no failed Context Check batch, no forecast without release, zero unrecovered 429s and no truncated call. What can still break the budget: a reviewer timeout (360 s, `retry_count` 1: up to 12 minutes, then published as partial), a truncated writer draft (+5 minutes) or a truncated Context Check batch (+1–2 minutes for the halves).
+
+D10 (Phase 5) adds no call and changes no bound. The Statement Check's cited lines gain each finding's snippet (at most 600 characters, `MAX_SNIPPET_CHARS`) and the writer's registry one line per figure-less finding; the last ReAct turn asks for the final answer instead of a tool call, which can only shorten a sub-topic that runs to its cap; and the static-first requests (PD-29) let DeepSeek's automatic context cache reuse each operation's contract across batches. The time this saves is unmeasured [INFERENCE]; the Telemetry line's cache-hit part (Task 5.8) is the measurement.
 
 ---
 
@@ -3094,14 +3190,17 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 - **4.14 Concurrency and budget telemetry (§7.3).** One collector per run records the 429 count and how many a retry recovered, the peak provider calls in flight, per-stage calls/seconds/slowest, and per-operation max output tokens against the configured cap plus the truncation count. It lands in the quality JSON and in one CLI summary line with advisory messages that name the config knob; nothing auto-tunes.
 - **Gate G4:** both full-suite invocations, the real-agent e2e matrix at three repetitions, IMPORT SMOKE, the acceptance grep over everything, the reviewer probe and the Telemetry line, all green (spec §9 step 4).
 
-### Phase 5 (spec step 5): the planner's floor
+### Phase 5 (spec step 5, D10): the planner's floor and generic prompts
 
-- **5.1** Final `EvidenceTarget` fields: `required_dimensions` and `critical` are removed and `measure` is required; `make_target` loses its legacy branch.
-- **5.2** `PLAN_INSTRUCTION` follows §7.1. One target per organisation, measure, period and kind the question asks for. `required` only for what the question names. Self-added targets (MWh for a capacity question, facility types, definitions) and paywalled-only issuers are optional. About five targets for the benchmark, with the temporal contract kept. `apply_answer_contract` drops the answer-form and evidence-period boilerplate, and a target with no measure is a plan problem the existing repair loop sees.
-- **5.3** Updates the consumers: the researcher's unit mentions come from `unit_dimension`; the reviewer's target view; the evaluation planner cases and gates (`targets_have_measure` replaces the dimension gates); the e2e planner double and matrix topics.
-- **5.4** Re-pins the fingerprints.
-- **5.5** `scratch/ev_plan_probe.py --live` (off-peak, about 3 minutes) runs the real planner on the benchmark question.
-- **Gate G5:** the probe's checks pass. At most five required targets; no required energy (MWh) target; no required facility-type or definition target; the required targets include EIA's 2024 actual and at least two organisations' 2025 forecasts.
+- **5.1** Final `EvidenceTarget` fields: `required_dimensions` and `critical` are removed and `measure` is required; `make_target` loses its legacy branch; `agents/prompts.py` gains the static-first request helper (PD-29).
+- **5.2** `PLAN_INSTRUCTION` states §7.1's general rule in Fable's two texts: `required` only for what the question names, the primary-publisher rule for organisation, the qualitative branch, an open one-word `unit_dimension`, no target count and no quoted question. The draft carries `required`; two hypothetical reply examples (a comparison and a causal plan); the paywall list and the second-body check go (C-c); the MWh check stays (C-d); the plan request is static-first. `apply_answer_contract` drops the answer-form and evidence-period boilerplate, and a target with no measure is a plan problem the existing repair loop sees.
+- **5.3** Updates the consumers: the researcher's unit mentions come from `unit_dimension`; the reviewer's target view; the evaluation planner cases and gates (`targets_have_measure` replaces the dimension gates and checks the measure only); the case-target builder; the e2e planner double and matrix topics.
+- **5.4** Exports the phase's new names and re-pins the five prompt fingerprints once, after 5.2, 5.3, 5.6, 5.7 and 5.8.
+- **5.5** `scratch/ev_plan_probe.py --live` (off-peak, about 3 minutes) runs the real planner on the benchmark question; `--question` gives the user a planning-only look at another question. `scratch/ev_prompt_text.py` writes every string a model can read, for Gate G5's generality check.
+- **5.6** Open unit vocabulary (C-e): `unit_dimension` is free text, and a money or count target is answered only by a figure in a unit the parser does not scale, with the period, kind and organisation checks a power target gets.
+- **5.7** The prompt-generality sweep: Fable §3 rows B5–B23, gaps 1, 3 and 4 (the Statement Check and the writer see a prose finding's snippet and attribution), the tool descriptions (E1.1) and the static-first layout of every tool-free request (E2.4); the reviewer request joins the shared reply-format convention, and its two strict xfails go.
+- **5.8** Provider settings S1–S5: request `deepseek-flash`; the schema instruction right after the role prompt; the last ReAct turn asks for the final answer; the notes come before the acquisition context; cached input tokens on the Telemetry line.
+- **Gate G5:** the suites are green; the PROMPT GENERALITY CHECK prints nothing; the probe's checks pass on the benchmark question: at most five required targets; no required energy (MWh) target; no required facility-type or definition target; the required targets include EIA's 2024 actual and at least two organisations' 2025 forecasts.
 
 ### Phase 6 (spec step 6): the live proof
 
@@ -3109,6 +3208,7 @@ Run in `$W` once Tasks 2.1–2.3 are merged and review-clean (rule R8):
 - **6.2** The operator runs `ev-preflight` off-peak. Pass: exit 0 (quality accepted; exit 4 fails); report, evidence log and quality JSON written; the projected first pass within 30 minutes; the researcher's per-turn mean at most 27 s; no failed Context Check batch and no unchecked context; no forecast without release (F7, F8, PD-24); zero unrecovered 429s and no truncated call on the Telemetry line. A violated criterion is fixed by lowering the config knob its advice names (`agents.sub_topic_concurrency` to 3), no code change.
 - **6.3** The operator runs `ev-1` off-peak, never hard-stopped.
 - **6.4** A fresh read-only reviewer audits `output/live-proof/ev-1/` against spec §10: wall time at most 45 minutes; the summary answers both halves with releases; every number is traced; relays are labelled; no wrong scope, period or kind; the reviewer accepted with no gate failure; rated GREAT.
+- **Generality (D10)** is judged from `ev-1` on the generic prompts; the user tests further questions after the work is finalised.
 
 ---
 
@@ -5562,7 +5662,7 @@ Run in `$W` once Tasks 4.1–4.14 are merged and review-clean (rule R8):
 "$PY" -m pytest -q tests/test_state.py
 "$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
 "$PY" -c "import deep_research.agents, deep_research.graph, deep_research.runtime, deep_research.api, deep_research.cli, deep_research.main, deep_research.evaluation, deep_research.e2e_evaluation"
-grep -rnwE "<the Caller inventory's acceptance pattern>" src tests    # prints nothing
+grep -rInwE "<the Caller inventory's acceptance pattern>" src tests    # prints nothing; -I skips binary files (stale __pycache__ bytecode)
 "$PY" scratch/ev_review_audit2.py
 "$PY" scratch/ev_review_audit2.py --live      # operator, off-peak only
 "$PY" -m deep_research --help
@@ -5572,17 +5672,25 @@ grep -rnwE "<the Caller inventory's acceptance pattern>" src tests    # prints n
 
 ---
 
-## Phase 5 — The planner's floor (spec step 5)
+## Phase 5 — The planner's floor and generic prompts (spec step 5, D10, D11)
 
-Phase goal: the benchmark question plans five or fewer required targets, one per organisation, measure, period and kind the question asks for, with no MWh, facility-type or definition requirement.
+Phase goal: the benchmark question plans five or fewer required targets, one per organisation, measure, period and kind the question asks for, with no MWh, facility-type or definition requirement; eight questions of other domains and shapes plan to a generic check list (Task 5.5); and every prompt a model reads is generic (spec D10, PD-28): it quotes no benchmark question or fact, states no target count, and teaches with hypothetical examples of other shapes. D11 extends this to every agent and the code they share: any question from any domain and of any type produces a useful report. Fable §8 places it per agent: the general planner and writer rules (5.2, 5.7a), one-part plans and evidence-form answer forms (5.2), the figure subject (5.6b, 5.7b), the relative-period rule and the page-date line (5.6a, 5.7b), the per-agent prompt fixes (5.7a), the seven-sub-topic cap (5.4) and ten offline e2e rows of other shapes (5.9). Waves: 5A (5.1), 5B (5.3, then 5.3b; 5.6a), 5C (5.2, 5.6b), 5D (5.7a), 5E (5.7b, 5.8), 5F (5.9), 5G (5.4), 5H (5.5), then Gate G5. Between merges the suite is red in four known places only, each closed by a named task: tests that build legacy targets (from 5.1 until 5.2, 5.3 and 5.3b), the prompt fingerprint pins of `tests/test_evaluation/test_config.py` (every prompt edit, until 5.4), `tests/test_imports.py` for the phase's new public names (from 5.1 until 5.4), and three cases of `tests/test_agents/test_tool_free_prompts.py` that pin the planner's old request layout and example count (from 5.2 until 5.7a). Each task runs only its scoped tests (R3).
 
-### Task 5.1: The final target fields
+Carried from Gate G4 (G4Probe: the live reviewer probe passed RV1–RV3, mean 0.879, no material defect, on corrected scripted data). Two generic findings, with the rule and the owners Fable §8.7 gives them:
+
+- (a) A correct relative-period resolution is dropped: the Context Check reads "this year" on a page dated 2026-02-20 as 2026, and `_checked` in `agents/evidence_verifier.py` drops it, because a correction is kept only when the corrected wording appears in `evidence_words` (§8.7-D11). Task 5.6a adds `period_resolved_from` and `resolve_relative_period`; Task 5.7b keeps such a correction when the page's own stated date resolves it, and the label says "period resolved from the page date".
+- (b) The live Context Check decides the same figures differently across batches (§8.7-D12). Task 5.7b prints the page's stated date on every Context Check block, so every batch resolves against one basis; batch size and effort stay as they are.
+
+### Task 5.1: The final target fields and the static-first request helper
 
 **Role:** sp-implementer. **Wave:** 5A, alone. **Depends on:** Gate G4.
 
-**Owns:** `utils/types.py`, `utils/__init__.py`, `tests/evidence_fakes.py`, `tests/test_types.py`.
+**Owns:** `utils/types.py`, `utils/__init__.py`, `tests/evidence_fakes.py`, `tests/test_types.py`, `agents/prompts.py` (the two new names only), `tests/test_agents/test_prompts.py`.
 
-- [ ] **Step 1: Write the failing test** (append to `tests/test_types.py`):
+**Interfaces:**
+- Produces: the final `EvidenceTarget` fields of "Shared interfaces"; `STRUCTURED_REQUEST_END` and `render_structured_request` ("Phase 5 additions (D10)"), which Tasks 5.2 and 5.7 import from `deep_research.agents.prompts` (R3) and Task 5.4 re-exports.
+
+- [ ] **Step 1: Write the failing tests.** Append to `tests/test_types.py`:
 
 ```python
 def test_a_target_is_its_structured_fields_and_needs_a_measure() -> None:
@@ -5592,28 +5700,101 @@ def test_a_target_is_its_structured_fields_and_needs_a_measure() -> None:
         make_target(measure="")
 ```
 
-- [ ] **Step 2: Run to see it fail.** Run: `"$PY" -m pytest -q tests/test_types.py -k needs_a_measure`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `EvidenceTarget` keeps exactly the final fields of "Shared interfaces" (`measure: str = Field(min_length=1)`); remove `required_dimensions`, `critical`, their validators and `counted_evidence_targets`' legacy branch; remove the `if "required_dimensions" in EvidenceTarget.model_fields` branch from `make_target`.
-- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_types.py` and, alone, `tests/test_state.py`. Expected: PASS (tests elsewhere that build legacy targets are fixed by 5.2 and 5.3).
-- [ ] **Step 5: Commit** the four owned files with "refactor(types): targets are their structured fields (spec 7.1)".
+and to `tests/test_agents/test_prompts.py` (import `STRUCTURED_REQUEST_END` and `render_structured_request` from `deep_research.agents.prompts`):
 
-### Task 5.2: The planner asks for the question's targets only
+```python
+def test_a_structured_request_puts_its_static_sections_first() -> None:
+    body = render_structured_request(
+        ["# Rules\nOne rule.", "# Reply format\nThe format."],
+        ["# Material\nThe material."],
+    )
+    assert body == (
+        "# Rules\nOne rule.\n\n# Reply format\nThe format.\n\n"
+        "# Material\nThe material.\n\n" + STRUCTURED_REQUEST_END
+    )
 
-**Role:** sp-hard-implementer. **Wave:** 5B, parallel with Task 5.3. **Depends on:** Task 5.1 merged.
 
-**Owns:** `agents/planner.py`, `tests/test_agents/test_planner.py`.
+def test_a_structured_request_needs_static_sections_and_material() -> None:
+    with pytest.raises(ValueError):
+        render_structured_request([], ["# Material\nThe material."])
+    with pytest.raises(ValueError):
+        render_structured_request(["# Rules\nOne rule."], [])
+```
 
-- [ ] **Step 1: Write the failing tests** (append; delete the tests of `required_dimensions`, `critical`, the answer-form and evidence-period boilerplate):
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_types.py tests/test_agents/test_prompts.py -k "needs_a_measure or structured_request"`. Expected: FAIL (the two prompt names do not exist; the target still carries its legacy fields).
+- [ ] **Step 3: Implement.** `EvidenceTarget` keeps exactly the final fields of "Shared interfaces" (`measure: str = Field(min_length=1)`); remove `required_dimensions`, `critical`, their validators and `counted_evidence_targets`' legacy branch; remove the `if "required_dimensions" in EvidenceTarget.model_fields` branch from `make_target`. In `agents/prompts.py`, directly below `STRUCTURED_EXAMPLE_NOTICE`, add:
+
+```python
+# D10 (PD-29): the last line of every tool-free pipeline request. The static
+# sections (the contract and the reply format) lead, so every call of one
+# operation shares them as a prefix DeepSeek's context cache can reuse; the
+# per-call material follows. The line avoids "JSON object", which
+# STRUCTURED_REPLY_FORMAT alone carries.
+STRUCTURED_REQUEST_END = "Return the reply for the material above."
+
+
+def render_structured_request(
+    static_sections: Sequence[str], material_sections: Sequence[str]
+) -> str:
+    """One request body: the static sections, the material, the closing line."""
+    if not static_sections or not material_sections:
+        raise ValueError("a structured request needs static sections and material")
+    return "\n\n".join([*static_sections, *material_sections, STRUCTURED_REQUEST_END])
+```
+
+- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_types.py tests/test_agents/test_prompts.py` and, alone, `tests/test_state.py`. Expected: PASS (tests elsewhere that build legacy targets are fixed by 5.2 and 5.3; `tests/test_imports.py` fails until Task 5.4 exports the two names).
+- [ ] **Step 5: Commit** the six owned files with "refactor(types): targets are their structured fields (spec 7.1); static-first request helper (D10)".
+
+**Acceptance:** a target is its structured fields with a required measure; `render_structured_request` returns the static sections, the material and `STRUCTURED_REQUEST_END`, in that order, and refuses an empty half.
+
+### Task 5.2: The planner asks for the question's parts only (the general rule)
+
+**Role:** sp-hard-implementer. **Wave:** 5C, beside Task 5.6b (no shared file); Task 5.3 may still be running. **Depends on:** Tasks 5.1 and 5.6a merged (Task 5.6a's `unit_dimension: str | None` is what lets an open dimension word survive stamping, and both reply examples and three of this task's tests stamp one). **Size:** L.
+
+**Owns:** `agents/planner.py`, `tests/test_agents/test_planner.py`, and in `agents/__init__.py` only the import and `__all__` entries of `latest_available_obligation` and `geographic_obligation`, which this task deletes.
+
+**Interfaces:**
+- Consumes: the final `EvidenceTarget` (Tasks 5.1 and 5.6a); `render_structured_request` and `STRUCTURED_REQUEST_END` (Task 5.1).
+- Produces: `EvidenceTargetDraft` as in "Phase 5 additions (D10)"; `_PLAN_REPLY_EXAMPLES` with two examples (Task 5.7a's operation inventory counts 2 for plan finalization); `plan_messages` in the static-first layout with the static headings `# Plan requirements` and `# Reply format` (PD-29); `render_plan_for_review` printing `  <target_id> [required]: <question>` (or `[optional]`), then `    fields: measure <m>; unit <u>; period <p>; kind <k>; organisation <o>`, with `none` for an empty field; `MIN_SUB_TOPICS = 1`; the `factual` and `comparison` answer forms of Step 3.
+
+- [ ] **Step 1: Migrate the helpers, then write the failing tests.** In `tests/test_agents/test_planner.py` the helpers take the final draft shape:
+
+```python
+def _target(
+    question: str = "What benchmark result does Alpha report?",
+    *,
+    required: bool = True,
+    measure: str = "benchmark result",
+    **fields: str,
+) -> EvidenceTargetDraft:
+    return EvidenceTargetDraft(
+        question=question, required=required, measure=measure, **fields
+    )
+```
+
+`_structured_draft(**overrides: object)` passes `required=True` where it passed `required_dimensions` and `critical`; `_raw_draft` sends `"required": True` and `"measure": "benchmark result"` where it sent `required_dimensions` and `critical`. Then append (import `STRUCTURED_REQUEST_END` from `deep_research.agents.prompts`):
 
 ```python
 def test_a_draft_target_without_a_measure_is_a_plan_problem() -> None:
-    draft = _structured_draft(measure="")
-    assert any("measure" in problem for problem in plan_problems_for(draft))
+    draft = ResearchPlanDraft(
+        sub_topics=[
+            _draft("Topic 1", priority=1, evidence_targets=[_target(measure="")]),
+            _draft("Topic 2", priority=2),
+            _draft("Topic 3", priority=3),
+        ]
+    )
+    _, problems = validate_plan_draft(draft)
+    assert any("check these fields: measure" in problem for problem in problems)
 
 
 def test_the_answer_contract_adds_no_boilerplate_to_targets() -> None:
     targets = _draft_targets(_structured_draft(), "topic-01")
-    [stamped] = apply_answer_contract([_topic_with(targets)], _contract())
+    topic = SubTopic(
+        coverage_id="topic-01", title="EIA 2024 additions", rationale="r",
+        search_queries=["q"], success_criteria=["c"], priority=1,
+        evidence_targets=targets,
+    )
+    [stamped] = apply_answer_contract([topic], _contract())
     assert stamped.evidence_targets[0].model_dump() == targets[0].model_dump()
 
 
@@ -5622,70 +5803,1402 @@ def test_the_plan_instruction_states_the_floor() -> None:
                    "required only for what the question names",
                    "optional", "paywalled"):
         assert phrase in PLAN_INSTRUCTION
+
+
+def test_the_models_required_flag_is_what_the_plan_stamps() -> None:
+    [optional] = _draft_targets(_structured_draft(required=False), "topic-01")
+    [required] = _draft_targets(_structured_draft(), "topic-01")
+    assert (optional.required, required.required) == (False, True)
+
+
+def test_an_open_dimension_word_survives_stamping() -> None:
+    [target] = _draft_targets(_structured_draft(unit_dimension=" Currency "), "topic-01")
+    assert target.unit_dimension == "currency"
+
+
+def test_the_plan_request_puts_its_requirements_before_the_question() -> None:
+    body = plan_messages(AgentTask(instruction="Why did ferry fares rise?"), _run())[1].content
+    assert body.startswith("# Plan requirements\n")
+    assert body.index("# Reply format") < body.index("# Research question")
+    assert body.rstrip().endswith(STRUCTURED_REQUEST_END)
 ```
 
-(`plan_problems_for` is the module's existing problem-listing entry point — `target_problems` or `_plan_problems`, whichever takes one sub-topic draft; `_topic_with` and `_contract` build the `SubTopic` and `AnswerContract` of Task 1.4's tests.)
-- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_planner.py -k "measure or boilerplate or floor"`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `EvidenceTargetDraft` drops `required_dimensions` and `critical`; `_draft_targets` stamps only the structured fields and `required`; a target with an empty `measure` is a plan problem (so the existing review-and-repair loop, `MAX_PLAN_REVIEW_CALLS = 2`, asks for it); `apply_answer_contract` stops adding answer-form and evidence-period items. In `PLAN_INSTRUCTION`, replace every paragraph about required dimensions, answer form and evidence period with:
+Replace `test_an_unknown_dimension_or_kind_is_stamped_empty` and `test_the_plan_example_the_model_is_shown_passes_every_plan_check` with:
+
+```python
+def test_an_unknown_kind_or_a_blank_organisation_is_stamped_empty() -> None:
+    [target] = _draft_targets(
+        _structured_draft(unit_dimension="volts", kind="estimate", organisation=" "),
+        "topic-01",
+    )
+    assert (target.unit_dimension, target.kind, target.organisation) == ("volts", None, None)
+
+
+@pytest.mark.parametrize(("label", "payload"), _PLAN_REPLY_EXAMPLES)
+def test_every_plan_example_the_model_is_shown_passes_every_plan_check(
+    label: str, payload: str
+) -> None:
+    """Each example is a plan the planner would accept (D10: two shapes, neither the benchmark's)."""
+    question = label.split("Example input:", 1)[1].strip().rstrip(".")
+    sub_topics, problems = validate_plan_draft(ResearchPlanDraft.model_validate_json(payload))
+    assert problems == []
+    assert target_problems(sub_topics, _contract(question)) == []
+```
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_planner.py -k "without_a_measure or boilerplate or floor or required_flag or open_dimension or requirements_before or unknown_kind or every_plan_example"`. Expected: FAIL (the draft has no `required`, `volts` and `currency` are coerced to `None`, the request ends with its reply format, and there is one example).
+- [ ] **Step 3: Draft, stamping and plan checks** (`agents/planner.py`). `EvidenceTargetDraft` has exactly the "Phase 5 additions" fields; its docstring, which the JSON schema sends to the model, says the planner assigns the id and the model supplies the question, whether the question names it (`required`, spec §7.1) and the fields a program checks an answer against. `_structured_fields` stamps `"unit_dimension": dimension or None`, lower-cased and whitespace-collapsed as now (Fable C-e step 2); drop the `UnitDimension` import if nothing else in the module uses it. `_draft_targets` passes `required=target.required` and neither `required_dimensions` nor `critical`, and its docstring says the question, `required` and the structured fields are carried through. `apply_answer_contract` becomes:
+
+```python
+def apply_answer_contract(
+    sub_topics: Sequence[SubTopic],
+    contract: AnswerContract,
+) -> list[SubTopic]:
+    """Re-stamp each target's id and decide ``required`` (spec §7.1).
+
+    The model marks a target required only when the question names it. One
+    bounded code rule remains (Fable C-d): a target that asks for an energy
+    figure (MWh) a capacity question never named is optional, whatever the
+    draft said. Nothing else is added to a target.
+    """
+    stamped: list[SubTopic] = []
+    for sub_topic in sub_topics:
+        targets = [
+            EvidenceTarget(
+                target_id=target_id_for(sub_topic.coverage_id, position),
+                coverage_id=sub_topic.coverage_id,
+                question=target.question,
+                required=target.required
+                and not _unrequested_energy_measure(target, contract=contract),
+                measure=target.measure,
+                unit_dimension=target.unit_dimension,
+                period=target.period,
+                kind=target.kind,
+                geography=target.geography,
+                organisation=target.organisation,
+            )
+            for position, target in enumerate(sub_topic.evidence_targets, start=1)
+        ]
+        stamped.append(sub_topic.model_copy(update={"evidence_targets": targets}))
+    return stamped
+```
+
+C-c (Fable §4; the rule now tells the model that a publisher whose outlook is paywalled is optional): delete `_PAYWALLED_OUTLOOKS`, `_source_requirements`, `_SOURCE_CLAUSE_SPLIT`, `_paywalled_only_sources`, `_demanded_second_body`, `_SECOND_BODY_MARKERS` and `_INDEPENDENCE_MARKERS` (none has another caller), and in `_plan_problems` the second-body block and the paywall block. C-d stays, reading the structured fields: `_unrequested_energy_measure` builds `target_text = " ".join(filter(None, (target.question, target.measure)))`, and its docstring says "its question and its measure". Its advisory in `_plan_problems` keeps only the "is planned optional: …" message: `_stamp` and `extend_plan` both stamp before they check, so a target it flags is already optional, and the "required, critical" branch is deleted. `_unrequested_forecast_vintage` reads `" ".join(filter(None, (target.question, target.measure)))` (the period field is never scanned for an edition date, as the old `period:` requirement was not), and `_demanded_widening` reads `target.question, target.measure or ""` in place of `*target.required_dimensions`. Delete `_plan_dimensions`, `_checkable_plan_requirement`, `latest_available_obligation` and `geographic_obligation` (no caller is left) with their two `agents/__init__.py` entries; drop the `unique_phrases` import if nothing in `planner.py` still uses it; keep `answer_form_requirement` (`render_answer_contract` prints it). `render_plan_for_review` prints the two lines per target given in "Interfaces".
+
+One-part questions and evidence-form answer forms (D11; Fable §8.5 Planner, §8.7-D1 and §8.7-D19). `MIN_SUB_TOPICS = 1`: a one-part question is one sub-topic, and padding it to three was the only content-driven way to reach `graph_planning_failed`; every reader follows the constant (the `PLAN_INSTRUCTION` f-string, `ResearchPlan.validate_plan_size`, `validate_plan_draft` and `planning_started_event`'s metadata). No answer kind is added, because a list of kinds misses the next shape; in `_ANSWER_FORM_REQUIREMENTS` two forms are reworded, and every stage that prints the answer contract reads them:
+
+```python
+    "comparison": (
+        "answer form: the same dimension, measured or described, for every "
+        "option compared, on one shared basis"
+    ),
+    "factual": (
+        "answer form: the specific thing asked for, in the form its evidence "
+        "takes — a figure with its value, unit and date; items with their "
+        "attributes; dated events; reasons; a rule's provisions"
+    ),
+```
+
+- [ ] **Step 4: The rule, the examples and the request layout.** In `PLAN_INSTRUCTION`, replace the paragraph from "For every target also fill the fields a program checks answers against: " to "Plan one target per organisation, measure, period and kind.\n" (today lines 487–495) with Fable §2.2 text (1), verbatim, with an ASCII apostrophe:
 
 ```
-"Plan one target per organisation, measure, period and kind the question asks for, "
-"and nothing else required. A target is required only for what the question names: "
-"for 'how much grid-scale battery storage was added in 2024, and what do the latest "
-"forecasts project for 2025', that is the 2024 actual and each organisation's latest "
-"2025 forecast. Targets you add yourself (an energy figure in MWh for a capacity "
-"question, facility types, definitions) are optional, and so is any issuer whose "
-"figures are only behind a paywall. Optional targets never fail a run. Keep the "
-"temporal contract: the latest forecasts, no cutoff inferred from a year in the "
-"question, actuals labelled apart from forecasts. For the example question, about "
-"five targets are expected.\n"
+"For every target also fill the fields a program checks answers against: "
+"measure (what the target asks for, in the question's own words: a quantity, "
+"a rule, a mechanism, a list); unit_dimension (for a quantity, one word for "
+"the kind of quantity: power, energy, percent, currency, count, mass, volume, "
+"distance, time, rate; empty when the answer is not a quantity); period (the "
+"year or period the question names for it, or empty); kind (actual for a "
+"measured or reported outcome, forecast for a projection or outlook; empty "
+"when the answer is not a quantity); geography; and organisation (the body "
+"the question names as its source; when it names none, the body that "
+"publishes the primary or official record of that measure for that geography "
+"— a statistical agency, a regulator, the company for its own filing — or "
+"empty when no single body does). Plan one target per organisation, measure, "
+"period and kind the question asks for.\n"
 ```
 
-and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `critical`.
-- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_agents/test_planner.py`. Expected: PASS.
-- [ ] **Step 5: Commit** both owned files with "feat(planner): the question's targets only (spec 7.1)".
+and the paragraph from "Mark a target critical when the question cannot be answered without it, " to "and a target resting on it cannot be answered.\n" (today lines 496–502) with Fable §2.2 text (2) whose opening, from "A target is required only for what the question names:" through "…or one target for a published ranking that covers them.", is Fable §8.1's general rule (D11: one rule for every question, no per-type branch; the recommendation and writer texts of the earlier D10 brief are merged into §8.1 and §8.2 and dropped, Fable §8.4). ASCII apostrophes throughout; the rest of the §2.2 paragraph stands unchanged:
+
+```
+"A target is required only for what the question names. Read the question as "
+"its parts: each figure, period, body, option, place or item it names, and "
+"each clause it asks, is a part a complete answer needs, and every part gets "
+"its own target. For each part, the evidence that settles it decides the "
+"target's fields: a figure (measure, unit_dimension, period, kind); a set of "
+"items with their attributes, such as options with a price and a rating per "
+"criterion (one target per attribute, its measure naming the attribute, the "
+"items found by the research when the question names none); dated changes or "
+"events (a target whose measure is the change and whose period is the window); "
+"reasons or mechanisms; or the text of a rule (empty unit_dimension and kind, "
+"no figure added to make them measurable). The organisation of a target is "
+"the body that produced, measured, judged or announced that evidence — the "
+"statistical agency for a statistic, the maker for its own release notes or "
+"prices, an independent tester or reviewer for a rating, the regulator for a "
+"rule — named by the question or, when it names none, the body that publishes "
+"the primary record; a page that repeats another body's evidence is a relay, "
+"never the organisation. When the question asks for forecasts, outlooks, "
+"rankings or recommendations without naming who gives them, plan one target "
+"per body whose published, reachable evidence you expect, at least two when "
+"the question is plural; a body whose evidence is paywalled is optional. A "
+"period is a target's period only when the question bounds when the evidence "
+"happened or applies (\"changes in 2026\", \"added in 2024\"); a year that "
+"names when the reader will buy, decide or use (\"to buy in 2026\") is not a "
+"period: leave it empty, the as-of date governs, and earlier evidence is "
+"still current. "
+"Targets you add yourself — a second unit of measure, a related "
+"quantity, a type or category breakdown, a definition, background — are "
+"optional. Optional targets never fail a run; a required target no source "
+"can answer fails acceptance, so require nothing the question did not ask "
+"for. A target never asks for a publication date, retrieval date or edition "
+"as its measure: those are context the researcher records beside the "
+"evidence. Keep the temporal contract: the latest available evidence, no "
+"cutoff inferred from a year in the question, actuals labelled apart from "
+"forecasts. The number of targets follows the question — as many as its "
+"parts and named bodies need, and no more.\n"
+```
+
+In "The answer contract above fixes the as-of date, …" write "below" for "above": the contract now follows the requirements (PD-29). Nothing else in `PLAN_INSTRUCTION` changes; Fable §2.2 found the rest generic, including "Never make a required target depend on a source behind a paywall …" and "… not a second publisher where one issuer settles the fact". No worked example goes inside the rule (Fable §2.3). `_PLAN_REPLY_EXAMPLES` holds two examples of different shapes, neither the benchmark's (Fable §2.3): the bus-and-rail comparison with the final fields only (`"required": true` on the two ridership targets and the on-time target, `"required": false` on the planner-added capital-cost target), its quantities dimensioned under the open vocabulary (`count` for ridership, `currency` for the capital cost; Fable kept Task 1.4's empty values, which the new rule contradicts) and its cost criterion asking for both options' estimates rather than "two independent sources", which D2 rules out; and Fable's causal public-health plan. The whole constant, replacing today's (lines 519–581):
+
+```python
+_PLAN_REPLY_EXAMPLES = (
+    (
+        "Example input: compare bus and rail options for a city.",
+        '{"sub_topics":['
+        '{"title":"travel demand and coverage",'
+        '"rationale":"Establish which trips each option must serve.",'
+        '"search_queries":["city bus rail travel demand route coverage"],'
+        '"success_criteria":['
+        '"Measured demand and coverage estimates are available for both '
+        'options."],"priority":1,'
+        '"evidence_targets":['
+        '{"question":"What ridership did the bus option carry in the most '
+        'recent reported year?","required":true,'
+        '"measure":"annual ridership","unit_dimension":"count",'
+        '"period":"","kind":"actual",'
+        '"geography":"the city","organisation":""},'
+        '{"question":"What ridership did the rail option carry in the most '
+        'recent reported year?","required":true,'
+        '"measure":"annual ridership","unit_dimension":"count",'
+        '"period":"","kind":"actual",'
+        '"geography":"the city","organisation":""}]},'
+        '{"title":"cost and delivery",'
+        '"rationale":"Compare the resources and time required to deliver each '
+        'option.",'
+        '"search_queries":["city bus rail capital operating cost delivery '
+        'time"],"success_criteria":['
+        '"Comparable cost estimates are available for both options."],'
+        '"priority":2,'
+        '"evidence_targets":['
+        '{"question":"What capital cost per route kilometre does each option '
+        'report?","required":false,'
+        '"measure":"capital cost per route kilometre","unit_dimension":"currency",'
+        '"period":"","kind":"",'
+        '"geography":"the city","organisation":""}]},'
+        '{"title":"service reliability",'
+        '"rationale":"Establish how reliably each option delivers its '
+        'timetable.",'
+        '"search_queries":["city bus rail on-time performance reliability"],'
+        '"success_criteria":['
+        '"A measured on-time performance figure is available for each '
+        'option."],"priority":3,'
+        '"evidence_targets":['
+        '{"question":"What on-time performance did each option report?",'
+        '"required":true,'
+        '"measure":"on-time performance","unit_dimension":"percent",'
+        '"period":"","kind":"actual",'
+        '"geography":"the city","organisation":""}]}'
+        "]}",
+    ),
+    (
+        "Example input: why did measles cases rise in the region in 2024?",
+        '{"sub_topics":['
+        '{"title":"vaccination coverage",'
+        '"rationale":"Establish whether coverage fell before the rise.",'
+        '"search_queries":["regional health authority MMR first dose coverage 2024"],'
+        '"success_criteria":["A reported first-dose coverage figure for 2024 from '
+        'the regional health authority."],'
+        '"priority":1,"evidence_targets":['
+        '{"question":"What MMR first-dose coverage did the regional health '
+        'authority report for 2024?","required":true,'
+        '"measure":"MMR first-dose coverage","unit_dimension":"percent",'
+        '"period":"2024","kind":"actual",'
+        '"geography":"the region","organisation":"the regional health authority"}]},'
+        '{"title":"outbreak investigation findings",'
+        '"rationale":"The causes the investigating body itself identified.",'
+        '"search_queries":["regional health authority measles outbreak report 2024 causes"],'
+        '"success_criteria":["The outbreak report names the causes it identified."],'
+        '"priority":2,"evidence_targets":['
+        '{"question":"What causes of the 2024 rise did the regional health '
+        'authority\'s outbreak report identify?","required":true,'
+        '"measure":"causes identified by the outbreak report","unit_dimension":"",'
+        '"period":"2024","kind":"",'
+        '"geography":"the region","organisation":"the regional health authority"}]},'
+        '{"title":"immunity threshold",'
+        '"rationale":"Background the reader needs to judge the coverage figure.",'
+        '"search_queries":["national public health agency measles herd immunity threshold"],'
+        '"success_criteria":["A stated immunity threshold from the national public '
+        'health agency."],'
+        '"priority":3,"evidence_targets":['
+        '{"question":"What population immunity threshold does the national '
+        'public health agency state for measles?","required":false,'
+        '"measure":"stated immunity threshold","unit_dimension":"percent",'
+        '"period":"","kind":"",'
+        '"geography":"national","organisation":"the national public health agency"}]}'
+        "]}",
+    ),
+)
+```
+
+`plan_messages` becomes static-first:
+
+```python
+    static = [
+        f"# Plan requirements\n{PLAN_INSTRUCTION}",
+        f"# Reply format\n{render_structured_reply_format(_PLAN_REPLY_EXAMPLES)}",
+    ]
+    material = [f"# Research question\n{task.instruction}"]
+    if contract is not None:
+        material.append(f"# Answer contract\n{render_answer_contract(contract)}")
+    if task.guidance.strip():
+        material.append(f"# Context\n{task.guidance}")
+    material.append(f"# Scoping notes\n{_render_notes(run)}")
+    if repair is not None:
+        material.append(f"# Repair\n{repair}")
+    return [
+        ChatMessage(role="developer", content=PLANNER_PLAN_SYSTEM_PROMPT),
+        ChatMessage(role="user", content=render_structured_request(static, material)),
+    ]
+```
+
+- [ ] **Step 5: Migrate and delete the old tests** in `tests/test_agents/test_planner.py`. Every `_target(…, dimensions=[…], critical=…)` call and every `EvidenceTarget(…, required_dimensions=…, critical=…)` construction takes the final shape by one rule: `critical=` is dropped, and a `_target` draft keeps the default `required=True`, which is what the old stamping produced for every target no hygiene rule downgraded (an `EvidenceTarget` keeps its own `required=`); a `measure: X` phrase becomes `measure="X"`; a `period: X` phrase becomes `period="X"`; every other phrase (`source:`, `geography:`, `unit:`, `definition:`, `answer form:`) is dropped; a module-level fixture left without a user is deleted. Delete, with the code they tested: `test_audit_battery_plan_stamps_only_dischargeable_dimensions`, `test_a_source_requirement_that_names_two_bodies_is_named_for_a_split`, `test_a_source_requirement_that_names_one_body_is_not_named`, `test_a_paywalled_only_target_is_planned_optional_with_an_advisory`, `test_a_reachable_required_target_is_not_named`, `test_a_paywalled_outlook_beside_a_public_source_is_not_named`, `test_a_critical_paywalled_target_stays_required_with_an_advisory` and `test_a_critical_unrequested_energy_measure_target_stays_required_with_an_advisory`. `MIN_SUB_TOPICS = 1` (Step 3) moves these pins: `test_plan_size_bounds_match_the_spec` asserts `MIN_SUB_TOPICS == 1`; every expected message "produce between 3 and 7" and the body check "between 3 and 7" read "between 1 and 7"; `test_a_plan_with_too_few_sub_topics_is_rejected` is replaced by `test_a_one_part_plan_is_valid` (`_, problems = validate_plan_draft(_plan("Alpha"))`, then `assert problems == []`); `test_a_sub_topic_missing_its_queries_is_reported_by_field` loses its expected `"the plan has 2 valid sub-topics; …"` entry; `test_a_redundant_plan_is_repaired_once_and_then_accepted` loses its `"produce between 3 and 7" in repair_body` assertion (the repeated-title assertion stays); `test_a_plan_that_stays_invalid_fails_the_session` scripts its repair as `_plan("A", "B", "C", "D", "E", "F", "G", "H")` and expects `("draft: the plan has 0 valid sub-topics; produce between 1 and 7", "repair: the plan has 8 valid sub-topics; produce between 1 and 7")`. The docstring of `test_a_threshold_question_is_not_a_comparison` says the comparison answer form is printed in the answer contract every request carries, no longer stamped into target dimensions. `tests/test_agents/test_errors.py`'s `"the plan has 1 valid sub-topics; …"` is a fixture string of `PlanningError`, not a bound, and stays.
+- [ ] **Step 6: Run.** `"$PY" -m pytest -q tests/test_agents/test_planner.py tests/test_agents/test_planner_researcher_seam.py tests/test_agents/test_tool_free_prompts.py`. Expected: PASS, except three cases of `test_tool_free_prompts.py` that pin the planner's old layout and example count, which Task 5.7a rewrites for every request: the `planner-plan` row of `test_every_tool_free_request_has_one_heading_level_and_one_reply_format`, the `plan-finalization` row of `test_every_rendered_request_keeps_one_reply_contract`, and `test_the_matrix_covers_exactly_the_planned_operation_inventory`. Any other failure outside the owned files is reported (R2).
+- [ ] **Step 7: Commit** the owned files with "feat(planner): one general rule for every question; one-part plans; evidence-form answer forms (spec 7.1, D10, D11)".
+
+**Acceptance:** `PLAN_INSTRUCTION` carries Fable §2.2's field list and §8.1's general rule and quotes no question and no target count; the model's `required` is what the plan stamps, except the bounded MWh-for-capacity downgrade; an open dimension word survives stamping; a one-sub-topic plan validates; the `factual` and `comparison` answer forms name the evidence's form rather than a measured value; the paywall list and the second-body check are gone with their tests; the plan request is static-first; both reply examples pass every plan check.
 
 ### Task 5.3: Target consumers
 
-**Role:** sp-implementer. **Wave:** 5B, parallel with Task 5.2. **Depends on:** Task 5.1 merged.
+**Role:** sp-implementer. **Wave:** 5B, parallel with Task 5.6a. **Depends on:** Task 5.1 merged.
 
-**Owns:** `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_report_reviewer.py`, `tests/test_agents/test_planner_researcher_seam.py`, `tests/test_evaluation/test_cases_planner.py`, `tests/test_evaluation/test_evaluators_agents.py`, `tests/test_e2e_evaluation/test_real_agents.py`.
+**Owns:** `agents/researcher.py`, `agents/report_reviewer.py`, `evaluation/cases/__init__.py`, `evaluation/cases/planner.py`, `evaluation/evaluators.py`, `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_report_reviewer.py`, `tests/test_agents/test_planner_researcher_seam.py`, `tests/test_evaluation/test_cases_planner.py`, `tests/test_evaluation/test_evaluators_agents.py`, `tests/test_e2e_evaluation/test_real_agents.py`.
 
-- [ ] **Step 1: Inventory.** `grep -rn "required_dimensions\|\.critical\b\|critical=" src tests` — every hit in an owned file is migrated: the researcher's unit mentions (around researcher.py 780) come from `target.unit_dimension`; the reviewer's target view shows the structured fields; the planner evaluation gates `_dimensions_are_checkable_passes` and `_no_vague_dimensions_passes` are replaced by `targets_have_measure` (every target has a non-empty measure and a known unit dimension or none); the e2e planner double and the matrix's `_topic(critical=...)` builder stop passing the removed fields. A hit in a file not owned here goes to the controller.
+- [ ] **Step 1: Inventory.** `grep -rIn "required_dimensions\|\.critical\b\|critical=" src tests` (`-I` skips the stale `__pycache__` bytecode, as in the Caller-inventory grep) — every hit in an owned file is migrated: the researcher's unit mentions (`_measure_bases`, around researcher.py 660) come from `target.unit_dimension`; the reviewer's target view shows the structured fields; the planner evaluation gates `_dimensions_are_checkable_passes` and `_no_vague_dimensions_passes` are replaced by `targets_have_measure` (every target has a non-empty measure; D10 opens the unit vocabulary, so the gate does not check the dimension word); the e2e planner double and the matrix's `_topic(critical=...)` builder stop passing the removed fields; the case-target builder of `evaluation/cases/__init__.py` (around line 186) drops `required_dimensions=[...]` and the `# type: ignore[arg-type]` on `unit_dimension=`, which Task 5.6a's `str | None` makes unnecessary; and the comment on the matrix's widget-funding row (`replay_matrix.py`, around line 1228) gives a reason D10 removes ("``UnitDimension`` has no money"), so it says only why the row asks for a share. A hit in a file not owned here goes to the controller (Task 5.2 owns `planner.py` and `test_planner.py`).
 - [ ] **Step 2: Tests.** Update the owned tests to the final target shape and add `test_targets_have_measure_gate` in `test_evaluators_agents.py` (passes on a structured plan, fails on a target with an empty measure).
 - [ ] **Step 3: Run.** `"$PY" -m pytest -q tests/test_agents/test_researcher.py tests/test_agents/test_report_reviewer.py tests/test_agents/test_planner_researcher_seam.py tests/test_evaluation tests/test_e2e_evaluation`. Expected: PASS.
 - [ ] **Step 4: Commit** the owned files changed with "refactor: target consumers read the structured target fields".
 
-### Task 5.4: Phase-5 integration
+### Task 5.3b: Migrate the test files no Phase-5 task owns to the final target shape
 
-**Role:** sp-implementer. **Wave:** 5C, parallel with Task 5.5. **Depends on:** Tasks 5.2 and 5.3 merged.
+**Role:** sp-implementer (mechanical). **Wave:** 5B, after Task 5.3 merges; beside Task 5.6a (no shared file). **Depends on:** Task 5.3 merged. **Size:** S. Without it these files would wait for Task 5.4 (R6), and the suite would stay red through Tasks 5.6a–5.9.
 
-**Owns:** `agents/__init__.py`, `tests/test_evaluation/test_config.py`. Re-pin the planner and researcher fingerprints (Task 1.5 Step 2 procedure), export any new public name, run `"$PY" -m pytest -q tests/test_imports.py tests/test_evaluation/test_config.py`, commit "chore: re-pin planner and researcher fingerprints".
+**Owns:** `tests/graph_fakes.py`, `tests/test_graph/*`, `tests/test_runtime/*`, `tests/test_cli/test_entrypoint.py`, `tests/test_openai_provider.py`, `tests/test_native_react_shape_probe.py`, `tests/test_agents/test_source_evaluator.py`, `tests/test_agents/test_native_react_boundary.py`, `tests/test_e2e_evaluation/test_runner.py`. (Later waves also edit two of them: Task 5.7a `test_source_evaluator.py`, only for a pin of the old scoring layout, and Task 5.8 `tests/test_runtime/test_assembly.py`, one model-id line; R5 holds them until this task's review is clean.)
 
-### Task 5.5: Step-5 proof: the plan probe (Gate G5)
+- [ ] **Step 1: See them fail.** `"$PY" -m pytest -q tests/test_graph tests/test_runtime tests/test_cli/test_entrypoint.py tests/test_openai_provider.py tests/test_native_react_shape_probe.py tests/test_agents/test_source_evaluator.py tests/test_agents/test_native_react_boundary.py tests/test_e2e_evaluation/test_runner.py`. Expected: FAIL only where a fixture builds a legacy target.
+- [ ] **Step 2: Migrate.** `grep -rIn "required_dimensions\|\.critical\b\|critical=" tests/graph_fakes.py tests/test_graph tests/test_runtime tests/test_cli/test_entrypoint.py tests/test_openai_provider.py tests/test_native_react_shape_probe.py tests/test_agents/test_source_evaluator.py tests/test_agents/test_native_react_boundary.py tests/test_e2e_evaluation/test_runner.py` lists every legacy construction; each takes the final shape by Task 5.2 Step 5's rule (`critical=` dropped and `required=` kept; a `measure: X` phrase becomes `measure="X"`, a `period: X` phrase `period="X"`, every other phrase dropped). Nothing else changes.
+- [ ] **Step 3: Run.** The Step 1 command, then the FULL SUITE. Expected: the owned files PASS, and the full suite is red only in files Task 5.2 owns (the planner's) and in `tests/test_imports.py` (Task 5.4).
+- [ ] **Step 4: Commit** the owned files changed with "test: migrate the unowned test files to the final target shape".
 
-**Role:** sp-implementer, in `$W`; the `--live` run is an operator step. **Wave:** 5C. **Depends on:** Task 5.2 merged.
+**Acceptance:** no owned file builds a legacy target; the full suite is red only in Task 5.2's planner files and in `tests/test_imports.py`.
 
-**Files:** Create (untracked) `scratch/ev_plan_probe.py`.
+### Task 5.4: Phase-5 integration: exports, the sub-topic cap and one re-pin
 
-- [ ] **Step 1: Write the probe.** Build the planner with `build_agent("planner", settings, tracker=tracker, provider=provider, tools=build_tools(settings, tracker=tracker, memory=..., request_budget=budget), session_id="ev-plan-probe", reputation=None)` from `runtime/assembly.py` (tracker, settings and provider as in Task 2.3's `--live`; memory: an in-memory `LongTermMemory` as `runtime/assembly.build_runtime` builds for tests, or `None` if `build_tools` accepts it), run it on `QUESTION` from `initial_graph_state(session_id="ev-plan-probe", question=QUESTION)` inside `tracker.session_span`, and print every target (id, required, measure, unit dimension, period, kind, organisation). Checks: **Q1** at most five required targets; **Q2** no required target with `unit_dimension == "energy"`; **Q3** no required target whose measure contains "facility", "type of" or "definition"; **Q4** a required target with period 2024, kind actual and organisation EIA (`same_organisation`), and required 2025 forecast targets for at least two organisations. `--offline` instead feeds the planner a `ScriptedCompleter` whose draft is the audit-3 plan (six targets, one MWh) and prints what the stamped plan keeps, to show the code path; it checks nothing about the model.
-- [ ] **Step 2: Run live (operator, off-peak).** OFF-PEAK CHECK, then `"$PY" scratch/ev_plan_probe.py`. Expected: `PASS Q1`–`PASS Q4`, about 3 minutes.
-- [ ] **Step 3: No commit** (scratch).
+**Role:** sp-implementer. **Wave:** 5G, alone. **Depends on:** every other implementation task of Phase 5 merged (5.2, 5.3, 5.6a, 5.6b, 5.7a, 5.7b, 5.8, 5.9) and the reviews of 5.2 and 5.8 clean (R5: they edit `agents/__init__.py`, `config.yaml`, `tests/test_config.py` and `tests/test_evaluation/test_config.py`). It is the last task that changes text a model reads, so its one re-pin sees every Phase-5 prompt edit. **Size:** S.
+
+**Owns:** `agents/__init__.py`, `tests/test_evaluation/test_config.py`, `config.yaml` (`agents.max_sub_topics` and its comment), `tests/test_config.py` (the two sub-topic-cap assertions).
+
+- [ ] **Step 1: Export the phase's public names.** Add `STRUCTURED_REQUEST_END` and `render_structured_request` to the `from deep_research.agents.prompts import (...)` block of `agents/__init__.py`; `resolve_relative_period`, `same_subject`, `subject_context` and `subject_named_in` to its `verified_facts` block; `evaluated_page_date` to its `evidence_verifier` block; each also to `__all__`. `"$PY" -m pytest -q tests/test_imports.py` names any other public name the phase added; export it the same way.
+- [ ] **Step 2: Attempt every planned sub-topic (D11; Fable §8.7-D3).** In `config.yaml` set `agents.max_sub_topics: 7` and replace the comment above it with: "How many planned sub-topics one Researcher pass attempts (AGENTS_MAX_SUB_TOPICS overrides this). Seven is the Planner's own ceiling: a lower cap dropped the last parts of a six- or seven-part question under Not found. How many run at once is agents.sub_topic_concurrency." In `tests/test_config.py`, `test_the_shipped_config_file_carries_the_sub_topic_cap` asserts `raw["agents"]["max_sub_topics"] == MAX_SUB_TOPICS` in place of its `== 5` and `< MAX_SUB_TOPICS` lines, and `test_the_shipped_config_sets_the_researcher_budget_and_turn_caps` asserts `settings.agents.max_sub_topics == 7`.
+- [ ] **Step 3: Re-pin once, after every Phase-5 prompt edit (PD-17, D10).** Print the values the merged tree computes with the Task 1.5 command. All five `PINNED_TARGET_PROMPT_FINGERPRINTS` move (`agents/prompts.py` changed in Tasks 5.1, 5.7a and 5.8, the agent modules in 5.2, 5.7a and 5.7b): set each to its printed value, with one comment line "Evidence Verifier plan, Task 5.4 (D10, D11): planner, researcher, source evaluator, evidence verifier and report writer prompts and the shared prompts module changed; one re-pin for the phase." `PINNED_JUDGE_PROMPT_FINGERPRINT` must print unchanged (`74b9cddfbbee`; the judge prompt is not a D10 target); if it moved, stop and report. Delete each historical single-value test that fails only because a pin moved.
+- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_imports.py tests/test_evaluation/test_config.py tests/test_config.py`. Expected: PASS.
+- [ ] **Step 5: Commit** the owned files with "chore: export the Phase-5 names; attempt all seven sub-topics; re-pin the five prompt fingerprints once (D10, D11)".
+
+**Acceptance:** `tests/test_imports.py`, `tests/test_evaluation/test_config.py` and `tests/test_config.py` pass on the merged Phase-5 tree; the shipped config attempts seven sub-topics; the judge pin did not move.
+
+### Task 5.5: Step-5 proof: the planning probe on nine questions and the prompt-text dump (Gate G5)
+
+**Role:** sp-implementer, in `$W`, writes the two scripts; the `--live` run is an operator step; a fresh read-only reviewer that has seen neither the planner changes nor their reviews grades the plans (Step 5). **Wave:** 5H, alone; it owns scratch files only. **Depends on:** Task 5.4 merged, so the probe runs once, on the final configuration, after every Phase-5 implementation task and before Gate G5 (the user approved it: D11). It measures the shipped planner request: the general rule, the one-part bound and the answer forms (5.2), the open unit vocabulary (5.6a), the static-first layout (5.1, 5.2), the tool descriptions its scoping turns read (5.7a), `deepseek-flash`, the schema message after the role prompt and the ReAct order and last-iteration line (5.8), and the seven-sub-topic cap (5.4).
+
+**Files:** Create (untracked) `scratch/ev_plan_probe.py` and `scratch/ev_prompt_text.py`; the probe writes `scratch/ev-plan-probe.md`.
+
+- [ ] **Step 1: Write the probe.** Build the planner with `build_agent("planner", settings, tracker=tracker, provider=provider, tools=build_tools(settings, tracker=tracker, memory=..., request_budget=budget), session_id="ev-plan-probe", reputation=None)` from `runtime/assembly.py` (tracker, settings and provider as in Task 2.3's `--live`; memory: an in-memory `LongTermMemory` as `runtime/assembly.build_runtime` builds for tests, or `None` if `build_tools` accepts it). For each question of `QUESTIONS`, in order, run it on `initial_graph_state(session_id=f"ev-plan-probe-{label}", question=question)` inside `tracker.session_span`, print every target (id, required, measure, unit dimension, period, kind, organisation) and append the same lines, with the sub-topic titles, to `scratch/ev-plan-probe.md` under `## <label>: <question>`, where the label is `B` for the benchmark question and `P1`–`P8` for the eight, numbered as in Fable §8.9. A question whose planning raises writes its error type and message there instead, and the probe goes on to the next. `QUESTIONS` is the benchmark question first, then the eight questions of other domains and shapes, planning only:
+
+```python
+QUESTIONS = (
+    QUESTION,  # the benchmark question: code checks Q1-Q4
+    "which is the best headphones to buy 2026 for best audio quality and best mic",
+    "what are the latest changes to valorant in 2026",
+    "How effective are GLP-1 drugs such as semaglutide for weight loss, and what are their most common side effects?",
+    "What obligations does the EU AI Act place on providers of general-purpose AI models, and when do they apply?",
+    "What was Apple's revenue by product category in fiscal 2025, and how did it compare with fiscal 2024?",
+    "Why did the Roman Republic fall?",
+    "How much has global mean sea level risen since 1993, and what are the main contributors?",
+    "Which programming languages grew fastest in popularity in 2025?",
+)
+```
+
+The eight are Fable §8.9's, in its order and verbatim (ASCII apostrophe), the user's two first and exactly as the user typed them, in lower case and unpunctuated. The scoping turns run exactly as the CLI's (Fable §8.9): the planner's own ReAct loop with `web_search` and `query_memory`, an empty in-memory `LongTermMemory` (its one `query_memory` call returns nothing and the loop goes on) and a `RequestBudget` with the default ceiling, each built fresh per question; no user is consulted anywhere, and the plan request itself carries no tools. The questions plan one at a time, each in its own tracker session and log, so a failure is attributable to one question. Under each plan the probe prints the question's wall time, input and output tokens and provider calls from the tracker (check-list item 8) and whether planning halted (item 1). Checks, on the benchmark question only: **Q1** at most five required targets; **Q2** no required target with `unit_dimension == "energy"`; **Q3** no required target whose measure contains "facility", "type of" or "definition"; **Q4** a required target with period 2024, kind actual and organisation EIA (`same_organisation`), and required 2025 forecast targets for at least two organisations. Q4's organisation comes from the primary-record clause: a Q4 failure on it is fixed by tightening that clause of Task 5.2's rule, never by naming EIA in the prompt (Fable §2.4). The other eight carry no code check: the reviewer grades them (Step 5). `--offline` instead feeds the planner a `ScriptedCompleter` whose draft is the audit-3 plan (six targets, one MWh) and prints what the stamped plan keeps, to show the code path; it checks nothing about the model. The audit-3 draft takes the final draft shape: each target's `required` is its old `critical`, its `measure` the text after `measure:` in its `required_dimensions` (else its question), its `period` the text after `period:`, and every other field empty. `--question TEXT` plans only that question and prints its plan with no check: a planning-only look for the user after finalisation (D10), not part of Gate G5.
+- [ ] **Step 2: Write the prompt-text dump** (the input of the PROMPT GENERALITY CHECK in "How to run things"):
+
+```python
+"""Every string a model can read in the pipeline's code (D10, D11, Gate G5).
+
+Writes scratch/ev-prompt-text.txt: one line per string literal of every module
+under src/deep_research except the evaluation harness, as ``path:line: text``.
+Every newline, tab, NUL or other control character is written as one space, so
+grep reads the file as text and -w still sees a word that followed a newline.
+Comments never reach the AST. A string that is a statement by itself documents
+code (a module, function or attribute docstring) and is skipped; a class
+docstring is kept, because a pydantic model's class docstring is the
+description its JSON schema carries to the model. The two code-vocabulary
+constants Fable ruled "keep" are skipped by name: code matches against them,
+and never sends them.
+"""
+
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+ROOT = Path("src/deep_research")
+# The evaluation harness, not an agent: its cases carry the benchmark question
+# and expected facts as data, and no pipeline agent reads them.
+EXCLUDED_PACKAGES = ("evaluation", "e2e_evaluation")
+# Fable C-a and C-b: the energy-market scope words the scope check matches.
+KEPT_VOCABULARY = {
+    "agents/wording.py": {"SCOPE_TERMS"},
+    "agents/verified_facts.py": {"_SCOPE_EQUIVALENTS"},
+}
+OUT = Path("scratch/ev-prompt-text.txt")
+
+
+def _skipped_ids(tree: ast.Module, kept: set[str]) -> set[int]:
+    """Documentation strings, and every string inside a kept vocabulary constant."""
+    class_docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.body and isinstance(node.body[0], ast.Expr)
+    }
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+                and id(node.value) not in class_docstrings):
+            ids.add(id(node.value))
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id in kept for target in targets):
+                ids.update(id(inner) for inner in ast.walk(node))
+    return ids
+
+
+def main() -> None:
+    lines: list[str] = []
+    for path in sorted(ROOT.rglob("*.py")):
+        name = path.relative_to(ROOT).as_posix()
+        if name.split("/", 1)[0] in EXCLUDED_PACKAGES:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        skipped = _skipped_ids(tree, KEPT_VOCABULARY.get(name, set()))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                    and id(node) not in skipped):
+                text = " ".join(
+                    "".join(ch if ch.isprintable() else " " for ch in node.value).split()
+                )
+                if text:
+                    lines.append(f"{name}:{node.lineno}: {text}")
+    OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"{len(lines)} strings -> {OUT.as_posix()}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 3: Dry checks.** `"$PY" scratch/ev_plan_probe.py --offline` prints the stamped audit-3 plan with its MWh target optional. The PROMPT GENERALITY CHECK runs: its script prints its line count and its grep prints nothing, since every Phase-5 prompt edit has merged.
+- [ ] **Step 4: Run live (operator, off-peak).** OFF-PEAK CHECK, then `"$PY" scratch/ev_plan_probe.py`. Expected: `PASS Q1`–`PASS Q4` and nine plans in `scratch/ev-plan-probe.md`: 2–4 minutes a question (Fable §8.9), 18–36 minutes in all, which the OFF-PEAK CHECK's 50-minute window covers; about 40–90K input and 15–45K output tokens a question [INFERENCE, Fable §8.9].
+- [ ] **Step 5: Grade the plans (independent reviewer, read-only).** The reviewer reads `scratch/ev-plan-probe.md` and this check list, and nothing else (not the planner's prompt, the diff or this plan's rule texts), so the grade judges the plans rather than their fit to the rule that made them. For each of the eight non-benchmark plans it returns PASS or FAIL on every item, and for a FAIL the item and the target ids. The controller records the verdicts, the benchmark's Q1–Q4 lines and item 8's figures in the ledger. The check list (Fable §8.9, verbatim):
+  1. A plan was produced with no halt (`graph_planning_failed` absent), and the review loop converged (no advisory left after the repair, at most one repair).
+  2. A target for every part: list the question's parts (figures, periods, bodies, options, places, items, clauses) and find each in a target; a part with none is a failure.
+  3. Required only where the question asks: every `required` target names something the question names or the primary-record body for it; every planner-added target is optional.
+  4. The evidence form fits each part: a figure part carries measure, `unit_dimension`, period and kind; an items part has one target per attribute with empty period unless the question bounds one; a dated-events part carries the window as its period; a reasons or rule part has empty `unit_dimension` and kind and no figure invented.
+  5. The authority fits the domain: the organisation is the body that produced, measured, judged or announced it (agency, maker, independent tester, regulator, publisher of the ranking), or empty when no single body does; no maker named as the judge of its own quality; no relay named as the organisation.
+  6. Time sense: a bounded window ("in 2026", "since 1993", "fiscal 2025") is a period; a buy/decide/use year leaves period empty; "latest" targets carry no cutoff year.
+  7. No benchmark leakage: no target, query or criterion mentions EIA, battery storage, GW/MWh or any benchmark body unless the question does.
+  8. Wall time and tokens per question, from the tracker (`tokens in`, `tokens out`, calls), against the budget in Step 4.
+  9. `unit_dimension` words other than power/energy/percent survive stamping (P1, P3, P5, P7, P8) — C-e landed.
+- [ ] **Step 6: A failure is fixed by a general rule only (Fable §8.9).** A FAIL goes as a fix round (R6) to the task that owns the failing rule: Task 5.2 for the §8.1 rule, the field list, the examples and the plan checks; Task 5.7a for a tool description the scoping turns read. It opens a fresh `../ev-<id>` worktree if that task's was removed (R10). The fix is a sentence or a check that serves every question of that shape; it never mentions the failing question, its domain or its bodies, and never states a target count (D10, PD-28). A fix in `planner.py` moves the planner's prompt fingerprint, so the same fix round re-pins that one value in `tests/test_evaluation/test_config.py` (Task 5.4's file, R6). The fix is reviewed like any fix round; then the probe runs again, once, on all nine questions, and the reviewer grades again. A failure that survives the re-run is recorded as a known limit with the question it failed on, and is not patched again before `ev-1`; Gate G5 then fails on it, and the controller takes the plan, the item it broke and the fix tried to the user.
+- [ ] **Step 7: No commit** (scratch).
+
+### Task 5.6a: Open unit vocabulary and the relative-period fields (D10, D11; Fable C-e, §8.7-D11)
+
+**Role:** sp-implementer. **Wave:** 5B, parallel with Task 5.3. **Depends on:** Task 5.1 merged and its review clean (R5: `utils/types.py` and `tests/test_types.py` are 5.1's until then). **Size:** M. Task 5.6 is split in two because both halves are more than one reviewable diff (the controller's ruling): 5.6a, then 5.6b, serially, since they share files.
+
+**Owns:** `utils/types.py` (`EvidenceTarget.unit_dimension`, `FigureContext.period_resolved_from`, `FactRow.period_resolved_from`), `agents/verified_facts.py`, `agents/report.py` (`figure_label`, `_row_label` and the finding log's `figure_label` call), `tests/test_types.py`, `tests/test_agents/test_verified_facts.py`, `tests/test_agents/test_report_layout.py`, `README.md` (one paragraph, Fable C-g).
+
+**Interfaces:**
+- Consumes: `UnitDimension` (unchanged: the words `figures.py` scales), `Quantity.dimension`, `finding_answers`, `verified_figures`, `_date_key` (`verified_facts.py`).
+- Produces: `EvidenceTarget.unit_dimension: str | None = Field(default=None, min_length=1)` ("Phase 5 additions (D10)"). §6.6 answering for a word outside `UnitDimension`: only a verified figure whose quantity has `dimension is None` (a number in a unit the parser does not scale) fits, and the period, kind and organisation checks then apply as they do to a power target. The relative-period pieces of "Phase 5 additions (D11)": `FigureContext.period_resolved_from` and `FactRow.period_resolved_from` (`str | None = None`), `resolve_relative_period(evidence_words, page_date) -> str | None`, and `figure_label(..., period_resolved_from: str | None = None)`, which Task 5.7b's `_checked` and `_figure_label_for` use.
+
+- [ ] **Step 1: Write the failing tests.** In `tests/test_types.py`, append `test_a_target_needs_its_required_flag` (Task 5.1's deferred minor): building an `EvidenceTarget` from `make_target().model_dump()` without its `required` key raises `ValidationError`. And `test_a_target_carries_structured_fields` ends with
+
+```python
+    assert make_target(unit_dimension="currency").unit_dimension == "currency"
+    with pytest.raises(ValidationError):
+        make_target(unit_dimension="")
+```
+
+in place of its `make_target(unit_dimension="volts")` check. Append to `tests/test_agents/test_verified_facts.py`:
+
+```python
+def _stated(read, snippet, value, unit, *, period="2024", kind="actual"):
+    finding = make_finding(read, snippet, figures=[figure(value, unit, period, kind)],
+                           target_ids=["topic-01-target-01"])
+    return verified(finding, ctx(organisation="Example Statistical Agency",
+                                 period=period, kind=kind))
+
+
+def test_a_currency_target_checks_period_and_kind_like_a_power_target() -> None:
+    text = "Public spending was USD 4.2 billion in 2024."
+    read = make_read(text)
+    target = make_target(measure="public spending", unit_dimension="currency")
+    assert finding_answers(_stated(read, text, "4.2", "USD billion"), target)
+    assert not finding_answers(_stated(read, text, "4.2", "USD billion", period="2023"), target)
+    assert not finding_answers(_stated(read, text, "4.2", "USD billion", kind="forecast"), target)
+
+
+def test_a_percent_figure_does_not_answer_a_currency_target() -> None:
+    text = "Public funding was 12 percent of the total in 2024."
+    share = _stated(make_read(text), text, "12", "percent")
+    assert not finding_answers(share, make_target(measure="public funding", unit_dimension="currency"))
+    assert finding_answers(share, make_target(measure="public funding share", unit_dimension="percent"))
+```
+
+The third case of Fable's C-e list, a qualitative target still answered by a figure-less finding that names it, is the existing `test_a_qualitative_target_is_answered_by_naming_it`; it stays as it is and must stay green. For the relative-period fields, append to `tests/test_agents/test_verified_facts.py` (import `resolve_relative_period`):
+
+```python
+@pytest.mark.parametrize(("words", "page_date", "period"), [
+    ("installed 4 GW this year", "2026-02-20", "2026"),
+    ("so far this year the fleet grew", "2026-02-20", "2026"),
+    ("added last year", "2026-02-20", "2025"),
+    ("planned for next year", "February 2026", "2027"),
+    ("up 3 percent in the last quarter", "2026-02-20", "Q4 2025"),
+    ("sales this quarter", "2026-05-02", "Q2 2026"),
+    ("orders this month", "2026-01-15", "January 2026"),
+    ("the best of this season", "2026-02-20", None),
+    ("over the past year", "2026-02-20", None),
+    ("sales this quarter", "2026", None),
+    ("installed 4 GW in 2024", "2026-02-20", None),
+    ("installed 4 GW this year", None, None),
+])
+def test_a_relative_period_resolves_only_against_the_page_date(words, page_date, period) -> None:
+    assert resolve_relative_period(words, page_date) == period
+
+
+def test_a_resolved_period_reaches_its_key_facts_row() -> None:
+    text = "Operators installed 4 GW this year, the agency said."
+    finding = make_finding(make_read(text), text, figures=[figure("4", "GW", None, "actual")],
+                           target_ids=["topic-01-target-01"])
+    resolved = FigureContext(period="2026", scope=None, attribution="own",
+                             organisation="Example Statistical Agency", kind="actual",
+                             period_resolved_from="2026-02-20")
+    [row] = fact_rows([verified(finding, resolved)], [make_target(period="2026")])
+    assert (row.period, row.period_resolved_from) == ("2026", "2026-02-20")
+```
+
+and to `tests/test_agents/test_report_layout.py`:
+
+```python
+def test_a_resolved_period_is_named_on_the_label() -> None:
+    assert figure_label(organisation="Example Statistical Agency", attribution="own",
+                        relay_host=None, kind="actual", release=None, unchecked=False,
+                        period_resolved_from="2026-02-20") == (
+        "Example Statistical Agency's own figure; actual; "
+        "period resolved from the page date 2026-02-20"
+    )
+```
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_types.py tests/test_agents/test_verified_facts.py tests/test_agents/test_report_layout.py -k "structured_fields or currency or relative_period or resolved_period"`. Expected: FAIL (`currency` is not a `UnitDimension`; `resolve_relative_period` and `period_resolved_from` do not exist).
+- [ ] **Step 3: Implement.** In `utils/types.py`, `EvidenceTarget.unit_dimension: str | None = Field(default=None, min_length=1)`, with the docstring "One word for the kind of quantity the target asks for (power, energy, percent, currency, count, …), as the planner stamps it; ``None`` for a qualitative target (D10)."; `UnitDimension` stays for `figures.py` and `Quantity.dimension`. In `agents/verified_facts.py`, beside `_MEASURE_BY_DIMENSION`:
+
+```python
+# The dimensions figures.py scales (spec §6.6). A target naming any other word
+# (D10: currency, count, ...) is answered by a figure in a unit the parser does
+# not scale, so its period, kind and organisation are still checked.
+_SCALED_DIMENSIONS: frozenset[str] = frozenset(get_args(UnitDimension))
+```
+
+and, after its unchanged scope check, `_figure_answers` ends:
+
+```python
+    if figure.quantity is None:
+        return False
+    if target.unit_dimension in _SCALED_DIMENSIONS:
+        fits = figure.quantity.dimension == target.unit_dimension
+    else:
+        fits = figure.quantity.dimension is None
+    return (
+        fits
+        and (target.period is None or same_period(figure.context.period, target.period))
+        and (target.kind is None or figure.context.kind == target.kind)
+        and (target.organisation is None or same_organisation(target.organisation, figure.context.organisation))
+    )
+```
+
+(import `get_args` and `UnitDimension`). The PD-7 branch of `finding_answers` is unchanged: it now fires only for a target left without a word, which under the Task 5.2 rule is a qualitative one. In `README.md`, after the paragraph that begins "Reader labels are built by code (D7, §6.1)", add: "A sentence ends with its figure's reader label only when the figure's unit is one the figure parser scales (watts, watt-hours, percent). A figure in any other unit (money, counts, tonnes) is still verified, cited and listed in Key facts with its organisation, period and kind, but the sentence that states it carries no label (spec D10)."
+
+The relative-period fields (§8.7-D11, Gate G4's finding (a); Task 5.7b applies them in `_checked`). In `utils/types.py`, `FigureContext` and `FactRow` each gain `period_resolved_from: str | None = None`, docstring "The page's own stated date a relative period ("this year") was resolved from (spec §5.2, D11); None when the page states the period itself." `fact_rows` sets `period_resolved_from=primary.context.period_resolved_from`. `figure_label` gains the keyword `period_resolved_from: str | None = None` and, when it is set, appends `f"period resolved from the page date {period_resolved_from}"` after the kind and release parts and before "unchecked context"; `_row_label` passes `period_resolved_from=row.period_resolved_from`, and `render_finding_log`'s call passes `period_resolved_from=context.period_resolved_from`. In `agents/verified_facts.py`, beside `release_key`:
+
+```python
+_RELATIVE_PERIOD = re.compile(
+    r"\b(?:(this|current|last|next|coming)\s+(year|quarter|half|month|season)"
+    r"|(year[- ]to[- ]date|so far this year))\b",
+    re.IGNORECASE,
+)
+_MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
+                "August", "September", "October", "November", "December")
+_RELATIVE_STEP = {"this": 0, "current": 0, "last": -1, "next": 1, "coming": 1}
+_PERIOD_MONTHS = {"quarter": 3, "half": 6, "month": 1}
+
+
+def resolve_relative_period(evidence_words: str, page_date: str | None) -> str | None:
+    """Spec §5.2 (D11): the period a relative phrase names, counted from the page's own date.
+
+    "this year" on a page dated 2026-02-20 is 2026 and "last quarter" is
+    Q4 2025. ``None`` when the words carry no relative phrase, when there is no
+    page date, for a season (its year is the page's to state), and for a
+    quarter, half or month against a date with no month. "The past year" is
+    the last twelve months, not a calendar year, so it is never resolved.
+    """
+    key = _date_key(page_date)
+    match = _RELATIVE_PERIOD.search(evidence_words or "")
+    if key is None or match is None:
+        return None
+    year, month, _ = key
+    if match.group(3):
+        return str(year)
+    step = _RELATIVE_STEP[match.group(1).casefold()]
+    unit = match.group(2).casefold()
+    if unit == "year":
+        return str(year + step)
+    if unit == "season" or not month:
+        return None
+    size = _PERIOD_MONTHS[unit]
+    start_year, start_month = divmod(((year * 12 + month - 1) // size + step) * size, 12)
+    if unit == "quarter":
+        return f"Q{start_month // 3 + 1} {start_year}"
+    if unit == "half":
+        return f"H{start_month // 6 + 1} {start_year}"
+    return f"{_MONTH_NAMES[start_month]} {start_year}"
+```
+- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_types.py tests/test_agents/test_verified_facts.py tests/test_agents/test_figures.py tests/test_agents/test_report_layout.py`. Expected: PASS.
+- [ ] **Step 5: Commit** the owned files with "feat(types): open unit vocabulary; relative periods resolved from the page date (D10, D11, C-e)".
+
+**Acceptance:** a target's unit dimension accepts any word and refuses a blank; a target in a unit the parser does not scale is answered only by a figure in such a unit that matches its period, kind and organisation; a qualitative target is still answered by naming; a relative phrase resolves only against a stated page date, and a season, "the past year" and a month-less date resolve to nothing; a resolved period reaches its row and its label; the README states the reader-label limit for unscaled units.
+
+### Task 5.6b: The figure subject (D11; Fable §8.6, §8.7-D4)
+
+**Role:** sp-hard-implementer. **Wave:** 5C, beside Task 5.2 (no shared file). **Depends on:** Task 5.6a merged and its review clean (R5: the same files). **Size:** L.
+
+**Owns:** `utils/types.py` (`FindingFigure.subject`, `FigureContext.subject`, `FactRow.subject`), `agents/verified_facts.py`, `agents/quality.py` (the duplicate gate), `agents/report.py` (the Key Facts Subject column and `_point_labels`), `tests/test_agents/test_verified_facts.py`, `tests/test_agents/test_quality.py`, `tests/test_agents/test_report_layout.py`.
+
+**Interfaces:**
+- Consumes: `FigureContext`, `FactRow`, `fact_rows`, `answered_target_ids` (Tasks 3.1, 5.6a); `ReportComposition.sub_topics` (the plan's targets).
+- Produces: the subject fields and the four `verified_facts.py` functions of "Phase 5 additions (D11)": `same_subject`, `subject_context`, `subject_named_in`, and `finding_answers(finding, target, *, plan_targets=())`. Task 5.7b fills the fields (the researcher's draft and the Context Check) and uses `subject_named_in` in the writer's restatement guard. Every rule here is a no-op when no figure carries a subject, and the sibling rule is a no-op for a plan whose targets never ask one thing of two subjects, so a single-subject run is unchanged (the benchmark included).
+
+- [ ] **Step 1: Write the failing tests.** Append to `tests/test_agents/test_verified_facts.py` (import `same_subject`, `subject_context`, `subject_named_in` and `FigureContext`):
+
+```python
+def _rated(subject, value="4.5", *, period=None):
+    text = f"In our tests {subject or 'the kettle'} scored {value} out of 5 for noise."
+    slug = (subject or "kettle").casefold().replace(" ", "-")
+    read = make_read(text, url=f"https://lab.example.test/{slug}", title="Kettle tests")
+    finding = make_finding(read, text,
+                           figures=[figure(value, "out of 5", period, "actual").model_copy(
+                               update={"subject": subject})],
+                           target_ids=["topic-01-target-01"])
+    return verified(finding, FigureContext(period=period, scope=None, attribution="own",
+                                           organisation="Example Test Lab", kind="actual",
+                                           subject=subject))
+
+
+RATING = {"question": "Which kettles do testers rate quietest?", "measure": "noise rating",
+          "unit_dimension": "rating", "period": None, "geography": None}
+
+
+@pytest.mark.parametrize(("left", "right", "rows"), [
+    ("Model A", "Model B", 2),
+    ("X200", "Acme X200", 1),
+    (None, "kettle noise", 1),
+    ("version 10.02", "version 10.03", 2),
+])
+def test_equal_values_about_different_subjects_stay_apart(left, right, rows) -> None:
+    target = make_target(**RATING)
+    assert len(fact_rows([_rated(left), _rated(right)], [target])) == rows
+
+
+def test_a_subject_that_restates_the_target_names_nothing() -> None:
+    target = make_target()
+    words = subject_context([target.target_id], [target])
+    assert same_subject("United States", "battery storage", context_words=words)
+    assert not same_subject("Spain", "Italy", context_words=words)
+    assert subject_named_in("The Acme X200 scored 4.5.", "Acme X200")
+    assert not subject_named_in("Model B scored 4.5.", "Model A")
+    assert subject_named_in("Anything at all.", None)
+
+
+def test_two_releases_about_two_versions_are_not_one_revision() -> None:
+    target = make_target(**RATING)
+    early = _rated("version 10.02", period="2026").model_copy(update={"release_date": "2026-01-10"})
+    late = _rated("version 10.03", period="2026").model_copy(update={"release_date": "2026-02-10"})
+    rows = fact_rows([early, late], [target])
+    assert len(rows) == 2 and all(not row.earlier for row in rows)
+
+
+def test_a_figure_answers_only_its_own_subjects_sibling_target() -> None:
+    """D11 (Fable §8.5): two targets that ask one thing of two places."""
+    spain = make_target("topic-01-target-01", question="What was Spain's unemployment rate in 2024?",
+                        measure="unemployment rate", unit_dimension="percent", geography="Spain",
+                        organisation="Example Statistical Agency")
+    italy = make_target("topic-01-target-02", question="What was Italy's unemployment rate in 2024?",
+                        measure="unemployment rate", unit_dimension="percent", geography="Italy",
+                        organisation="Example Statistical Agency")
+    text = "Italy's unemployment rate was 6.5 percent in 2024."
+    finding = make_finding(make_read(text), text,
+                           figures=[figure("6.5", "percent", "2024", "actual").model_copy(
+                               update={"subject": "Italy"})],
+                           target_ids=[spain.target_id, italy.target_id])
+    italian = verified(finding, FigureContext(period="2024", scope=None, attribution="own",
+                                              organisation="Example Statistical Agency",
+                                              kind="actual", subject="Italy"))
+    assert set(answered_target_ids([italian], [spain, italy])) == {italy.target_id}
+    assert finding_answers(italian, spain)
+```
+
+The last line pins the sibling rule's scope: without the plan's targets there is no sibling, and nothing changes. The fold test gives both figures a period because `_fold_revisions` folds only rows whose periods are the same. Append to `tests/test_agents/test_quality.py` (import `FactRow` if missing):
+
+```python
+def test_two_rows_that_differ_only_by_subject_are_not_duplicates() -> None:
+    state, composition = _clean_pair()
+    row = composition.fact_rows[0]
+    apart = [row.model_copy(update={"row_id": "K001", "subject": "Model A"}),
+             row.model_copy(update={"row_id": "K002", "subject": "Model B"})]
+    same = [row.model_copy(update={"row_id": "K001", "subject": "Model A"}),
+            row.model_copy(update={"row_id": "K002", "subject": "Model A"})]
+    assert compute_report_quality(*_relinked(state, composition, fact_rows=apart)).duplicate_fact_rows == 0
+    assert compute_report_quality(*_relinked(state, composition, fact_rows=same)).duplicate_fact_rows == 1
+```
+
+and to `tests/test_agents/test_report_layout.py` (import `_FACTS_HEADER` and `_point_labels` from `deep_research.agents.report`):
+
+```python
+def test_the_subject_column_appears_only_when_a_row_has_a_subject() -> None:
+    base = _composition()
+    assert _FACTS_HEADER in render_written_report(base)
+    named = base.fact_rows[0].model_copy(update={"subject": "Model A"})
+    report = render_written_report(base.model_copy(update={"fact_rows": [named, *base.fact_rows[1:]]}))
+    assert "| Organisation | Subject | Measure |" in report and "| Model A |" in report
+
+
+def test_a_sentence_carries_the_label_of_the_subject_it_names() -> None:
+    base = _composition()
+    row = base.fact_rows[0]
+    rows = [row.model_copy(update={"row_id": "K001", "subject": "Model A"}),
+            row.model_copy(update={"row_id": "K002", "subject": "Model B",
+                                   "organisation": "Example Test Lab"})]
+    composition = base.model_copy(update={"fact_rows": rows})
+    point = base.summary[0].model_copy(update={"text": f"Model B had {row.value}."})
+    assert _point_labels(point, composition) == [_row_label(rows[1])]
+```
+
+(import `_row_label` too; both rows cite the first row's finding, so only the subject decides.)
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_verified_facts.py tests/test_agents/test_quality.py tests/test_agents/test_report_layout.py -k "subject or subjects or versions or sibling"`. Expected: FAIL (`FindingFigure` has no `subject`).
+- [ ] **Step 3: Implement.** In `utils/types.py`, `FindingFigure`, `FigureContext` and `FactRow` each gain `subject: str | None = None`, docstring "The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole (spec §4, D11)." In `agents/verified_facts.py`:
+
+```python
+# Fable §8.6 step 2's filler words, less "a" and "an": a single letter can be a
+# model's name ("Model A"), and the subset rule already tolerates an article.
+_SUBJECT_FILLER = frozenset({"the", "of", "for", "in", "on", "and", "or", "its", "this", "that"})
+
+
+def _subject_words(text: str | None) -> frozenset[str]:
+    """Fable §8.6 step 2: casefolded words, "U.S." as "us", punctuation as spaces, filler dropped."""
+    if not text or not text.strip():
+        return frozenset()
+    folded = re.sub(r"\bu\.s\.", "us", text.casefold())
+    return frozenset(re.sub(r"[\W_]+", " ", folded).split()) - _SUBJECT_FILLER
+
+
+def subject_context(target_ids: Iterable[str], targets: Iterable[EvidenceTarget]) -> frozenset[str]:
+    """Fable §8.6 step 3: the words of these targets' measure, question and geography.
+
+    A subject that only restates what its targets already say ("United States"
+    on a target about the United States) names nothing, so it matches any subject.
+    """
+    wanted = set(target_ids)
+    words: set[str] = set()
+    for target in targets:
+        if target.target_id in wanted:
+            for text in (target.measure, target.question, target.geography):
+                words |= _subject_words(text)
+    return frozenset(words)
+
+
+def same_subject(left: str | None, right: str | None, *,
+                 context_words: frozenset[str] = frozenset()) -> bool:
+    """Fable §8.6 steps 1-5: whether two subjects can name one thing.
+
+    Compatible when either names nothing beyond the context, or when one set of
+    words contains the other ("X200" and "Acme X200"). Overlap is not enough:
+    "version 10.02" and "version 10.03" share "version" and stay apart.
+    """
+    left_words = _subject_words(left) - context_words
+    right_words = _subject_words(right) - context_words
+    if not left_words or not right_words:
+        return True
+    return left_words <= right_words or right_words <= left_words
+
+
+def subject_named_in(text: str, subject: str | None, *,
+                     context_words: frozenset[str] = frozenset()) -> bool:
+    """Whether ``text`` names every distinctive word of ``subject``; True with no subject."""
+    distinctive = _subject_words(subject) - context_words
+    return distinctive <= _subject_words(text)
+
+
+def _asks_the_same(left: EvidenceTarget, right: EvidenceTarget) -> bool:
+    return (
+        " ".join(left.measure.casefold().split()) == " ".join(right.measure.casefold().split())
+        and _period_key(left.period) == _period_key(right.period)
+        and left.kind == right.kind and left.unit_dimension == right.unit_dimension
+        and (left.organisation or "").casefold() == (right.organisation or "").casefold()
+    )
+
+
+def _subject_fits(figure: VerifiedFigure, target: EvidenceTarget,
+                  plan_targets: Sequence[EvidenceTarget]) -> bool:
+    """D11 (Fable §8.5): of targets asking one thing of different subjects, a figure answers its own.
+
+    Siblings share measure, period, kind, unit dimension and organisation, so
+    the words of a target's question and geography that not all of them share
+    name its subject ("Spain", "Model A"). A plan without siblings, or a figure
+    without a subject, is never refused here.
+    """
+    siblings = [t for t in plan_targets if t.target_id != target.target_id and _asks_the_same(t, target)]
+    if not siblings or not figure.context.subject:
+        return True
+    shared = frozenset.intersection(
+        *(_subject_words(f"{t.question} {t.geography or ''}") for t in (target, *siblings))
+    )
+    return same_subject(figure.context.subject, f"{target.question} {target.geography or ''}",
+                        context_words=shared)
+```
+
+`_figure_answers(figure, target, plan_targets=())` adds `and _subject_fits(figure, target, plan_targets)` to its return; `finding_answers(finding, target, *, plan_targets: Sequence[EvidenceTarget] = ())` passes it through; `answered_target_ids` calls `finding_answers(f, target, plan_targets=targets)`, and `fact_rows` calls `_figure_answers(figure, by_id[t], targets)`. `_same_fact(left, right, by_id)` returns False when `not same_subject(left.context.subject, right.context.subject, context_words=subject_context(set(left.finding.target_ids) & set(right.finding.target_ids), by_id.values()))`; `fact_rows` passes `by_id` to it and to `_fold_revisions(rows, by_id)`, whose pair condition adds the same test on the two rows' `subject` and shared `target_ids`; each `FactRow` takes `subject=primary.context.subject`. Import `Iterable`. In `agents/quality.py`, the duplicate count adds `and same_subject(a.subject, b.subject, context_words=subject_context(set(a.target_ids) & set(b.target_ids), targets))` (import both). In `agents/report.py`, `render_written_report` prints `_FACTS_HEADER_WITH_SUBJECT = "| Organisation | Subject | Measure | Period | Value | Kind | Scope | Release or edition | Source |"` and a nine-cell separator when any row has a subject, with `row.subject or "not stated"` as the second cell of each row, and `_FACTS_HEADER` unchanged otherwise, so a single-subject report is byte-identical; `_point_labels` keeps a quantity-matched row only when `subject_named_in(point.text, row.subject, context_words=subject_context(row.target_ids, targets))`, with `targets` the composition's `sub_topics`' `evidence_targets`.
+- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_agents/test_verified_facts.py tests/test_agents/test_quality.py tests/test_agents/test_report_layout.py tests/test_agents/test_report.py tests/test_agents/test_report_writer.py`. Expected: PASS (the writer's tests carry no subject, so its rows, labels and restatement guard are unchanged).
+- [ ] **Step 5: Commit** the owned files with "feat(facts): the figure subject keeps different things apart in rows, revisions, the duplicate gate and labels (D11)".
+
+**Acceptance:** two equal values about two subjects are two rows, two revisions about two versions are not folded, and the duplicate gate does not count them; a subject that restates its target, a nested spelling or a missing subject changes nothing; a figure answers only its own subject's target among sibling targets, and nothing changes for a plan without siblings; the Key Facts table gains its Subject column only when a row carries a subject; a sentence carries only the label of the subject it names.
+
+### Task 5.7a: The prompt-generality sweep (D10, D11; Fable §3, §6 and §8)
+
+**Role:** sp-hard-implementer. **Wave:** 5D, alone. **Depends on:** Task 5.2 merged (the matrix's planner row reads 5.2's static-first request and second example) and Task 5.3 merged with its review clean (R5: `researcher.py`, `report_reviewer.py` and their tests are 5.3's until then). It changes prompt text, request layout and tool descriptions; the subject and relative-period code is Task 5.7b's, which follows it in the same files. **Size:** XL.
+
+**Owns:** `agents/researcher.py`, `agents/evidence_verifier.py`, `agents/report_writer.py`, `agents/report_reviewer.py`, `agents/source_evaluator.py` (`scoring_messages` only), `agents/prompts.py` (`SOURCE_SCORING_INSTRUCTION` only), `agents/wording.py` (one comment), `tools/web_search.py`, `tools/web_scraper.py`, `tools/document_reader.py`, `tools/memory_tools.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_evidence_verifier.py`, `tests/test_agents/test_report_writer.py`, `tests/test_agents/test_report_reviewer.py`, `tests/test_agents/test_tool_free_prompts.py`, and `tests/test_agents/test_source_evaluator.py` (only a pin of the old scoring layout, if any).
+
+**Interfaces:**
+- Consumes: `render_structured_request` and `STRUCTURED_REQUEST_END` (Task 5.1); `stated_role` (`agents/wording.py`); `publisher_identity` (`agents/sources.py`).
+- Produces: every tool-free pipeline request static-first (PD-29), with these static headings before `# Reply format`: extraction `# Response contract`; scoring `# Scoring contract`; Context Check `# Response contract`; Statement Check `# Response contract`; writer `# Rules`; review `# Response contract` then `# What each dimension means`. The request line formats of "Phase 5 additions (D10)" (the Statement Check's snippet and attribution sub-lines, the writer's statement line); `_REVIEW_REPLY_EXAMPLES` (one example); `REPORT_REVIEW_PROMPT_VERSION = "report-review-4"`. The e2e doubles need no change: they parse block-local lines only (`## F01`, `## S001`, `page:`, `snippet:`, `sentence:`, `  figure N:`, `F01 | figure N:`, `Statement ids in this packet:`), and `F07 | statement |` does not match the figure-row pattern.
+
+- [ ] **Step 1: Write the failing tests.** Append to `tests/test_agents/test_evidence_verifier.py` (gap 3; import whichever of `FindingVerification`, `StatementCheckItem`, `statement_check_messages`, `make_finding` and `make_read` the file lacks):
+
+```python
+def test_the_statement_check_shows_each_cited_findings_snippet_and_attribution() -> None:
+    """D10 gap 3: a finding with no figure is judged against its verified words."""
+    text = "Rising rents pushed households out of the centre, according to the Example Institute."
+    finding = make_finding(
+        make_read(text), text,
+        attributed_issuer="Example Institute",
+        attribution_quote="according to the Example Institute",
+    ).model_copy(update={"verification": FindingVerification(status="verified")})
+    body = statement_check_messages(
+        [StatementCheckItem(label="S001", text="Rising rents pushed households out of the centre.",
+                            findings=[finding], labels=["F01"])],
+        question="Why did households leave the centre?",
+    )[1].content
+    assert "  F01: (no kept figures)\n" in body
+    assert f'    snippet: "{text}"' in body
+    assert '    attributed to: Example Institute ("according to the Example Institute")' in body
+```
+
+```python
+def test_an_own_page_finding_is_attributed_to_its_publisher() -> None:
+    """D10: with no admitted issuer, the Statement Check still sees whose words a snippet is."""
+    text = "Of the five kettles we tested, Model B was the quietest."
+    finding = make_finding(
+        make_read(text, url="https://lab.example.test/kettles", title="Kettles"), text,
+    ).model_copy(update={"verification": FindingVerification(status="verified")})
+    body = statement_check_messages(
+        [StatementCheckItem(label="S001", text="Model B is the quietest kettle.",
+                            findings=[finding], labels=["F01"])],
+        question="Which kettle is the quietest?",
+    )[1].content
+    assert "    attributed to: lab.example.test" in body.splitlines()
+```
+
+Append to `tests/test_agents/test_report_writer.py` (gap 4; import `registry_lines` from `deep_research.agents.report_writer` if the file lacks it):
+
+```python
+def test_a_finding_with_no_figure_is_listed_with_its_attribution_and_its_role() -> None:
+    """D10 gap 4: the writer sees whose statement a prose finding is, and whether it forecasts."""
+    text = "The Example Institute forecasts that rents will keep rising next year."
+    finding = make_finding(
+        make_read(text, url="https://gazette.example.test/rents", title="Rents"), text,
+        attributed_issuer="Example Institute",
+        attribution_quote="The Example Institute forecasts",
+    ).model_copy(update={"verification": FindingVerification(status="verified")})
+    assert registry_lines("F07", finding) == [
+        "## F07: Rents (gazette.example.test)",
+        f"snippet: {text}",
+        "F07 | statement | attributed to Example Institute | forecast",
+    ]
+```
+
+In `tests/test_agents/test_tool_free_prompts.py` (the shared convention, PD-29): import `STRUCTURED_REQUEST_END` from `deep_research.agents.prompts`, and give `StructuredOperation` the field
+
+```python
+    # D10 (PD-29): the request-owned sections before "# Reply format", in order.
+    # None only for the evaluation judge, which keeps its reply contract last:
+    # it is not a pipeline request.
+    static_headings: tuple[str, ...] | None = None
+```
+
+Set it on the rows: plan finalization `("# Plan requirements",)`; finding extraction, context check and statement check `("# Response contract",)`; source scoring `("# Scoring contract",)`; report drafting `("# Rules",)`; report review `("# Response contract", "# What each dimension means")`, whose `reply_heading` override goes so it takes the default `"# Reply format"`. Set `PLANNED_OPERATION_INVENTORY["plan finalization"]` to `("planner", 2)` and `["report review"]` to `("report_reviewer", 1)`; its comment says two examples appear only where the second shows what a rule cannot (the planner's two plan shapes, the scorer's weak and strong ends, the judge's pair). Delete `CONVENTION_GAPS` and `_operation_cases` (no gap is left) and parametrize the example test over `OPERATIONS`. In `test_every_tool_free_request_has_one_heading_level_and_one_reply_format`, delete the two `sections` lines that pinned `# Reply format` last. Replace `test_every_rendered_request_keeps_one_reply_contract` with the two tests below; the judge's keeps the old body unchanged.
+
+```python
+PIPELINE_OPERATIONS = tuple(
+    operation for operation in OPERATIONS if operation.static_headings is not None
+)
+
+
+@pytest.mark.parametrize("operation", PIPELINE_OPERATIONS, ids=_operation_id)
+def test_every_pipeline_request_puts_its_static_sections_first(
+    operation: StructuredOperation,
+) -> None:
+    """D10 (E2.4): the contract and the reply format lead, the material follows."""
+    envelope = _request_envelope(operation.body())
+    lines = envelope.rstrip().splitlines()
+
+    assert lines[-1] == STRUCTURED_REQUEST_END
+    assert envelope.count("JSON object") == 1
+    assert envelope.count("# Reply format") == 1
+    assert "```" not in envelope
+    assert "## Tools" not in envelope
+
+    sections = [line for line in lines if line.startswith("# ")]
+    reply = sections.index("# Reply format")
+    assert tuple(sections[:reply]) == operation.static_headings
+    assert reply < len(sections) - 1
+    levels = {len(line) - len(line.lstrip("#")) for line in lines if line.startswith("#")}
+    assert levels <= set(operation.heading_levels)
+
+    start = envelope.index("# Reply format")
+    reply_format = envelope[start : envelope.index("\n# ", start)]
+    for field in operation.schema.model_fields:
+        assert f'"{field}"' in reply_format, field
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [operation for operation in OPERATIONS if operation.static_headings is None],
+    ids=_operation_id,
+)
+def test_the_judge_request_keeps_its_reply_contract_last(
+    operation: StructuredOperation,
+) -> None:
+    """The evaluation judge is outside the pipeline, so D10's layout is not its own."""
+    body = operation.body()
+    envelope = _request_envelope(body)
+
+    assert envelope.count("JSON object") == 1
+    assert envelope.count("# Reply format") == 1
+    assert envelope.rstrip().splitlines()[-1].strip().endswith("}")
+    assert "```" not in envelope
+    assert "## Tools" not in envelope
+
+    # The last request-owned section is the reply contract.
+    headings = [line for line in envelope.splitlines() if line.startswith("#")]
+    assert headings[-1] == operation.reply_heading
+    levels = {len(line) - len(line.lstrip("#")) for line in headings}
+    assert levels <= set(operation.heading_levels)
+
+    contract = envelope[envelope.index(operation.reply_heading) :]
+    for field in operation.schema.model_fields:
+        assert f'"{field}"' in contract, field
+```
+
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_tool_free_prompts.py tests/test_agents/test_evidence_verifier.py tests/test_agents/test_report_writer.py -k "static_sections or judge_request or inventory or rendered_example or snippet_and_attribution or own_page_finding or attribution_and_its_role"`. Expected: FAIL (only the planner's request is static-first; the review has no example; the cited lines show no snippet and no attribution; the registry has no statement line).
+- [ ] **Step 3: Replace the benchmark text (Fable §3 rows, verbatim, ASCII apostrophes).** `agents/researcher.py`: B5 and B13, in `RESEARCHER_SYSTEM_PROMPT`: "an agency's inventory, a market monitor's release, a company's filing" becomes "an agency's statistics, an institute's report, a company's filing", and "(for example eia.gov or woodmac.com)" becomes "(its own site, report page or filing)". B6, in `_FINDING_PROVENANCE_CONTRACT`: the attribution example becomes `\"according to the Example Statistical Agency (ESA)\"`. B7: the carried-over example becomes `\"the Example Statistical Agency projects that road freight will grow by another 3.2 percent in 2027. And ... a record 41,000 new registrations ... are projected this year\"` (the elisions stay three ASCII dots, as today). B8: after "keep the page's own words for what the figure measures: " the example becomes `a broader category on the page never becomes the narrower one a target asks for — \"all vehicles\" does not become \"electric vehicles\" — and a count of installations does not become a count of something else.` B9: the scope examples become `\"all segments\", \"households only\", \"firms above a stated size threshold\"`. B10, in `registry_contract`: the values `(\"7.25\", \"12,314\")` and the units `(\"tonnes\", \"per cent\", \"USD million\", \"MW\")`. B11, in the label of `_FINDING_REPLY_EXAMPLES`: `(what was the measured reduction in 2024?)`. B12 stays. C-f: the comment above `_MEASURE_UNITS` gains "Bounded: the energy-market units only (Fable C-f); a target in any other unit owes no passage, so the re-extraction is a no-op outside that domain." `agents/evidence_verifier.py`: B14, in `CONTEXT_CHECK_INSTRUCTION`: the scope examples become `(\"all segments\", \"households only\", \"firms with more than 250 employees\")`; the rest of the Context Check prompts stays (B22). B15a: `_STATEMENT_CHECK_REPLY_EXAMPLES` becomes the first block below. B21: `STATEMENT_CHECK_SYSTEM_PROMPT` ends "judge only from the figures, evidence words and verified snippets shown for each sentence.", and the verdict line of `STATEMENT_CHECK_INSTRUCTION` becomes the second block (Fable's B21 opening, with the rest of today's line kept, and one closing sentence for a pick stated as fact). That sentence and the reviewer's matching clause below are new for D10's recommendation shape: neither prompt says it today. Both judge a sentence only by whether its findings state or support what it says (`STATEMENT_CHECK_INSTRUCTION`'s verdict line; the reviewer's "supported when the findings it cites state what the sentence says"), and a reviewer's pick restated as a plain fact can read as stated. `agents/report_writer.py`: B19: `REPORT_WRITER_SYSTEM_PROMPT` gains " A finding with no figure is listed with its snippet and the body it is attributed to; cite it for what the snippet states, attributed as the line says." B15–B18: `REPORT_WRITER_INSTRUCTION` becomes the third block (B20 kept); its relay rule also names statements, so a relayed prose finding reads as relayed too, and its summary rule gains a branch for a part that asks which option is best (D10's recommendation shape). `agents/report_reviewer.py`: B23: after "…That mismatch is a defect you record against that statement's id." `REPORT_REVIEW_SYSTEM_PROMPT` gains " A sentence that ends with no label states no figure: judge it against the snippets of the findings it cites, and record as unsupported one that asserts more than those snippets state; a pick, ranking or verdict stated as fact, rather than as the judgement of the source that made it, asserts more." `agents/wording.py`: C-a: the comment above `SCOPE_TERMS` becomes the fourth block.
+
+```python
+_STATEMENT_CHECK_REPLY_EXAMPLES = (
+    (
+        "Example input: S01: \"The Example Statistical Agency forecasts that 4.1 "
+        "million households will have rooftop solar by the end of 2026.\" | F01: "
+        "4.1 million households | period 2025 | scope none | kind actual | own "
+        "(Example Statistical Agency) | evidence: \"by the end of 2025, 4.1 million "
+        "households had rooftop solar\"",
+        '{"statements":[{"label":"S01","verdict":"corrected","corrected_text":'
+        '"The Example Statistical Agency reported that by the end of 2025, 4.1 '
+        'million households had rooftop solar.","reason":"The finding states an '
+        'actual for 2025, not a forecast."}]}',
+    ),
+)
+```
+
+```python
+    "- verdict: consistent when the sentence states only the numbers, "
+    "dates, subject, scope, organisation and forecast-vs-actual distinction "
+    "its cited findings' figures actually state and — for a finding with no "
+    "figure — the statement its verified snippet makes; corrected when a "
+    "minimal rewording would make it so; inconsistent when it states a "
+    "number, date, subject, scope, organisation, forecast/actual distinction "
+    "or statement those figures and snippets do not support, or invents "
+    "anything. A judgement, ranking or recommendation stated as fact rather "
+    "than as the judgement of the source that made it is not supported as "
+    "written: correct it by attributing it to that source.\n"
+```
+
+```python
+REPORT_WRITER_INSTRUCTION = (
+    "Rules:\n"
+    "- Cite by label only: every point lists in finding_labels the one to three labels it "
+    "rests on. Never write a URL.\n"
+    "- State a forecast with a forecast verb (\"projects\", \"expects\", \"forecasts\"), never "
+    "as a completed outcome.\n"
+    "- Use only the numbers and dates of the cited findings.\n"
+    "- Use the scope words the finding states (\"households only\", \"all segments\"), never "
+    "the question's.\n"
+    "- Name only organisations and publications the cited findings name.\n"
+    "- A figure belongs to the subject its finding names (a product, a place, a version): "
+    "never move a figure from one subject to another, and name the subject as the finding "
+    "names it.\n"
+    "- For a figure or a statement one site relays from another organisation, name the "
+    "organisation and the site (\"according to the Example Institute, as reported by the "
+    "Example Gazette\").\n"
+    "- Credit a figure the way its label does: a figure labelled as the organisation's own "
+    "is that organisation's; a relay is \"according to <organisation>, as reported by "
+    "<site>\"; a figure whose label says the source does not attribute it is stated as the "
+    "page's figure (\"<site> reports ...\") and is never credited to a body the label does "
+    "not name.\n"
+    "- The executive summary answers the question's parts in the order the "
+    "question asks them, one point per fact, each part in the form its evidence "
+    "takes: a figure with its period and its organisation; a forecast with its "
+    "issuer and release; items with their attributes (an option with its price "
+    "and its rating per criterion, a change with its date) grouped or ordered on "
+    "a basis the question or the findings give — price, date, size — and stated "
+    "as the findings state them; reasons, mechanisms or provisions as the cited "
+    "findings state them. Every judgement, ranking or recommendation is "
+    "attributed to the finding's organisation as its finding names it; where "
+    "findings disagree, give each. The report makes no pick, ranking or verdict "
+    "of its own and adds no criterion the question did not name. When the "
+    "findings hold more items than the summary can carry, give the ones the "
+    "findings themselves rank or emphasise most and say the list is partial. "
+    "Never state the same figure twice.\n"
+    "- At most four sections, each explaining what the findings state and the "
+    "summary needs — basis or scope, revisions, definitions, mechanisms, "
+    "disagreements, caveats — and nothing the findings do not state.\n"
+    "- Never write verdict or corroboration words: verified, confirmed, corroborated, "
+    "independently, insufficient evidence, contested."
+)
+```
+
+The third block is §3's B16, B17, B19 and B20 kept, Fable §8.2's general writer rule in place of B15 and B18, §8.7-D13's crediting rule beside the relay rule, and §8.6's subject rule; the recommendation branch of the earlier D10 brief is dropped (Fable §8.4: §8.2 covers every judgement). The rest of Fable §8 that is prompt text lands here too, verbatim with ASCII apostrophes. `STATEMENT_CHECK_INSTRUCTION` closes "Never invent a number, date, subject, scope, or organisation the cited findings do not state." In `CONTEXT_CHECK_INSTRUCTION` (§8.7-D9, D10), the kind bullet becomes `"- kind: actual for anything the page states as measured, reported, observed, current or in force — a count, a price, a rating or score, a rule's date; forecast for a projection, plan, expectation, target or announced future change.\n"`, and the period bullet ends `"; null when the page states none (a current price or rating usually has none — never invent one).\n"`. In `SOURCE_SCORING_INSTRUCTION` (`agents/prompts.py`), the authority sentence from "authority: how much the publisher's identity" to "vendor marketing score low.\n" becomes `"authority: how far the publisher is the body that produced, measured, judged or announced the information this source is cited for — a statistical agency for its statistic, a maker for its own release notes or prices, an independent tester or reviewer for a rating, a court or regulator for a rule, a peer-reviewed venue for a study — and how far its editorial process justifies trust. A page that repeats another body's information is a relay and scores as one; a body rating its own product is self-interested for that rating, not for its own prices or notes. Anonymous posts and content farms score low.\n"`. In `report_reviewer.py`, `DIMENSION_GUIDANCE`'s completeness text appends " — each part in the form its evidence takes: a figure, items with their attributes, dated events, reasons, a rule's provisions" before its question mark, and its prioritization text reads "…justified by the evidence — a basis the question or the sources give: a comparison basis, a price, a date, a size — rather than by how much was written about something, or by a model's stated confidence?"; after the B23 sentence, `REPORT_REVIEW_SYSTEM_PROMPT` gains §8.7-D13's " A sentence that credits a body its label does not name — \"according to X\" beside a label that reads \"source does not attribute it\" or names another organisation — is unsupported."
+
+```python
+# Segment and basis words of the one domain the scope check was measured on
+# (energy markets; Fable C-a): bounded, and a no-op for any other question,
+# whose scopes the Statement Check judges in prose (spec §6.2: "no ... scope
+# that the cited findings' verified fields do not carry"). Longest first.
+```
+
+- [ ] **Step 4: Prose findings (gaps 1, 3, 4) and the reviewer's reply format.** Gap 1, in `registry_contract` after "…and mine each passage for every planned target rather than only the one that fetched it.": "A finding names a planned target only when its content states the fact, item, mechanism or provision the target asks for, not when it merely concerns the topic." Gap 3: `_statement_cited_lines` (docstring: every cited finding's kept figures, then its verified snippet and the body it is attributed to: the admitted issuer, else the page's publisher) ends each finding with the lines below. The publisher fallback is the writer registry's own (gap 4), so the Statement Check can attribute a pick or a statement the page makes in its own name, which the closing sentence of B21 asks it to do; `publisher_identity` is already imported in `evidence_verifier.py`:
+
+```python
+        body = "; ".join(figures) if figures else "(no kept figures)"
+        lines.append(f"  {label}: {body}")
+        lines.append(f'    snippet: "{finding.snippet or finding.content}"')
+        name = finding.attributed_issuer or publisher_identity(finding.source_url)
+        quote = (
+            f' ("{finding.attribution_quote}")'
+            if finding.attributed_issuer and finding.attribution_quote else ""
+        )
+        lines.append(f"    attributed to: {name}{quote}")
+```
+
+Gap 4: `registry_lines` (import `stated_role` from `deep_research.agents.wording`) ends:
+
+```python
+    if number == 0:
+        name = finding.attributed_issuer or publisher_identity(finding.source_url)
+        lines.append(
+            f"{label} | statement | attributed to {name} | "
+            f"{stated_role(finding.snippet or finding.content)}"
+        )
+    return lines
+```
+
+The reviewer, which closes its two strict xfails: `REPORT_REVIEW_INSTRUCTION`'s first line "Return one JSON object and nothing else, with these fields:\n" becomes "The reply carries these fields:\n" (the shared `STRUCTURED_REPLY_FORMAT` owns the one "JSON object" sentence); `REPORT_REVIEW_PROMPT_VERSION = "report-review-4"`, its docstring gaining "Version 4 is D10's: the same packet in the static-first layout, with the shared reply format and one example, and the rule for sentences that end with no label."; and, beside `REVIEW_DEFECT_RULES`:
+
+```python
+_REVIEW_REPLY_EXAMPLES = (
+    (
+        "Example input: statements S001 and S002; S001 restates the actual that "
+        "F01 reports, and S002 calls the actual that F02 reports a forecast.",
+        '{"dimensions":{"completeness":0.7,"prioritization":0.8,'
+        '"evidence_quality":0.5,"attribution":0.6,"uncertainty":0.7,'
+        '"readability":0.9,"actionability":0.7},'
+        '"statement_dispositions":[{"statement_id":"S001","disposition":"supported",'
+        '"problem":""},{"statement_id":"S002","disposition":"unsupported",'
+        '"problem":"F02 reports an actual; the sentence calls it a forecast."}],'
+        '"defects":[{"kind":"contradiction","severity":"major",'
+        '"statement_ids":["S002"],"target_ids":[],'
+        '"problem":"S002 presents the actual F02 reports as a forecast."}],'
+        '"rationale":"S001 is supported by F01; S002 misstates the kind of '
+        'F02\'s figure, a material defect."}',
+    ),
+)
+```
+
+- [ ] **Step 5: Static-first builders, positional words and tool descriptions.** `extraction_messages`, `scoring_messages`, `context_check_messages`, `statement_check_messages`, `writer_messages` and `review_messages` each return `render_structured_request(static, material)`: `static` is the operation's contract section(s), as "Interfaces" lists them, then `"# Reply format\n" + render_structured_reply_format(<its examples>)`; `material` is every other section in today's order. `report_reviewer.py` imports nothing from `deep_research.agents.prompts` today; it now imports `render_structured_reply_format` and `render_structured_request`. For the review:
+
+```python
+    static = [
+        f"# Response contract\n{REPORT_REVIEW_INSTRUCTION}\n\n{_render_defect_contract(packet)}",
+        "# What each dimension means\n"
+        "Score each dimension in [0,1] against its own definition:\n"
+        + _render_dimension_guidance(),
+        "# Reply format\n" + render_structured_reply_format(_REVIEW_REPLY_EXAMPLES),
+    ]
+```
+
+and `material` is today's other ten sections, from `# Research question` to `# Manifest of what you were shown`. Text that pointed at material "above" or "below" turns round: in `registry_contract`, "exactly as the acquisition context above prints them" says "below", and its legacy variant's "from the evidence above" says "below"; in the owed-passages section, "the same target ids the contract below requires" says "above". One rule per line (Fable E2.3): the acquisition variant of `registry_contract`, `_FINDING_DATES_CONTRACT` and `_FINDING_PROVENANCE_CONTRACT` render each sentence on its own line starting `- `; a sentence that only continues the rule before it ("Quote the page's own words for it, …") stays on that rule's line, and the two constants start with `"\n- "` instead of a space. No word changes beyond B6–B10, gap 1 and the positional words. The tool descriptions (Fable E1.1, verbatim, ASCII apostrophes), each the class's `description`:
+
+```python
+# tools/web_search.py (WebSearchTool)
+description = (
+    "Search the web and return ranked result links with short snippets. Use it "
+    "to find candidate pages to read; a result is a lead, never evidence. "
+    "Queries may name organisations, standards, years and places."
+)
+# tools/web_scraper.py (WebScraperTool)
+description = (
+    "Read one web page by URL and return its visible text. Use it to read a "
+    "promising search result before reporting anything from it, and to read an "
+    "organisation's own page before a page that repeats it. A host that refused "
+    "automated access will refuse again: do not retry it."
+)
+# tools/document_reader.py (DocumentReaderTool)
+description = (
+    "Extract the text of a PDF, spreadsheet or data file at a URL or local path, "
+    "in chunks. Prefer it for primary reports and datasets, which are usually "
+    "published as documents, and when a web page refused access."
+)
+# tools/memory_tools.py (QueryMemoryTool)
+description = (
+    "Look up findings and source notes saved by earlier research sessions. Call "
+    "it once, early, to avoid repeating research; its matches are leads, not "
+    "evidence."
+)
+```
+
+- [ ] **Step 6: Re-point the old layout pins.** In `tests/test_agents/test_researcher.py` (`test_extraction_messages_carry_the_sub_topic_criteria_and_evidence`), `assert body.rstrip().endswith(_FINDING_EXAMPLE_OUTPUT)` becomes `assert _FINDING_EXAMPLE_OUTPUT in body` and `assert body.rstrip().endswith(STRUCTURED_REQUEST_END)`. In `tests/test_agents/test_evidence_verifier.py`, `_confirm_reply` reads the figures up to the closing line: `section = section.split("\n\n" + STRUCTURED_REQUEST_END, 1)[0]`. Any other assertion that pinned the old order moves to the static-first layout, never back.
+- [ ] **Step 7: Run.** `"$PY" -m pytest -q tests/test_agents tests/test_e2e_evaluation`, then `"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3` (the controlled suite refuses any other count). Expected: PASS, every matrix row passing (the doubles parse the reordered requests). `tests/test_imports.py` and `tests/test_evaluation/test_config.py` are Task 5.4's (R3).
+- [ ] **Step 8: Commit** the owned files with "feat(prompts): generic prompts: hypothetical examples, one general writer rule, prose findings judged on their snippets, static-first requests, tool descriptions (D10, D11)".
+
+**Acceptance:** no string in the owned modules matches the PROMPT GENERALITY CHECK; every pipeline request is static-first and ends with `STRUCTURED_REQUEST_END`; the reviewer request holds the shared reply-format convention with one example, and its two strict xfails are gone with `CONVENTION_GAPS`; the Statement Check shows every cited finding's snippet and the body it is attributed to; the writer lists a figure-less finding with its attribution and role, and its rules carry §8.2's general rule and §8.7-D13's crediting rule; the source evaluator scores authority by who produced the evidence; each tool description says when to call it; the e2e matrix is green.
+
+### Task 5.7b: Subjects and relative periods through the researcher, the Evidence Verifier, the writer and the reviewer (D11; Fable §8.6, §8.7-D11, §8.7-D12)
+
+**Role:** sp-hard-implementer. **Wave:** 5E, beside Task 5.8 (no shared file). **Depends on:** Task 5.7a merged and its review clean (R5: the same files), and Tasks 5.6a and 5.6b merged. **Size:** L.
+
+**Owns:** `agents/researcher.py`, `agents/evidence_verifier.py`, `agents/report_writer.py`, `agents/report_reviewer.py`, `tests/test_agents/test_researcher.py`, `tests/test_agents/test_evidence_verifier.py`, `tests/test_agents/test_report_writer.py`, `tests/test_agents/test_report_reviewer.py`.
+
+**Interfaces:**
+- Consumes: Task 5.6a's `resolve_relative_period`, `period_resolved_from` fields and `figure_label(..., period_resolved_from=)`; Task 5.6b's subject fields, `subject_context` and `subject_named_in`; `ScoredSource.temporal.publication_date`; `excerpt_matches`, `same_period`.
+- Produces: `FindingFigureDraft.subject` and `FigureCheckDraft.subject` (`str | None = None`); `ContextItem.page_date: str | None = None`; `evaluated_page_date(sources, read) -> str | None`, beside and like `evaluated_issuer`; the request line formats of "Phase 5 additions (D11)". A part that prints only when its value is set leaves every existing e2e row's requests unchanged.
+
+- [ ] **Step 1: Write the failing tests.** Append to `tests/test_agents/test_evidence_verifier.py` (import `ContextItem`, `FigureCheckDraft`, `_checked`, `context_check_messages`, `figure_match`, `unchecked_context` and `figure` if missing):
+
+```python
+def _item(text, figure_, *, page_date=None):
+    read = make_read(text)
+    finding = make_finding(read, text, figures=[figure_], target_ids=["topic-01-target-01"])
+    return ContextItem(label="F01", finding=finding, read=read, passage=text,
+                       match=figure_match(finding, {read.read_id: read}), page_date=page_date)
+
+
+def _check(item, **reply):
+    fields = {"finding": "F01", "figure": 1, "period": None, "scope": None,
+              "attribution": "own", "organisation": None, "kind": "actual",
+              "evidence_words": item.finding.snippet, "verdict": "confirm",
+              "reason": "Stated."} | reply
+    return _checked(item, item.finding.figures[0], FigureCheckDraft(**fields))
+
+
+def test_a_relative_period_is_resolved_from_the_page_date() -> None:
+    """Spec §5.2, D11 (Gate G4 finding (a)): 'this year' on a page dated 2026-02-20."""
+    text = "Operators installed 4 GW this year."
+    kept = _check(_item(text, figure("4", "GW"), page_date="2026-02-20"),
+                  period="2026", verdict="correct")
+    assert kept.kept and (kept.context.period, kept.context.period_resolved_from) == ("2026", "2026-02-20")
+    undated = _check(_item(text, figure("4", "GW")), period="2026", verdict="correct")
+    assert undated.dropped_reason == "correction_not_on_page"
+
+
+def test_a_subject_is_kept_only_as_the_page_names_it() -> None:
+    text = "Model B scored 4.5 out of 5 for noise."
+    named = _check(_item(text, figure("4.5", "out of 5")), subject="Model B")
+    assert named.kept and named.context.subject == "Model B"
+    invented = _check(_item(text, figure("4.5", "out of 5")), subject="Model C", verdict="correct")
+    assert invented.dropped_reason == "correction_not_on_page"
+    item = _item(text, figure("4.5", "out of 5").model_copy(update={"subject": "Model B"}))
+    assert unchecked_context(item.finding, item.finding.figures[0], item.read, None).subject == "Model B"
+
+
+def test_the_context_check_block_shows_the_page_date_and_the_recorded_subject() -> None:
+    item = _item("Model B scored 4.5 out of 5 this year.",
+                 figure("4.5", "out of 5").model_copy(update={"subject": "Model B"}),
+                 page_date="2026-02-20")
+    body = context_check_messages([item])[1].content
+    assert "page date: 2026-02-20 (from the Source Evaluator)" in body.splitlines()
+    assert "| recorded subject Model B" in body
+```
+
+Append to `tests/test_agents/test_researcher.py`: `test_a_figure_draft_keeps_its_subject` asserts `_admitted_figures([FindingFigureDraft(value="4.5", unit="out of 5", subject=" Model B ")], index=1)[0][0].subject == "Model B"`. Append to `tests/test_agents/test_report_writer.py`: `test_a_figure_line_names_its_subject` builds a finding whose kept figure's context carries `subject="Model B"` (as the gap-4 test builds its finding, with a `FigureResult(matched=True, context=FigureContext(...))`) and asserts its `registry_lines` figure line contains `"| figure 1: 4.5 out of 5 | subject Model B | period "`. Append to `tests/test_agents/test_report_reviewer.py`: `test_a_fact_row_line_names_its_subject` asserts `"| subject Model B |"` in `_fact_row_line(row)` for a `FactRow` with `subject="Model B"`, and `"| subject not stated |"` without one.
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_evidence_verifier.py tests/test_agents/test_researcher.py tests/test_agents/test_report_writer.py tests/test_agents/test_report_reviewer.py -k "relative_period or subject or page_date"`. Expected: FAIL.
+- [ ] **Step 3: Implement.** `researcher.py`: `FindingFigureDraft.subject: str | None = None`; `_admitted_figures` sets `subject=(draft.subject or "").strip() or None`; the figures rule of `registry_contract` ends with Fable §8.6's sentence "and subject: the thing the figure is about, as the page names it — a product model, a place, a company, a patch or version, a named item — copied from the page, or null when the page names none and the figure is about the topic as a whole. One snippet may carry several figures with different subjects; give each its own subject rather than splitting the snippet."; the reply example's figure gains `"subject":null`. `evidence_verifier.py`: `FigureCheckDraft.subject: str | None = None`; `CONTEXT_CHECK_INSTRUCTION` gains after the scope bullet `"- subject: the thing the page says the figure is about, as the page names it (a product model, a place, a version); repeat the recorded subject when the page confirms it, correct it when the page names a different thing, null when the page names none.\n"`, after the period bullet §8.7-D11's `"When the page dates a figure only relatively (\"this year\", \"last quarter\"), give the period that the page's own stated date resolves it to and quote the relative words in evidence_words; never resolve against today's date.\n"`, its verdict bullet reads "confirm when the recorded period, scope, subject and kind are right", and its last sentence "Never guess a period, a scope, a subject or an organisation the passage does not state."; the reply example gains `"subject":null`. `evaluated_page_date(sources, read)` returns the matching source's `temporal.publication_date`; `verify` passes `page_date=evaluated_page_date(sources, read)` to each `ContextItem`. `context_check_messages` prints, under each block's `page:` line, `page date: <date> (from the Source Evaluator)`, or `page date: not stated` (§8.7-D12: one resolution basis in every batch), and appends ` | recorded subject <subject>` to a figure line whose figure has one. `_checked` handles `subject` exactly as period and scope (the recorded value is `figure.subject`); a period correction whose wording is not in `evidence_words` is still kept when `resolve_relative_period(words, page_date)` returns a period that `same_period` equates with it, where `page_date` is `item.page_date or finding.release_date or finding.statement_date`, and the kept context carries `period_resolved_from=page_date`; otherwise it is `correction_not_on_page` as before. `unchecked_context` copies `figure.subject`. `_statement_cited_lines` appends ` | subject {ctx.subject or 'none'}` after each figure's scope part. `report_writer.py`: a registry figure line carries ` | subject <subject>` after its unit when the context has one; the gap-4 statement line ends ` | dated <statement_date or release_date or data_period>` when the finding has one; `_figure_label_for` passes `period_resolved_from=context.period_resolved_from`; the restatement guard counts a quantity-matched row only when `subject_named_in(text, row.subject, context_words=subject_context(row.target_ids, targets))`, with `targets` the list the composition answers against (R2: the writer's subject rule lands before `ev-1`). `report_reviewer.py`: `_fact_row_line` prints ` | subject {row.subject or 'not stated'}` after its value and measure.
+- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_agents tests/test_e2e_evaluation`, then `"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3`. Expected: PASS; no existing row prints a subject, so every row's requests are unchanged apart from the always-printed page-date line and Statement Check subject part, which no double parses.
+- [ ] **Step 5: Commit** the owned files with "feat(verifier): figure subjects and page-dated relative periods from extraction to the report (D11)".
+
+**Acceptance:** a relative period resolves only against the page's stated date and is labelled so; a subject is kept only as the page names it; every Context Check block shows the page date; the writer's and the reviewer's lines name a figure's subject; a restatement is counted only for the subject the sentence names; the e2e matrix is green.
+
+### Task 5.8: Provider settings S1–S5 (D10, Fable §6.4)
+
+**Role:** sp-implementer. **Wave:** 5E, beside Task 5.7b (no shared file). **Depends on:** Task 5.7a merged and its review clean (R5: `agents/prompts.py`, where 5.7a edits `SOURCE_SCORING_INSTRUCTION`), and the reviews of Tasks 5.6a and 5.6b clean (R5: `utils/types.py`, `README.md`). **Size:** M.
+
+**Owns:** `providers/deepseek_provider.py`, `providers/capabilities.py`, `config.yaml`, `utils/config.py`, `utils/types.py` (two `RunTelemetry` fields), `agents/prompts.py` (`render_react_messages` only), `observability/run_telemetry.py`, `README.md` (the model-id lines), `tests/test_deepseek_provider.py`, `tests/test_provider_capabilities.py`, `tests/test_agents/test_prompts.py`, `tests/test_observability_run_telemetry.py`, `tests/test_config.py`, `tests/test_evaluation/test_config.py` (the model-id assertions and one docstring; the prompt pins are Task 5.4's), `tests/test_evaluation/test_judge_visibility.py`, `tests/test_evaluation/test_targets.py`, `tests/test_evaluation/test_judging.py`, `tests/test_runtime/test_assembly.py`, and `tests/test_cli/test_render.py` and `tests/test_agents/test_report.py` (only an exact `RunTelemetry` dump they pin, if any).
+
+**Interfaces:**
+- Consumes: `RunTelemetryCollector.record_call`, `snapshot`, `render_telemetry_line` and the provider's `_record_tokens` (Task 4.14).
+- Produces: the shipped model id `deepseek-flash`; the capability pattern `^deepseek-(flash|v4-flash|v4-pro)$` (PD-30); `_with_schema_instruction(messages, instruction) -> list[dict[str, str]]` (private; both structured paths); the `render_react_messages` order `## Task`, `## Guidance`, `## Notes so far`, `## Acquisition context`, `## Budget`, `## How to respond` and its last-iteration budget line; the `RunTelemetry` fields and the `record_call` parameters of "Phase 5 additions (D10)"; the Telemetry line's closing part `cache hits <c> of <n> input tokens (<p>%)`, printed only when input tokens were reported.
+
+- [ ] **Step 1: Write the failing tests.** Append to `tests/test_agents/test_prompts.py`:
+
+```python
+def test_the_notes_precede_the_acquisition_context() -> None:
+    body = render_react_messages(
+        system_prompt="Research.", task=AgentTask(instruction="Find it.", guidance="Guide."),
+        scratchpad=[], iteration=1, max_iterations=3, decision_context="Reads so far.",
+    )[1].content
+    assert [line for line in body.splitlines() if line.startswith("## ")] == [
+        "## Task", "## Guidance", "## Notes so far", "## Acquisition context",
+        "## Budget", "## How to respond",
+    ]
+
+
+def test_the_last_iteration_asks_for_the_final_answer_without_a_tool() -> None:
+    def budget(iteration: int) -> str:
+        body = render_react_messages(
+            system_prompt="Research.", task=AgentTask(instruction="Find it."),
+            scratchpad=[], iteration=iteration, max_iterations=3,
+        )[1].content
+        return body.split("## Budget\n", 1)[1].split("\n\n", 1)[0]
+
+    assert budget(2) == "Iteration 2 of 3."
+    assert budget(3) == (
+        "Iteration 3 of 3. This is the last iteration: return the final answer "
+        "now without calling a tool."
+    )
+```
+
+Append to `tests/test_deepseek_provider.py`:
+
+```python
+def test_the_schema_instruction_follows_the_role_prompt() -> None:
+    schema = ChatMessage(role="system", content="SCHEMA")
+    with_role = deepseek_module._with_schema_instruction(
+        [{"role": "system", "content": "role"}, {"role": "user", "content": "body"}], schema
+    )
+    without_role = deepseek_module._with_schema_instruction(
+        [{"role": "user", "content": "body"}], schema
+    )
+    assert [message["content"] for message in with_role] == ["role", "SCHEMA", "body"]
+    assert [message["content"] for message in without_role] == ["SCHEMA", "body"]
+
+
+def test_cached_input_tokens_are_read_from_both_usage_shapes() -> None:
+    chat = SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=10, completion_tokens=2, prompt_cache_hit_tokens=6))
+    responses = SimpleNamespace(usage=SimpleNamespace(
+        input_tokens=10, output_tokens=2,
+        input_tokens_details=SimpleNamespace(cached_tokens=4)))
+    malformed = SimpleNamespace(usage=SimpleNamespace(
+        input_tokens_details=SimpleNamespace(cached_tokens="4")))
+    assert deepseek_module._chat_cached_input_tokens(chat) == 6
+    assert deepseek_module._responses_cached_input_tokens(responses) == 4
+    assert deepseek_module._chat_cached_input_tokens(SimpleNamespace(usage=None)) == 0
+    assert deepseek_module._responses_cached_input_tokens(malformed) == 0
+```
+
+Append to `tests/test_observability_run_telemetry.py`:
+
+```python
+def test_the_line_reports_cache_hits_when_input_tokens_were_reported() -> None:
+    collector = RunTelemetryCollector()
+    for input_tokens, cached in ((4_000, 3_000), (6_000, 0)):
+        collector.record_call(
+            agent="evidence_verifier", operation="structured_output", seconds=2.0,
+            output_tokens=100, configured_cap=32_768, truncated=False,
+            input_tokens=input_tokens, cached_input_tokens=cached,
+        )
+    telemetry = collector.snapshot()
+    assert (telemetry.input_tokens, telemetry.cached_input_tokens) == (10_000, 3_000)
+    assert render_telemetry_line(telemetry).endswith(
+        "0 truncated; cache hits 3,000 of 10,000 input tokens (30%)"
+    )
+```
+
+In `tests/test_provider_capabilities.py`, `test_deepseek_capabilities_enable_high_or_max` is parametrized over `["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"]`. S1 in the tests: the assertions that read the shipped id become `deepseek-flash`: `tests/test_config.py` (`test_evaluation_defaults_match_the_approved_baseline`, two lines; `test_the_shipped_config_file_carries_the_evaluation_block`), `tests/test_evaluation/test_config.py` (`test_the_baseline_models_are_deepseek_v4_flash`, renamed `test_the_baseline_models_are_deepseek_flash`; `test_the_target_llm_config_carries_the_frozen_effort_and_model`; `test_the_judge_llm_config_is_independent_of_the_target`), `tests/test_evaluation/test_judge_visibility.py` (`test_evaluator_metadata_carries_the_prompt_and_fingerprints`), `tests/test_evaluation/test_targets.py` (`test_every_trace_carries_the_tags_the_spec_lists`, `test_a_successful_target_returns_a_typed_redacted_output`, and the requested id in `test_the_output_records_both_model_identifiers`), `tests/test_evaluation/test_judging.py` (`test_a_successful_judge_produces_scored_feedback`) and `tests/test_runtime/test_assembly.py` (the planner line of `test_validate_agent_models_resolves_every_agent_before_runtime`). The ids tests supply themselves stay `deepseek-v4-flash` (the fakes, the provider and contract tests, the evaluation conftest, `target_model_returned == "deepseek-v4-flash-fake"`): the pattern still accepts them. The docstring of `test_the_judge_configuration_fingerprint_did_not_move` says S1 (Task 5.8) moved the judge model to `deepseek-flash`, so the canary documents' `924caf47aa0d` describes the configuration before it, and the test asserts identity only. S2 in the tests: `test_deepseek_judge_uses_responses_json_schema_with_prompt_parity` asserts `call["input"][0] == {"role": "system", "content": "judge policy"}`, `call["input"][1]["role"] == "system"` with `"JSON Schema:"` in its content, and `call["input"][2] == {"role": "user", "content": "judge input"}`; `test_deepseek_structured_output_prompts_json_and_validates_locally` reads the instruction from `call["messages"][0]` (its request has no role prompt) and asserts `call["messages"][1] == {"role": "user", "content": "decide"}`; the schema-marker test (around line 1473) reads `completions.calls[0]["messages"][0]`; the repair tests keep reading the repair message at `[-1]`.
+- [ ] **Step 2: Run to see them fail.** Run: `"$PY" -m pytest -q tests/test_agents/test_prompts.py tests/test_deepseek_provider.py tests/test_observability_run_telemetry.py tests/test_provider_capabilities.py -k "acquisition_context or last_iteration or schema_instruction or cached or cache_hits or high_or_max"`. Expected: FAIL.
+- [ ] **Step 3: Implement S1–S4.** S1: `config.yaml` (`llm.model`, `evaluation.target_model`, `evaluation.judge_model`) and the three defaults in `utils/config.py` (`LLMConfig.model`, `EvaluationConfig.target_model`, `EvaluationConfig.judge_model`) become `deepseek-flash`; the pattern in `providers/capabilities.py` becomes `r"^deepseek-(flash|v4-flash|v4-pro)$"`; `README.md`'s chat defaults and its example configuration (lines 117, 135, 139, 141) name `deepseek-flash`; the `last_model_returned` docstring says `deepseek-flash` is requested as a bare name and the API may answer with a more specific identifier. S2, in `deepseek_provider.py`, used by both `complete_structured` bodies as `current_messages = _with_schema_instruction(_translated_messages(messages), instruction)`:
+
+```python
+def _with_schema_instruction(
+    messages: list[dict[str, str]], instruction: ChatMessage
+) -> list[dict[str, str]]:
+    """The JSON-schema instruction right after the role prompt (D10, S2).
+
+    Static content first: every structured call of one kind then shares the
+    role prompt, the schema and the request's static sections as one prefix
+    that DeepSeek's context cache can reuse. A request with no leading system
+    message opens with the schema instruction.
+    """
+    schema = {"role": "system", "content": instruction.content}
+    if messages and messages[0]["role"] == "system":
+        return [messages[0], schema, *messages[1:]]
+    return [schema, *messages]
+```
+
+S3 and S4, in `render_react_messages` (the section list after the argument checks):
+
+```python
+    sections = [f"## Task\n{task.instruction}"]
+    if task.guidance.strip():
+        sections.append(f"## Guidance\n{task.guidance}")
+    # D10 (S4): the notes grow oldest first and the acquisition context changes
+    # every turn, so the notes come first and each turn shares the last one's prefix.
+    sections.append(f"## Notes so far\n{render_scratchpad(scratchpad)}")
+    if decision_context.strip():
+        sections.append(f"## Acquisition context\n{decision_context}")
+    budget = f"Iteration {iteration} of {max_iterations}."
+    if iteration == max_iterations:
+        # D10 (S3): a tool called on the last turn is never reasoned over.
+        budget += (
+            " This is the last iteration: return the final answer now without "
+            "calling a tool."
+        )
+    sections.append(f"## Budget\n{budget}")
+    sections.append(f"## How to respond\n{NATIVE_REACT_RESPONSE_CONTRACT}")
+```
+
+- [ ] **Step 4: Implement S5.** In `deepseek_provider.py`:
+
+```python
+def _cached_count(value: object) -> int:
+    """A cache-hit count as the API reports it; 0 when absent or not a count."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _chat_cached_input_tokens(response: Any) -> int:
+    """Chat Completions: DeepSeek's ``usage.prompt_cache_hit_tokens``."""
+    usage = getattr(response, "usage", None)
+    return _cached_count(getattr(usage, "prompt_cache_hit_tokens", None))
+
+
+def _responses_cached_input_tokens(response: Any) -> int:
+    """Responses API: ``usage.input_tokens_details.cached_tokens``."""
+    details = getattr(getattr(response, "usage", None), "input_tokens_details", None)
+    return _cached_count(getattr(details, "cached_tokens", None))
+```
+
+`_record_tokens` gains `cached_input_tokens: int` and passes `input_tokens=usage.input_tokens, cached_input_tokens=cached_input_tokens` to `record_call`; the three Chat Completions call sites (operations `chat`, `structured_output` and `react_tool_turn`) pass `_chat_cached_input_tokens(response)`, the Responses site `_responses_cached_input_tokens(response)`. `TokenUsage` is unchanged (PD-30). In `observability/run_telemetry.py`, `record_call` gains `input_tokens: int = 0` and `cached_input_tokens: int = 0` and adds both to two run totals under its lock (`__init__` starts them at 0); `snapshot()` sets `RunTelemetry.input_tokens` and `cached_input_tokens` from them; `render_telemetry_line` appends, after the truncation part:
+
+```python
+    if telemetry.input_tokens:
+        parts.append(
+            f"cache hits {telemetry.cached_input_tokens:,} of "
+            f"{telemetry.input_tokens:,} input tokens "
+            f"({telemetry.cached_input_tokens * 100 // telemetry.input_tokens}%)"
+        )
+```
+
+`RunTelemetry` in `utils/types.py` gains the two fields of "Phase 5 additions (D10)", with the docstring "Input tokens the provider calls reported, and the part DeepSeek served from its context cache (D10, S5)." The OpenAI provider passes neither, so its calls count 0 of each.
+- [ ] **Step 5: Run.** `"$PY" -m pytest -q tests/test_deepseek_provider.py tests/test_provider_capabilities.py tests/test_provider_factory.py tests/test_provider_contracts.py tests/test_agents/test_prompts.py tests/test_agents/test_base.py tests/test_observability_run_telemetry.py tests/test_retry_policy.py tests/test_config.py tests/test_evaluation tests/test_runtime/test_assembly.py tests/test_cli/test_render.py tests/test_agents/test_report.py`. Expected: PASS, except `test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift` and `test_the_target_fingerprint_covers_the_shared_prompt_module`, which fail until Task 5.4 re-pins (the `prompts.py` edit moves every pin).
+- [ ] **Step 6: Commit** the owned files changed with "feat(provider): request deepseek-flash; schema after the role prompt; last-turn and notes-first ReAct; cached input tokens on the Telemetry line (D10, S1-S5)".
+
+**Acceptance:** the shipped configuration and defaults request `deepseek-flash` and all three ids validate; on both structured paths the schema instruction sits right after the role prompt; a ReAct turn puts its notes before the acquisition context and its last iteration asks for the final answer; cached input tokens are summed per run and printed on the Telemetry line; an absent or malformed cache count is 0 and never fails a call.
+
+### Task 5.9: Offline e2e rows for other shapes (D11; Fable §8.8)
+
+**Role:** sp-implementer. **Wave:** 5F, alone. **Depends on:** Tasks 5.2, 5.6b and 5.7b merged, and Task 5.3's review clean (R5: the replay files and `test_real_agents.py` are 5.3's until then). It lands before `ev-1` (controller ruling). **Size:** L.
+
+**Owns:** `e2e_evaluation/replay.py`, `e2e_evaluation/replay_matrix.py`, `tests/test_e2e_evaluation/test_real_agents.py`, `tests/test_e2e_evaluation/test_replay_doubles.py`.
+
+**Interfaces:** Consumes the request line formats of "Phase 5 additions (D11)" and `TemporalClaim` (`agents/evidence.py`). Produces ten manifest rows and four invariants; `REPLAY_CASE_MANIFEST_VERSION = 4`.
+
+- [ ] **Step 1: Write the failing test.** In `tests/test_e2e_evaluation/test_real_agents.py`, add the ten ids of the table below to `DECLARED_CASE_IDS`. Run `"$PY" -m pytest -q tests/test_e2e_evaluation/test_real_agents.py -k declares_every_case`. Expected: FAIL (the manifest lacks them).
+- [ ] **Step 2: Extend the doubles** (`replay.py`). `ReplaySource` gains `figure_subjects: tuple[str | None, ...] = ()` (aligned with `figures`) and `publication_date: tuple[str, str] | None = None` (value and quote; the page `text` carries the quote verbatim). `_reply_SubTopicFindingsDraft` passes each figure's `subject=`; `_reply_SourceScoresDraft` passes `publication_date=TemporalClaim(value=..., quote=...)` when set. `CONTEXT_OVERRIDE_KEYS` gains `"period"` and `"subject"`, and `_reply_ContextCheckDraft` returns `period=override.get("period", period)` and `subject=override.get("subject", <the figure line's recorded subject or None>)`. `_printed_figures` accepts an optional trailing ` | recorded subject (.*)` (its kind group becomes `(\S+)`); `_registry_entries`'s figure pattern accepts an optional ` | subject (.*?)` after the unit, and `_written_sentence` names that subject first. `_reply_StatementCheckDraft` raises `ReplayContractError` when a cited line reads `(no kept figures)` without the `snippet:` and `attributed to:` sub-lines under it. Four invariants join `_REPLAY_INVARIANTS`: `subjects_stay_apart` (two fact rows equal in value, organisation, period and kind carry different subjects, and no refused point's reason starts "restates"), `versions_stay_apart` (two rows answering one target, neither with `earlier`), `one_fact_row` (exactly one row) and `period_resolved_from_page_date` (a row whose `period_resolved_from` is `"2026-02-20"`, and the undated page's figure dropped with `correction_not_on_page`).
+- [ ] **Step 3: Add the rows** (`replay_matrix.py`), built with `_topic` and `_page` like `revision-noted`, one topic each unless stated, `expected_product_result="accepted / 0"` unless stated. Hosts, bodies and products are hypothetical (`*.example.test`, "Example …", "Kettle K1"), so no fixture is fitted to a question `ev-1` may draw (D12):
+
+| case_id | Scenario | Expectation |
+|---|---|---|
+| `two-subjects-one-value` | a "noise rating" target (unit dimension `rating`, empty period); one tester's two pages rate Kettle K1 and Kettle K2 4.5 out of 5, `figure_subjects` set | `subjects_stay_apart`; report phrases "\| Subject \|", "Kettle K1", "Kettle K2" |
+| `two-versions-one-target` | a "changes in 2026" target; the maker's notes for version 10.02 and version 10.03, one value each, releases a month apart, subjects set | `versions_stay_apart`; `revision-noted` still folds |
+| `single-subject-spellings` | one figure, one value, on three pages whose subjects are "United States", "widget adoption" and none, for a target about widget adoption in the United States | `one_fact_row` |
+| `prose-only-question` | a why question; findings without figures | report phrase "No figure passed the Evidence Verifier."; the Statement Check double's format check passes |
+| `count-unit-period` | a `count` target, period 2025, kind actual, with 2025 and 2024 counts on the page; a required 2026 forecast target no page answers | only the 2025 target in `required_target_ids`; `missing_target_triggers_one_extra_pass`; result as that row's own |
+| `purchase-year-empty-period` | a rating target with an empty period; a rating on a page dated 2025 | the target answered |
+| `relative-period-resolved` | topic 1: "this year" on a page whose `publication_date` is ("2026-02-20", "Published 2026-02-20"), the Context Check overriding the period to "2026"; topic 2 (optional target): the same words on an undated page | `period_resolved_from_page_date`; report phrase "period resolved from the page date 2026-02-20" |
+| `unattributed-relay-prose` | an unattributed figure; a Statement Check override `corrected` whose text credits the site | report phrase of the corrected sentence; forbidden "according to Example Institute" |
+| `one-part-question` | a plan of one topic | accepted / 0 (no structural plan problem) |
+| `maker-notes-vs-relay` | the maker's own notes page and a news page relaying another of its figures (attribution `relayed`, organisation "Example Games") | report phrases "Example Games's own figure" and "relayed by news.example.test from Example Games" |
+- [ ] **Step 4: Run.** `"$PY" -m pytest -q tests/test_e2e_evaluation`, then `"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3`. Expected: PASS, 31 rows.
+- [ ] **Step 5: Commit** the owned files with "test(e2e): ten offline rows for subjects, versions, prose, units, periods and relays (D11)".
+
+**Acceptance:** the manifest declares 31 rows and every row passes three offline repetitions; each §8.8 failure has a permanent catch.
 
 ### Gate G5 — end of step 5
+
+Run in `$W` once every Phase-5 task is merged and review-clean (rule R8), and after Task 5.5's planning probe has run and been graded:
 
 ```bash
 "$PY" -m pytest -q tests --ignore=tests/test_state.py
 "$PY" -m pytest -q tests/test_state.py
-"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 1
-"$PY" scratch/ev_plan_probe.py      # operator, off-peak only
+"$PY" -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3    # 31 rows, Task 5.9's ten included
+grep -rInwE "<the Caller inventory's acceptance pattern>" src tests    # prints nothing; -I skips binary files (stale __pycache__ bytecode)
+"$PY" scratch/ev_prompt_text.py      # PROMPT GENERALITY CHECK (see "How to run things")
+grep -IinwE "batter(y|ies)|grid-scale|utility-scale|Wood Mackenzie|woodmac|Energy Information Administration|EIA|eia\.gov|Utility Dive|BNEF|10\.4|43\.6|18\.2|32\.5" scratch/ev-prompt-text.txt    # prints nothing
+# Task 5.5's probe is not re-run here: the gate reads its outcome from the ledger.
 ```
 
-**Pass condition:** the suites are green; the probe prints PASS for Q1–Q4 (spec §9 step 5: five or fewer required targets, no MWh, facility-type or definition requirements). Do not start Phase 6 until G5 passes.
+**Pass condition:** the suites are green, the Caller-inventory grep prints nothing, and the e2e matrix passes all 31 rows, Task 5.9's ten among them; the generality grep prints nothing (it exits 1): no string a model can read in any agent's code, tool descriptions or schemas names a benchmark organisation, host or figure (D10, D11). The check excludes comments and documentation strings by construction and the two kept scope-vocabulary constants by name ("How to run things"); the other energy-only code vocabulary Fable ruled "keep" matches no term of the grep (`_CAPACITY_MARKERS`, `_ENERGY_MARKERS`, `_MEASURE_UNITS`, the parser's `_UNIT` in `figures.py`, the unit regexes in `utils/types.py`). The planning probe (Task 5.5) passed: the benchmark plan printed PASS for Q1–Q4 (spec §9 step 5: five or fewer required targets, no MWh, facility-type or definition requirements), and the independent reviewer graded all eight other plans PASS on Fable §8.9's nine-item check list, with at most one re-run after a general fix. Only the probe supplies the questions, since no prompt quotes one, so passing shows the general rule plans the benchmark and eight other shapes and domains right. Do not start Phase 6 until G5 passes.
 
 ---
 
 ## Phase 6 — Live proof (spec step 6)
+
+Generality (D10, D11, D12). Phase 6 runs on the generic prompts and code of Phase 5. Two signals judge generality: Task 5.5's planning probe (the benchmark question plus eight questions of other domains and shapes, planning only, graded before Gate G5), and `ev-1`, the one full run, on one of those eight questions picked at random at launch time (D12); the capped pre-flight (6.2) runs the benchmark question, for mechanics and regression. No other full run happens in this plan; the user tests further questions after the work is finalised (for a planning-only look, `scratch/ev_plan_probe.py --question "…"`, Task 5.5).
 
 ### Task 6.1: Live-proof labels
 
@@ -5693,7 +7206,7 @@ and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `c
 
 **Files:** Modify (untracked) `scratch/run_live_proof.py`.
 
-- [ ] **Step 1: Per-label arguments.** Change `RUNS` to `dict[str, tuple[str, list[str], dict[str, str]]]` (question, extra CLI arguments, extra environment); keep the old labels as `(AUDIT or SMOKE, [], {})`; add `"ev-preflight": (AUDIT, ["--max-iterations", "0", "--request-tavily-attempt-ceiling", "12"], {"AGENTS_MAX_SUB_TOPICS": "2"})` and `"ev-1": (AUDIT, [], {})`. `run()` appends the extra arguments, merges the extra environment, and writes both to `run.env` (`EXTRA_ARGS=...`, `EXTRA_ENV=...`). Keep `PROOF_MAX_ITERATIONS` as it is (it still maps to `--max-iterations`); update the docstring's "macro refinement budget the critic may spend" to "extra research passes for missing required targets".
+- [ ] **Step 1: Per-label arguments.** Change `RUNS` to `dict[str, tuple[str | None, list[str], dict[str, str]]]` (question, extra CLI arguments, extra environment); keep the old labels as `(AUDIT or SMOKE, [], {})`; add `"ev-preflight": (AUDIT, ["--max-iterations", "0", "--request-tavily-attempt-ceiling", "12"], {"AGENTS_MAX_SUB_TOPICS": "2"})` and `"ev-1": (None, [], {})`, whose question is given at launch as `--question TEXT` (the runner refuses `ev-1` without one, D12). `run()` appends the extra arguments, merges the extra environment, and writes them and the question to `run.env` (`QUESTION=...`, `EXTRA_ARGS=...`, `EXTRA_ENV=...`). Keep `PROOF_MAX_ITERATIONS` as it is (it still maps to `--max-iterations`); update the docstring's "macro refinement budget the critic may spend" to "extra research passes for missing required targets".
 - [ ] **Step 2: A stage-time summary.** After the run, read `cli.log` and print each stage's duration: the time between consecutive `graph.node.completed` lines, per node name and pass, and the total; then print the researcher's slowest sub-topic and its per-turn mean, never the sum — each sub-topic's `sub_topic.completed` event carries `elapsed_s` (Task 4.13), so `slowest = max(elapsed_s)` and `per_turn_mean = elapsed_s / iterations` across the sub-topics (concurrent sub-topics no longer separate in the log's timestamps). Append them to `SUMMARY.tsv` as a `stages=` column, a `researcher=` column (`slowest=…; per_turn_mean=…`) and a `telemetry=` column (the Telemetry line, Task 4.14).
 - [ ] **Step 3: Dry check.** `"$PY" -c "import runpy; m = runpy.run_path('scratch/run_live_proof.py'); print(sorted(m['RUNS']))"` lists `ev-1` and `ev-preflight`. No commit (scratch).
 
@@ -5711,17 +7224,28 @@ and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `c
 
   On a failure, stop: fix through the owning task's fix loop, re-run the affected gate's offline commands, then repeat 6.2. A per-turn mean over 27 s or a projected first pass over 30 minutes is fixed by lowering the named config knob before `ev-1` — `agents.sub_topic_concurrency` to 3, no code change and no re-run of 6.2, because the sequential budget already fits 45 minutes — and `agents.max_iterations: 6` (review item 15) is the last resort. Recurring 429s are lowered the same way on the knob the Telemetry advice names (the knob of the agent at the peak; `agents.verifier_concurrency` first), and a truncated or near-cap call by raising the cap that advice names. A failed or slow Context Check batch is review item 13's one config line.
 
+  The pre-flight runs the benchmark question only: never run a non-benchmark question under its attempt ceiling (`--request-tavily-attempt-ceiling 12`, Fable §8.7-D2), which a wide question's searches meet and which then stops the run.
+
 ### Task 6.3: The live run `ev-1` (operator)
 
 **Depends on:** Task 6.2 passed; OFF-PEAK CHECK prints `OK`.
 
-- [ ] Run `"$PY" scratch/run_live_proof.py ev-1` with the default configuration (one extra pass at most). The run is never hard-stopped. Record the commit, exit code, wall time and stage summary from `output/live-proof/SUMMARY.tsv`.
+- [ ] At launch, pick one of Task 5.5's eight probe questions at random (D12) and run `"$PY" scratch/run_live_proof.py ev-1 --question "<the picked question>"` with the default configuration (one extra pass at most). The run is never hard-stopped. Record the commit, the question, exit code, wall time and stage summary from `output/live-proof/SUMMARY.tsv`.
 
-### Task 6.4: Independent audit against spec §10
+### Task 6.4: Independent audit on a generic rubric (D12)
 
 **Role:** a fresh read-only reviewer that has not seen the implementation. **Depends on:** Task 6.3.
 
-- [ ] Give the reviewer the spec, `output/live-proof/ev-1/` (report, evidence log, quality JSON, `cli.log`, `run.env`) and read access to the reads the evidence log names. It checks spec §10 item by item — (1) wall time ≤ 45 minutes; (2) the summary answers both halves: EIA's 2024 figure with its release, at least two organisations' latest 2025 forecasts each with its release, 2025 actuals labelled as actuals; (3) every number traces to a checked figure on its cited page and no relay is presented as its originator; (4) no wrong scope, period or kind (no all-segment figure called grid-scale; no actual presented as a forecast); (5) the Report Reviewer accepted with no gate failure; (6) its own rating — and reports each with evidence (the line of the report and the page text). **Pass:** all six hold and the rating is GREAT.
+- [ ] Give the reviewer the spec, `output/live-proof/ev-1/` (report, evidence log, quality JSON, `cli.log`, `run.env`) and read access to the reads the evidence log names. The question is not the benchmark, so the audit uses a short generic rubric and no expected figures (D12); the reviewer reports each item with evidence (the report line and the page text):
+  - **A1** every part of the question is answered, in the question's order, in the form its evidence takes (figures, items with attributes, dated events, reasons, rule text);
+  - **A2** every cited page is opened for every key figure and claim, and for a sample of the rest; each is traceable to its page;
+  - **A3** the honesty rules hold: no relay presented as the issuer; no provenance, scope or date the page does not carry; forecasts carry issuer and release; actuals are labelled; no inferred as-of cutoff; no verdict of the report's own;
+  - **A4** source authority fits the domain: the primary publisher where one exists; relays labelled;
+  - **A5** completeness and currency: the auditor's own quick research finds no major, readily available fact the report misses or contradicts; gaps are disclosed under Not found;
+  - **A6** structure and readability: items grouped or ordered sensibly; no filler; no benchmark leakage;
+  - **A7** mechanics: wall time ≤ 45 minutes (target 30), no crash, at most one extra pass, the reviewer's status recorded.
+
+  Rating: GREAT = no material defect and at most cosmetic issues; GOOD = minor defects only; POOR = any material defect. **Pass:** rated GREAT.
 
 **If the audit fails:** the failures are defects with owners (the task whose code produced them); fix through the normal fix loop, re-run Gates G4/G5 offline, and repeat 6.2–6.4 off-peak. Per spec §2, live runs stay at one extra pass until the report is judged great.
 
@@ -5729,7 +7253,7 @@ and update `_PLAN_REPLY_EXAMPLES` to targets without `required_dimensions` or `c
 
 ## Over-engineering review: decisions for the user
 
-Each item goes beyond the spec's letter, or is a choice the spec leaves open. Each carries a recommendation. None is silently included: the plan does what the "Plan" column says. Items marked **decided** were ruled on by the user after the plan audit (`agent://FablePlanAudit`) or during execution (D7, D8 and D9: `agent://FableParallel`); the rest stand as recommended unless the user rules otherwise.
+Each item goes beyond the spec's letter, or is a choice the spec leaves open. Each carries a recommendation. None is silently included: the plan does what the "Plan" column says. Items marked **decided** were ruled on by the user after the plan audit (`agent://FablePlanAudit`) or during execution (D7, D8 and D9: `agent://FableParallel`; D10: `SDD/fable-prompt-generality.md`, adopted whole by the user); the rest stand as recommended unless the user rules otherwise.
 
 | # | Item | Plan | Recommendation and trade-off |
 |---|---|---|---|
@@ -5759,3 +7283,25 @@ Each item goes beyond the spec's letter, or is a choice the spec leaves open. Ea
 | 24 | D7: minimal writer guards (numbers, dates, scope, a known label), labels carry provenance, the reviewer flags prose that contradicts its label | superseded by D8 | D7's minimal *code* guards never shipped: the user's D8 replaces them with the LLM checks (Context Check for figures, Statement Check for sentences). What D7 added and stays: code-built labels on every figure, the reviewer's defect for contradicting prose (§6.3), and the two prompt lines. |
 | 25 | D8: the Context Check judges each figure and the Statement Check each sentence; 5 items per call, 8 in flight; code keeps only "the quoted words are on the page" and mechanical rules | included; **decided** (user, spec `d34fd21`) | Removes every code wording check, and with them the false refusals that cost the G3 live runs two of three forecasts. Contract: `SDD/d8-contract.md`. The batch bounds become config in D9 (PD-12). |
 | 26 | D9: researcher sub-topics concurrent (5) under one run-wide tool lock, source-evaluator scoring batches concurrent (3), every cap in config, §7.3 telemetry with advice only | included; **decided** (user, spec `3789d0a`, from `agent://FableParallel`) | The one change measured to move the first pass materially: ≈ 23–27 min → ≈ 14–17, and ≈ 24–28 with the extra pass, under the 30-minute target. Rejected alternatives: fewer or larger sub-topics (paid in turns per target; `AGENTS_MAX_SUB_TOPICS` stays the fallback), overlapping only first extractions (dominated), tool calls within a turn (high risk for ≤ 30 s), overlapping the verifier with the source evaluator (1 minute for graph complexity). Caps are config so live results can lower them without a code change: Task 4.13 implements, Task 4.14 reports. |
+| 27 | D10's generic planner rule (Task 5.2, Fable §2): `required` only for what the question names, the primary-publisher rule for organisation, the qualitative branch, an open one-word `unit_dimension`, no count, no quoted question; two hypothetical reply examples | included; **decided** (user: "Adopt all of it") | One rule for every question type instead of one taught shape, and the benchmark run no longer receives its plan from the prompt. The primary-publisher rule keeps Gate G5 Q4 (EIA on the 2024 actual) reachable without naming EIA. Risk: a looser benchmark plan; Q1–Q4 catch it, and the fix tightens the rule, never re-quotes the benchmark (spec §11). Example 1 dimensions its ridership and cost targets (`count`, `currency`) and drops its "two independent sources" criterion (D2), where Fable kept Task 1.4's values. |
+| 28 | Open unit vocabulary (Task 5.6, with Task 5.2's stamping; Fable C-e) | included; **decided** | About 15 lines. Without it a money or count target is coerced to "qualitative" and answered by any bound finding with no period or kind check, and no extra pass fires. `Field(min_length=1)` keeps a blank word invalid, as the old `Literal` did. Reader labels for unscaled units stay a stated limit (C-g, one README paragraph). |
+| 29 | Prompt-generality sweep (Task 5.7): Fable §3 B5–B23 and gaps 3–4, plus gap 1's extraction sentence, one rule per line in the extraction contract (E2.3) and "or a statement" in the writer's relay rule | included; **decided** (gap 1, E2.3 and the relay word are this plan's reading of "all of it") | Gaps 3 and 4 let the Statement Check and the writer see a prose finding's snippet and attribution, so causal, qualitative and news reports are judged against words instead of "(no kept figures)". Gap 1 is one sentence against false coverage of qualitative targets; the relay word keeps a relayed statement labelled as relayed. E2.3 changes no rule. If the user wants the smallest sweep, drop E2.3 (one step of 5.7). |
+| 30 | Static-first requests (PD-29): the shared helper (Task 5.1), every tool-free pipeline builder (5.2, 5.7), the schema instruction after the role prompt (5.8), and the reviewer request on the shared reply-format convention with one example and `report-review-4` | included; **decided** | The convention changes once for every pipeline request, and the reviewer's two strict xfails flip. The closing line is shortened to "Return the reply for the material above." so "JSON object" stays `STRUCTURED_REPLY_FORMAT`'s alone (the matrix counts it). The evaluation judge keeps its reply-last layout: it is outside the pipeline, and its prompt is pinned by `PINNED_JUDGE_PROMPT_FINGERPRINT`. |
+| 31 | Tool descriptions that say when to call each tool (Fable E1.1, Task 5.7) | included; **decided** | Four strings; the API reference says the description is what the model uses to choose a tool. Parameter descriptions are not added (Fable: only if arguments come back malformed). |
+| 32 | Provider settings S1–S5 (Task 5.8, PD-30) | included; **decided** | S1 requests `deepseek-flash`, the name of what is actually served, and keeps the two v4 ids accepted: the API still accepts them, and every test fixture and any `LLM_MODEL` override that names them keeps working. S5 records cached input tokens in the run telemetry (quality JSON and Telemetry line), not in `TokenUsage`, whose three-key dump is pinned across provider, evaluation and API records. |
+| 33 | One fingerprint re-pin for the whole phase (Task 5.4) | included; **decided** (user) | One commit of pin churn instead of five; every Phase-5 prompt edit lands first. |
+| 34 | `--question` on the plan probe (Task 5.5) | included | A few lines; lets the user read the planner's plan for another question after finalisation. Q1–Q4 run only on the benchmark question, and the flag is not part of a gate. |
+| 35 | A planning-only probe on the benchmark question plus eight questions of other domains and shapes, graded by an independent reviewer on Fable §8.9's nine-item check list (Task 5.5); Fable's typed probe (§5.1, P1–P6) and two non-benchmark full runs (§5.2) | the probe included; **decided** (user, D11), with §8.9's questions, check list, scoping turns and sequential runs; the typed probe and the full runs not included (**decided**, controller) | About 30 minutes of off-peak planner time and one review. It tests the general rule on shapes the benchmark does not have before `ev-1` spends a full run. A failure is fixed only by a general rule, with one re-run at most; the user tests further questions end to end after finalisation. |
+| 36 | Energy-only code vocabulary kept: `SCOPE_TERMS` (C-a), `_SCOPE_EQUIVALENTS` (C-b), the MWh plan check (C-d), `_MEASURE_UNITS` (C-f), the unit parser (C-g) | included, as kept; the comments say "bounded" (C-a, C-f), and a README paragraph states C-g's limit; Fable §8.5 re-examined each under D11 and keeps it | Each is a no-op outside the domain it was measured on; generalising them needs one vocabulary per domain, and the LLM checks (Context Check, Statement Check) are the general mechanism. |
+| 37 | Fable options not taken: replaying `reasoning_content` between ReAct turns (E1.6), deleting the inert `temperature` settings (E2.7), `strict` tools and `tool_choice: required`, routing figure-less findings through the Context Check (gap 2), rewording the MWh repair message (B4) | not included | E1.6 is a message-history change across the provider and `MessageRole`: deferred, the one option with a plausible quality effect. E2.7 is cosmetic. `strict` needs the Beta endpoint, and `tool_choice: required` returns 400 in thinking mode. Gap 2 needs a new verification field for little gain once gap 3 lands. B4 fires only for a capacity question. |
+| 38 | The PROMPT GENERALITY CHECK is a gate command (G5), not a permanent test, scanning every module under `src/deep_research/` but the evaluation harness (D11) | included | A permanent test would pin prompt wording, which the test rules forbid; the check runs at G5 and at every offline G5 re-run in Phase 6. Scanning the whole tree rather than a module list keeps a new agent, a moved prompt, a tool description, an observation or a schema docstring from escaping it; the cost is two kept vocabulary constants named in the script. |
+| 39 | The recommendation texts of the earlier D10 brief (a planner sentence and a writer branch for "which option is best") | dropped; **decided** (controller, Fable §8.4): merged into §8.1's and §8.2's general rules; the judgement-stated-as-fact clauses of the Statement Check and the reviewer stay, now for every judgement | A per-type branch misses the next shape (D11). |
+| 40 | The Statement Check sees the page's publisher when the Researcher admitted no issuer (gap 3 falls back to `publisher_identity`) | included | One line, mirroring the writer registry's fallback (gap 4). Without it the Statement Check cannot attribute an own-page pick or statement, which B21's new sentence asks it to do. |
+| 41 | Fable §8.6's figure subject in rows, revisions, the duplicate gate, `_point_labels`, the restatement guard and the sibling-target rule, before `ev-1` | included; **decided** (controller) | Each is a no-op for a single subject. The sibling rule replaces §8.5's wording ("when the target names a geography or its question names one option"), which would refuse the benchmark's own figures ("U.S." against "United States") and has no structured field to read an option name from. |
+| 42 | The relative-period rule (§8.7-D11) and the page-date line (§8.7-D12) | included | Recovers figures the G4 probe lost. "The past year" and seasons are not resolved: neither names one calendar period. |
+| 43 | A subject correction that is not on the page drops the figure, as a period or scope correction does (Fable §8.6) | included, as §8.6 states it | Risk: on any question the Context Check may propose an off-page subject and lose a figure; the pre-flight's Findings line shows it. The alternative, keeping the figure and dropping the subject, is one line if that happens. |
+| 44 | `MIN_SUB_TOPICS = 1`, the evidence-form answer forms, `agents.max_sub_topics: 7` | included; **decided** (controller) | Removes the one content-driven planning halt and the silent dropping of a six- or seven-part plan's last parts. |
+| 45 | Ten offline e2e rows (Task 5.9) before `ev-1` | included; **decided** (controller) | About an hour; each is a permanent catch for a §8.7 failure path. |
+| 46 | Known limits, deferred: an `agents.*` knob for `MAX_UNIQUE_SOURCES_PER_SUB_TOPIC` (§8.7-D15) and more legal suffixes in `identity.py` (§8.7-D16) | not included; **decided** (controller) | Recorded in spec §11. Both thin a report honestly; neither makes one wrong. |
+| 47 | Optional extras: a bare `should` judgement marker (§8.7-D14) and the probe's `--concurrency 4` | not included | One repair call at most, and 18–36 minutes sequential is acceptable. |
+| 48 | D12: `ev-1` runs one of the eight probe questions picked at random at launch; the pre-flight stays on the benchmark; the audit uses the generic rubric A1–A7 | included; **decided** (user) | Picking at launch keeps the prompts from being fitted to the live question. |
