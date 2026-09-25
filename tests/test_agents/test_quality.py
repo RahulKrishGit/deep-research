@@ -49,10 +49,14 @@ from deep_research.utils.types import (
     FigureResult,
     Finding,
     FindingVerification,
+    NotFoundTarget,
     ReportComposition,
+    ReportPoint,
+    ReportStatement,
     ResearchState,
     SubTopic,
 )
+from deep_research.agents.identity import finding_fingerprint
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
 from tests.research_fakes import report_writer_tools
@@ -312,28 +316,44 @@ def with_recorded_writer_failure() -> tuple[ResearchState, ReportComposition]:
         return _clean_pair()
 
 
-def with_uncited_point() -> tuple[ResearchState, ReportComposition]:
-    """The clean pair with one kept point whose statement cites no finding."""
-    state, composition = _clean_pair()
-    first, *rest = composition.summary
-    uncited = first.model_copy(
-        update={"statement": first.statement.model_copy(update={"finding_ids": []})}
+def _extra_point(*, finding_ids: list[str]) -> ReportPoint:
+    """One kept point beside the clean summary, judged consistent like the rest."""
+    return ReportPoint(
+        text="A point the section evidence carries.",
+        source_urls=["https://example.test/section"],
+        statement=ReportStatement(statement_id="S003",
+                                  text="A point the section evidence carries.",
+                                  finding_ids=finding_ids, target_ids=[]),
     )
-    return _relinked(state, composition, summary=[uncited, *rest])
+
+
+def with_uncited_point() -> tuple[ResearchState, ReportComposition]:
+    """The clean pair with one kept point whose statement cites no finding.
+
+    The point is *added* to the clean summary rather than standing in for a
+    statement that answers a required target: with the accounting rule (review
+    F2) a target whose only statement is defected is unaccounted for as well,
+    and this fixture keeps to its one gate.
+    """
+    state, composition = _clean_pair()
+    verdicts = {**composition.statement_verdicts, "S003": "consistent"}
+    return _relinked(state, composition,
+                     summary=[*composition.summary, _extra_point(finding_ids=[])],
+                     statement_verdicts=verdicts)
 
 
 def with_unknown_finding_id() -> tuple[ResearchState, ReportComposition]:
-    """The clean pair with one kept point citing a finding no registry carries."""
+    """The clean pair with one kept point citing a finding no registry carries.
+
+    Added beside the clean summary for the same reason as ``with_uncited_point``:
+    the required targets stay stated by the points that answer them.
+    """
     state, composition = _clean_pair()
-    first, *rest = composition.summary
-    dangling = first.model_copy(
-        update={
-            "statement": first.statement.model_copy(
-                update={"finding_ids": ["finding-nobody-cited"]}
-            )
-        }
-    )
-    return _relinked(state, composition, summary=[dangling, *rest])
+    verdicts = {**composition.statement_verdicts, "S003": "consistent"}
+    return _relinked(state, composition,
+                     summary=[*composition.summary,
+                              _extra_point(finding_ids=["finding-nobody-cited"])],
+                     statement_verdicts=verdicts)
 
 
 def missing_forecast_state(
@@ -562,6 +582,27 @@ def _unbound_dated_finding() -> Finding:
         "verification": FindingVerification(status="verified", figure_results=[result])})
 
 
+def _stating_composition(state: ResearchState, findings: Sequence[Finding], *,
+                         not_found: NotFoundTarget | None = None) -> ReportComposition:
+    """A composition whose summary states the answers these findings carry.
+
+    The gate reads the kept statements' own ``finding_ids`` (review F2), so a
+    fixture states an answer by citing the finding that carries it -- exactly
+    what the writer's packet asks the model to do.
+    """
+    return ReportComposition(
+        question=state.original_question, session_id=state.session_id, as_of="2026-09-25",
+        summary=[ReportPoint(
+            text="The obligations apply from 2 August 2025.",
+            source_urls=[f.source_url for f in findings],
+            statement=ReportStatement(
+                statement_id="S001", text="The obligations apply from 2 August 2025.",
+                finding_ids=[finding_fingerprint(f) for f in findings], target_ids=[]),
+        )],
+        not_found=[] if not_found is None else [not_found],
+    )
+
+
 def test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic() -> None:
     """Improvement 1A on the run's shape: the live run's figures were all dates
     and every one carried an empty ``target_ids``, so this gate declared two
@@ -574,12 +615,27 @@ def test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic() -> Non
     state = _state([dated]).model_copy(update={"sub_topics": [
         _topic(1, make_target(organisation=EIA)), _topic(2), _topic(3, when),
         _topic(4), _topic(5)]})
-    composition = ReportComposition(question=state.original_question,
-                                    session_id=state.session_id, as_of="2026-09-25")
+    composition = _stating_composition(state, [dated])
 
     snapshot = compute_report_quality(state, composition)
     assert "topic-03-target-01" in snapshot.answered_target_ids
     assert "topic-03-target-01" not in snapshot.missing_required_target_ids
+    # Stated, so this target is accounted for (review F2's other half). The
+    # plan's other required target has no finding at all, which is the pre-1A
+    # case and not this test's subject.
+    assert "topic-03-target-01" not in snapshot.unaccounted_target_ids
+
+    # Answered but never stated: the obligation is neither missing (a finding
+    # answers it) nor silent -- it is an unaccounted answer and a hard failure.
+    unstated = compute_report_quality(state, _stating_composition(state, []))
+    assert "topic-03-target-01" not in unstated.missing_required_target_ids
+    assert "topic-03-target-01" in unstated.unaccounted_target_ids
+    assert "unaccounted_required_targets" in unstated.hard_failures
+    # Disclosed under Not found instead of stated: the other honest reading.
+    listed = compute_report_quality(state, _stating_composition(
+        state, [], not_found=NotFoundTarget(target_id="topic-03-target-01",
+                                            question="From what date do the obligations apply?")))
+    assert "topic-03-target-01" not in listed.unaccounted_target_ids
 
     # The same run with a finding that names another sub-topic is the run's own
     # observation: the obligation it answers is declared missing.
@@ -587,3 +643,31 @@ def test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic() -> Non
         "verified_findings": [dated.model_copy(update={"related_sub_topic": "Another topic"})]})
     assert "topic-03-target-01" in compute_report_quality(
         blind, composition).missing_required_target_ids
+
+
+def test_an_answer_the_extraction_bound_is_accounted_for_by_being_answered() -> None:
+    """The bound on F2's rule: a target the *extraction* bound to a finding whose
+    sentence the Statement Check refused stays accounted for by being answered.
+
+    That is the pre-1A reading, and it is what the controlled scenarios
+    (`report-scope-corrected-to-all-segments`, `report-relay-labelled-as-relay`,
+    `validated-cache-reuse`) publish: their own expectation is an accepted report
+    whose refused sentence is gone. The rule's job is the fallback answer, which
+    no extraction ever read for this target.
+    """
+    bound = _unbound_dated_finding().model_copy(
+        update={"target_ids": ["topic-03-target-01"]})
+    assert bound.verification is not None
+    when = make_target("topic-03-target-01", question="From what date do the obligations apply?",
+                       measure="application date", unit_dimension=None, period=None,
+                       kind=None, geography=None)
+    state = _state([bound]).model_copy(update={"sub_topics": [
+        _topic(1, make_target(organisation=EIA)), _topic(2), _topic(3, when),
+        _topic(4), _topic(5)]})
+
+    snapshot = compute_report_quality(state, _stating_composition(state, []))
+
+    # The plan's other required target has no finding at all, which is a
+    # different failure; this target is the one the rule is about.
+    assert "topic-03-target-01" not in snapshot.unaccounted_target_ids
+    assert "topic-03-target-01" not in snapshot.missing_required_target_ids

@@ -421,6 +421,7 @@ from deep_research.agents.toolset import (
 from deep_research.agents.verified_facts import (
     VerifiedFigure,
     answered_target_ids,
+    answers_by_fallback,
     canonical_scopes,
     citable_findings,
     claimed_organisation,
@@ -835,6 +836,7 @@ __all__ = [
     "ToolDescriptor",
     "VerifiedFigure",
     "answered_target_ids",
+    "answers_by_fallback",
     "canonical_scopes",
     "citable_findings",
     "claimed_organisation",

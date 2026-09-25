@@ -947,6 +947,23 @@ def _binds_target(finding: Finding, target: EvidenceTarget,
     )
 
 
+def answers_by_fallback(finding: Finding, target: EvidenceTarget,
+                        sub_topics: Sequence[SubTopic]) -> bool:
+    """Whether this finding answers the target *only* through its own sub-topic (1A).
+
+    The extraction's own binding is authoritative, so a finding that names this
+    target answers it directly and this is ``False`` whatever else it names. The
+    one case this reports is the fallback: no target id at all, and the target
+    belongs to the sub-topic the finding names. That is the answer a consumer
+    has to keep honest -- it rests on the finding's sub-topic rather than on the
+    extraction's reading of the target's question -- which is why the coverage
+    gate asks a fallback answer to reach the reader (review F2).
+    """
+    return (target.target_id not in finding.target_ids
+            and finding.target_ids == []
+            and _names_the_targets_sub_topic(finding, target, sub_topics))
+
+
 def _finding_organisations(finding: Finding) -> list[str]:
     names = [figure.context.organisation for figure in verified_figures([finding])]
     if finding.attributed_issuer:

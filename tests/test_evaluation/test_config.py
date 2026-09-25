@@ -937,8 +937,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # defects a re-draft is asked about). Neither item edited a prompt string
     # or ``agents.prompts``, so the other three target pins and the Judge pin
     # are unchanged.
+    # Review F2's remedy moved the writer once more: its instruction now asks a
+    # point in the executive summary to state every required target the packet
+    # names a label for (`1bfcd866e32f` -> `d6b723723629`).
     "evidence_verifier": "a6205ea9c362",
-    "report_writer": "1bfcd866e32f",
+    "report_writer": "d6b723723629",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
