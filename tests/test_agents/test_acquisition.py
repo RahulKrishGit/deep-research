@@ -62,10 +62,14 @@ from tests.research_fakes import (
 
 
 def test_two_searches_require_read_but_failed_reads_do_not_deadlock() -> None:
+    # The turns a live loop has left (``_MODEL_TURNS``): a state with none is a
+    # *spent* loop, which the policy is never asked about, and the last-turn rule
+    # would answer ``finish`` for a reason this test is not about.
     state = AcquisitionState(
         candidate_urls=["https://primary.example/report.pdf"],
         consecutive_searches=2,
         remaining_calls=3,
+        remaining_model_turns=_MODEL_TURNS,
     )
     assert next_acquisition_action(state) == "read"
 
@@ -196,6 +200,57 @@ def test_the_last_model_turn_is_a_read_even_with_calls_left() -> None:
         "read",
         "search",
     )
+
+
+def test_the_last_model_turn_with_an_empty_queue_finishes_rather_than_searches() -> (
+    None
+):
+    """The turn cap binds a search the queue guard cannot see.
+
+    ``remaining_model_turns`` is the turns left *after* this one, so the loop's
+    last tool turn is the one that reads zero. ``search_is_admissible`` only
+    speaks about a search *beside a queued read*, so a search on that turn with
+    nothing queued was still admissible — and the candidates it returned had no
+    turn left to be read, which is the outcome the whole guard exists to
+    prevent. With the queue empty the only useful thing left is to stop: the
+    deterministic action is ``finish``, the accepted set is ``finish`` alone, and
+    a search is refused.
+    """
+    last_turn = _policy(
+        candidate_urls=[], remaining_calls=14, remaining_model_turns=0
+    )
+
+    assert next_acquisition_action(last_turn.state) == "finish"
+    assert allowed_acquisition_actions(last_turn.state) == ("finish",)
+    refused = last_turn.before_action(
+        _search_decision("search on the last turn"),
+        {"query": "search on the last turn"},
+    )
+    assert refused.allowed is False
+    # Finishing is never gated: the loop can always stop.
+    assert last_turn.before_action(
+        finish("Nothing more is possible.", "Not established."), {}
+    ).allowed is True
+
+
+def test_one_turn_left_with_an_empty_queue_still_searches() -> None:
+    """The bound is the last turn only, not the tail of the loop.
+
+    One turn left means the next turn can read what a search returns, so the
+    search is admissible and the deterministic action says so. This is also the
+    shape a two-turn loop has on its first turn, which is why the guard reads
+    the counter rather than approximating it.
+    """
+    one_turn_left = _policy(
+        candidate_urls=[], remaining_calls=14, remaining_model_turns=1
+    )
+
+    assert next_acquisition_action(one_turn_left.state) == "search"
+    assert allowed_acquisition_actions(one_turn_left.state) == ("search",)
+    assert one_turn_left.before_action(
+        _search_decision("search with a turn to read it"),
+        {"query": "search with a turn to read it"},
+    ).allowed is True
 
 
 def test_the_decision_context_names_every_action_the_policy_accepts() -> None:
@@ -2390,6 +2445,7 @@ def _gateway_policy(
     *,
     candidate_urls: Sequence[str] = (),
     remaining_calls: int = 4,
+    remaining_model_turns: int = _MODEL_TURNS,
     query: str = "queue delay commissioning",
     selected_passages_per_read: int = 4,
     cache: dict[str, ReadRecord] | None = None,
@@ -2403,6 +2459,7 @@ def _gateway_policy(
             target_id=target_id,
             candidate_urls=list(candidate_urls),
             remaining_calls=remaining_calls,
+            remaining_model_turns=remaining_model_turns,
         ),
         session_id="session-1",
         target_id=target_id,
