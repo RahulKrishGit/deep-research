@@ -1017,7 +1017,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # finding's own page title, its no-issuer line is `read at: <host>`, VER-2's
     # evidence_words is one contiguous span, and VER-4's one rule agrees with its
     # example: `90e57af30cd8` -> `aacdca45c69f`.
-    "evidence_verifier": "aacdca45c69f",
+    # Fable's round-2 optional follow-ups 4-6 (VER-4's inconsistent list defers
+    # to the one rule; corrected_text may take a document name from the page
+    # line's title; EXTRA-4 shows the page line): `aacdca45c69f` -> `99faed0d857d`.
+    "evidence_verifier": "99faed0d857d",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
