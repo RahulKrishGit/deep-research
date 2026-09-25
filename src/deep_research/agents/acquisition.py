@@ -1792,6 +1792,7 @@ class AcquisitionPolicy:
                 "empty_document_content",
                 "document_extraction_failed",
                 "empty_page_content",
+                "client_rendered_page",
                 "unsupported_content_type",
                 "unsupported_document_format",
             }

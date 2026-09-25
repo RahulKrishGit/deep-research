@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from html import unescape
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from deep_research.agents.evidence import normalized_content_sha256
 from deep_research.observability import Tracker
@@ -33,6 +35,27 @@ _MEDIA_TYPE_PATTERN = re.compile(r"[a-z0-9!#$%&'*+.^_`|~-]+/[a-z0-9!#$%&'*+.^_`|
 # transient or malformed-response failure. They get their own static sentence
 # because the useful next move differs: re-sourcing, not retrying.
 _ACCESS_DENIED_STATUSES = frozenset({401, 402, 403, 451})
+
+# A page is a *shell* when its visible text is no longer than this while its
+# markup is at least ``_SHELL_MARKUP_MIN_CHARS``: the browser builds the body
+# from data the page ships, and the static read saw only the site's chrome.
+# Measured on a client-rendered site: every page was 200-315 KB of HTML whose
+# visible text was 1.1-1.2 KB of navigation, while the body sat in ``data-*``
+# attribute JSON. The text bound is the acquisition policy's shell bound. The
+# markup floor keeps a short page in modest markup (a notice, a stub) out of
+# the rule: its HTML holds nothing its visible text lacks.
+_SHELL_CONTENT_MAX_CHARS = 2000
+_SHELL_MARKUP_MIN_CHARS = 50_000
+
+# A string in a shell page's data is prose -- a sentence of the page, not a
+# label, an identifier or a class list -- when, tags stripped, it is at least
+# this long and carries at least this many spaces.
+_PROSE_MIN_CHARS = 60
+_PROSE_MIN_SPACES = 8
+_TAG_PATTERN = re.compile(r"<[^>]+>")
+
+# The script types that carry a page's data rather than its code.
+_JSON_SCRIPT_TYPES = frozenset({"application/json", "application/ld+json"})
 
 
 class AsyncHttpClient(Protocol):
@@ -152,9 +175,20 @@ class WebScraperTool(BaseTool):
             )
         title, text = _extract_html(response.text)
         if not text.strip():
+            if _is_large_markup(response.text):
+                # A shell whose data held no prose: everything the static read
+                # saw was the site's chrome. Admitting that as the page is how
+                # a menu becomes evidence, and the same HTML comes back on a
+                # retry, so the useful move is another source.
+                raise ToolExecutionError(
+                    "the page served its navigation but not its body; read the "
+                    "same material from another source",
+                    error_type="client_rendered_page",
+                    recoverable=True,
+                )
             # A 200 response with no readable text — an interstitial, a
-            # challenge page, a shell — read nothing. Returning it as a
-            # successful read is how an empty body becomes evidence.
+            # challenge page — read nothing. Returning it as a successful read
+            # is how an empty body becomes evidence.
             raise ToolExecutionError(
                 "the page returned no readable text",
                 error_type="empty_page_content",
@@ -282,11 +316,118 @@ def _bounded_content_type(content_type: str) -> str:
 
 
 def _extract_html(html: str) -> tuple[str, str]:
+    """The page's title and its readable text.
+
+    The readable text is the visible text, unless the page is a shell: visible
+    text within ``_SHELL_CONTENT_MAX_CHARS`` in markup of at least
+    ``_SHELL_MARKUP_MIN_CHARS``. A shell's visible text is its chrome, so the
+    prose its own data carries (``_shell_prose``) is appended to it; a shell
+    whose data holds no prose has no readable text at all, since chrome is not
+    the page's text. A page with a body of its own is read exactly as before.
+    """
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(strip=True) if soup.title else ""
-    for element in soup(["script", "style", "noscript"]):
+    # Detached rather than decomposed: a shell's JSON payloads live in them.
+    scripts = [element.extract() for element in soup("script")]
+    for element in soup(["style", "noscript"]):
         element.decompose()
-    return title, " ".join(soup.stripped_strings)
+    visible = " ".join(soup.stripped_strings)
+    if len(visible) > _SHELL_CONTENT_MAX_CHARS or not _is_large_markup(html):
+        return title, visible
+    prose = _shell_prose(soup, scripts)
+    if not prose:
+        return title, ""
+    return title, " ".join([visible, *prose] if visible else prose)
+
+
+def _is_large_markup(html: str) -> bool:
+    """Whether ``html`` is large enough to hold a body its visible text lacks."""
+    return len(html) >= _SHELL_MARKUP_MIN_CHARS
+
+
+def _shell_prose(soup: BeautifulSoup, scripts: list[Tag]) -> list[str]:
+    """The prose a shell page ships in its own data, each string once.
+
+    A client-rendered page keeps its words in three places: its description
+    meta tags, JSON in ``data-*`` attributes, and JSON scripts, read in that
+    order. A plain script is code, not data, and is never read.
+    """
+    found: list[str] = []
+    for meta in soup.find_all("meta"):
+        if _is_description_meta(meta):
+            _add_prose(meta.get("content"), found)
+    for element in soup.find_all(True):
+        for name, value in element.attrs.items():
+            if (
+                name.startswith("data-")
+                and isinstance(value, str)
+                and value.startswith(("{", "["))
+            ):
+                _add_json_prose(value, found)
+    for script in scripts:
+        if _is_json_script(script):
+            _add_json_prose(script.get_text(), found)
+    return list(dict.fromkeys(found))
+
+
+def _is_description_meta(meta: Tag) -> bool:
+    name = meta.get("name")
+    prop = meta.get("property")
+    return (isinstance(name, str) and name.strip().casefold() == "description") or (
+        isinstance(prop, str) and prop.strip().casefold() == "og:description"
+    )
+
+
+def _is_json_script(script: Tag) -> bool:
+    kind = script.get("type")
+    return (
+        isinstance(kind, str)
+        and kind.split(";", 1)[0].strip().casefold() in _JSON_SCRIPT_TYPES
+    )
+
+
+def _add_json_prose(payload: str, found: list[str]) -> None:
+    try:
+        data = json.loads(payload)
+    except (ValueError, RecursionError):
+        # Not JSON, or nested past the parser's depth limit: either way the
+        # payload has no prose this read can use.
+        return
+    for value in _json_strings(data):
+        _add_prose(value, found)
+
+
+def _json_strings(data: object) -> Iterator[str]:
+    """Every string value in a decoded JSON document, breadth first.
+
+    A queue rather than recursion, because the payload's depth is the page's
+    to choose. Object keys are identifiers, not prose, and are skipped.
+    """
+    queue: list[object] = [data]
+    for value in queue:
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            queue.extend(value.values())
+        elif isinstance(value, list):
+            queue.extend(value)
+
+
+def _add_prose(value: object, found: list[str]) -> None:
+    """Append ``value``, tags stripped, when it reads as a sentence of prose.
+
+    A string that is itself serialized JSON is data, not prose, whatever its
+    length.
+    """
+    if not isinstance(value, str):
+        return
+    text = " ".join(unescape(_TAG_PATTERN.sub(" ", value)).split())
+    if (
+        len(text) >= _PROSE_MIN_CHARS
+        and text.count(" ") >= _PROSE_MIN_SPACES
+        and not text.startswith(("{", "["))
+    ):
+        found.append(text)
 
 
 def _is_retryable(error: BaseException) -> bool:
