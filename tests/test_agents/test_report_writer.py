@@ -882,20 +882,19 @@ async def test_a_summary_point_about_another_subject_is_not_a_restatement(writer
     assert [(r.where, r.reason) for r in composition.rejected_points] == [("summary[2]", "restates K002")]
 
 
-def _comparison_state() -> ResearchState:
+def _comparison_state(left: str = "Kettle K1", right: str = "Kettle K2") -> ResearchState:
     """One page reporting two named products adding the same capacity (Task 5.6c's comparison target).
 
     The question names **both** products, which is what strips either subject's
     words from the context the guard tests a sentence against.
     """
-    target = make_target(question=("How do the Kettle K1 and the Kettle K2 compare on battery "
+    target = make_target(question=(f"How do the {left} and the {right} compare on battery "
                                    "storage capacity added in 2024?"))
     topic = SubTopic(coverage_id=target.coverage_id, title="Capacity", rationale="r", search_queries=["q"],
                      success_criteria=["c"], priority=1, evidence_targets=[target])
     finding = _about("https://grid.example.test/kettles",
-                     "The Kettle K1 added 4 GW of capacity in 2024, and the Kettle K2 added 4 GW.",
-                     [("4", "GW", {"subject": "Kettle K1"}),
-                      ("4", "GW", {"subject": "Kettle K2"})])
+                     "The first product added 4 GW of capacity in 2024, and the second 4 GW too.",
+                     [("4", "GW", {"subject": left}), ("4", "GW", {"subject": right})])
     return ResearchState(session_id="s", original_question=target.question,
                          sub_topics=[topic], verified_findings=[finding])
 
@@ -926,3 +925,27 @@ async def test_a_comparison_target_counts_a_restatement_only_for_the_subject_it_
         "The Kettle K1 added 4 GW of capacity in 2024.",
         "The Kettle K2 added 4 GW of capacity in 2024."]
     assert [(r.where, r.reason) for r in composition.rejected_points] == [("summary[2]", "restates K002")]
+
+
+@pytest.mark.asyncio
+async def test_a_comparison_target_does_not_let_an_article_carry_a_restatement(writer, checker) -> None:
+    """Fix round 1 (Important 2): "Model B added a record 4 GW" is not Model A's restatement.
+
+    The give-away between "Model A" and "Model B" is the article "a" alone, and
+    any sentence may carry one: matched alone it makes the Model B sentence
+    count for Model A's row, and the guard then refuses the genuine Model A
+    sentence that follows it.
+    """
+    task = writer.build_task(_comparison_state("Model A", "Model B"))
+    assert [row.subject for row in task.facts] == ["Model A", "Model B"]
+    [(label, _)] = task.registry
+    draft = ReportWriterDraft(executive_summary=[
+        WriterPointDraft(text="Model B added a record 4 GW of capacity in 2024.", finding_labels=[label]),
+        WriterPointDraft(text="Model A added 4 GW of capacity in 2024.", finding_labels=[label]),
+    ], sections=[])
+    composition = await compose_written_report(task, draft, provider=writer.provider,
+                                               fingerprint=writer.fingerprint_call)
+    assert [point.text for point in composition.summary] == [
+        "Model B added a record 4 GW of capacity in 2024.",
+        "Model A added 4 GW of capacity in 2024."]
+    assert composition.rejected_points == []

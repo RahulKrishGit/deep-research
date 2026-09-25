@@ -6,7 +6,7 @@ import pytest
 
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.verified_facts import (
-    _own_fields,
+    _target_fields,
     answered_target_ids,
     fact_rows,
     finding_answers,
@@ -290,11 +290,11 @@ def test_figures_with_no_period_are_one_fact_only_on_a_shared_subject() -> None:
 def test_a_subject_that_restates_the_target_names_nothing() -> None:
     target = make_target()
     words = subject_context([target.target_id], [target])
-    fields = _own_fields([target.target_id], [target])
+    fields = _target_fields([target.target_id], [target])
     assert not subject_named_in("Model B scored a 4.5.", "Model A")
     assert same_subject("United States", "battery storage", context_words=words,
-                        own_fields=fields)
-    assert not same_subject("Spain", "Italy", context_words=words, own_fields=fields)
+                        target_fields=fields)
+    assert not same_subject("Spain", "Italy", context_words=words, target_fields=fields)
     assert subject_named_in("The Acme X200 scored 4.5.", "Acme X200")
     assert not subject_named_in("Model B scored 4.5.", "Model A")
     assert subject_named_in("Anything at all.", None)
@@ -473,9 +473,9 @@ def test_a_subject_that_restates_a_field_of_its_target_still_matches() -> None:
                          measure="widget adoption", unit_dimension="percent", period="2025",
                          geography="United States")
     words = subject_context([target.target_id], [target])
-    fields = _own_fields([target.target_id], [target])
+    fields = _target_fields([target.target_id], [target])
     assert same_subject("United States", "widget adoption", context_words=words,
-                        own_fields=fields)
+                        target_fields=fields)
 
     def survey(subject, page):
         text = "The institute measured widget adoption in the United States at 40 percent in 2025."
@@ -492,3 +492,71 @@ def test_a_subject_that_restates_a_field_of_its_target_still_matches() -> None:
                       survey("widget adoption", "bureau21"),
                       survey(None, "panel21")], [target])
     assert [(row.subject, len(row.duplicate_finding_ids)) for row in rows] == [("United States", 2)]
+
+
+def _widget_figure(subject, page, target):
+    """One 40 percent 2025 widget-adoption figure about ``subject``."""
+    text = "The institute measured widget adoption in the United States at 40 percent in 2025."
+    read = make_read(text, url=f"https://{page}.example.test/adoption", title="Adoption survey")
+    finding = make_finding(read, text,
+                           figures=[figure("40", "percent", "2025", "actual").model_copy(
+                               update={"subject": subject})],
+                           target_ids=[target.target_id])
+    return verified(finding, FigureContext(period="2025", scope=None, attribution="own",
+                                           organisation="Example Institute", kind="actual",
+                                           subject=subject))
+
+
+def test_a_subject_carrying_an_extra_question_word_stays_one_row() -> None:
+    """Fix round 1 (Critical 1): the target's own fields decide, not a whole-subject match.
+
+    "widget adoption rate" carries a word the measure does not state ("rate" is
+    the target's own question word) and "United States" is its geography: the
+    two name one topic, and BASE printed one row.
+    """
+    target = make_target(question="What was the widget adoption rate in the United States in 2025?",
+                         measure="widget adoption", unit_dimension="percent", period="2025",
+                         geography="United States")
+    rows = fact_rows([_widget_figure("widget adoption rate", "lab", target),
+                      _widget_figure("United States", "news", target)], [target])
+    assert len(rows) == 1
+
+
+def _grid_figure(subject, page, target):
+    """One 10.4 GW 2024 capacity figure about ``subject`` (the live run's shape)."""
+    text = "Grid-scale battery storage capacity added in the United States was 10.4 GW in 2024."
+    read = make_read(text, url=f"https://{page}.example.test/capacity", title="Capacity report")
+    finding = make_finding(read, text,
+                           figures=[figure("10.4", "GW", "2024", "actual").model_copy(
+                               update={"subject": subject})],
+                           target_ids=[target.target_id])
+    return verified(finding, FigureContext(period="2024", scope=None, attribution="own",
+                                           organisation="Example Institute", kind="actual",
+                                           subject=subject))
+
+
+def test_a_benchmark_shaped_subject_keeps_every_spelling_in_one_row() -> None:
+    """Fix round 1 (Critical 1): the live run's most important case.
+
+    One benchmark-shaped target, one value, period, organisation and kind, under
+    five spellings of one subject -- the place, its abbreviation, the place plus
+    the measure, the measure alone, and no subject at all: one row, as at BASE.
+    """
+    target = make_target(question=("How much grid-scale battery storage capacity was added in "
+                                   "the United States in 2024?"),
+                         measure="grid-scale battery storage capacity added",
+                         unit_dimension="power", period="2024", geography="United States")
+    figures = [_grid_figure(subject, page, target) for subject, page in (
+        ("United States", "agency21"), ("U.S.", "bureau21"),
+        ("US grid-scale battery storage", "panel21"),
+        ("grid-scale battery storage capacity", "survey21"), (None, "note21"))]
+    rows = fact_rows(figures, [target])
+    assert [(row.subject, len(row.duplicate_finding_ids)) for row in rows] == [("United States", 4)]
+
+
+def test_an_article_only_give_away_needs_the_target_to_spell_it() -> None:
+    """Fix round 1 (Minor 3): an article nobody wrote tells "a kettle" from "Kettle K2" nothing."""
+    target = make_target(**COMPARISON_RATING)
+    words = subject_context([target.target_id], [target])
+    fields = _target_fields([target.target_id], [target])
+    assert same_subject("a kettle", "Kettle K2", context_words=words, target_fields=fields)
