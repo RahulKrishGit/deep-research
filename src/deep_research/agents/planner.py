@@ -571,8 +571,8 @@ PLAN_INSTRUCTION = (
 # question.
 _PLAN_REPLY_EXAMPLES = (
     (
-        "Example input: compare the ridership and cost of bus and rail "
-        "options for a city.",
+        "Example input: compare the ridership and capital cost of bus and "
+        "rail options for a city.",
         '{"sub_topics":['
         '{"title":"travel demand and coverage",'
         '"rationale":"Establish which trips each option must serve.",'
@@ -596,14 +596,14 @@ _PLAN_REPLY_EXAMPLES = (
         'option.",'
         '"search_queries":["city bus rail capital operating cost delivery '
         'time"],"success_criteria":['
-        '"A published capital cost per route kilometre for each option, in the '
-        'currency its own statement uses."],'
+        '"A published capital cost for each option, in the currency its own '
+        'statement uses."],'
         '"priority":2,'
         '"evidence_targets":['
-        '{"question":"What capital cost per route kilometre does each option '
-        'report?","required":true,'
-        '"measure":"capital cost per route kilometre","unit_dimension":"currency",'
-        '"period":"","kind":"",'
+        '{"question":"What capital cost does each option report?",'
+        '"required":true,'
+        '"measure":"capital cost","unit_dimension":"currency",'
+        '"period":"","kind":"actual",'
         '"geography":"the city","organisation":""}]},'
         '{"title":"service reliability",'
         '"rationale":"Establish how reliably each option delivers its '
@@ -2519,13 +2519,28 @@ def validate_plan_draft(
     return _assign_coverage_ids(sub_topics), problems
 
 
-def format_plan_problems(problems: Sequence[str]) -> str:
-    """Render plan problems as the corrective instruction for one repair."""
+def format_plan_problems(
+    problems: Sequence[str], *, plan_printed: bool = True
+) -> str:
+    """Render plan problems as the corrective instruction for one repair.
+
+    A problem names what it concerns — a target by its id, a sub-topic by its
+    position, or the plan as a whole — so the wrapper says that rather than
+    claiming every problem carries a target id. ``plan_printed`` is whether the
+    request prints the plan under repair: a draft none of whose sub-topics
+    validated has no plan to print, and the wrapper then says so instead of
+    pointing at a section the request does not carry.
+    """
     listed = "\n".join(f"- {problem}" for problem in problems)
+    if plan_printed:
+        return (
+            "The plan under repair is printed above. Fix every problem listed "
+            "below — each names the target, the sub-topic or the plan it "
+            f"concerns — and return that plan corrected.\n{listed}"
+        )
     return (
-        "The plan under repair is printed above. Fix every problem listed "
-        "below, each named by its target id, and return that plan "
-        f"corrected.\n{listed}"
+        "The previous plan could not be validated, so it is not printed. Fix "
+        f"every problem listed below and return a corrected plan.\n{listed}"
     )
 
 
@@ -2643,7 +2658,7 @@ def plan_messages(
             # asked to correct a plan it cannot see, and the repair is a
             # fresh sample rather than a correction.
             material.append(
-                "# Plan under repair (correct this plan; do not restate it)\n"
+                "# Plan under repair (return this plan corrected, not unchanged)\n"
                 f"{render_plan_for_review(plan_under_repair)}"
             )
         material.append(f"# Repair\n{repair}")
@@ -2685,9 +2700,11 @@ PLAN_REVIEW_INSTRUCTION = (
     "deadline, threshold or duration carries no unit or kind unless the "
     "question asks for that quantity itself; name one that does in "
     "`atomicity_defects`. Name each compound target in `atomicity_defects`.\n"
-    "- No target asks for a verdict, a pick, a ranking, a comparison or a "
-    "combination the question did not ask for, or for an item selected by "
-    "another target's answer. Name each one in `atomicity_defects`.\n"
+    "- No target asks for a verdict, a pick, a ranking or a comparison the "
+    "run itself would have to make — a pick or a ranking a page states is "
+    "evidence, the run's own is not — or for a combination of other targets' "
+    "answers, or for an item selected by another target's answer. Name each "
+    "one in `atomicity_defects`.\n"
     "- No search query or success criterion assumes the answer, states a "
     "conclusion the plan has not established, or treats a recalled memory as "
     "evidence; a query says where to look, never the value, date, item or pick "
@@ -3288,9 +3305,13 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             raise retry_error.redacted_copy(
                 ProviderOutputLimitError.SAFE_MESSAGE
             ) from None
-        except ProviderError:
+        except ProviderError as retry_error:
+            # The reviewer's rule: the retry's failure keeps its type and its
+            # provider-free diagnostics (a schema failure's still reach
+            # ``structured_output_problems``), but the caller gets a fresh copy
+            # with the provider exception chain cut, never the raised object.
             record("failed")
-            raise
+            raise retry_error.redacted_copy(str(retry_error)) from None
         record("answered")
         return reply
 
@@ -3480,7 +3501,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     task,
                     run,
                     contract=contract,
-                    repair=format_plan_problems(attempt.problems),
+                    repair=format_plan_problems(
+                        attempt.problems,
+                        plan_printed=bool(attempt.sub_topics),
+                    ),
                     plan=_PLAN_REPAIR_LABEL,
                     plan_under_repair=attempt.sub_topics,
                 )
