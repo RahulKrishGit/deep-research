@@ -1752,6 +1752,39 @@ async def test_a_dropped_defect_note_names_only_the_field_that_failed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_coverage_defect_on_a_required_target_is_always_material() -> None:
+    """A coverage defect on a required target is material whatever severity
+    the model gave it (D11): the model called an identical missing-half-answer
+    problem major in one review and minor in another, and routing cannot be
+    left to that inconsistency.
+    """
+    built = packet()
+    completer = ScriptedCompleter(
+        outputs=[
+            _draft(
+                defects=[
+                    _defect_draft(
+                        statement_ids=("S001",),
+                        target_ids=(TARGET_ID,),
+                        kind="coverage",
+                        severity="minor",
+                        problem="The question's part has no named answer.",
+                    )
+                ]
+            )
+        ]
+    )
+
+    review = await review_report(completer, built)
+
+    assert review.status == "scored"
+    [defect] = review.defects
+    assert defect.severity == "major"
+    assert defect.material
+    assert not semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
 async def test_a_disposition_outside_the_packet_is_refused() -> None:
     """A judgement about a record this packet does not carry is not a judgement."""
     built = packet()

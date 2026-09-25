@@ -378,6 +378,42 @@ def test_a_redraft_never_outranks_research_the_budget_can_still_buy() -> None:
     )
 
 
+def test_a_coverage_defect_naming_a_required_target_buys_the_extra_pass() -> None:
+    """A reviewer's own coverage defect is missing evidence too (D10).
+
+    ``missing_required_target_ids`` is code-stamped from whether a verified
+    finding exists for the target; a required target can carry one and still
+    not answer the question, which is exactly what the reviewer's own
+    ``coverage`` defect says. That defect must buy the extra pass before any
+    redraft whenever the budget still holds one: a redraft cannot answer a
+    target no verified finding actually establishes.
+    """
+    review = ReportReview(
+        status="scored",
+        dimensions={d: 0.9 for d in REVIEW_DIMENSIONS},
+        input_fingerprint="packet-1",
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        defects=[
+            ReviewDefect(
+                defect_id="review-01",
+                kind="coverage",
+                severity="major",
+                target_ids=["t2"],
+                problem="The question's second part names no answer.",
+            )
+        ],
+    )
+    quality = ReportQualitySnapshot(required_target_ids=["t1", "t2"])
+
+    assert _routed(
+        review=review, quality=quality, iteration=0, max_extra_passes=1
+    ) == ("extra_pass", "extra_pass_requested")
+    assert _routed(
+        review=review, quality=quality, iteration=1, max_extra_passes=1
+    ) == ("redraft", "redraft_requested")
+
+
 def test_an_unscored_review_buys_no_redraft() -> None:
     """No judgement is not a defect list: a partial review has nothing to feed."""
     assert _routed(review=ReportReview(status="provider_failed")) == (

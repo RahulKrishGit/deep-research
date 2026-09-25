@@ -4916,6 +4916,22 @@ def test_the_plan_instruction_states_the_floor() -> None:
         assert phrase in PLAN_INSTRUCTION
 
 
+def test_the_plan_instruction_orders_optional_sub_topics_after_required_ones() -> None:
+    """D17: a sub-topic beyond the question's own parts must never outrank a
+    sub-topic that answers a part, so research always reaches the required
+    parts before anything the plan added.
+    """
+    for phrase in (
+        "A sub-topic whose targets are all optional answers no part of the "
+        "question",
+        "give it a lower priority than every sub-topic that carries a "
+        "required target",
+        "research reaches the question's own parts before anything the plan "
+        "added",
+    ):
+        assert phrase in PLAN_INSTRUCTION
+
+
 # The live P3/P4 plan probe stamped bodies the question never named by
 # *describing* them where a body's name belongs — "the manufacturer of
 # semaglutide" for the maker of a drug, and a join of two institutions for the
