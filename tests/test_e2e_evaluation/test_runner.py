@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -31,6 +32,7 @@ from deep_research.e2e_evaluation.replay_matrix import (
 from deep_research.e2e_evaluation.runner import (
     LIVE_TIER_NOT_RUN,
     build_parser,
+    canonical_report_fingerprint,
     network_line,
     real_agent_suite_lines,
     run_replay_suite,
@@ -91,6 +93,7 @@ def _stub_replay_suite(
                     exit_code=0,
                     expectation_failures=[] if passed else ["stub failure"],
                     answered_target_ids=["topic-01-target-01"],
+                    extra_passes=0,
                     network_attempts=(
                         list(attempts) if (index, number) == (1, 1) else []
                     ),
@@ -241,6 +244,7 @@ def test_a_row_whose_repetitions_disagree_is_not_passed(
             exit_code=0,
             expectation_failures=[],
             answered_target_ids=["topic-01-target-01"],
+            extra_passes=0,
             report_fingerprint=f"{number:064d}",
         )
 
@@ -363,3 +367,100 @@ def test_a_replay_report_is_dated_by_the_harness_clock(
         and REPLAY_CLOCK_INSTANT.isoformat() in line
         for line in lines
     )
+
+
+# --- what the report fingerprint is taken over --------------------------------
+
+
+def _published_report(*, findings_checked: int, dropped: int) -> str:
+    """A report whose byline counts are the only thing that moves.
+
+    The byline is the reader's own line (``agents.report.render_written_report``):
+    the ``As of`` stamp, the scope, and the counts. Everything below it is
+    fixed, so two of these differ only in what the reader was told.
+    """
+    return (
+        "# Was the grid modernised in 2024?\n"
+        "\n"
+        "*As of 2026-01-02T00:00:00+00:00. Scope: All segments. "
+        "3 sources cited; "
+        f"{findings_checked} findings checked against their pages "
+        "(0 with corrected context, 0 with unchecked context), "
+        f"{dropped} dropped; 0 required targets not found.*\n"
+        "\n"
+        "## Executive summary\n"
+        "\n"
+        "- The grid was modernised [1].\n"
+        "\n"
+        "## Sources\n"
+        "\n"
+        "1. Example Agency, *Grid report*, https://example.test/grid\n"
+    )
+
+
+def test_the_byline_counts_the_reader_was_shown_are_hashed() -> None:
+    """The counts in the byline are part of a repetition's own outcome.
+
+    The byline is one line: the pinned ``As of`` stamp, the scope, and what the
+    reader was told was checked, corrected, dropped or left not found. The
+    harness clock is pinned, so the stamp is a constant of the row and needs no
+    stripping; a fingerprint that skipped the whole line could not tell two
+    repetitions apart when the only thing that moved was those totals.
+    """
+    baseline = canonical_report_fingerprint(
+        _published_report(findings_checked=2, dropped=0)
+    )
+
+    assert canonical_report_fingerprint(
+        _published_report(findings_checked=3, dropped=0)
+    ) != baseline
+    assert canonical_report_fingerprint(
+        _published_report(findings_checked=2, dropped=1)
+    ) != baseline
+    # The same report is one fingerprint, so the two differences above are the
+    # counts rather than the fixture.
+    assert canonical_report_fingerprint(
+        _published_report(findings_checked=2, dropped=0)
+    ) == baseline
+
+
+# --- the counts a recorded repetition carries ---------------------------------
+
+
+def test_a_recorded_repetition_carries_the_seven_counts_of_its_final_state(
+    monkeypatch, tmp_path
+) -> None:
+    """A row's recorded result states the product's own seven counts.
+
+    ``verified_findings``, ``dropped_findings``, ``context_unchecked_findings``,
+    ``duplicate_fact_rows``, ``unjudged_sentences``, ``missing_required_targets``
+    and ``extra_passes`` are read from the state the run finished in, never
+    re-derived here: a harness that counted for itself could only disagree with
+    the run it is judging. The row is the one that spends a real extra pass, so
+    its iteration count is asserted against the harness's own cap as well.
+    """
+    entry = manifest_entry("extra-pass-recovers-missing-target")
+    states: list[Any] = []
+    real_run = campaign_runner.run_replay_scenario
+
+    def _capturing_run(*args, **kwargs):
+        run = real_run(*args, **kwargs)
+        states.append(run.state)
+        return run
+
+    monkeypatch.setattr(campaign_runner, "run_replay_scenario", _capturing_run)
+
+    recorded = campaign_runner._replay_repetition(entry, 1, storage=tmp_path)
+
+    state = states[0]
+    quality = state.quality
+    assert quality is not None
+    assert recorded.verified_findings == quality.verified_findings
+    assert recorded.dropped_findings == quality.dropped_findings
+    assert recorded.context_unchecked_findings == quality.context_unchecked_findings
+    assert recorded.duplicate_fact_rows == quality.duplicate_fact_rows
+    assert recorded.unjudged_sentences == len(quality.unjudged_sentences)
+    assert recorded.missing_required_targets == len(
+        quality.missing_required_target_ids
+    )
+    assert recorded.extra_passes == state.iteration == 1
