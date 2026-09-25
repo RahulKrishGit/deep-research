@@ -521,7 +521,11 @@ PLAN_INSTRUCTION = (
     "is reported Not found however much evidence the run collects. Name one body "
     "per target; never join two. Plan one target per organisation, measure, "
     "period and kind the question asks for.\n"
-    "A target is required only for what the question names. A target you add "
+    "A target is required only for what the question names. A target is "
+    "required only when the question itself asks for that thing: a "
+    "sub-category, aspect, example, event or list item you introduce to "
+    "organise the research is optional, even when you expect it to hold the "
+    "answer. A target you add "
     "to make another target checkable — a magnitude, a definition, a supporting "
     "statistic or a running total — is optional, even when the answer needs it. "
     "Read the question as "
@@ -540,7 +544,11 @@ PLAN_INSTRUCTION = (
     "prices, an independent tester or reviewer for a rating, the regulator for a "
     "rule — named by the question or, when it names none, the body that publishes "
     "the primary record; a page that repeats another body's evidence is a relay, "
-    "never the organisation. When the question asks for forecasts, outlooks, "
+    "never the organisation. For a product's or a drug's performance the "
+    "authority is the body that measured, tested or approved it — a regulator, a "
+    "trial or its publication, an independent tester — never the maker; for a "
+    "law or a regulation it is the body that adopted it, never the office that "
+    "publishes it. When the question asks for forecasts, outlooks, "
     "rankings or recommendations without naming who gives them, plan one target "
     "per body whose published, reachable evidence you expect, at least two when "
     "the question is plural; a body whose evidence is paywalled is optional. A "
@@ -548,7 +556,8 @@ PLAN_INSTRUCTION = (
     "happened or applies (\"changes in 2026\", \"added in 2024\"); a year that "
     "names when the reader will buy, decide or use (\"to buy in 2026\") is not a "
     "period: leave it empty, the as-of date governs, and earlier evidence is "
-    "still current. "
+    "still current. When the question bounds the time window it asks about, "
+    "every figure target for that window carries it as its period. "
     "Targets you add yourself — a second unit of measure, a related "
     "quantity, a type or category breakdown, a definition, background — are "
     "optional. Optional targets never fail a run; a required target no source "
@@ -2181,6 +2190,74 @@ def _question_asks_for_a_quantity(contract: AnswerContract) -> bool:
     )
 
 
+# The words that introduce a year as the window the question's evidence falls
+# in, rather than as when the reader will act on it: "since 1993", "in 2025".
+# The instruction already says a year that names when the reader will buy,
+# decide or use is not a period, so a year only becomes the run's window here
+# when the question frames it that way and names no other.
+_WINDOW_FRAMES = ("since", "in", "during", "over", "through", "between", "from", "as of")
+
+# The words that make the year beside them the reader's own act rather than the
+# window the evidence falls in: the instruction's own list — "names when the
+# reader will buy, decide or use" — so "Which Kettle should I buy in 2026?"
+# states no period at all, while "since 1993" and "in 2025" do.
+_USE_FRAMES = (
+    "buy", "buys", "buying", "purchase", "purchases", "purchasing",
+    "decide", "decides", "deciding", "use", "uses", "using",
+    "choose", "chooses", "choosing", "rent", "rents", "renting",
+)
+_USE_FRAME_WINDOW = 24
+
+
+def _question_window(contract: AnswerContract) -> str | None:
+    """The one time window the question bounds, as a period to stamp (§7.1).
+
+    The final probe's P7 plan stamped "since 1993" on two of its three sea-level
+    targets and left the third empty, and its P8 plan left the window off a
+    share target while its siblings carried it: a figure target of a windowed
+    question that states no period of its own is a defect the review has to
+    repair. The window is read from the question's own words, and only when the
+    question names exactly one year *and* frames it as the window it asks about,
+    so "to buy in 2026" names when the reader buys and is no period at all.
+    """
+    years = set(_past_years(contract.question))
+    if len(years) != 1:
+        return None
+    (year,) = years
+    question = _normalized_question(contract.question)
+    frames = "|".join(_WINDOW_FRAMES)
+    if not re.search(rf"(?i)\b(?:{frames})\s+{year}\b", question):
+        return None
+    start = question.index(str(year))
+    preceding = question[max(0, start - _USE_FRAME_WINDOW):start]
+    if re.search(r"(?i)\b(?:" + "|".join(_USE_FRAMES) + r")\b", preceding):
+        return None
+    return str(year)
+
+
+# What a *target's* own wording asks for, when its question asked for no
+# quantity at all: a "how many"/"how much" of the target's own, or a count,
+# total, share or rate *of something*. Only the ask counts, never a magnitude
+# word on its own: the middle of a measure is where a magnitude word lives
+# without any obligation behind it ("interconnection constraints" beside a
+# sub-topic called "Queue totals"), and demoting that shape is how a word list
+# removed `required` from every target of a headphones question in the probe
+# re-run. Rule 4's other half — a question answered by a reason carries no
+# figure obligation the question never asked for.
+_TARGET_QUANTITY_ASKS = (
+    "how much", "how many", "number of", "count of", "total of", "share of",
+    "rate of", "percentage of", "amount of", "volume of",
+)
+
+
+def _target_asks_for_a_quantity(target: EvidenceTarget) -> bool:
+    """Whether the target's own wording asks for a quantity of something."""
+    text = _normalized_question(
+        " ".join(filter(None, (target.question, target.measure or "")))
+    )
+    return _mentions(text, _TARGET_QUANTITY_ASKS)
+
+
 def _figure_targets_are_planned(contract: AnswerContract) -> bool:
     """Whether this question's own form lets a target carry a figure (§7.1).
 
@@ -2223,6 +2300,12 @@ def apply_answer_contract(
     """
     stamped: list[SubTopic] = []
     figures_planned = _figure_targets_are_planned(contract)
+    window = _question_window(contract)
+    owed_before = any(
+        target.required
+        for sub_topic in sub_topics
+        for target in sub_topic.evidence_targets
+    )
     for sub_topic in sub_topics:
         targets = [
             EvidenceTarget(
@@ -2230,12 +2313,23 @@ def apply_answer_contract(
                 coverage_id=sub_topic.coverage_id,
                 question=target.question,
                 required=target.required
-                and not _unrequested_energy_measure(target, contract=contract),
+                and not _unrequested_energy_measure(target, contract=contract)
+                and not (
+                    not figures_planned and _target_asks_for_a_quantity(target)
+                ),
                 measure=target.measure,
                 unit_dimension=(
                     target.unit_dimension if figures_planned else None
                 ),
-                period=target.period,
+                period=(
+                    target.period
+                    or (
+                        window
+                        if figures_planned
+                        and (target.unit_dimension or target.kind)
+                        else None
+                    )
+                ),
                 kind=target.kind if figures_planned else None,
                 geography=target.geography,
                 organisation=_stamped_organisation(target.organisation),
@@ -2243,6 +2337,29 @@ def apply_answer_contract(
             for position, target in enumerate(sub_topic.evidence_targets, start=1)
         ]
         stamped.append(sub_topic.model_copy(update={"evidence_targets": targets}))
+    if owed_before and not any(
+        target.required
+        for sub_topic in stamped
+        for target in sub_topic.evidence_targets
+    ):
+        # Rule 4's second half may not leave a plan that owes nothing: the probe
+        # re-run measured that failure, so the first obligation of every
+        # sub-topic is required again and the plan keeps owing its dimensions.
+        stamped = [
+            sub_topic.model_copy(
+                update={
+                    "evidence_targets": [
+                        target.model_copy(update={"required": True})
+                        if position == 1
+                        else target
+                        for position, target in enumerate(
+                            sub_topic.evidence_targets, start=1
+                        )
+                    ]
+                }
+            )
+            for sub_topic in stamped
+        ]
     return stamped
 
 
