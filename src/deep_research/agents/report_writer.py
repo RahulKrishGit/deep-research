@@ -50,6 +50,8 @@ from deep_research.agents.verified_facts import (
     fact_rows,
     not_found_targets,
     release_text,
+    subject_context,
+    subject_named_in,
 )
 from deep_research.agents.wording import stated_role
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -195,9 +197,15 @@ class WrittenReport(ContractModel):
 
 
 def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) -> list[tuple[str, Finding]]:
-    """One label per citable finding: answers to required targets first, then the rest."""
+    """One label per citable finding: answers to required targets first, then the rest.
+
+    The answers are resolved against every target, so an optional sibling
+    still keeps a figure about its subject off a required target's answers
+    (F11), and only the required targets' answers are then ranked first.
+    """
     citable = citable_findings(findings)
-    answered = answered_target_ids(citable, [t for t in targets if t.required])
+    required = {t.target_id for t in targets if t.required}
+    answered = {t: ids for t, ids in answered_target_ids(citable, targets).items() if t in required}
     first = list(dict.fromkeys(fid for ids in answered.values() for fid in ids))
     rank = {fid: n for n, fid in enumerate(first)}
     ordered = sorted(citable, key=lambda f: rank.get(finding_fingerprint(f), len(rank)))
@@ -262,6 +270,7 @@ def _figure_label_for(finding: Finding, context: FigureContext) -> str:
         relay_host=publisher_identity(finding.source_url) if context.attribution == "relayed" else None,
         kind=context.kind, release=release_text(finding),
         unchecked=bool(finding.verification and finding.verification.context_unchecked),
+        period_resolved_from=context.period_resolved_from,
     )
 
 
@@ -274,16 +283,19 @@ def registry_lines(label: str, finding: Finding) -> list[str]:
             continue
         number += 1
         context = result.context
+        subject = f" | subject {context.subject}" if context.subject else ""
         lines.append(
-            f"{label} | figure {number}: {result.figure.value} {result.figure.unit} | period "
+            f"{label} | figure {number}: {result.figure.value} {result.figure.unit}{subject} | period "
             f"{context.period or 'not stated'} | kind {context.kind} | organisation "
             f"{context.organisation} | label: {_figure_label_for(finding, context)}"
         )
     if number == 0:
         name = finding.attributed_issuer or publisher_identity(finding.source_url)
+        date = finding.statement_date or finding.release_date or finding.data_period
         lines.append(
             f"{label} | statement | attributed to {name} | "
             f"{stated_role(finding.snippet or finding.content)}"
+            + (f" | dated {date}" if date else "")
         )
     return lines
 
@@ -510,7 +522,9 @@ async def compose_written_report(
         stated = quantities_in(text)
         rows = {row.row_id for row in task.facts
                 if (row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids))
-                and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)}
+                and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)
+                and subject_named_in(text, row.subject,
+                                     context_words=subject_context(row.target_ids, task.targets))}
         if dedup and rows and rows <= stated_rows:
             reject("restates " + ", ".join(sorted(rows)))
             return None

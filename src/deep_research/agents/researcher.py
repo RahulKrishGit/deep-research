@@ -160,6 +160,7 @@ class FindingFigureDraft(ContractModel):
     unit: str
     period: str | None = None
     kind: str | None = None
+    subject: str | None = None
 
 
 class FindingDraft(ContractModel):
@@ -517,7 +518,8 @@ _FINDING_REPLY_EXAMPLES = (
         '"read_id":"read-111111111111111111111111","locator":"page-4-chunk-0",'
         '"snippet":"The measured reduction was 12 percent, according to the '
         'Example Statistical Agency, across all classes.",'
-        '"figures":[{"value":"12","unit":"percent","period":"2024","kind":"actual"}],'
+        '"figures":[{"value":"12","unit":"percent","period":"2024","kind":"actual",'
+        '"subject":null}],'
         '"target_ids":["topic-01-target-01"],"data_period":"2024",'
         '"statement_date":"2025-03-12",'
         '"vintage":"January 2025 preliminary inventory",'
@@ -748,8 +750,13 @@ def extraction_messages(
         "- List every figure the snippet states for the finding in figures: value "
         "exactly as the snippet writes it (\"7.25\", \"12,314\"), unit as the snippet "
         "writes it (\"tonnes\", \"per cent\", \"USD million\", \"MW\"), the period it "
-        "applies to, and kind: actual for a measured or reported outcome, forecast for "
-        "a projection, plan or expectation.\n"
+        "applies to, kind: actual for a measured or reported outcome, forecast for "
+        "a projection, plan or expectation, and subject: the thing the figure is about, "
+        "as the page names it — a product model, a place, a company, a patch or "
+        "version, a named item — copied from the page, or null when the page names "
+        "none and the figure is about the topic as a whole. One snippet may carry "
+        "several figures with different subjects; give each its own subject rather "
+        "than splitting the snippet.\n"
         "- Figures that measure different things - a yearly addition and a cumulative "
         "total - belong in separate findings.\n"
         "- A finding MUST name in target_ids every planned target from the Planned "
@@ -1134,6 +1141,7 @@ def _admitted_figures(
                 unit=unit,
                 period=(draft.period or "").strip() or None,
                 kind=_normalized_figure_kind(kind),
+                subject=(draft.subject or "").strip() or None,
             )
         )
     return figures, dropped
