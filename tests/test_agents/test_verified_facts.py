@@ -1077,9 +1077,12 @@ def test_a_relayed_figure_does_not_answer_a_qualitative_target() -> None:
 
     assert not finding_answers(finding, target)
     assert finding_answers(finding, own)
+    # A near miss the legal-form fold does not cover is still another body (F4
+    # makes "Wood Mackenzie Inc" the same organisation as "Wood Mackenzie", so
+    # that spelling is no longer the negative case).
     assert not finding_answers(finding, make_target("topic-01-target-01",
-                                                    organisation="Wood Mackenzie Inc",
-                                                    **{**TEXT_TARGET, "measure": "storage added"}))
+                                                   organisation="BloombergNEF",
+                                                   **{**TEXT_TARGET, "measure": "storage added"}))
 
 
 def test_two_bodies_whose_names_share_an_acronym_stay_two_rows() -> None:
@@ -1164,3 +1167,80 @@ def test_a_multi_year_span_does_not_state_its_start_year() -> None:
                  "Solar capacity was 18 GW, per the report published 2024-1-5.",
                  "Solar capacity was 18 GW, per the report published 2024/01/15."):
         assert _period_stated_in(text, "calendar 2024"), text
+
+
+# ---------------------------------------------------------------------------
+# Round 7: the expert final review's F3, F4 and F8.
+# ---------------------------------------------------------------------------
+
+
+def test_targets_told_apart_only_by_words_no_subject_can_carry_defer_to_the_binding() -> None:
+    """F3 (final review, smoke 2): two sibling price targets differ only by the
+    publisher they cite ("the model RTINGS ranks highest" against "the model
+    Wirecutter ranks highest"), words a product's subject cannot carry, so the
+    sibling rule cannot decide and the extraction's own binding answers -- the
+    finding is bound to the first and only the second says Not found."""
+    def price_target(target_id: str, publisher: str):
+        return make_target(target_id, question=(
+            f"What is the current list price of the model {publisher} ranks highest?"),
+            measure="current list price", unit_dimension="currency", period=None,
+            kind="actual", geography=None, organisation="Roborock")
+
+    rtings = price_target("topic-01-target-01", "RTINGS")
+    wirecutter = price_target("topic-01-target-02", "Wirecutter")
+    text = "The Roborock Saros Z70 lists at 1,600 USD."
+    finding = verified(
+        make_finding(make_read(text, url="https://www.roborock.com/x", title="Store"),
+                     text, figures=[figure("1,600", "USD", None, "actual").model_copy(
+                         update={"subject": "Roborock Saros Z70"})],
+                     target_ids=[rtings.target_id]),
+        ctx(organisation="Roborock", period=None, subject="Roborock Saros Z70"))
+
+    assert finding_answers(finding, rtings, plan_targets=[rtings, wirecutter])
+    assert not finding_answers(finding, wirecutter, plan_targets=[rtings, wirecutter])
+    # Without the sibling the rule never engages, as before.
+    assert finding_answers(finding, rtings, plan_targets=[rtings])
+
+
+@pytest.mark.parametrize(("left", "right"), [
+    ("Apple Inc.", "Apple"),
+    ("Apple Inc.", "apple.com"),
+    ("Sony Corporation", "Sony"),
+    ("Riot Games, Inc.", "Riot Games"),
+    ("Novo Nordisk A/S", "Novo Nordisk"),
+    ("Example Lab Ltd", "Example Lab"),
+])
+def test_a_legal_form_suffix_never_splits_one_organisation(left, right) -> None:
+    """F4 (final review): a legal form is not part of the name, so a filing's
+    "Apple Inc." and a newsroom's "Apple" are one organisation -- in either
+    direction, and against the organisation's own host."""
+    assert same_organisation(left, right)
+    assert same_organisation(right, left)
+
+
+@pytest.mark.parametrize(("left", "right"), [
+    ("IEA PVPS", "IEA"),
+    ("Energy", "Energy Information Administration"),
+    ("EIA-923", "EIA"),
+    ("UN Women", "UN"),
+    ("Department of Energy", "eia.gov"),
+    ("Samsung Electronics", "Samsung"),
+    ("Ford Motor Company", "Ford"),
+])
+def test_the_legal_form_fold_keeps_every_guard(left, right) -> None:
+    """The bound on F4: dropping a legal form is not dropping the words that tell
+    two organisations apart."""
+    assert not same_organisation(left, right)
+    assert not same_organisation(right, left)
+
+
+def test_a_period_states_the_same_words_in_any_order() -> None:
+    """F8 (final review): "Q3 2025" and "2025 Q3" are one period, while a month
+    with its year is not the year alone."""
+    assert same_period("Q3 2025", "2025 Q3")
+    assert same_period("2025 Q3", "third quarter of 2025")
+    assert same_period("H1 2026", "first half of 2026")
+
+    assert not same_period("March 2026", "2026")
+    assert not same_period("Q3 2025", "Q4 2025")
+    assert not same_period("Q1 2025", "Q2 2025")

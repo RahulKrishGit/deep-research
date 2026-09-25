@@ -261,6 +261,10 @@ _RUN_WORD = r"(?:(?:[A-Z]\.){2,}|[A-Z][\w&'-]*)"
 _CAPITALIZED_RUN = re.compile(rf"(?:{_RUN_WORD}\s+){{0,4}}{_RUN_WORD}")
 _LEADING_YEAR = re.compile(r"^(?:19|20)\d{2}\s*")
 _YEAR = re.compile(r"(?:19|20)\d{2}")
+# A host label written as an organisation: the Context Check's own block prints
+# the page's host as its owner ("tester.example.test"), and that is the page
+# itself rather than a body it might not own.
+_HOST_LABEL = re.compile(r"(?:[a-z0-9-]+\.)+[a-z]{2,}")
 
 # Cues a page's own text marks its publisher's name with: the copyright
 # symbol, the word, or the ASCII "(c)" a plain-text page carries.
@@ -540,8 +544,27 @@ def resolve_attribution(
             return "own", credited
         return "relayed", credited
     owner = issuer or page_owner(read)
-    if proposed in (None, "own"):
+    if proposed is None or (proposed == "own" and not name):
         return "own", owner
+    if proposed == "own":
+        if issuer and same_organisation(name, issuer):
+            # PD-25: the body the Source Evaluator validated for this read is the
+            # page's own organisation, which is what the verdict proposed.
+            return "own", name
+        if _HOST_LABEL.fullmatch(name.casefold()) and (
+            publisher_identity(f"https://{name}") == publisher_identity(read.resolved_url)
+        ):
+            # The verdict named this page's own host (the Context Check's block
+            # prints it as the page owner), which is not "a body the host does
+            # not own": the own-page reading stands.
+            return "own", owner
+        # F2: otherwise the verdict named a body this page is not, so the page's
+        # own cue beside the figure decides whether it is that body's relay;
+        # nothing does, and the figure is attributed to nobody. Returning the
+        # host as its own organisation here presented a relay as the issuer.
+        if relay_attribution_on_page(read, finding.locator or "", finding.snippet or "", name):
+            return "relayed", name
+        return "unattributed", owner
     return "unattributed", owner
 
 

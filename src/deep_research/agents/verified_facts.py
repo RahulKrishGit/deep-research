@@ -116,12 +116,33 @@ def verified_figures(findings: Sequence[Finding]) -> list[VerifiedFigure]:
 
 def _tokens(value: str) -> list[str]:
     """A name's words, case kept, camel case split, "U.S." read as one word."""
-    text = value.replace("U.S.", "US").replace("U.K.", "UK").replace("&", " and ")
+    text = (
+        value.replace("U.S.", "US").replace("U.K.", "UK").replace("A/S", "AS")
+        .replace("&", " and ")
+    )
     return _WORD.findall(text)
 
 
+# A legal form is the registration's word, not the organisation's: a filing's
+# "Apple Inc." and a newsroom's "Apple" are one organisation, and a page whose
+# own name is spelled the other way is still that organisation's page (F4).
+_LEGAL_FORMS = frozenset({
+    "inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited",
+    "plc", "llc", "llp", "lp", "ag", "sa", "se", "nv", "bv", "gmbh", "kg", "ab",
+    "as", "oy", "oyj", "kk", "pty", "spa", "srl", "sarl",
+})
+
+
 def _core(tokens: Sequence[str]) -> list[str]:
-    return [t.casefold() for t in tokens if t.casefold() not in _COUNTRY_WORDS | _CONNECTORS]
+    """The name's words without a country word, a connector or a trailing legal form.
+
+    At least one word survives, so a name that is nothing but a legal form
+    ("Company") keeps the word it has.
+    """
+    words = [t.casefold() for t in tokens if t.casefold() not in _COUNTRY_WORDS | _CONNECTORS]
+    while len(words) > 1 and words[-1] in _LEGAL_FORMS:
+        words.pop()
+    return words
 
 
 def _initials_variants(tokens: Sequence[str]) -> set[str]:
@@ -329,10 +350,21 @@ def _split_period_words(text: str) -> list[str]:
     return words
 
 
+def _period_tokens(value: str | None) -> frozenset[str] | None:
+    """A period's folded words as a set, or ``None`` when it states none.
+
+    A period's words carry no order -- "Q3 2025" is "2025 Q3" -- while
+    ``_period_stated_in`` needs the key's own *run* to find it in a sentence, so
+    this is the comparison form and the key stays the ordered one.
+    """
+    key = _period_key(value)
+    return frozenset(key.split()) if key is not None else None
+
+
 def same_period(left: str | None, right: str | None) -> bool:
-    """Equal after cosmetic normalisation, or both the same bare year."""
-    key = _period_key(left)
-    return key is not None and key == _period_key(right)
+    """Equal after cosmetic normalisation, in any word order, or both the same bare year."""
+    tokens = _period_tokens(left)
+    return tokens is not None and tokens == _period_tokens(right)
 
 
 # A period the text continues as a *year span* ("FY2024-25", "FY24-25",
@@ -660,7 +692,7 @@ def subject_names_row(text: str, row: FactRow, rows: Sequence[FactRow],
 def _asks_the_same(left: EvidenceTarget, right: EvidenceTarget) -> bool:
     return (
         " ".join(left.measure.casefold().split()) == " ".join(right.measure.casefold().split())
-        and _period_key(left.period) == _period_key(right.period)
+        and _period_tokens(left.period) == _period_tokens(right.period)
         and left.kind == right.kind and left.unit_dimension == right.unit_dimension
         and (left.organisation or "").casefold() == (right.organisation or "").casefold()
     )
@@ -683,7 +715,24 @@ def _subject_fits(figure: VerifiedFigure, target: EvidenceTarget,
     shared = frozenset.intersection(
         *(_stated_words(t.question, t.geography) for t in (target, *siblings))
     )
-    return _names_one_thing(_subject_words(figure.context.subject),
+    subject_words = _subject_words(figure.context.subject)
+    distinctive = _folded_words(subject_words - shared)
+    # The words the siblings are told apart *by*: what each of them states about
+    # itself and the others do not.
+    distinguishing = _folded_words(
+        frozenset.union(*(
+            _subject_words(t.question) | _subject_words(t.geography) for t in (target, *siblings)
+        )) - shared
+    )
+    if distinctive and not (distinctive & distinguishing):
+        # The siblings differ only by words this subject cannot carry: "the model
+        # RTINGS ranks highest" against "the model Wirecutter ranks highest", two
+        # price targets no product's subject names either publisher of. The rule
+        # has nothing to match on, so it defers to the extraction's own binding
+        # (``finding_answers`` already requires the target id) rather than
+        # refusing both and printing "Not found" beside the report's answer (F3).
+        return True
+    return _names_one_thing(subject_words,
                             _stated_words(target.question, target.geography),
                             context_words=shared)
 
