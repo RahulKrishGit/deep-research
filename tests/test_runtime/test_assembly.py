@@ -59,12 +59,11 @@ def test_build_tools_covers_every_tool_the_agents_declare(tracker) -> None:
 def test_build_tools_covers_the_union_of_every_agent_allowlist(tracker) -> None:
     """No agent may declare a tool this assembly does not build."""
     from deep_research.agents import (
-        CriticAgent,
-        FactCheckerAgent,
+        EvidenceVerifierAgent,
         PlannerAgent,
+        ReportWriterAgent,
         ResearcherAgent,
         SourceEvaluatorAgent,
-        SynthesizerAgent,
     )
 
     declared = {
@@ -73,9 +72,8 @@ def test_build_tools_covers_the_union_of_every_agent_allowlist(tracker) -> None:
             PlannerAgent,
             ResearcherAgent,
             SourceEvaluatorAgent,
-            FactCheckerAgent,
-            SynthesizerAgent,
-            CriticAgent,
+            EvidenceVerifierAgent,
+            ReportWriterAgent,
         )
         for name in agent.allowed_tools
     }
@@ -252,17 +250,15 @@ def test_build_agents_fills_every_slot_with_the_right_agent(tracker) -> None:
         "planner",
         "researcher",
         "source_evaluator",
-        "fact_checker",
-        "synthesizer",
-        "critic",
+        "evidence_verifier",
+        "report_writer",
     )
     assert [
         agents.planner.name,
         agents.researcher.name,
         agents.source_evaluator.name,
-        agents.fact_checker.name,
-        agents.synthesizer.name,
-        agents.critic.name,
+        agents.evidence_verifier.name,
+        agents.report_writer.name,
     ] == list(AGENT_NAMES)
 
 
@@ -289,13 +285,12 @@ def test_every_agent_gets_its_own_scratchpad_on_the_shared_session(
         agents.planner.scratchpad,
         agents.researcher.scratchpad,
         agents.source_evaluator.scratchpad,
-        agents.fact_checker.scratchpad,
-        agents.synthesizer.scratchpad,
-        agents.critic.scratchpad,
+        agents.evidence_verifier.scratchpad,
+        agents.report_writer.scratchpad,
     ]
     assert {pad.session_id for pad in pads} == {"session-1"}
     assert [pad.agent_name for pad in pads] == list(AGENT_NAMES)
-    assert len({id(pad) for pad in pads}) == 6
+    assert len({id(pad) for pad in pads}) == 5
 
 
 def test_build_agents_reports_a_missing_tool_as_a_configuration_failure(
@@ -523,39 +518,6 @@ def test_the_production_researcher_receives_the_configured_sub_topic_cap(
     assert agent._max_sub_topics == 2
 
 
-def test_the_production_fact_checker_receives_the_configured_claim_batch(
-    tracker,
-) -> None:
-    """The batch bounds must reach the agent, not just the settings object.
-
-    ``agents.claim_batch_size`` and ``agents.claim_batches_per_pass`` exist so
-    a deployment can decide how much claim work one pass adjudicates; values
-    nothing passes to the Fact Checker are knobs that silently do nothing.
-    """
-    settings = ConfigSettings.model_validate(
-        {"agents": {"claim_batch_size": 3, "claim_batches_per_pass": 2}}
-    )
-    tools = build_tools(
-        settings,
-        tracker=tracker,
-        memory=build_bridge(),
-        search_client=FakeSearchClient(),
-    )
-
-    agent = build_agent(
-        "fact_checker",
-        settings,
-        tracker=tracker,
-        provider=RecordingProvider(),
-        tools=tools,
-        session_id="session-1",
-        reputation=None,
-    )
-
-    assert agent.claim_batch_size == 3
-    assert agent.claim_batches_per_pass == 2
-
-
 def test_an_agent_without_a_sub_topic_cap_is_not_given_one(tracker) -> None:
     """The four sub-topic cap belongs to the Researcher alone."""
     tools = build_tools(
@@ -568,9 +530,8 @@ def test_an_agent_without_a_sub_topic_cap_is_not_given_one(tracker) -> None:
     for name in (
         "planner",
         "source_evaluator",
-        "fact_checker",
-        "synthesizer",
-        "critic",
+        "evidence_verifier",
+        "report_writer",
     ):
         agent = build_agent(
             name,
@@ -630,7 +591,7 @@ def test_the_seeded_source_cache_reaches_the_researcher_alone(tracker) -> None:
 
     assert agents.researcher._shared_cache is stored
     assert getattr(agents.planner, "_shared_cache", None) is None
-    assert getattr(agents.fact_checker, "_shared_cache", None) is None
+    assert getattr(agents.report_writer, "_shared_cache", None) is None
 
 
 def test_build_agent_rejects_an_unknown_agent_name(tracker) -> None:
@@ -694,12 +655,12 @@ def test_build_agents_uses_the_shared_constructor_mapping(
 
 
 @pytest.mark.asyncio
-async def test_a_bad_report_judge_override_fails_before_any_collaborator(
+async def test_a_bad_report_reviewer_override_fails_before_any_collaborator(
     tracker, monkeypatch
 ) -> None:
     """Task 10: the extra service role is preflighted like an agent.
 
-    The report judge is not one of the six agents, but a run that cannot
+    The report reviewer is not one of the five agents, but a run that cannot
     configure it cannot be accepted either, so the same fail-fast rule applies:
     the misconfiguration is reported before a collaborator exists rather than
     at the review that decides the run's outcome.
@@ -714,7 +675,7 @@ async def test_a_bad_report_judge_override_fails_before_any_collaborator(
         {
             "llm": {
                 "model_overrides": {
-                    "report_judge": {"reasoning_effort": "medium"}
+                    "report_reviewer": {"reasoning_effort": "medium"}
                 }
             }
         }
@@ -724,12 +685,12 @@ async def test_a_bad_report_judge_override_fails_before_any_collaborator(
         await build_runtime(settings, session_id="session-1", tracker=tracker)
 
     assert caught.value.reason == "provider_unconfigured"
-    assert "report_judge" in str(caught.value)
+    assert "report_reviewer" in str(caught.value)
     assert calls == []
 
 
 @pytest.mark.asyncio
-async def test_the_runtime_wires_the_report_judge_as_its_own_service_role(
+async def test_the_runtime_wires_the_report_reviewer_as_its_own_service_role(
     tracker, tmp_path, monkeypatch
 ) -> None:
     """The reviewer is built from its own resolved profile, not an agent's."""
@@ -748,7 +709,7 @@ async def test_the_runtime_wires_the_report_judge_as_its_own_service_role(
     settings = ConfigSettings.model_validate(
         {
             "output": {"directory": str(tmp_path)},
-            "llm": {"model_overrides": {"report_judge": {"reasoning_effort": "max"}}},
+            "llm": {"model_overrides": {"report_reviewer": {"reasoning_effort": "max"}}},
         }
     )
 
@@ -769,10 +730,10 @@ async def test_the_runtime_wires_the_report_judge_as_its_own_service_role(
     assert runtime.graph is not None
 
 
-def test_validate_agent_models_resolves_all_six_before_runtime() -> None:
+def test_validate_agent_models_resolves_every_agent_before_runtime() -> None:
     config = LLMConfig(
         model_overrides={
-            "critic": {"model": "deepseek-v4-pro", "reasoning_effort": "max"}
+            "report_writer": {"model": "deepseek-v4-pro", "reasoning_effort": "max"}
         }
     )
 
@@ -780,12 +741,12 @@ def test_validate_agent_models_resolves_all_six_before_runtime() -> None:
 
     assert tuple(resolved) == AGENT_NAMES
     assert resolved["planner"].effective.model == "deepseek-v4-flash"
-    assert resolved["critic"].effective.model == "deepseek-v4-pro"
-    assert resolved["critic"].reasoning_effort == "max"
+    assert resolved["report_writer"].effective.model == "deepseek-v4-pro"
+    assert resolved["report_writer"].reasoning_effort == "max"
 
 
 @pytest.mark.asyncio
-async def test_bad_critic_override_fails_before_any_runtime_collaborator(
+async def test_bad_verifier_override_fails_before_any_runtime_collaborator(
     tracker, monkeypatch
 ) -> None:
     calls: list[str] = []
@@ -795,7 +756,13 @@ async def test_bad_critic_override_fails_before_any_runtime_collaborator(
         lambda *_args, **_kwargs: calls.append("embeddings"),
     )
     settings = ConfigSettings.model_validate(
-        {"llm": {"model_overrides": {"critic": {"reasoning_effort": "medium"}}}}
+        {
+            "llm": {
+                "model_overrides": {
+                    "evidence_verifier": {"reasoning_effort": "medium"}
+                }
+            }
+        }
     )
 
     with pytest.raises(ResearchConfigurationError) as caught:
@@ -803,18 +770,18 @@ async def test_bad_critic_override_fails_before_any_runtime_collaborator(
 
     assert caught.value.reason == "provider_unconfigured"
     assert "deepseek" in str(caught.value)
-    assert "critic" in str(caught.value)
+    assert "evidence_verifier" in str(caught.value)
     assert calls == []
 
 
 @pytest.mark.asyncio
-async def test_bad_critic_override_fails_before_the_default_tracker(
+async def test_bad_verifier_override_fails_before_the_default_tracker(
     monkeypatch,
 ) -> None:
     """The non-injected tracker path is preflighted too.
 
     Leaves ``tracker=None`` so ``Tracker.from_config`` would run before
-    validation on the current implementation; an invalid critic-only
+    validation on the current implementation; an invalid verifier-only
     override must fail with the safe provider/agent error before the
     tracker factory is ever called.
     """
@@ -825,7 +792,13 @@ async def test_bad_critic_override_fails_before_the_default_tracker(
         classmethod(lambda cls, config: tracker_calls.append(config)),
     )
     settings = ConfigSettings.model_validate(
-        {"llm": {"model_overrides": {"critic": {"reasoning_effort": "medium"}}}}
+        {
+            "llm": {
+                "model_overrides": {
+                    "evidence_verifier": {"reasoning_effort": "medium"}
+                }
+            }
+        }
     )
 
     with pytest.raises(ResearchConfigurationError) as caught:
@@ -833,7 +806,7 @@ async def test_bad_critic_override_fails_before_the_default_tracker(
 
     assert caught.value.reason == "provider_unconfigured"
     assert "deepseek" in str(caught.value)
-    assert "critic" in str(caught.value)
+    assert "evidence_verifier" in str(caught.value)
     assert tracker_calls == []
 
 
@@ -1159,23 +1132,22 @@ async def test_build_runtime_wires_the_raw_memory_not_the_bridge_as_reputation(
     assert not isinstance(received[0], LongTermMemoryBridge)
 
 
-def test_all_six_agents_receive_the_same_shared_tool_registry(
+def test_all_five_agents_receive_the_same_shared_tool_registry(
     tracker, monkeypatch
 ) -> None:
-    """One registry for every agent, not six hand-filtered lists.
+    """One registry for every agent, not five hand-filtered lists.
 
     ``AgentToolset`` only notices a list that dropped a declared tool; a
     hand-filtered list that drifted sideways would silently change what an
-    agent can call. Pinning the constructor wire keeps the six in lockstep.
+    agent can call. Pinning the constructor wire keeps the five in lockstep.
     """
     received: list[object] = []
     for class_name in (
         "PlannerAgent",
         "ResearcherAgent",
         "SourceEvaluatorAgent",
-        "FactCheckerAgent",
-        "SynthesizerAgent",
-        "CriticAgent",
+        "EvidenceVerifierAgent",
+        "ReportWriterAgent",
     ):
         monkeypatch.setattr(
             assembly,
@@ -1200,16 +1172,16 @@ def test_all_six_agents_receive_the_same_shared_tool_registry(
         reputation=None,
     )
 
-    assert len(received) == 6
+    assert len(received) == 5
     assert all(tool_list is tools for tool_list in received)
     assert {tool.name for tool in received[0]} == EXPECTED_TOOL_NAMES
 
 
-def test_the_assembled_critic_gets_no_tools(tracker) -> None:
-    """Task 8's wiring: the Critic is a tool-free editor of the candidate.
+def test_the_assembled_verifier_gets_no_tools(tracker) -> None:
+    """The Evidence Verifier judges from the page it was shown, with no tools.
 
     The shared registry still reaches every constructor, so the guard that an
-    agent declares no tool nobody built stays in one place; the Critic's own
+    agent declares no tool nobody built stays in one place; the verifier's own
     allowlist is empty, so its toolset is empty whatever the registry holds.
     """
     tools = build_tools(
@@ -1228,8 +1200,8 @@ def test_the_assembled_critic_gets_no_tools(tracker) -> None:
         reputation=None,
     )
 
-    assert agents.critic.allowed_tools == ()
-    assert agents.critic.toolset.names == ()
+    assert agents.evidence_verifier.allowed_tools == ()
+    assert agents.evidence_verifier.toolset.names == ()
 
 
 @pytest.mark.asyncio

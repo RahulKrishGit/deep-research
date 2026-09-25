@@ -20,7 +20,16 @@ from deep_research.runtime.assembly import ResearchRuntime
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.types import ResearchEvent
-from tests.graph_fakes import FakeAgent, fake_critique, fake_research_agents
+from tests.graph_fakes import (
+    REVIEW_DIMENSIONS,
+    FakeAgent,
+    FakeReviewer,
+    fake_report_review,
+    fake_research_agents,
+    fake_sub_topic,
+    fake_target,
+    fake_writer_update,
+)
 
 QUESTION = "How mature is quantum error correction?"
 
@@ -32,7 +41,7 @@ def config_file(tmp_path, monkeypatch) -> str:
     monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
     monkeypatch.setenv("LANGSMITH_TRACING", "false")
     payload = {
-        "graph": {"max_iterations": 2, "checkpointing_enabled": False},
+        "graph": {"max_extra_passes": 2, "checkpointing_enabled": False},
         "output": {"directory": str(tmp_path / "output"), "default_format": "markdown"},
         "memory": {
             "long_term": {"persist_directory": str(tmp_path / "memory")},
@@ -100,7 +109,8 @@ async def test_a_successful_run_returns_an_outcome(config_file, tracker) -> None
     assert isinstance(outcome, ResearchOutcome)
     assert outcome.question == QUESTION
     assert outcome.status == "completed"
-    assert outcome.report == "# Research report: pass 1"
+    assert outcome.report is not None
+    assert outcome.report.startswith(f"# {QUESTION}")
     assert outcome.session_id
 
 
@@ -130,24 +140,40 @@ async def test_generated_session_ids_are_unique(config_file, tracker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_max_iterations_overrides_the_configured_budget(
+async def test_max_extra_passes_overrides_the_configured_budget(
     config_file, tracker
 ) -> None:
+    """An explicit ceiling wins over ``graph.max_extra_passes`` (PD-15)."""
+    topic = fake_sub_topic(
+        targets=[
+            fake_target(),
+            fake_target("topic-01-target-02", question="What did it cost?"),
+        ]
+    )
     agents = fake_research_agents(
-        critic=FakeAgent(
-            "critic", [{"critique": fake_critique(should_continue=True)}]
-        )
+        planner=FakeAgent("planner", [{"sub_topics": [topic]}]),
+        report_writer=FakeAgent(
+            "report_writer", [], update_factory=fake_writer_update
+        ),
+        report_reviewer=FakeReviewer(
+            [
+                fake_report_review(
+                    dimensions={name: 0.5 for name in REVIEW_DIMENSIONS}
+                )
+            ]
+        ),
     )
 
     outcome = await run_research(
         QUESTION,
         config_path=config_file,
-        max_iterations=1,
+        max_extra_passes=1,
         runtime_builder=fake_builder(tracker, agents=agents),
     )
 
     assert outcome.status == "max_iterations"
-    assert outcome.state.max_iterations == 1
+    assert outcome.state.max_extra_passes == 1
+    assert outcome.state.iteration == 1
 
 
 @pytest.mark.asyncio
@@ -158,7 +184,7 @@ async def test_the_configured_budget_is_used_when_none_is_passed(
         QUESTION, config_path=config_file, runtime_builder=fake_builder(tracker)
     )
 
-    assert outcome.state.max_iterations == 2
+    assert outcome.state.max_extra_passes == 2
 
 
 @pytest.mark.asyncio

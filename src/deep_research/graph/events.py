@@ -8,7 +8,7 @@ observable without reading a LangSmith trace.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from pydantic import JsonValue
 
@@ -17,7 +17,7 @@ from deep_research.graph.state import (
     GRAPH_ROUTES,
     GRAPH_SOURCE,
     GRAPH_STATUSES,
-    REPORT_REVIEW_NODE,
+    REPORT_REVIEWER_NODE,
 )
 from deep_research.utils.types import ReportQualitySnapshot, ResearchEvent
 
@@ -93,15 +93,17 @@ def route_decided_event(
     destination: str,
     reason: str,
     iteration: int,
-    max_iterations: int,
-    should_continue: bool,
+    max_extra_passes: int,
+    missing_required_target_ids: Sequence[str] = (),
 ) -> ResearchEvent:
-    """Record where the graph went after the Critic, and why.
+    """Record where the graph went after the Report Reviewer, and why.
 
     ``reason`` is a ``GRAPH_ROUTES`` key, never provider text, so a consumer
     can group runs by *why* they continued or stopped rather than parsing a
-    rationale. ``should_continue`` is recorded next to it so a reader can
-    see when the iteration bound overrode the critic.
+    rationale. ``missing_required_target_ids`` is recorded next to it — the
+    targets code measured, never ones a model proposed — so a reader can see
+    which obligations bought a pass, or which ones the ceiling could no
+    longer buy for.
     """
     explanation = GRAPH_ROUTES.get(reason)
     if explanation is None:
@@ -113,22 +115,32 @@ def route_decided_event(
             "destination": destination,
             "reason": reason,
             "iteration": iteration,
-            "max_iterations": max_iterations,
-            "should_continue": should_continue,
+            "max_extra_passes": max_extra_passes,
+            "missing_required_target_ids": list(missing_required_target_ids),
         },
     )
 
 
-def refinement_started_event(
+def extra_pass_started_event(
     *,
     iteration: int,
-    max_iterations: int,
+    max_extra_passes: int,
+    targets: Sequence[str],
 ) -> ResearchEvent:
-    """Announce the macro iteration a loop-back just opened."""
+    """Announce the one extra pass a loop-back just opened, and its job list.
+
+    The targets are what the pass exists for: the required obligations the
+    last pass measured as still missing a verified finding. They are ids the
+    plan minted, never provider text.
+    """
     return graph_event(
-        event_type="graph.refinement.started",
-        message=f"Refinement pass {iteration} started.",
-        metadata={"iteration": iteration, "max_iterations": max_iterations},
+        event_type="graph.extra_pass.started",
+        message=f"Extra pass {iteration} started.",
+        metadata={
+            "iteration": iteration,
+            "max_extra_passes": max_extra_passes,
+            "targets": list(targets),
+        },
     )
 
 
@@ -154,9 +166,11 @@ def quality_assessed_event(
         metadata={
             "iteration": iteration,
             "hard_failures": failures,
-            "coverage_ratio": quality.coverage_ratio,
-            "duplicate_claims": quality.duplicate_claims,
-            "duplicate_source_rows": quality.duplicate_source_rows,
+            "required_target_ids": list(quality.required_target_ids),
+            "answered_target_ids": list(quality.answered_target_ids),
+            "missing_required_target_ids": list(
+                quality.missing_required_target_ids
+            ),
             "uncited_settled_points": quality.uncited_settled_points,
         },
     )
@@ -169,7 +183,6 @@ def report_review_completed_event(
     mean_score: float | None,
     material_defects: int,
     reviewed_statements: int,
-    omitted_evidence: int,
     fingerprint: str,
     reused: bool,
 ) -> ResearchEvent:
@@ -177,9 +190,9 @@ def report_review_completed_event(
 
     Counts, an enumerated status, and the packet fingerprint only — never the
     review's prose and never a defect's text, which are provider output. The
-    status is one of ``scored``/``incomplete``/``provider_failed``, kept apart
-    from the Critic's own ``review_status`` so a reader of the event stream can
-    tell which reviewer the record is about.
+    status is one of ``scored``/``incomplete``/``provider_failed``: the first
+    means a judgement exists, the other two are the honest record that none
+    does.
     """
     return graph_event(
         event_type="graph.report.reviewed",
@@ -188,14 +201,13 @@ def report_review_completed_event(
             if review_status == "scored"
             else "The report review did not produce a score."
         ),
-        node=REPORT_REVIEW_NODE,
+        node=REPORT_REVIEWER_NODE,
         metadata={
             "iteration": iteration,
             "review_status": review_status,
             "mean_score": mean_score,
             "material_defects": material_defects,
             "reviewed_statements": reviewed_statements,
-            "omitted_evidence": omitted_evidence,
             "input_fingerprint": fingerprint,
             "reused": reused,
         },
@@ -218,7 +230,7 @@ def report_published_event(
     and it carries all three paths. A path is ``None`` when that write failed
     *or* when any other required write failed — the set is published whole or
     advertised not at all, so a front-end reading this event is never pointed
-    at an earlier refinement pass's file, and never at two thirds of a set.
+    at an earlier pass's file, and never at two thirds of a set.
     ``quality_path`` defaults to ``None`` so a record written before the third
     artifact existed stays readable. ``quality_status`` is an enumerated
     ``QUALITY_STATUS_*`` value; the counts are write outcomes, never content.
@@ -242,7 +254,7 @@ def report_published_event(
 def session_started_event(
     *,
     session_id: str,
-    max_iterations: int,
+    max_extra_passes: int,
     checkpointing: bool,
 ) -> ResearchEvent:
     """Announce the research session, before the first node runs."""
@@ -251,7 +263,7 @@ def session_started_event(
         message="Research session started.",
         metadata={
             "session_id": session_id,
-            "max_iterations": max_iterations,
+            "max_extra_passes": max_extra_passes,
             "checkpointing": checkpointing,
         },
     )

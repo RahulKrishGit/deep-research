@@ -124,7 +124,7 @@ async def run_research(
     session_id: str | None = None,
     resume_session_id: str | None = None,
     config_path: str = DEFAULT_CONFIG_PATH,
-    max_iterations: int | None = None,
+    max_extra_passes: int | None = None,
     output_format: str | None = None,
     config_overrides: Mapping[str, JsonValue] | None = None,
     runtime_builder: RuntimeBuilder = build_runtime,
@@ -132,6 +132,12 @@ async def run_research(
     request_budget_handler: RequestBudgetObserver | None = None,
 ) -> ResearchOutcome:
     """Run one research session, or continue a checkpointed one.
+
+    ``max_extra_passes`` bounds how many extra research passes the run may
+    buy after its first one (D4) and defaults to
+    ``settings.graph.max_extra_passes``. The CLI's ``--max-iterations`` flag
+    and the API's ``max_iterations`` field keep their own names and arrive
+    here as this argument (PD-15).
 
     ``runtime_builder`` is injected rather than imported at the call site so
     a test can drive the real graph with scripted agents and no provider.
@@ -225,7 +231,7 @@ async def run_research(
                     graph=runtime.graph,
                     tracker=runtime.tracker,
                     session_id=resume_session_id,
-                    max_iterations=max_iterations,
+                    max_extra_passes=max_extra_passes,
                     event_handler=event_handler,
                 )
             except GraphResumeError as error:
@@ -256,10 +262,10 @@ async def run_research(
                 tracker=runtime.tracker,
                 session_id=effective_session_id,
                 question=question,
-                max_iterations=(
-                    settings.graph.max_iterations
-                    if max_iterations is None
-                    else max_iterations
+                max_extra_passes=(
+                    settings.graph.max_extra_passes
+                    if max_extra_passes is None
+                    else max_extra_passes
                 ),
                 memory_context=memory_context,
                 event_handler=event_handler,
