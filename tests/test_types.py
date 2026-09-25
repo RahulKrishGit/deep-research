@@ -621,8 +621,9 @@ def test_a_target_carries_structured_fields() -> None:
     target = make_target(organisation="U.S. Energy Information Administration")
     assert (target.unit_dimension, target.period, target.kind) == ("power", "2024", "actual")
     assert target.organisation == "U.S. Energy Information Administration"
+    assert make_target(unit_dimension="currency").unit_dimension == "currency"
     with pytest.raises(ValidationError):
-        make_target(unit_dimension="volts")
+        make_target(unit_dimension="")
 
 
 from deep_research.utils.types import (
@@ -757,3 +758,16 @@ def test_a_target_is_its_structured_fields_and_needs_a_measure() -> None:
     assert not hasattr(target, "critical")
     with pytest.raises(ValidationError):
         make_target(measure="")
+
+
+def test_a_target_needs_its_required_flag() -> None:
+    """Task 5.1's deferred minor: the flag is a field, never an assumed default.
+
+    A target read back from a snapshot that lost ``required`` would otherwise
+    be silently optional, and a missing obligation would never reach Not found.
+    """
+    payload = make_target().model_dump()
+    del payload["required"]
+
+    with pytest.raises(ValidationError):
+        EvidenceTarget(**payload)

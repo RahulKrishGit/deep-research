@@ -360,6 +360,8 @@ class FigureContext(ContractModel):
     organisation: str = Field(min_length=1)
     """``own``: the publisher; ``relayed``: the originator; ``unattributed``: the page's owner (host)."""
     kind: FigureKind
+    period_resolved_from: str | None = None
+    """The page's own stated date a relative period ("this year") was resolved from (spec §5.2, D11); None when the page states the period itself."""
 
 
 class FigureResult(ContractModel):
@@ -826,8 +828,8 @@ class EvidenceTarget(ContractModel):
     required: bool
     measure: str = Field(min_length=1)
     """The obligation's measured quantity, as the plan states it ("battery storage power capacity added")."""
-    unit_dimension: UnitDimension | None = None
-    """The figure's physical dimension, or ``None`` for a qualitative target."""
+    unit_dimension: str | None = Field(default=None, min_length=1)
+    """One word for the kind of quantity the target asks for (power, energy, percent, currency, count, …), as the planner stamps it; ``None`` for a qualitative target (D10)."""
     period: str | None = None
     """The period the target asks about ("2024")."""
     kind: FigureKind | None = None
@@ -1415,6 +1417,8 @@ class FactRow(ContractModel):
     kind: FigureKind
     scope: str | None = None
     release: str | None = None
+    period_resolved_from: str | None = None
+    """The page's own stated date a relative period ("this year") was resolved from (spec §5.2, D11); None when the page states the period itself."""
     finding_id: str                     # the cited finding
     duplicate_finding_ids: list[str] = Field(default_factory=list)
     earlier: list[EarlierEdition] = Field(default_factory=list)

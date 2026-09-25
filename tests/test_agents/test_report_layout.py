@@ -212,3 +212,12 @@ def test_an_undated_pass_says_so_instead_of_reading_a_clock() -> None:
 
     assert "As of not recorded." in header
     assert re.search(r"\d{4}-\d{2}-\d{2}", header) is None
+
+
+def test_a_resolved_period_is_named_on_the_label() -> None:
+    assert figure_label(organisation="Example Statistical Agency", attribution="own",
+                        relay_host=None, kind="actual", release=None, unchecked=False,
+                        period_resolved_from="2026-02-20") == (
+        "Example Statistical Agency's own figure; actual; "
+        "period resolved from the page date 2026-02-20"
+    )

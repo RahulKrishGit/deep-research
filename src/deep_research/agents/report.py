@@ -705,6 +705,7 @@ def figure_label(
     kind: FigureKind,
     release: str | None,
     unchecked: bool,
+    period_resolved_from: str | None = None,
 ) -> str:
     """§6.1's reader label: who, kind (with a forecast's release), edition, unchecked."""
     if attribution == "own":
@@ -720,6 +721,8 @@ def figure_label(
         parts = [who, kind]
     if kind == "actual" and release:
         parts.append(release)
+    if period_resolved_from:
+        parts.append(f"period resolved from the page date {period_resolved_from}")
     if unchecked:
         parts.append("unchecked context")
     return "; ".join(parts)
@@ -728,7 +731,8 @@ def figure_label(
 def _row_label(row: FactRow) -> str:
     return figure_label(organisation=row.organisation, attribution=row.attribution,
                         relay_host=row.relay_host, kind=row.kind, release=row.release,
-                        unchecked=row.context_unchecked)
+                        unchecked=row.context_unchecked,
+                        period_resolved_from=row.period_resolved_from)
 
 
 def _table_cell(text: str) -> str:
@@ -905,7 +909,8 @@ def render_finding_log(composition: ReportComposition) -> str:
                         + figure_label(organisation=context.organisation, attribution=context.attribution,
                                        relay_host=publisher_identity(finding.source_url), kind=context.kind,
                                        release=release_text(finding) or row_release.get(finding_id),
-                                       unchecked=verification.context_unchecked))
+                                       unchecked=verification.context_unchecked,
+                                       period_resolved_from=context.period_resolved_from))
                 if result.evidence_words:
                     line += f'; evidence words: "{result.evidence_words}"'
                 if result.corrected:

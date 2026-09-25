@@ -524,6 +524,12 @@ are the only provenance the reader sees: the report prints the label beside the
 figure, so a corrected scope or a relayed originator is visible whatever the
 prose says.
 
+A sentence ends with its figure's reader label only when the figure's unit is
+one the figure parser scales (watts, watt-hours, percent). A figure in any
+other unit (money, counts, tonnes) is still verified, cited and listed in Key
+facts with its organisation, period and kind, but the sentence that states it
+carries no label (spec D10).
+
 ```python
 from deep_research.agents import EvidenceVerifierAgent, SourceEvaluatorAgent
 from deep_research.utils.types import merge_research_state

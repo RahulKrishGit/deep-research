@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import get_args
 
 from deep_research.agents.evidence import cosmetic_text
 from deep_research.agents.figures import (
@@ -30,6 +31,7 @@ from deep_research.utils.types import (
     FindingFigure,
     NotFoundTarget,
     SubTopic,
+    UnitDimension,
 )
 
 _WORD = re.compile(r"[A-Z]{2,}(?![a-z])|[A-Z]?[a-z]+|[A-Z]|\d+")
@@ -62,6 +64,10 @@ _MONTH_YEAR = re.compile(
 )
 _ISO_DATE = re.compile(r"\b((?:19|20)\d{2})(?:-(\d{1,2})(?:-(\d{1,2}))?)?\b")
 _MEASURE_BY_DIMENSION = {"power": "power capacity", "energy": "energy capacity", "percent": "share"}
+# The dimensions figures.py scales (spec §6.6). A target naming any other word
+# (D10: currency, count, ...) is answered by a figure in a unit the parser does
+# not scale, so its period, kind and organisation are still checked.
+_SCALED_DIMENSIONS: frozenset[str] = frozenset(get_args(UnitDimension))
 _ATTRIBUTION_RANK = {"own": 0, "relayed": 1, "unattributed": 2}
 # "grid-scale" and "utility-scale" name the same segment in practice (spec
 # §6.6 gap): a target asking for one is answered by a figure stating the
@@ -241,9 +247,14 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget) -> bool:
         # refused by a figure stating a *different* one ("all segments");
         # a figure with no stated scope is never refused on this ground.
         return False
+    if figure.quantity is None:
+        return False
+    if target.unit_dimension in _SCALED_DIMENSIONS:
+        fits = figure.quantity.dimension == target.unit_dimension
+    else:
+        fits = figure.quantity.dimension is None
     return (
-        figure.quantity is not None
-        and figure.quantity.dimension == target.unit_dimension
+        fits
         and (target.period is None or same_period(figure.context.period, target.period))
         and (target.kind is None or figure.context.kind == target.kind)
         and (target.organisation is None or same_organisation(target.organisation, figure.context.organisation))
@@ -316,6 +327,48 @@ def release_key(finding: Finding) -> tuple[int, int, int] | None:
     return None
 
 
+_RELATIVE_PERIOD = re.compile(
+    r"\b(?:(this|current|last|next|coming)\s+(year|quarter|half|month|season)"
+    r"|(year[- ]to[- ]date|so far this year))\b",
+    re.IGNORECASE,
+)
+_MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
+                "August", "September", "October", "November", "December")
+_RELATIVE_STEP = {"this": 0, "current": 0, "last": -1, "next": 1, "coming": 1}
+_PERIOD_MONTHS = {"quarter": 3, "half": 6, "month": 1}
+
+
+def resolve_relative_period(evidence_words: str, page_date: str | None) -> str | None:
+    """Spec §5.2 (D11): the period a relative phrase names, counted from the page's own date.
+
+    "this year" on a page dated 2026-02-20 is 2026 and "last quarter" is
+    Q4 2025. ``None`` when the words carry no relative phrase, when there is no
+    page date, for a season (its year is the page's to state), and for a
+    quarter, half or month against a date with no month. "The past year" is
+    the last twelve months, not a calendar year, so it is never resolved.
+    """
+    key = _date_key(page_date)
+    match = _RELATIVE_PERIOD.search(evidence_words or "")
+    if key is None or match is None:
+        return None
+    year, month, _ = key
+    if match.group(3):
+        return str(year)
+    step = _RELATIVE_STEP[match.group(1).casefold()]
+    unit = match.group(2).casefold()
+    if unit == "year":
+        return str(year + step)
+    if unit == "season" or not month:
+        return None
+    size = _PERIOD_MONTHS[unit]
+    start_year, start_month = divmod(((year * 12 + month - 1) // size + step) * size, 12)
+    if unit == "quarter":
+        return f"Q{start_month // 3 + 1} {start_year}"
+    if unit == "half":
+        return f"H{start_month // 6 + 1} {start_year}"
+    return f"{_MONTH_NAMES[start_month]} {start_year}"
+
+
 def _value_text(figure: FindingFigure) -> str:
     return f"{figure.value} {figure.unit}"
 
@@ -374,6 +427,7 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
                 kind=primary.context.kind,
                 scope=primary.context.scope,
                 release=release_text(primary.finding),
+                period_resolved_from=primary.context.period_resolved_from,
                 finding_id=primary.finding_id,
                 duplicate_finding_ids=sorted({f.finding_id for f in group} - {primary.finding_id}),
                 target_ids=target_ids,

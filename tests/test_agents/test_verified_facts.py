@@ -11,6 +11,7 @@ from deep_research.agents.verified_facts import (
     finding_answers,
     not_found_targets,
     release_key,
+    resolve_relative_period,
     same_organisation,
     same_period,
 )
@@ -180,3 +181,55 @@ def test_target_answering_refuses_a_scope_mismatch_but_treats_grid_scale_and_uti
     )
     assert not finding_answers(woodmac, grid_scale_target)
     assert finding_answers(eia_utility_scale, grid_scale_target)
+
+
+def _stated(read, snippet, value, unit, *, period="2024", kind="actual"):
+    finding = make_finding(read, snippet, figures=[figure(value, unit, period, kind)],
+                           target_ids=["topic-01-target-01"])
+    return verified(finding, ctx(organisation="Example Statistical Agency",
+                                 period=period, kind=kind))
+
+
+def test_a_currency_target_checks_period_and_kind_like_a_power_target() -> None:
+    text = "Public spending was USD 4.2 billion in 2024."
+    read = make_read(text)
+    target = make_target(measure="public spending", unit_dimension="currency")
+    assert finding_answers(_stated(read, text, "4.2", "USD billion"), target)
+    assert not finding_answers(_stated(read, text, "4.2", "USD billion", period="2023"), target)
+    assert not finding_answers(_stated(read, text, "4.2", "USD billion", kind="forecast"), target)
+
+
+def test_a_percent_figure_does_not_answer_a_currency_target() -> None:
+    text = "Public funding was 12 percent of the total in 2024."
+    share = _stated(make_read(text), text, "12", "percent")
+    assert not finding_answers(share, make_target(measure="public funding", unit_dimension="currency"))
+    assert finding_answers(share, make_target(measure="public funding share", unit_dimension="percent"))
+
+
+@pytest.mark.parametrize(("words", "page_date", "period"), [
+    ("installed 4 GW this year", "2026-02-20", "2026"),
+    ("so far this year the fleet grew", "2026-02-20", "2026"),
+    ("added last year", "2026-02-20", "2025"),
+    ("planned for next year", "February 2026", "2027"),
+    ("up 3 percent in the last quarter", "2026-02-20", "Q4 2025"),
+    ("sales this quarter", "2026-05-02", "Q2 2026"),
+    ("orders this month", "2026-01-15", "January 2026"),
+    ("the best of this season", "2026-02-20", None),
+    ("over the past year", "2026-02-20", None),
+    ("sales this quarter", "2026", None),
+    ("installed 4 GW in 2024", "2026-02-20", None),
+    ("installed 4 GW this year", None, None),
+])
+def test_a_relative_period_resolves_only_against_the_page_date(words, page_date, period) -> None:
+    assert resolve_relative_period(words, page_date) == period
+
+
+def test_a_resolved_period_reaches_its_key_facts_row() -> None:
+    text = "Operators installed 4 GW this year, the agency said."
+    finding = make_finding(make_read(text), text, figures=[figure("4", "GW", None, "actual")],
+                           target_ids=["topic-01-target-01"])
+    resolved = FigureContext(period="2026", scope=None, attribution="own",
+                             organisation="Example Statistical Agency", kind="actual",
+                             period_resolved_from="2026-02-20")
+    [row] = fact_rows([verified(finding, resolved)], [make_target(period="2026")])
+    assert (row.period, row.period_resolved_from) == ("2026", "2026-02-20")
