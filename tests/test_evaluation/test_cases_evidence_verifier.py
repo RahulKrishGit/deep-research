@@ -23,6 +23,7 @@ from deep_research.agents.evidence_verifier import (
     EvidenceVerifierAgent,
     FigureCheckDraft,
 )
+from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import (
     EXPECTED_CONTROLLED_CASE_IDS,
     EXPECTED_LIVE_CASE_IDS,
@@ -36,7 +37,6 @@ from deep_research.evaluation.evaluators import (
     deterministic_metric_scores,
     evaluate_agent_gates,
 )
-from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.models import TargetOutput
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
@@ -329,32 +329,6 @@ def test_the_live_case_is_judged_in_one_batch_covering_every_finding(
         for result in verification["figure_results"]:
             assert result["dropped_reason"] is None
             assert result["context"] is not None
-
-
-def test_a_repetition_without_a_result_is_judged_from_its_state_update(
-    evidence_verifier_output_for,
-) -> None:
-    """The verifier's snapshot has two artifact homes, and both are read.
-
-    ``VerifiedFindings.findings`` in the result and ``verified_findings`` on
-    the state update carry the same judgement; a repetition whose result was
-    not recorded is still judged on the snapshot the run wrote into state,
-    rather than failing every gate as if it had judged nothing.
-    """
-    case = _case("relay-labelled-as-relay")
-    output = evidence_verifier_output_for(case, [_reply(case)])
-    from_state = output.model_copy(
-        update={
-            "result": None,
-            "state_update": {
-                **(output.state_update or {}),
-                "verified_findings": output.result["findings"],
-            },
-        }
-    )
-
-    assert _gates(from_state, case) == {gate: True for gate in GATES}
-    assert from_state.result is None
 
 
 def test_the_context_check_is_asked_once_per_batch_of_findings() -> None:

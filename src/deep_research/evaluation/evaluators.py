@@ -1084,18 +1084,20 @@ def _gate_low_confidence_flagged(
 def _verified_findings(output: TargetOutput) -> list[Finding] | None:
     """Every finding this run judged, typed, or ``None`` when unreadable.
 
-    Two artifact keys carry the same snapshot: the result's ``findings`` (the
-    verifier's own ``VerifiedFindings``), and the state update's
-    ``verified_findings`` (the name the snapshot has on ``ResearchState``).
-    The result is preferred and the state update is the fallback, so a
-    repetition whose result was not recorded is still judged on the snapshot
-    the run wrote into state. A payload that does not validate is refused
-    rather than guessed at — these gates exist to prove a judgement happened,
-    and an unreadable snapshot proves nothing.
+    Read from the result's ``findings`` — the verifier's own
+    ``VerifiedFindings``, which is what the run returned and is therefore the
+    set it judged. The state update's ``verified_findings`` is deliberately
+    **not** a substitute: ``EvidenceVerifierAgent.run`` merges its judgement
+    onto the snapshot the state already carried (``[*state.verified_findings,
+    *judged]``), so that key holds every earlier pass's findings beside this
+    run's, and grading from it would score a set this repetition did not
+    judge. A payload that does not validate is refused rather than guessed at:
+    these gates exist to prove a judgement happened, and an unreadable
+    snapshot proves nothing.
     """
-    payload = _artifact(output, "findings")
-    if not isinstance(payload, (list, tuple)):
-        payload = _artifact(output, "verified_findings")
+    payload = dict(output.result or {}).get("findings") if isinstance(
+        output.result, Mapping
+    ) else None
     if not isinstance(payload, (list, tuple)):
         return None
     try:
