@@ -136,6 +136,16 @@ def test_different_score_denominators_are_not_one_scale() -> None:
     assert not same_quantity(out_of_5, out_of_10)
 
 
+def test_currency_and_score_spellings_still_match_the_pages_own_words() -> None:
+    """P1 regression: the comparison-only fold must never change what
+    ``figure_in_text`` searches for -- it has to find the figure exactly as
+    the page spelled it, not a canonical spelling no page ever wrote."""
+    assert figure_in_text("390", "dollars", "It costs 390 dollars.")
+    assert figure_in_text("390", "US$", "It costs 390 US$.")
+    assert figure_in_text("390", "$", "It costs 390 $.")
+    assert figure_in_text("4.8", "out of 5", "Rated 4.8 out of 5.")
+
+
 # ---------------------------------------------------------------------------
 # Round 3, Defect B: a unit written with its own abbreviation in brackets.
 # ---------------------------------------------------------------------------
