@@ -245,6 +245,27 @@ def test_the_header_never_prints_two_full_stops_in_a_row() -> None:
     assert re.search(r"Scope: United States\. \d+ sources cited", unterminated)
 
 
+def test_a_sub_topic_title_ending_in_a_full_stop_keeps_one_stop() -> None:
+    """The scope punctuates the list it names, and a title may end its own sentence.
+
+    ``report_scope`` appends the assumed-scope note after the listed sub-topics,
+    so a plan whose title ends with a full stop ("Capacity in the U.S.") printed
+    "U.S.. No geography, ..." in every header of that session's report. The
+    scope's own sentence ends once, whatever its titles end with.
+    """
+    scope = report_scope([SubTopic(coverage_id="topic-01", title="Capacity in the U.S.",
+                                   rationale="r", search_queries=["q"],
+                                   success_criteria=["c"], priority=1)])
+    assert "U.S.." not in scope
+
+    header = render_written_report(
+        _composition().model_copy(update={"scope": scope})
+    ).splitlines()[2]
+
+    assert ".." not in header
+    assert "Capacity in the U.S. No geography" in header
+
+
 def test_the_header_prints_a_recorded_stamp_as_a_utc_time() -> None:
     """The reader meets a UTC minute, not the raw ISO stamp of the third pre-flight run.
 

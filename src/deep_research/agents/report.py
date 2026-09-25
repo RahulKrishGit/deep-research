@@ -217,10 +217,8 @@ def report_scope(sub_topics: Sequence[SubTopic]) -> str:
     if not topics:
         return f"No sub-topic plan was recorded. {assumed}"
     listed = "; ".join(f"{topic.coverage_id} {topic.title}" for topic in topics)
-    return (
-        f"{len(topics)} planned sub-topic(s), in priority order: {listed}. "
-        f"{assumed}"
-    )
+    plan = _sentence(f"{len(topics)} planned sub-topic(s), in priority order: {listed}")
+    return f"{plan} {assumed}"
 
 
 def _lookup(index: Sequence[Citation]) -> dict[str, int]:
@@ -936,9 +934,11 @@ def _header_counts(composition: ReportComposition) -> str:
 def _sentence(text: str) -> str:
     """``text`` ended with exactly one stop: one it already ends with is kept.
 
-    The header's parts are sentences, and one of them -- the scope -- is written
-    by ``report_scope``, which ends with its own full stop. Appending another
-    prints two stops in a row, so a part that already ends with a stop is
+    Every part of the header is a sentence, and two of them are written from
+    strings the plan supplies: the scope's assumed note ends with its own full
+    stop, and a sub-topic title may ("Capacity in the U.S."), so
+    ``report_scope`` asks this of the list it names too. Appending a stop to a
+    part that already ends with one prints two in a row, so a part that does is
     printed as written.
     """
     text = text.rstrip()
