@@ -360,12 +360,13 @@ def request_budget_overrides(
 
 
 # The events a plain run shows: the session's boundaries, which agent is
-# running, and every macro routing decision. Enough to see progress without
-# reading a log, which is exactly what the design asks for.
+# running, the extra pass when one is bought, and every routing decision.
+# Enough to see progress without reading a log, which is exactly what the
+# design asks for.
 PROGRESS_EVENT_TYPES = (
     "graph.session.started",
     "graph.node.started",
-    "graph.refinement.started",
+    "graph.extra_pass.started",
     "graph.route.decided",
     "graph.session.completed",
 )

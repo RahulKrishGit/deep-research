@@ -26,10 +26,7 @@ from deep_research.graph.errors import (
 from deep_research.graph.events import (
     node_completed_event,
     node_started_event,
-    refinement_started_event,
-    route_decided_event,
     session_completed_event,
-    session_started_event,
 )
 from deep_research.graph.orchestrator import GraphRun
 from deep_research.observability import TokenUsage
@@ -100,16 +97,28 @@ def quality_state(
     Carries a scored review by default, because a pass with no review is never
     accepted — a test that wants the unreviewed reading passes
     ``report_review=None`` explicitly and says so.
+
+    The default review is stamped the way the reviewer node stamps it (PD-5):
+    with the snapshot's own missing-target reading. A fixture whose gates
+    measured a missing target while its review named none would describe a
+    record the graph never produces, and it would be accepted by a route the
+    real run would not take.
     """
+    snapshot = quality_snapshot() if quality is None else quality
+    review = report_review
+    if review is None:
+        review = scored_review(
+            missing_required_target_ids=list(
+                snapshot.missing_required_target_ids
+            )
+        )
     return ResearchState.model_validate(
         {
             "session_id": "session-1",
             "original_question": QUESTION,
             "composition": judged_composition(),
-            "report_review": scored_review()
-            if report_review is None
-            else report_review,
-            "quality": quality_snapshot() if quality is None else quality,
+            "report_review": review,
+            "quality": snapshot,
             **overrides,
         }
     )
@@ -263,8 +272,12 @@ def progress_state() -> ResearchState:
         session_id="session-1",
         original_question=QUESTION,
         events=[
-            session_started_event(
-                session_id="session-1", max_iterations=2, checkpointing=False
+            graph_event(
+                "graph.session.started",
+                "Research session started.",
+                session_id="session-1",
+                max_extra_passes=2,
+                checkpointing=False,
             ),
             node_started_event("planner", iteration=0),
             ResearchEvent(
@@ -275,7 +288,13 @@ def progress_state() -> ResearchState:
             node_started_event("researcher", iteration=0),
             node_started_event("evidence_verifier", iteration=0),
             node_started_event("report_writer", iteration=0),
-            refinement_started_event(iteration=1, max_iterations=2),
+            graph_event(
+                "graph.extra_pass.started",
+                "Extra research pass 1 started.",
+                iteration=1,
+                max_extra_passes=2,
+                targets=["topic-02-target-01"],
+            ),
             session_completed_event(
                 status="completed", iteration=1, error_count=0, has_report=True
             ),
@@ -286,6 +305,26 @@ def progress_state() -> ResearchState:
 def index_of(lines: list[str], prefix: str) -> int:
     return next(
         index for index, line in enumerate(lines) if line.startswith(prefix)
+    )
+
+
+def graph_event(
+    event_type: str, message: str, *, iteration: int = 0, **metadata: object
+) -> ResearchEvent:
+    """One graph record, built by its enumerated type rather than by producer.
+
+    The graph's own constructors move with its nodes — the per-pass record is
+    ``graph.extra_pass.started`` now, and the session and route records carry
+    the extra-pass ceiling instead of the retired macro budget — while this
+    renderer's contract is the type string and the message. Building the record
+    here keeps the CLI's own surface tested without pinning a sibling module's
+    keyword list.
+    """
+    return ResearchEvent(
+        event_type=event_type,
+        source="graph",
+        message=message,
+        metadata={"iteration": iteration, **metadata},
     )
 
 
@@ -300,21 +339,34 @@ def test_progress_returns_the_line_for_one_plain_event() -> None:
 
 def test_plain_progress_streams_every_allowed_event_type() -> None:
     assert render_progress(
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
+        graph_event(
+            "graph.session.started",
+            "Research session started.",
+            session_id="session-1",
+            max_extra_passes=2,
+            checkpointing=False,
         ),
         verbose=False,
     )
     assert render_progress(
-        refinement_started_event(iteration=1, max_iterations=2), verbose=False
-    )
-    assert render_progress(
-        route_decided_event(
-            destination="refine",
-            reason="refinement_requested",
+        graph_event(
+            "graph.extra_pass.started",
+            "Extra research pass 1 started.",
             iteration=1,
-            max_iterations=2,
-            should_continue=True,
+            max_extra_passes=2,
+            targets=["topic-02-target-01"],
+        ),
+        verbose=False,
+    ) == "  [1] Extra research pass 1 started."
+    assert render_progress(
+        graph_event(
+            "graph.route.decided",
+            "Route decided: extra_pass_requested.",
+            iteration=1,
+            destination="extra_pass",
+            reason="extra_pass_requested",
+            max_extra_passes=2,
+            missing_required_target_ids=["topic-02-target-01"],
         ),
         verbose=False,
     )
@@ -1057,6 +1109,34 @@ def test_the_review_row_names_the_packet_its_score_was_made_over() -> None:
     assert "Review: scored 0.00" not in unreviewed
 
 
+def test_an_accepted_run_says_accepted() -> None:
+    """PD-23: passes spent, gates clear, reviewer accepts -> ``accepted``.
+
+    The missing target is not hidden by the acceptance: it is listed under
+    Not found, which is what §6.4 accepts, and the console states both facts.
+    """
+    outcome = build_outcome(
+        state=quality_state(iteration=1, max_extra_passes=1)
+    )
+
+    joined = "\n".join(render_summary(outcome, verbose=False))
+
+    assert "Quality: accepted (review scored 0.90)" in joined
+    assert "Quality reasons:" not in joined
+    assert "Not found: topic-02-target-01" in joined
+    assert "Required targets: 2/3 answered" in joined
+
+
+def test_a_pass_with_an_extra_pass_left_is_not_accepted() -> None:
+    """The same report, with the pass still to spend, is not accepted yet."""
+    outcome = build_outcome(state=quality_state())
+
+    joined = "\n".join(render_summary(outcome, verbose=False))
+
+    assert "Quality: partial (review scored 0.90)" in joined
+    assert "Quality: accepted" not in joined
+
+
 def test_the_quality_line_stands_alone_without_a_snapshot() -> None:
     """No quality pass judged this run: no counts are invented for it."""
     lines = render_summary(build_outcome(state=progress_state()), verbose=False)
@@ -1507,7 +1587,12 @@ def composed_state(**overrides: object) -> ResearchState:
             semantic_review_score=0.86,
             semantic_review_fingerprint="abc123def456",
         ),
-        report_review=scored_review(),
+        # Stamped the way the reviewer node stamps it (PD-5): a review that
+        # named no missing target while the gates measured one describes a
+        # record the graph never produces, and it routes to acceptance.
+        report_review=scored_review(
+            missing_required_target_ids=[MISSING_TARGET_ID]
+        ),
     )
     payload = overrides.pop("state_overrides", {})
     return state.model_copy(update={**payload, **overrides})

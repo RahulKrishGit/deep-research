@@ -25,7 +25,6 @@ from deep_research.graph.events import (
     node_completed_event,
     node_started_event,
     session_completed_event,
-    session_started_event,
 )
 from deep_research.main import run_research_sync
 from deep_research.observability import TokenUsage
@@ -63,6 +62,52 @@ def outcome(status: str = "completed", **overrides) -> ResearchOutcome:
     }
     defaults.update(overrides)
     return ResearchOutcome(**defaults)
+
+
+def session_started() -> ResearchEvent:
+    """One session-start record, built by its enumerated type.
+
+    The graph's own constructor carries the extra-pass ceiling now, and this
+    file is about the CLI's streaming surface — which is keyed on the event
+    type and the message — so the record is built here rather than through a
+    signature a sibling task is still moving.
+    """
+    return ResearchEvent(
+        event_type="graph.session.started",
+        source="graph",
+        message="Research session started.",
+        metadata={"session_id": "session-1", "checkpointing": False},
+    )
+
+
+def accepted_review() -> ReportReview:
+    """The scored review an accepted pass carries."""
+    return ReportReview(
+        status="scored",
+        dimensions={name: 0.9 for name in REVIEW_DIMENSIONS},
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        input_fingerprint="packet-1",
+        composition_fingerprint="composition-1",
+    )
+
+
+def accepted_state() -> ResearchState:
+    """One pass the router accepted: passes spent, gates clear, review passes.
+
+    PD-23's accepted shape: the extra-pass ceiling is spent, the deterministic
+    pass found no hard failure, and the terminal review scored the report. The
+    report publishes as ``completed`` and ``accepted``, which is the only case
+    ``--require-quality`` exits 0 for.
+    """
+    return ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        iteration=1,
+        max_extra_passes=1,
+        report_review=accepted_review(),
+        quality=ReportQualitySnapshot(),
+    )
 
 
 class RecordingRunner:
@@ -155,9 +200,7 @@ def test_the_cli_passes_every_option_through_to_run_research() -> None:
 def test_progress_streams_while_the_run_happens_and_is_never_reprinted() -> None:
     """Step 6: the handler runs before the runner returns, and once only."""
     events = [
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
-        ),
+        session_started(),
         node_started_event("planner", iteration=0),
         session_completed_event(
             status="completed", iteration=0, error_count=0, has_report=True
@@ -196,9 +239,7 @@ def test_every_streamed_progress_line_is_flushed_immediately() -> None:
     they inject an unbuffered ``io.StringIO``.
     """
     events = [
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
-        ),
+        session_started(),
         node_started_event("planner", iteration=0),
         session_completed_event(
             status="completed", iteration=0, error_count=0, has_report=True
@@ -572,6 +613,18 @@ def test_require_quality_exits_four_without_any_quality_pass() -> None:
     assert code == EXIT_QUALITY_UNACCEPTED
 
 
+def test_require_quality_exits_zero_for_an_accepted_run() -> None:
+    """PD-23: passes spent, gates clear, reviewer accepts -> exit 0."""
+    runner = RecordingRunner(result=outcome(state=accepted_state()))
+    stream = io.StringIO()
+
+    code = main([QUESTION, "--require-quality"], runner=runner, stream=stream)
+
+    assert code == EXIT_OK
+    assert "Quality: accepted" in stream.getvalue()
+    assert "Status: completed" in stream.getvalue()
+
+
 def test_require_quality_exits_zero_for_an_accepted_verdict() -> None:
     """The accepted reading reaches exit 0 through the same policy.
 
@@ -736,9 +789,7 @@ def test_debug_events_prints_the_complete_bounded_event_log_once() -> None:
     with its enumerated type and source beside it.
     """
     events = [
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
-        ),
+        session_started(),
         node_completed_event(
             "planner", iteration=0, event_count=2, error_count=0
         ),
