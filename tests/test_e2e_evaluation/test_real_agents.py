@@ -733,7 +733,9 @@ def _manifest_from_the_public_summary(real):
         limit,
         target_id=None,
         dispositions=(),
+        focus_ids=(),
         findings=(),
+        query=None,
     ):
         text = real(
             state,
@@ -742,7 +744,9 @@ def _manifest_from_the_public_summary(real):
             limit=limit,
             target_id=target_id,
             dispositions=dispositions,
+            focus_ids=focus_ids,
             findings=findings,
+            query=query,
         )
         carried = summarize_text(
             json.dumps(

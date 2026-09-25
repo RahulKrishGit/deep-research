@@ -33,7 +33,11 @@ from deep_research.agents.evidence import (
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActDecision, ReActStep, summarize_text
 from deep_research.tools.base import ToolResult
-from deep_research.tools.passage_selection import select_relevant_passages
+from deep_research.tools.passage_selection import (
+    is_link_dense,
+    select_passages_by_budget,
+    select_relevant_passages,
+)
 from deep_research.utils.types import (
     AcquisitionState,
     Finding,
@@ -638,32 +642,62 @@ def _adopt_recorded_read(
 def select_passages_with_lede(
     passages: Mapping[str, str],
     query: str,
-    limit: int,
+    budget: int,
     *,
     lede: str,
 ) -> list[str]:
     """The relevance-selected passages, led by the read's own opening passage.
 
-    Selection scores a page's passages by the query alone, and a release's
-    opening passage is its header — the title and lede the publisher wrote to
-    say what the page is. The audited run's market-monitor read deferred its
-    opening chunk ("2025 U.S. Energy Storage Installations Set New Record,
-    Surpass 2024 by 52%") in both batches selection ran, so the headline of
-    the page the run cited never became evidence. The opening passage is
-    therefore always taken — inside ``limit`` when the ranking left room for
-    it, and one past it when the bound was already full — and the relevance
-    ranking decides everything else. It is the read's *first* passage which is
-    guaranteed, not every passage a ranking can miss: a figure deep in a long
-    page is what the ranking, and then the bounded re-extraction, are for.
+    Selection scores a page's passages by the query alone and admits them by
+    a character budget (D1), not a fixed count: a page's chunks vary sharply
+    in length, and a fixed count either starves a page of many short,
+    on-topic chunks or wastes the whole allowance on a few long ones. A
+    release's opening passage is its header — the title and lede the
+    publisher wrote to say what the page is. It ranks with every other
+    passage on the same budget, so it shares the bound like anything else
+    when its own relevance earns it a place there; only when the ranking
+    left it out is it added on top, past the bound when the bound was
+    already full, because the opening passage is the one part of a page
+    selection may not leave behind entirely.
+
+    That guarantee holds only for a genuine header. The audited headphone
+    run's reads routinely opened on the site's own navigation bar, not a
+    headline, and the old unconditional rule forced that navigation into
+    every packet regardless of relevance (D1). A lede :func:`is_link_dense`
+    is never added on top; it only ever appears when the ranking itself
+    puts it there.
 
     ``lede`` is the read's own first locator, not necessarily the first key of
     ``passages``: a caller selecting from a subset (a continuation batch) must
     not mistake the subset's first entry for the read's opening passage.
     """
-    selected = select_relevant_passages(passages, query, limit)
+    selected = select_passages_by_budget(passages, query, budget)
     if lede not in passages or lede in selected:
         return selected
+    if is_link_dense(passages[lede]):
+        return selected
     return [lede, *selected]
+
+
+def _within_budget(
+    order: Sequence[str], texts: Mapping[str, str], budget: int
+) -> list[str]:
+    """``order`` taken in sequence up to ``budget`` characters, at least one.
+
+    A batch whose locators do not lexically match the query is still handed
+    over, in reader order (D1): a selection miss is not "there is no
+    evidence". The first locator is always kept, even when it alone is the
+    whole budget, so the fallback never hands over nothing.
+    """
+    taken: list[str] = []
+    used = 0
+    for locator in order:
+        text_len = len(texts[locator])
+        if taken and used + text_len > budget:
+            break
+        taken.append(locator)
+        used += text_len
+    return taken
 
 
 def admit_read_result(
@@ -709,15 +743,16 @@ def admit_read_result(
     if recorded_reads:
         read = _adopt_recorded_read(read, recorded_reads)
     target_ids = () if target_id is None else (target_id,)
+    budget = selected_limit * WEB_PASSAGE_CHARS
     selected_locators = (
         select_passages_with_lede(
             read.passages,
             query,
-            selected_limit,
+            budget,
             lede=next(iter(read.passages)),
         )
         if include_lede
-        else select_relevant_passages(read.passages, query, selected_limit)
+        else select_passages_by_budget(read.passages, query, budget)
     )
     evidence: dict[str, EvidenceUnit] = {}
     dispositions: list[EvidenceDisposition] = []
@@ -1269,14 +1304,15 @@ class AcquisitionPolicy:
                 continue
             handed_over.append(read_id)
             texts = {locator: read.passages[locator] for locator in locators}
+            budget = self.selected_passages_per_read * WEB_PASSAGE_CHARS
             selected = select_passages_with_lede(
                 texts,
                 self.query,
-                self.selected_passages_per_read,
+                budget,
                 lede=next(iter(read.passages)),
             )
             if not selected:
-                selected = locators[: self.selected_passages_per_read]
+                selected = _within_budget(locators, read.passages, budget)
             self._passage_batches[read_id] = taken + 1
             units: dict[str, EvidenceUnit] = {}
             for locator in selected:
@@ -1772,7 +1808,7 @@ class AcquisitionPolicy:
                     selected = select_passages_with_lede(
                         validated.passages,
                         self.query,
-                        self.selected_passages_per_read,
+                        self.selected_passages_per_read * WEB_PASSAGE_CHARS,
                         lede=next(iter(validated.passages)),
                     )
                     target_ids = (
@@ -2094,6 +2130,7 @@ class AcquisitionPolicy:
             target_id=self.target_id,
             dispositions=self.dispositions,
             findings=self.findings,
+            query=self.query,
         )
 
 
@@ -2131,6 +2168,19 @@ def _render_read(record: ReadRecord) -> str:
     )
 
 
+def _ranked_locators(passages: Mapping[str, str], query: str) -> list[str]:
+    """Every locator of ``passages``, ranked against ``query``, all included.
+
+    :func:`select_relevant_passages` drops a locator that shares no term with
+    the query; a packet dump must still show it (D2 renders every passage of
+    a selected read), so the passages the query ranked are followed by
+    whatever it left out, in their own original order.
+    """
+    ranked = select_relevant_passages(passages, query, len(passages))
+    rest = [locator for locator in passages if locator not in ranked]
+    return [*ranked, *rest]
+
+
 def build_acquisition_context(
     state: AcquisitionState,
     reads: Mapping[str, ReadRecord],
@@ -2141,6 +2191,7 @@ def build_acquisition_context(
     dispositions: Sequence[EvidenceDisposition] = (),
     focus_ids: Sequence[str] = (),
     findings: Sequence[Finding] = (),
+    query: str | None = None,
 ) -> str:
     """Render complete acquisition records, with explicit continuation IDs.
 
@@ -2160,6 +2211,13 @@ def build_acquisition_context(
     so a packet that renders the read before the unit it was narrowed to
     spends its whole budget on menu text and asks the model for a passage it
     never shows. Empty (the ordinary packet) leaves the order untouched.
+
+    ``query`` orders each read's own passage dump by rank against it (D2),
+    spending the packet's budget on the passages that answer the query
+    first, instead of the read's raw document order that put a page's own
+    navigation ahead of the mid-page chunk that actually answered it.
+    ``None`` (a caller with no query of its own) keeps the dump in document
+    order, exactly as before.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -2312,9 +2370,15 @@ def build_acquisition_context(
             (f"candidate:{candidate.candidate_id}", _render_candidate(candidate))
         )
     for read_id, read in selected_reads.items():
-        for locator, text in read.passages.items():
+        order = (
+            _ranked_locators(read.passages, query)
+            if query is not None
+            else list(read.passages)
+        )
+        for locator in order:
             if f"passage:{read_id}/{locator}" in focused_ids:
                 continue
+            text = read.passages[locator]
             rows.append(
                 (
                     f"passage:{read_id}/{locator}",
