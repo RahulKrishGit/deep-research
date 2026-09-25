@@ -234,7 +234,7 @@ def test_llm_defaults_select_deepseek_reasoning() -> None:
     assert llm.retry_initial_delay == 1.0
     assert llm.retry_max_delay == 16.0
     assert llm.resolve_for(None) == EffectiveModelConfig(
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         thinking_mode="enabled",
         reasoning_effort="high",
     )
@@ -257,7 +257,7 @@ def test_agent_model_overrides_support_string_and_structured_forms() -> None:
         reasoning_effort="high",
     )
     assert llm.resolve_for("critic") == EffectiveModelConfig(
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         thinking_mode="enabled",
         reasoning_effort="max",
     )
@@ -1134,7 +1134,7 @@ def test_evaluation_defaults_match_the_approved_baseline() -> None:
     assert evaluation.controlled_repetition_floor == 0.65
     assert evaluation.live_repetitions == 1
     assert evaluation.live_threshold == 0.75
-    assert evaluation.target_model == "deepseek-v4-flash"
+    assert evaluation.target_model == "deepseek-flash"
     assert evaluation.target_reasoning_effort == "max"
     assert evaluation.target_reasoning_effort_overrides == {
         "planner": "max",
@@ -1143,7 +1143,7 @@ def test_evaluation_defaults_match_the_approved_baseline() -> None:
         "evidence_verifier": "high",
         "report_writer": "high",
     }
-    assert evaluation.judge_model == "deepseek-v4-flash"
+    assert evaluation.judge_model == "deepseek-flash"
     assert evaluation.judge_reasoning_effort == "max"
     assert evaluation.embedding_provider is None
     assert evaluation.embedding_model is None
@@ -1177,7 +1177,7 @@ def test_evaluation_rejects_concurrency_above_one() -> None:
 def test_the_shipped_config_file_carries_the_evaluation_block() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["evaluation"]["target_model"] == "deepseek-v4-flash"
+    assert raw["evaluation"]["target_model"] == "deepseek-flash"
     assert raw["evaluation"]["judge_reasoning_effort"] == "max"
     assert raw["evaluation"]["max_concurrency"] == 1
 

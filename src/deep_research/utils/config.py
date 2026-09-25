@@ -56,7 +56,7 @@ class LLMConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: ProviderName = "deepseek"
-    model: str = Field(default="deepseek-v4-flash", min_length=1)
+    model: str = Field(default="deepseek-flash", min_length=1)
     # Independent of ``provider``: chat and embeddings need not share a
     # vendor, and the default stack is DeepSeek chat with local embeddings.
     embedding_provider: EmbeddingProviderName = "local"
@@ -381,7 +381,7 @@ class EvaluationConfig(BaseModel):
     controlled_repetition_floor: float = Field(default=0.65, ge=0.0, le=1.0)
     live_repetitions: int = Field(default=1, ge=1)
     live_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
-    target_model: str = Field(default="deepseek-v4-flash", min_length=1)
+    target_model: str = Field(default="deepseek-flash", min_length=1)
     target_reasoning_effort: ReasoningEffort = "max"
     target_reasoning_effort_overrides: dict[str, ReasoningEffort] = Field(
         default_factory=lambda: dict(_DEFAULT_TARGET_EFFORTS)
@@ -398,7 +398,7 @@ class EvaluationConfig(BaseModel):
     a run that resolves an evaluation-only profile is labelled non-release
     evidence rather than silently reported as a measurement of production.
     """
-    judge_model: str = Field(default="deepseek-v4-flash", min_length=1)
+    judge_model: str = Field(default="deepseek-flash", min_length=1)
     judge_reasoning_effort: ReasoningEffort = "max"
     # ``None`` means inherit ``llm.embedding_provider`` / ``llm.embedding_model``:
     # production is the single source of truth for the embedding selection,

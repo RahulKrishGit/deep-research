@@ -127,6 +127,8 @@ class RunTelemetryCollector:
         self._starting_agent: str | None = None
         self._rate_limit_errors = 0
         self._rate_limit_recovered = 0
+        self._input_tokens = 0
+        self._cached_input_tokens = 0
         self._stages: dict[str, _StageAccumulator] = {}
 
     def note_call_starting(self, agent: str | None) -> None:
@@ -197,6 +199,8 @@ class RunTelemetryCollector:
         output_tokens: int,
         configured_cap: int,
         truncated: bool,
+        input_tokens: int = 0,
+        cached_input_tokens: int = 0,
     ) -> None:
         """Record one provider call that returned and reported its usage.
 
@@ -204,10 +208,16 @@ class RunTelemetryCollector:
         included: it is what the stage's runtime is made of. ``operation``
         decides which config key bounds the call, so the record says which knob
         an operator would raise.
+
+        ``input_tokens`` and ``cached_input_tokens`` are the run's cache
+        figures (D10, S5). A provider that reports neither -- OpenAI does not
+        -- leaves both at their defaults and so contributes zeros.
         """
         stage_name = agent or UNATTRIBUTED_AGENT
         cap_key = cap_key_for(agent, operation)
         with self._lock:
+            self._input_tokens += input_tokens
+            self._cached_input_tokens += cached_input_tokens
             stage = self._stages.get(stage_name)
             if stage is None:
                 stage = _StageAccumulator()
@@ -256,6 +266,8 @@ class RunTelemetryCollector:
                 peak_calls_in_flight=self._peak_calls_in_flight,
                 peak_agent=self._peak_agent,
                 stages=stages,
+                input_tokens=self._input_tokens,
+                cached_input_tokens=self._cached_input_tokens,
             )
 
 
@@ -297,7 +309,9 @@ def render_telemetry_line(telemetry: RunTelemetry) -> str:
     The line carries the four groups of §7.3 in a fixed order, so the same run
     always renders it the same way: the peak and the agent that set it, the
     rate limits and how many came back, the slowest call, the operation
-    closest to its cap, and the truncation count.
+    closest to its cap, and the truncation count. A run whose calls reported
+    input tokens closes with the cache-hit share (D10, S5); a run that
+    reported none prints no cache part rather than a measured zero.
     """
     peak = f"peak {telemetry.peak_calls_in_flight} provider calls in flight"
     if telemetry.peak_agent is not None:
@@ -317,6 +331,12 @@ def render_telemetry_line(telemetry: RunTelemetry) -> str:
             f"{fullest.configured_cap:,} tokens ({_cap_share(fullest)}% of its cap)"
         )
     parts.append(f"{_truncations(telemetry)} truncated")
+    if telemetry.input_tokens:
+        parts.append(
+            f"cache hits {telemetry.cached_input_tokens:,} of "
+            f"{telemetry.input_tokens:,} input tokens "
+            f"({telemetry.cached_input_tokens * 100 // telemetry.input_tokens}%)"
+        )
     return f"Telemetry: {'; '.join(parts)}"
 
 

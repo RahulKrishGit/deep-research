@@ -43,7 +43,7 @@ REPOSITORY_CONFIG_PATH = REPOSITORY_ROOT / "config.yaml"
 
 SENTINEL = "PROBE_SENTINEL_MUST_NOT_BE_RETAINED_7C31"
 
-MODEL = "deepseek-v4-flash"
+MODEL = "deepseek-flash"
 ALLOWED_TOOLS = frozenset({"web_search", "query_memory"})
 
 DSML_FINAL = (

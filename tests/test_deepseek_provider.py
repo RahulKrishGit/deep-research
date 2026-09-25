@@ -456,9 +456,9 @@ async def test_deepseek_judge_uses_responses_json_schema_with_prompt_parity() ->
         }
     }
     assert call["input"][0] == {"role": "system", "content": "judge policy"}
-    assert call["input"][1] == {"role": "user", "content": "judge input"}
-    assert call["input"][2]["role"] == "system"
-    assert "JSON Schema:" in call["input"][2]["content"]
+    assert call["input"][1]["role"] == "system"
+    assert "JSON Schema:" in call["input"][1]["content"]
+    assert call["input"][2] == {"role": "user", "content": "judge input"}
     assert "response_format" not in call
     assert "max_tokens" not in call
     assert client.chat.completions.calls == []
@@ -1470,8 +1470,8 @@ async def test_deepseek_structured_failure_drops_provider_and_request_frames(
     assert caught.value.__context__ is None
     requests = json.dumps(completions.calls, default=repr, sort_keys=True)
     assert schema_marker in requests
-    assert schema_marker in completions.calls[0]["messages"][-1]["content"]
-    assert schema_marker in completions.calls[1]["messages"][-1]["content"]
+    assert schema_marker in completions.calls[0]["messages"][0]["content"]
+    assert schema_marker in completions.calls[1]["messages"][0]["content"]
     surfaces = _provider_exception_surfaces(caught.value)
     assert surfaces
     assert all(
@@ -1936,8 +1936,9 @@ async def test_deepseek_structured_output_prompts_json_and_validates_locally() -
     assert result == TinyAnswer(answer="yes", confidence=9)
     call = completions.calls[0]
     assert call["response_format"] == {"type": "json_object"}
-    assert call["messages"][-1]["role"] == "system"
-    instruction = call["messages"][-1]["content"]
+    assert call["messages"][0]["role"] == "system"
+    instruction = call["messages"][0]["content"]
+    assert call["messages"][1] == {"role": "user", "content": "decide"}
     assert "JSON" in instruction
     assert json.dumps(
         TinyAnswer.model_json_schema(), sort_keys=True, separators=(",", ":")
@@ -4266,3 +4267,29 @@ async def test_a_clean_reply_records_no_repair() -> None:
         )
 
     assert provider.drain_structured_repairs() == ()
+
+
+def test_the_schema_instruction_follows_the_role_prompt() -> None:
+    schema = ChatMessage(role="system", content="SCHEMA")
+    with_role = deepseek_module._with_schema_instruction(
+        [{"role": "system", "content": "role"}, {"role": "user", "content": "body"}], schema
+    )
+    without_role = deepseek_module._with_schema_instruction(
+        [{"role": "user", "content": "body"}], schema
+    )
+    assert [message["content"] for message in with_role] == ["role", "SCHEMA", "body"]
+    assert [message["content"] for message in without_role] == ["SCHEMA", "body"]
+
+
+def test_cached_input_tokens_are_read_from_both_usage_shapes() -> None:
+    chat = SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=10, completion_tokens=2, prompt_cache_hit_tokens=6))
+    responses = SimpleNamespace(usage=SimpleNamespace(
+        input_tokens=10, output_tokens=2,
+        input_tokens_details=SimpleNamespace(cached_tokens=4)))
+    malformed = SimpleNamespace(usage=SimpleNamespace(
+        input_tokens_details=SimpleNamespace(cached_tokens="4")))
+    assert deepseek_module._chat_cached_input_tokens(chat) == 6
+    assert deepseek_module._responses_cached_input_tokens(responses) == 4
+    assert deepseek_module._chat_cached_input_tokens(SimpleNamespace(usage=None)) == 0
+    assert deepseek_module._responses_cached_input_tokens(malformed) == 0

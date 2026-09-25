@@ -741,7 +741,7 @@ def test_validate_agent_models_resolves_every_agent_before_runtime() -> None:
     resolved = validate_agent_model_configs(config, AGENT_NAMES)
 
     assert tuple(resolved) == AGENT_NAMES
-    assert resolved["planner"].effective.model == "deepseek-v4-flash"
+    assert resolved["planner"].effective.model == "deepseek-flash"
     assert resolved["report_writer"].effective.model == "deepseek-v4-pro"
     assert resolved["report_writer"].reasoning_effort == "max"
 

@@ -457,3 +457,29 @@ def test_a_structured_request_needs_static_sections_and_material() -> None:
         render_structured_request([], ["# Material\nThe material."])
     with pytest.raises(ValueError):
         render_structured_request(["# Rules\nOne rule."], [])
+
+
+def test_the_notes_precede_the_acquisition_context() -> None:
+    body = render_react_messages(
+        system_prompt="Research.", task=AgentTask(instruction="Find it.", guidance="Guide."),
+        scratchpad=[], iteration=1, max_iterations=3, decision_context="Reads so far.",
+    )[1].content
+    assert [line for line in body.splitlines() if line.startswith("## ")] == [
+        "## Task", "## Guidance", "## Notes so far", "## Acquisition context",
+        "## Budget", "## How to respond",
+    ]
+
+
+def test_the_last_iteration_asks_for_the_final_answer_without_a_tool() -> None:
+    def budget(iteration: int) -> str:
+        body = render_react_messages(
+            system_prompt="Research.", task=AgentTask(instruction="Find it."),
+            scratchpad=[], iteration=iteration, max_iterations=3,
+        )[1].content
+        return body.split("## Budget\n", 1)[1].split("\n\n", 1)[0]
+
+    assert budget(2) == "Iteration 2 of 3."
+    assert budget(3) == (
+        "Iteration 3 of 3. This is the last iteration: return the final answer "
+        "now without calling a tool."
+    )

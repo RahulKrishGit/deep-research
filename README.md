@@ -114,7 +114,7 @@ continues locally.
 ## Chat and Embedding Providers
 
 Chat defaults are committed under `llm` in `config.yaml`: provider `deepseek`,
-model `deepseek-v4-flash`, thinking mode `enabled`, and reasoning effort
+model `deepseek-flash`, thinking mode `enabled`, and reasoning effort
 `high`. Embedding defaults are also committed under `llm`: `embedding_provider`
 `local`, backed by chromadb's default ONNX model at 384 dimensions, with no
 API key and no per-call cost. `LLM_PROVIDER`, `LLM_MODEL`, `LLM_THINKING_MODE`,
@@ -132,13 +132,13 @@ A complete DeepSeek configuration with per-agent overrides:
 ```yaml
 llm:
   provider: deepseek
-  model: deepseek-v4-flash
+  model: deepseek-flash
   thinking_mode: enabled
   reasoning_effort: high
   model_overrides:
-    planner: deepseek-v4-flash
+    planner: deepseek-flash
     report_reviewer:
-      model: deepseek-v4-flash
+      model: deepseek-flash
       thinking_mode: enabled
       reasoning_effort: max
 ```

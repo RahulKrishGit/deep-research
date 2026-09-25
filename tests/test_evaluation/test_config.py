@@ -761,11 +761,11 @@ def test_the_baseline_efforts_match_the_approved_profile() -> None:
     assert resolve_judge_effort(config, override=None) == "max"
 
 
-def test_the_baseline_models_are_deepseek_v4_flash() -> None:
+def test_the_baseline_models_are_deepseek_flash() -> None:
     config = EvaluationConfig()
 
-    assert config.target_model == "deepseek-v4-flash"
-    assert config.judge_model == "deepseek-v4-flash"
+    assert config.target_model == "deepseek-flash"
+    assert config.judge_model == "deepseek-flash"
 
 
 def test_the_evaluation_config_no_longer_carries_a_reasoning_mode() -> None:
@@ -955,6 +955,10 @@ def test_the_judge_configuration_fingerprint_did_not_move() -> None:
     value is unchanged and the recorded ``924caf47aa0d`` still describes this
     configuration. It is asserted by identity rather than by a new literal
     because it is recorded in the canary documents, not in this suite.
+
+    S1 (Task 5.8) later moved the judge model to ``deepseek-flash``, so the
+    canary documents' ``924caf47aa0d`` now describes the configuration before
+    that change; this test still asserts identity only.
     """
     baseline = build()
     identical = build()
@@ -1185,7 +1189,7 @@ def test_the_target_llm_config_carries_the_frozen_effort_and_model() -> None:
     llm = target_llm_config(build(agent_name="planner"), ConfigSettings().llm)
 
     assert llm.provider == "deepseek"
-    assert llm.model == "deepseek-v4-flash"
+    assert llm.model == "deepseek-flash"
     assert llm.reasoning_effort == "max"
     assert llm.thinking_mode == "enabled"
     assert llm.model_overrides == {}
@@ -1504,7 +1508,7 @@ def test_the_judge_llm_config_is_independent_of_the_target() -> None:
     )
 
     assert llm.provider == "deepseek"
-    assert llm.model == "deepseek-v4-flash"
+    assert llm.model == "deepseek-flash"
     assert llm.reasoning_effort == "max"
     assert llm.thinking_mode == "enabled"
     assert llm.temperature == 0.0

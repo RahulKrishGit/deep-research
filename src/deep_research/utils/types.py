@@ -2078,3 +2078,7 @@ class RunTelemetry(ContractModel):
     peak_calls_in_flight: int = Field(default=0, ge=0)
     peak_agent: str | None = Field(default=None, min_length=1)
     stages: tuple[StageTelemetry, ...] = ()
+    input_tokens: int = Field(default=0, ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
+    """Input tokens the provider calls reported, and the part DeepSeek served
+    from its context cache (D10, S5)."""
