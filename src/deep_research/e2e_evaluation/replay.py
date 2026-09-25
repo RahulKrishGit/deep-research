@@ -1023,10 +1023,16 @@ class ReplayCompleter(AgentCompleter):
         sub-topic fetched the read, not which sentence answers which
         obligation, so it names that topic's targets and leaves the binding to
         the Fact Checker's own dimension check.
+
+        The line's own shape is the request's: the id, the owner bracket (the
+        coverage id alone, or with the sub-topic's title after a colon), an
+        optional ``[required]`` marker, then the question. Only the id is read
+        here, so the brackets may grow without this parser decoding them.
         """
         catalogue = re.findall(
             rf"^- ({re.escape(coverage_id)}-target-\d+) "
-            rf"\[{re.escape(coverage_id)}\]: ",
+            rf"\[{re.escape(coverage_id)}(?:: [^\]]*)?\]"
+            rf"(?: \[required\])?: ",
             text,
             re.M,
         )
