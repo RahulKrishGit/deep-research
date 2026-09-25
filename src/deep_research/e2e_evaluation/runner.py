@@ -1,53 +1,22 @@
-"""Offline whole-report campaign runner and artifact writer."""
+"""Offline real-agent replay matrix runner and artifact writer."""
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import re
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
 from uuid import uuid4
 
 from pydantic import JsonValue
 
-from deep_research.cli import render_summary
-from deep_research.e2e_evaluation.cases import (
-    CONTROLLED_CASE_IDS,
-    LIVE_CASE_IDS,
-    ScriptedGraphPublisher,
-    case_by_id,
-    controlled_cases,
-    dependencies_for,
-    scripted_research_agents,
-)
-from deep_research.e2e_evaluation.evaluators import (
-    build_judge_input,
-    deterministic_evaluation,
-    judge_whole_report,
-    production_cli_summary,
-    semantic_review_summary,
-)
 from deep_research.e2e_evaluation.models import (
-    AGENT_NAMES,
-    CAMPAIGN_SCHEMA_VERSION,
-    CASE_REGISTRY_VERSION,
-    CASE_SCHEMA_VERSION,
-    QUALITY_GATE_VERSION,
-    REPORT_SCHEMA_VERSION,
-    CampaignMetadata,
-    CampaignRepetition,
-    CampaignResult,
-    CaseCampaignResult,
-    ControlledCase,
     ReplayCaseResult,
     ReplayRepetitionResult,
     ReplaySuiteResult,
-    WholeReportJudgeScore,
 )
 from deep_research.e2e_evaluation.replay import (
     expectation_failures,
@@ -55,20 +24,12 @@ from deep_research.e2e_evaluation.replay import (
     run_replay_scenario,
 )
 from deep_research.e2e_evaluation.replay_matrix import (
-    GRAPH_ONLY_HISTORICAL_MANIFEST,
     REPLAY_CASE_MANIFEST,
     REPLAY_CASE_MANIFEST_VERSION,
     REPLAY_CASE_VERSION,
     ReplayCaseEntry,
     scenario_by_id,
 )
-from deep_research.graph.orchestrator import (
-    compile_research_graph,
-    run_research_graph,
-)
-from deep_research.graph.state import graph_quality_status
-from deep_research.observability import LangSmithRuntimeConfig, Tracker
-from deep_research.runtime.outcome import build_outcome
 from deep_research.utils.types import QUALITY_STATUS_ACCEPTED
 
 LIVE_TIER_NOT_RUN = (
@@ -77,78 +38,24 @@ LIVE_TIER_NOT_RUN = (
 )
 DEFAULT_OUTPUT_DIRECTORY = Path("output/evaluations/e2e")
 CONTROLLED_REPETITIONS = 3
-JUDGE_FLOOR = 0.70
-JUDGE_MEAN_FLOOR = 0.80
-_SCORE_EPSILON = 1e-9
 
-# The two harnesses a controlled suite can run. The tier is "controlled"
-# either way; which agents ran is a separate axis, and it is the axis a
-# reader has to be told about before reading any result.
+# The controlled suite runs one harness: the real agents over the replay
+# matrix. PD-14 retires the six-agent scripted-double harness that used to
+# replay a graph that no longer exists -- the real-agent matrix covers the
+# new graph end to end, so the mode axis is gone rather than defaulted.
 REAL_AGENT_MODE = "real-agent"
-GRAPH_HISTORICAL_MODE = "graph-historical"
-SUITE_MODES = (REAL_AGENT_MODE, GRAPH_HISTORICAL_MODE)
-# A different filename from the legacy suite's ``suite.json``: the two modes
-# share an output directory, and one harness's evidence must never overwrite
-# the other's.
 REPLAY_SUITE_FILENAME = "replay-suite.json"
 _REPLAY_STORAGE_DIRECTORY = "replay"
 
-# What each harness is, in the words its own output uses. A reader who sees
+# What the harness is, in the words its own output uses. A reader who sees
 # only the terminal gets the same disclosure the artifact's `mode` carries:
-# which agents produced the numbers, and whether the result is release
-# evidence at all.
+# which agents produced the numbers.
 AGENTS_PRODUCTION = "Agents: production classes through the real graph"
-AGENTS_SCRIPTED = (
-    "Agents: SCRIPTED DOUBLES, not production classes — historical regression "
-    "only.",
-    "        This mode is not release evidence for the real agents.",
-)
 
-# The suffix the graph-historical inventory's ids carry, so one inventory's
-# evidence cannot be read as the other's.
-GRAPH_HISTORICAL_ID_SUFFIX = "-graph"
-
-
-def graph_historical_case_ids() -> tuple[str, ...]:
-    """The graph-historical inventory's own case ids, in manifest order.
-
-    The form ``list`` prints under that mode's label, and the form ``case``
-    accepts. Derived from the manifest rather than restated, so an inventory
-    that gains a row cannot leave the accepted ids behind.
-    """
-    return tuple(entry.case_id for entry in GRAPH_ONLY_HISTORICAL_MANIFEST)
-
-
-def legacy_case_id(case_id: str) -> str:
-    """The legacy controlled case one runnable ``case`` id names.
-
-    The ids this command runs are the graph-historical inventory's rows: the
-    ``<id>-graph`` form the manifest — and therefore ``list`` — uses, or the
-    legacy id that row was built from. Both name one run, and ``list`` shows
-    the legacy ids under the real-agent label, which is why neither form may
-    pass for a real-agent result without the command saying which harness
-    produced it.
-
-    The declared live ids are not runnable here (no live runner exists) and
-    are refused before this is reached; any other id names no case at all.
-
-    A manifest lookup rather than a suffix strip, so an id that names nothing
-    is passed through unchanged and fails in ``case_by_id`` instead of
-    silently resolving to some other case.
-    """
-    if case_id in graph_historical_case_ids():
-        return case_id.removesuffix(GRAPH_HISTORICAL_ID_SUFFIX)
-    return case_id
-
-_AS_OF_PREFIX = "**As of:**"
+_AS_OF_PREFIX = "*As of "
 _REFERENCE_LINE = re.compile(r"^(\d+)\. (.*)$")
 _CITATION = re.compile(r"\[(\d+)\]")
 _CITATION_RUN = re.compile(r"(?:\[\d+\]){2,}")
-
-
-def _score_at_least(value: float, floor: float) -> bool:
-    """Treat an exact decimal boundary as inclusive despite binary floats."""
-    return value + _SCORE_EPSILON >= floor
 
 
 def graph_revision() -> str:
@@ -166,361 +73,33 @@ def graph_revision() -> str:
     return revision if result.returncode == 0 and revision else "unknown"
 
 
-def target_prompt_fingerprints() -> dict[str, str]:
-    """Fingerprint all six production prompts without loading configuration."""
-    from deep_research.evaluation.config import agent_prompt_fingerprint
-
-    return {
-        name: agent_prompt_fingerprint(name)  # type: ignore[arg-type]
-        for name in AGENT_NAMES
-    }
-
-
-def build_judge_metadata(
-    *,
-    graph_revision: str | None = None,
-    case_id: str,
-    repetition: int,
-    request_counts: Mapping[str, int],
-    tier: str = "controlled",
-    target_model: str = "scripted-target",
-    target_reasoning_effort: str = "none",
-    judge_model: str = "scripted-whole-report-judge",
-    judge_reasoning_effort: str = "none",
-    case_version: int = CASE_SCHEMA_VERSION,
-) -> dict[str, JsonValue]:
-    """Build secret-free metadata shared by local and trace-shaped artifacts."""
-    payload = CampaignMetadata(
-        campaign_schema_version=CAMPAIGN_SCHEMA_VERSION,
-        case_schema_version=CASE_SCHEMA_VERSION,
-        case_registry_version=CASE_REGISTRY_VERSION,
-        report_schema_version=REPORT_SCHEMA_VERSION,
-        quality_gate_version=QUALITY_GATE_VERSION,
-        graph_revision=graph_revision or graph_revision_value(),
-        target_prompt_fingerprints=target_prompt_fingerprints(),
-        target_model=target_model,
-        target_reasoning_effort=target_reasoning_effort,
-        judge_model=judge_model,
-        judge_reasoning_effort=judge_reasoning_effort,
-        case_id=case_id,
-        case_version=case_version,
-        tier=(tier if tier in {"controlled", "live"} else "controlled"),
-        repetition=repetition,
-        request_counts=dict(request_counts),
-    )
-    return payload.model_dump(mode="json")
-
-
 def graph_revision_value() -> str:
     """Named wrapper makes the metadata source easy to replace in tests."""
     return graph_revision()
-
-
-def _scripted_repetition(
-    case: ControlledCase,
-    repetition: int,
-    *,
-    artifact_directory: Path,
-    judge: Callable[[Any], WholeReportJudgeScore] = judge_whole_report,
-) -> CampaignRepetition:
-    dependencies = dependencies_for(case)
-    artifact_directory.mkdir(parents=True, exist_ok=True)
-    publisher = ScriptedGraphPublisher(dependencies, artifact_directory)
-    agents = scripted_research_agents(case, dependencies, publisher)
-    tracker = Tracker(
-        LangSmithRuntimeConfig(
-            tracing_enabled=False,
-            project="controlled-e2e",
-            api_key=None,
-        )
-    )
-    graph = compile_research_graph(agents)
-    graph_run = asyncio.run(
-        run_research_graph(
-            graph=graph,
-            tracker=tracker,
-            session_id=f"controlled-{case.case_id}-r{repetition}",
-            question=case.question,
-            max_iterations=max(2, len(case.passes)),
-        )
-    )
-    state = graph_run.state
-    outcome = build_outcome(graph_run, metrics=tracker.metrics)
-    cli_output = render_summary(outcome, verbose=False)
-    metrics = deterministic_evaluation(
-        case,
-        state,
-        dependencies=dependencies,
-        cli_output=cli_output,
-    )
-    summary = production_cli_summary(cli_output)
-    judge_input = build_judge_input(case, state, metrics)
-    judge_result = judge(judge_input)
-    metadata = build_judge_metadata(
-        graph_revision=graph_revision_value(),
-        case_id=case.case_id,
-        case_version=case.version,
-        repetition=repetition,
-        request_counts={**dependencies.request_counts, "judge": 1},
-    )
-    return CampaignRepetition(
-        case_id=case.case_id,
-        repetition=repetition,
-        state=state,
-        composition=state.composition,
-        report=state.report or "",
-        evidence_ledger=state.report_evidence or "",
-        deterministic=metrics,
-        judge=judge_result,
-        # The terminal semantic review the run recorded, read into the harness's
-        # own vocabulary. ``None`` stays reserved for a repetition that holds no
-        # review at all; a run whose review could not be made records the
-        # incomplete status it has, so "no judgement" is visible as itself
-        # rather than as a missing field a reader might read as success.
-        semantic_review=(
-            None
-            if state.report_review is None
-            else semantic_review_summary(state.report_review)
-        ),
-        cli_summary=summary,
-        cli_output=list(cli_output),
-        judge_input=judge_input,
-        publication_operations=list(dependencies.publication_operations),
-        metadata=CampaignMetadata.model_validate(metadata),
-        langsmith_metadata=dict(metadata),
-    )
-
-
-def _recorded_legs(repetition: CampaignRepetition) -> set[str]:
-    """The legs one repetition recorded, in the campaign's own vocabulary.
-
-    The evaluator's integrity failures and the product's hard failures are one
-    list here because they are one fact to a reader: the named ways this run
-    fell short, each of which a case either requires, tolerates, or fails on.
-    """
-    return {
-        *repetition.deterministic.integrity_failures,
-        *repetition.deterministic.hard_failures,
-    }
-
-
-def _meets_declared_result(
-    case: ControlledCase,
-    repetitions: Sequence[CampaignRepetition],
-    *,
-    accepted: bool,
-) -> bool:
-    """Whether this run produced the result its case declares.
-
-    Per repetition, not on average: a row whose mean hides one repetition that
-    recorded something its case does not declare has not produced the declared
-    result, and the whole point of declaring one is that a correct run and a
-    wrong one can be told apart without a reader deciding which.
-    """
-    declared = case.expected_result
-    if accepted is not declared.accepted:
-        return False
-    required = set(declared.required_failures)
-    tolerated = required | set(declared.allowed_failures)
-    for repetition in repetitions:
-        legs = _recorded_legs(repetition)
-        if not required.issubset(legs):
-            return False
-        if legs - tolerated:
-            return False
-    return True
-
-
-def _case_result(
-    case: ControlledCase, repetitions: Sequence[CampaignRepetition]
-) -> CaseCampaignResult:
-    coverages = [item.deterministic.coverage_ratio for item in repetitions]
-    judges = [item.judge.score for item in repetitions]
-    hard_failures: list[str] = []
-    for item in repetitions:
-        for failure in [
-            *item.deterministic.integrity_failures,
-            *item.deterministic.hard_failures,
-        ]:
-            if failure not in hard_failures:
-                hard_failures.append(failure)
-    accepted = (
-        len(repetitions) == CONTROLLED_REPETITIONS
-        and all(item.deterministic.integrity_passed for item in repetitions)
-        and all(item.deterministic.coverage_ratio >= 0.80 for item in repetitions)
-        and sum(coverages) / len(coverages) >= 0.90
-        and all(
-            item.deterministic.scored_cited_sources == item.deterministic.cited_sources
-            for item in repetitions
-        )
-        and all(item.deterministic.duplicate_claims == 0 for item in repetitions)
-        and all(item.deterministic.duplicate_source_rows == 0 for item in repetitions)
-        and all(item.deterministic.uncited_settled_points == 0 for item in repetitions)
-        and all(_score_at_least(item.judge.score, JUDGE_FLOOR) for item in repetitions)
-        and _score_at_least(sum(judges) / len(judges), JUDGE_MEAN_FLOOR)
-    )
-    return CaseCampaignResult(
-        case_id=case.case_id,
-        repetitions=list(repetitions),
-        mean_coverage=sum(coverages) / len(coverages),
-        mean_judge_score=sum(judges) / len(judges),
-        accepted=accepted,
-        expected_result=case.expected_result,
-        met_expectation=_meets_declared_result(
-            case, repetitions, accepted=accepted
-        ),
-        hard_failures=hard_failures,
-    )
-
-
-def run_case(
-    case_id: str,
-    *,
-    tier: str = "controlled",
-    repetitions: int = CONTROLLED_REPETITIONS,
-    output_directory: str | Path | None = None,
-    judge: Callable[[Any], WholeReportJudgeScore] = judge_whole_report,
-) -> CaseCampaignResult:
-    """Run one controlled case exactly three times and write its artifact."""
-    if tier == "live":
-        raise RuntimeError(LIVE_TIER_NOT_RUN)
-    if tier != "controlled":
-        raise ValueError("tier must be controlled or live")
-    if repetitions != CONTROLLED_REPETITIONS:
-        raise ValueError("controlled whole-report cases require exactly 3 repetitions")
-    case = case_by_id(case_id)
-    root = Path(output_directory or DEFAULT_OUTPUT_DIRECTORY) / case.case_id
-    root.mkdir(parents=True, exist_ok=True)
-    rows = [
-        _scripted_repetition(
-            case,
-            repetition,
-            artifact_directory=root / f"repetition-{repetition}",
-            judge=judge,
-        )
-        for repetition in range(1, repetitions + 1)
-    ]
-    result = _case_result(case, rows)
-    artifact = root / "case.json"
-    result = result.model_copy(update={"artifact_path": str(artifact)})
-    artifact.write_text(result.model_dump_json(indent=2), encoding="utf-8")
-    return result
-
-
-def run_suite(
-    *,
-    tier: str = "controlled",
-    repetitions: int = CONTROLLED_REPETITIONS,
-    output_directory: str | Path | None = None,
-    case_ids: Sequence[str] | None = None,
-    judge: Callable[[Any], WholeReportJudgeScore] = judge_whole_report,
-) -> CampaignResult:
-    """Run the offline controlled campaign and write a suite artifact."""
-    if tier == "live":
-        raise RuntimeError(LIVE_TIER_NOT_RUN)
-    if tier != "controlled":
-        raise ValueError("tier must be controlled or live")
-    if repetitions != CONTROLLED_REPETITIONS:
-        raise ValueError("controlled whole-report suite requires exactly 3 repetitions")
-    selected = tuple(case_ids or CONTROLLED_CASE_IDS)
-    if selected != CONTROLLED_CASE_IDS:
-        # A full controlled suite is intentionally closed over exactly the
-        # three required cases; use run_case for a focused case invocation.
-        raise ValueError(
-            "controlled suite must contain exactly the three required cases"
-        )
-    root = Path(output_directory or DEFAULT_OUTPUT_DIRECTORY)
-    results = [
-        run_case(
-            case.case_id,
-            tier=tier,
-            repetitions=repetitions,
-            output_directory=root,
-            judge=judge,
-        )
-        for case in controlled_cases()
-    ]
-    accepted = all(case.met_expectation for case in results)
-    rows_accepted = all(case.accepted for case in results)
-    request_counts: dict[str, int] = {}
-    for case_result in results:
-        for repetition in case_result.repetitions:
-            for name, count in repetition.metadata.request_counts.items():
-                request_counts[name] = request_counts.get(name, 0) + count
-    suite_metadata: dict[str, JsonValue] = {
-        "campaign_schema_version": CAMPAIGN_SCHEMA_VERSION,
-        "case_schema_version": CASE_SCHEMA_VERSION,
-        "case_registry_version": CASE_REGISTRY_VERSION,
-        "report_schema_version": REPORT_SCHEMA_VERSION,
-        "quality_gate_version": QUALITY_GATE_VERSION,
-        "graph_revision": graph_revision_value(),
-        "target_prompt_fingerprints": target_prompt_fingerprints(),
-        "target_model": "scripted-target",
-        "target_reasoning_effort": "none",
-        "judge_model": "scripted-whole-report-judge",
-        "judge_reasoning_effort": "none",
-        "request_counts": request_counts,
-        "network": "zero",
-        "case_ids": list(selected),
-    }
-    suite = CampaignResult(
-        campaign_id=(
-            "controlled-"
-            + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            + "-"
-            + uuid4().hex[:8]
-        ),
-        tier="controlled",
-        repetitions=repetitions,
-        cases=results,
-        accepted=accepted,
-        rows_accepted=rows_accepted,
-        metadata=suite_metadata,
-    )
-    root.mkdir(parents=True, exist_ok=True)
-    suite_artifact = root / "suite.json"
-    suite = suite.model_copy(
-        update={
-            "artifact_path": str(suite_artifact),
-            "langsmith_metadata": dict(suite_metadata),
-        }
-    )
-    suite_artifact.write_text(
-        suite.model_dump_json(indent=2), encoding="utf-8"
-    )
-    return suite
-
-
-def run_controlled_suite(**kwargs: Any) -> CampaignResult:
-    """Named alias for callers that want to state the tier explicitly."""
-    return run_suite(tier="controlled", **kwargs)
 
 
 def canonical_report_fingerprint(report: str) -> str:
     """The published report's hash, over the part of it the reader was shown.
 
     Two things about a published report are facts about the *session* that
-    made it rather than about the report: the ``As of`` line, which is the
-    newest timestamp the recorded *evidence* carries rather than anything the
-    report itself says, and the ordinal each source was given, which is the
+    made it rather than about the report: the byline that opens with ``*As
+    of``, which states the newest timestamp the recorded *evidence* carries
+    and the source/finding counts of that pass rather than anything the
+    reader authored, and the ordinal each source was given, which is the
     order that session's reads were recorded in. Read identity is
     session-scoped by the product's own contract, so two repetitions of one
     fixture cite the same sources numbered in whichever order their own reads
-    landed — measured here, that renumbering happens in fifteen of the
-    eighteen rows. Hashing the rendered text as it stands would report a
-    deterministic harness as non-deterministic on five sixths of the matrix.
+    landed. Hashing the rendered text as it stands would report a
+    deterministic harness as non-deterministic whenever citation order moved.
 
-    So the hash is taken over the canonical form: the evidence recency
-    dropped, and every reference renumbered by its own label. What remains
-    comparable is which sources the reader was shown against which sentences,
-    so a citation set that gained, lost or moved a source still differs here.
-
-    The ``Generated on`` line is deliberately *not* dropped, unlike the ``As
-    of`` line beside it: which day a run says it printed its report is part of
-    what that run published, so two runs that disagree on it did not publish
-    the same thing. A replay row is reproducible because the harness stamps
-    every repetition from one pinned clock (``replay.replay_clock``), not
-    because the date is left out of the hash.
+    So the hash is taken over the canonical form: the byline dropped, and
+    every reference renumbered by its own label. What remains comparable is
+    which sources the reader was shown against which sentences, so a
+    citation set that gained, lost or moved a source still differs here. A
+    replay row is reproducible regardless, because the harness stamps every
+    repetition from one pinned clock (``replay.replay_clock``): the byline
+    the hash drops would be identical across repetitions even if it were
+    kept.
     """
     body: list[str] = []
     references: list[tuple[str, str]] = []
@@ -642,7 +221,7 @@ def run_replay_suite(
 ) -> ReplaySuiteResult:
     """Run every row of the real-agent matrix and write the suite artifact.
 
-    This is the real thing: six production agents through the real compiled
+    This is the real thing: five production agents through the real compiled
     graph, the real reviewer, renderer and publisher, with only the external
     boundaries scripted and the socket layer denied for every repetition. The
     inventory is ``REPLAY_CASE_MANIFEST``, so the suite covers every row the
@@ -663,8 +242,7 @@ def run_replay_suite(
                     entry,
                     repetition,
                     # Each repetition gets its own storage root, so the
-                    # repetitions are isolated from one another and from the
-                    # legacy mode's per-case directories.
+                    # repetitions are isolated from one another.
                     storage=(
                         root
                         / _REPLAY_STORAGE_DIRECTORY
@@ -730,44 +308,20 @@ def run_replay_suite(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m deep_research.e2e_evaluation",
-        description="Run the network-zero whole-report quality campaign.",
+        description="Run the network-zero real-agent replay matrix.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("list", help="list controlled case ids")
-    case_parser = subparsers.add_parser("case", help="run one whole-report case")
-    # Both inventories' ids for the same three runs: the legacy id, and the
-    # ``<id>-graph`` form the graph-historical manifest — and `list` — uses.
-    case_parser.add_argument(
-        "case_id",
-        choices=(
-            *CONTROLLED_CASE_IDS,
-            *graph_historical_case_ids(),
-            *LIVE_CASE_IDS,
-        ),
-    )
-    case_parser.add_argument(
-        "--tier", choices=("controlled", "live"), default="controlled"
-    )
-    case_parser.add_argument("--repetitions", type=int, default=CONTROLLED_REPETITIONS)
+    subparsers.add_parser("list", help="list the matrix's case ids")
     suite_parser = subparsers.add_parser("suite", help="run the controlled suite")
     suite_parser.add_argument(
         "--tier", choices=("controlled", "live"), default="controlled"
-    )
-    suite_parser.add_argument(
-        "--mode",
-        choices=SUITE_MODES,
-        default=REAL_AGENT_MODE,
-        help=(
-            "which controlled harness to run: the real agents over the replay "
-            "matrix (default), or the historical scripted doubles"
-        ),
     )
     suite_parser.add_argument("--repetitions", type=int, default=CONTROLLED_REPETITIONS)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """CLI for list, case, and suite; report bodies never go to stdout."""
+    """CLI for list and suite; report bodies never go to stdout."""
     options = build_parser().parse_args(argv)
     try:
         if options.command == "list":
@@ -781,55 +335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(AGENTS_PRODUCTION)
             for entry in REPLAY_CASE_MANIFEST:
                 print(f"  {entry.case_id}: {entry.title}")
-            print(
-                graph_historical_mode_label(len(GRAPH_ONLY_HISTORICAL_MANIFEST))
-            )
-            for line in AGENTS_SCRIPTED:
-                print(line)
-            for entry in GRAPH_ONLY_HISTORICAL_MANIFEST:
-                print(f"  {entry.case_id}: {entry.title}")
-            print("Live cases: declared only; no live runner exists")
-            for case_id in LIVE_CASE_IDS:
-                print(f"  {case_id}")
             return 0
-        if options.command == "case":
-            if options.case_id in LIVE_CASE_IDS:
-                # The live tier is declared only, so nothing here runs and
-                # nothing here may describe a harness: a disclosure is a claim
-                # about which agents produced a result. Refused by name rather
-                # than reported as an unknown controlled case.
-                print(f"error: {LIVE_TIER_NOT_RUN}")
-                return 2
-            # Every id that reaches here runs the scripted doubles — the three
-            # legacy controlled cases are the graph-historical inventory, and
-            # the manifest's ``-graph`` ids name the same runs — so the
-            # harness is disclosed before the result, exactly as the suite's
-            # own output does. A per-case line reading "accepted" is a claim
-            # about which agents produced it.
-            print(graph_historical_mode_label(len(GRAPH_ONLY_HISTORICAL_MANIFEST)))
-            for line in AGENTS_SCRIPTED:
-                print(line)
-            result = run_case(
-                legacy_case_id(options.case_id),
-                tier=options.tier,
-                repetitions=options.repetitions,
-            )
-            print(f"Case {result.case_id}: {_case_verdict(result)}")
-            print(f"Artifact: {result.artifact_path}")
-            print("Network: zero (scripted dependencies only)")
-            # The exit code is the case's verdict, not the product's: a case
-            # that declares a partial result has produced what it declares
-            # when the run is partial, and exiting non-zero for that would
-            # make one declared row a command that can never succeed.
-            return 0 if result.met_expectation else 1
-        if options.mode == GRAPH_HISTORICAL_MODE:
-            historical = run_suite(
-                tier=options.tier,
-                repetitions=options.repetitions,
-            )
-            for line in graph_historical_suite_lines(historical):
-                print(line)
-            return 0 if historical.accepted else 1
         suite = run_replay_suite(
             tier=options.tier,
             repetitions=options.repetitions,
@@ -852,23 +358,12 @@ def real_agent_mode_label(
     )
 
 
-def graph_historical_mode_label(cases: int) -> str:
-    """The mode, and how many scripted-double cases it runs.
-
-    "scripted-double" rather than "legacy": the inventory began as the three
-    cases whose product result was recorded when the only agents were the
-    doubles, and it now also holds the cases that declare counted obligations
-    — which are scripted for the same reason and are not historical.
-    """
-    return f"Mode: {GRAPH_HISTORICAL_MODE} ({cases} scripted-double cases)"
-
-
 def real_agent_suite_lines(suite: ReplaySuiteResult) -> list[str]:
     """The real-agent suite's own output, one line each.
 
     The two header lines come first and are not optional: a per-case line
-    reading "passed" is a claim about the six production agents, and a reader
-    who was not told which harness ran cannot tell that claim from its
+    reading "passed" is a claim about the five production agents, and a
+    reader who was not told which harness ran cannot tell that claim from its
     opposite.
     """
     lines = [
@@ -898,84 +393,6 @@ def real_agent_suite_lines(suite: ReplaySuiteResult) -> list[str]:
     return lines
 
 
-def _product_graph_quality_status(case: CaseCampaignResult) -> str:
-    """The product quality status the row's repetitions recorded.
-
-    Read from each repetition's own terminal quality decision — the same
-    ``graph_quality_status`` the finalizer stamps on the artifacts — never from
-    the campaign's floors. The two are different facts: a scripted-double row
-    records ``partial`` on every repetition because no reviewer scored its
-    report, while the campaign may still accept the row on its own gates. A
-    line that printed the campaign's verdict as the product's would claim an
-    acceptance the product never made. Repetitions that recorded different
-    statuses are reported as ``mixed`` rather than collapsed to the best one.
-    """
-    statuses = {graph_quality_status(item.state) for item in case.repetitions}
-    if len(statuses) == 1:
-        return next(iter(statuses))
-    return "mixed"
-
-
-def _case_verdict(case: CaseCampaignResult) -> str:
-    """One row's line tail: the declaration, the campaign, and the product.
-
-    Three separate facts. ``declared`` is the result the case says its run
-    should produce; ``campaign`` is the harness's own floor verdict — the
-    coverage, judge and integrity gates; ``product graph_quality_status`` is
-    what the run actually recorded as the product's terminal quality status.
-    They are not interchangeable: a row the campaign accepted can hold a
-    product status of ``partial``, and printing the campaign's verdict as the
-    product's was exactly that error.
-    """
-    declared = case.expected_result
-    return (
-        f"declared {'accepted' if declared.accepted else 'partial'}, "
-        f"{'met' if case.met_expectation else 'NOT met'}; "
-        f"campaign {'accepted' if case.accepted else 'not accepted'}; "
-        f"product graph_quality_status {_product_graph_quality_status(case)}; "
-        f"coverage {case.mean_coverage:.2f}; "
-        f"judge {case.mean_judge_score:.2f}"
-    )
-
-
-def _declared_line(case: CaseCampaignResult) -> str:
-    """One row's line: what it declared, whether it produced it, and what it did.
-
-    The declared result, the campaign's verdict and the product's own recorded
-    status are separate facts and the line states all three, because a row can
-    pass this suite by producing a partial result: "accepted" alone would read
-    as if every row's report had cleared the gates, which is exactly the
-    reading a declared-partial row exists to make impossible. The product
-    status is read from the run's own ``graph_quality_status``, so a row whose
-    report the product recorded as partial can never be printed as a product
-    acceptance however the campaign's floors judge it.
-    """
-    return f"{case.case_id}: {_case_verdict(case)}"
-
-
-def graph_historical_suite_lines(result: CampaignResult) -> list[str]:
-    """The historical suite's own output, one line each.
-
-    The header is longer here than for the real-agent mode on purpose: an
-    unlabelled "accepted" from a scripted double is exactly the reading this
-    mode's output exists to prevent.
-    """
-    lines = [
-        graph_historical_mode_label(len(result.cases)),
-        *AGENTS_SCRIPTED,
-    ]
-    lines += [_declared_line(case) for case in result.cases]
-    accepted_rows = sum(1 for case in result.cases if case.accepted)
-    lines.append(
-        f"Suite: {'accepted' if result.accepted else 'failed'} "
-        f"({result.repetitions} repetitions per case; "
-        f"{accepted_rows}/{len(result.cases)} rows accepted)"
-    )
-    lines.append(f"Artifact: {result.artifact_path}")
-    lines.append("Network: zero (scripted dependencies only)")
-    return lines
-
-
 def network_line(suite: ReplaySuiteResult) -> str:
     """What the socket guard recorded, as the run's own evidence.
 
@@ -998,23 +415,15 @@ def network_line(suite: ReplaySuiteResult) -> str:
 
 
 __all__ = [
-    "CASE_REGISTRY_VERSION",
     "CONTROLLED_REPETITIONS",
     "DEFAULT_OUTPUT_DIRECTORY",
-    "GRAPH_HISTORICAL_MODE",
     "LIVE_TIER_NOT_RUN",
     "REAL_AGENT_MODE",
     "REPLAY_SUITE_FILENAME",
-    "SUITE_MODES",
-    "build_judge_metadata",
     "build_parser",
     "canonical_report_fingerprint",
-    "graph_historical_suite_lines",
     "main",
     "network_line",
     "real_agent_suite_lines",
-    "run_case",
-    "run_controlled_suite",
     "run_replay_suite",
-    "run_suite",
 ]

@@ -5,10 +5,10 @@ against. Each row names a case id, the version of its semantics, the product
 result the plan expects, the decisive assertion that makes it that result, and
 the scenario builder that drives the real stack.
 
-Every case runs the production agents through the real graph. The
-``ScriptedGraphAgent`` cases in :mod:`deep_research.e2e_evaluation.cases`
-remain as graph-only historical regression tests; nothing here instantiates
-that double.
+Every case runs the production agents through the real graph. The retired
+scripted-double harness (a six-agent double replaying a graph that no longer
+exists) is gone (PD-14): this matrix is the only controlled harness, and it
+covers the new graph end to end.
 
 Two things about the fixtures are worth stating once, because every case
 depends on them. A page states its own claim in prose, and the excerpt the run
@@ -35,12 +35,14 @@ from deep_research.e2e_evaluation.replay import (
 )
 from deep_research.memory.entries import MemoryEntry
 
-REPLAY_CASE_MANIFEST_VERSION = 1
+REPLAY_CASE_MANIFEST_VERSION = 2
 
 # The case-schema version each case's semantics are pinned at. Bumping a case
 # means changing its declaration here and in its own builder together, so a
-# recorded result names the semantics it was produced under.
-REPLAY_CASE_VERSION = 1
+# recorded result names the semantics it was produced under. Bumped for the
+# 4.9 re-review's N1 fix: ``extra-pass-recovers-missing-target`` now takes a
+# real extra pass instead of a second discovery round inside the first pass.
+REPLAY_CASE_VERSION = 2
 
 HTML = "text/html; charset=utf-8"
 PDF = "application/pdf"
@@ -422,15 +424,33 @@ def _comparative_conflict() -> ReplayScenario:
 
 
 def _extra_pass_recovers_missing_target() -> ReplayScenario:
-    """The missing account is published later, and the repair round finds it.
+    """The missing account is unreachable in the opening round; the extra pass finds it.
 
-    The opening round can read one publisher: the claim is competent but
-    uncorroborated, so its obligation is not met and the run owes itself a
-    repair. The second round's search is what surfaces the second publisher,
-    which is the only way the target can be answered - so a run that recovered
-    it did so by acquiring new evidence, not by re-reading what it had.
+    Six rosters answer the opening round's search and all refuse the read,
+    which spends the sub-topic's whole turn budget before the pair that
+    states the figure -- reachable only by the follow-up search -- can be
+    asked for. The opening round therefore ends with the obligation missing,
+    code buys exactly one extra pass for it (D4, §6.5), and that pass issues
+    the search the opening round could not: both independent accounts of the
+    pair are read together, and it is that read which turns the obligation
+    into an answer, never a second search folded into the first pass.
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    rosters = tuple(
+        _page(
+            f"roster{position}.example.test",
+            f"entry-{position}",
+            f"Adoption roster {position}",
+            "the adoption roster lists a title and a publication date and "
+            "states no measured value",
+            issuer=f"Acme Roster {position}",
+            # A roster that refuses the read spends a turn and yields no
+            # finding, which is what leaves the turn budget to be exhausted
+            # without also filling the per-extraction finding cap.
+            status=403,
+        )
+        for position in range(1, 7)
+    )
     return ReplayScenario(
         case_id="extra-pass-recovers-missing-target",
         version=REPLAY_CASE_VERSION,
@@ -442,7 +462,17 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
                 "What was the Acme widget adoption rate in the United States in 2024?",
                 "rate",
                 "Acme widget adoption rate United States 2024",
-                _pair(1, "adoption-2024", "Adoption survey", claim, discovered_b=2),
+                (
+                    *rosters,
+                    *_pair(
+                        1,
+                        "adoption-2024",
+                        "Adoption survey",
+                        claim,
+                        discovered_a=2,
+                        discovered_b=2,
+                    ),
+                ),
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
                 follow_up_queries=(
@@ -464,6 +494,13 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
                 "topic-01-target-01",
                 "topic-02-target-01",
                 "topic-03-target-01",
+            ),
+            # The rosters' refusals are the case's own machinery: they are
+            # what spends the opening round's turns, and a topic whose whole
+            # opening round was refused produces no findings to extract.
+            allowed_failure_classes=(
+                "error:agent_tool_failed",
+                "error:researcher_sub_topic_without_findings",
             ),
             required_invariants=("extra_pass_recovers_missing_target",),
         ),
@@ -969,9 +1006,14 @@ def _unsupported_mechanism() -> ReplayScenario:
     the two places it can. The recommendation is prose the composer is able to
     recognise - it never reaches the reader, and the case names the phrase as
     forbidden so a run that published it fails here. The invented cause cannot
-    be recognised that way, so what the run refuses is the *answer*: the
-    mechanism obligation stays outstanding, and the pair of pages the topic
-    really did read cannot fill it, because a citation is not a cause.
+    be recognised that way, so what the run refuses is the drafted *sentence*:
+    the invariant pins the reader-visible refusal (the drafted cause is
+    refused by the Statement Check, and no causal marker reaches the report).
+    Under PD-7, an outcome-only claim about the same topic still counts
+    ``topic-02-target-01`` answered, because the target's dimension carries no
+    unit for the Context Check to test the claim against; whether a mechanism
+    obligation needs a substance test of its own is a plan-level question this
+    row does not decide (escalated in the Task 4.9 review).
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
     return ReplayScenario(
@@ -1935,14 +1977,7 @@ def _statement_check_failure_keeps_sentences() -> ReplayScenario:
 
 
 class ReplayCaseEntry:
-    """One declared matrix row: identity, expectation, and its builder.
-
-    ``build`` is ``None`` for exactly the rows the matrix cannot replay: a
-    historical row records what the product did when the six agents were
-    scripted doubles, and there is no real-agent scenario to build for it.
-    The two facts are the same fact, so the constructor refuses the pairings
-    that would let them disagree.
-    """
+    """One declared matrix row: identity, expectation, and its builder."""
 
     def __init__(
         self,
@@ -1952,21 +1987,14 @@ class ReplayCaseEntry:
         title: str,
         expected_product_result: str,
         decisive_assertion: str,
-        build: Callable[[], ReplayScenario] | None,
-        graph_only_historical: bool = False,
+        build: Callable[[], ReplayScenario],
     ) -> None:
-        if graph_only_historical != (build is None):
-            raise ValueError(
-                f"{case_id!r}: graph_only_historical must be True exactly "
-                "when build is None"
-            )
         self.case_id = case_id
         self.version = version
         self.title = title
         self.expected_product_result = expected_product_result
         self.decisive_assertion = decisive_assertion
         self.build = build
-        self.graph_only_historical = graph_only_historical
 
 
 REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
@@ -2228,101 +2256,15 @@ def manifest_entry(case_id: str) -> ReplayCaseEntry:
 
 
 def scenario_by_id(case_id: str) -> ReplayScenario:
-    entry = manifest_entry(case_id)
-    if entry.build is None:  # pragma: no cover - the manifest's own invariant
-        raise KeyError(f"replay case {case_id!r} declares no scenario")
-    return entry.build()
-
-
-# The scripted-double half of the controlled inventory: the rows the
-# graph-historical harness runs. Three of them are the cases the whole-report
-# campaign ran before the real-agent matrix existed — scripted dependencies, a
-# scripted six-agent double, and a recorded product result — and two declare
-# counted obligations, which is the shape the product's coverage gate reads.
-# They are declared *beside* the manifest rather than inside it because they
-# have no scenario to replay, and because the first three cases' ids are the
-# same strings as the first three matrix rows — inside ``REPLAY_CASE_MANIFEST``
-# they would collide with real-agent rows, and the manifest's own contract is
-# that it is exactly the plan's twenty-one. The ``-graph`` suffix names the
-# harness that produced the result, so one inventory's evidence can never be
-# read as the other's.
-GRAPH_ONLY_HISTORICAL_MANIFEST: tuple[ReplayCaseEntry, ...] = (
-    ReplayCaseEntry(
-        case_id="broad-constraints-graph",
-        version=REPLAY_CASE_VERSION,
-        title="Six obligations, five-item batching, all answered",
-        expected_product_result="accepted / 0",
-        decisive_assertion=(
-            "graph-only historical regression: scripted six-agent double"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-    ReplayCaseEntry(
-        case_id="comparative-conflict-graph",
-        version=REPLAY_CASE_VERSION,
-        title="Three groups measured on one basis, no invented winner",
-        expected_product_result="accepted / 0",
-        decisive_assertion=(
-            "graph-only historical regression: scripted six-agent double"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-    ReplayCaseEntry(
-        case_id="refinement-evidence-recovery-graph",
-        version=REPLAY_CASE_VERSION,
-        title="The missing account is acquired in the repair round",
-        expected_product_result="accepted / 0",
-        decisive_assertion=(
-            "graph-only historical regression: scripted six-agent double"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-    ReplayCaseEntry(
-        case_id="claimed-coverage-open-obligation-graph",
-        version=REPLAY_CASE_VERSION,
-        title="A claimed topic whose obligation the evidence cannot answer",
-        expected_product_result="partial / coverage_below_0.80",
-        decisive_assertion=(
-            "A checked claim consumes the topic while the plan's independent "
-            "pair stands open: the campaign reports the substantive ratio "
-            "(0.75, not the claimed 1.00) and records coverage_below_0.80"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-    ReplayCaseEntry(
-        case_id="declared-obligations-answered-graph",
-        version=REPLAY_CASE_VERSION,
-        title="Every declared obligation answered",
-        expected_product_result="accepted / 0",
-        decisive_assertion=(
-            "The control: four topics whose declared obligations are all "
-            "answered by independently corroborated statements reach the "
-            "passing coverage verdict, so the stricter reading is not "
-            "'always fails'"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-)
-
-
-def controlled_suite_inventory() -> tuple[ReplayCaseEntry, ...]:
-    """The declared controlled inventory: the twenty-one rows, then the five."""
-    return (*REPLAY_CASE_MANIFEST, *GRAPH_ONLY_HISTORICAL_MANIFEST)
+    return manifest_entry(case_id).build()
 
 
 __all__ = [
-    "GRAPH_ONLY_HISTORICAL_MANIFEST",
     "REPLAY_CASE_IDS",
     "REPLAY_CASE_MANIFEST",
     "REPLAY_CASE_MANIFEST_VERSION",
     "REPLAY_CASE_VERSION",
     "ReplayCaseEntry",
-    "controlled_suite_inventory",
     "manifest_entry",
     "replay_scenarios",
     "scenario_by_id",
