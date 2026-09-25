@@ -495,8 +495,9 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     period the words state themselves is never resolved relatively (fix round
     1). A subject is adopted only when the evidence words or the passage name
     it (ruling N2). An unnamed proposal never drops a figure for a subject it
-    restates or a subject the page itself backs; it drops only a figure whose
-    recorded subject nothing backs (fix round 1).
+    restates or a subject the figure's own evidence words state; it drops only
+    a figure whose recorded subject its own words do not back (fix rounds 1
+    and 2).
     """
     words = reply.evidence_words.strip()
 
@@ -533,11 +534,12 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
         if excerpt_matches(words, proposed) or excerpt_matches(item.passage, proposed):
             subject, corrected = proposed, True
         elif subject and not (
-            same_subject(proposed, subject)
-            or excerpt_matches(words, subject) or excerpt_matches(item.passage, subject)
+            same_subject(proposed, subject) or excerpt_matches(words, subject)
         ):
-            # Neither subject is on the page: the proposal cannot displace the
-            # recorded one, and the recorded one is unbacked (fix round 1).
+            # Neither subject is backed by this figure's own words (fix round 2):
+            # the proposal cannot displace the recorded one, and the recorded one
+            # is not what these words state. A passage that names another
+            # figure's subject never backs this figure's.
             return drop("correction_not_on_page")
     attribution, organisation = resolve_attribution(
         proposed=reply.attribution, organisation=reply.organisation,

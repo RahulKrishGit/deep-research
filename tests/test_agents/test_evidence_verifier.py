@@ -1347,3 +1347,25 @@ def test_the_block_labels_where_its_page_date_came_from() -> None:
     assert "page date: 2025-11-30 (the finding's release date)" in lines(
         release_date="2025-11-30", statement_date="2025-12-01")
     assert "page date: not stated" in lines()
+
+
+def test_a_recorded_subject_must_be_in_the_figures_own_evidence_words() -> None:
+    """Fix 2: a passage naming another figure's subject never backs this figure's one.
+
+    The passage carries both kettles; the words that state the 4.5 figure name
+    the C kettle, and the recorded subject belongs to the 4.2 figure. A
+    proposal names neither, so nothing backs either subject and the figure is
+    dropped rather than kept carrying the other figure's subject.
+    """
+    passage = ("The Model B kettle scored 4.2 out of 5 for noise. "
+               "The Model C kettle scored 4.5 out of 5 for noise.")
+    words = "The Model C kettle scored 4.5 out of 5 for noise."
+    recorded = figure("4.5", "out of 5").model_copy(update={"subject": "Model B"})
+    read = make_read(passage)
+    finding = make_finding(read, words, figures=[recorded], target_ids=["topic-01-target-01"])
+    item = ContextItem(label="F01", finding=finding, read=read, passage=passage,
+                       match=figure_match(finding, {read.read_id: read}))
+
+    miscredited = _check(item, subject="the C-series kettle", verdict="correct")
+
+    assert miscredited.dropped_reason == "correction_not_on_page"
