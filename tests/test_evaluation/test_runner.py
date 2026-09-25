@@ -107,7 +107,7 @@ def test_repetition_result_retains_structured_diagnostics(
             "errors": [
                 {
                     "details": {
-                        "operation": "critic_report_review",
+                        "operation": "evidence_verifier_context_check",
                         "provider_failure": {
                             "kind": "schema_output",
                             "exception_type": "StructuredOutputError",
@@ -135,7 +135,7 @@ def test_repetition_result_retains_structured_diagnostics(
     diagnostic = result.fallback_provider_diagnostic
     assert diagnostic is not None
     assert diagnostic.kind == "schema_output"
-    assert diagnostic.operation == "critic_report_review"
+    assert diagnostic.operation == "evidence_verifier_context_check"
     assert [item.attempt for item in diagnostic.diagnostics] == [1, 2]
     assert [item.category for item in diagnostic.diagnostics] == [
         "json_invalid",
@@ -155,7 +155,7 @@ def test_repetition_result_normalizes_an_unsafe_diagnostic_path(
             "errors": [
                 {
                     "details": {
-                        "operation": "critic_report_review",
+                        "operation": "evidence_verifier_context_check",
                         "provider_failure": {
                             "kind": "schema_output",
                             "diagnostics": [
@@ -204,7 +204,9 @@ def test_repetition_result_keeps_a_fallback_with_no_diagnostics(
     assert diagnostic.diagnostics == ()
 
 
-@pytest.mark.parametrize("agent_name", ["source_evaluator", "synthesizer"])
+@pytest.mark.parametrize(
+    "agent_name", ["source_evaluator", "evidence_verifier", "report_writer"]
+)
 def test_non_react_agents_project_no_stop_reason(
     clean_target_output, agent_name
 ) -> None:
@@ -548,7 +550,7 @@ def test_the_summary_feedback_names_the_first_failed_gate(
     payload = build_evaluation_summary_feedback(
         failing_experiment_result.cases,
         tier="controlled",
-        runtime=runtime_config_for("synthesizer"),
+        runtime=runtime_config_for("report_writer"),
     )
 
     assert _summary_values(payload) == {

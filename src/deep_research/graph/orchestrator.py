@@ -1,25 +1,28 @@
 """The research graph: assembly, compilation, and the session runner.
 
 The only module in this package that imports LangGraph. Everything the
-graph *decides* — routing, halting, the macro-iteration bound — lives in
+graph *decides* — routing, halting, the extra-pass ceiling — lives in
 ``state.py`` and ``nodes.py``, framework-free, so this module is pure
 wiring and the rules are testable without compiling anything.
 
 Graph shape:
 
-    START -> planner -> researcher -> source_evaluator -> fact_checker
-          -> synthesizer -> critic -> report_review
-          -> {refine -> researcher | finalize_report -> END}
+    START -> planner -> researcher -> source_evaluator -> evidence_verifier
+          -> report_writer -> report_reviewer
+          -> {extra_pass -> researcher | finalize_report -> END}
 
-``report_review`` is the terminal semantic review: it judges the candidate the
-Critic just read, and it runs before the route because a review that refuses
-the report is a defect with somewhere to go. ``refine`` is the hop that carries
-the macro-iteration increment. It exists because a LangGraph conditional edge
-chooses a destination but cannot write state, and the increment has to happen
-somewhere both the graph and a test can see. ``finalize_report`` is the run's
-only writer: it publishes the two composed artifacts once, at the terminal
-node, and is the reason the graph has three destinations after the review
-rather than two.
+``report_reviewer`` is the terminal review: it judges the report the Report
+Writer just composed, and it runs before the route because the missing
+required targets it stamps are what decide whether one more research pass is
+owed. ``extra_pass`` is the hop that carries the iteration increment, and it
+loops back to the researcher alone: an extra pass runs only for the targets
+that were missing, so the plan — and every topic that already answered its
+own obligation — is deliberately not re-derived. It exists as its own node
+because a LangGraph conditional edge chooses a destination but cannot write
+state, and the increment has to happen somewhere both the graph and a test
+can see. ``finalize_report`` is the run's only writer: it publishes the three
+composed artifacts once, at the terminal node, and is the reason the graph
+has three destinations after the review rather than two.
 """
 
 from __future__ import annotations
@@ -41,29 +44,26 @@ from deep_research.graph.nodes import (
     ReportReviewerLike,
     ResearchAgent,
     agent_node,
-    critic_node,
+    extra_pass_node,
     finalize_report_node,
-    refine_node,
-    report_review_node,
-    route_after_critic,
-    route_after_refine,
-    synthesizer_node,
+    report_reviewer_node,
+    report_writer_node,
+    route_after_review,
 )
 from deep_research.graph.state import (
-    CRITIC_NODE,
-    DEFAULT_MAX_ITERATIONS,
-    FACT_CHECKER_NODE,
+    DEFAULT_MAX_EXTRA_PASSES,
+    EVIDENCE_VERIFIER_NODE,
+    EXTRA_PASS_NODE,
     FINALIZE_NODE,
     NODE_NAMES,
     PLANNER_NODE,
-    REFINE_NODE,
-    REPORT_REVIEW_NODE,
+    REPORT_REVIEWER_NODE,
+    REPORT_WRITER_NODE,
     RESEARCHER_NODE,
     ROUTE_END,
+    ROUTE_EXTRA_PASS,
     ROUTE_FINALIZE,
-    ROUTE_REFINE,
     SOURCE_EVALUATOR_NODE,
-    SYNTHESIZER_NODE,
     ResearchGraphState,
     dump_state,
     graph_recursion_limit,
@@ -80,42 +80,41 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 
-# The five agent nodes that run before the Critic, in order. The Critic, the
-# terminal review, the refinement hop, and the terminal finalizer are named
-# separately because they are wired by different calls: one extra node, one
-# conditional edge, one plain edge back, and one plain edge to END. Derived
+# The five agent nodes that run before the terminal review, in order. The
+# reviewer, the extra-pass hop, and the terminal finalizer are named
+# separately because they are wired by different calls: one conditional edge,
+# one plain edge back to the researcher, and one plain edge to END. Derived
 # from ``NODE_NAMES`` so the execution order lives in exactly one place.
 AGENT_NODE_ORDER = NODE_NAMES[:5]
 
 
 @dataclass(frozen=True)
 class ResearchAgents:
-    """The six agents one research graph runs, plus its reviewer and writer.
+    """The five agents one research graph runs, plus its reviewer and writer.
 
     A dataclass rather than a mapping so ``build_research_graph`` has a
-    typed signature: forgetting the Fact Checker is a ``TypeError`` at
+    typed signature: forgetting the Evidence Verifier is a ``TypeError`` at
     construction, not a ``KeyError`` deep inside assembly.
 
-    ``publisher`` is the graph's terminal writer. Left ``None``, the
-    Synthesizer is asked instead (see ``terminal_publisher``); a graph whose
-    Synthesizer cannot write records that nothing was published rather than
-    dropping the artifacts silently.
+    ``publisher`` is the graph's terminal writer. Left ``None``, the Report
+    Writer is asked instead (see ``terminal_publisher``); a graph whose writer
+    cannot write records that nothing was published rather than dropping the
+    artifacts silently.
 
-    ``report_reviewer`` is the terminal semantic reviewer, and it is the one
+    ``report_reviewer`` is the terminal reviewer, and it is the one
     collaborator whose absence is *recorded* rather than substituted: a graph
     without one still runs and still publishes, and the review node writes an
     explicit ``incomplete`` judgement with a recoverable error. There is no
     fallback that would let an unreviewed report be accepted, because a silent
-    fallback to critic-only acceptance is the defect this wiring exists to
+    fallback to a gate-only acceptance is the defect this wiring exists to
     remove.
     """
 
     planner: ResearchAgent
     researcher: ResearchAgent
     source_evaluator: ResearchAgent
-    fact_checker: ResearchAgent
-    synthesizer: ResearchAgent
-    critic: ResearchAgent
+    evidence_verifier: ResearchAgent
+    report_writer: ResearchAgent
     publisher: ReportPublisher | None = None
     report_reviewer: ReportReviewerLike | None = None
 
@@ -123,7 +122,7 @@ class ResearchAgents:
 def terminal_publisher(agents: ResearchAgents) -> ReportPublisher | None:
     """The one writer of the terminal artifacts, or ``None`` when unwired.
 
-    The explicit slot wins. Otherwise the Synthesizer is asked: that agent
+    The explicit slot wins. Otherwise the Report Writer is asked: that agent
     declares the ``write_document`` and ``save_to_memory`` tools and provides
     the publishing methods, so a production graph publishes without a second
     wiring step. A double that implements only ``run`` is not a publisher, and
@@ -131,9 +130,9 @@ def terminal_publisher(agents: ResearchAgents) -> ReportPublisher | None:
     """
     if agents.publisher is not None:
         return agents.publisher
-    synthesizer = agents.synthesizer
-    if isinstance(synthesizer, ReportPublisher):
-        return synthesizer
+    writer = agents.report_writer
+    if isinstance(writer, ReportPublisher):
+        return writer
     return None
 
 
@@ -149,51 +148,44 @@ def build_research_graph(agents: ResearchAgents) -> StateGraph:
         agent_node(agents.source_evaluator, node_name=SOURCE_EVALUATOR_NODE),
     )
     builder.add_node(
-        FACT_CHECKER_NODE,
-        agent_node(agents.fact_checker, node_name=FACT_CHECKER_NODE),
+        EVIDENCE_VERIFIER_NODE,
+        agent_node(
+            agents.evidence_verifier, node_name=EVIDENCE_VERIFIER_NODE
+        ),
     )
-    builder.add_node(SYNTHESIZER_NODE, synthesizer_node(agents.synthesizer))
-    builder.add_node(CRITIC_NODE, critic_node(agents.critic, node_name=CRITIC_NODE))
     builder.add_node(
-        REPORT_REVIEW_NODE, report_review_node(agents.report_reviewer)
+        REPORT_WRITER_NODE, report_writer_node(agents.report_writer)
     )
-    builder.add_node(REFINE_NODE, refine_node)
+    builder.add_node(
+        REPORT_REVIEWER_NODE, report_reviewer_node(agents.report_reviewer)
+    )
+    builder.add_node(EXTRA_PASS_NODE, extra_pass_node)
     builder.add_node(
         FINALIZE_NODE, finalize_report_node(terminal_publisher(agents))
     )
 
     builder.add_edge(START, PLANNER_NODE)
     for source, destination in zip(
-        AGENT_NODE_ORDER, (*AGENT_NODE_ORDER[1:], CRITIC_NODE), strict=True
+        AGENT_NODE_ORDER,
+        (*AGENT_NODE_ORDER[1:], REPORT_REVIEWER_NODE),
+        strict=True,
     ):
         builder.add_edge(source, destination)
-    # The Critic's review is written before the terminal review reads the same
-    # candidate; the route is decided after the terminal review, because a
-    # semantic refusal is a defect the loop can act on.
-    builder.add_edge(CRITIC_NODE, REPORT_REVIEW_NODE)
+    # The review is written before the route is read, because the missing
+    # required targets it stamps are what the route acts on.
     builder.add_conditional_edges(
-        REPORT_REVIEW_NODE,
-        route_after_critic,
+        REPORT_REVIEWER_NODE,
+        route_after_review,
         {
-            ROUTE_REFINE: REFINE_NODE,
+            ROUTE_EXTRA_PASS: EXTRA_PASS_NODE,
             ROUTE_FINALIZE: FINALIZE_NODE,
             ROUTE_END: END,
         },
     )
-    # The refinement hop decides whether the pass that just finished earned
-    # another one, and which node the next repair starts at: a stall goes
-    # straight to publication, an original-question omission goes to the
-    # Planner (whose own edge then reaches the Researcher), and everything else
-    # opens an ordinary research pass.
-    builder.add_conditional_edges(
-        REFINE_NODE,
-        route_after_refine,
-        {
-            "planner": PLANNER_NODE,
-            "researcher": RESEARCHER_NODE,
-            "finalize": FINALIZE_NODE,
-        },
-    )
+    # The extra-pass hop loops back to the researcher alone: the pass it opens
+    # exists for the targets that were missing, and the topics that already
+    # answered their own obligations are not part of it.
+    builder.add_edge(EXTRA_PASS_NODE, RESEARCHER_NODE)
     builder.add_edge(FINALIZE_NODE, END)
     return builder
 
@@ -221,7 +213,7 @@ def build_checkpointer(*, enabled: bool) -> Any | None:
     return InMemorySaver() if enabled else None
 
 
-def session_config(session_id: str, *, max_iterations: int) -> dict[str, Any]:
+def session_config(session_id: str, *, max_extra_passes: int) -> dict[str, Any]:
     """The LangGraph run config for one research session.
 
     ``thread_id`` is the session id, which is what makes resume-by-session
@@ -231,7 +223,7 @@ def session_config(session_id: str, *, max_iterations: int) -> dict[str, Any]:
     """
     return {
         "configurable": {"thread_id": session_id},
-        "recursion_limit": graph_recursion_limit(max_iterations),
+        "recursion_limit": graph_recursion_limit(max_extra_passes),
     }
 
 
@@ -260,7 +252,6 @@ def _session_outputs(state: ResearchState, *, status: str) -> dict[str, Any]:
     of the run, which is what makes "graph route decisions are observable"
     true from the trace alone.
     """
-    critique = state.critique
     return {
         "session_id": state.session_id,
         "status": status,
@@ -271,14 +262,12 @@ def _session_outputs(state: ResearchState, *, status: str) -> dict[str, Any]:
             if event.event_type == "graph.route.decided"
         ],
         "iteration": state.iteration,
-        "max_iterations": state.max_iterations,
-        "repair_stop_reason": state.repair_stop_reason,
-        "refinement_target_count": len(state.refinement_targets),
+        "max_extra_passes": state.max_extra_passes,
+        "extra_pass_target_count": len(state.extra_pass_target_ids),
         "sub_topic_count": len(state.sub_topics),
         "finding_count": len(state.raw_findings),
+        "verified_finding_count": len(state.verified_findings),
         "source_count": len(state.evaluated_sources),
-        "claim_count": len(state.verified_claims),
-        "critic_score": None if critique is None else critique.score,
         "has_report": state.report is not None,
         "error_count": len(state.errors),
     }
@@ -344,7 +333,7 @@ async def _invoke(
     channel: ResearchGraphState | None,
     session_id: str,
     question: str,
-    max_iterations: int,
+    max_extra_passes: int,
     event_handler: ProgressHandler | None = None,
     terminal_checkpoint: ResearchState | None = None,
 ) -> GraphRun:
@@ -360,7 +349,7 @@ async def _invoke(
     ``_stream_graph_result``).
     """
     async with tracker.session_span(session_id, question) as span:
-        config = session_config(session_id, max_iterations=max_iterations)
+        config = session_config(session_id, max_extra_passes=max_extra_passes)
         if event_handler is None:
             result = await graph.ainvoke(channel, config)
         else:
@@ -405,7 +394,7 @@ async def run_research_graph(
     tracker: Tracker,
     session_id: str,
     question: str,
-    max_iterations: int = DEFAULT_MAX_ITERATIONS,
+    max_extra_passes: int = DEFAULT_MAX_EXTRA_PASSES,
     memory_context: MemorySnapshot | None = None,
     event_handler: ProgressHandler | None = None,
 ) -> GraphRun:
@@ -431,7 +420,7 @@ async def run_research_graph(
         initial_graph_state(
             session_id=session_id,
             question=question,
-            max_iterations=max_iterations,
+            max_extra_passes=max_extra_passes,
             memory_context=memory_context,
         )
     )
@@ -441,7 +430,7 @@ async def run_research_graph(
             "events": [
                 session_started_event(
                     session_id=session_id,
-                    max_iterations=max_iterations,
+                    max_extra_passes=max_extra_passes,
                     checkpointing=checkpointing,
                 )
             ]
@@ -453,7 +442,7 @@ async def run_research_graph(
         channel=dump_state(state),
         session_id=session_id,
         question=state.original_question,
-        max_iterations=max_iterations,
+        max_extra_passes=max_extra_passes,
         event_handler=event_handler,
     )
 
@@ -463,16 +452,16 @@ async def resume_research_graph(
     graph: Any,
     tracker: Tracker,
     session_id: str,
-    max_iterations: int | None = None,
+    max_extra_passes: int | None = None,
     event_handler: ProgressHandler | None = None,
 ) -> GraphRun:
     """Continue a checkpointed session from where it stopped.
 
-    The question and the iteration budget are read back out of the
+    The question and the extra-pass budget are read back out of the
     checkpoint rather than re-supplied, so a resume cannot silently research
     something else under a session id that already means something, and it
     cannot die at a recursion bound smaller than the one the session started
-    with. ``max_iterations`` is an explicit override for callers who want a
+    with. ``max_extra_passes`` is an explicit override for callers who want a
     different budget than the one the checkpoint records.
 
     With ``event_handler`` the resumed supersteps stream the same way a
@@ -481,7 +470,10 @@ async def resume_research_graph(
     only result. Without one, execution is the plain ``ainvoke`` path.
     """
     config = session_config(
-        session_id, max_iterations=max_iterations or DEFAULT_MAX_ITERATIONS
+        session_id,
+        max_extra_passes=max_extra_passes
+        if max_extra_passes is not None
+        else DEFAULT_MAX_EXTRA_PASSES,
     )
     try:
         snapshot = await graph.aget_state(config)
@@ -497,7 +489,11 @@ async def resume_research_graph(
         )
 
     checkpointed = load_state(values)
-    budget = checkpointed.max_iterations if max_iterations is None else max_iterations
+    budget = (
+        checkpointed.max_extra_passes
+        if max_extra_passes is None
+        else max_extra_passes
+    )
     # An empty ``next`` means the checkpoint is terminal: the graph has no
     # pending nodes, so a resumed stream is legitimately empty and the
     # checkpoint is the fallback result. Any other checkpoint must produce
@@ -509,7 +505,7 @@ async def resume_research_graph(
         channel=None,
         session_id=session_id,
         question=checkpointed.original_question,
-        max_iterations=budget,
+        max_extra_passes=budget,
         event_handler=event_handler,
         terminal_checkpoint=terminal_checkpoint,
     )

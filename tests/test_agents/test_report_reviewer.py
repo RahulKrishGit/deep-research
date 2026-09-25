@@ -602,6 +602,146 @@ def test_the_finding_block_carries_the_snippet_host_and_figure_labels() -> None:
     assert EIA_SNIPPET in _render(built)
 
 
+def _second_eia_finding() -> object:
+    """A second EIA finding whose reader label is identical to the first's.
+
+    Same publisher, same attribution, same kind and same release, so
+    ``_finding_label`` renders the same string for both and only the registry
+    label (``F01``/``F02``) can tell a statement which snippet it rests on.
+    """
+    finding = _written_finding().model_copy(
+        update={
+            "content": "A second EIA page states the same capacity addition.",
+            "snippet": (
+                "Generators added 9.9 gigawatts (GW) of new battery storage "
+                "capacity in 2024"
+            ),
+        }
+    )
+    result = FigureResult(
+        figure=finding.figures[0].model_copy(update={"value": "9.9"}),
+        matched=True,
+        evidence_words=finding.snippet,
+        context=FigureContext(
+            period="2024",
+            scope=None,
+            attribution="own",
+            organisation=EIA,
+            kind="actual",
+        ),
+    )
+    return finding.model_copy(
+        update={
+            "verification": FindingVerification(
+                status="verified", figure_results=[result]
+            )
+        }
+    )
+
+
+def _composition_citing(
+    findings: list,
+    statement_findings: dict[str, list[str]],
+) -> ReportComposition:
+    """A composition whose statements cite exactly the findings named for them."""
+    composition = _written_composition()
+    labels = {
+        f"F{index:02d}": finding_fingerprint(finding)
+        for index, finding in enumerate(findings, start=1)
+    }
+    statements = {
+        statement_id: ReportStatement(
+            statement_id=statement_id,
+            text=WRITTEN_SENTENCES[statement_id],
+            finding_ids=list(finding_ids),
+            target_ids=[TARGET_ID],
+        )
+        for statement_id, finding_ids in statement_findings.items()
+    }
+    points = [
+        ReportPoint(
+            text=statement.text,
+            source_urls=[EIA_URL],
+            statement=statement,
+        )
+        for statement in statements.values()
+    ]
+    return composition.model_copy(
+        update={
+            "findings": list(findings),
+            "finding_labels": labels,
+            "summary": points[:1],
+            "sections": [ReportSection(title="Additions in 2024", points=points[1:])],
+        }
+    )
+
+
+def test_a_statement_names_the_registry_labels_of_the_findings_it_cites() -> None:
+    """Two findings can share a reader label; only F-labels tell them apart.
+
+    ``_finding_label`` is built from organisation, attribution, kind and
+    release, so two findings from one publisher with the same kind and release
+    render the *same* string. A statement that carries only that string cannot
+    be matched to a snippet, and the reviewer would judge it against a guess.
+    """
+    first = _written_finding()
+    second = _second_eia_finding()
+    composition = _composition_citing(
+        [first, second],
+        {
+            "S001": [finding_fingerprint(first)],
+            "S002": [finding_fingerprint(second)],
+        },
+    )
+    built = build_report_review_input(state_with_written_report(composition=composition))
+
+    # The two findings' descriptive labels are identical...
+    assert (
+        built.statement("S001").finding_labels
+        == built.statement("S002").finding_labels
+    )
+    # ...so each statement must name its own registry label.
+    assert built.statement("S001").finding_refs == ["F01"]
+    assert built.statement("S002").finding_refs == ["F02"]
+    assert {finding.label for finding in built.findings} == {"F01", "F02"}
+
+    rendered = _render(built)
+    assert "### F01" in rendered and "### F02" in rendered
+    s001 = rendered.split("- S002")[0].split("- S001")[1]
+    s002 = rendered.split("- S002")[1]
+    assert "cites: F01" in s001 and "cites: F02" not in s001
+    assert "cites: F02" in s002 and "cites: F01" not in s002
+
+
+def test_two_revision_editions_with_one_fingerprint_keep_their_own_snippets() -> None:
+    """A shared fingerprint must not collapse two editions onto one snippet.
+
+    Two revision editions of one page -- an unchanged URL, sub-topic and
+    content, with only the structured figure or its release differing -- share a
+    ``finding_fingerprint`` and are both registered in ``finding_labels``. A
+    fingerprint-keyed lookup hands the later edition's snippet to both labels,
+    so a statement citing the first is judged against the wrong evidence.
+    """
+    first = _written_finding()
+    second = _written_finding().model_copy(
+        update={
+            "snippet": "EARLIER EDITION: Generators added 9.9 gigawatts in 2024",
+            "release_date": "2024-06-01",
+        }
+    )
+    shared = finding_fingerprint(first)
+    assert finding_fingerprint(second) == shared
+    composition = _composition_citing([first, second], {"S001": [shared], "S002": [shared]})
+    built = build_report_review_input(state_with_written_report(composition=composition))
+
+    shown = {finding.label: finding for finding in built.findings}
+    assert shown["F01"].snippet == first.snippet
+    assert shown["F02"].snippet == second.snippet
+    assert shown["F01"].figure_labels != shown["F02"].figure_labels
+    assert "released 2025-03-12" in shown["F01"].figure_labels[0]
+    assert "released 2024-06-01" in shown["F02"].figure_labels[0]
+
+
 def test_the_key_facts_and_not_found_lines_reach_the_request() -> None:
     built = packet()
 
@@ -1714,6 +1854,36 @@ async def test_a_defect_with_an_unknown_kind_is_dropped_and_the_drop_is_recorded
     ]
     assert "vibes" in review.rationale
     assert semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_defect_note_names_only_the_field_that_failed() -> None:
+    """The note is the only record of the drop, so it must not misstate it.
+
+    A valid kind with an unknown severity was recorded as "the kind is not a
+    defect kind", which names a field that was in fact correct and hides which
+    one to fix.
+    """
+    built = packet()
+    completer = ScriptedCompleter(
+        outputs=[
+            _draft(
+                defects=[
+                    _defect_draft(kind="coverage", severity="urgent"),
+                    _defect_draft(kind="vibes", severity="major"),
+                ]
+            )
+        ]
+    )
+
+    review = await review_report(completer, built)
+
+    assert review.status == "scored"
+    assert review.defects == []
+    assert "'urgent' is not a defect severity" in review.rationale
+    assert "'coverage' is not a defect kind" not in review.rationale
+    assert "'vibes' is not a defect kind" in review.rationale
+    assert "'major' is not a defect severity" not in review.rationale
 
 
 @pytest.mark.asyncio

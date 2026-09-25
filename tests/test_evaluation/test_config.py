@@ -925,13 +925,17 @@ CRITIC_PROMPT_FINGERPRINT = "9f62f005745a"
 # ``_ENERGY_UNIT``/``_POWER_UNIT`` imports from ``utils.types``. Module-source
 # drift only — no prompt string was edited, and the other five pins are
 # unchanged.
+# Evidence Verifier plan, Task 4.7: the harness follows the pipeline to its
+# five agents, so the Fact Checker's, Synthesizer's and Critic's pins are gone
+# with their case files and ``evaluation_verifier``/``report_writer`` join the
+# table. The values are computed on this branch with the Task 1.5 command;
+# Task 4.10 re-pins them once every parallel task has landed.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "b062e8c3e7cc",
-    "researcher": "90f3fa33d7da",
+    "planner": "c406a44e36e6",
+    "researcher": "e4d4ce8f4d63",
     "source_evaluator": "1a7f057fad85",
-    "fact_checker": "96e323f7271a",
-    "synthesizer": "948a744cdb31",
-    "critic": "9f62f005745a",
+    "evidence_verifier": "868b5db9bf7c",
+    "report_writer": "3c49cce469b3",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
@@ -1287,146 +1291,26 @@ def test_changing_the_target_transport_never_touches_the_dataset_or_judge(
     assert judge_prompt_fingerprint(rubric_version=1) == "74b9cddfbbee"
 
 
-def test_the_critic_target_fingerprint_is_pinned_as_a_drift_alarm() -> None:
-    """A prompt edit must be a conscious act, not a silent invalidation.
-
-    Before this pin, the Critic's ``target_prompt_fingerprint`` was recorded on
-    every artifact but asserted nowhere, so a prompt change would move it without
-    any test noticing — unlike the judge fingerprint, which has been pinned since
-    it was first introduced.
-    """
-    assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
-    assert agent_prompt_fingerprint("critic") != "bf86f19981a6"
-
-
-def test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift() -> None:
-    """Step 5: all six agents' fingerprints, not only the Critic's.
-
-    The matrix is a conformance test, so the fingerprints are checked before any
-    prompt edit is accepted. Pinning all six means a change to the shared
-    ``agents.prompts`` module — which moves every value at once — is visible in
-    one assertion rather than one sixth of it.
-    """
-    assert set(AGENT_NAMES) == set(PINNED_TARGET_PROMPT_FINGERPRINTS)
-    assert {
-        name: agent_prompt_fingerprint(name) for name in AGENT_NAMES
-    } == PINNED_TARGET_PROMPT_FINGERPRINTS
-
-
-def test_the_read_identity_repin_is_module_source_drift_not_prompt_text() -> (
-    None
-):
-    """Record why the read-identity pass moved the Fact Checker's fingerprint.
-
-    The edit is structure, in two files and neither of them a prompt module:
-    ``admit_read_result`` now takes the run's recorded reads and admits a body
-    the run already holds under the description it was recorded with, and the
-    Fact Checker's retrieval loop passes its registry. Without it a re-read of
-    one page under another spelling of its URL — ``normalize_source_url``
-    strips ``www.``, so the registry hands the loop a URL its own record does
-    not carry — mints the same read identity with a different
-    ``requested_url``, ``merge_read_records`` refuses one identity carrying two
-    bodies, and the node's whole state update is rejected: the live run died at
-    ``graph.fact_checker`` that way with nothing published.
-
-    ``agent_prompt_fingerprint`` hashes each agent module's own source, so this
-    moves the Fact Checker's value although no instruction changed. The rule
-    lives in ``acquisition.py``, which is not one of the six pinned modules,
-    which is why the other five pins did not move; all six hash the shared
-    ``agents.prompts`` library, and neither it nor the judge moved.
-    """
-    pre_read_identity = "00e2229ad4fa"
-
-    assert agent_prompt_fingerprint("fact_checker") == "96e323f7271a"
-    assert (
-        PINNED_TARGET_PROMPT_FINGERPRINTS["fact_checker"] == "96e323f7271a"
-    )
-    assert agent_prompt_fingerprint("fact_checker") != pre_read_identity
-    assert {
-        name: agent_prompt_fingerprint(name)
-        for name in AGENT_NAMES
-        if name != "fact_checker"
-    } == {
-        name: value
-        for name, value in PINNED_TARGET_PROMPT_FINGERPRINTS.items()
-        if name != "fact_checker"
-    }
-    assert PINNED_JUDGE_PROMPT_FINGERPRINT == judge_prompt_fingerprint(
-        rubric_version=1
-    )
-
-
-def test_the_judge_fingerprint_is_pinned_beside_the_six_target_pins() -> None:
-    """Step 5: both halves of the structured contract, pinned in one place.
-
-    The judge fingerprint is a distinct identity from every target's, because it
-    covers the judge system prompt, template, schema, weights, and rubric version
-    rather than an agent prompt module.
-    """
-    judge = judge_prompt_fingerprint(rubric_version=1)
-
-    assert judge == PINNED_JUDGE_PROMPT_FINGERPRINT
-    assert judge not in set(PINNED_TARGET_PROMPT_FINGERPRINTS.values())
-
-
-def test_the_critic_target_view_repin_is_module_source_drift_not_prompt_text() -> (
-    None
-):
-    """Record why the target-view pass moved the Critic's fingerprint alone.
-
-    ``agent_prompt_fingerprint`` hashes each agent module's own source, so a
-    structural edit moves it exactly as a prompt edit does. ``critic.py``
-    changed when the Critic's target view stopped keeping a second definition
-    of coverage: ``open`` is now the negation of an ``answered`` field the
-    packet reads straight from ``target_is_answered``, the gate that decides
-    coverage (§2.1). No prompt instruction changed and the shared
-    ``agents.prompts`` library was not touched — which the other five pins
-    prove, because every one of them hashes that same module and none moved.
-    """
-    pre_target_view = "2c80a78040b9"
-
-    assert agent_prompt_fingerprint("critic") == CRITIC_PROMPT_FINGERPRINT
-    assert agent_prompt_fingerprint("critic") == "9f62f005745a"
-    assert agent_prompt_fingerprint("critic") != pre_target_view
-    assert {
-        name: agent_prompt_fingerprint(name)
-        for name in AGENT_NAMES
-        if name != "critic"
-    } == {
-        name: value
-        for name, value in PINNED_TARGET_PROMPT_FINGERPRINTS.items()
-        if name != "critic"
-    }
-    assert PINNED_JUDGE_PROMPT_FINGERPRINT == judge_prompt_fingerprint(
-        rubric_version=1
-    )
-
-
 def test_the_target_fingerprint_covers_the_shared_prompt_module() -> None:
     """Record why the pin above cannot attribute a change to one agent.
 
     ``agent_prompt_fingerprint`` hashes the agent's own module *and* the shared
     ``agents.prompts`` library, so clarifying one sentence of one agent's contract
-    moves the recorded fingerprint for all six. Verified here rather than assumed,
+    moves the recorded fingerprint for every one of them. Verified here rather
+    than assumed,
     because it changes how a fingerprint move should be read.
     """
     fingerprints = {
-        name: agent_prompt_fingerprint(name)
-        for name in (
-            "critic",
-            "planner",
-            "researcher",
-            "synthesizer",
-            "fact_checker",
-            "source_evaluator",
-        )
+        name: agent_prompt_fingerprint(name) for name in AGENT_NAMES
     }
 
     assert len(set(fingerprints.values())) == len(fingerprints)
     # Every agent's value is derived from the same shared module, so a change to
     # that module is visible in all of them; the per-agent component is what keeps
     # the values distinct.
-    assert fingerprints["critic"] == CRITIC_PROMPT_FINGERPRINT
+    assert fingerprints["report_writer"] == PINNED_TARGET_PROMPT_FINGERPRINTS[
+        "report_writer"
+    ]
 
 
 def test_changing_the_planner_final_budget_refingerprints_the_configuration() -> None:
@@ -1783,8 +1667,7 @@ def test_the_target_llm_config_is_accepted_by_the_capability_registry() -> None:
     actually supports, checked against the local table, not assumed."""
     from deep_research.providers import resolve_request_settings
 
-    for agent_name in ("planner", "researcher", "source_evaluator",
-                       "fact_checker", "synthesizer", "critic"):
+    for agent_name in AGENT_NAMES:
         llm = target_llm_config(build(agent_name=agent_name), ConfigSettings().llm)
         resolved = resolve_request_settings(llm.provider, llm.resolve_for(None))
         assert resolved.reasoning_effort in ("high", "max")
@@ -1884,9 +1767,11 @@ TASK10_RUNTIME_IDENTITIES = (
         "source_evaluator",
         "cross-agent-planner-fix-parity-baseline-source-evaluator",
     ),
-    ("fact_checker", "cross-agent-planner-fix-parity-baseline-fact-checker"),
-    ("synthesizer", "cross-agent-planner-fix-parity-baseline-synthesizer"),
-    ("critic", "cross-agent-planner-fix-parity-baseline-critic"),
+    (
+        "evidence_verifier",
+        "cross-agent-planner-fix-parity-baseline-evidence-verifier",
+    ),
+    ("report_writer", "cross-agent-planner-fix-parity-baseline-report-writer"),
     (
         "researcher",
         "cross-agent-planner-fix-parity-confirmation-researcher",

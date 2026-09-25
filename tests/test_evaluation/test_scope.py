@@ -59,9 +59,8 @@ def test_the_evaluation_package_defines_no_graph_or_suite_dataset() -> None:
             "planner",
             "researcher",
             "source_evaluator",
-            "fact_checker",
-            "synthesizer",
-            "critic",
+            "evidence_verifier",
+            "report_writer",
         }
         for case in all_cases()
     )

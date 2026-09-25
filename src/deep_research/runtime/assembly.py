@@ -13,17 +13,16 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from deep_research.agents.base import AgentCompleter
-from deep_research.agents.critic import CriticAgent
 from deep_research.agents.errors import AgentConfigurationError
-from deep_research.agents.fact_checker import FactCheckerAgent
+from deep_research.agents.evidence_verifier import EvidenceVerifierAgent
 from deep_research.agents.planner import Clock, PlannerAgent
 from deep_research.agents.report_reviewer import REPORT_REVIEWER_ROLE, ReportReviewer
+from deep_research.agents.report_writer import ReportWriterAgent
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.agents.source_evaluator import (
     ReputationSource,
     SourceEvaluatorAgent,
 )
-from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.graph.orchestrator import (
     ResearchAgents,
     build_checkpointer,
@@ -67,7 +66,7 @@ def build_tools(
 ) -> list[BaseTool]:
     """Build every tool any agent declares, in one shared registry.
 
-    One registry for all six agents rather than a per-agent subset:
+    One registry for all five agents rather than a per-agent subset:
     ``AgentToolset`` already selects the names an agent declares and
     ignores the rest, and it raises ``AgentConfigurationError`` when a
     declared tool was never injected — so the wiring guard is kept without
@@ -101,18 +100,17 @@ def build_tools(
     ]
 
 
-# The six agents, in graph order. Equal to ``graph.state.NODE_NAMES[:6]``
-# by construction: node names deliberately equal agent names. The service roles
-# below are deliberately not in this tuple — they are not agents, they hold no
-# ReAct loop, and no consumer that means "the agents that research" should pick
-# one up.
+# The five agents, in graph order. Equal to ``graph.state.NODE_NAMES[:5]``
+# by construction: node names deliberately equal agent names. The service
+# roles below are deliberately not in this tuple — they are not agents, they
+# hold no ReAct loop, and no consumer that means "the agents that research"
+# should pick one up.
 AGENT_NAMES = (
     "planner",
     "researcher",
     "source_evaluator",
-    "fact_checker",
-    "synthesizer",
-    "critic",
+    "evidence_verifier",
+    "report_writer",
 )
 
 
@@ -129,7 +127,7 @@ def _scratchpad(
     )
 
 
-# Keyed by the six canonical agent names. Every entry receives the identical
+# Keyed by the five canonical agent names. Every entry receives the identical
 # shared kwargs, apart from two that only some constructors accept:
 # ``read_cache``, which only the Researcher consumes, and ``clock``, which goes
 # to the three agents named in ``_CLOCK_AWARE_AGENTS`` below. Only the Source
@@ -153,23 +151,20 @@ _AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
     "source_evaluator": lambda reputation, **shared: SourceEvaluatorAgent(
         reputation=reputation, **shared
     ),
-    "fact_checker": lambda reputation, **shared: FactCheckerAgent(
-        max_claims=shared["config"].claim_batch_size,
-        batches_per_pass=shared["config"].claim_batches_per_pass,
-        **shared,
+    "evidence_verifier": lambda reputation, **shared: EvidenceVerifierAgent(
+        **shared
     ),
-    "synthesizer": lambda reputation, **shared: SynthesizerAgent(**shared),
-    "critic": lambda reputation, **shared: CriticAgent(**shared),
+    "report_writer": lambda reputation, **shared: ReportWriterAgent(**shared),
 }
 
 # The three agents whose constructors read the run's clock: the planner dates
 # the answer contract from it, the researcher stamps every read and finding
-# from it, and the synthesizer stamps the reader's ``Generated on`` line from
+# from it, and the report writer stamps the reader's ``Generated on`` line from
 # it. A caller that injects one clock therefore gets one run with one clock in
 # it, and a run whose dates must not move with the machine's can be pinned. The
-# other three hold no clock at all — handing them one would be a keyword no
+# other two hold no clock at all — handing one a clock would be a keyword no
 # constructor accepts. An agent that grows a ``clock`` parameter belongs here.
-_CLOCK_AWARE_AGENTS = frozenset({"planner", "researcher", "synthesizer"})
+_CLOCK_AWARE_AGENTS = frozenset({"planner", "researcher", "report_writer"})
 
 
 def build_agent(
@@ -186,14 +181,14 @@ def build_agent(
 ) -> Any:
     """Construct exactly one production-configured agent.
 
-    The single place any agent is wired. ``build_agents`` calls it six
+    The single place any agent is wired. ``build_agents`` calls it five
     times; the evaluation harness calls it once. Sharing the mapping is
     what keeps evaluation from drifting away from production wiring.
 
     ``read_cache`` is source-cache state the caller already holds — bodies an
     earlier session read, keyed by URL. Only the Researcher looks a URL up
     before downloading it, so only the Researcher is handed the registry; the
-    other five never fetch a body and a cache they cannot consult would be a
+    other four never fetch a body and a cache they cannot consult would be a
     parameter with no meaning.
 
     ``clock`` is the run's clock, read by the three agents that stamp a date or
@@ -243,7 +238,7 @@ def build_agents(
     read_cache: MutableMapping[str, ReadRecord] | None = None,
     clock: Clock | None = None,
 ) -> ResearchAgents:
-    """Construct the six agents one graph runs.
+    """Construct the five agents one graph runs.
 
     A tool an agent declares but nobody injected is an
     ``AgentConfigurationError`` raised at construction, not a failure
@@ -251,7 +246,7 @@ def build_agents(
     ``ResearchConfigurationError`` so the CLI can print it without a
     traceback.
 
-    ``clock`` is passed to every agent that reads one, so the six are built
+    ``clock`` is passed to every agent that reads one, so the five are built
     against a single clock rather than each choosing its own.
     """
     try:

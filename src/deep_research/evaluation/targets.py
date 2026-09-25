@@ -631,10 +631,6 @@ def _success_output(
                 finding.model_dump(mode="json")
                 for finding in case.state.raw_findings
             ],
-            claims=[
-                claim.model_dump(mode="json")
-                for claim in case.state.verified_claims
-            ],
             scripted_search_urls=(
                 list(script.scripted_search_urls) if script is not None else []
             ),
@@ -658,9 +654,8 @@ def _safe_agent_name(value: Any) -> AgentName:
         "planner",
         "researcher",
         "source_evaluator",
-        "fact_checker",
-        "synthesizer",
-        "critic",
+        "evidence_verifier",
+        "report_writer",
     ):
         return value  # type: ignore[return-value]
     return "planner"

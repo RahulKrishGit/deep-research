@@ -80,6 +80,36 @@ def session_started() -> ResearchEvent:
     )
 
 
+def accepted_review() -> ReportReview:
+    """The scored review an accepted pass carries."""
+    return ReportReview(
+        status="scored",
+        dimensions={name: 0.9 for name in REVIEW_DIMENSIONS},
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        input_fingerprint="packet-1",
+        composition_fingerprint="composition-1",
+    )
+
+
+def accepted_state() -> ResearchState:
+    """One pass the router accepted: passes spent, gates clear, review passes.
+
+    PD-23's accepted shape: the extra-pass ceiling is spent, the deterministic
+    pass found no hard failure, and the terminal review scored the report. The
+    report publishes as ``completed`` and ``accepted``, which is the only case
+    ``--require-quality`` exits 0 for.
+    """
+    return ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        iteration=1,
+        max_extra_passes=1,
+        report_review=accepted_review(),
+        quality=ReportQualitySnapshot(),
+    )
+
+
 class RecordingRunner:
     """Capture the keyword arguments the CLI hands to run_research_sync."""
 
@@ -581,6 +611,18 @@ def test_require_quality_exits_four_without_any_quality_pass() -> None:
     )
 
     assert code == EXIT_QUALITY_UNACCEPTED
+
+
+def test_require_quality_exits_zero_for_an_accepted_run() -> None:
+    """PD-23: passes spent, gates clear, reviewer accepts -> exit 0."""
+    runner = RecordingRunner(result=outcome(state=accepted_state()))
+    stream = io.StringIO()
+
+    code = main([QUESTION, "--require-quality"], runner=runner, stream=stream)
+
+    assert code == EXIT_OK
+    assert "Quality: accepted" in stream.getvalue()
+    assert "Status: completed" in stream.getvalue()
 
 
 def test_require_quality_exits_zero_for_an_accepted_verdict() -> None:

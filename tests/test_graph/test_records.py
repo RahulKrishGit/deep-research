@@ -18,11 +18,11 @@ from deep_research.graph.errors import (
     provider_configuration_error,
 )
 from deep_research.graph.events import (
+    extra_pass_started_event,
     graph_event,
     node_completed_event,
     node_skipped_event,
     node_started_event,
-    refinement_started_event,
     route_decided_event,
     session_completed_event,
     session_started_event,
@@ -31,7 +31,7 @@ from deep_research.graph.state import (
     GRAPH_ROUTES,
     GRAPH_STATUSES,
     HALTING_ERROR_TYPES,
-    ROUTE_REFINE,
+    ROUTE_EXTRA_PASS,
 )
 
 
@@ -117,10 +117,12 @@ def test_planning_failed_error_preserves_safe_problems_without_hostile_text() ->
 
 
 def test_an_invalid_route_records_the_budget_it_violated() -> None:
-    recorded = invalid_route_error(node="refine", iteration=3, max_iterations=3)
+    recorded = invalid_route_error(
+        node="extra_pass", iteration=3, max_extra_passes=3
+    )
 
     assert recorded.error_type == "graph_invalid_route"
-    assert recorded.details == {"iteration": 3, "max_iterations": 3}
+    assert recorded.details == {"iteration": 3, "max_extra_passes": 3}
     assert recorded.recoverable is False
 
 
@@ -187,7 +189,7 @@ def test_node_lifecycle_events_carry_their_counts() -> None:
     completed = node_completed_event(
         "researcher", iteration=1, event_count=4, error_count=1
     )
-    skipped = node_skipped_event("synthesizer", iteration=1)
+    skipped = node_skipped_event("report_writer", iteration=1)
 
     assert started.event_type == "graph.node.started"
     assert started.metadata == {"node": "researcher", "iteration": 1}
@@ -200,47 +202,55 @@ def test_node_lifecycle_events_carry_their_counts() -> None:
 
 def test_a_route_decision_records_an_enumerated_reason() -> None:
     event = route_decided_event(
-        destination=ROUTE_REFINE,
-        reason="refinement_requested",
+        destination=ROUTE_EXTRA_PASS,
+        reason="extra_pass_requested",
         iteration=0,
-        max_iterations=3,
-        should_continue=True,
+        max_extra_passes=1,
+        missing_required_target_ids=["topic-01-target-02"],
     )
 
     assert event.event_type == "graph.route.decided"
-    assert event.metadata["destination"] == ROUTE_REFINE
-    assert event.metadata["reason"] == "refinement_requested"
-    assert event.metadata["should_continue"] is True
-    assert GRAPH_ROUTES["refinement_requested"] in event.message
+    assert event.metadata["destination"] == ROUTE_EXTRA_PASS
+    assert event.metadata["reason"] == "extra_pass_requested"
+    assert event.metadata["missing_required_target_ids"] == [
+        "topic-01-target-02"
+    ]
+    assert GRAPH_ROUTES["extra_pass_requested"] in event.message
 
 
 def test_a_route_decision_refuses_an_unenumerated_reason() -> None:
     with pytest.raises(ValueError, match="unknown route reason"):
         route_decided_event(
-            destination=ROUTE_REFINE,
+            destination=ROUTE_EXTRA_PASS,
             reason="because",
             iteration=0,
-            max_iterations=3,
-            should_continue=True,
+            max_extra_passes=1,
         )
 
 
-def test_a_refinement_announces_the_iteration_it_opened() -> None:
-    event = refinement_started_event(iteration=1, max_iterations=3)
+def test_an_extra_pass_announces_the_iteration_and_the_targets_it_serves() -> None:
+    event = extra_pass_started_event(
+        iteration=1, max_extra_passes=2, targets=["topic-01-target-02"]
+    )
 
-    assert event.event_type == "graph.refinement.started"
-    assert event.metadata == {"iteration": 1, "max_iterations": 3}
+    assert event.event_type == "graph.extra_pass.started"
+    assert event.metadata == {
+        "iteration": 1,
+        "max_extra_passes": 2,
+        "targets": ["topic-01-target-02"],
+    }
 
 
 def test_session_events_bracket_the_run() -> None:
     started = session_started_event(
-        session_id="session-1", max_iterations=3, checkpointing=True
+        session_id="session-1", max_extra_passes=3, checkpointing=True
     )
     completed = session_completed_event(
         status="completed", iteration=1, error_count=0, has_report=True
     )
 
     assert started.event_type == "graph.session.started"
+    assert started.metadata["max_extra_passes"] == 3
     assert started.metadata["checkpointing"] is True
     assert completed.event_type == "graph.session.completed"
     assert completed.metadata["status"] in GRAPH_STATUSES

@@ -333,6 +333,27 @@ async def test_a_sentence_kept_after_a_failed_batch_records_an_unchecked_verdict
 
 
 @pytest.mark.asyncio
+async def test_a_point_in_a_dropped_section_records_no_verdict(writer, checker) -> None:
+    """Task 4.3 review P3: a section with a blank title is dropped whole, so
+    its points never reach the reader. ``statement_verdicts`` is a record of
+    the report's own sentences, so a point that was finalized but never
+    printed does not appear in it."""
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = "Generators added 10.4 GW of battery storage in 2024."
+    draft = ReportWriterDraft(
+        executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])],
+        sections=[WriterSectionDraft(title="   ", points=[
+            WriterPointDraft(text=drafted, finding_labels=[label]),
+        ])],
+    )
+    checker.verdicts = {"S001": _verdict("consistent")}
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.sections == []
+    assert composition.statement_verdicts == {"S001": "consistent"}
+
+
+@pytest.mark.asyncio
 async def test_a_summary_restatement_is_refused(writer, checker) -> None:
     task = writer.build_task(_task_state())
     label = _labels(task.registry)["eia.gov"]

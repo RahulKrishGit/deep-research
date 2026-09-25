@@ -32,17 +32,15 @@ _SAMPLE_CASE_IDS = {
     "planner": "focused-decomposition",
     "researcher": "multi-source-coverage",
     "source_evaluator": "strong-and-weak-sources",
-    "fact_checker": "mixed-verdicts",
-    "synthesizer": "complete-cited-report",
-    "critic": "approve-strong-report",
+    "evidence_verifier": "relay-labelled-as-relay",
+    "report_writer": "complete-cited-report",
 }
 _SAMPLE_SCENARIOS = {
     "planner": "planner-clean-memory",
     "researcher": "researcher-multi-source",
     "source_evaluator": "source-evaluator-mixed",
-    "fact_checker": "fact-checker-mixed",
-    "synthesizer": "synthesizer-complete",
-    "critic": "critic-strong-report",
+    "evidence_verifier": "evidence-verifier-relay",
+    "report_writer": "report-writer-complete",
 }
 
 
@@ -107,7 +105,8 @@ def test_live_dependencies_are_derived_from_declared_tools() -> None:
     assert "tavily" in LIVE_DEPENDENCIES["researcher"]
     assert "http" in LIVE_DEPENDENCIES["researcher"]
     assert "tavily" not in LIVE_DEPENDENCIES["source_evaluator"]
-    assert "documents" in LIVE_DEPENDENCIES["synthesizer"]
+    assert "documents" in LIVE_DEPENDENCIES["report_writer"]
+    assert LIVE_DEPENDENCIES["evidence_verifier"] == ()
     assert "memory" in LIVE_DEPENDENCIES["planner"]
 
 
@@ -217,8 +216,8 @@ def test_live_memory_and_documents_stay_in_the_evaluation_namespace(
     tracker, settings, tmp_path, runtime_config_for, live_case_for
 ) -> None:
     bundle = build_live_dependencies(
-        runtime_config_for("synthesizer", tier="live"),
-        live_case_for("synthesizer"),
+        runtime_config_for("report_writer", tier="live"),
+        live_case_for("report_writer"),
         tracker=tracker,
         settings=settings,
         root=tmp_path,

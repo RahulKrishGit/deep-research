@@ -682,16 +682,66 @@ def test_a_gate_failure_is_never_accepted() -> None:
     assert outcome_of(failing).accepted is False
 
 
-def test_accepted_is_false_for_a_pass_that_still_owes_a_required_target() -> None:
-    """The fixture run owes one target and has spent no extra pass on it.
+def test_a_pass_with_an_extra_pass_left_is_not_accepted() -> None:
+    """PD-23: the route is ``extra_pass``, so the report is not accepted yet.
 
-    Acceptance is the router's own decision (``graph_quality_status``), which
-    the outcome reads rather than re-derives; this pins the reading a run with
-    a missing target has under it, whatever edge the graph took to get there.
+    The fixture is the shape the reviewer node leaves: the deterministic pass
+    measured one missing required target and the record names it (PD-5), with
+    an extra pass still to spend. Acceptance is the router's own decision
+    (``graph_quality_status``), which the outcome reads rather than re-derives.
     """
-    judged = verified_state(report_review=scored_review())
+    judged = verified_state(
+        report_review=scored_review(
+            missing_required_target_ids=[MISSING_TARGET_ID]
+        )
+    )
 
     assert outcome_of(judged).accepted is False
+    assert outcome_of(judged).quality_status == QUALITY_STATUS_PARTIAL
+
+
+def test_a_spent_extra_pass_with_the_target_under_not_found_is_accepted() -> None:
+    """PD-23: passes spent, gates clear, reviewer accepts -> completed.
+
+    The missing target stays missing and stays disclosed — it is listed under
+    Not found, which §6.4 accepts — so the run finishes ``completed`` with an
+    accepted report rather than ``max_iterations``. The budget running out is a
+    fact about the machine, not a defect in the report.
+    """
+    judged = verified_state(
+        iteration=1,
+        max_extra_passes=1,
+        report_review=scored_review(
+            missing_required_target_ids=[MISSING_TARGET_ID]
+        ),
+    )
+
+    outcome = outcome_of(judged)
+
+    assert outcome.quality_status == QUALITY_STATUS_ACCEPTED
+    assert outcome.accepted is True
+    assert outcome.failed is False
+    assert outcome.status == "completed"
+    assert outcome.coverage is not None
+    assert outcome.coverage.missing_required_target_ids == (MISSING_TARGET_ID,)
+    assert outcome.coverage.not_found_target_ids == (MISSING_TARGET_ID,)
+
+
+def test_a_scored_review_that_did_not_pass_is_not_accepted() -> None:
+    """A reviewer that judged the report and did not accept it is a verdict."""
+    rejected = scored_review(
+        dimensions={
+            name: 0.5 for name in REVIEW_DIMENSIONS
+        },
+        missing_required_target_ids=[MISSING_TARGET_ID],
+    )
+
+    outcome = outcome_of(
+        verified_state(iteration=1, max_extra_passes=1, report_review=rejected)
+    )
+
+    assert outcome.accepted is False
+    assert outcome.quality_status == QUALITY_STATUS_PARTIAL
 
 
 def test_build_outcome_ignores_metrics_from_other_sessions() -> None:

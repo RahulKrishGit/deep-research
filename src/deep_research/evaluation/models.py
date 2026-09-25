@@ -50,9 +50,8 @@ AgentName: TypeAlias = Literal[
     "planner",
     "researcher",
     "source_evaluator",
-    "fact_checker",
-    "synthesizer",
-    "critic",
+    "evidence_verifier",
+    "report_writer",
 ]
 EvaluationTier: TypeAlias = Literal["controlled", "live"]
 
@@ -60,9 +59,8 @@ AGENT_NAMES: tuple[AgentName, ...] = (
     "planner",
     "researcher",
     "source_evaluator",
-    "fact_checker",
-    "synthesizer",
-    "critic",
+    "evidence_verifier",
+    "report_writer",
 )
 CLI_AGENT_NAMES: tuple[str, ...] = tuple(
     name.replace("_", "-") for name in AGENT_NAMES
@@ -127,20 +125,6 @@ class CaseExpectations(ContractModel):
     max_tool_calls: int = Field(ge=0)
     deterministic_metrics: list[DeterministicMetric] = Field(min_length=1)
     must_record_recoverable_error: bool = False
-    state_is_the_defect: bool = False
-    """True when this case's state is the defective candidate under review.
-
-    A controlled case normally seeds records an honest run could have
-    produced: the state is the input a later agent judges, and downstream
-    evaluations read it as a snapshot of what really happened. A Critic case
-    is the one place where that cannot hold — the report it reviews is itself
-    the defect being graded — so a case may seed a candidate whose
-    corroboration is not independent, which is a state no honest pass would
-    emit and precisely what the agent has to notice. Declaring it here is what
-    lets the registry invariants that hold a seeded claim to the shapes
-    ``fact_checker.resolve_verdict`` can emit skip this case by reading the
-    declaration, instead of the tests naming an exempt case id.
-    """
     prohibited_tool_names: list[str] = Field(default_factory=list)
     required_live_dependencies: list[str] = Field(default_factory=list)
 
@@ -309,7 +293,6 @@ class EvidenceContext(ContractModel):
 
     sources: list[dict[str, JsonValue]] = Field(default_factory=list)
     findings: list[dict[str, JsonValue]] = Field(default_factory=list)
-    claims: list[dict[str, JsonValue]] = Field(default_factory=list)
     scripted_search_urls: list[str] = Field(default_factory=list)
 
 

@@ -138,8 +138,8 @@ def test_kebab_agent_names_are_accepted_and_canonicalized() -> None:
     assert parse_arguments(["agent", "source-evaluator"]).agent_name == (
         "source_evaluator"
     )
-    assert parse_arguments(["agent", "fact-checker"]).agent_name == (
-        "fact_checker"
+    assert parse_arguments(["agent", "evidence-verifier"]).agent_name == (
+        "evidence_verifier"
     )
 
 
@@ -148,7 +148,7 @@ def test_an_unknown_agent_exits_two_and_lists_the_valid_names() -> None:
 
     assert code == EXIT_USAGE
     assert "librarian" in output
-    for name in ("planner", "source-evaluator", "critic"):
+    for name in ("planner", "source-evaluator", "report-writer"):
         assert name in output
 
 
@@ -311,7 +311,7 @@ def test_verbose_output_discloses_the_resolved_production_parity(
 # --- list ------------------------------------------------------------------
 
 
-def test_list_shows_all_six_agents_and_all_cases() -> None:
+def test_list_shows_every_agent_and_all_cases() -> None:
     code, output = run(["list"])
 
     assert code == EXIT_OK
@@ -319,14 +319,13 @@ def test_list_shows_all_six_agents_and_all_cases() -> None:
         "planner",
         "researcher",
         "source-evaluator",
-        "fact-checker",
-        "synthesizer",
-        "critic",
+        "evidence-verifier",
+        "report-writer",
     ):
         assert name in output
-    assert output.count("deep-research-") == 12
+    assert output.count("deep-research-") == 10
     assert "focused-decomposition" in output
-    assert "critic-live-review" in output
+    assert "evidence-verifier-live-benchmark" in output
 
 
 # --- agent -----------------------------------------------------------------

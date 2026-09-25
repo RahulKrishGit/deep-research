@@ -102,7 +102,7 @@ def test_the_factory_matches_production_build_agents(
 def test_the_factory_builds_one_agent_not_six(
     tracker, settings, runtime_config_for, monkeypatch
 ) -> None:
-    """Assembling six agents to test one is exactly what the spec forbids."""
+    """Assembling every agent to test one is what the spec forbids."""
     built: list[str] = []
     real = assembly.build_agent
 
@@ -115,7 +115,7 @@ def test_the_factory_builds_one_agent_not_six(
     )
 
     build_evaluation_agent(
-        runtime_config_for("critic"),
+        runtime_config_for("evidence_verifier"),
         settings,
         tracker=tracker,
         provider=RecordingProvider(),
@@ -124,7 +124,7 @@ def test_the_factory_builds_one_agent_not_six(
         reputation=None,
     )
 
-    assert built == ["critic"]
+    assert built == ["evidence_verifier"]
 
 
 def test_a_missing_declared_tool_fails_at_construction(
@@ -170,7 +170,7 @@ def test_a_provider_without_native_react_is_rejected_by_the_factory(
 ) -> None:
     with pytest.raises(AgentConstructionError) as caught:
         build_evaluation_agent(
-            runtime_config_for("critic"),
+            runtime_config_for("planner"),
             settings,
             tracker=tracker,
             provider=StructuredOnlyProvider(),
