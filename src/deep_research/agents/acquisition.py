@@ -44,7 +44,10 @@ from deep_research.utils.types import (
 )
 
 AcquisitionAction = Literal["search", "read", "extract", "finish"]
-OriginName = Literal["researcher", "fact_checker"]
+# The agents that select evidence. Only the researcher does: the Fact Checker
+# that used to verify claims is deleted, so an admission for another selector
+# would name an agent this branch cannot run.
+OriginName = Literal["researcher"]
 
 # The single line a packet falls back to when even the continuation list cannot
 # fit inside the configured budget. Kept short so it fits wherever a packet is

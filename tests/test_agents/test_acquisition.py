@@ -22,6 +22,7 @@ from deep_research.agents.acquisition import (
     next_acquisition_action,
 )
 from deep_research.agents.evidence import (
+    EvidenceContractError,
     build_read_record,
     merge_evidence_units,
     normalized_content_sha256,
@@ -369,12 +370,12 @@ def test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones() -> None
 
 
 def test_verification_selects_by_relevance_without_the_lede() -> None:
-    """The opening-passage guarantee is an extraction rule, not a verdict rule.
+    """The opening-passage guarantee is an extraction rule, not a selection one.
 
-    A claim's packet must hold only passages that bear on the claim: an
-    unrelated lede admitted during verification turned a claim whose retrieval
-    found nothing relevant from a free ``no_candidate`` outcome into a paid
-    adjudication of a passage about something else.
+    An admission that asks only for passages bearing on the query must not
+    carry the read's unrelated lede: a lede admitted beside a relevant passage
+    is what turned a retrieval that found nothing relevant into a paid
+    selection of a passage about something else.
     """
     lede = "Sunny days improved panel output across the southwest."
     relevant = (
@@ -387,7 +388,7 @@ def test_verification_selects_by_relevance_without_the_lede() -> None:
         result,
         session_id="session-1",
         query=query,
-        origin="fact_checker",
+        origin="researcher",
         selected_limit=1,
         include_lede=False,
     )
@@ -3013,3 +3014,20 @@ def test_a_dossier_leads_with_the_query_that_states_a_figure() -> None:
 
     shown = "\n".join(dossier.excerpts)
     assert "18.2 GW" in shown
+
+
+def test_a_read_cannot_be_admitted_for_a_deleted_selector() -> None:
+    """Task FF1 follow-up: the admission path records the agent that selected a
+    passage, and the Fact Checker that used to verify claims is deleted, so the
+    dead selector is refused here rather than recorded on a unit."""
+    result = _chunked_document_result(
+        "Grid-scale battery storage capacity additions reached 18.9 GW in 2025."
+    )
+
+    with pytest.raises(EvidenceContractError):
+        admit_read_result(
+            result,
+            session_id="session-1",
+            query="grid-scale battery storage capacity additions 2025",
+            origin="fact_checker",
+        )

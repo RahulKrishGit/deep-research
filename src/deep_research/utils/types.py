@@ -819,7 +819,10 @@ class EvidenceUnit(_VerbatimContractModel):
     locator: str = Field(min_length=1)
     excerpt: str = Field(min_length=1)
     target_ids: list[str] = Field(default_factory=list)
-    origin: Literal["researcher", "fact_checker"]
+    origin: Literal["researcher"]
+    """Which agent selected this passage. The researcher is the only one that
+    can: the Fact Checker that used to verify claims is deleted (step 4), so a
+    unit naming another selector names an agent this branch cannot run."""
 
 
 class EvidenceTarget(ContractModel):

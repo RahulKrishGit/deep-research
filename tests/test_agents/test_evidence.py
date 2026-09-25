@@ -14,6 +14,7 @@ Four jobs, one module:
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from deep_research.agents.evidence import (
     DISPOSITION_REASONS,
@@ -1245,13 +1246,12 @@ def test_conflicting_evidence_units_for_one_id_are_a_conflict() -> None:
         merge_evidence_units({unit.evidence_id: unit}, {altered.evidence_id: altered})
 
 
-def test_one_passage_selected_twice_keeps_its_first_selector() -> None:
-    """Both agents read the same stored passage: that is reuse, not conflict.
+def test_one_passage_selected_twice_keeps_its_first_record() -> None:
+    """One passage selected twice is reuse, not conflict (the Fact Checker that
+    used to select it too is deleted, so the researcher is the only selector).
 
-    The unit records the agent that selected it first and unions the targets
-    the later selection added, so nothing a later selector contributed is
-    dropped — cross-agent reuse of one read is exactly what the registry is
-    for.
+    The registry keeps the first record and unions the targets the later
+    selection added, so nothing a later pass contributed is dropped.
     """
     stored = _original_read()
     first = build_evidence_unit(
@@ -1265,7 +1265,7 @@ def test_one_passage_selected_twice_keeps_its_first_selector() -> None:
         read=stored,
         locator="p-1",
         excerpt=PASSAGE,
-        origin="fact_checker",
+        origin="researcher",
         target_ids=("target-2",),
     )
 
@@ -1273,7 +1273,6 @@ def test_one_passage_selected_twice_keeps_its_first_selector() -> None:
         {first.evidence_id: first}, {second.evidence_id: second}
     )
 
-    assert merged[first.evidence_id].origin == "researcher"
     assert merged[first.evidence_id].target_ids == ["target-1", "target-2"]
 
 
@@ -1564,7 +1563,7 @@ def test_the_read_registry_keeps_ids_independent_of_assessments() -> None:
     """Nothing on a read or evidence record is a mutable quality judgement."""
     stored = _original_read()
     unit = build_evidence_unit(
-        read=stored, locator="p-1", excerpt=PASSAGE, origin="fact_checker"
+        read=stored, locator="p-1", excerpt=PASSAGE, origin="researcher"
     )
 
     assert set(ReadRecord.model_fields) == {
@@ -3223,3 +3222,30 @@ def test_the_boundary_manifest_carries_no_claim_cluster_ids() -> None:
     """Task FF1 (review P3-2): claim clusters left the state in step 4, and the
     manifest they were recorded on has no writer for them."""
     assert "claim_cluster_ids" not in BoundaryAudit.model_fields
+
+
+# ---------------------------------------------------------------------------
+# Task FF1 follow-up: the dead origin value, the reporting verbs the slice-3
+# review named, and a publication cue for the publication date.
+# ---------------------------------------------------------------------------
+
+
+def test_an_evidence_unit_records_the_surviving_origin_only() -> None:
+    """Task FF1 follow-up: the Fact Checker is deleted (step 4), so the
+    researcher is the only agent that selects evidence. A unit naming another
+    selector is refused by the producer and by the persisted contract, and the
+    surviving value is still taken."""
+    stored = _original_read()
+
+    with pytest.raises(EvidenceContractError):
+        build_evidence_unit(
+            read=stored, locator="p-1", excerpt=PASSAGE, origin="fact_checker"
+        )
+
+    unit = build_evidence_unit(
+        read=stored, locator="p-1", excerpt=PASSAGE, origin="researcher"
+    )
+
+    assert unit.origin == "researcher"
+    with pytest.raises(ValidationError):
+        EvidenceUnit.model_validate({**unit.model_dump(), "origin": "fact_checker"})

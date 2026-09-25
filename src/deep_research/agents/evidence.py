@@ -2594,7 +2594,10 @@ def build_evidence_unit(
     the registry's own stored passages: an excerpt the read does not contain
     is not evidence, however plausible it reads.
     """
-    if origin not in ("researcher", "fact_checker"):
+    if origin != "researcher":
+        # The Fact Checker is deleted (step 4), so the researcher is the only
+        # agent that selects a passage: a unit recording another selector names
+        # an agent this branch cannot run.
         raise EvidenceContractError(
             "an evidence unit requires the agent that selected it"
         )
