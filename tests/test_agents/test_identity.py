@@ -322,14 +322,16 @@ def test_one_passage_restated_twice_is_one_finding() -> None:
 
 
 def test_one_passage_extracted_in_several_loops_is_one_finding() -> None:
-    """D13: identity folds across sub-topics on (read, locator, figure set).
+    """D13: identity folds across sub-topics on (read, locator, figure set),
+    for records each loop's extraction explicitly bound to one of its own
+    targets -- the shape that published one page's chunk as three findings
+    (F01/F19/F27) for one fact.
 
     Three research loops each read the same page and mine the same passage,
-    each stamping its own sub-topic on what it extracted -- the shape that
-    published one page's chunk as three findings (F01/F19/F27) for one fact.
+    each stamping its own sub-topic and its own binding on what it extracted.
     The URL, the read, the locator, the verbatim snippet and the figure are
-    identical; only the sub-topic and the prose differ, and neither is what
-    the evidence *is*.
+    identical; only the sub-topic, the binding and the prose differ, and none
+    of those is what the evidence *is*.
     """
     read = make_read("Reported capacity rose to 12,314 MW in 2024.")
     snippet = "Reported capacity rose to 12,314 MW in 2024."
@@ -347,12 +349,85 @@ def test_one_passage_extracted_in_several_loops_is_one_finding() -> None:
     third = make_finding(
         read, snippet, figures=[figure_],
         content="The monitor reported 12,314 MW of capacity for 2024.",
+        target_ids=["topic-03-target-01"],
     ).model_copy(update={"related_sub_topic": "Market outlook"})
 
     folded = deduplicate_findings([first, second, third])
 
     (kept,) = folded
-    assert kept.target_ids == ["topic-01-target-01", "topic-02-target-01"]
+    assert kept.target_ids == [
+        "topic-01-target-01", "topic-02-target-01", "topic-03-target-01"]
+
+
+def test_an_unbound_records_own_sub_topic_survives_a_shared_passage() -> None:
+    """P1 regression: folding across sub-topics must never cost an *unbound*
+    record its only route to an answer.
+
+    An unbound record's sole path to answering anything is the sub-topic
+    fallback (1A), carried on ``related_sub_topic`` alone. Loop A reads this
+    passage and binds its own target explicitly; loop B reads the same
+    passage, for a different sub-topic, and extracts it unbound. Folding B
+    into A would keep A's sub-topic and delete B's -- the only record that
+    could answer B's target through the fallback -- reporting a verified,
+    extracted fact as Not found.
+    """
+    read = make_read("The obligations apply from 2 August 2025.")
+    snippet = "The obligations apply from 2 August 2025."
+    figure_ = figure("2 August 2025", "date", None, "actual")
+    bound = make_finding(
+        read, snippet, figures=[figure_],
+        content="The regulation's scope covers items placed after 2 August 2025.",
+        target_ids=["topic-01-target-01"],
+    ).model_copy(update={"related_sub_topic": "Scope of the regulation"})
+    unbound = make_finding(
+        read, snippet, figures=[figure_],
+        content="The obligations apply from 2 August 2025.",
+    ).model_copy(update={"related_sub_topic": "Application date"})
+
+    folded = deduplicate_findings([bound, unbound])
+
+    assert len(folded) == 2
+    survivor = next(f for f in folded if not f.target_ids)
+    assert survivor.related_sub_topic == "Application date"
+    kept_bound = next(f for f in folded if f.target_ids)
+    assert kept_bound.related_sub_topic == "Scope of the regulation"
+    assert kept_bound.target_ids == ["topic-01-target-01"]
+
+    # Reversed input order loses it exactly the same way if the key ever
+    # keys off which record happened to come first.
+    assert len(deduplicate_findings([unbound, bound])) == 2
+
+
+def test_two_subjects_of_one_comparison_sentence_stay_two_findings() -> None:
+    """P2 regression: the figure set D13 folds on must include the subject.
+
+    One comparison-table sentence names two products at the same value and
+    unit. Two loops each bind the one they were reading for; without subject
+    in the fold key the pair collapses to one record, one survivor's target
+    id claims the *other* product's obligation, and the other product's price
+    is never verified under its own binding.
+    """
+    text = "Model A costs 390 USD and Model B costs 390 USD."
+    read = make_read(text)
+    model_a = make_finding(
+        read, text, figures=[figure("390", "USD", None, "actual").model_copy(
+            update={"subject": "Model A"})],
+        content="Model A costs 390 USD.",
+        target_ids=["topic-01-target-01"],
+    )
+    model_b = make_finding(
+        read, text, figures=[figure("390", "USD", None, "actual").model_copy(
+            update={"subject": "Model B"})],
+        content="Model B costs 390 USD.",
+        target_ids=["topic-02-target-01"],
+    )
+
+    folded = deduplicate_findings([model_a, model_b])
+
+    assert len(folded) == 2
+    assert {f.figures[0].subject for f in folded} == {"Model A", "Model B"}
+    assert {tuple(f.target_ids) for f in folded} == {
+        ("topic-01-target-01",), ("topic-02-target-01",)}
 
 
 def test_two_statements_of_one_passage_stay_two_findings() -> None:

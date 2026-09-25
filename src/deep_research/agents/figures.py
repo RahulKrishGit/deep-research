@@ -10,10 +10,12 @@ One fixed, question-independent rule set reads a figure out of text:
   parenthetical; an ``ac``/``dc`` suffix on the abbreviated unit is ignored;
 - a single number word before a unit ("ten gigawatts") is its number;
 - a currency spelling (``$``, ``US$``, ``USD``, ``dollar(s)``) is one unit,
-  and a score's ``/5`` is one unit with ``out of 5`` (D13): neither gets a
-  scale -- ``unit_dimension`` still reads ``None`` for both, and a figure's
-  own ``value``/``unit`` are never rewritten by this -- the two spellings
-  are read as one unit only when two figures are *compared*.
+  and a score's ``/5`` is one unit with ``out of 5`` (D13), but only when
+  :func:`same_quantity` *compares* two already-parsed figures: neither gets a
+  scale (``unit_dimension`` still reads ``None`` for both), ``Quantity.unit``
+  keeps the plain spelling ``_canonical_unit`` read, and a figure's own
+  ``value``/``unit`` are never rewritten -- so :func:`figure_in_text` still
+  finds "390 dollars" or "4.8 out of 5" exactly as the page wrote them.
 
 Two live uses: :func:`figure_in_text` and :func:`quantities_in` decide whether
 a snippet states the figure when the Context Check could not judge it (PD-26),
@@ -122,11 +124,6 @@ def _canonical_unit(unit: str) -> str:
     known = _known_unit(text)
     if known is not None:
         return known
-    if text in _CURRENCY_UNITS:
-        return "usd"
-    score = _SCORE_UNIT.fullmatch(text)
-    if score:
-        return f"/{score.group(1) or score.group(2)}"
     bracketed = _BRACKETED_UNIT.fullmatch(text)
     if bracketed:
         halves = [bracketed.group(part).strip() for part in ("outer", "inner")]
@@ -143,6 +140,25 @@ def _canonical_unit(unit: str) -> str:
         if units[1] is not None and qualified[0]:
             return units[1]
     return text
+
+
+def _comparison_unit(unit: str) -> str:
+    """``unit`` (already ``_canonical_unit``-read) folded for comparison only.
+
+    P1 fix: this must never feed ``Quantity.unit`` -- ``figure_in_text``
+    builds its literal search from that field, so folding it there made the
+    search look for "usd"/"/5" instead of the spelling the page actually
+    used, and a verbatim price or score figure stopped matching (dropped by
+    the Context Check's PD-26 fallback as unsupported). Read only by
+    ``same_quantity``'s unscaled branch, which compares two already-parsed
+    figures and never touches what either one prints or is searched for.
+    """
+    if unit in _CURRENCY_UNITS:
+        return "usd"
+    score = _SCORE_UNIT.fullmatch(unit)
+    if score:
+        return f"/{score.group(1) or score.group(2)}"
+    return unit
 
 
 def _number(value: str) -> Decimal | None:
@@ -236,10 +252,10 @@ def quantities_in(text: str) -> list[Quantity]:
 
 
 def same_quantity(left: Quantity, right: Quantity) -> bool:
-    """Equal after scale for known units; equal number and unit text otherwise."""
+    """Equal after scale for known units; equal comparison unit and number otherwise (D13)."""
     if left.base is not None and right.base is not None:
         return left.dimension == right.dimension and left.base == right.base
-    return left.unit == right.unit and left.number == right.number
+    return _comparison_unit(left.unit) == _comparison_unit(right.unit) and left.number == right.number
 
 
 def figure_in_text(value: str, unit: str, text: str) -> bool:

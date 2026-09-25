@@ -1575,6 +1575,16 @@ def test_an_unbound_off_topic_finding_answers_no_target() -> None:
     assert not any(finding_answers(off_topic, target, sub_topics=topics) for target in targets)
 
 
+def test_the_content_check_ignores_a_borrowed_function_word() -> None:
+    """P2 regression: a function/question word the target's own question
+    happens to use ("from") is not proof a finding states what it asks."""
+    topics, targets = when_sub_topics(), when_targets()
+    warranty = dated_finding(
+        text="The manufacturer offers a warranty from the date of purchase.")
+
+    assert answered_target_ids([warranty], targets, sub_topics=topics) == {}
+    assert not any(finding_answers(warranty, target, sub_topics=topics) for target in targets)
+
 
 def test_the_fallback_answers_only_the_findings_own_sub_topic() -> None:
     topics = when_sub_topics()

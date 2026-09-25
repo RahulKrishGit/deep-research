@@ -956,6 +956,20 @@ def _sub_topic_evidence_targets(target: EvidenceTarget,
     return [target]
 
 
+# Words a target's own question or measure states purely as grammar, never as
+# what it asks about: shared by almost any two English questions, so their
+# presence in a finding's content proves nothing about which target it states
+# (P2 regression -- "from" in "From what date do the obligations apply?"
+# passed an unrelated warranty sentence that also happened to say "from").
+# Domain-neutral and short by design; not folded into ``_distinctive_words``
+# itself, which other callers use for a different question (what a *subject*
+# or a *measure* is about, not whether prose answers a specific target).
+_QUESTION_FUNCTION_WORDS = frozenset({
+    "what", "which", "when", "where", "does", "have", "from", "with", "must",
+    "should", "into", "about", "their", "there", "than", "more", "most", "also",
+})
+
+
 def _fallback_content_words(target: EvidenceTarget,
                             sub_topics: Sequence[SubTopic]) -> frozenset[str]:
     """The words a fallback answer to ``target`` must find in a finding's own
@@ -964,17 +978,19 @@ def _fallback_content_words(target: EvidenceTarget,
     The words that single this target out among its own sub-topic's other
     targets, not every one of the target's own distinctive words: two targets
     of one sub-topic both asking "what date" are not told apart by the word
-    both ask with, so that word is dropped before the check is made. A target
-    with no sibling to be told apart from is checked on every one of its own
-    distinctive words instead.
+    both ask with, so that word is dropped before the check is made -- and
+    neither is a generic function/question word neither target's content
+    would ever need to restate. A target with no sibling to be told apart
+    from is checked on every one of its own distinctive words instead.
     """
     siblings = _sub_topic_evidence_targets(target, sub_topics)
-    own = _distinctive_words(f"{target.measure} {target.question}")
+    own = _distinctive_words(f"{target.measure} {target.question}") - _QUESTION_FUNCTION_WORDS
     shared: frozenset[str] = frozenset()
     for sibling in siblings:
         if sibling.target_id == target.target_id:
             continue
-        shared |= _distinctive_words(f"{sibling.measure} {sibling.question}")
+        shared |= (_distinctive_words(f"{sibling.measure} {sibling.question}")
+                   - _QUESTION_FUNCTION_WORDS)
     return (own - shared) or own
 
 
@@ -987,8 +1003,11 @@ def _content_states_target(finding: Finding, target: EvidenceTarget,
     sub-topic's coverage id and, with no check on what they actually said,
     answered every required target that sub-topic owned. An explicit binding
     is the extraction's own judgement of its own content and is never put
-    through this; ``statement target_ids come from explicit bindings`` (D9)
-    regardless of what this returns.
+    through this. This gates only whether *this finding's own* ``target_ids``
+    field may be read as answering ``target`` through the fallback --
+    ``ReportStatement.target_ids`` still take a fallback answer too
+    (``report_writer.py``'s ``answered_target_ids`` call, owned by the format
+    work, D9's other half is not delivered by this slice).
     """
     wanted = _fallback_content_words(target, sub_topics)
     return bool(wanted & _distinctive_words(finding.content))
