@@ -681,7 +681,7 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
     function, so the recorded route event and the taken edge agree by
     construction.
 
-    Three outcomes, and the difference between them is the point:
+    Four outcomes, and the difference between them is the point:
 
     * a *scored* review is recorded, the quality snapshot carries its status
       and mean beside its structural diagnostics, and the route may read the

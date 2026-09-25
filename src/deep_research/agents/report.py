@@ -126,7 +126,11 @@ SUB_TOPIC_SKIP_MESSAGES: dict[str, str] = {
 }
 
 _DETAILED_ERROR_TYPES = frozenset(
-    {"agent_tool_failed", _SUB_TOPIC_SKIP_ERROR_TYPE}
+    {
+        "agent_tool_failed",
+        "agent_tool_policy_rejected",
+        _SUB_TOPIC_SKIP_ERROR_TYPE,
+    }
 )
 
 
@@ -286,7 +290,7 @@ def _clamped(text: str, *, limit: int) -> str:
 
 
 def _published_details(error: ResearchError) -> str:
-    """Render ``error.details`` for the one error type whose details are bounded.
+    """Render ``error.details`` for the error types whose details are bounded.
 
     ``agent_tool_failed`` is published because its details are produced by the
     ReAct projection, which revalidates every value it copies: the tool name the
@@ -295,6 +299,14 @@ def _published_details(error: ResearchError) -> str:
     ``status_code``, and a media type or the static ``unknown`` marker). Without
     those values a scraper failure is countable but not *classifiable*, which is
     the whole point of classifying it.
+
+    ``agent_tool_policy_rejected`` is published for the same reason, from the
+    same projection: the name the toolset resolved, the iteration, and the
+    refusing policy's own sentence clamped by the loop's summary bound. A
+    refusal that keeps only its tool and iteration can be counted and nothing
+    else — a session whose searches were blocked by the acquisition policy
+    reads exactly like one whose guessed URLs were rejected, which is a
+    diagnosis the record made impossible rather than merely harder.
 
     Every other error type's details are withheld. They are not vetted by a
     projection that revalidates them, and this artifact is public, so an

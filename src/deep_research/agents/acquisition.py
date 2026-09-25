@@ -178,6 +178,49 @@ def next_acquisition_action(state: AcquisitionState) -> AcquisitionAction:
     return "read" if state.candidate_urls else "search"
 
 
+def search_is_admissible(state: AcquisitionState) -> bool:
+    """True when a search may run even though a queued read is expected.
+
+    The candidate queue is a reading order, not a lock on the target's
+    discovery. One search queues several candidates, and a sub-topic that needs
+    two named sources — or whose first search returned poor candidates — has to
+    be able to search again while those wait, or its turns go on forced reads
+    and its remaining searches never happen.
+
+    Two bounds keep the queue's discipline. ``consecutive_searches < 2`` is the
+    anti-search-spam guard ``next_acquisition_action`` already enforced: after
+    two searches in a row the next call is a read. ``remaining_calls > 1`` is
+    the last call of the budget, and that call is always a read — a search
+    there could queue candidates the target has no call left to drain, which is
+    how a target ends with candidates and no evidence.
+    """
+    return (
+        bool(state.candidate_urls)
+        and state.consecutive_searches < 2
+        and state.remaining_calls > 1
+    )
+
+
+def allowed_acquisition_actions(
+    state: AcquisitionState,
+) -> tuple[AcquisitionAction, ...]:
+    """Every action the policy accepts right now, the preferred one first.
+
+    ``next_acquisition_action`` names the action the loop *prefers*; this names
+    every kind ``before_action`` will accept, and it is that much longer only
+    when a queued read and a fresh search are both legitimate (see
+    ``search_is_admissible``). The decision packet renders this set and the
+    policy judges by it, so the context the model reads and the admission it
+    meets cannot disagree — a model that searches while a read is expected is
+    not refused for it, and neither an extract the queue asked for nor a
+    finish the budget asked for is ever joined by anything else.
+    """
+    expected = next_acquisition_action(state)
+    if expected == "read" and search_is_admissible(state):
+        return ("read", "search")
+    return (expected,)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1316,7 +1359,18 @@ class AcquisitionPolicy:
             and expected == "search"
             and self._last_search_failed
         )
-        if requested_kind != expected and not fallback_read_after_failed_search:
+        # The accepted set, not only the preferred action: a search is
+        # admissible beside a queued read while the queue's own discipline is
+        # not binding (at most two searches in a row, never the last call). A
+        # target with several named sources, or a first search that returned
+        # poor candidates, otherwise spends every turn on forced reads and can
+        # never search again. ``allowed_acquisition_actions`` is the same
+        # function the decision packet renders, so the model is told exactly
+        # what this gate accepts.
+        if (
+            requested_kind not in allowed_acquisition_actions(self.state)
+            and not fallback_read_after_failed_search
+        ):
             return ToolPolicyDecision(
                 allowed=False,
                 reason=(
@@ -2049,6 +2103,7 @@ def build_acquisition_context(
         (
             "state",
             f"next_action={next_acquisition_action(state)} "
+            f"allowed_actions={','.join(allowed_acquisition_actions(state))} "
             f"remaining_calls={state.remaining_calls} "
             f"remaining_model_turns={state.remaining_model_turns}",
         ),
@@ -2170,9 +2225,11 @@ __all__ = [
     "ToolPolicyDecision",
     "UNMINED_QUANTITY_REASON",
     "admit_read_result",
+    "allowed_acquisition_actions",
     "build_acquisition_context",
     "build_read_record_from_tool_result",
     "next_acquisition_action",
+    "search_is_admissible",
     "select_passages_with_lede",
     "select_relevant_passages",
     "split_read_body",
