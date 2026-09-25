@@ -58,9 +58,12 @@ from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import (
     ReportComposition,
     # The label builders this review must never re-derive (R1): ``_point_labels``
-    # is the list a rendered statement ends with, and ``_row_label`` is one key
-    # facts row's label, which ``figure_label`` builds. Private names imported
-    # rather than copied, so a label cannot drift from the reader's.
+    # is the list a rendered statement ends with, ``_row_label`` is one key
+    # facts row's label (both over ``figure_label``), and
+    # ``_finding_registry_pairs`` pairs each finding with its *own* registered
+    # label — the one walk that survives two revision editions sharing a
+    # fingerprint (P2).
+    _finding_registry_pairs,
     _point_labels,
     _row_label,
 )
@@ -285,14 +288,15 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
     "not_reviewed and the review is incomplete rather than a result, so leave "
     "no statement id out.\n"
     "\n"
-    "Read each sentence against the code-built label it ends with and the "
-    "labels of the findings it cites. That label is what the reader sees "
-    "beside the sentence, and it is built by code from the verified figure, "
-    "not by the writer: a relay must read as relayed from the organisation "
-    "named in the label, an actual must read as an actual, a forecast must "
-    "carry its issuer and its release, and no period, scope, kind or "
-    "organisation in the prose may contradict the label. That mismatch is a "
-    "defect you record against that statement's id.\n"
+    "Read each sentence against the code-built label it ends with, and against "
+    "the findings it cites — each statement names them by their registry "
+    "labels, whose snippets and figure labels are below. That label is what "
+    "the reader sees beside the sentence, and it is built by code from the "
+    "verified figure, not by the writer: a relay must read as relayed from the "
+    "organisation named in the label, an actual must read as an actual, a "
+    "forecast must carry its issuer and its release, and no period, scope, "
+    "kind or organisation in the prose may contradict the label. That mismatch "
+    "is a defect you record against that statement's id.\n"
     "\n"
     "Report every defect you find as a typed defect against the ids in this "
     "request, and only against ids in this request. When nothing is wrong, "
@@ -402,11 +406,17 @@ class ReviewStatementView(ContractModel):
 
     ``label`` is the label a rendered statement *ends with* — the key facts
     label of every figure the sentence itself states — built by the report's
-    own label builders and never re-derived here (R1, D7). ``finding_labels``
-    carries one label string per cited finding, which is the material a
-    sentence's wording has to agree with: the label knows the organisation,
-    attribution, kind, period and release the Evidence Verifier established,
-    whatever the prose says.
+    own label builders and never re-derived here (R1, D7). ``finding_refs``
+    names the findings the sentence cites in the registry's own notation
+    (``F01``), the same notation the finding blocks below the statements are
+    headed with, and ``finding_labels`` carries their code-built reader labels:
+    the material a sentence's wording has to agree with, since a label knows
+    the organisation, attribution, kind, period and release the Evidence
+    Verifier established, whatever the prose says.
+
+    ``finding_refs`` is not decoration: two findings from one publisher with
+    the same kind and release render *identical* reader labels, so the refs are
+    the only thing that tells the reviewer which snippet a sentence rests on.
 
     ``target_ids`` is the address a defect against this statement routes by
     (Task 4.4's extra pass), and ``substantive`` says whether the statement
@@ -417,6 +427,7 @@ class ReviewStatementView(ContractModel):
     statement_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     label: str = ""
+    finding_refs: list[str] = Field(default_factory=list)
     finding_labels: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
     substantive: bool = True
@@ -583,26 +594,36 @@ def _statement_views(
     Walked through ``composition.statements``, which is the composition's own
     reader-ordered list — first occurrence wins, so a fact the summary states
     and the answer table lists is one statement judged once.
+
+    The cited findings are resolved through ``_finding_registry_pairs``, the
+    report's own label-to-finding walk: two revision editions of one page share
+    a ``finding_fingerprint``, so a fingerprint-keyed lookup would hand the
+    later edition's snippet to a statement citing the earlier one (P2) and a
+    statement citing either would name no registry label at all (P1).
     """
     if composition is None:
         return []
-    by_finding_id = {
-        finding_fingerprint(finding): finding for finding in composition.findings
-    }
+    pairs = [
+        (label, finding)
+        for label, finding in _finding_registry_pairs(composition)
+        if label is not None
+    ]
     labels = _statement_labels(composition)
     views: list[ReviewStatementView] = []
     for statement in composition.statements:
+        cited_ids = set(statement.finding_ids)
         cited = [
-            by_finding_id[finding_id]
-            for finding_id in statement.finding_ids
-            if finding_id in by_finding_id
+            (label, finding)
+            for label, finding in pairs
+            if finding_fingerprint(finding) in cited_ids
         ]
         views.append(
             ReviewStatementView(
                 statement_id=statement.statement_id,
                 text=statement.text,
                 label=labels.get(statement.statement_id, ""),
-                finding_labels=[_finding_label(finding) for finding in cited],
+                finding_refs=[label for label, _ in cited],
+                finding_labels=[_finding_label(finding) for _, finding in cited],
                 target_ids=list(statement.target_ids),
                 substantive=statement.substantive,
             )
@@ -646,21 +667,26 @@ def _statement_labels(composition: ReportComposition) -> dict[str, str]:
 def _finding_views(
     composition: ReportComposition | None,
 ) -> list[ReviewFindingView]:
-    """One view per cited finding, in the order the report's labels number them."""
+    """One view per cited finding, paired with its own registered label.
+
+    Paired by ``_finding_registry_pairs`` rather than by inverting
+    ``finding_labels`` into a fingerprint-keyed map: two revision editions of
+    one page share a fingerprint, and that map hands the later edition's
+    snippet and figure labels to both labels (P2), so a statement citing the
+    earlier one would be judged against the wrong evidence.
+    """
     if composition is None:
         return []
-    by_finding_id = {
-        finding_fingerprint(finding): finding for finding in composition.findings
-    }
     views: list[ReviewFindingView] = []
-    for label, finding_id in composition.finding_labels.items():
-        finding = by_finding_id.get(finding_id)
-        if finding is None:
+    for label, finding in _finding_registry_pairs(composition):
+        if label is None:
+            # A finding the report never gave a label is never cited by a
+            # statement, and the finding blocks are the citable registry.
             continue
         views.append(
             ReviewFindingView(
                 label=label,
-                finding_id=finding_id,
+                finding_id=finding_fingerprint(finding),
                 source_title=finding.source_title,
                 host=publisher_identity(finding.source_url),
                 snippet=finding.snippet or finding.content,
@@ -889,7 +915,7 @@ def _render_answer_contract(contract: AnswerContract | None) -> str:
 
 
 def _render_statements(packet: ReportReviewInput) -> str:
-    """Every statement with its text, its label, and the labels it must agree with."""
+    """Every statement with its text, its labels, and the findings it cites."""
     lines: list[str] = []
     for statement in packet.statements:
         parts = [f"- {statement.statement_id}"]
@@ -898,6 +924,8 @@ def _render_statements(packet: ReportReviewInput) -> str:
         parts.append(f"  {statement.text}")
         if statement.label:
             parts.append(f"  reader label: {statement.label}")
+        if statement.finding_refs:
+            parts.append("  cites: " + ", ".join(statement.finding_refs))
         if statement.finding_labels:
             parts.append(
                 "  cited finding labels: " + " | ".join(statement.finding_labels)
@@ -963,7 +991,7 @@ def _render_manifest(packet: ReportReviewInput) -> str:
             + (", ".join(packet.expected_statement_ids) or "(none)"),
             "Target ids in this packet: "
             + (", ".join(packet.known_target_ids) or "(none)"),
-            "Finding labels in this packet: "
+            "Finding registry labels in this packet: "
             + (", ".join(finding.label for finding in packet.findings) or "(none)"),
         )
     )
@@ -1000,8 +1028,9 @@ def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
         (
             "# Reader statements\n"
             "Every sentence the report prints, with the code-built reader label "
-            "it ends with and the labels of the findings it cites. A defect may "
-            "cite a statement id from this list and no other.\n"
+            "it ends with, and the finding labels it cites (F01…, whose snippets "
+            "and figure labels follow below). A defect may cite a statement id "
+            "from this list and no other.\n"
             + _render_statements(packet)
         ),
         (
@@ -1123,10 +1152,14 @@ def _defects(
         kind = draft.kind.strip()
         severity = draft.severity.strip()
         problem = draft.problem.strip()
-        if kind not in GAP_KINDS or severity not in GAP_SEVERITIES:
+        unknown: list[str] = []
+        if kind not in GAP_KINDS:
+            unknown.append(f"{draft.kind!r} is not a defect kind")
+        if severity not in GAP_SEVERITIES:
+            unknown.append(f"{draft.severity!r} is not a defect severity")
+        if unknown:
             notes.append(
-                f"Defect {index} was dropped: {draft.kind!r} is not a defect "
-                f"kind and {draft.severity!r} is not a defect severity."
+                f"Defect {index} was dropped: " + " and ".join(unknown) + "."
             )
             continue
         if not problem:
