@@ -757,7 +757,7 @@ def test_the_dry_run_inventory_proves_request_construction(probe: Any) -> None:
     assert inventory["model"] == MODEL
     assert inventory["reasoning_effort"] == "max"
     assert inventory["thinking"] == "enabled"
-    assert inventory["max_tokens"] == 49152
+    assert inventory["max_tokens"] == 32768
     assert inventory["tool_choice"] == "auto"
     assert inventory["response_format_present"] is False
     assert inventory["native_tool_names"] == ["query_memory", "web_search"]
