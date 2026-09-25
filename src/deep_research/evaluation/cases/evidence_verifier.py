@@ -34,7 +34,8 @@ from deep_research.utils.types import ReadRecord
 _CONTEXT_DIMENSIONS = (
     (
         "context_fidelity",
-        "Each kept figure carries the period, scope, kind and organisation its page states.",
+        "Each kept figure carries the period, scope, kind and organisation "
+        "its page states.",
         "Every kept figure's recorded context matches what the passage says, and a "
         "correction is only made where the page carries the corrected wording.",
         "A figure keeps a period, scope, kind or organisation the page does not state.",
@@ -44,14 +45,16 @@ _CONTEXT_DIMENSIONS = (
         "A relayed figure is credited to the organisation the page credits.",
         "A page that hands the figure to another body is recorded as relayed, under "
         "that body's name, and a page stating its own figure is recorded as own.",
-        "A relay is presented as the relaying site's own figure, or credit is invented.",
+        "A relay is presented as the relaying site's own figure, or credit "
+        "is invented.",
     ),
 )
 
 _DROP_DIMENSIONS = (
     (
         "refusal_discipline",
-        "A figure or finding the page does not support is dropped, with its reason named.",
+        "A figure or finding the page does not support is dropped, with "
+        "its reason named.",
         "Invented or unsupported evidence is dropped and the recorded reason says why.",
         "An unsupported figure is kept, or a drop is recorded with no reason.",
     ),
@@ -106,8 +109,11 @@ _RELAY_SNIPPET = (
     "in 2025."
 )
 
-_EIA_URL = "https://eia.gov/todayinenergy/battery-capacity-2024"
-_EIA_TITLE = "U.S. battery capacity increased 66% in 2024 | U.S. Energy Information Administration"
+_EIA_URL = "https://eia.gov/todayinenergy/detail.php?id=64705"
+_EIA_TITLE = (
+    "U.S. battery capacity increased 66% in 2024 | U.S. Energy "
+    "Information Administration"
+)
 _EIA_PAGE = (
     "U.S. battery capacity increased 66% in 2024. Generators added 10.4 "
     "gigawatts (GW) of new battery storage capacity in 2024, the second-largest "
@@ -141,17 +147,28 @@ def _read(
 
 
 _SCOPE_READ = _read(
-    "scope-corrected-to-all-segments", _WOODMAC_URL, title=_WOODMAC_TITLE, text=_WOODMAC_PAGE
+    "scope-corrected-to-all-segments",
+    _WOODMAC_URL,
+    title=_WOODMAC_TITLE,
+    text=_WOODMAC_PAGE,
 )
 _INVENTED_READ = _read(
-    "invented-evidence-words-rejected", _WOODMAC_URL, title=_WOODMAC_TITLE, text=_WOODMAC_PAGE
+    "invented-evidence-words-rejected",
+    _WOODMAC_URL,
+    title=_WOODMAC_TITLE,
+    text=_WOODMAC_PAGE,
 )
-_RELAY_READ = _read("relay-labelled-as-relay", _RELAY_URL, title=_RELAY_TITLE, text=_RELAY_PAGE)
+_RELAY_READ = _read(
+    "relay-labelled-as-relay", _RELAY_URL, title=_RELAY_TITLE, text=_RELAY_PAGE
+)
 _LIVE_EIA_READ = _read(
     "evidence-verifier-live-benchmark", _EIA_URL, title=_EIA_TITLE, text=_EIA_PAGE
 )
 _LIVE_WOODMAC_READ = _read(
-    "evidence-verifier-live-benchmark", _WOODMAC_URL, title=_WOODMAC_TITLE, text=_WOODMAC_PAGE
+    "evidence-verifier-live-benchmark",
+    _WOODMAC_URL,
+    title=_WOODMAC_TITLE,
+    text=_WOODMAC_PAGE,
 )
 _LIVE_RELAY_READ = _read(
     "evidence-verifier-live-benchmark", _RELAY_URL, title=_RELAY_TITLE, text=_RELAY_PAGE
@@ -176,7 +193,10 @@ _SCOPE = build_case(
     ),
     state=evaluation_state(
         case_id="scope-corrected-to-all-segments",
-        question="How much battery storage capacity was installed in the United States in 2025?",
+        question=(
+            "How much battery storage capacity was installed in the "
+            "United States in 2025?"
+        ),
         sub_topics=(
             sub_topic(
                 "U.S. battery storage installations",
@@ -276,7 +296,10 @@ _RELAY = build_case(
     ),
     state=evaluation_state(
         case_id="relay-labelled-as-relay",
-        question="What is the utility-scale battery storage installation figure for 2025?",
+        question=(
+            "What is the utility-scale battery storage installation "
+            "figure for 2025?"
+        ),
         sub_topics=(
             sub_topic(
                 "Utility-scale storage installations",
@@ -369,7 +392,10 @@ _INVENTED = build_case(
     ),
     state=evaluation_state(
         case_id="invented-evidence-words-rejected",
-        question="How much battery storage capacity was installed in the United States in 2025?",
+        question=(
+            "How much battery storage capacity was installed in the "
+            "United States in 2025?"
+        ),
         sub_topics=(
             sub_topic(
                 "U.S. battery storage installations",
@@ -462,7 +488,10 @@ _LIVE = build_case(
     ),
     state=evaluation_state(
         case_id="evidence-verifier-live-benchmark",
-        question="How much battery storage capacity was added in the United States in 2024, and what is forecast for 2025?",
+        question=(
+            "How much battery storage capacity was added in the United "
+            "States in 2024, and what is forecast for 2025?"
+        ),
         sub_topics=(
             sub_topic(
                 "U.S. battery storage capacity additions",

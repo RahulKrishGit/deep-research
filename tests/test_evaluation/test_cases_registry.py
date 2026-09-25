@@ -19,7 +19,6 @@ from deep_research.evaluation.cases import (
     rubric,
     scored_source,
     sub_topic,
-    target,
     validate_registry,
 )
 from deep_research.evaluation.models import (

@@ -25,7 +25,6 @@ from deep_research.agents.evidence_verifier import read_text
 from deep_research.agents.report import collapse_mirror_urls
 from deep_research.agents.sources import (
     normalize_source_url,
-    publisher_identity,
     source_domain,
 )
 from deep_research.evaluation.cases import all_cases
@@ -1085,13 +1084,18 @@ def _gate_low_confidence_flagged(
 def _verified_findings(output: TargetOutput) -> list[Finding] | None:
     """Every finding this run judged, typed, or ``None`` when unreadable.
 
-    The result's ``findings`` is preferred and the state update's
-    ``verified_findings`` is the fallback: both carry the same snapshot, and
-    the result is what the agent itself returned. A payload that does not
-    validate is refused rather than guessed at — these gates exist to prove a
-    judgement happened, and an unreadable snapshot proves nothing.
+    Two artifact keys carry the same snapshot: the result's ``findings`` (the
+    verifier's own ``VerifiedFindings``), and the state update's
+    ``verified_findings`` (the name the snapshot has on ``ResearchState``).
+    The result is preferred and the state update is the fallback, so a
+    repetition whose result was not recorded is still judged on the snapshot
+    the run wrote into state. A payload that does not validate is refused
+    rather than guessed at — these gates exist to prove a judgement happened,
+    and an unreadable snapshot proves nothing.
     """
     payload = _artifact(output, "findings")
+    if not isinstance(payload, (list, tuple)):
+        payload = _artifact(output, "verified_findings")
     if not isinstance(payload, (list, tuple)):
         return None
     try:

@@ -36,6 +36,7 @@ from deep_research.evaluation.evaluators import (
     deterministic_metric_scores,
     evaluate_agent_gates,
 )
+from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.models import TargetOutput
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
@@ -194,6 +195,26 @@ def test_every_seeded_finding_is_bound_to_its_own_seeded_read() -> None:
             assert finding.verification is None, "a seeded finding starts unverified"
 
 
+def test_the_live_case_cites_the_benchmark_s_own_addresses() -> None:
+    """R4: the live case's pages are the benchmark's, down to the address.
+
+    The EIA address is the one the benchmark itself declares
+    (``tests.evidence_fakes.EIA_URL``), compared through production's own
+    normalizer so the two fixtures cannot drift apart.
+    """
+    from tests.evidence_fakes import EIA_URL
+
+    case = _case(LIVE, "live")
+    urls = {finding.source_url for finding in case.state.raw_findings}
+
+    assert normalize_source_url(EIA_URL) in urls
+    assert normalize_source_url(EIA_URL) == (
+        "https://eia.gov/todayinenergy/detail.php?id=64705"
+    )
+    assert "https://woodmac.com/press-releases/2025-us-energy-storage" in urls
+    assert "https://utilitydive.com/news/storage-2025" in urls
+
+
 def test_the_live_case_uses_the_benchmark_pages() -> None:
     case = _case(LIVE, "live")
     pages = case.expectations.reference["benchmark_pages"]
@@ -286,6 +307,54 @@ def test_evidence_words_the_page_does_not_carry_drop_the_figure(
     assert not excerpt_matches(" ".join(read.passages.values()), _reference_words(case))
     assert _gates(output, case) == {gate: True for gate in GATES}
     assert _scores(output, case)["expected_outcome"] == 1.0
+
+
+def test_the_live_case_is_judged_in_one_batch_covering_every_finding(
+    evidence_verifier_live_case, evidence_verifier_live_output
+) -> None:
+    """One Context Check batch, labelled F01..F0n, judges every finding.
+
+    ``context_unchecked`` is the fixture's own witness: it is set only when a
+    figure had no reply and code had to fall back, so a run whose reply
+    covered every finding leaves it False everywhere. A reply that answered
+    one label would light it up on the rest.
+    """
+    findings = evidence_verifier_live_output.result["findings"]
+
+    assert len(findings) == len(evidence_verifier_live_case.state.raw_findings)
+    for finding in findings:
+        verification = finding["verification"]
+        assert verification is not None
+        assert verification["context_unchecked"] is False
+        for result in verification["figure_results"]:
+            assert result["dropped_reason"] is None
+            assert result["context"] is not None
+
+
+def test_a_repetition_without_a_result_is_judged_from_its_state_update(
+    evidence_verifier_output_for,
+) -> None:
+    """The verifier's snapshot has two artifact homes, and both are read.
+
+    ``VerifiedFindings.findings`` in the result and ``verified_findings`` on
+    the state update carry the same judgement; a repetition whose result was
+    not recorded is still judged on the snapshot the run wrote into state,
+    rather than failing every gate as if it had judged nothing.
+    """
+    case = _case("relay-labelled-as-relay")
+    output = evidence_verifier_output_for(case, [_reply(case)])
+    from_state = output.model_copy(
+        update={
+            "result": None,
+            "state_update": {
+                **(output.state_update or {}),
+                "verified_findings": output.result["findings"],
+            },
+        }
+    )
+
+    assert _gates(from_state, case) == {gate: True for gate in GATES}
+    assert from_state.result is None
 
 
 def test_the_context_check_is_asked_once_per_batch_of_findings() -> None:

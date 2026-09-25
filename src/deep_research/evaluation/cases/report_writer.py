@@ -100,12 +100,15 @@ _LIVE_RUBRIC = rubric("report-writer-live-report", *_REPORT_DIMENSIONS)
 # All URLs are written in the normalized form the agent records (no ``www.``,
 # no trailing slash), so a gate comparison can never byte-mismatch.
 
-_EIA_URL = "https://eia.gov/todayinenergy/battery-capacity-2024"
+_EIA_URL = "https://eia.gov/todayinenergy/detail.php?id=64705"
 _WOODMAC_URL = "https://woodmac.com/press-releases/2025-us-energy-storage"
 _RELAY_URL = "https://utilitydive.com/news/storage-2025"
 _COMPLETE_URLS = (_EIA_URL, _WOODMAC_URL, _RELAY_URL)
 
-_EIA_TITLE = "U.S. battery capacity increased 66% in 2024 | U.S. Energy Information Administration"
+_EIA_TITLE = (
+    "U.S. battery capacity increased 66% in 2024 | U.S. Energy "
+    "Information Administration"
+)
 _EIA_PAGE = (
     "U.S. battery capacity increased 66% in 2024. Generators added 10.4 "
     "gigawatts (GW) of new battery storage capacity in 2024, the second-largest "
@@ -247,7 +250,10 @@ _COMPLETE = build_case(
                 targets=(
                     target(
                         "topic-03-target-01",
-                        question="What did the whole U.S. storage market install in 2025?",
+                        question=(
+                            "What did the whole U.S. storage market "
+                            "install in 2025?"
+                        ),
                         measure="battery energy storage system installations",
                         unit_dimension="power",
                         period="2025",
@@ -260,7 +266,10 @@ _COMPLETE = build_case(
                     # answers a required target or says it could not.
                     target(
                         "topic-03-target-02",
-                        question="How much did grid-scale installations add on their own in 2025?",
+                        question=(
+                            "How much did grid-scale installations add on "
+                            "their own in 2025?"
+                        ),
                         measure="grid-scale battery storage installations",
                         unit_dimension="power",
                         period="2025",
@@ -344,7 +353,9 @@ _COMPLETE = build_case(
                     snippet=_WOODMAC_SNIPPET,
                     read_id=_COMPLETE_WOODMAC_READ.read_id,
                     locator="body",
-                    figures=(figure("18.9", "gigawatts", period="2025", kind="actual"),),
+                    figures=(
+                        figure("18.9", "gigawatts", period="2025", kind="actual"),
+                    ),
                     target_ids=("topic-03-target-01",),
                     data_period="2025",
                     measure_scope="all segments",
@@ -526,7 +537,10 @@ _CONFLICT = build_case(
     ),
     state=evaluation_state(
         case_id="conflict-and-limitations",
-        question="What do forecasters expect for U.S. battery storage additions in 2025?",
+        question=(
+            "What do forecasters expect for U.S. battery storage "
+            "additions in 2025?"
+        ),
         sub_topics=(
             sub_topic(
                 "2025 battery storage forecasts by forecaster",
@@ -649,7 +663,9 @@ _CONFLICT = build_case(
                 transport_relation="original",
             ),
         ),
-        memory_context=MemorySnapshot(suggested_strategies=["state disagreements explicitly"]),
+        memory_context=MemorySnapshot(
+            suggested_strategies=["state disagreements explicitly"]
+        ),
     ),
     dependency_scenario="report-writer-conflicted",
     expectations=CaseExpectations(
@@ -738,7 +754,10 @@ _COMPOSITION = build_case(
     ),
     state=evaluation_state(
         case_id="composition-no-publication",
-        question="How much battery storage capacity was added in the United States in 2024?",
+        question=(
+            "How much battery storage capacity was added in the United "
+            "States in 2024?"
+        ),
         sub_topics=(
             sub_topic(
                 "U.S. battery storage capacity additions",

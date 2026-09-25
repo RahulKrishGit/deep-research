@@ -21,7 +21,6 @@ from deep_research.agents.evidence_verifier import (
     StatementCheckDraft,
     StatementVerdictDraft,
 )
-from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.planner import (
     EvidenceTargetDraft,
     PlanReviewDraft,
@@ -37,7 +36,7 @@ from deep_research.agents.report_writer import (
     WriterSectionDraft,
 )
 from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
-from deep_research.agents.steps import ReActDecision, ReActStep
+from deep_research.agents.steps import ReActDecision
 from deep_research.evaluation.cases import (
     all_cases as _all_cases,
 )
@@ -55,7 +54,6 @@ from deep_research.evaluation.dependencies import (
     bounded_url_fingerprints,
     build_controlled_dependencies,
     build_live_dependencies,
-    read_url_fingerprints,
 )
 from deep_research.evaluation.models import (
     CaseResult,
@@ -825,7 +823,9 @@ class ReportWriterOutput(TargetOutput):
             update={"result": {**result, "report_path": path}}
         )
 
-    def with_persistence_call(self, tool_name: str = "write_document") -> "ReportWriterOutput":
+    def with_persistence_call(
+        self, tool_name: str = "write_document"
+    ) -> "ReportWriterOutput":
         """Record one call to a persistence tool in the dependency ledger."""
         return self.model_copy(
             update={
@@ -3087,42 +3087,45 @@ def evidence_verifier_live_case(live_case_for):
     return live_case_for("evidence_verifier")
 
 
-def _confirm_replies(case: EvaluationCase) -> list[ContextCheckDraft]:
-    """One confirming Context Check per finding, reading only the fixture.
+def _confirm_reply(case: EvaluationCase) -> ContextCheckDraft:
+    """One batched, confirming Context Check over every seeded finding.
 
-    Each reply repeats the figure's recorded period and kind and leaves the
+    The verifier labels a batch's items ``F01``..``F0n`` in order and asks for
+    one reply covering them all, so this answers in that same shape — one
+    ``FigureCheckDraft`` per finding, under that finding's own label. A reply
+    per finding instead would leave every finding after the first to the
+    no-reply fallback, which is a different (and silent) run.
+
+    Each figure repeats its recorded period and kind and leaves the
     organisation to code's own resolution (``page_owner``), so the run is a
     real verification of the case's own pages without this helper asserting
     any organisation the pages do not carry.
     """
-    replies = []
+    figures: list[FigureCheckDraft] = []
     for position, finding in enumerate(case.state.raw_findings, start=1):
         [item] = finding.figures
-        replies.append(
-            ContextCheckDraft(
-                figures=[
-                    FigureCheckDraft(
-                        finding="F01",
-                        figure=1,
-                        period=item.period,
-                        scope=finding.measure_scope,
-                        attribution="own",
-                        organisation="",
-                        kind=item.kind,
-                        evidence_words=finding.snippet,
-                        verdict="confirm",
-                        reason="As stated on the page.",
-                    )
-                ]
+        figures.append(
+            FigureCheckDraft(
+                finding=f"F{position:02d}",
+                figure=1,
+                period=item.period,
+                scope=finding.measure_scope,
+                attribution="own",
+                organisation="",
+                kind=item.kind,
+                evidence_words=finding.snippet,
+                verdict="confirm",
+                reason="As stated on the page.",
             )
         )
-    return replies
+    return ContextCheckDraft(figures=figures)
 
 
-async def _run_live_evidence_verifier(case: EvaluationCase) -> "EvidenceVerifierOutput":
-    """One batch's worth of replies, one per finding of the case."""
-    replies = _confirm_replies(case)
-    completer = ScriptedCompleter(outputs=list(replies))
+async def _run_live_evidence_verifier(
+    case: EvaluationCase,
+) -> "EvidenceVerifierOutput":
+    """The case's findings, judged by one scripted Context Check batch."""
+    completer = ScriptedCompleter(outputs=[_confirm_reply(case)])
     agent = EvidenceVerifierAgent(
         provider=completer,
         tracker=_case_tracker(),
@@ -3137,7 +3140,9 @@ async def _run_live_evidence_verifier(case: EvaluationCase) -> "EvidenceVerifier
 
 
 @pytest.fixture
-def evidence_verifier_live_output(evidence_verifier_live_case) -> "EvidenceVerifierOutput":
+def evidence_verifier_live_output(
+    evidence_verifier_live_case,
+) -> "EvidenceVerifierOutput":
     """A completed evidence-verifier repetition of the live benchmark case."""
     return asyncio.run(_run_live_evidence_verifier(evidence_verifier_live_case))
 
