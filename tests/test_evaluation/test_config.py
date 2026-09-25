@@ -1038,7 +1038,16 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # module source moved `3bbe364fcd0d` -> `e00e6218a22b`; no other agent's
     # text changed, so the other four target pins and the Judge pin are
     # unchanged.
-    "researcher": "e00e6218a22b",
+    # ReRevResearcherR3's review (agent://ReRevResearcherR3, P1): content's
+    # own sentence-initial word now gets the same exclusion the snippet's
+    # does -- an opening "Overall,"/"However,"/"According to reviewers,"/
+    # "We" no longer counts as naming a judgement's subject, only an
+    # internal-capital or non-ASCII-leading-capital word, or a plain-ASCII
+    # leading capital that is not content's own sentence-initial word. The
+    # module source moved `e00e6218a22b` -> `0e92c7cf1206`; no other agent's
+    # text changed, so the other four target pins and the Judge pin are
+    # unchanged.
+    "researcher": "0e92c7cf1206",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read

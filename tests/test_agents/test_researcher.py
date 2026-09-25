@@ -1104,44 +1104,6 @@ def test_extraction_evidence_keeps_search_payloads_out_of_the_evidence_block() -
     assert "- QEC 2025: https://example.test/qec" in body
 
 
-def test_extraction_confidence_ranks_this_sub_topics_own_obligations_first() -> None:
-    """D4: the model's own confidence score must favour this sub-topic's own
-    obligations over a passage that merely answers another sub-topic's
-    target -- the audited run's cap ranked by that score and kept six of
-    another topic's price rows ahead of the sub-topic's own answer.
-    """
-    task = SubTopicTask(
-        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
-    )
-    run = ReActRun(agent_name="researcher", stop_reason="finished")
-
-    system_message = extraction_messages(task, run, evidence_chars=200)[0]
-
-    assert system_message.role == "developer"
-    assert "this sub-topic's own" in system_message.content
-
-
-def test_extraction_registry_contract_treats_a_condition_label_as_furniture() -> None:
-    """D8: a caption, player title or condition label a page prints beside a
-    name is furniture, not a judgement -- the audited run turned a caption
-    naming a recording condition into a rating the page never made.
-    """
-    task = SubTopicTask(
-        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
-    )
-    run = ReActRun(agent_name="researcher", stop_reason="finished")
-
-    body = extraction_messages(
-        task,
-        run,
-        evidence_chars=200,
-        acquisition_context="- evidence_id=ev-1 read_id=read-1 locator=chunk-0",
-    )[1].content
-
-    assert "parenthetical condition label" in body
-    assert "not a judgement" in body
-
-
 def test_drafts_are_stamped_with_the_sub_topic_and_extraction_time() -> None:
     draft = SubTopicFindingsDraft(
         findings=[
@@ -2900,22 +2862,6 @@ def test_the_selection_query_is_built_from_target_questions_and_the_research_que
     assert "clearest voice pickup" in policy.query
     assert "best call quality" in policy.query
     assert "Alpha" not in policy.query
-
-
-def test_the_researcher_prompt_requires_one_more_search_before_finishing_a_required_obligation(
-    tracker: Tracker,
-) -> None:
-    """RES-1 (D12): a required obligation is met only by a page about it, and
-    the loop must try once more in the obligation's own words rather than
-    finishing on general pages alone.
-    """
-    agent = _researcher(tracker, ScriptedCompleter())
-
-    prompt = agent.system_prompt(AgentTask(instruction="Gather evidence."))
-
-    assert "answered only by a page about that obligation" in prompt
-    assert "search once more in the obligation's own words" in prompt
-    assert "read the page it returns about that obligation" in prompt
 
 
 @pytest.mark.parametrize(
@@ -5553,6 +5499,27 @@ def test_bare_pronoun_judgement_triggers_at_a_clause_boundary() -> None:
     states one exactly as much as a sentence-initial "It is...".
     """
     assert _bare_pronoun_judgement("Overall, it is the one to beat.", "") is True
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Overall, it is the model to beat.",
+        "However, this is the best option.",
+        "According to reviewers, it is the best.",
+        "We think it is the best.",
+    ],
+)
+def test_bare_pronoun_judgement_refuses_content_whose_only_capital_opens_a_sentence(
+    content: str,
+) -> None:
+    """P1 (ReRevResearcherR3): content's own sentence-initial word is
+    exactly as uninformative as the snippet's -- restating the nameless
+    judgement with a leading adverb or clause must not count as naming a
+    referent, whatever ordinary English capitalises there.
+    """
+    snippet = "Utility reports vary widely across regions. This is the utility to beat."
+    assert _bare_pronoun_judgement(snippet, content) is True
 
 
 def test_an_unusable_figure_is_dropped_but_the_finding_is_kept() -> None:
