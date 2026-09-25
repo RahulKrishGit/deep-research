@@ -911,7 +911,13 @@ from deep_research.utils.config import (
 # report writer `a3a73e32c3c0` -> `24ccad97fb9f`.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
-    "researcher": "7314b246b217",
+    # Run-2 review F4 (FixSelection) moved the researcher source once more:
+    # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
+    # `bound_sub_topic_findings` is now capped at two findings per required
+    # target, so it can no longer make the per-sub-topic cap meaningless. No
+    # prompt string was edited, and ``agents.prompts`` was untouched, so the
+    # other four target pins and the Judge pin are unchanged.
+    "researcher": "37bb78b1eca8",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read

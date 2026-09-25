@@ -103,6 +103,12 @@ DEFAULT_MAX_SUB_TOPICS = 7
 # are properties of the extraction contract, not deployment knobs.
 MAX_FINDINGS_PER_SUB_TOPIC = 6
 MAX_UNIQUE_SOURCES_PER_SUB_TOPIC = 4
+# How many findings one required target may keep outside those caps. The
+# exemption is what stops a cap from deleting the answer the run was sent to
+# get; the ceiling is what stops an extraction that binds its whole output to
+# one required target from making the cap meaningless. An obligation's answer
+# is one claim and its strongest restatement, not twenty-five of them.
+MAX_EXEMPT_PER_REQUIRED_TARGET = 2
 DEFAULT_EVIDENCE_CHARS = 4000
 
 Clock = Callable[[], datetime]
@@ -1387,6 +1393,7 @@ def bound_sub_topic_findings(
     required_target_ids: Collection[str] = (),
     max_findings: int = MAX_FINDINGS_PER_SUB_TOPIC,
     max_sources: int = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC,
+    max_exempt_per_target: int = MAX_EXEMPT_PER_REQUIRED_TARGET,
 ) -> BoundedFindings:
     """Fold restatements, then bound one sub-topic's kept evidence.
 
@@ -1401,6 +1408,14 @@ def bound_sub_topic_findings(
     menu's own paragraphs kept their slots. Exempt findings are kept in
     addition to the capped set rather than counted inside it, so an answer
     never spends a slot another finding needed.
+
+    The exemption is a guarantee, not a bypass: at most
+    ``max_exempt_per_target`` findings per required target escape the caps,
+    the most confident first, and every other finding bound to that target is
+    evidence like any other and ranked by the caps. Without that ceiling an
+    extraction that binds its whole output to a required target keeps all of
+    it — twenty-five restatements of one obligation, and a per-sub-topic cap
+    that bounds nothing.
 
     Selection is by confidence, but not by confidence alone. Findings are
     grouped by *publisher* — not by URL — ranked by their strongest finding and
@@ -1420,18 +1435,35 @@ def bound_sub_topic_findings(
     the same complete document resolve to one work, while a finding with no
     read in the registry stays its own unresolved entry.
     """
-    if max_findings < 1 or max_sources < 1:
-        raise ValueError("max_findings and max_sources must be at least 1")
+    if max_findings < 1 or max_sources < 1 or max_exempt_per_target < 1:
+        raise ValueError(
+            "max_findings, max_sources and max_exempt_per_target must be at "
+            "least 1"
+        )
 
     deduplicated = deduplicate_findings(findings)
     required = set(required_target_ids)
-    exempt: list[Finding] = []
-    bounded_pool: list[Finding] = []
-    for finding in deduplicated:
-        if required and required.intersection(finding.target_ids):
-            exempt.append(finding)
-        else:
-            bounded_pool.append(finding)
+    exempt_indexes: set[int] = set()
+    for target_id in required:
+        bound_indexes = [
+            index
+            for index, finding in enumerate(deduplicated)
+            if target_id in finding.target_ids
+        ]
+        bound_indexes.sort(
+            key=lambda index: deduplicated[index].confidence, reverse=True
+        )
+        exempt_indexes.update(bound_indexes[:max_exempt_per_target])
+    exempt = [
+        finding
+        for index, finding in enumerate(deduplicated)
+        if index in exempt_indexes
+    ]
+    bounded_pool = [
+        finding
+        for index, finding in enumerate(deduplicated)
+        if index not in exempt_indexes
+    ]
     groups: dict[str, list[Finding]] = {}
     for finding in bounded_pool:
         groups.setdefault(
