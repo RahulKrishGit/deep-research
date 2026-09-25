@@ -136,3 +136,20 @@ def test_a_bracketed_unit_naming_two_known_units_stays_unparsed() -> None:
 
     assert quantity is not None and quantity.dimension is None
     assert unit_dimension("GW (MWh)") is None
+
+
+def test_a_bracketed_qualifier_that_scales_or_denominates_stays_unparsed() -> None:
+    """RevFF1r3's Important 3: the bracketed form is the unit's own
+    abbreviation, so a half that scales it ("kWh (millions)") or denominates it
+    ("kWh (per capita)") is not that: reading one half and dropping the other
+    gave 26 million kWh the base of 26 kWh.
+
+    An ac/dc qualifier is the exception the parser already reads beside a unit.
+    """
+    for unit in ("kWh (millions)", "GW (thousands)", "kWh (per capita)",
+                 "MW (per household)", "kWh (billion)"):
+        quantity = parse_figure("26", unit)
+        assert quantity is not None and quantity.dimension is None, unit
+        assert unit_dimension(unit) is None, unit
+
+    assert parse_figure("26", "GW (AC)").dimension == "power"

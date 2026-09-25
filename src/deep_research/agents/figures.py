@@ -90,12 +90,15 @@ def _known_unit(text: str) -> str | None:
 
 
 # A unit written with its own abbreviation in brackets ("gigawatts (GW)",
-# "GW (gigawatts)", "megawatt hours (MWh)"): the two spellings name one unit,
-# so either half may carry it. Pages in every domain write units this way, and
-# without this the unit had no dimension at all — so the figure could not answer
-# a power or energy target, could not be compared, and its Key facts row fell
-# back to "stated figure".
+# "GW (gigawatts)", "megawatt hours (MWh)"): the two spellings name one unit, so
+# the bracketed form is read only when they agree — or when the other half is
+# the ac/dc qualifier a unit may carry. A half that scales or denominates the
+# unit is not its abbreviation ("kWh (millions)" is a million kWh, "GW
+# (thousands)" a thousand GW, "kWh (per capita)" a rate), and reading one half
+# while dropping the other gave those units a base that was off by orders of
+# magnitude (RevFF1r3's Important 3).
 _BRACKETED_UNIT = re.compile(r"^(?P<outer>[^()]+?)\((?P<inner>[^()]+)\)$")
+_UNIT_QUALIFIERS = frozenset({"ac", "dc", "acdc"})
 
 
 def _canonical_unit(unit: str) -> str:
@@ -105,11 +108,15 @@ def _canonical_unit(unit: str) -> str:
         return known
     bracketed = _BRACKETED_UNIT.fullmatch(text)
     if bracketed:
-        named = {
-            _known_unit(bracketed.group(part).strip()) for part in ("outer", "inner")
-        } - {None}
-        if len(named) == 1:
-            return named.pop()
+        halves = [bracketed.group(part).strip() for part in ("outer", "inner")]
+        units = [_known_unit(half) for half in halves]
+        qualified = [half.replace(" ", "") in _UNIT_QUALIFIERS for half in halves]
+        if units[0] is not None and units[0] == units[1]:
+            return units[0]
+        if units[0] is not None and qualified[1]:
+            return units[0]
+        if units[1] is not None and qualified[0]:
+            return units[1]
     return text
 
 

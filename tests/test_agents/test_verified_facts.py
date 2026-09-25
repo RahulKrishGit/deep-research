@@ -897,3 +897,40 @@ def test_a_bracketed_unit_answers_the_target_it_belongs_to() -> None:
 
     assert row.measure == "utility-scale battery storage capacity"
     assert row.target_ids == ["topic-01-target-01"]
+
+
+# ---------------------------------------------------------------------------
+# Round 4, part 1: the review's findings on the two-digit-year fold, the range
+# continuation, and the bracketed unit's qualifier.
+# ---------------------------------------------------------------------------
+
+
+def test_a_two_digit_year_needs_an_apostrophe_or_fy() -> None:
+    """RevFF1r3's Important 1: only "'" and "FY" attach a two-digit year. A
+    part number that happens to look like one ("H20 chips", "H100") is not a
+    year, and neither is a bare "Q25"."""
+    assert not same_period("half 2020", "H20")
+    assert not same_period("half 1 2000", "H100")
+    assert not same_period("half 2012", "H12")
+    assert not same_period("2025", "Q25")
+
+    # The spellings the rule does read keep working.
+    assert same_period("Q1 2025", "Q1\u201925")
+    assert same_period("H1 2025", "H1'25")
+    assert same_period("fiscal 2025", "FY25")
+
+
+def test_a_period_the_words_state_as_a_range_is_not_stated() -> None:
+    """RevFF1r3's Important 2: "FY2024-25" and "FY25/26" are ranges, and the
+    year a range *starts* in is not the period it states."""
+    assert not _period_stated_in("India added 18 GW in FY2024-25, the ministry said.",
+                                 "fiscal 2024")
+    assert not _period_stated_in("India added 18 GW in FY24-25, the ministry said.",
+                                 "fiscal 2024")
+    assert not _period_stated_in("India added 18 GW in FY25/26, the ministry said.",
+                                 "fiscal 2025")
+    # The range itself, and a year that stands alone, are still stated.
+    assert _period_stated_in("India added 18 GW in FY2024-25, the ministry said.",
+                             "fiscal 2024 25")
+    assert _period_stated_in("India added 18 GW in FY2024, the ministry said.", "fiscal 2024")
+    assert _period_stated_in("India added 18 GW in 2024, the ministry said.", "2024")

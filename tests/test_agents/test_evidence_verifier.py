@@ -1680,3 +1680,47 @@ def test_a_period_the_words_abbreviate_states_the_fiscal_year() -> None:
                   verdict="correct")
 
     assert kept.kept and kept.context.period == "fiscal 2025"
+
+
+# ---------------------------------------------------------------------------
+# Round 4, part 1: the review's findings, through the enforcement.
+# ---------------------------------------------------------------------------
+
+
+def test_a_part_number_that_looks_like_a_period_is_not_one() -> None:
+    """RevFF1r3's Important 1 through ``_checked``: "H20" is a chip, not the
+    year 2020, so the recorded period is not stated and a proposal of it is
+    refused."""
+    text = "Nvidia sold 1.2 million H20 chips, the filing said."
+
+    cleared = _check(_figure_item(text, figure("1.2", "million", "2020", "actual")),
+                     verdict="correct")
+    refused = _check(_figure_item(text, figure("1.2", "million", None, "actual")),
+                     period="2020", kind="actual", verdict="correct")
+
+    assert cleared.kept and cleared.context.period is None
+    assert refused.dropped_reason == "correction_not_on_page"
+
+
+def test_a_fiscal_range_does_not_state_the_year_it_starts_in() -> None:
+    """RevFF1r3's Important 2 through ``_checked``."""
+    text = "India added 18 GW in FY2024-25, the ministry said."
+
+    cleared = _check(_figure_item(text, figure("18", "GW", "fiscal 2024", "actual")),
+                     verdict="correct")
+    refused = _check(_figure_item(text, figure("18", "GW", None, "actual")),
+                     period="fiscal 2024", kind="actual", verdict="correct")
+
+    assert cleared.kept and cleared.context.period is None
+    assert refused.dropped_reason == "correction_not_on_page"
+
+
+def test_a_period_the_words_abbreviate_beats_a_relative_reading() -> None:
+    """RevFF1r3's Minor 4: the two-digit period the words state is what
+    ``dated_explicitly`` reads, so a relative "this year" cannot replace it."""
+    text = "Firms added 4 GW in Q1\u201925; this year they plan more."
+    item = _figure_item(text, figure("4", "GW", "Q1 2025", "actual"), page_date="2026-02-20")
+
+    dropped = _check(item, period="2026", kind="actual", verdict="correct")
+
+    assert dropped.dropped_reason == "correction_not_on_page"

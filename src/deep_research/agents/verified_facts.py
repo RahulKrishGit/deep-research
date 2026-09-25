@@ -236,12 +236,12 @@ _PERIOD_ABBREVIATION = re.compile(r"\b(fy|q|h)(?=\d)")
 _PERIOD_FOLDS = {"fy": "fiscal", "q": "quarter", "h": "half"}
 _ORDINAL_NUMBER = {"first": "1", "second": "2", "third": "3", "fourth": "4"}
 _SPELLED_ORDINAL_PERIOD = re.compile(r"\b(first|second|third|fourth)[\s-]+(quarter|half)\b")
-# A two-digit year reads as its four-digit one when the page attaches it to a
-# period abbreviation or marks it with an apostrophe ("Q1'25", "FY25",
-# "H1'25"): 00-49 is 20xx and 50-99 is 19xx. A bare two-digit number is not a
-# year -- "Q1 25" and "25 GW" state none -- so nothing folds without one of
-# those markers, and a four-digit year is never touched.
-_TWO_DIGIT_YEAR = re.compile(r"(?P<lead>['\u2019]|\bfy|\bq[1-4]?|\bh[1-2]?)(?P<year>\d{2})(?!\d)")
+# A two-digit year reads as its four-digit one only where the page writes it as
+# a year: after an apostrophe ("Q1'25", "H1'25", "FY'25") or directly after
+# "FY" ("FY25"). Nothing else attaches one -- a part number that happens to look
+# like a period ("H20 chips", "H100", a bare "Q25") is not a year -- and a
+# four-digit year is never touched.
+_TWO_DIGIT_YEAR = re.compile(r"(?P<lead>['\u2019]|\bfy)(?P<year>\d{2})(?!\d)")
 
 
 def _full_year(year: str) -> str:
@@ -280,6 +280,11 @@ def same_period(left: str | None, right: str | None) -> bool:
     return key is not None and key == _period_key(right)
 
 
+# A period the text continues as a range: "FY2024-25", "FY24-25", "FY25/26",
+# "2024–25". The year a range starts in is not the period the range states.
+_RANGE_CONTINUATION = re.compile(r"^\s*[-/\u2013]\s*\d")
+
+
 def _period_stated_in(text: str, period: str | None) -> bool:
     """Whether ``text`` states ``period``, however either one spells it.
 
@@ -287,14 +292,25 @@ def _period_stated_in(text: str, period: str | None) -> bool:
     2025"), and the key counts as stated when the text's own folded tokens carry
     it as a contiguous run: a sentence that dates a figure "at the end of Q1'25"
     states the period a page or a reply writes "Q1 2025".
+
+    A run the text continues as a range does not count: "FY2024-25" states the
+    fiscal year the range ends in, not "fiscal 2024" (RevFF1r3's Important 2).
     """
     key = _period_key(period)
     if key is None:
         return False
     wanted = key.split()
-    words = [w for w in re.findall(r"[a-z0-9]+", _folded_period(text))
-             if w not in _PERIOD_FILLER]
-    return any(words[i : i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
+    folded = _folded_period(text)
+    tokens = [match for match in re.finditer(r"[a-z0-9]+", folded)
+              if match.group() not in _PERIOD_FILLER]
+    for start in range(len(tokens) - len(wanted) + 1):
+        run = tokens[start : start + len(wanted)]
+        if [match.group() for match in run] != wanted:
+            continue
+        if _RANGE_CONTINUATION.match(folded[run[-1].end() : run[-1].end() + 5]):
+            continue
+        return True
+    return False
 
 
 # Fable §8.6 step 2's filler words, less "a" and "an": a single letter can be a
