@@ -56,9 +56,8 @@ from deep_research.utils.types import (
     WorkIdentity,
 )
 
-# Which boundary one manifest describes. Later tasks add their own operations
-# (retention, clustering, adjudication packet, composition) as new constants
-# and pass them to ``build_boundary_audit``.
+# Which boundary one manifest describes. A stage that mints its own operation
+# adds its own constant beside these and passes it to ``build_boundary_audit``.
 READ_ADMISSION_OPERATION = "read_admission"
 PASSAGE_SELECTION_OPERATION = "passage_selection"
 
@@ -69,8 +68,6 @@ DISPOSITION_STAGES = (
     "read-selection",
     "extraction",
     "retention",
-    "clustering",
-    "adjudication-packet",
     "composition",
 )
 DISPOSITION_REASONS = (
@@ -83,7 +80,7 @@ DISPOSITION_REASONS = (
     "unsupported_excerpt",
     # A selected passage that states a figure in its target's measure unit
     # but yielded no finding even after one bounded re-extraction. Kept apart
-    # from "irrelevant" so the critic sees evidence that was held and unused.
+    # from "irrelevant" so the run records evidence that was held and unused.
     "unmined_quantity",
 )
 
@@ -1115,6 +1112,26 @@ ATTRIBUTION_CUE_PATTERN = re.compile(
     r"data\s+from|estimates?\s+from|sources?\s*:|per|said)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+# The active form of the same claim: a reporting verb the page puts straight
+# after the name it credits ("Gartner estimates ...", "IDC reported ...", "a
+# Pew Research Center survey found ..."), with at most a possessive and one
+# source noun between them. The verb has to be the named body's own, so the
+# carrier's own sentence never credits a body it merely mentions: "Unlike the
+# EIA, our survey found 12 GW" names the EIA and then reports the carrier's
+# survey, and "our" is neither a verb nor a source noun.
+_REPORTING_NOUN = (
+    r"(?:survey|poll|study|research|report|analysis|data|figures?|numbers?|"
+    r"index|outlook|forecast|estimates?)"
+)
+_REPORTING_VERB = (
+    r"(?:reports?|reported|finds?|found|estimates?|estimated|forecasts?|forecasted|"
+    r"projects?|projected|shows?|showed|warns?|warned|reveals?|revealed|"
+    r"expects?|expected)"
+)
+_REPORTING_CUE_PATTERN = re.compile(
+    rf"\s*(?:{_REPORTING_NOUN}\s+)?(?:{_REPORTING_VERB})(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 # A possessive immediately after the matched name: "Wood Mackenzie's" names
 # an owner of what follows exactly as "according to Wood Mackenzie" does.
 _POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
@@ -1132,7 +1149,8 @@ def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
     anything — so admission requires one of the words this project reads as
     handing a figure to somebody, immediately before or after the name.
     """
-    if _POSSESSIVE_MARK.match(phrase[name_match.end() :]):
+    tail = phrase[name_match.end() :]
+    if _POSSESSIVE_MARK.match(tail) or _REPORTING_CUE_PATTERN.match(tail):
         return True
     for cue in ATTRIBUTION_CUE_PATTERN.finditer(phrase):
         if 0 <= name_match.start() - cue.end() <= _ATTRIBUTION_CUE_REACH:
@@ -2926,7 +2944,6 @@ def build_boundary_audit(
     packet_fingerprint: str,
     configuration_fingerprint: str,
     target_ids: Sequence[str] = (),
-    claim_cluster_ids: Sequence[str] = (),
     selected_ids: Sequence[str] = (),
     returned_ids: Sequence[str] = (),
     accepted_ids: Sequence[str] = (),
@@ -2953,7 +2970,6 @@ def build_boundary_audit(
         agent_name=agent_name,
         operation=operation,
         target_ids=list(target_ids),
-        claim_cluster_ids=list(claim_cluster_ids),
         input_ids=list(input_ids),
         selected_ids=list(selected_ids),
         returned_ids=list(returned_ids),

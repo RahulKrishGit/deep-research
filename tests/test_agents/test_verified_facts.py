@@ -6,6 +6,7 @@ import pytest
 
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.verified_facts import (
+    _rows_share_a_subject,
     _target_fields,
     answered_target_ids,
     fact_rows,
@@ -31,9 +32,10 @@ from tests.evidence_fakes import figure, make_finding, make_read, make_target
 EIA = "U.S. Energy Information Administration"
 
 
-def ctx(organisation=EIA, attribution="own", period="2024", kind="actual", scope=None):
+def ctx(organisation=EIA, attribution="own", period="2024", kind="actual", scope=None,
+        subject=None):
     return FigureContext(period=period, scope=scope, attribution=attribution,
-                         organisation=organisation, kind=kind)
+                         organisation=organisation, kind=kind, subject=subject)
 
 
 def verified(finding, *contexts, unchecked=False, dropped=False):
@@ -560,3 +562,163 @@ def test_an_article_only_give_away_needs_the_target_to_spell_it() -> None:
     words = subject_context([target.target_id], [target])
     fields = _target_fields([target.target_id], [target])
     assert same_subject("a kettle", "Kettle K2", context_words=words, target_fields=fields)
+
+
+# ---------------------------------------------------------------------------
+# Task FF1 (final review, slice 1): the row a group prints, the figures the
+# number parser cannot read, period spellings, and one value answering two
+# measures.
+# ---------------------------------------------------------------------------
+
+
+def _kettle_page() -> str:
+    return ("Our testers rated it 4.5 out of 5 in 2025. The Kettle K1 scored 4.5 out of 5 "
+            "in 2025. The Kettle K2 scored 4.5 out of 5 in 2025.")
+
+
+def _kettle_targets():
+    return [
+        make_target("topic-01-target-01", question="How did the Kettle K1 score?",
+                    measure="kettle rating", unit_dimension=None, period="2025", kind="actual",
+                    geography=None),
+        make_target("topic-02-target-01", question="How did the Kettle K2 score?",
+                    measure="kettle rating", unit_dimension=None, period="2025", kind="actual",
+                    geography=None),
+    ]
+
+
+def test_a_group_with_a_named_subject_prints_that_subject() -> None:
+    """Task FF1 (review I2): a subject-less figure and a named one can be one
+    row -- the extraction order decides which joins which -- and the row must
+    print the subject its group carries.
+
+    A row with no subject beside a named one is read as a duplicate by the
+    quality gate and hides which thing the figure is about, so the group's
+    named member is also the row's own, and its obligations are the ones that
+    member answers: the subject-less figure answers both targets because
+    nothing can refuse it, and that binding must not answer the other model's
+    obligation from a row about this one.
+    """
+    read = make_read(_kettle_page(), url="https://www.example.com/review", title="Kettle reviews")
+    overall = make_finding(read, "Our testers rated it 4.5 out of 5 in 2025.",
+                           figures=[figure("4.5", "out of 5", "2025", "actual")],
+                           target_ids=["topic-01-target-01", "topic-02-target-01"])
+    k1 = make_finding(read, "The Kettle K1 scored 4.5 out of 5 in 2025.",
+                      figures=[figure("4.5", "out of 5", "2025", "actual").model_copy(
+                          update={"subject": "Kettle K1"})],
+                      target_ids=["topic-01-target-01"])
+    k2 = make_finding(read, "The Kettle K2 scored 4.5 out of 5 in 2025.",
+                      figures=[figure("4.5", "out of 5", "2025", "actual").model_copy(
+                          update={"subject": "Kettle K2"})],
+                      target_ids=["topic-02-target-01"])
+    findings = [
+        verified(overall, ctx(organisation="example.com", period="2025")),
+        verified(k1, ctx(organisation="example.com", period="2025", subject="Kettle K1")),
+        verified(k2, ctx(organisation="example.com", period="2025", subject="Kettle K2")),
+    ]
+    targets = _kettle_targets()
+
+    rows = fact_rows(findings, targets)
+
+    assert [(row.subject, row.target_ids) for row in rows] == [
+        ("Kettle K1", ["topic-01-target-01"]),
+        ("Kettle K2", ["topic-02-target-01"]),
+    ]
+    assert rows[0].finding_id == finding_fingerprint(k1)
+    # The gate's own pair test over these rows: one row per model, no duplicate.
+    assert not any(_rows_share_a_subject(a, b, targets)
+                   for n, a in enumerate(rows) for b in rows[n + 1:])
+
+
+def test_an_unreadable_figure_answers_only_its_own_dimensions_target() -> None:
+    """Task FF1 (review I3): a currency symbol or a sign is not a number the
+    parser reads, but the figure's unit still says what the figure is about.
+
+    A price or a signed growth rate then answers the target it belongs to --
+    the value text is on the page and verified -- while a figure whose unit is
+    another dimension still answers nothing.
+    """
+    read = make_read("The K1 lists at $199 in 2025. Output fell -3.2 percent in 2025.")
+    priced = make_finding(read, "The K1 lists at $199 in 2025.",
+                          figures=[figure("$199", "USD", "2025", "actual")],
+                          target_ids=["topic-01-target-01"])
+    price_target = make_target("topic-01-target-01", measure="list price", unit_dimension=None,
+                               period="2025", kind="actual", geography=None)
+
+    [row] = fact_rows([verified(priced, ctx(organisation="example.com", period="2025"))],
+                      [price_target])
+
+    assert (row.target_ids, row.measure) == (["topic-01-target-01"], "list price")
+
+    signed = make_finding(read, "Output fell -3.2 percent in 2025.",
+                          figures=[figure("-3.2", "percent", "2025", "actual")],
+                          target_ids=["topic-02-target-01"])
+    kept = verified(signed, ctx(organisation="example.com", period="2025"))
+    share = make_target("topic-02-target-01", measure="output growth",
+                        unit_dimension="percent", period="2025", kind="actual", geography=None)
+    power = make_target("topic-02-target-01", measure="storage additions",
+                        unit_dimension="power", period="2025", kind="actual", geography=None)
+
+    assert finding_answers(kept, share)
+    assert not finding_answers(kept, power)
+
+
+def test_period_spellings_of_one_fiscal_quarter_and_half_agree() -> None:
+    """Task FF1 (review I4): a planner writes the question's own spelling and
+    the page writes another; one period spelled two ways answers the same
+    target, while a fiscal year stays distinct from a bare calendar year."""
+    assert same_period("FY2025", "fiscal 2025")
+    assert same_period("FY2025", "FY 2025")
+    assert same_period("Q4 2025", "fourth quarter of 2025")
+    assert same_period("H1 2025", "first half of 2025")
+
+    assert not same_period("FY2025", "2025")
+    assert not same_period("Q1 2025", "Q2 2025")
+    assert not same_period("FY2025", "FY2024")
+
+
+def test_two_figures_answering_different_targets_stay_two_rows() -> None:
+    """Task FF1 (review I6): PD-9's fact key is the measure family -- the unit
+    dimension plus the target the finding answers -- so two measures that
+    happen to share one value are two rows, each answering its own obligation."""
+    read = make_read("Participants lost 15 percent of body weight. Nausea affected 15 percent "
+                     "of participants in the trial.",
+                     url="https://www.journal.org/trial", title="Trial")
+    targets = [
+        make_target("topic-01-target-01", question="How much weight did participants lose?",
+                    measure="mean body weight loss", unit_dimension="percent", period="2024",
+                    kind="actual", geography=None),
+        make_target("topic-02-target-01", question="What share had nausea?",
+                    measure="nausea incidence", unit_dimension="percent", period="2024",
+                    kind="actual", geography=None),
+    ]
+    findings = [
+        verified(make_finding(read, "Participants lost 15 percent of body weight.",
+                              figures=[figure("15", "percent", "2024", "actual")],
+                              target_ids=["topic-01-target-01"]),
+                 ctx(organisation="journal.org", period="2024")),
+        verified(make_finding(read, "Nausea affected 15 percent of participants in the trial.",
+                              figures=[figure("15", "percent", "2024", "actual")],
+                              target_ids=["topic-02-target-01"]),
+                 ctx(organisation="journal.org", period="2024")),
+    ]
+
+    rows = fact_rows(findings, targets)
+
+    assert [(row.measure, row.target_ids) for row in rows] == [
+        ("mean body weight loss", ["topic-01-target-01"]),
+        ("nausea incidence", ["topic-02-target-01"]),
+    ]
+
+
+def test_a_comparison_base_is_never_resolved_as_the_figures_period() -> None:
+    """Task FF1 (review P2-1): "over last year" names the base a figure is
+    compared with, not the period the figure applies to, so no period is
+    resolved from it -- while a plain relative phrase still resolves."""
+    assert resolve_relative_period("Sales rose 12 percent over last year", "2026-02-20") is None
+    assert resolve_relative_period("Sales were 12 percent higher than last year",
+                                    "2026-02-20") is None
+    assert resolve_relative_period("Sales are up from last year", "2026-02-20") is None
+    assert resolve_relative_period("Revenue grew 12 percent compared with last year",
+                                    "2026-02-20") is None
+    assert resolve_relative_period("Sales rose 12 percent this year", "2026-02-20") == "2026"

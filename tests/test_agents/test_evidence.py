@@ -61,6 +61,7 @@ from deep_research.agents.sources import (
 from deep_research.utils.types import (
     INCOMPLETE_CONTENT_SHA256,
     QUALITY_CONTRACT_VERSION,
+    BoundaryAudit,
     EvidenceDisposition,
     EvidenceUnit,
     ReadRecord,
@@ -1379,7 +1380,6 @@ def test_a_read_admission_manifest_records_every_boundary_id() -> None:
     assert audit.deferred_ids == ["https://lab.example/other.pdf"]
     assert audit.packet_fingerprint == PACKET_FINGERPRINT
     assert audit.configuration_fingerprint == CONFIGURATION_FINGERPRINT
-    assert audit.claim_cluster_ids == []
 
 
 def test_a_passage_selection_manifest_records_what_it_omitted() -> None:
@@ -3174,3 +3174,52 @@ def test_an_opening_that_merely_mentions_an_organisation_is_not_authorship() -> 
         passages=passages,
     )
     assert not relay_attribution_on_page(read, "page-14-chunk-14", figure_text, "BloombergNEF")
+
+
+# ---------------------------------------------------------------------------
+# Task FF1 (final review, slice 1): the sentence-level relay cues, and the
+# claim-era vocabulary that went with the claim pipeline.
+# ---------------------------------------------------------------------------
+
+
+def test_a_reporting_verb_after_the_name_is_an_attribution_cue() -> None:
+    """Task FF1 (review I5): a page credits a body with a reporting verb after
+    its name -- "Gartner estimates ...", "IDC reported ...", "a Pew Research
+    Center survey found ..." -- which is the same claim "according to Gartner"
+    makes, so a relayed forecast keeps its issuer.
+
+    The verb has to be the named body's own, so the carrier's sentence cannot
+    credit a body it merely mentions: "Unlike the EIA, our survey found 12 GW"
+    names the EIA and then reports the carrier's own survey.
+    """
+    credited = {
+        "Gartner estimates that PC shipments grew 5 percent in 2025": "Gartner",
+        "IDC reported 5 percent growth in 2025": "IDC",
+        "Counterpoint data show 5 percent growth in 2025": "Counterpoint",
+        "The CDC projects 40 percent growth by 2030": "The CDC",
+        "A Pew Research Center survey found 5 percent growth in 2025": "Pew Research Center",
+        "BloombergNEF forecasts 15 GW of additions in 2025": "BloombergNEF",
+        "Wood Mackenzie expects 15 GW of additions in 2025": "Wood Mackenzie",
+        "Wood Mackenzie reports 15 GW of additions in 2025": "Wood Mackenzie",
+    }
+    for sentence, name in credited.items():
+        read = make_read(f"{sentence}.", url="https://www.utilitydive.com/news/x", title="x")
+        assert relay_attribution_on_page(read, "page-1-chunk-0", sentence, name), sentence
+
+    mention = "Unlike the EIA, our survey found 12 GW of additions in 2025"
+    read = make_read(f"{mention}.", url="https://www.utilitydive.com/news/x", title="x")
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", mention, "EIA")
+
+
+def test_the_disposition_vocabulary_carries_no_stage_without_a_producer() -> None:
+    """Task FF1 (review P3-2): the claim pipeline that wrote "clustering" and
+    "adjudication-packet" is gone, so the persisted vocabulary names neither."""
+    assert "clustering" not in DISPOSITION_STAGES
+    assert "adjudication-packet" not in DISPOSITION_STAGES
+    assert {"read-selection", "extraction", "retention", "composition"} <= set(DISPOSITION_STAGES)
+
+
+def test_the_boundary_manifest_carries_no_claim_cluster_ids() -> None:
+    """Task FF1 (review P3-2): claim clusters left the state in step 4, and the
+    manifest they were recorded on has no writer for them."""
+    assert "claim_cluster_ids" not in BoundaryAudit.model_fields

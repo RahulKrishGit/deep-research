@@ -11,6 +11,7 @@ import pytest
 from deep_research.agents.evidence_verifier import (
     _CONTEXT_CHECK_REPLY_EXAMPLES,
     _checked,
+    _page_date_basis,
     CONTEXT_CHECK_BATCH_SIZE,
     CONTEXT_CHECK_CONCURRENCY,
     EVIDENCE_VERIFIER_NAME,
@@ -21,6 +22,7 @@ from deep_research.agents.evidence_verifier import (
     StatementCheckDraft,
     StatementCheckItem,
     StatementVerdictDraft,
+    VerifiedFindings,
     check_statements,
     context_check_messages,
     context_passage,
@@ -34,9 +36,11 @@ from deep_research.agents.evidence_verifier import (
     verify_finding,
 )
 from deep_research.agents.prompts import STRUCTURED_REQUEST_END
+from deep_research.agents.steps import ReActRun
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
+    ProviderConfigurationError,
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
     ProviderTimeoutError,
@@ -1334,7 +1338,7 @@ def test_the_block_names_the_date_the_check_resolves_against() -> None:
 
 def test_the_block_labels_where_its_page_date_came_from() -> None:
     """Fix 3: the Source Evaluator first, then the finding's own two dates, then none."""
-    text = "Operators installed 4 GW in 2024."
+    text = "Operators installed 4 GW in 2024, the firm's 2025-12-01 update said."
     figure_ = figure("4", "GW", "2024", "actual")
 
     def lines(**dates) -> list[str]:
@@ -1369,3 +1373,185 @@ def test_a_recorded_subject_must_be_in_the_figures_own_evidence_words() -> None:
     miscredited = _check(item, subject="the C-series kettle", verdict="correct")
 
     assert miscredited.dropped_reason == "correction_not_on_page"
+
+
+# ---------------------------------------------------------------------------
+# Task FF1 (final review, slice 1): the relay a multi-source finding states,
+# the null proposal, the off-page statement date, the grown binding, the
+# BaseAgent hook's own answer, and a configuration fault.
+# ---------------------------------------------------------------------------
+
+
+def test_a_relayed_figure_is_credited_to_the_body_the_page_credits() -> None:
+    """Task FF1 (review C1): one finding states two bodies' figures and the
+    extraction admitted one issuer for the whole finding; the Context Check's
+    relay of the *other* body must survive, or the report prints a figure the
+    admitted body never issued as its relay."""
+    text = ("According to the EIA, developers plan to add 18.2 GW in 2025, while "
+            "Wood Mackenzie projects 15 GW in 2025.")
+    read = make_read(text, url="https://www.utilitydive.com/news/x", title="Storage outlook")
+    finding = make_finding(read, text,
+                           figures=[figure("18.2", "GW", "2025", "forecast"),
+                                    figure("15", "GW", "2025", "forecast")],
+                           attributed_issuer="EIA")
+
+    assert resolve_attribution(
+        proposed="relayed", organisation="Wood Mackenzie", finding=finding,
+        read=read, issuer=None,
+    ) == ("relayed", "Wood Mackenzie")
+
+
+def test_a_relay_the_page_does_not_credit_is_never_the_findings_other_issuer() -> None:
+    """Task FF1 (review C1): with no cue beside the proposed body, the finding's
+    admitted issuer is not the answer -- the figure is unattributed to the site
+    that carried it rather than credited to a body that did not issue it."""
+    text = ("U.S. developers plan to add 18.2 GW in 2025. A second body, "
+            "Wood Mackenzie, is named here with no attribution at all.")
+    read = make_read(text, url="https://www.utilitydive.com/news/x", title="Storage outlook")
+    finding = make_finding(read, text,
+                           figures=[figure("18.2", "GW", "2025", "forecast"),
+                                    figure("15", "GW", "2025", "forecast")],
+                           attributed_issuer="EIA")
+
+    assert resolve_attribution(
+        proposed="relayed", organisation="Wood Mackenzie", finding=finding,
+        read=read, issuer=None,
+    ) == ("unattributed", "utilitydive.com")
+
+
+def test_a_null_period_proposal_clears_a_period_the_page_does_not_state() -> None:
+    """Task FF1 (review I1): the extraction recorded a period the page never
+    dates; the Context Check answers null, as its prompt instructs, and the
+    recorded value must not stand as a verified period."""
+    text = ("Our testers rated the kettle highly, and the review says nothing about "
+            "when they did.")
+    kept = _check(_figure_item(text, figure("4.5", "out of 5", "2026", "actual")),
+                  verdict="correct")
+
+    assert kept.kept and kept.context.period is None and kept.corrected
+
+
+def test_a_period_the_words_state_survives_a_null_proposal() -> None:
+    """The bound on the rule above: the words the check was given state the
+    recorded period, so the figure's own evidence backs it and it stands."""
+    text = "The K1 scored 4.5 out of 5 in 2026."
+    kept = _check(_figure_item(text, figure("4.5", "out of 5", "2026", "actual")),
+                  verdict="correct")
+
+    assert kept.kept and kept.context.period == "2026"
+
+
+def test_a_null_subject_proposal_clears_a_subject_the_words_do_not_state() -> None:
+    """Task FF1 (review I1): the same rule for the recorded subject."""
+    text = "The X200 scored 4.5 out of 5."
+    recorded = figure("4.5", "out of 5").model_copy(update={"subject": "Acme X300"})
+    kept = _check(_figure_item(text, recorded), verdict="correct")
+
+    assert kept.kept and kept.context.subject is None and kept.corrected
+
+
+def test_an_explicit_period_in_the_words_beats_a_relative_reading() -> None:
+    """Task FF1 (review P2-2): fix round 1 guarded the *recorded* period only;
+    with nothing recorded, the words' own explicit year still beats a relative
+    reading, so a 2024 figure is never kept under 2026."""
+    text = "Firms added 4 GW in 2024; this year they plan more."
+    item = _figure_item(text, figure("4", "GW", None, "forecast"), page_date="2026-02-20")
+    dropped = _check(item, period="2026", kind="forecast", verdict="correct")
+
+    assert dropped.dropped_reason == "correction_not_on_page"
+
+
+def test_a_statement_date_the_page_does_not_state_is_no_basis() -> None:
+    """Task FF1 (review I7): the finding's statement date is admitted the way
+    its quote is, so a relative period is never resolved against a date the
+    page cannot support."""
+    text = "Operators plan to add 4 GW this year, the firm said."
+    item = _figure_item(text, figure("4", "GW", None, "forecast"), statement_date="2031-05-01")
+
+    assert _page_date_basis(item) == (None, "")
+    assert "page date: not stated" in context_check_messages([item])[1].content.splitlines()
+    dropped = _check(item, period="2031", kind="forecast", verdict="correct")
+    assert dropped.dropped_reason == "correction_not_on_page"
+
+
+@pytest.mark.asyncio
+async def test_a_finding_already_verified_is_judged_again_when_its_targets_grew(
+    tracker: Tracker,
+) -> None:
+    """Task FF1 (review P2-4): a re-extraction of the same content that binds a
+    target the verified record lacked is judged again, so the obligation it now
+    answers is read from a verified record instead of staying Not found."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")],
+                           target_ids=["topic-01-target-01"])
+    verified_before = finding.model_copy(
+        update={"verification": FindingVerification(status="verified")})
+    rebound = finding.model_copy(
+        update={"target_ids": ["topic-01-target-01", "topic-02-target-01"]})
+    completer = ScriptedCompleter(outputs=[_confirm_reply])
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=[rebound], read_records={read.read_id: read},
+                   verified_findings=[verified_before])
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert [call[0] for call in completer.calls] == ["ContextCheckDraft"]
+    snapshot = outcome.state_update["verified_findings"]
+    assert [f.target_ids for f in snapshot] == [["topic-01-target-01", "topic-02-target-01"]]
+    assert snapshot[0].verification.status == "verified"
+
+
+@pytest.mark.asyncio
+async def test_a_finding_already_verified_with_the_same_bindings_is_not_judged_again(
+    tracker: Tracker,
+) -> None:
+    """The bound on the rule above: a pass costs nothing the snapshot covers."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")],
+                           target_ids=["topic-01-target-01"])
+    verified_before = finding.model_copy(
+        update={"verification": FindingVerification(status="verified")})
+    completer = ScriptedCompleter(outputs=[])
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=[finding], read_records={read.read_id: read},
+                   verified_findings=[verified_before])
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert completer.calls == []
+    assert [f.target_ids for f in outcome.state_update["verified_findings"]] == [
+        ["topic-01-target-01"]]
+
+
+def test_the_state_update_hook_reports_errors_only(tracker: Tracker) -> None:
+    """Task FF1 (review P3-1): ``run`` builds the snapshot PD-4 accumulates, so
+    the documented ``BaseAgent`` hook must not answer with one pass's findings
+    in its place -- a caller relying on it would drop every earlier finding."""
+    agent = _evidence_verifier(tracker, ScriptedCompleter(outputs=[]))
+    finding = make_finding(make_read(), SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")])
+
+    update = agent.state_update(
+        VerifiedFindings(findings=[finding]),
+        ReActRun(agent_name=EVIDENCE_VERIFIER_NAME, stop_reason="finished"),
+    )
+
+    assert "verified_findings" not in update
+
+
+@pytest.mark.asyncio
+async def test_a_provider_configuration_error_halts_the_context_check(tracker: Tracker) -> None:
+    """Task FF1 (review P3-5): a rejected model or effort is a configuration
+    fault the run halts on, not a batch that silently publishes every figure as
+    unchecked context."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")])
+    completer = ScriptedCompleter(
+        outputs=[ProviderConfigurationError("unsupported reasoning effort")])
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=[finding], read_records={read.read_id: read})
+
+    with pytest.raises(ProviderConfigurationError):
+        async with tracker.session_span("session-1", "question"):
+            await agent.run(state)

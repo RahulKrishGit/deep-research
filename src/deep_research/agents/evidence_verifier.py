@@ -49,6 +49,8 @@ from deep_research.agents.evidence import (
     _document_text,
     _identity_words,
     _opening_credits,
+    _quote_states,
+    _stated_dates,
     cosmetic_text,
     excerpt_matches,
     neighbouring_passage_text,
@@ -72,6 +74,7 @@ from deep_research.agents.verified_facts import (
 from deep_research.agents.wording import stated_role
 from deep_research.providers import (
     ChatMessage,
+    ProviderConfigurationError,
     ProviderError,
     ProviderOutputLimitError,
     StructuredOutputError,
@@ -90,7 +93,6 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchEvent,
     ResearchState,
-    ResearchStateUpdate,
     ScoredSource,
 )
 
@@ -229,6 +231,7 @@ class ContextItem:
     read: ReadRecord
     passage: str
     match: FigureMatch
+    """``figure_match`` for this finding, whose snippets every figure here shares."""
     issuer: str | None = None   # evaluated_issuer(...) for the read (PD-25)
     page_date: str | None = None   # evaluated_page_date(...) for the read (D11, D12)
 
@@ -255,6 +258,7 @@ _RUN_WORD = r"(?:(?:[A-Z]\.){2,}|[A-Z][\w&'-]*)"
 # fifth word onward is never capitalised, so the run stops there).
 _CAPITALIZED_RUN = re.compile(rf"(?:{_RUN_WORD}\s+){{0,4}}{_RUN_WORD}")
 _LEADING_YEAR = re.compile(r"^(?:19|20)\d{2}\s*")
+_YEAR = re.compile(r"(?:19|20)\d{2}")
 
 # Cues a page's own text marks its publisher's name with: the copyright
 # symbol, the word, or the ASCII "(c)" a plain-text page carries.
@@ -405,14 +409,18 @@ def _page_date_basis(item: ContextItem) -> tuple[str | None, str]:
 
     The block prints what ``_checked`` resolves from, so one helper gives both
     of them the same basis and the same words for it: a batch reads the date
-    that decides the figure, whichever date that is.
+    that decides the figure, whichever date that is. The finding's release
+    date is admitted by the researcher's own quote rule; its statement date is
+    checked here, because the extraction copies that draft field straight
+    through, so an off-page one would resolve a relative period against a date
+    the page cannot support (I7).
     """
     if item.page_date:
         return item.page_date, "from the Source Evaluator"
     finding = item.finding
     if finding.release_date:
         return finding.release_date, "the finding's release date"
-    if finding.statement_date:
+    if finding.statement_date and _quote_states(read_text(item.read), (finding.statement_date,)):
         return finding.statement_date, "the finding's statement date"
     return None, ""
 
@@ -443,7 +451,14 @@ def resolve_attribution(
         if relay_attribution_on_page(read, finding.locator or "", finding.snippet or "", name):
             return "relayed", name
     admitted = finding.attributed_issuer
-    if admitted:
+    if admitted and not (
+        proposed == "relayed" and name and not same_organisation(name, admitted)
+    ):
+        # The finding-level admission is the whole snippet's issuer, and one
+        # finding can state two bodies' figures (C1): when the Context Check
+        # proposes a *different* body and the page carries no cue for it, the
+        # admitted issuer is not this figure's, and crediting it would print a
+        # figure that body never issued as its relay.
         if _owns_page(read, admitted, issuer):
             return "own", admitted
         return "relayed", admitted
@@ -486,18 +501,42 @@ def _differs(proposed: str | None, recorded: str | None) -> bool:
     )
 
 
+def _agrees_with_the_years_the_words_state(words: str, resolved: str) -> bool:
+    """Whether a relative period the code read agrees with the words' own years.
+
+    The words can carry an explicit period and a relative phrase at once
+    ("Firms added 4 GW in 2024; this year they plan more"), and fix round 1
+    ruled only on the case where the *recorded* period is the explicit one. A
+    resolution naming another year than the ones these words state is not the
+    period these words are about, so no correction is kept from it (P2-2).
+    """
+    stated = {
+        int(atom[:4])
+        for atoms in _stated_dates(words)
+        for atom in atoms
+        if _YEAR.fullmatch(atom[:4])
+    }
+    if not stated:
+        return True
+    year = _YEAR.search(resolved)
+    return year is not None and int(year.group()) in stated
+
+
 def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) -> FigureResult:
     """§5.2's enforcement of one reply: the page decides every correction.
 
     A period or scope correction is kept only when ``evidence_words`` carry
     it, except a period the words date relatively that the page's own stated
-    date resolves to (D11), which is kept with the date it came from. A
-    period the words state themselves is never resolved relatively (fix round
-    1). A subject is adopted only when the evidence words or the passage name
-    it (ruling N2). An unnamed proposal never drops a figure for a subject it
-    restates or a subject the figure's own evidence words state; it drops only
-    a figure whose recorded subject its own words do not back (fix rounds 1
-    and 2).
+    date resolves to (D11), which is kept with the date it came from and only
+    when it agrees with any year the words state themselves (P2-2). A period
+    the words state themselves is never resolved relatively (fix round 1). A
+    recorded period or subject the reply answers null on, under a `correct`
+    verdict, is not backed by the words and is cleared rather than printed
+    (I1). A subject is adopted only when the evidence words or the passage
+    name it (ruling N2). An unnamed proposal never drops a figure for a
+    subject it restates or a subject the figure's own evidence words state; it
+    drops only a figure whose recorded subject its own words do not back (fix
+    rounds 1 and 2).
     """
     words = reply.evidence_words.strip()
 
@@ -518,13 +557,23 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
         if not excerpt_matches(words, reply.period):
             # An explicit period the words themselves state beats a relative
             # reading (fix round 1): only a page that dates the figure
-            # relatively lets code resolve one.
+            # relatively lets code resolve one. Fix round 1 guarded the
+            # *recorded* period; the words' own year is what has to agree, or a
+            # figure the words date 2024 is kept under a relative 2026 (P2-2).
             dated_explicitly = bool(period) and excerpt_matches(words, period)
             resolved = None if dated_explicitly else resolve_relative_period(words, page_date)
-            if resolved is None or not same_period(resolved, reply.period):
+            if (resolved is None or not same_period(resolved, reply.period)
+                    or not _agrees_with_the_years_the_words_state(words, resolved)):
                 return drop("correction_not_on_page")
             resolved_from = page_date
         period, corrected = reply.period, True
+    elif reply.verdict == "correct" and period and not excerpt_matches(words, period):
+        # The Context Check answers null as its prompt instructs ("null when
+        # the page states none"), so a recorded period its own words do not
+        # state is not verified by them: the figure keeps its value and its
+        # label reads "period not stated" (I1). A period the words do state
+        # stands -- the quote backs it.
+        period, corrected = None, True
     if reply.scope and _differs(reply.scope, scope):
         if not excerpt_matches(words, reply.scope):
             return drop("correction_not_on_page")
@@ -541,6 +590,11 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
             # is not what these words state. A passage that names another
             # figure's subject never backs this figure's.
             return drop("correction_not_on_page")
+    elif reply.verdict == "correct" and subject and not excerpt_matches(words, subject):
+        # The same rule for the recorded subject (I1): the page names none the
+        # words carry, so nothing backs it and it is dropped rather than
+        # printed as the thing this figure is about.
+        subject, corrected = None, True
     attribution, organisation = resolve_attribution(
         proposed=reply.attribution, organisation=reply.organisation,
         finding=finding, read=item.read, issuer=item.issuer,
@@ -665,37 +719,22 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         del task, run
         return None
 
-    def state_update(
-        self, result: VerifiedFindings | None, run: ReActRun
-    ) -> ResearchStateUpdate:
-        """The ``BaseAgent`` hook's own answer; ``run`` never calls this.
-
-        ``run`` is overridden below and builds its own ``state_update`` dict
-        directly, the same way ``SynthesizerAgent.run`` does, because it
-        merges ``judged`` onto the *existing* ``verified_findings`` snapshot
-        (``[*state.verified_findings, *judged]``) rather than replacing it
-        with ``result.findings`` alone, and it adds the completion event this
-        hook's signature has nowhere to return. This override exists only so
-        a caller that invokes the hook directly (as the shared ``BaseAgent``
-        contract allows) gets a real answer instead of the ``errors``-only
-        default.
-        """
-        update: ResearchStateUpdate = {"errors": list(run.errors)}
-        if result is not None:
-            update["verified_findings"] = result.findings
-        return update
-
     async def run(self, state: ResearchState) -> AgentRun[VerifiedFindings]:
-        done = {finding_fingerprint(finding) for finding in state.verified_findings}
+        verified = {finding_fingerprint(finding): finding for finding in state.verified_findings}
         pending = [
             finding for finding in deduplicate_findings(state.raw_findings)
-            if finding_fingerprint(finding) not in done
+            if (record := verified.get(finding_fingerprint(finding))) is None
+            # A re-extraction can bind a target the verified record never
+            # carried (P2-4). The binding lives on the finding, so judging the
+            # record again is what lets the obligation it answers be read from
+            # a verified record instead of staying Not found.
+            or not set(finding.target_ids) <= set(record.target_ids)
         ]
         errors: list[ResearchError] = []
         async with self.tracker.agent_span(self.name) as span:
             judged = await self.verify(pending, state.read_records, errors, state.evaluated_sources)
             span.set_outputs({"agent_name": self.name, "findings": len(judged)})
-        snapshot = [*state.verified_findings, *judged]
+        snapshot = _merged_snapshot(state.verified_findings, judged)
         react = ReActRun(agent_name=self.name, stop_reason="finished", errors=errors)
         return AgentRun(
             agent_name=self.name, result=VerifiedFindings(findings=judged), react=react,
@@ -758,6 +797,11 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
                 return {**first, **await self._check(labelled[half:], errors, split=False)}
             errors.append(context_check_failed_error(len(labelled), error))
             return {finding_fingerprint(item.finding): None for item in labelled}
+        except ProviderConfigurationError:
+            # A rejected model or effort is a configuration fault the node halts
+            # on (P3-5): recording it as a failed batch would publish a report
+            # whose every figure reads "unchecked context".
+            raise
         except ProviderError as error:
             errors.append(context_check_failed_error(len(labelled), error))
             return {finding_fingerprint(item.finding): None for item in labelled}
@@ -790,6 +834,28 @@ def context_check_failed_error(batch_size: int, error: Exception) -> ResearchErr
                  "Figure Match result and are cited only as unchecked context."),
         details={"findings": batch_size, "exception_type": type(error).__name__},
     )
+
+
+def _merged_snapshot(existing: Sequence[Finding], judged: Sequence[Finding]) -> list[Finding]:
+    """PD-4's snapshot, with a re-judged finding's newer verdict in its place.
+
+    ``run`` judges a finding again only when a later extraction bound a target
+    the verified record did not carry (P2-4), so the newer verdict stands and
+    both passes' bindings are kept -- the same argument
+    ``deduplicate_findings`` makes for raw findings, and what keeps one record
+    per finding, which is what readers of the snapshot count.
+    """
+    latest = {finding_fingerprint(finding): finding for finding in judged}
+    merged: list[Finding] = []
+    for finding in existing:
+        replacement = latest.pop(finding_fingerprint(finding), None)
+        if replacement is None:
+            merged.append(finding)
+            continue
+        merged.append(replacement.model_copy(update={"target_ids": list(dict.fromkeys(
+            [*finding.target_ids, *replacement.target_ids]))}))
+    merged.extend(latest.values())
+    return merged
 
 
 def evidence_verified_event(findings: Sequence[Finding]) -> ResearchEvent:
@@ -1008,6 +1074,10 @@ async def _check_statement_batch(
             }
         errors.append(statement_check_failed_error(len(batch), error))
         return {item.label: None for item in batch}
+    except ProviderConfigurationError:
+        # The same configuration fault as the Context Check's (P3-5): the run
+        # halts instead of keeping every sentence as an unchecked draft.
+        raise
     except ProviderError as error:
         errors.append(statement_check_failed_error(len(batch), error))
         return {item.label: None for item in batch}
