@@ -1381,18 +1381,22 @@ class ReportQualitySnapshot(ContractModel):
     read from the plan, and no missing record shrinks it.
     """
 
-    coverage_ratio: UnitScore
-    planned_topics: int = Field(ge=0)
-    covered_topics: int = Field(ge=0)
+    # Every reading below carries a zero, including the claim-era ones: the
+    # step-4 contract (and Task 4.8's tests) build the record before each
+    # reading exists, so a partially measured pass is representable as
+    # incomplete rather than unconstructible. The bounds are unchanged.
+    coverage_ratio: UnitScore = 0.0
+    planned_topics: int = Field(default=0, ge=0)
+    covered_topics: int = Field(default=0, ge=0)
     unresolved_topic_ids: list[str] = Field(default_factory=list)
-    unique_findings: int = Field(ge=0)
-    unique_sources: int = Field(ge=0)
+    unique_findings: int = Field(default=0, ge=0)
+    unique_sources: int = Field(default=0, ge=0)
     cited_sources: int = Field(default=0, ge=0)
-    scored_cited_source_ratio: UnitScore
-    verified_claims: int = Field(ge=0)
-    contradicted_claims: int = Field(ge=0)
-    duplicate_claims: int = Field(ge=0)
-    duplicate_source_rows: int = Field(ge=0)
+    scored_cited_source_ratio: UnitScore = 0.0
+    verified_claims: int = Field(default=0, ge=0)
+    contradicted_claims: int = Field(default=0, ge=0)
+    duplicate_claims: int = Field(default=0, ge=0)
+    duplicate_source_rows: int = Field(default=0, ge=0)
     uncited_settled_points: int = Field(default=0, ge=0)
     hard_failures: list[str] = Field(default_factory=list)
     # --- Task 10: the substantive reading of the same denominator -----------
