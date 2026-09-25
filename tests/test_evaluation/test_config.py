@@ -38,219 +38,15 @@ from deep_research.utils.config import (
     load_config,
 )
 
-# The Critic's recorded ``target_prompt_fingerprint`` after the
-# ``unsupported_claims`` definition was clarified to the lenient reading with a
-# contrary-evidence override (fix-log section 89). Superseded: ``bf86f19981a6``,
-# the value recorded on the live canary artifacts.
-#
-# A later commit added a tool-convention sentence to ``CRITIC_SYSTEM_PROMPT`` and
-# moved this value to ``b6b9b768a517``. That sentence failed its predeclared 0/30
-# DSML gate (16 of 30 first attempts still returned tool-call markup), so it was
-# reverted — see fix-log sections 91 and 95 — and the pin moved back. A prompt
-# change that does not demonstrate benefit must not keep a fingerprint move.
-#
 # This is a **drift alarm, not an attribution mechanism**. Because
 # ``agent_prompt_fingerprint`` hashes the whole shared ``agents.prompts`` module,
-# this value moves when *any* agent's prompt text changes — that is what makes it
-# useful as a "did a prompt edit land" signal, and useless for saying whose. And
-# attribution is recoverable anyway while the tree is clean: artifacts record
-# ``git_commit``, so the change is explained by its diff. Attribution is genuinely
-# lost only when a fingerprint was recorded from a dirty tree whose exact source
-# snapshot was not kept.
-# Moved 2c0bd1210e21 -> c971e00c3773 by
-# docs/superpowers/plans/2026-09-12-shared-native-react-tools-and-prompt-conformance.md:
-# the shared native ReAct change removed the simulated tool catalogue from
-# ``agents.prompts`` and replaced the Critic's own ReAct closure, so every
-# agent's recorded ``target_prompt_fingerprint`` moved. Re-pinned deliberately,
-# in its own commit, rather than silently invalidated.
-# Moved c971e00c3773 -> 04df8604c26a by task 1 of
-# docs/superpowers/plans/2026-09-14-cli-report-quality-and-agent-output-integrity.md:
-# ``NATIVE_REACT_RESPONSE_CONTRACT`` said "Call at most one tool", which the
-# transport contradicts — every ``function_call`` item in one response is
-# executed — so it now says "Call one or more tools ... when independent
-# lookups or actions are needed". Wording only: the sentence forbidding a
-# tool call written in text, JSON, XML, DSML, or a Markdown fence is
-# unchanged. Re-pinned deliberately rather than silently invalidated.
-# Task 4 then removed the source evaluator's computed corroboration field and
-# changed source-quality rendering to carry explicit unscored statuses. That
-# shared ``agents.prompts`` edit moved all six target fingerprints again;
-# re-pinned deliberately so the drift alarm remains meaningful.
-# Fix Round 1 then changed the shared synthesizer and Critic wording to say
-# that a source carries a quality score when scored and an explicit evaluation
-# status otherwise. Because the fingerprint includes the shared prompt module,
-# this legitimate source-text change moved all six values together; re-pin all
-# six deliberately rather than weakening the drift alarm. The exact moves were
-# planner ``b5d310a541c7`` -> ``68802a12d777``, researcher
-# ``50c7713d2448`` -> ``69a0c396334f``, source evaluator
-# ``6452df9110e7`` -> ``cd5ea5f5579b``, Fact Checker
-# ``6bb72f0c0f63`` -> ``5c7744ff65bc``, Synthesizer
-# ``31e7a9cff8aa`` -> ``366b69880972``, and Critic
-# ``92e10384399b`` -> ``243f6ebb1627``.
-# Fix Round 2 then applied the same score/status distinction to the tool-aware
-# Critic prompt. This shared prompt-module source change legitimately moved all
-# six values again; the exact moves were planner ``68802a12d777`` ->
-# ``059a32ca8b85``, researcher ``69a0c396334f`` -> ``076337666605``, source
-# evaluator ``cd5ea5f5579b`` -> ``21d4d79ca09a``, Fact Checker
-# ``5c7744ff65bc`` -> ``f9dd5826f66a``, Synthesizer ``366b69880972`` ->
-# ``6f5b7739f134``, and Critic ``243f6ebb1627`` -> ``5b0105f4dcc1``.
-# Task 6 then replaced section-level report prose with claim-linked points and
-# added the checked-claim packet to the shared prompt module, so all six
-# shared fingerprints moved together again: planner ``8a5f8a1499bf`` ->
-# ``aa648f82af71``, researcher ``ebdfd3ae4c05`` -> ``6d5fd0f85dc3``, source
-# evaluator ``ffab1c9795e2`` -> ``ddd8f9e5785a``, Fact Checker
-# ``d5c99dbd9a35`` -> ``3ccaa7aa4fc1``, Synthesizer ``affe67074133`` ->
-# ``6b9c616afad9``, and Critic ``a15c36b0ed0e`` -> ``5bb5ef748a84``. The
-# synthesizer moved for a second reason as well — its own module now
-# validates points against the canonical claim registry and composes two
-# artifacts instead of writing one — which is the documented false positive
-# of hashing a module's full source. (The synthesizer's value covers the
-# final source of that module in this commit, including the blank-cell
-# normalization its constraint rows use.) The Judge pin did **not** move.
-# Fix wave A-1 then moved the Critic's own value a final time — ``e8bb04d10046``
-# -> ``1d2833ae6bdf`` — for the load-bearing defect of the whole plan: the
-# "# Sub-topics planned" block rendered titles only, so the response contract's
-# "Copy coverage_id exactly from a planned sub-topic" had nothing to copy,
-# ``normalize_gaps`` nulled every invented id, and targeted refinement had never
-# fired. ``CritiqueTask`` now carries the planner's own ``SubTopic`` objects
-# instead of parallel title and coverage-id lists, and both the review request
-# and ``_render_spot_check_guidance`` render ``- <coverage_id>: <title>`` from
-# that one sequence. Only the Critic's value moved: ``agents/prompts.py`` was
-# untouched, so the other five target pins and the Judge pin are unchanged.
-# Fix wave A-4 then moved the Fact Checker's own value, ``926a1d968c68`` ->
-# ``5080d1810c7e``, together with A-6 below. A-4 stopped recording
-# ``consumed_finding_fingerprints``/``consumed_coverage_ids`` on the two
-# reasons where no model ever judged the finding (``provider_unavailable``,
-# ``loop_failed``), because a recorded fingerprint is what makes
-# ``_finding_is_new`` answer ``False`` and ``extract_claims`` return early —
-# so a transient provider blip permanently suppressed re-extraction of that
-# finding. A-6 then attributed consumption against the digest-truncated
-# candidate list (``visible_findings``) instead of the full ordered list: the
-# model is shown only the first ``finding_digest`` findings, so a claim citing
-# a URL whose finding sits past the cut was recording that finding's coverage
-# id as consumed on evidence nobody read. Rationale recorded here rather than
-# under one item because both edits are in the same module and the pin moved
-# once.
-# Fix wave A-2 moved the Synthesizer's own value, ``bf2b62331950`` ->
-# ``b6cca2eaabd7``: ``state_update`` no longer stamps ``state.evidence_path``
-# from the composed ledger name. That name is a future filename, not a write,
-# and ``ResearchState.evidence_path`` means "the ledger the terminal finalizer
-# published"; the stamp made ``evidence_path_from_state`` fall back to it and
-# ``cli.render_summary`` advertise an ``Evidence ledger:`` line for a file
-# that does not exist on any run halting after the synthesizer node.
-# The remaining blast radius of this wave is ``planner`` 028150f7e4a5,
-# ``researcher`` 96907685a382, ``source_evaluator`` 6e127ffba9d4 and the Judge
-# pin 74b9cddfbbee, all verified unchanged after every P1 edit because
-# ``agents/prompts.py`` was not edited. Three of the six moved rather than the
-# Critic alone: A-1 is the only edit whose module is ``agents/critic.py``, and
-# the review's assumption that it was the wave's sole module-source edit does
-# not hold for A-2/A-4/A-6.
-# Fix wave P4 then moved two more values for documentation-only edits, which is
-# the documented false positive of hashing a module's full source rather than
-# its prompt text: the Critic ``1d2833ae6bdf`` -> ``bc6b1f23064c`` for A-6
-# (``normalize_gaps``' docstring claimed its legacy-shape mapping was "the same
-# ``normalize_gap_drafts`` rule both typed boundaries use" when it is a second,
-# per-value copy of that rule; ``normalize_gap_drafts``' own "single place"
-# claim is now scoped to payload boundaries), and the Synthesizer
-# ``b6cca2eaabd7`` -> ``dd422429c34b`` for A-5 (``run`` recomputed the
-# limitations list inline while ``compose_limitations`` computed it for the
-# artifacts; one computation now feeds both). No prompt string moved. Re-pinned
-# deliberately rather than silently invalidated, the same convention the
-# researcher's own module-source move used. The Critic then moved with the rest
-# of the six when ``CLAIM_VERIFICATION_SYSTEM_PROMPT`` gained read-before-search
-# guidance — the shared ``agents.prompts`` module is hashed for every agent, so
-# a change to any prompt in it moves all of them: ``bc6b1f23064c`` ->
-# ``97a2d10ad688``. Task 2 moved it once more, ``97a2d10ad688`` ->
-# ``60ffff5a3558``, when the Critic's own ``run_react_loop`` call site began
-# resolving its per-agent tool budget through ``tool_budget_for`` — a
-# module-source move with no prompt edit.
-# Task 4 moved all six values together, and the Critic's with them. The shared
-# ``agents/prompts.py`` gained ``render_read_dossier`` and a scoring contract
-# that asks for the role, transport relation, self-interest, dates, and
-# metadata anchors the source record now carries, so every agent whose
-# fingerprint hashes that module moved even though only the Source Evaluator's
-# request changed meaning. The Source Evaluator moved for a second reason as
-# well: its own module gained ``assess_new_sources`` and the extended
-# ``SourceScoreDraft``. The exact moves were planner ``7e43f342910c`` ->
-# ``948c6015646c``, researcher ``0628475cb810`` -> ``81f0ec215feb``, source
-# evaluator ``9528b1099f3f`` -> ``b2ce33c07533``, Fact Checker
-# ``518464aa4cee`` -> ``6425f37345c4``, Synthesizer ``758ea76a8c0c`` ->
-# ``c3daf199e75d``, and Critic ``29176f9c39df`` -> ``4f8e2cac55a1``. The Judge
-# pin did **not** move: no judge prompt or template changed.
-# Task 4's fix round 5 moved all six again, for the same shared-module reason:
-# the scoring contract in ``agents/prompts.py`` now asks for each temporal field
-# as a date *and* the document's own words for it, so a date is admitted only
-# when its quote is verbatim in the read. The Source Evaluator moved for its own
-# module as well — ``SourceScoreDraft``'s four temporal fields became quoted
-# ``TemporalClaim`` objects. The exact moves were planner ``948c6015646c`` ->
-# ``da23fbecdf5d``, researcher ``81f0ec215feb`` -> ``0d4ee670a0fe``, source
-# evaluator ``4dbe292964d2`` -> ``e01b5b79a4d2``, Fact Checker
-# ``6425f37345c4`` -> ``772e7d9d13f8``, Synthesizer ``c3daf199e75d`` ->
-# ``895e307a5068``, and Critic ``4f8e2cac55a1`` -> ``cfb6f062b992``. The Judge
-# pin did **not** move: no judge prompt or template changed.
-# Task 5 moved it once more, ``cfb6f062b992`` -> ``15754f64fa12``, with the
-# other five: the shared ``agents.prompts`` module gained the claim-equivalence
-# prompt and its two schema-version constants, and the Critic shares that
-# module. No critic prompt string changed.
-# Task 7 moved it again, ``15754f64fa12`` -> ``3f0341751794``, with the other
-# five: the shared ``REPORT_INSTRUCTION`` now states the four-field point
-# contract (``basis``), the answer-rows contract, and that a mechanism or
-# geography cell is checked against the evidence its row cites. No critic
-# prompt string changed; a shared-module edit moves all six by design.
-# Task 8 moved it once more, ``3f0341751794`` -> ``3a95336ed551``, with the
-# other five, and this time the critic's own strings changed too: the Critic is
-# a tool-free editor of one packet, so ``CRITIC_REVIEW_SYSTEM_PROMPT`` lost
-# every tool instruction and gained the read-excerpt evidence rule,
-# ``CRITIQUE_INSTRUCTION`` gained the typed gap object (id fields, kind,
-# severity, action, and "queries ride on an acquisition gap only"), the two
-# reply examples were rewritten to the typed shape, and a repair instruction
-# was added. The other five agents' prompt text is byte-identical; they moved
-# because the shared ``agents.prompts`` module did, which is the documented
-# behaviour of this fingerprint and the reason all six are pinned together.
-# Task 8's fix round 1 moved the critic alone, ``3a95336ed551`` ->
-# ``c32c826d7024``: the change was in ``agents/critic.py`` (the gap contract
-# enforced at the provider boundary, the typed violation, the real fingerprint
-# guard, whole-section rendering, the repair path's failure handling, and
-# ``review_status`` on the completed event), and no shared prompt string was
-# edited, so the other five did not move. Fix round 2 moved it alone again,
-# ``c32c826d7024`` -> ``98c2864fd56c``, for the same reason: the outage fallback
-# now records a failed review, a blank ``problem`` is a schema failure, an
-# unresolved scope is refused instead of globalized, and the packet fingerprint
-# is computed from the canonical packet. No prompt string changed at all this
-# round, which is why the five moved in neither direction.
-# Task 8's fix round 3 moved it alone once more, ``98c2864fd56c`` ->
-# ``6da1052f44b6``: ``CritiqueDraft`` bounds ``score`` to 1-10 and ``gaps`` to
-# ``DEFAULT_MAX_NOTES``, and ``build_critique`` uses the provider's score
-# verbatim, so the structured-output contract the provider is held to changed
-# (the schema it is sent now carries ``minimum``, ``maximum`` and ``maxItems``)
-# and the module that renders the review request changed with it. ``clamp_score``
-# is no longer called by the review path. ``agents.prompts`` is untouched, so
-# the other five moved in neither direction.
-# Task 8's fix round 4 — the systematic provider-boundary sweep — moved it alone
-# once more, ``6da1052f44b6`` -> ``30496ba14ad6``. Every change was in
-# ``agents/critic.py``: the score is strict (so ``"9"``, ``9.0`` and ``true`` are
-# refused rather than coerced), a blank unsupported claim is a schema failure
-# instead of a deleted defect, the legacy string gap is no longer accepted by the
-# live provider schema (only by the state-facing ``Critique``), a gap's ``kind``,
-# ``severity`` and ``repair_action`` are required instead of defaulted, the reply
-# is re-validated after transport so a forged object is not trusted, evidence
-# excerpts and the unit list are carried whole, every checked claim and cited
-# source is rendered instead of sliced or summarized, and the shared evidence
-# badge is blank when contributing badges disagree. ``agents.prompts`` was not
-# touched, so the other five moved in neither direction. The same round's cleanup
-# commit moved it once more, ``30496ba14ad6`` -> ``24f2a9be4630``: the three
-# constants that still asserted the deleted bounds (``CRITIC_CLAIM_DIGEST``,
-# ``CRITIC_EVIDENCE_UNIT_CHARS``, ``CRITIC_MAX_EVIDENCE_UNITS``) and the
-# accepted-but-ignored ``claim_digest`` parameter were removed, so no bound the
-# code no longer applies survives to be re-wired. ``agents.prompts`` again
-# untouched; the other five again unmoved.
-# Task 9's re-pin: ``agents/critic.py`` gained the repair action and the kind
-# in ``normalize_gaps``' dedupe identity, so two defects that route to
-# different nodes are no longer collapsed into one. No prompt string was
-# edited; the module source is what the fingerprint hashes, so a routing fix
-# that lives in ``critic.py`` moves a value whose name implies a prompt change
-# — the same false positive the researcher's first re-pin records below.
-CRITIC_PROMPT_FINGERPRINT = "9f62f005745a"
-
+# these values move when *any* agent's prompt text changes — that is what makes
+# them useful as a "did a prompt edit land" signal, and useless for saying
+# whose. And attribution is recoverable anyway while the tree is clean:
+# artifacts record ``git_commit``, so the change is explained by its diff.
+# Attribution is genuinely lost only when a fingerprint was recorded from a
+# dirty tree whose exact source snapshot was not kept.
+#
 # Every target agent's recorded ``target_prompt_fingerprint`` when the
 # cross-agent JSON conformance matrix was locked. All six are pinned together
 # because ``agent_prompt_fingerprint`` hashes the shared ``agents.prompts``
@@ -499,8 +295,7 @@ CRITIC_PROMPT_FINGERPRINT = "9f62f005745a"
 # source changed (the extraction response contract now requires the registry
 # fields, the reply example demonstrates that shape, and the acquisition
 # counters changed). Only that agent's source changed, so no other pin moves.
-# Task 4's re-pin is recorded against ``CRITIC_PROMPT_FINGERPRINT`` above: all
-# six moved with the shared prompt module, and the source evaluator moved for
+# Task 4's re-pin moved all six with the shared prompt module, and the source evaluator moved for
 # its own module change as well — ``b2ce33c07533`` -> ``4dbe292964d2``, an
 # import-order fix in its own module with no further prompt edit, which is the
 # documented false positive of hashing a module's whole source rather than its
@@ -508,8 +303,7 @@ CRITIC_PROMPT_FINGERPRINT = "9f62f005745a"
 # Task 4's fix round 5 re-pins all six once more: the shared scoring contract
 # now asks for a verbatim quote beside every temporal value, and the Source
 # Evaluator's own module gained the quoted draft fields and dropped the
-# value-only parsing path. Moves are recorded against
-# ``CRITIC_PROMPT_FINGERPRINT`` above; the Judge pin is unchanged.
+# value-only parsing path. The Judge pin is unchanged.
 # Task 5 re-pins all six again, in one step, because the change was to the
 # SHARED ``agents.prompts`` module: it gained the claim-equivalence system
 # prompt, its response contract, and the two schema-version constants the
@@ -930,12 +724,13 @@ CRITIC_PROMPT_FINGERPRINT = "9f62f005745a"
 # with their case files and ``evaluation_verifier``/``report_writer`` join the
 # table. The values are computed on this branch with the Task 1.5 command;
 # Task 4.10 re-pins them once every parallel task has landed.
+# Evidence Verifier plan, Task 4.10: agent set and shared prompts changed.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "c406a44e36e6",
-    "researcher": "e4d4ce8f4d63",
-    "source_evaluator": "1a7f057fad85",
-    "evidence_verifier": "868b5db9bf7c",
-    "report_writer": "3c49cce469b3",
+    "planner": "927ebbbdb99d",
+    "researcher": "4ce1067d61dc",
+    "source_evaluator": "f601e676f95f",
+    "evidence_verifier": "ec188e91a1fb",
+    "report_writer": "1c40be45868f",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
