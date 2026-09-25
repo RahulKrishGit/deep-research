@@ -953,13 +953,18 @@ from deep_research.utils.config import (
 # PLAN-5's verdict check mirrors PLAN-3's run-judgement rule, and example 1
 # names the capital cost its required target measures (kind actual). Prompt
 # strings and module source of the planner's own; the others are unchanged.
-# Run-3 content wave (FixRouteR3, D17) moved the planner once more,
-# 632bdf446f27 -> 5e36f9f4cb3b: PLAN_INSTRUCTION now orders a sub-topic whose
-# targets are all optional after every sub-topic that carries a required
-# target, so research reaches the question's own parts before anything the
-# plan added. Prompt string only; the others are unchanged.
+# Run-3 content wave review round moved it twice more, 5e36f9f4cb3b ->
+# 7b9532f4fd85: (RevRouteR3 P1) _PLAN_REPLY_EXAMPLES' example 2 contradicted
+# the new PLAN-3 ordering sentence (its priority-1 sub-topic was all-optional
+# while priority-2 carried the only required target); "outbreak investigation
+# findings" (required) is now priority 1 and listed first, "vaccination
+# coverage" (all-optional) is priority 2. (Spec 2026-09-25 §4.5 Q2)
+# `_CONSTRAINTS_MARKERS` gained "obligation"/"obligations" (regular plural),
+# so a "what obligations does <law> place on <party>" question gets the
+# constraints answer form. Module source and one marker string; the others
+# are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "5e36f9f4cb3b",
+    "planner": "7b9532f4fd85",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required

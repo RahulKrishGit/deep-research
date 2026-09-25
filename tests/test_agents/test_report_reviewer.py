@@ -831,6 +831,16 @@ def test_the_request_names_the_exact_fingerprint_it_reviews() -> None:
     assert built.fingerprint in _render(built)
 
 
+def test_the_manifest_marks_which_target_ids_are_required() -> None:
+    """P3b (RevRouteR3): REVIEW_DEFECT_RULES tells the reviewer a coverage
+    defect on a *required* target is always material, but nothing in the
+    packet said which target ids those are -- the manifest must show it.
+    """
+    rendered = _render(packet())
+
+    assert f"{TARGET_ID} [required]" in rendered
+
+
 @pytest.mark.asyncio
 async def test_a_real_written_report_builds_the_same_packet(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
