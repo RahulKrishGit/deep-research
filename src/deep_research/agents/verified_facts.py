@@ -205,11 +205,30 @@ def _drop_trailing_parenthetical(value: str) -> str:
     return _TRAILING_PARENTHETICAL.sub("", value)
 
 
+def _trailing_legal_form(value: str) -> str | None:
+    """The legal-form word ``value`` ends with, or ``None``.
+
+    "Siemens AG" carries ag and "Siemens SA" carries sa: two registrations of one
+    brand, which the trailing-form fold must not merge (N2). A name that writes
+    no form returns ``None``, so it still matches its formed spelling ("Apple" is
+    "Apple Inc.").
+    """
+    words = [t.casefold() for t in _tokens(value) if t.casefold() not in _COUNTRY_WORDS | _CONNECTORS]
+    return words[-1] if words and words[-1] in _LEGAL_FORMS else None
+
+
 def same_organisation(left: str, right: str) -> bool:
     """Whether two organisation names, acronyms or hosts name one organisation."""
     left = _drop_trailing_parenthetical(left)
     right = _drop_trailing_parenthetical(right)
     if not left.strip() or not right.strip():
+        return False
+    left_form, right_form = _trailing_legal_form(left), _trailing_legal_form(right)
+    if left_form is not None and right_form is not None and left_form != right_form:
+        # Two formed names whose forms differ are different legal entities
+        # ("Siemens AG" is not "Siemens SA"), so their figures are never one
+        # fact and neither is an earlier edition of the other (N2). A name with
+        # no form at all is still its formed spelling.
         return False
     if _HOST.fullmatch(left.strip().casefold()) and _HOST.fullmatch(right.strip().casefold()):
         return publisher_identity(f"https://{left.strip()}") == publisher_identity(f"https://{right.strip()}")
@@ -698,6 +717,23 @@ def _asks_the_same(left: EvidenceTarget, right: EvidenceTarget) -> bool:
     )
 
 
+def _item_shaped(per_target: Sequence[frozenset[str]]) -> bool:
+    """Whether a sibling group's distinguishing words are identifiers a subject carries.
+
+    "Kettle K1" against "Kettle K2" is one family of items: the words carry
+    digits, and they share what the group does not ("Kettle"), so a correct
+    subject for either is expected to state them. Two publishers ("RTINGS"
+    against "Wirecutter") share nothing and carry no number, so no product's
+    subject can name either -- the case the deferral exists for (N1).
+    """
+    words = frozenset().union(*per_target)
+    if any(any(character.isdigit() for character in word) for word in words):
+        return True
+    return any(
+        left & right for index, left in enumerate(per_target) for right in per_target[index + 1:]
+    )
+
+
 def _subject_fits(figure: VerifiedFigure, target: EvidenceTarget,
                   plan_targets: Sequence[EvidenceTarget]) -> bool:
     """D11 (Fable §8.5): of targets asking one thing of different subjects, a figure answers its own.
@@ -716,21 +752,33 @@ def _subject_fits(figure: VerifiedFigure, target: EvidenceTarget,
         *(_stated_words(t.question, t.geography) for t in (target, *siblings))
     )
     subject_words = _subject_words(figure.context.subject)
-    distinctive = _folded_words(subject_words - shared)
+    folded_shared = _folded_words(shared)
+    distinctive = _folded_words(subject_words) - folded_shared
     # The words the siblings are told apart *by*: what each of them states about
     # itself and the others do not.
-    distinguishing = _folded_words(
-        frozenset.union(*(
-            _subject_words(t.question) | _subject_words(t.geography) for t in (target, *siblings)
-        )) - shared
-    )
-    if distinctive and not (distinctive & distinguishing):
+    per_target = [
+        _folded_words(_subject_words(t.question) | _subject_words(t.geography)) - folded_shared
+        for t in (target, *siblings)
+    ]
+    distinguishing = frozenset().union(*per_target)
+    group = {t.target_id for t in (target, *siblings)}
+    bound = group & set(figure.finding.target_ids)
+    if (len(bound) == 1 and distinctive and not (distinctive & distinguishing)
+            and not _item_shaped(per_target)):
         # The siblings differ only by words this subject cannot carry: "the model
         # RTINGS ranks highest" against "the model Wirecutter ranks highest", two
         # price targets no product's subject names either publisher of. The rule
         # has nothing to match on, so it defers to the extraction's own binding
-        # (``finding_answers`` already requires the target id) rather than
-        # refusing both and printing "Not found" beside the report's answer (F3).
+        # rather than refusing both and printing "Not found" beside the report's
+        # answer (F3).
+        #
+        # Two bounds keep that deferral from answering an obligation it should
+        # refuse (N1): the extraction must have bound exactly one member of the
+        # group (a finding bound to both cannot be the reason either is
+        # answered), and the distinguishing words must not be identifiers a
+        # subject *would* carry -- "Kettle K1" against "Kettle K2" is one family
+        # of items, so a figure about "Kettle K3" is a wrong subject there and
+        # today's refusal stands.
         return True
     return _names_one_thing(subject_words,
                             _stated_words(target.question, target.geography),

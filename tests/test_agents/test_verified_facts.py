@@ -1244,3 +1244,97 @@ def test_a_period_states_the_same_words_in_any_order() -> None:
     assert not same_period("March 2026", "2026")
     assert not same_period("Q3 2025", "Q4 2025")
     assert not same_period("Q1 2025", "Q2 2025")
+
+
+# ---------------------------------------------------------------------------
+# Round 8: ReRevF2F4's N1 (the deferral's bounds) and N2 (legal forms).
+# ---------------------------------------------------------------------------
+
+
+def _sibling_price_targets(first: str, second: str, measure: str = "current list price",
+                           organisation: str | None = "Roborock"):
+    """Two sibling targets differing only in their own distinguishing words."""
+    return [make_target("topic-01-target-01", question=f"What is the {measure} of {first}?",
+                        measure=measure, unit_dimension="currency", period=None,
+                        kind="actual", geography=None, organisation=organisation),
+            make_target("topic-01-target-02", question=f"What is the {measure} of {second}?",
+                        measure=measure, unit_dimension="currency", period=None,
+                        kind="actual", geography=None, organisation=organisation)]
+
+
+def _price_finding(target_ids, subject: str, organisation: str = "Roborock"):
+    text = f"The {subject} lists at 1,600 USD."
+    return verified(
+        make_finding(make_read(text, url="https://www.roborock.com/x", title="Store"), text,
+                     figures=[figure("1,600", "USD", None, "actual").model_copy(
+                         update={"subject": subject})],
+                     target_ids=list(target_ids)),
+        ctx(organisation=organisation, period=None, subject=subject))
+
+
+def test_an_item_family_never_defers_to_the_binding() -> None:
+    """N1: siblings told apart by item identifiers ("Kettle K1" against "Kettle
+    K2") are a family the subject is expected to state, so a figure about a third
+    item is refused rather than deferred to the extraction's binding."""
+    t1, t2 = _sibling_price_targets("the Kettle K1", "the Kettle K2")
+
+    assert not finding_answers(_price_finding(["topic-01-target-01"], "Kettle K3"), t1,
+                               plan_targets=[t1, t2])
+
+
+def test_a_finding_bound_to_both_referent_siblings_answers_neither() -> None:
+    """N1: the deferral needs exactly one binding -- a finding bound to both
+    siblings cannot be the reason either one is answered."""
+    t1, t2 = _sibling_price_targets("the model RTINGS ranks highest",
+                                    "the model Wirecutter ranks highest")
+    both = _price_finding(["topic-01-target-01", "topic-01-target-02"], "Roborock Saros Z70")
+
+    assert not finding_answers(both, t1, plan_targets=[t1, t2])
+    assert not finding_answers(both, t2, plan_targets=[t1, t2])
+    assert answered_target_ids([both], [t1, t2]) == {}
+
+
+def test_a_referent_only_sibling_pair_still_defers_to_its_single_binding() -> None:
+    """The shape N1 keeps: the distinguishing words are two publishers no
+    product's subject carries, and the finding binds exactly one target."""
+    t1, t2 = _sibling_price_targets("the model RTINGS ranks highest",
+                                    "the model Wirecutter ranks highest")
+    bound_to_first = _price_finding(["topic-01-target-01"], "Roborock Saros Z70")
+
+    assert finding_answers(bound_to_first, t1, plan_targets=[t1, t2])
+    assert not finding_answers(bound_to_first, t2, plan_targets=[t1, t2])
+
+
+def test_two_registrations_of_one_brand_stay_two_rows() -> None:
+    """N2: "Siemens AG" and "Siemens SA" are different legal entities, so one
+    entity's figure is never printed as the other's earlier edition."""
+    assert not same_organisation("Siemens AG", "Siemens SA")
+    assert not same_organisation("TotalEnergies SE", "TotalEnergies SA")
+    assert not same_organisation("Sony Corporation", "Sony AB")
+    assert not same_organisation("Nokia Oyj", "Nokia OY")
+
+    def siemens(form: str, value: str, release: str):
+        text = f"Siemens revenue was {value} in 2024."
+        return verified(
+            make_finding(make_read(text, url=f"https://siemens.example/{form}", title="Report"),
+                         text, figures=[figure(value, "USD", "2024", "actual")],
+                         target_ids=["topic-01-target-01"], release_date=release),
+            ctx(organisation=f"Siemens {form}", period="2024"))
+
+    rows = fact_rows([siemens("AG", "1", "2025-01-01"), siemens("SA", "2", "2025-02-01")],
+                     [make_target("topic-01-target-01", measure="revenue",
+                                  unit_dimension="currency", period="2024", kind="actual",
+                                  geography=None, organisation=None)])
+
+    assert [(row.organisation, row.value) for row in rows] == [("Siemens AG", "1 USD"),
+                                                              ("Siemens SA", "2 USD")]
+    assert all(not row.earlier for row in rows)
+
+
+def test_a_name_without_a_legal_form_still_matches_its_formed_spelling() -> None:
+    """The bound on N2: refusing two *different* forms must not refuse a name
+    that writes none at all."""
+    assert same_organisation("Apple", "Apple Inc.")
+    assert same_organisation("Siemens", "Siemens AG")
+    assert same_organisation("Siemens AG", "Siemens AG")
+    assert same_organisation("Novo Nordisk", "Novo Nordisk A/S")
