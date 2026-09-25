@@ -60,12 +60,11 @@ from deep_research.runtime.errors import (
 )
 from deep_research.runtime.outcome import DroppedProposals, ResearchOutcome
 from deep_research.utils.types import (
-    GAP_MATERIAL_SEVERITIES,
     QUALITY_STATUS_ACCEPTED,
-    CritiqueGap,
     ReportQualitySnapshot,
     ResearchError,
     ResearchEvent,
+    ReviewDefect,
 )
 
 PROGRAM_NAME = "python -m deep_research"
@@ -123,6 +122,24 @@ def _positive_int(value: str) -> int:
         ) from error
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    """Parse ``N >= 0``, the interval ``graph.max_extra_passes`` validates.
+
+    Zero is a legitimate ceiling — a run that may buy no extra research pass,
+    which is exactly what ``--max-iterations 0`` asks for — so this is not the
+    positive-integer parser the request-budget ceilings use.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a whole number"
+        ) from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
     return parsed
 
 
@@ -187,9 +204,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-iterations",
-        type=_positive_int,
+        type=_non_negative_int,
         default=None,
-        help="macro refinement passes the critic may request",
+        help=(
+            "extra research passes for missing required targets "
+            "(default: graph.max_extra_passes, 1)"
+        ),
     )
     parser.add_argument(
         "--output-format",
@@ -357,23 +377,26 @@ SPAN_EVENT_PREFIX = "observability.span."
 # Every agent (and the graph itself) names its terminal record this way.
 COMPLETION_EVENT_SUFFIX = ".completed"
 
-# The two records ``--verbose`` adds that are not completions: the placeholder
-# a halted run emits where a node's completion would go, and the single
-# enumerated provider-failure event an agent can emit.
+# The three records ``--verbose`` adds that are not completions: the
+# placeholder a halted run emits where a node's completion would go, the single
+# enumerated provider-failure event an agent can emit, and the Report Writer's
+# own announcement that it wrote a report — which is not a completion record of
+# an agent loop, and is the one line that says a draft exists.
 VERBOSE_EVENT_TYPES = (
     "graph.node.skipped",
     "agent.provider_failure",
+    "report_writer.report.written",
 )
 
 # What a non-failing but non-ideal ending means, in one sentence.
 STATUS_NOTES = {
     "max_iterations": (
-        "Research completed with limitations: the refinement budget was "
-        "exhausted before the critic accepted the report."
+        "Research completed with limitations: extra passes exhausted with "
+        "required targets still missing, and the report not accepted."
     ),
     "incomplete": (
-        "Research completed with limitations: the run ended without an "
-        "accepted critique."
+        "Research completed with limitations: the report was published "
+        "without an accepted quality judgement."
     ),
     "failed": (
         "The research run stopped on a non-recoverable failure; everything "
@@ -805,12 +828,12 @@ def _skip_lines(
     """The sub-topic skips that cost the pass nothing, apart from the warnings.
 
     A refinement pass omits a topic whose required targets are already answered
-    and which the Critic asked no new searches for: the topic was researched —
-    on an earlier pass — and owes nothing now. Counting it as an error under
-    its coverage id prints a coverage loss the run does not have, and the
-    producer's message for all four skip reasons reads "never researched",
-    which is false here. Deferred and never-attempted skips stay warnings;
-    these get a line that names the topics and says what happened.
+    and which the pass's target selection asked no new searches for: the topic
+    was researched — on an earlier pass — and owes nothing now. Counting it as
+    an error under its coverage id prints a coverage loss the run does not
+    have, and the producer's message for all four skip reasons reads "never
+    researched", which is false here. Deferred and never-attempted skips stay
+    warnings; these get a line that names the topics and says what happened.
     """
     if not errors:
         return []
@@ -826,66 +849,58 @@ def _skip_lines(
     return lines
 
 
-def _scored_cited_sources(quality: ReportQualitySnapshot) -> int:
-    """How many of the cited sources carry a numeric score.
-
-    ``scored_cited_source_ratio`` is the snapshot's own field and is defined
-    as ``scored / cited``, so multiplying recovers the exact count the quality
-    pass measured. Nothing is recomputed from the report.
-    """
-    return round(quality.scored_cited_source_ratio * quality.cited_sources)
-
-
 def _verdict_lines(outcome: ResearchOutcome) -> list[str]:
-    """The terminal verdict, and the typed metrics it rests on.
+    """The terminal verdict, and the judgement it rests on.
 
-    A fragment is printed only when the state carries it: no model review
-    means no critic score, and a run no quality pass judged prints its verdict
-    alone rather than a row of invented zeroes.
-
-    A *failed* review means no critic score either, and that is the case this
-    guard exists for. The floor score exists so an outage cannot read as a low
-    score — ``critic.py`` says so where it writes one — and printing
-    "critic 1/10" beside the warning that the review never validated put the
-    judgement back.
-
-    The topic fragment is gone from this line. It was the console's first
-    "topics" number and it is the *claimed* one, so "4/4 topics claimed, 100%"
-    printed above "0/4 topics covered" read as one run contradicting itself.
-    The claimed count has its own labelled row on the coverage block now.
+    Acceptance is earned by the deterministic gates and the terminal semantic
+    review, so the review's own status and mean are the fragment printed beside
+    the verdict. A run no review judged prints its verdict alone rather than a
+    score nobody gave: the review's dimensions are never averaged into an
+    acceptance it did not pass.
     """
     parts: list[str] = []
-    critique = outcome.state.critique
-    if critique is not None and critique.review_status != "failed":
-        parts.append(f"critic {critique.score}/10")
+    status = outcome.semantic_review_status.strip()
+    if status:
+        score = outcome.semantic_review_score
+        parts.append(
+            f"review {status}" + (f" {score:.2f}" if score is not None else "")
+        )
     detail = f" ({'; '.join(parts)})" if parts else ""
     return [f"Quality: {outcome.quality_status}{detail}"]
 
 
 def _evidence_lines(outcome: ResearchOutcome) -> list[str]:
-    """The structural integrity counts, and the topics still open.
+    """What the Evidence Verifier kept, and the run's structural integrity.
 
     Nothing is invented for a run no quality pass judged: with no snapshot
     there are no counts to print, and a row of zeroes would read as a clean
     report rather than as an unjudged one.
+
+    The findings row keeps the verifier's readings apart — the total kept,
+    how many of those were kept with corrected context, how many were kept with
+    an unchecked context, how many were dropped, and how many are cited —
+    because they are different answers: a corrected finding is a kept one whose
+    context the verifier amended, so it is *inside* the total rather than
+    beside it; a dropped finding is in neither; and a cited one is not the same
+    as a checked one. The integrity row reads the snapshot's own fields, and
+    the unjudged count is the length of the list the quality record publishes,
+    so the number and the list can never disagree.
     """
+    counts = outcome.evidence_counts
     quality = outcome.quality
-    if quality is None:
+    if counts is None or quality is None:
         return []
-    lines = [
-        f"Evidence: {quality.cited_sources} cited sources; "
-        f"{_scored_cited_sources(quality)} scored; "
-        f"{quality.verified_claims} verified, "
-        f"{quality.contradicted_claims} contradicted",
-        f"Integrity: {quality.duplicate_claims} duplicate claims; "
-        f"{quality.duplicate_source_rows} duplicate source rows; "
-        f"{quality.uncited_settled_points} uncited settled points",
+    kept = counts.verified_findings + counts.corrected_findings
+    return [
+        f"Findings: {kept} checked "
+        f"({counts.corrected_findings} with corrected context, "
+        f"{counts.context_unchecked_findings} unchecked context), "
+        f"{counts.dropped_findings} dropped; {counts.cited_findings} cited",
+        f"Integrity: {quality.duplicate_fact_rows} duplicate fact rows; "
+        f"{quality.uncited_settled_points} uncited statements; "
+        f"{len(quality.unjudged_sentences)} unjudged sentences; "
+        f"{quality.forecasts_without_release} forecasts without release",
     ]
-    if quality.unresolved_topic_ids:
-        lines.append(
-            f"Open coverage: {', '.join(quality.unresolved_topic_ids)}"
-        )
-    return lines
 
 
 def _request_budget_lines(
@@ -922,22 +937,29 @@ def _request_budget_lines(
     return lines
 
 
-def _quality_reason_line(quality: ReportQualitySnapshot) -> list[str]:
+def _quality_reason_line(outcome: ResearchOutcome) -> list[str]:
     """Why this verdict, from the typed records behind it.
 
     A verdict with no reason is not actionable. The specific reason here is the
     gate's own hard-failure names and the semantic review's own status — both
     enumerated values, never report prose — and the line is printed only when
     there is one, so an accepted run carries no invented qualifier.
+
+    The review's status is read from the outcome, not from the snapshot's
+    field alone: a snapshot written before the review was stamped carries an
+    empty status while the state holds a scored judgement, and printing "no
+    semantic review was recorded" directly above the row that reports one
+    would make the summary contradict itself.
     """
+    quality = outcome.quality
     reasons: list[str] = []
-    if quality.hard_failures:
+    if quality is not None and quality.hard_failures:
         reasons.append(
             f"{len(quality.hard_failures)} gate failure"
             + ("" if len(quality.hard_failures) == 1 else "s")
             + f" ({', '.join(quality.hard_failures)})"
         )
-    status = quality.semantic_review_status.strip()
+    status = outcome.semantic_review_status.strip()
     if status and status != "scored":
         reasons.append(f"semantic review {status}")
     elif not status:
@@ -948,57 +970,27 @@ def _quality_reason_line(quality: ReportQualitySnapshot) -> list[str]:
 
 
 def _coverage_line(outcome: ResearchOutcome) -> list[str]:
-    """Substantive topic and target completion, then the claimed reading.
+    """Required-target completion, then what no search could answer.
 
-    Three readings of one run, kept apart (Section 2.3). The first row is the
-    *substantive* count: a topic some claim recorded consuming is not an
-    answered obligation, and only the stricter number belongs in a line about
-    completion. The claimed count follows on its own row and says what it is,
-    because the two are different measurements of the same denominator and a
-    console that prints them in one place under one name contradicts itself.
+    Two readings of one denominator, kept apart (§6.4). The count is the
+    gate's own: required targets some verified finding answers. The Not found
+    row is the report's own account of what it searched for and did not find,
+    printed under its own name so a reader can tell an accounted obligation
+    from an unaccounted one — the Unresolved row is where a missing target no
+    search reported on shows up. Printing one number for both readings would
+    either hide an unaccounted obligation or report an accounted one as a
+    defect.
     """
     coverage = outcome.coverage
     if coverage is None:
         return []
-    critical = (
-        f"{coverage.answered_critical_targets}/{coverage.critical_targets} "
-        "critical targets answered"
-    )
     lines = [
-        f"Coverage: {coverage.covered_topics}/{coverage.planned_topics} topics "
-        f"covered (substantive, "
-        f"{coverage.substantive_topic_ratio:.0%}); "
-        f"{coverage.answered_targets}/{coverage.required_targets} required "
-        f"targets answered; {critical}"
+        f"Required targets: {coverage.answered_targets}/"
+        f"{coverage.required_targets} answered"
     ]
-    quality = outcome.quality
-    if quality is not None:
-        lines.append(
-            f"Coverage claimed: {quality.covered_topics}/"
-            f"{quality.planned_topics} topics recorded as consumed by a "
-            f"checked claim ({quality.coverage_ratio:.0%})"
-        )
+    if coverage.not_found_target_ids:
+        lines.append(f"Not found: {', '.join(coverage.not_found_target_ids)}")
     return lines
-
-
-def _claim_lines(outcome: ResearchOutcome) -> list[str]:
-    """Checked claims, counted apart from the claims that were corroborated.
-
-    "Sixteen claims were checked" is not "sixteen claims are verified". The
-    four readings below are the badges the canonical claims actually recorded,
-    and they add up to the number that was checked — so the line can never
-    present a check count as a corroboration count.
-    """
-    counts = outcome.evidence_counts
-    if counts is None:
-        return []
-    return [
-        f"Claims: {counts.checked_claims} checked; "
-        f"{counts.corroborated} independently corroborated, "
-        f"{counts.primary_attributed} primary-source attributed, "
-        f"{counts.contested} contested, "
-        f"{counts.not_established} not established"
-    ]
 
 
 def _source_lines(outcome: ResearchOutcome) -> list[str]:
@@ -1024,68 +1016,70 @@ def _source_lines(outcome: ResearchOutcome) -> list[str]:
 
 
 def _review_line(outcome: ResearchOutcome) -> list[str]:
-    """The semantic judgement, or the explicit record that there was none.
+    """The judgement's own row: its status, and the packet it was made over.
 
-    A missing judgement is printed as missing. It is never rendered as a score
-    of zero, and never left off the summary, because an absent review is the
-    reason a run cannot be accepted — a reader who cannot see it cannot see why
-    the verdict is ``partial``.
+    The mean is printed once, on the verdict line it earned; this row carries
+    the judgement's identity so two runs' judgements can be told apart. A
+    missing judgement is printed as missing — never as a score of zero, and
+    never left off the summary, because an absent review is the reason a run
+    cannot be accepted, and a reader who cannot see it cannot see why the
+    verdict is ``partial``.
     """
     if outcome.quality is None:
         return []
     status = outcome.semantic_review_status.strip()
     if not status:
         return ["Review: no semantic review was recorded"]
-    if status != "scored":
+    if outcome.semantic_review_score is None:
         return [f"Review: {status} (no score was recorded)"]
-    score = outcome.semantic_review_score
     fingerprint = outcome.semantic_review_fingerprint.strip()
-    detail = f" {score:.2f}" if score is not None else ""
-    return [f"Review: scored{detail} (fingerprint {fingerprint or 'unrecorded'})"]
+    return [
+        f"Review: {status} (fingerprint {fingerprint or 'unrecorded'})"
+    ]
 
 
 def _unresolved_lines(outcome: ResearchOutcome) -> list[str]:
-    """The significant questions the run left open, by kind and scope.
+    """The defects the reviewer named, and the required targets still owed.
 
-    Read from the Critic's own material defects and the semantic review's, each
-    with the coverage topic or statement it affects. A run with nothing open
-    prints nothing; a run with something open names it rather than saying
-    "limitations remain".
+    Read from the Report Reviewer's own material defects and the gate's own
+    missing-target list, each with the target ids it affects. A run with
+    nothing open prints nothing; a run with something open names it rather
+    than saying "limitations remain".
     """
-    critique = outcome.state.critique
-    critic_defects = (
-        [
-            gap
-            for gap in critique.gaps
-            if gap.severity in GAP_MATERIAL_SEVERITIES
-        ]
-        if critique is not None and critique.review_status == "reviewed"
-        else []
-    )
     review = outcome.state.report_review
-    review_defects = (
+    defects = (
         review.material_defects
         if review is not None and review.status == "scored"
         else []
     )
-    if not critic_defects and not review_defects:
+    coverage = outcome.coverage
+    missing = (
+        () if coverage is None else coverage.missing_required_target_ids
+    )
+    if not defects and not missing:
         return []
     parts: list[str] = []
-    if critic_defects:
-        parts.append(f"{_defect_phrase(critic_defects)} (critic)")
-    if review_defects:
-        parts.append(f"{_defect_phrase(review_defects)} (semantic review)")
+    if defects:
+        parts.append(f"{_defect_phrase(defects)} (semantic review)")
+    if missing:
+        parts.append(
+            f"{len(missing)} missing required target"
+            + ("" if len(missing) == 1 else "s")
+            + f" ({', '.join(missing)})"
+        )
     return [f"Unresolved: {'; '.join(parts)}"]
 
 
-def _defect_phrase(gaps: Sequence[CritiqueGap]) -> str:
+def _defect_phrase(defects: Sequence[ReviewDefect]) -> str:
     """One defect list as its count and its bounded kind/scope pairs."""
-    scopes = []
-    for gap in gaps:
-        scope = gap.coverage_id or (gap.target_ids[0] if gap.target_ids else "")
-        scopes.append(f"{gap.kind} {scope}".strip())
-    return f"{len(gaps)} defect" + ("" if len(gaps) == 1 else "s") + (
-        f" ({', '.join(scopes)})" if scopes else ""
+    scopes: list[str] = []
+    for defect in defects:
+        named = [*defect.target_ids, *defect.statement_ids]
+        scopes.append(f"{defect.kind} {named[0]}".strip() if named else defect.kind)
+    return (
+        f"{len(defects)} defect"
+        + ("" if len(defects) == 1 else "s")
+        + (f" ({', '.join(scopes)})" if scopes else "")
     )
 
 
@@ -1151,7 +1145,7 @@ def _artifact_lines(outcome: ResearchOutcome) -> list[str]:
             lines.append(f"{label}: {missing}")
     memory_failures = outcome.failed_memory_writes
     if memory_failures:
-        count = f"{memory_failures} claim write"
+        count = f"{memory_failures} finding write"
         lines.append(
             f"Memory: {count}{'' if memory_failures == 1 else 's'} to memory "
             "failed; memory writes are outside the artifact set, so the paths "
@@ -1201,11 +1195,8 @@ def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
         lines.append(note)
 
     lines.extend(_verdict_lines(outcome))
-    quality = outcome.quality
-    if quality is not None:
-        lines.extend(_quality_reason_line(quality))
+    lines.extend(_quality_reason_line(outcome))
     lines.extend(_coverage_line(outcome))
-    lines.extend(_claim_lines(outcome))
     lines.extend(_source_lines(outcome))
     lines.extend(_review_line(outcome))
     lines.extend(_evidence_lines(outcome))
@@ -1285,13 +1276,13 @@ def strict_quality_exit(
     can reorder them.
 
     The verdict is read from the enumerated status alone. Every other field a
-    snapshot may carry (hard-failure names, the critic's score, the semantic
-    review's status and mean, coverage ratios, claim counts) is a diagnostic,
-    and none of them can buy acceptance: a report the terminal gates did not
-    accept exits 4 under ``--require-quality`` even when every counter looks
-    clean. A snapshot with no status at all is not accepted either — an absent
-    judgement is never an acceptance, and a missing key must not read as a
-    pass.
+    snapshot may carry (hard-failure names, the semantic review's status and
+    mean, the required and answered target ids, the verifier's finding counts,
+    coverage ratios) is a diagnostic, and none of them can buy acceptance: a
+    report the terminal gates did not accept exits 4 under
+    ``--require-quality`` even when every counter looks clean. A snapshot with
+    no status at all is not accepted either — an absent judgement is never an
+    acceptance, and a missing key must not read as a pass.
 
     Without ``--require-quality`` a completed run exits 0 whether or not the
     report was accepted. That 0 means "the run finished"; it is explicitly not
@@ -1307,7 +1298,7 @@ def strict_quality_exit(
 INTERACTIVE_PROMPT = "Research question: "
 
 _STARTING_NOTICE = (
-    "Preparing the research run. A full session runs the six agents and "
+    "Preparing the research run. A full session runs the five agents and "
     "can take several minutes."
 )
 
@@ -1400,7 +1391,7 @@ def main(
             question=question,
             resume_session_id=options.resume,
             config_path=options.config,
-            max_iterations=options.max_iterations,
+            max_extra_passes=options.max_iterations,
             output_format=options.output_format,
             config_overrides=request_budget_overrides(options),
             event_handler=progress,

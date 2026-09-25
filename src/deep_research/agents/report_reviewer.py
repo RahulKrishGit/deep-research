@@ -1,26 +1,29 @@
-"""The terminal semantic report review: a source-bound judgement of the report.
+"""The terminal semantic report review: one call, the report judged against its findings.
 
-Task 10 replaces a structural proxy — a keyword-and-length formula over counts
-— with a review that reads the report and the evidence behind it. The proxy is
-kept for historical comparability (``e2e_evaluation.evaluators`` labels it
-structural-only) and is never an acceptance gate again.
+Task 10 replaced a structural proxy — a keyword-and-length formula over counts
+— with a review that reads the report and the evidence behind it. Step 4
+(Task 4.2, spec §6.2-§6.3) makes it the one judgement the graph runs: the fact
+checker, the claim clusters and the Critic left with step 4 (D2, D6, PD-16), so
+this review judges the *report* against the question and the verified findings
+behind each sentence, and nothing else asks a second reviewer the same question.
 
-Three properties make this review different from the proxy in kind rather than
+Four properties make this review different from the proxy in kind rather than
 in degree:
 
 * **It sees the whole report.** ``reader_content`` is the candidate verbatim,
-  and no section, statement, or excerpt is prefix-clipped. Oversized evidence
-  is split into bounded batches with a complete manifest, so "reviewed" means
-  every batch came back — a missing batch is ``incomplete``, never a pass.
-* **It judges against the evidence, not against itself.** The packet carries
-  the exact excerpts, their badges, the target obligations with their support
-  policies, and the deterministic hard checks. The request carries no score
-  from the Critic, no prior run's judgement, and no threshold to reach: a
-  reviewer told what the acceptance bar is would be answering a different
-  question. A separate request is independent *process* review — a second
-  reading of the same material — and not proof of an independent model error;
-  Task 13's external source review addresses that limit, and nothing here
-  claims it.
+  and no section, statement, or finding snippet is prefix-clipped.
+* **It judges against the findings, not against itself.** The packet carries
+  the reader report, every reader statement with the code-built label the
+  reader sees at its end, the labels, hosts and snippets of the findings each
+  statement cites, the key facts, the obligations Not found could not answer,
+  and the deterministic gate results. It carries no score from another
+  reviewer, no threshold, and no suggested verdict: a reviewer told what the
+  acceptance bar is would be answering a different question.
+* **One request carries the whole judgement.** The reply holds the seven
+  dimensions, a disposition for every statement, and the typed defects. A
+  statement the reply leaves without a disposition is recorded
+  ``not_reviewed`` and the review is ``incomplete``: reading a statement is not
+  judging it, and a partial review may never read as a scored one.
 * **No judgement can read as an acceptance.** A review that could not be made
   is ``incomplete`` or ``provider_failed`` with no dimensions at all, and a
   review whose dispositions leave a statement unsupported derives the material
@@ -34,34 +37,43 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, Field, ValidationError
 
 from deep_research.agents.base import (
-    OUTPUT_LIMIT_ATTEMPT_EFFORTS,
-    OUTPUT_LIMIT_RETRY_READINGS,
     OUTPUT_LIMIT_RETRY_EFFORT,
     OUTPUT_LIMIT_RETRY_OUTCOMES,
+    OUTPUT_LIMIT_RETRY_READINGS,
     StructuredCompleter,
     call_configuration_fingerprint,
-)
-from deep_research.agents.critic import (
-    CritiqueContractViolation,
-    CritiqueGapDraft,
-    normalize_gaps,
 )
 from deep_research.agents.errors import (
     agent_error,
     agent_provider_failure_details,
 )
-from deep_research.agents.quality import compute_substantive_coverage
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import (
     ReportComposition,
-    evidence_badge_label,
-    evidence_status_bucket,
+    # The label builders this review must never re-derive (R1): ``_point_labels``
+    # is the list a rendered statement ends with, ``_row_label`` is one key
+    # facts row's label (both over ``figure_label``), and
+    # ``_finding_registry_pairs`` pairs each finding with its *own* registered
+    # label — the one walk that survives two revision editions sharing a
+    # fingerprint (P2).
+    _finding_registry_pairs,
+    _point_labels,
+    _row_label,
 )
+from deep_research.agents.report_writer import (
+    # The other half of R1: one label string per cited finding, and one label
+    # per kept figure of a finding.
+    _figure_label_for,
+    _finding_label,
+)
+from deep_research.agents.sources import publisher_identity
 from deep_research.observability import Tracker
 from deep_research.providers import (
     ChatMessage,
@@ -72,27 +84,29 @@ from deep_research.providers import (
 from deep_research.providers.validation import validation_diagnostic
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
-    EVIDENCE_BADGE_LABELS,
+    GAP_KINDS,
+    GAP_SEVERITIES,
     QUESTION_TARGET_ID,
     REVIEW_DIMENSIONS,
     REVIEW_RUBRIC_VERSION,
     SEMANTIC_REVIEW_MEAN,
     UNSETTLED_STATEMENT_DISPOSITIONS,
+    UNREVIEWED_STATEMENT_DISPOSITION,
     AnswerContract,
     ContractModel,
-    CritiqueGap,
+    FactRow,
+    Finding,
+    GapKind,
+    GapSeverity,
+    ReportPoint,
     ReportReview,
-    ReportStatement,
     ResearchError,
     ResearchState,
+    ReviewDefect,
     ScoredSource,
     SourceTemporal,
     StatementReviewDisposition,
-    SubstantiveCoverage,
     UnitScore,
-    counted_evidence_targets,
-    statement_claims,
-    target_is_answered,
 )
 
 REPORT_REVIEWER_ROLE = "report_reviewer"
@@ -104,8 +118,16 @@ Preflight validates it exactly like an agent, so a misconfigured reviewer
 fails the run before any collaborator exists.
 """
 
-REPORT_REVIEW_PROMPT_VERSION = "report-review-2"
-"""The prompt and reply contract this review's requests are versioned under."""
+REPORT_REVIEW_PROMPT_VERSION = "report-review-3"
+"""The prompt and reply contract this review's requests are versioned under.
+
+Version 2 was the whole-report Critic-era packet, which carried checked claims,
+corroboration badges, evidence batches and coverage targets. Version 3 is the
+step-4 review: the statements with their code-built labels and the findings
+behind them, one request, dispositions in the three-valued step-4 vocabulary.
+The version is what keeps a stored judgement of the older packet from being
+read as a judgement of this one.
+"""
 
 REPORT_REVIEW_MAX_TOKENS = 65536
 """Output headroom for reasoning and the complete structured judgement.
@@ -116,14 +138,20 @@ request with thinking enabled; this is a verified setting, not a maximum.
 """
 
 REPORT_REVIEW_EVIDENCE_BATCH_CHARS = 4000
-"""How much rendered evidence one batch carries before the next one starts."""
+"""How much rendered evidence one batch carried while batches existed.
+
+Kept, with the batch shapes below, for the step-4 sweep (PD-21): the name is
+exported by ``agents/__init__.py``, so a parallel task must not delete it. The
+review no longer batches anything — the packet carries no evidence batch, and
+one request judges the whole report.
+"""
 
 REPORT_REVIEW_OPERATION = "report_review"
 """The operation label this reviewer's records carry.
 
-One role makes one kind of request — the cross-section judgement and the
-follow-ups that complete it — so one label names them all, and a reader
-grouping the run's warnings by operation sees this reviewer's records together.
+One role makes one kind of request — the review and the single re-ask a
+truncation buys — so one label names them all, and a reader grouping the run's
+warnings by operation sees this reviewer's records together.
 """
 
 
@@ -137,10 +165,10 @@ def report_review_output_limit_retry(
 ) -> ResearchError:
     """Record that a truncated review request was re-asked at another effort.
 
-    The Critic's rule, on this reviewer's requests: one retry, the same output
-    budget, and no run ending. The record exists because the retry is a second
-    paid call — without it, a review that took two requests is indistinguishable
-    in the artifacts from one that took a single request.
+    One retry, the same output budget, and no run ending. The record exists
+    because the retry is a second paid call — without it, a review that took
+    two requests is indistinguishable in the artifacts from one that took a
+    single request.
 
     The request, the effort, the budget it kept, and what came back are in the
     *message*, not only in ``details``: this project publishes details only for
@@ -170,6 +198,7 @@ def report_review_output_limit_retry(
         ),
     )
 
+
 MAX_REVIEW_DEFECTS = 12
 """The smallest defect bound any review is given, however small its packet.
 
@@ -182,22 +211,18 @@ unsupported statements has more than twelve true findings.
 def review_defect_limit(packet: ReportReviewInput) -> int:
     """How many distinct defects one review of ``packet`` may carry.
 
-    One per record a defect can be scoped to -- every statement, target, and
-    claim cluster the packet carries -- and never fewer than
+    One per address a defect can be scoped to — every statement the packet
+    carries and every target its statements answer — and never fewer than
     ``MAX_REVIEW_DEFECTS``, so a small packet can still hold several kinds of
-    defect against one statement. The request states this number and the
-    merge enforces it: a reply beyond it is refused whole, never cut, because
-    the tail of a padded list is where one material defect can hide.
+    defect against one statement. The request states this number and the review
+    enforces it: a reply beyond it is refused whole, never cut, because the
+    tail of a padded list is where one material defect can hide.
     """
-    clusters = {
-        cluster_id
-        for statement in packet.statements
-        for cluster_id in statement.claim_cluster_ids
-    }
     return max(
         MAX_REVIEW_DEFECTS,
-        len(packet.expected_statement_ids) + len(packet.targets) + len(clusters),
+        len(packet.statements) + len(packet.known_target_ids),
     )
+
 
 # The dimensions, in a stable order, with the semantic definition of each. The
 # names are the whole-report campaign's own seven; the definitions are what
@@ -216,15 +241,15 @@ DIMENSION_GUIDANCE: tuple[tuple[str, str], ...] = (
     ),
     (
         "evidence_quality",
-        "Is each substantive assertion carried by the passages cited for it: "
+        "Is each substantive assertion carried by the findings cited for it: "
         "the right kind of source for the claim, and evidence that entails "
         "what the sentence says, at the scope and period it says it?",
     ),
     (
         "attribution",
-        "Does every claim's provenance read as what it is — independently "
-        "corroborated, primary-source attribution, a recorded derivation, or "
-        "contested — with no single work presented as a settled consensus?",
+        "Does every claim's provenance read as what it is — the publisher's "
+        "own figure, a relay credited to its originator, or an unattributed "
+        "page — with no relay presented as the organisation it relays?",
     ),
     (
         "uncertainty",
@@ -247,35 +272,31 @@ DIMENSION_GUIDANCE: tuple[tuple[str, str], ...] = (
 
 REPORT_REVIEW_SYSTEM_PROMPT = (
     "You are the terminal reviewer of a finished research report. You judge "
-    "the report a reader will receive against the evidence the run actually "
-    "holds. You have no tools: everything you may rely on is in this request, "
-    "and a fact that is not in the evidence you were shown is not established "
-    "by anything you know.\n"
+    "the report a reader will receive against the findings this run verified. "
+    "You have no tools: everything you may rely on is in this request, and a "
+    "fact that is not in the findings you were shown is not established by "
+    "anything you know.\n"
     "\n"
     "Judge substance, not presentation. A fluent report that asserts things "
-    "its evidence does not carry is a failed report however well it reads, and "
-    "a plain report that answers the question on adequate evidence is a good "
-    "one whether or not it tells the reader what to do.\n"
+    "its cited findings do not state is a failed report however well it reads, "
+    "and a plain report that answers the question on adequate findings is a "
+    "good one whether or not it tells the reader what to do.\n"
     "\n"
-    "For every reader statement, record one disposition: supported, "
-    "attributed, inference, unsupported, or returned_to_fact_checker. Use "
-    "returned_to_fact_checker when a statement introduces something the cited "
-    "evidence does not carry and you cannot settle it from what you were "
-    "shown — a mechanism, a quantity, a date, a name, or a place that appears "
-    "in the sentence and in no cited passage. Check names and places wherever "
-    "they appear in a statement, including a name or place that opens a "
-    "sentence: sentence position is not evidence, and an unattested place name "
-    "is exactly as unsupported at the start of a sentence as in the middle of "
-    "one.\n"
+    "For every statement id you were shown, record exactly one disposition: "
+    "supported when the findings it cites state what the sentence says, "
+    "unsupported when they do not. A statement with no disposition is recorded "
+    "not_reviewed and the review is incomplete rather than a result, so leave "
+    "no statement id out.\n"
     "\n"
-    "Apply the strict definitions. Two passages corroborate a claim only when "
-    "they are different works by different publishers and each supports the "
-    "whole claim; a single primary source stated as its own attribution is "
-    "supported at that level and must not be failed for lacking a second work, "
-    "and it must not be passed as independently corroborated. A ranking needs "
-    "an evidenced comparison basis: importance is not evidence abundance, and "
-    "it is not a model's confidence. Where no comparison basis exists, say so "
-    "rather than accepting the order.\n"
+    "Read each sentence against the code-built label it ends with, and against "
+    "the findings it cites — each statement names them by their registry "
+    "labels, whose snippets and figure labels are below. That label is what "
+    "the reader sees beside the sentence, and it is built by code from the "
+    "verified figure, not by the writer: a relay must read as relayed from the "
+    "organisation named in the label, an actual must read as an actual, a "
+    "forecast must carry its issuer and its release, and no period, scope, "
+    "kind or organisation in the prose may contradict the label. That mismatch "
+    "is a defect you record against that statement's id.\n"
     "\n"
     "Report every defect you find as a typed defect against the ids in this "
     "request, and only against ids in this request. When nothing is wrong, "
@@ -287,42 +308,40 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
 REPORT_REVIEW_INSTRUCTION = (
     "Return one JSON object and nothing else, with these fields:\n"
     "- dimensions: seven scores in [0,1], one per named dimension.\n"
-    "- statement_dispositions: one entry per reader statement id you were "
-    "shown, each with the statement id and its disposition.\n"
-    "- defects: the typed defects you found, each naming the target, "
-    "statement, or claim cluster it affects.\n"
-    "- reviewed_statement_ids: every reader statement id you actually read.\n"
-    "- reviewed_evidence_ids: every evidence id you actually read.\n"
+    "- statement_dispositions: one entry per statement id you were shown, "
+    "each with the statement id and its disposition (supported, unsupported, "
+    "or not_reviewed).\n"
+    "- defects: the typed defects you found, each naming the statement ids it "
+    "affects.\n"
     "- rationale: why the report scores as it does.\n"
-    "Every id you cite must be one this request showed you. List every "
-    "statement id and every evidence id you read in the two reviewed lists: a "
-    "review that does not cover what it was shown is recorded as incomplete "
-    "rather than as a result."
+    "Every id you cite must be one this request showed you. A statement you "
+    "leave without a disposition is recorded not_reviewed, and the review is "
+    "recorded incomplete rather than as a result."
 )
 
 REVIEW_DEFECT_RULES = (
-    "Every defect must also satisfy these rules, which the schema cannot "
-    "show and which refuse the whole reply when broken:\n"
-    "- A critical or major defect names at least one target_ids, "
-    "statement_ids, or claim_cluster_ids entry.\n"
-    "- A defect with repair_action acquire names the target_ids (or the "
-    "coverage_id) whose evidence is owed; a statement id alone does not say "
-    "what to acquire. Name the statement ids as well where they help.\n"
-    "- recommended_queries appear only on an acquire defect, and never on a "
-    "presentation defect; every other repair runs no search, so leave the "
-    "list empty.\n"
+    "Every defect must also satisfy these rules:\n"
+    "- A defect names the statement ids it affects, and only ids this request "
+    "showed you. An id this request does not carry is dropped from the defect; "
+    "the defect stays if its problem stays.\n"
+    "- kind is one of: coverage, missing_support, acquisition, identity, "
+    "contradiction, semantic_duplicate, source_quality, mechanism, freshness, "
+    "presentation. severity is one of: critical, major, minor. A defect whose "
+    "kind or severity is none of these is dropped rather than recorded.\n"
+    "- critical and major are the material defects: a report cannot be "
+    "accepted while one is open. minor is a real but editorial observation.\n"
     "- Report each distinct problem once. When one problem affects several "
     "statements, name them all in one defect rather than repeating it."
 )
 
 
 def _render_defect_contract(packet: ReportReviewInput) -> str:
-    """The defect rules with this packet's own bound, as the merge enforces it."""
+    """The defect rules with this packet's own bound, as the review enforces it."""
     return (
         f"{REVIEW_DEFECT_RULES}\n"
         f"- Return at most {review_defect_limit(packet)} defects in total. "
-        "That is one per statement, target, and claim cluster in this "
-        "request, so every real finding fits; more is refused, never cut."
+        "That is one per statement and target in this request, so every real "
+        "finding fits; more is refused whole, never cut."
     )
 
 
@@ -348,7 +367,7 @@ def semantic_review_passes(review: ReportReview | None) -> bool:
         and all(_usable_score(value) for value in scores.values())
         and sum(scores.values()) / len(REVIEW_DIMENSIONS)
         >= SEMANTIC_REVIEW_MEAN
-        and not any(gap.material for gap in review.defects)
+        and not any(defect.material for defect in review.defects)
         and review.coverage_complete
         and _dispositions_complete(review)
     )
@@ -382,220 +401,83 @@ def _usable_score(value: object) -> bool:
 # --- the packet one review reads --------------------------------------------
 
 
-class ReviewEvidenceItem(ContractModel):
-    """One exact read excerpt the reviewer may treat as evidence.
+class ReviewStatementView(ContractModel):
+    """One reader statement, with the code-built labels a reader sees.
 
-    Only a registered ``EvidenceUnit`` becomes one of these, exactly as the
-    Critic's own evidence item does: a search result, a snippet, or a memory
-    recall is not evidence and cannot construct one. The badge is the
-    claim-specific corroboration status recorded for the clusters the citing
-    statements rest on, and an ambiguous badge resolves to none rather than to
-    the stronger of two readings.
+    ``label`` is the label a rendered statement *ends with* — the key facts
+    label of every figure the sentence itself states — built by the report's
+    own label builders and never re-derived here (R1, D7). ``finding_refs``
+    names the findings the sentence cites in the registry's own notation
+    (``F01``), the same notation the finding blocks below the statements are
+    headed with, and ``finding_labels`` carries their code-built reader labels:
+    the material a sentence's wording has to agree with, since a label knows
+    the organisation, attribution, kind, period and release the Evidence
+    Verifier established, whatever the prose says.
+
+    ``finding_refs`` is not decoration: two findings from one publisher with
+    the same kind and release render *identical* reader labels, so the refs are
+    the only thing that tells the reviewer which snippet a sentence rests on.
+
+    ``target_ids`` is the address a defect against this statement routes by
+    (Task 4.4's extra pass), and ``substantive`` says whether the statement
+    asserts anything about the world at all — a sentinel "not stated" cell is
+    readable context and never a disposition to give.
     """
 
-    evidence_id: str = Field(min_length=1)
-    read_id: str = Field(min_length=1)
-    source_url: str = Field(min_length=1)
-    source_title: str = Field(min_length=1)
-    locator: str = Field(min_length=1)
-    excerpt: str = Field(min_length=1)
-    target_ids: list[str] = Field(default_factory=list)
-    badge: str = ""
-    badge_label: str = Field(min_length=1)
-    cited_by_statement_ids: list[str] = Field(default_factory=list)
-
-
-class ReviewEvidenceBatch(ContractModel):
-    """A bounded group of evidence items, rendered under one heading.
-
-    ``chars`` is the rendered length, recorded on the batch so "no batch
-    exceeds the budget" is checkable without re-rendering. A single item larger
-    than the budget is its own batch and is allowed to exceed it: re-cutting an
-    exact excerpt would change the evidence, which is worse than one long
-    batch.
-    """
-
-    batch_id: str = Field(min_length=1)
-    items: list[ReviewEvidenceItem] = Field(min_length=1)
-    chars: int = Field(ge=1)
-
-    @property
-    def evidence_ids(self) -> list[str]:
-        return [item.evidence_id for item in self.items]
-
-
-class ReviewTargetView(ContractModel):
-    """One planned obligation, with what the report actually answered.
-
-    ``answered`` is the deterministic Section 2.3 reading, and ``accounted``
-    says whether an unanswered obligation has a recorded reason. Both travel
-    with the target so the reviewer can see the difference between an omission
-    the run explained and one it did not — and neither is a verdict: the review
-    may still judge that an "answered" target is answered badly.
-    """
-
-    target_id: str = Field(min_length=1)
-    coverage_id: str = Field(min_length=1)
-    coverage_title: str = ""
-    question: str = Field(min_length=1)
-    required: bool = True
-    critical: bool = False
-    support_policy: str = "independent_pair"
-    required_dimensions: list[str] = Field(default_factory=list)
-    answered_dimension_ids: list[str] = Field(default_factory=list)
-    answered_by_statement_ids: list[str] = Field(default_factory=list)
-    answered: bool = False
-    accounted: bool = False
-    account_reason: str = ""
-
-
-class ReviewClaimView(ContractModel):
-    """One checked claim, as the reviewer may see it.
-
-    Deliberately without the recorded confidence: a number the adjudicator
-    produced is a model judgement about the claim, not evidence for it, and a
-    reviewer shown it would be invited to weigh a claim by how sure something
-    else was. The verdict and the corroboration badge stay, because those are
-    the strict taxonomy Section 2.1 defines.
-    """
-
-    claim_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    verdict: str = Field(min_length=1)
-    evidence_status: str = ""
-    badge_label: str = Field(min_length=1)
-    source_urls: list[str] = Field(default_factory=list)
-    target_ids: list[str] = Field(default_factory=list)
-
-
-class ReviewSourceView(ContractModel):
-    """One assessed source, identified without its scores.
-
-    Publisher and work identity are what an independence judgement turns on,
-    so they travel — with the aliases, status, and evidenced lineage that
-    resolved them. So do the fitness facts that constrain what a citation is
-    worth: its role, its self-interest, how it was transported, what its dates
-    are, and which assessment revision said so. The numeric scores do not:
-    they are a model's rating of a source, and a reviewer that ranked evidence
-    by them would be repeating the proxy this review replaces.
-
-    This is also exactly the per-source projection of the composition's
-    semantic fingerprint, so a change a reviewer could see always invalidates
-    the stored judgement.
-    """
-
-    url: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    publisher_id: str = ""
-    work_id: str = ""
-    evaluation_status: str = ""
-    source_role: str = ""
-    self_interest: str = ""
-    transport_relation: str = ""
-    temporal: SourceTemporal = Field(default_factory=SourceTemporal)
-    assessment_revision: str = ""
-    identity_status: str = ""
-    """``known``/``unknown``/``conflicting``; empty when none was resolved."""
-    work_aliases: list[str] = Field(default_factory=list)
-    derives_from_work_ids: list[str] = Field(default_factory=list)
-
-
-def review_source_view(source: ScoredSource) -> ReviewSourceView:
-    """The one view of an assessed source a review reads and is keyed by."""
-    identity = source.work_identity
-    return ReviewSourceView(
-        url=source.url,
-        title=source.title,
-        publisher_id=source.publisher_id or "",
-        work_id=source.work_id or "",
-        evaluation_status=source.evaluation_status,
-        source_role=source.source_role,
-        self_interest=source.self_interest,
-        transport_relation=source.transport_relation,
-        temporal=source.temporal,
-        assessment_revision=source.assessment_revision,
-        identity_status=identity.identity_status if identity is not None else "",
-        work_aliases=list(identity.aliases) if identity is not None else [],
-        derives_from_work_ids=(
-            list(identity.derives_from_work_ids) if identity is not None else []
-        ),
-    )
-
-
-class ReviewRankedRow(ContractModel):
-    """One row of the report's ranked or compared table, in the printed order.
-
-    The reader table is where a report states an order, and an order is a claim
-    that needs a comparison basis. The row travels with the cells it prints
-    beside the ranking, the statement id a defect can cite, and the evidence
-    ids its statement rests on — so the reviewer can ask whether a passage
-    actually compares the ranked things rather than whether there is a lot of
-    it. ``rank`` is the position the reader sees.
-    """
-
-    rank: int = Field(ge=1)
     statement_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
-    cell_texts: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
+    label: str = ""
+    finding_refs: list[str] = Field(default_factory=list)
+    finding_labels: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    substantive: bool = True
+
+
+class ReviewFindingView(ContractModel):
+    """One cited finding, as the reviewer may read it.
+
+    The label is the code-built reader label of the finding's kept figures
+    (organisation and attribution first, then kind with a forecast's release);
+    the snippet is the verbatim passage the Evidence Verifier verified. This is
+    the evidence a statement is judged against, so it is shown whole and never
+    re-worded.
+    """
+
+    label: str = Field(min_length=1)
+    finding_id: str = Field(min_length=1)
+    source_title: str = Field(min_length=1)
+    host: str = Field(min_length=1)
+    snippet: str = Field(min_length=1)
+    figure_labels: list[str] = Field(default_factory=list)
 
 
 class ReviewDeterministic(ContractModel):
     """The deterministic results the reviewer is entitled to see.
 
-    Hard checks, and the coverage metrics the run computed for itself. These
-    are facts about the candidate — a failed integrity gate, a required target
-    with no answer — and not acceptance coaching: there is no threshold here,
-    no score from another reviewer, and no suggested conclusion.
+    The run's own integrity readings about this candidate — a failed hard
+    check, a kept sentence the Statement Check never judged, a duplicate fact
+    row, an unresolved citation, a settled point with no citation. These are
+    facts about the candidate, and not acceptance coaching: there is no
+    threshold here, no score from another reviewer, and no suggested
+    conclusion.
     """
 
     hard_checks: list[str] = Field(default_factory=list)
-    substantive_topic_ratio: UnitScore = 0.0
-    planned_topics: int = Field(default=0, ge=0)
-    covered_topics: int = Field(default=0, ge=0)
-    planned_targets: int = Field(default=0, ge=0)
-    required_targets: int = Field(default=0, ge=0)
-    answered_targets: int = Field(default=0, ge=0)
-    critical_targets: int = Field(default=0, ge=0)
-    unanswered_critical_target_ids: list[str] = Field(default_factory=list)
-    unaccounted_target_ids: list[str] = Field(default_factory=list)
-    initial_target_ids: list[str] = Field(default_factory=list)
-    expanded_target_ids: list[str] = Field(default_factory=list)
-
-    @classmethod
-    def from_coverage(
-        cls,
-        coverage: SubstantiveCoverage,
-        *,
-        hard_checks: Sequence[str],
-    ) -> "ReviewDeterministic":
-        return cls(
-            hard_checks=list(hard_checks),
-            substantive_topic_ratio=coverage.topic_ratio,
-            planned_topics=coverage.planned_topics,
-            covered_topics=coverage.covered_topics,
-            planned_targets=coverage.planned_targets,
-            required_targets=coverage.required_targets,
-            answered_targets=coverage.answered_targets,
-            critical_targets=coverage.critical_targets,
-            unanswered_critical_target_ids=list(
-                coverage.unanswered_critical_target_ids
-            ),
-            unaccounted_target_ids=list(coverage.unaccounted_target_ids),
-            initial_target_ids=list(coverage.initial_target_ids),
-            expanded_target_ids=list(coverage.expanded_target_ids),
-        )
+    unjudged_sentences: list[str] = Field(default_factory=list)
+    duplicate_fact_rows: int = Field(default=0, ge=0)
+    unresolved_citations: int = Field(default=0, ge=0)
+    uncited_settled_points: int = Field(default=0, ge=0)
 
 
 class ReportReviewInput(ContractModel):
     """Everything one semantic review is allowed to judge, and nothing else.
 
-    The whole reader report, every statement record, every registered excerpt,
-    the obligations with their policies, the checked claims, the assessed
-    sources' identities, and the deterministic checks over the same coverage
-    denominator. It carries no Critic score, no prior run's judgement, no
-    threshold, and no suggested verdict: a reviewer told what the bar is would
-    be answering a different question.
+    The whole reader report, every reader statement with its code-built label
+    and the labels of the findings it cites, those findings' titles, hosts and
+    snippets, the key facts lines, the obligations Not found could not answer,
+    and the deterministic checks over the same candidate. It carries no checked
+    claim, no corroboration badge, no evidence batch, no Critic score, no prior
+    run's judgement, no threshold, and no suggested verdict.
 
     ``fingerprint`` covers the exact material above. A review is reused only
     for an identical fingerprint, and a returned review is recorded against the
@@ -606,22 +488,10 @@ class ReportReviewInput(ContractModel):
     question: str = Field(min_length=1)
     answer_contract: AnswerContract | None = None
     reader_content: str = ""
-    reader_sections: dict[str, str] = Field(default_factory=dict)
-    statements: list[ReportStatement] = Field(default_factory=list)
-    targets: list[ReviewTargetView] = Field(default_factory=list)
-    evidence_batches: list[ReviewEvidenceBatch] = Field(default_factory=list)
-    omitted_evidence_ids: list[str] = Field(default_factory=list)
-    claims: list[ReviewClaimView] = Field(default_factory=list)
-    sources: list[ReviewSourceView] = Field(default_factory=list)
-    ranked_rows: list[ReviewRankedRow] = Field(default_factory=list)
-    """The report's ranked or compared table, row by row, in printed order.
-
-    Taken from the composition's own row structure rather than from an
-    ``answered_dimensions`` label: that field records which atom dimensions the
-    recorded evidence carries, and a row a constraints plan legitimately
-    attested often carries none of them, so selecting by it would give the
-    reviewer the comparison-basis rule and no row to apply it to.
-    """
+    statements: list[ReviewStatementView] = Field(default_factory=list)
+    findings: list[ReviewFindingView] = Field(default_factory=list)
+    fact_rows: list[str] = Field(default_factory=list)
+    not_found: list[str] = Field(default_factory=list)
     deterministic: ReviewDeterministic = Field(default_factory=ReviewDeterministic)
     rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
     composition_fingerprint: str = ""
@@ -639,11 +509,11 @@ class ReportReviewInput(ContractModel):
     def expected_statement_ids(self) -> list[str]:
         """Statement ids a review must cover and disposition.
 
-        A ``context`` statement — a sentinel cell repaired to "not stated",
-        or an uncertainty note framing this pass — asserts nothing about the
-        world (``ReportStatement.substantive`` is ``False``), so it is never
-        offered for a per-statement disposition: there is nothing for a
-        reviewer to judge "supported" or "unsupported" against. It stays in
+        A ``context`` statement — a sentinel cell repaired to "not stated", or
+        an uncertainty note framing this pass — asserts nothing about the world
+        (``ReportStatement.substantive`` is ``False``), so it is never offered
+        for a per-statement disposition: there is nothing for a reviewer to
+        judge "supported" or "unsupported" against. It stays in
         ``self.statements`` (and ``statement()`` still resolves it) so it is
         still readable as context; it is only excluded from what the review
         must cover to be scored.
@@ -655,36 +525,16 @@ class ReportReviewInput(ContractModel):
         ]
 
     @property
-    def expected_batch_ids(self) -> list[str]:
-        return [batch.batch_id for batch in self.evidence_batches]
+    def known_target_ids(self) -> list[str]:
+        """The target ids a defect may name, in the statements' own order."""
+        target_ids: list[str] = []
+        for statement in self.statements:
+            for target_id in statement.target_ids:
+                if target_id not in target_ids:
+                    target_ids.append(target_id)
+        return target_ids
 
-    @property
-    def total_batches(self) -> int:
-        return len(self.evidence_batches)
-
-    @property
-    def evidence_ids(self) -> list[str]:
-        return [
-            item.evidence_id
-            for batch in self.evidence_batches
-            for item in batch.items
-        ]
-
-    @property
-    def coverage_ids(self) -> set[str]:
-        return {target.coverage_id for target in self.targets}
-
-    def batch(self, batch_id: str) -> ReviewEvidenceBatch | None:
-        return next(
-            (
-                batch
-                for batch in self.evidence_batches
-                if batch.batch_id == batch_id
-            ),
-            None,
-        )
-
-    def statement(self, statement_id: str) -> ReportStatement | None:
+    def statement(self, statement_id: str) -> ReviewStatementView | None:
         return next(
             (
                 statement
@@ -695,318 +545,39 @@ class ReportReviewInput(ContractModel):
         )
 
 
-def _batch_evidence(
-    items: Sequence[ReviewEvidenceItem],
-) -> list[ReviewEvidenceBatch]:
-    """Fill bounded batches in order, never dropping or re-cutting an item."""
-    batches: list[ReviewEvidenceBatch] = []
-    current: list[ReviewEvidenceItem] = []
-    current_chars = 0
-
-    def rendered_chars(item: ReviewEvidenceItem) -> int:
-        return len(item.excerpt) + len(item.source_title) + len(item.locator) + 64
-
-    def flush() -> None:
-        nonlocal current, current_chars
-        if not current:
-            return
-        batches.append(
-            ReviewEvidenceBatch(
-                batch_id=f"batch-{len(batches) + 1:02d}",
-                items=list(current),
-                chars=max(1, current_chars),
-            )
-        )
-        current = []
-        current_chars = 0
-
-    for item in items:
-        size = rendered_chars(item)
-        if current and current_chars + size > REPORT_REVIEW_EVIDENCE_BATCH_CHARS:
-            flush()
-        current.append(item)
-        current_chars += size
-    flush()
-    return batches
-
-
-def _ranked_rows(
-    composition: ReportComposition | None,
-) -> list[ReviewRankedRow]:
-    """The report's own ranked material, in the order the reader receives it.
-
-    A constraints report prints one row per constraint in
-    ``composition.constraints`` order and a tabular answer prints
-    ``composition.answer_rows``; either order is the report's own claim about
-    importance, so the rows travel with the cells beside them and the evidence
-    ids their statements cite. A report prints one answer table, so the
-    constraint rows are the ranking when they exist and the answer rows are it
-    otherwise — numbering the two tables as one ranking would invent a single
-    order the reader never sees.
-    """
-    if composition is None:
-        return []
-    rows: list[ReviewRankedRow] = []
-    for constraint in composition.constraints:
-        statement = constraint.statement
-        if statement is None:
-            continue
-        rows.append(
-            ReviewRankedRow(
-                rank=len(rows) + 1,
-                statement_id=statement.statement_id,
-                text=constraint.text,
-                cell_texts=[
-                    text
-                    for text in (
-                        constraint.deployment_mechanism,
-                        constraint.geography,
-                    )
-                    if text.strip()
-                ],
-                evidence_ids=list(statement.evidence_ids),
-            )
-        )
-    if rows:
-        return rows
-    for answer_row in composition.answer_rows:
-        statement = answer_row.statement
-        if statement is None:
-            continue
-        rows.append(
-            ReviewRankedRow(
-                rank=len(rows) + 1,
-                statement_id=statement.statement_id,
-                text=statement.text,
-                cell_texts=[cell.text for cell in answer_row.labels],
-                evidence_ids=list(statement.evidence_ids),
-            )
-        )
-    return rows
-
-
-def _badge_by_evidence(
-    composition: ReportComposition,
-    *,
-    cited_by: Mapping[str, Sequence[str]],
-    reading_by_cluster: Mapping[str, str],
-) -> dict[str, str]:
-    """The one corroboration badge the statements citing a passage agree on.
-
-    Derived from the claims behind the citing statements rather than from the
-    cluster registry alone, so a fixture — or a snapshot whose clusters were
-    persisted without the registry — still reports the badge its claims carry.
-    Each claim contributes its *reading* — ``evidence_status_bucket``, which
-    consults the verdict the way the reader and the quality counts do, so a
-    contradicted claim carrying a stale ``verified_pair`` badge is contested
-    here too. Any disagreement reports no badge: an ambiguous passage must not
-    read as the stronger of two verdicts.
-    """
-    by_id = {statement.statement_id: statement for statement in composition.statements}
-    badges: dict[str, set[str]] = {}
-    for evidence_id, statement_ids in cited_by.items():
-        for statement_id in statement_ids:
-            statement = by_id.get(statement_id)
-            if statement is None:
-                continue
-            for claim in statement_claims(composition, statement):
-                bucket = evidence_status_bucket(
-                    claim.evidence_status, verdict=claim.verdict
-                )
-                if bucket != "not_established":
-                    badges.setdefault(evidence_id, set()).add(bucket)
-            for cluster_id in statement.claim_cluster_ids:
-                reading = reading_by_cluster.get(cluster_id, "")
-                if reading and reading != "not_established":
-                    badges.setdefault(evidence_id, set()).add(reading)
-    return {
-        evidence_id: (next(iter(values)) if len(values) == 1 else "")
-        for evidence_id, values in badges.items()
-    }
-
-
-def _badge_label(badge: str, *, verdict: str | None = None) -> str:
-    """The reader's label for one recorded badge, read through its verdict."""
-    return evidence_badge_label(badge, verdict=verdict)
-
-
 def build_report_review_input(
     state: ResearchState,
     composition: ReportComposition | None = None,
-    *,
-    terminal: bool = False,
 ) -> ReportReviewInput:
     """Build the one packet a semantic review reads, from the exact candidate.
 
     ``composition`` defaults to ``state.composition``. The report text comes
     from ``state.report`` verbatim — never a prefix — and the statements,
-    targets, evidence, and claims come from the composition and the state's
-    canonical snapshots, which is why a defect can only ever cite a record this
-    packet carries.
-
-    ``terminal`` is the caller's own fact about this pass (``iteration >=
-    max_iterations``), threaded into ``compute_substantive_coverage`` so a
-    target's ``ReviewTargetView.accounted`` agrees with the quality
-    snapshot's own terminal-pass reading: a target's acquisition can still
-    hold a queued candidate the run will never resume, and only the caller
-    knows whether this is the pass that decides it.
+    labels, findings, key facts and Not found come from the composition the
+    Report Writer composed, so a defect can only ever cite a record this packet
+    carries. The deterministic block is the quality snapshot's own reading of
+    the same candidate, never a second computation that could disagree with it.
     """
     if composition is None:
         composition = state.composition
-    report = state.report or ""
-    statements = list(composition.statements) if composition is not None else []
-    units = dict(composition.evidence_units) if composition is not None else {}
-    clusters = dict(composition.claim_clusters) if composition is not None else {}
-    sub_topics = (
-        list(composition.sub_topics)
-        if composition is not None
-        else list(state.sub_topics)
-    )
-
-    cited_by: dict[str, list[str]] = {}
-    for statement in statements:
-        for evidence_id in statement.evidence_ids:
-            cited_by.setdefault(evidence_id, []).append(statement.statement_id)
-
-    reading_by_cluster = {
-        cluster_id: _cluster_reading(cluster)
-        for cluster_id, cluster in clusters.items()
-    }
-    badges = _badge_by_evidence(
-        composition, cited_by=cited_by, reading_by_cluster=reading_by_cluster
-    ) if composition is not None else {}
-
-    cited_ids: list[str] = []
-    for statement in statements:
-        for evidence_id in statement.evidence_ids:
-            if evidence_id not in cited_ids:
-                cited_ids.append(evidence_id)
-    ordered_ids = [
-        *cited_ids,
-        *(evidence_id for evidence_id in units if evidence_id not in cited_ids),
-    ]
-    items = [
-        ReviewEvidenceItem(
-            evidence_id=units[evidence_id].evidence_id,
-            read_id=units[evidence_id].read_id,
-            source_url=units[evidence_id].source_url,
-            source_title=units[evidence_id].source_title,
-            locator=units[evidence_id].locator,
-            excerpt=units[evidence_id].excerpt,
-            target_ids=list(units[evidence_id].target_ids),
-            badge=badges.get(evidence_id, ""),
-            badge_label=_badge_label(badges.get(evidence_id, "")),
-            cited_by_statement_ids=cited_by.get(evidence_id, []),
-        )
-        for evidence_id in ordered_ids
-        if evidence_id in units
-    ]
-
-    coverage = (
-        compute_substantive_coverage(state, composition, terminal=terminal)
-        if composition
-        else None
-    )
-    coverage = coverage or compute_substantive_coverage(
-        state,
-        ReportComposition(
-            question=state.original_question,
-            session_id=state.session_id,
-            sub_topics=list(state.sub_topics),
-        ),
-        terminal=terminal,
-    )
-    accounted = set(coverage.accounted_target_ids)
-    targets: list[ReviewTargetView] = []
-    for topic in sub_topics:
-        for target in counted_evidence_targets(topic.evidence_targets):
-            answering = [
-                statement
-                for statement in statements
-                if target.target_id in statement.target_ids
-            ]
-            answered_dimensions: list[str] = []
-            for statement in answering:
-                for dimension in statement.answered_dimensions:
-                    if dimension not in answered_dimensions:
-                        answered_dimensions.append(dimension)
-            targets.append(
-                ReviewTargetView(
-                    target_id=target.target_id,
-                    coverage_id=target.coverage_id,
-                    coverage_title=topic.title,
-                    question=target.question,
-                    required=target.required,
-                    critical=target.critical,
-                    support_policy=target.support_policy,
-                    required_dimensions=list(target.required_dimensions),
-                    answered_dimension_ids=answered_dimensions,
-                    answered_by_statement_ids=[
-                        statement.statement_id for statement in answering
-                    ],
-                    answered=target_is_answered(state, target),
-                    accounted=(
-                        target.target_id in accounted
-                        or target_is_answered(state, target)
-                    ),
-                    account_reason=(
-                        "a recorded disposition or spent acquisition explains "
-                        "this obligation"
-                        if target.target_id in accounted
-                        else ""
-                    ),
-                )
-            )
-
-    canonical_claims = _canonical_claims(state, composition)
-    canonical_sources = _canonical_sources(state, composition)
-    hard_checks = list(state.quality.hard_failures) if state.quality else []
-    if composition is None:
-        hard_checks.append(
-            "the report carries no typed composition, so no reader statement "
-            "record exists to tie a finding to its evidence"
-        )
-    missing_evidence = sorted(
-        {
-            evidence_id
-            for statement in statements
-            for evidence_id in statement.evidence_ids
-            if evidence_id not in units
-        }
-    )
-    if missing_evidence:
-        hard_checks.append(
-            f"{len(missing_evidence)} statement evidence id(s) are not in the "
-            "read registry"
-        )
-
+    statements = _statement_views(composition)
+    quality = state.quality
     packet = ReportReviewInput(
         question=state.original_question,
         answer_contract=state.answer_contract,
-        reader_content=report,
-        reader_sections=_split_reader_report(report),
+        reader_content=state.report or "",
         statements=statements,
-        targets=targets,
-        evidence_batches=_batch_evidence(items),
-        omitted_evidence_ids=[],
-        claims=[
-            ReviewClaimView(
-                claim_id=claim.claim_id,
-                text=claim.text,
-                verdict=claim.verdict,
-                evidence_status=claim.evidence_status or "",
-                badge_label=_badge_label(
-                    claim.evidence_status or "", verdict=claim.verdict
-                ),
-                source_urls=list(claim.source_urls),
-                target_ids=list(claim.target_ids),
-            )
-            for claim in canonical_claims
-        ],
-        sources=[review_source_view(source) for source in canonical_sources],
-        ranked_rows=_ranked_rows(composition),
-        deterministic=ReviewDeterministic.from_coverage(
-            coverage, hard_checks=hard_checks
+        findings=_finding_views(composition),
+        fact_rows=_fact_row_lines(composition),
+        not_found=[target.question for target in composition.not_found]
+        if composition is not None
+        else [],
+        deterministic=ReviewDeterministic(
+            hard_checks=list(quality.hard_failures) if quality else [],
+            unjudged_sentences=list(quality.unjudged_sentences) if quality else [],
+            duplicate_fact_rows=quality.duplicate_fact_rows if quality else 0,
+            unresolved_citations=quality.unresolved_citations if quality else 0,
+            uncited_settled_points=quality.uncited_settled_points if quality else 0,
         ),
         composition_fingerprint=composition_semantic_fingerprint(composition),
     )
@@ -1015,41 +586,150 @@ def build_report_review_input(
     )
 
 
-def _canonical_claims(
-    state: ResearchState,
+def _statement_views(
     composition: ReportComposition | None,
-) -> list[Any]:
-    from deep_research.agents.identity import merge_claim_snapshot  # noqa: PLC0415
+) -> list[ReviewStatementView]:
+    """Every statement the composition renders, with its code-built labels.
 
-    rows = list(state.verified_claims or (composition.claims if composition else ()))
-    return merge_claim_snapshot([], rows)
+    Walked through ``composition.statements``, which is the composition's own
+    reader-ordered list — first occurrence wins, so a fact the summary states
+    and the answer table lists is one statement judged once.
 
-
-def _canonical_sources(
-    state: ResearchState,
-    composition: ReportComposition | None,
-) -> list[ScoredSource]:
-    from deep_research.agents.identity import merge_source_snapshot  # noqa: PLC0415
-
-    rows = list(
-        state.evaluated_sources or (composition.sources if composition else ())
-    )
-    return merge_source_snapshot([], rows)
-
-
-def _cluster_reading(cluster: Any) -> str:
-    """The one corroboration reading a cluster's verdicts agree on, or blank.
-
-    Normalized to the same four buckets the counts and the reader use, so a
-    cluster's recorded badge and a claim's badge cannot enter one evidence
-    item's reading set as two different words for the same judgement.
+    The cited findings are resolved through ``_finding_registry_pairs``, the
+    report's own label-to-finding walk: two revision editions of one page share
+    a ``finding_fingerprint``, so a fingerprint-keyed lookup would hand the
+    later edition's snippet to a statement citing the earlier one (P2) and a
+    statement citing either would name no registry label at all (P1).
     """
-    readings = {
-        evidence_status_bucket(badge)
-        for badge in cluster.verdict_evidence_status.values()
-        if badge in EVIDENCE_BADGE_LABELS
+    if composition is None:
+        return []
+    pairs = [
+        (label, finding)
+        for label, finding in _finding_registry_pairs(composition)
+        if label is not None
+    ]
+    labels = _statement_labels(composition)
+    views: list[ReviewStatementView] = []
+    for statement in composition.statements:
+        cited_ids = set(statement.finding_ids)
+        cited = [
+            (label, finding)
+            for label, finding in pairs
+            if finding_fingerprint(finding) in cited_ids
+        ]
+        views.append(
+            ReviewStatementView(
+                statement_id=statement.statement_id,
+                text=statement.text,
+                label=labels.get(statement.statement_id, ""),
+                finding_refs=[label for label, _ in cited],
+                finding_labels=[_finding_label(finding) for _, finding in cited],
+                target_ids=list(statement.target_ids),
+                substantive=statement.substantive,
+            )
+        )
+    return views
+
+
+def _statement_labels(composition: ReportComposition) -> dict[str, str]:
+    """Each statement's code-built reader label, as the rendered suffix.
+
+    Reused from the reader report's own builder rather than re-derived (R1):
+    ``_point_labels`` reads exactly a point's text and its statement's finding
+    ids, so a statement rendered as a table cell or an uncertainty note — a
+    bare ``ReportStatement`` with no point of its own — gets the same label the
+    reader would see beside that text.
+    """
+    labels: dict[str, list[str]] = {}
+    for point in [*composition.summary, *composition.constraints]:
+        if point.statement is not None:
+            labels.setdefault(point.statement.statement_id, []).extend(
+                _point_labels(point, composition)
+            )
+    for section in composition.sections:
+        for point in section.points:
+            if point.statement is not None:
+                labels.setdefault(point.statement.statement_id, []).extend(
+                    _point_labels(point, composition)
+                )
+    for statement in composition.statements:
+        if statement.statement_id in labels:
+            continue
+        labels[statement.statement_id] = _point_labels(
+            ReportPoint(text=statement.text, statement=statement), composition
+        )
+    return {
+        statement_id: " | ".join(dict.fromkeys(values))
+        for statement_id, values in labels.items()
     }
-    return readings.pop() if len(readings) == 1 else ""
+
+
+def _finding_views(
+    composition: ReportComposition | None,
+) -> list[ReviewFindingView]:
+    """One view per cited finding, paired with its own registered label.
+
+    Paired by ``_finding_registry_pairs`` rather than by inverting
+    ``finding_labels`` into a fingerprint-keyed map: two revision editions of
+    one page share a fingerprint, and that map hands the later edition's
+    snippet and figure labels to both labels (P2), so a statement citing the
+    earlier one would be judged against the wrong evidence.
+    """
+    if composition is None:
+        return []
+    views: list[ReviewFindingView] = []
+    for label, finding in _finding_registry_pairs(composition):
+        if label is None:
+            # A finding the report never gave a label is never cited by a
+            # statement, and the finding blocks are the citable registry.
+            continue
+        views.append(
+            ReviewFindingView(
+                label=label,
+                finding_id=finding_fingerprint(finding),
+                source_title=finding.source_title,
+                host=publisher_identity(finding.source_url),
+                snippet=finding.snippet or finding.content,
+                figure_labels=[
+                    _figure_label_for(finding, result.context)
+                    for result in _kept_results(finding)
+                ],
+            )
+        )
+    return views
+
+
+def _kept_results(finding: Finding) -> list[Any]:
+    """The finding's verified figure results, in the order they were verified."""
+    if finding.verification is None:
+        return []
+    return [
+        result
+        for result in finding.verification.figure_results
+        if result.kept and result.context is not None
+    ]
+
+
+def _fact_row_lines(composition: ReportComposition | None) -> list[str]:
+    """The key facts lines, one per row, with the row's own code-built label."""
+    if composition is None:
+        return []
+    return [_fact_row_line(row) for row in composition.fact_rows]
+
+
+def _fact_row_line(row: FactRow) -> str:
+    """One key facts line: the reader's columns, and the row's own label.
+
+    ``_row_label`` is the builder the rendered statement suffix uses, imported
+    rather than re-derived (R1), so the reviewer reads the same words about a
+    figure that the reader does.
+    """
+    return (
+        f"- {row.value} ({row.measure}) | period {row.period or 'not stated'} "
+        f"| kind {row.kind} | scope {row.scope or 'not stated'} "
+        f"| release or edition {row.release or 'not stated'} "
+        f"| {_row_label(row)}"
+    )
 
 
 def composition_semantic_fingerprint(
@@ -1057,66 +737,33 @@ def composition_semantic_fingerprint(
 ) -> str:
     """The digest of everything in one composition a review judges.
 
-    Task 10's state rule is "replacing the composition invalidates the stored
-    review unless its semantic fingerprint matches", and this is that
-    fingerprint: the reader-visible content (every rendered point's text and
-    its statement record), the evidence registry, the plan's sub-topics, and
-    the canonical claims and sources.
+    The rule is "replacing the composition invalidates the stored review unless
+    its semantic fingerprint matches", and this is that fingerprint: the reader
+    statements (text and record), the finding ids the report cites, the key
+    facts rows, and Not found. Those four are exactly what the review reads.
 
-    Deliberately *not* a whole-composition dump, and deliberately not
-    ``quality_status``: that field is a generated presentation badge the
-    terminal finalizer rewrites on the way out, and hashing it would make
-    stamping "accepted" onto a report invalidate the judgement that accepted
-    it. A content, reference, or target change always invalidates; the badge
-    never does.
+    Deliberately *not* a whole-composition dump, deliberately not
+    ``quality_status`` — a generated presentation badge the terminal finalizer
+    rewrites on the way out, whose hashing would make stamping "accepted" onto
+    a report invalidate the judgement that accepted it — and deliberately not
+    the plan: the reviewer never sees the plan, and a re-plan alone does not
+    change the report it judged.
     """
     if composition is None:
         return ""
     projection = {
-        "question": composition.question,
-        "scope": composition.scope,
-        "as_of": composition.as_of,
-        "sub_topics": [
-            topic.model_dump(mode="json") for topic in composition.sub_topics
-        ],
-        "points": [
-            _point_projection(point)
-            for point in _composition_points(composition)
-        ],
-        "cell_statements": [
+        "statements": [
             statement.model_dump(mode="json")
-            for statement in _composition_cell_statements(composition)
+            for statement in composition.statements
         ],
-        "answer_rows": [
-            {
-                "cells": [cell.model_dump(mode="json") for cell in row.cells],
-            }
-            for row in composition.answer_rows
+        "finding_ids": [
+            finding_fingerprint(finding) for finding in composition.findings
         ],
-        "uncertainty_statements": [
-            statement.model_dump(mode="json")
-            for statement in composition.uncertainty_statements
+        "fact_rows": [
+            row.model_dump(mode="json") for row in composition.fact_rows
         ],
-        "uncertainty_notes": list(composition.uncertainty_notes),
-        "limitations": list(composition.limitations),
-        "evidence_units": {
-            evidence_id: unit.model_dump(mode="json")
-            for evidence_id, unit in sorted(composition.evidence_units.items())
-        },
-        "claims": [
-            {
-                "claim_id": claim.claim_id,
-                "text": claim.text,
-                "verdict": claim.verdict,
-                "evidence_status": claim.evidence_status or "",
-                "source_urls": sorted(claim.source_urls),
-                "cluster_id": claim.cluster_id or "",
-            }
-            for claim in composition.claims
-        ],
-        "sources": [
-            review_source_view(source).model_dump(mode="json")
-            for source in composition.sources
+        "not_found": [
+            target.model_dump(mode="json") for target in composition.not_found
         ],
     }
     encoded = json.dumps(
@@ -1129,60 +776,17 @@ def composition_semantic_fingerprint(
     return hashlib.sha256(encoded).hexdigest()[:12]
 
 
-def _point_projection(point: Any) -> dict[str, Any]:
-    """One rendered point's reader-visible content and its record."""
-    return {
-        "text": point.text,
-        "claim_ids": list(point.claim_ids),
-        "source_urls": list(point.source_urls),
-        "statement": (
-            None
-            if point.statement is None
-            else point.statement.model_dump(mode="json")
-        ),
-    }
-
-
-def _composition_points(composition: ReportComposition) -> list[Any]:
-    """Every rendered *point*, in render order.
-
-    Points — summary bullets, constraint rows, section bullets — carry claim
-    ids and source urls as well as their statement record. A constraint's
-    mechanism and geography **cells**, and an answer row's cells, are not
-    points: they are bare ``ReportStatement`` records, and
-    ``_composition_cell_statements`` projects them separately rather than
-    asking a statement for a ``claim_ids`` field it does not have. Both halves
-    are reader-visible, so both are in the identity.
-    """
-    points: list[Any] = [*composition.summary, *composition.constraints]
-    for section in composition.sections:
-        points.extend(section.points)
-    return points
-
-
-def _composition_cell_statements(composition: ReportComposition) -> list[Any]:
-    """Every statement a composition renders as a table *cell*, in order."""
-    statements: list[Any] = []
-    for row in composition.constraints:
-        for cell in (row.mechanism_statement, row.geography_statement):
-            if cell is not None:
-                statements.append(cell)
-    for row in composition.answer_rows:
-        statements.extend(row.cells)
-    return statements
-
-
 def report_review_input_fingerprint(packet: ReportReviewInput) -> str:
     """The stable digest of the exact material one review judges.
 
     Twelve hex characters over the packet's canonical JSON, with its own
     ``fingerprint`` field excluded. Every field is part of it on purpose — a
-    statement's text, an evidence excerpt, a target's policy, and the reader
-    content are all things whose change makes the stored judgement about a
-    different report — and the packet deliberately carries no presentation
-    field: ``quality_status`` is a generated badge this packet never reads, so
-    stamping "accepted" onto a composition cannot invalidate a judgement of its
-    content, while a content, reference, or target change always does.
+    statement's text, a finding's snippet, a key facts line, the reader content
+    and the deterministic readings are all things whose change makes the stored
+    judgement about a different report — and the packet deliberately carries no
+    presentation field: ``quality_status`` is a generated badge this packet
+    never reads, so stamping "accepted" onto a composition cannot invalidate a
+    judgement of its content, while a content or reference change always does.
     """
     payload = packet.model_dump(mode="json", exclude={"fingerprint"})
     encoded = json.dumps(
@@ -1195,21 +799,21 @@ def report_review_input_fingerprint(packet: ReportReviewInput) -> str:
     return hashlib.sha256(encoded).hexdigest()[:12]
 
 
-def _split_reader_report(report: str) -> dict[str, str]:
-    """Split the candidate into its own ``##`` sections, whole.
-
-    The same split the Critic's packet performs, for the same reason: the
-    request renders one fenced block per section so a heading inside the report
-    cannot be confused with a heading of the request, and no section is cut.
-    """
-    from deep_research.agents.critic import (
-        _split_reader_report as split,  # noqa: PLC0415
-    )
-
-    return split(report)
-
-
 # --- the provider-facing contract -------------------------------------------
+
+# A report is quoted inside a Markdown fence of its own, made longer than any
+# backtick run inside it so the report cannot close the fence early and have its
+# own headings read as request sections. The Critic's renderer did this and is
+# deleted with step 4 (PD-21), so the rule lives here rather than behind a
+# doomed import.
+_REPORT_FENCE_MIN = 3
+_REPORT_FENCE_INFO = "report"
+
+
+def _report_fence(report: str) -> str:
+    """Return a backtick fence that no run inside ``report`` can close."""
+    longest = max((len(run) for run in re.findall(r"`+", report)), default=0)
+    return "`" * max(_REPORT_FENCE_MIN, longest + 1)
 
 
 class ReviewDimensionScores(ContractModel):
@@ -1248,37 +852,40 @@ class StatementDispositionDraft(ContractModel):
     problem: str = ""
 
 
-class ReviewBatchDraft(ContractModel):
-    """One provider-reported batch review.
+class ReviewDefectDraft(ContractModel):
+    """One provider-reported defect, before this review resolves its scope.
 
-    A batch reply carries no dimensions: the seven scores are a judgement of
-    the whole report, and a per-batch score would be an average over sections
-    pretending to be one.
+    ``kind`` and ``severity`` are plain strings rather than the closed
+    ``GapKind``/``GapSeverity`` literals: a reply that invents a category is a
+    reply this review must be able to *drop one defect from*, and a schema that
+    refused the whole reply would trade a single unusable defect for the entire
+    judgement. :func:`_defects` is where the vocabulary is enforced.
     """
 
-    batch_id: str = Field(min_length=1)
-    statement_dispositions: list[StatementDispositionDraft] = Field(
-        default_factory=list
-    )
-    defects: list[CritiqueGapDraft] = Field(default_factory=list)
-    reviewed_statement_ids: list[str] = Field(default_factory=list)
-    reviewed_evidence_ids: list[str] = Field(default_factory=list)
-    problem: str = ""
+    kind: str = Field(min_length=1)
+    severity: str = Field(min_length=1)
+    statement_ids: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    problem: str = Field(min_length=1)
 
 
 class ReportReviewDraft(ContractModel):
-    """One provider-reported whole-report review, before local merge."""
+    """One provider-reported whole-report review, before local resolution.
+
+    One reply carries the whole judgement the graph runs: the seven dimension
+    scores, a disposition for every statement offered, the typed defects, and
+    the reviewer's own rationale. There is no per-batch reply any more — the
+    packet carries no batch — so nothing has to be merged across requests.
+    """
 
     dimensions: ReviewDimensionScores
     statement_dispositions: list[StatementDispositionDraft] = Field(
         default_factory=list
     )
-    # No static ``max_length``: the bound depends on the packet, so the merge
+    # No static ``max_length``: the bound depends on the packet, so the review
     # enforces ``review_defect_limit`` and the request states it. A schema cap
     # of twelve refused truthful reviews of larger reports whole.
-    defects: list[CritiqueGapDraft] = Field(default_factory=list)
-    reviewed_statement_ids: list[str] = Field(default_factory=list)
-    reviewed_evidence_ids: list[str] = Field(default_factory=list)
+    defects: list[ReviewDefectDraft] = Field(default_factory=list)
     rationale: str = Field(min_length=1)
 
 
@@ -1308,152 +915,67 @@ def _render_answer_contract(contract: AnswerContract | None) -> str:
 
 
 def _render_statements(packet: ReportReviewInput) -> str:
+    """Every statement with its text, its labels, and the findings it cites."""
     lines: list[str] = []
     for statement in packet.statements:
-        lines.append(
-            f"- {statement.statement_id} [{statement.mode}] "
-            f"targets={','.join(statement.target_ids) or '-'} "
-            f"dimensions={','.join(statement.answered_dimensions) or '-'} "
-            f"clusters={','.join(statement.claim_cluster_ids) or '-'} "
-            f"evidence={','.join(statement.evidence_ids) or '-'}\n"
-            f"  {statement.text}"
-            + (f"\n  basis: {statement.basis}" if statement.basis else "")
-        )
+        parts = [f"- {statement.statement_id}"]
+        if not statement.substantive:
+            parts.append("  (context: this statement asserts nothing about the world)")
+        parts.append(f"  {statement.text}")
+        if statement.label:
+            parts.append(f"  reader label: {statement.label}")
+        if statement.finding_refs:
+            parts.append("  cites: " + ", ".join(statement.finding_refs))
+        if statement.finding_labels:
+            parts.append(
+                "  cited finding labels: " + " | ".join(statement.finding_labels)
+            )
+        if statement.target_ids:
+            parts.append("  answers targets: " + ", ".join(statement.target_ids))
+        lines.append("\n".join(parts))
     return "\n".join(lines) or "(no reader statement records were supplied)"
 
 
-def _render_targets(packet: ReportReviewInput) -> str:
-    lines: list[str] = []
-    for target in sorted(packet.targets, key=lambda item: item.answered):
-        lines.append(
-            f"- {target.target_id} ({target.coverage_id}"
-            f"{' critical' if target.critical else ''}"
-            f"{'' if target.required else ' optional'}) "
-            f"policy={target.support_policy} "
-            f"answered={'yes' if target.answered else 'no'} "
-            f"accounted={'yes' if target.accounted else 'no'} "
-            f"dimensions={','.join(target.required_dimensions) or '-'} "
-            f"statements={','.join(target.answered_by_statement_ids) or '-'}\n"
-            f"  {target.question}"
-        )
-    return "\n".join(lines) or "(no evidence targets were planned)"
-
-
-def _render_evidence_item(item: ReviewEvidenceItem) -> str:
-    return (
-        f"### {item.evidence_id}\n"
-        f"source: {item.source_title} — {item.source_url}\n"
-        f"read: {item.read_id} locator: {item.locator}\n"
-        f"corroboration: {item.badge_label}\n"
-        f"cited by: {', '.join(item.cited_by_statement_ids) or '-'}\n"
-        f"excerpt:\n{item.excerpt}"
-    )
-
-
-def _render_evidence_batches(packet: ReportReviewInput) -> str:
+def _render_findings(packet: ReportReviewInput) -> str:
+    """Every cited finding whole: its labels, its page, and its snippet."""
     blocks: list[str] = []
-    for batch in packet.evidence_batches:
+    for finding in packet.findings:
         blocks.append(
-            f"## Evidence {batch.batch_id} "
-            f"({len(batch.items)} passage(s), {batch.chars} rendered chars)"
+            f"### {finding.label}\n"
+            f"source: {finding.source_title} — {finding.host}\n"
+            f"figure labels: "
+            f"{' | '.join(finding.figure_labels) or '(no figure was kept)'}\n"
+            f"snippet:\n{finding.snippet}"
         )
-        blocks.extend(_render_evidence_item(item) for item in batch.items)
-    return "\n\n".join(blocks) or "(no read evidence was registered)"
+    return "\n\n".join(blocks) or "(no verified finding was cited)"
 
 
-def _render_ranking_section(packet: ReportReviewInput) -> str:
-    """Every ranked row with the evidence behind it, and the basis rule.
+def _render_fact_rows(packet: ReportReviewInput) -> str:
+    return "\n".join(packet.fact_rows) or "(no figure passed the Evidence Verifier)"
 
-    Ruling 6: ranking requires an evidenced comparison basis. Importance is not
-    evidence abundance and it is not model confidence, so the request shows the
-    rows the reader sees, their printed order, and the exact excerpts each row
-    rests on — the material a comparison has to be made from — and states the
-    rule rather than hoping the model applies one. The rows come from the
-    composition's own ranked table (``ranked_rows``), which is the only place
-    the printed order exists; a row's ``answered_dimensions`` records what the
-    evidence carries, not that it was ranked, and is empty for a legitimately
-    attested constraint.
-    """
-    lines = [
-        "A ranking states an order. Every order in this report must be "
-        "justified by an evidenced comparison basis: a passage that actually "
-        "compares the ranked things, on a stated scale, for the stated period "
-        "and scope. Evidence abundance is not importance — a row with five "
-        "weak passages is not more important than a row with one decisive "
-        "one — and a model's stated confidence is not evidence at all. When no "
-        "comparison basis exists, say so, and say that no defensible universal "
-        "order was established, rather than accepting the order as written.",
-        "Ranked rows and the evidence behind them:",
+
+def _render_not_found(packet: ReportReviewInput) -> str:
+    return "\n".join(
+        f"- {question}" for question in packet.not_found
+    ) or "(every planned obligation was answered)"
+
+
+def _render_deterministic(packet: ReportReviewInput) -> str:
+    deterministic = packet.deterministic
+    lines = [f"- {check}" for check in deterministic.hard_checks] or [
+        "- no deterministic hard failure was recorded"
     ]
-    if not packet.ranked_rows:
-        lines.append("- (this report records no ranked or compared rows)")
-        return "\n".join(lines)
-    by_id = {
-        item.evidence_id: item
-        for batch in packet.evidence_batches
-        for item in batch.items
-    }
-    for row in packet.ranked_rows:
-        cells = "; ".join(row.cell_texts)
-        lines.append(
-            f"- {row.rank}. {row.statement_id}: {row.text}"
-            + (f" ({cells})" if cells else "")
-            + "\n  evidence: "
-            + (
-                " | ".join(
-                    f"[{evidence_id}] {by_id[evidence_id].excerpt[:400]}"
-                    for evidence_id in row.evidence_ids
-                    if evidence_id in by_id
-                )
-                or "(no registered passage is cited for this row)"
-            )
+    lines.extend(
+        (
+            f"- kept sentences with no Statement Check verdict: "
+            f"{', '.join(deterministic.unjudged_sentences) or 'none'}",
+            f"- duplicate fact rows: {deterministic.duplicate_fact_rows}",
+            f"- unresolved citations: {deterministic.unresolved_citations}",
+            f"- settled points with no citation: "
+            f"{deterministic.uncited_settled_points}",
         )
+    )
     return "\n".join(lines)
-
-
-def _render_claims(packet: ReportReviewInput) -> str:
-    lines = [
-        f"- [{claim.verdict}; {claim.badge_label}] {claim.text} "
-        f"({', '.join(claim.source_urls) or 'no url'})"
-        for claim in packet.claims
-    ]
-    return "\n".join(lines) or "(no claims were checked)"
-
-
-def _render_sources(packet: ReportReviewInput) -> str:
-    lines = [_render_source(source) for source in packet.sources]
-    return "\n".join(lines) or "(no sources were assessed)"
-
-
-def _render_source(source: ReviewSourceView) -> str:
-    """One source line: identity, fitness, and dates, never a score."""
-    temporal = source.temporal
-    dates = ", ".join(
-        f"{name}={value}"
-        for name, value in (
-            ("published", temporal.publication_date),
-            ("data", temporal.data_period),
-            ("forecast", temporal.forecast_horizon),
-            ("effective", temporal.effective_date),
-        )
-        if value
-    )
-    return (
-        f"- {source.title} — {source.url} "
-        f"(publisher={source.publisher_id or 'unknown'}, "
-        f"work={source.work_id or 'unknown'}, "
-        f"identity={source.identity_status or 'unknown'}, "
-        f"aliases={', '.join(source.work_aliases) or 'none'}, "
-        f"derives_from={', '.join(source.derives_from_work_ids) or 'none'}, "
-        f"role={source.source_role or 'unknown'}, "
-        f"self_interest={source.self_interest or 'unknown'}, "
-        f"transport={source.transport_relation or 'unknown'}, "
-        f"assessment={source.evaluation_status or 'unknown'}, "
-        f"revision={source.assessment_revision or 'none'}, "
-        f"temporal={temporal.status}"
-        + (f" [{dates}]" if dates else "")
-        + ")"
-    )
 
 
 def _render_dimension_guidance() -> str:
@@ -1465,78 +987,78 @@ def _render_dimension_guidance() -> str:
 def _render_manifest(packet: ReportReviewInput) -> str:
     return "\n".join(
         (
-            f"Statement ids in this packet: "
-            f"{', '.join(packet.expected_statement_ids) or '(none)'}",
-            f"Evidence ids in this packet: "
-            f"{', '.join(packet.evidence_ids) or '(none)'}",
-            f"Evidence batches: {packet.total_batches} "
-            f"({', '.join(packet.expected_batch_ids) or 'none'})",
-            f"Omitted evidence ids: "
-            f"{', '.join(packet.omitted_evidence_ids) or '(none)'}",
+            "Statement ids in this packet: "
+            + (", ".join(packet.expected_statement_ids) or "(none)"),
+            "Target ids in this packet: "
+            + (", ".join(packet.known_target_ids) or "(none)"),
+            "Finding registry labels in this packet: "
+            + (", ".join(finding.label for finding in packet.findings) or "(none)"),
         )
     )
 
 
 def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
-    """The one whole-report request: report, statements, evidence, checks.
+    """The one request a review makes: the report, its statements, its findings.
 
-    Nothing here is truncated. The reader content is rendered section by
-    section, each in full, and the evidence is rendered batch by batch in
-    full — a report whose end is cut off is a report whose closing
-    contradiction, invented limitation, or fabricated citation cannot be
-    judged, and the reviewed baseline lost exactly those.
+    Nothing here is truncated. The reader content is carried whole in a fence of
+    its own — a report whose end is cut off is a report whose closing
+    contradiction, invented limitation, or mislabelled sentence cannot be
+    judged — and so is every finding snippet the statements rest on.
     """
     sections = [
         f"# Research question\n{packet.question}",
         (
             "# Packet fingerprint\n"
             f"Packet fingerprint: {packet.fingerprint}\n"
-            "This review is of exactly this material: the report, the statement "
-            "records, the targets, the evidence, and the checks below are the "
-            "whole of what is being judged."
+            "This review is of exactly this material: the reader report, the "
+            "statement records, their labels, the cited findings and the "
+            "deterministic checks below are the whole of what is being judged."
         ),
         f"# Answer contract\n{_render_answer_contract(packet.answer_contract)}",
         (
             "# Reader content — the complete candidate\n"
-            "The report is split into fenced sections below, one per section, "
-            "each carried in full and with nothing removed from its end. Its "
-            "headings belong to the report rather than to this request. This is "
-            "the complete report a reader would receive, not a prefix: judge it "
-            "whole, including its closing sections."
+            "The report is quoted in full below and nothing is removed from its "
+            "end. Its headings belong to the report rather than to this request. "
+            "This is the complete report a reader would receive, not a prefix: "
+            "judge it whole, including its closing sections.\n\n"
+            f"{_report_fence(packet.reader_content)}{_REPORT_FENCE_INFO}\n"
+            f"{packet.reader_content.rstrip()}\n"
+            f"{_report_fence(packet.reader_content)}"
         ),
-        *_render_reader_sections(packet),
         (
             "# Reader statements\n"
-            "Every substantive sentence the report prints, with the mode it "
-            "reads in, the targets and dimensions it answers, and the evidence "
-            "behind it. A defect may cite a statement id from this list and no "
-            "other.\n" + _render_statements(packet)
+            "Every sentence the report prints, with the code-built reader label "
+            "it ends with, and the finding labels it cites (F01…, whose snippets "
+            "and figure labels follow below). A defect may cite a statement id "
+            "from this list and no other.\n"
+            + _render_statements(packet)
         ),
         (
-            "# Evidence targets\n"
-            "The obligations this pass owed, with the support policy each one "
-            "declared and whether the run's own deterministic reading counts it "
-            "as answered.\n" + _render_targets(packet)
+            "# Cited findings\n"
+            "The verified findings the statements rest on, with the reader "
+            "labels built from their verified context and the snippet the "
+            "Evidence Verifier checked against the page. This is the evidence a "
+            "sentence is judged against.\n" + _render_findings(packet)
         ),
         (
-            "# Ranking and comparison basis\n" + _render_ranking_section(packet)
+            "# Key facts\n"
+            "The report's own key facts lines, each with the label the reader "
+            "sees beside the sentences that state it. A forecast's label carries "
+            "its issuer and its release, or says the page stated no release; an "
+            "actual's label says actual.\n" + _render_fact_rows(packet)
         ),
         (
-            "# Evidence — read excerpts, batched\n"
-            "Exact passages of successful reads this run registered, grouped "
-            "into batches. An excerpt is evidence; a search result, a snippet, "
-            "or a memory recall is not, and none of them appears here.\n"
-            + _render_evidence_batches(packet)
+            "# Not found\n"
+            "The obligations no verified finding answered. The report must say "
+            "so where it lists them, and must not present them as answered.\n"
+            + _render_not_found(packet)
         ),
         (
             "# Deterministic checks\n"
-            "Integrity results and coverage the run computed for itself. A "
-            "failed check is a fact about the candidate, not a verdict — and "
-            "none of these numbers is a target to reach.\n"
-            + _render_hard_checks(packet)
+            "Integrity results the run computed for itself. A failed check is a "
+            "fact about the candidate, not a verdict — and none of these "
+            "numbers is a target to reach.\n" + _render_deterministic(packet)
         ),
-        f"# Checked claims\n{_render_claims(packet)}",
-        f"# Assessed sources\n{_render_sources(packet)}",
         (
             "# What each dimension means\n"
             "Score each dimension in [0,1] against its own definition:\n"
@@ -1554,84 +1076,7 @@ def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
     ]
 
 
-def _render_reader_sections(packet: ReportReviewInput) -> list[str]:
-    from deep_research.agents.critic import (  # noqa: PLC0415
-        _render_balanced_report_sections,
-    )
-
-    return _render_balanced_report_sections(
-        packet.reader_content, report_sections=packet.reader_sections
-    )
-
-
-def batch_review_messages(
-    packet: ReportReviewInput,
-    batch: ReviewEvidenceBatch,
-) -> list[ChatMessage]:
-    """The follow-up request for one evidence batch the reply did not cover.
-
-    Same packet, same fingerprint, one batch in full: a reviewer that did not
-    read a batch is asked to read that batch rather than to redo the whole
-    review, and the batch's own id travels so the merge can record which
-    batches came back.
-    """
-    sections = [
-        f"# Research question\n{packet.question}",
-        (
-            "# Packet fingerprint\n"
-            f"Packet fingerprint: {packet.fingerprint}\n"
-            f"Evidence batch under review: {batch.batch_id}"
-        ),
-        (
-            "# Reader statements\n"
-            "The statements whose evidence this batch carries, with their "
-            "text.\n" + _render_statements(packet)
-        ),
-        (
-            f"# Evidence — {batch.batch_id}\n"
-            "Read every passage in this batch and record what it supports, "
-            "contradicts, or leaves unestablished.\n"
-            + "\n\n".join(_render_evidence_item(item) for item in batch.items)
-        ),
-        (
-            "# Response contract\n"
-            "Return one JSON object with these fields and no others: "
-            "batch_id (this batch's id), statement_dispositions (one entry per "
-            "statement you can now judge), defects (typed, naming the ids "
-            "above), reviewed_statement_ids, reviewed_evidence_ids (every "
-            "evidence id in this batch that you read), and problem (anything "
-            "that stopped you reading it, or an empty string).\n\n"
-            + _render_defect_contract(packet)
-        ),
-    ]
-    return [
-        ChatMessage(role="developer", content=REPORT_REVIEW_SYSTEM_PROMPT),
-        ChatMessage(role="user", content="\n\n".join(sections)),
-    ]
-
-
-def _render_hard_checks(packet: ReportReviewInput) -> str:
-    deterministic = packet.deterministic
-    lines = [
-        f"- {check}" for check in deterministic.hard_checks
-    ] or ["- no deterministic hard failure was recorded"]
-    lines.extend(
-        (
-            f"- substantive topic coverage: "
-            f"{deterministic.covered_topics}/{deterministic.planned_topics} "
-            f"topic(s) fully answered",
-            f"- required targets answered: "
-            f"{deterministic.answered_targets}/{deterministic.required_targets}",
-            f"- unanswered critical targets: "
-            f"{', '.join(deterministic.unanswered_critical_target_ids) or 'none'}",
-            f"- obligations with no recorded reason: "
-            f"{', '.join(deterministic.unaccounted_target_ids) or 'none'}",
-        )
-    )
-    return "\n".join(lines)
-
-
-# --- merging a reply into one review ----------------------------------------
+# --- resolving a reply into one review --------------------------------------
 
 
 def _dispositions(
@@ -1641,17 +1086,22 @@ def _dispositions(
 ) -> dict[str, StatementReviewDisposition]:
     """One disposition per statement, with disagreement resolved safely.
 
-    A statement two replies judge differently resolves to the *less* settled
-    reading: "this sentence is not carried by its evidence" may not be
-    overwritten by another reply's "supported", or a disagreement between two
-    readings of the same text would be recorded as agreement. An id the packet
-    does not carry is refused, exactly as an unresolvable defect scope is.
+    A statement the reply judges twice in two ways resolves to the *less*
+    settled reading: "this sentence is not carried by its findings" may not be
+    overwritten by the same reply's "supported", or a self-contradicting answer
+    would be recorded as agreement.
 
-    A statement the packet carries but that is not substantive — a sentinel
-    or context statement, never offered by ``expected_statement_ids`` — is a
-    no-op instead: it asserts nothing about the world, so a reply that names
-    it anyway is read as reading it, not as a judgement about it (see
-    ``ReportReviewInput.expected_statement_ids``).
+    An id the packet does not carry is refused, exactly as an unresolvable
+    defect scope is not: a disposition is a judgement *about a record*, and a
+    judgement about a record this request never showed cannot be recorded at
+    all. A defect is a *problem* whose ids are an address — losing the address
+    keeps the finding — but a disposition has nothing left once it is detached
+    from the statement it judges.
+
+    A statement the packet carries but that is not substantive — a sentinel or
+    context statement, never offered by ``expected_statement_ids`` — is a no-op
+    instead: it asserts nothing about the world, so a reply that names it
+    anyway is read as reading it, not as a judgement about it.
     """
     resolved: dict[str, StatementReviewDisposition] = {}
     for draft in drafts:
@@ -1675,137 +1125,125 @@ def _dispositions(
     return resolved
 
 
-def _resolved_defects(
-    drafts: Sequence[CritiqueGapDraft],
+def _defects(
+    drafts: Sequence[ReviewDefectDraft],
     *,
     packet: ReportReviewInput,
-) -> list[CritiqueGap]:
-    """The typed defects a reply named, refused where their scope cannot resolve.
+) -> tuple[list[ReviewDefect], list[str]]:
+    """The typed defects a reply returned, and a note for every draft dropped.
 
-    The reply is parsed by the Critic's own ``normalize_gaps`` — one contract,
-    one parser, one dedup rule for both reviewers — and the ids it names are
-    then checked against this packet's registries. ``normalize_gaps`` is called
-    without a ``CriticPacket`` because this packet is a different shape; the
-    resolution check that packet would have performed is performed here
-    instead, and a defect whose declared scope resolves to nothing is refused
-    rather than widened to the whole answer.
+    A draft whose ``kind`` or ``severity`` is not in this project's vocabulary
+    is dropped, with a note naming it, rather than forced into a category: the
+    vocabulary is closed, and recording an invented one would make "which
+    defects does this system find?" unanswerable. A draft whose problem is
+    blank is dropped for the same reason the record requires one.
+
+    A *scope* id this packet does not carry is removed from the defect, which
+    stays: the reviewer found something real, and what it got wrong is the
+    address. A defect whose ids all resolve to nothing is still a material
+    observation if it says so, and routing ignores it — but a phantom id never
+    enters the record as a resolvable scope.
     """
-    if not drafts:
-        return []
-    try:
-        gaps = normalize_gaps(
-            list(drafts),
-            known_coverage_ids=packet.coverage_ids,
-            packet=None,
-            limit=review_defect_limit(packet),
-        )
-    except CritiqueContractViolation as violation:
-        raise ReportReviewContractViolation(str(violation)) from violation
-    known_targets = {target.target_id for target in packet.targets}
-    # A defect's declared scope resolves against every statement the packet
-    # carries, not only the dispositionable ones (`expected_statement_ids`):
-    # a defect may legitimately be about a sentinel or context statement's
-    # own wording even though that statement is never offered a disposition.
     known_statements = {statement.statement_id for statement in packet.statements}
-    known_clusters: set[str] = set()
-    for statement in packet.statements:
-        known_clusters.update(statement.claim_cluster_ids)
-    for gap in gaps:
-        unknown_targets = [
-            target_id
-            for target_id in gap.target_ids
-            if target_id not in known_targets
-            and target_id != QUESTION_TARGET_ID
-        ]
-        unknown_statements = [
-            statement_id
-            for statement_id in gap.statement_ids
-            if statement_id not in known_statements
-        ]
-        unknown_clusters = [
-            cluster_id
-            for cluster_id in gap.claim_cluster_ids
-            if cluster_id not in known_clusters
-        ]
-        if unknown_targets or unknown_statements or unknown_clusters:
-            raise ReportReviewContractViolation(
-                "the defect declared scope ids that do not resolve in this "
-                "packet: "
-                + ", ".join(
-                    sorted(unknown_targets + unknown_statements + unknown_clusters)
-                )
+    known_targets = set(packet.known_target_ids)
+    defects: list[ReviewDefect] = []
+    notes: list[str] = []
+    for index, draft in enumerate(drafts, start=1):
+        kind = draft.kind.strip()
+        severity = draft.severity.strip()
+        problem = draft.problem.strip()
+        unknown: list[str] = []
+        if kind not in GAP_KINDS:
+            unknown.append(f"{draft.kind!r} is not a defect kind")
+        if severity not in GAP_SEVERITIES:
+            unknown.append(f"{draft.severity!r} is not a defect severity")
+        if unknown:
+            notes.append(
+                f"Defect {index} was dropped: " + " and ".join(unknown) + "."
             )
-        if not (gap.target_ids or gap.statement_ids or gap.claim_cluster_ids):
-            raise ReportReviewContractViolation(
-                "a defect must name the target, statement, or claim cluster "
-                "it affects"
+            continue
+        if not problem:
+            notes.append(f"Defect {index} was dropped: it names no problem.")
+            continue
+        defects.append(
+            ReviewDefect(
+                defect_id=f"review-{len(defects) + 1:02d}",
+                kind=cast(GapKind, kind),
+                severity=cast(GapSeverity, severity),
+                target_ids=[
+                    target_id
+                    for target_id in dict.fromkeys(draft.target_ids)
+                    if target_id in known_targets
+                ],
+                statement_ids=[
+                    statement_id
+                    for statement_id in dict.fromkeys(draft.statement_ids)
+                    if statement_id in known_statements
+                ],
+                problem=problem,
             )
-    return gaps
+        )
+    return defects, notes
 
 
 def _derived_defects(
     packet: ReportReviewInput,
     dispositions: Mapping[str, StatementReviewDisposition],
-    defects: Sequence[CritiqueGap],
-) -> tuple[list[CritiqueGap], list[str]]:
+    defects: Sequence[ReviewDefect],
+) -> tuple[list[ReviewDefect], list[str]]:
     """Material defects for the statements a disposition left unestablished.
 
     The reviewer's own disposition is a judgement — "this sentence is not in
-    the source" — and it must not be recordable while the review still passes,
-    which is exactly what would happen if an unsettled statement were an
-    observation and the pass rule only read ``defects``. So an unsettled
-    disposition that no returned defect names gets a project-derived material
-    defect, and the statements that produced one are recorded: the report says
-    which defects the reviewer returned and which this project derived from its
-    dispositions.
+    the findings" — and it must not be recordable while the review still
+    passes, which is exactly what would happen if an unsettled statement were
+    an observation and the pass rule only read ``defects``. So an unsettled
+    disposition that no returned material defect names gets a project-derived
+    material defect, and the statements that produced one are recorded: the
+    record says which defects the reviewer returned and which this project
+    derived from its dispositions.
 
     The skip test asks about a **material** defect, because that is what the
     record contract requires an unsettled statement to be named by: asking
-    whether *any* defect named it let a `minor` observation about a sentence
+    whether *any* defect named it let a ``minor`` observation about a sentence
     stand in for the finding that the sentence is not carried by its evidence.
-    The derived defect was then skipped, the record contract refused the
-    assembled review, and that refusal propagated out of ``review_report`` —
-    so a contract-valid reply crashed the run instead of recording the
-    judgement the reviewer had actually made.
 
     A statement that is not substantive — a sentinel cell repaired to "not
-    stated", or any other context statement — is never given a defect here
-    even if ``dispositions`` names it: ``_dispositions`` already drops such
-    an entry, so this is a second guard for a caller that built
-    ``dispositions`` some other way. A derived material defect requires a
-    statement that asserts something.
+    stated", or any other context statement — is never given a defect here:
+    ``_dispositions`` already drops such an entry, and this is a second guard
+    for a caller that built ``dispositions`` some other way.
     """
-    derived: list[CritiqueGap] = []
+    derived: list[ReviewDefect] = []
     derived_statements: list[str] = []
     for statement_id in sorted(dispositions):
         disposition = dispositions[statement_id]
         if disposition not in UNSETTLED_STATEMENT_DISPOSITIONS:
             continue
         if any(
-            statement_id in gap.statement_ids for gap in defects if gap.material
+            statement_id in defect.statement_ids
+            for defect in defects
+            if defect.material
         ):
             continue
         statement = packet.statement(statement_id)
         if statement is None or not statement.substantive:
             continue
-        targets = [
-            target.target_id
-            for target in packet.targets
-            if target.target_id in statement.target_ids
-        ]
         derived.append(
-            CritiqueGap(
-                gap_id=f"review-{len(derived) + 1:02d}",
-                target_ids=targets or [QUESTION_TARGET_ID],
-                claim_cluster_ids=list(statement.claim_cluster_ids),
+            ReviewDefect(
+                defect_id=f"review-{len(defects) + len(derived) + 1:02d}",
+                target_ids=list(statement.target_ids) or [QUESTION_TARGET_ID],
                 statement_ids=[statement_id],
                 kind="missing_support",
                 severity="major",
-                repair_action="adjudicate",
                 problem=(
-                    "The semantic review recorded this statement as "
-                    f"{disposition!r}: the evidence behind it does not "
-                    "establish it as written."
+                    f"The terminal review recorded this statement as "
+                    f"{disposition!r}: "
+                    + (
+                        "the review never judged it, so nothing establishes it "
+                        "as written."
+                        if disposition == UNREVIEWED_STATEMENT_DISPOSITION
+                        else "the findings behind it do not establish it as "
+                        "written."
+                    )
                 ),
             )
         )
@@ -1818,36 +1256,21 @@ def _merge_review(
     *,
     dimension_scores: Mapping[str, float] | None,
     dispositions: Mapping[str, StatementReviewDisposition],
-    defects: Sequence[CritiqueGap],
+    defects: Sequence[ReviewDefect],
     derived_statements: Sequence[str],
-    reviewed_statement_ids: Sequence[str],
-    reviewed_evidence_ids: Sequence[str],
-    reviewed_batch_ids: Sequence[str],
     rationale: str,
     status: str,
 ) -> ReportReview:
-    """Assemble the recorded review from the replies that came back."""
-    known_statements = set(packet.expected_statement_ids)
+    """Assemble the recorded review from the reply that came back."""
     reviewed = [
         statement_id
-        for statement_id in dict.fromkeys(reviewed_statement_ids)
-        if statement_id in known_statements
+        for statement_id in packet.expected_statement_ids
+        if dispositions.get(statement_id) not in (None, UNREVIEWED_STATEMENT_DISPOSITION)
     ]
     unreviewed = [
         statement_id
         for statement_id in packet.expected_statement_ids
         if statement_id not in reviewed
-    ]
-    known_evidence = set(packet.evidence_ids)
-    reviewed_evidence = [
-        evidence_id
-        for evidence_id in dict.fromkeys(reviewed_evidence_ids)
-        if evidence_id in known_evidence
-    ]
-    omitted = [
-        evidence_id
-        for evidence_id in packet.evidence_ids
-        if evidence_id not in reviewed_evidence
     ]
     return ReportReview(
         status=status,  # type: ignore[arg-type]
@@ -1856,11 +1279,6 @@ def _merge_review(
         per_statement_dispositions=dict(dispositions),
         reviewed_statement_ids=reviewed,
         unreviewed_statement_ids=unreviewed,
-        reviewed_evidence_ids=reviewed_evidence,
-        omitted_evidence_ids=omitted,
-        reviewed_batch_ids=list(dict.fromkeys(reviewed_batch_ids)),
-        expected_batch_ids=list(packet.expected_batch_ids),
-        reviewed_target_ids=[target.target_id for target in packet.targets],
         derived_defect_statement_ids=list(derived_statements),
         input_fingerprint=packet.fingerprint,
         composition_fingerprint=packet.composition_fingerprint,
@@ -1873,34 +1291,31 @@ def _status_for(
     packet: ReportReviewInput,
     *,
     dimension_scores: Mapping[str, float] | None,
-    reviewed_statement_ids: Sequence[str],
-    reviewed_batch_ids: Sequence[str],
     dispositions: Mapping[str, StatementReviewDisposition],
 ) -> str:
-    """``scored`` only when this review actually covered what it was given.
+    """``scored`` only when this review actually judged what it was given.
 
     Coverage is a precondition of a score, not a note beside one: a review that
-    skipped a statement, a batch, or a dimension has not judged the report, and
-    recording it as ``scored`` would let missing coverage read as a pass. The
-    same rule is stated on ``ReportReview`` itself, so an incomplete score
-    cannot be constructed even by a later caller.
+    skipped a statement or a dimension has not judged the report, and recording
+    it as ``scored`` would let missing coverage read as a pass. The same rule is
+    stated on ``ReportReview`` itself, so an incomplete score cannot be
+    constructed even by a later caller.
 
     Reading is not judging, so a disposition is required for every statement
-    too: ``reviewed_statement_ids`` is the reply's own account of what it read,
-    and a statement listed there with no disposition recorded is the
-    per-statement support review claimed and not performed. With a perfect mean
-    and no defects that shape would otherwise be recorded ``scored``, which is
-    the one reading this whole contract exists to prevent.
+    too, and ``not_reviewed`` is not one: it is the honest record of a statement
+    the review never reached, which is exactly the shape that must not be
+    ``scored``.
     """
     if dimension_scores is None:
         return "incomplete"
     if set(dimension_scores) != REVIEW_DIMENSIONS:
         return "incomplete"
-    if set(packet.expected_statement_ids).difference(reviewed_statement_ids):
-        return "incomplete"
-    if set(packet.expected_statement_ids).difference(dispositions):
-        return "incomplete"
-    if set(packet.expected_batch_ids).difference(reviewed_batch_ids):
+    judged = {
+        statement_id
+        for statement_id, disposition in dispositions.items()
+        if disposition != UNREVIEWED_STATEMENT_DISPOSITION
+    }
+    if set(packet.expected_statement_ids).difference(judged):
         return "incomplete"
     return "scored"
 
@@ -1908,43 +1323,18 @@ def _status_for(
 def _incomplete_reason(
     packet: ReportReviewInput,
     *,
-    reviewed_statement_ids: Sequence[str],
-    reviewed_batch_ids: Sequence[str],
-    dispositions: Mapping[str, StatementReviewDisposition],
+    unreviewed_statement_ids: Sequence[str],
 ) -> str:
-    missing_statements = [
+    missing = [
         statement_id
         for statement_id in packet.expected_statement_ids
-        if statement_id not in reviewed_statement_ids
+        if statement_id in set(unreviewed_statement_ids)
     ]
-    undispositioned_statements = [
-        statement_id
-        for statement_id in packet.expected_statement_ids
-        if statement_id not in dispositions
-    ]
-    missing_batches = [
-        batch_id
-        for batch_id in packet.expected_batch_ids
-        if batch_id not in reviewed_batch_ids
-    ]
-    parts: list[str] = []
-    if missing_statements:
-        parts.append(
-            "no review reached statement(s) " + ", ".join(missing_statements)
-        )
-    if undispositioned_statements:
-        parts.append(
-            "no disposition was recorded for statement(s) "
-            + ", ".join(undispositioned_statements)
-        )
-    if missing_batches:
-        parts.append(
-            "no review reached evidence batch(es) " + ", ".join(missing_batches)
-        )
+    if not missing:
+        return "This review returned no complete judgement."
     return (
-        "This review is incomplete: " + "; ".join(parts) + "."
-        if parts
-        else "This review returned no complete judgement."
+        "This review is incomplete: no disposition was recorded for "
+        "statement(s) " + ", ".join(missing) + "."
     )
 
 
@@ -1963,7 +1353,7 @@ class ReportReviewer:
 
     name: ClassVar[str] = REPORT_REVIEWER_ROLE
     description: ClassVar[str] = (
-        "Judge the finished report against the evidence it rests on."
+        "Judge the finished report against the findings it rests on."
     )
     allowed_tools: ClassVar[tuple[str, ...]] = ()
     prompt_version: ClassVar[str] = REPORT_REVIEW_PROMPT_VERSION
@@ -2044,9 +1434,9 @@ class ReportReviewer:
         Reuse is by fingerprint and nothing else: a stored review of different
         content is not a review of this report, and a stored review that is not
         ``scored`` is not a review at all. There is no second attempt loop
-        here — one request per batch, and the outcome is recorded — but a
-        request the provider truncated is re-asked once, and
-        ``review_records`` reports what that cost.
+        here — one request per review, and the outcome is recorded — but a
+        request the provider truncated is re-asked once, and ``review_records``
+        reports what that cost.
         """
         self._review_records = []
         if (
@@ -2106,10 +1496,9 @@ class ReportReviewer:
     ) -> Any:
         """One structured request for this review, at this request's effort.
 
-        ``reasoning_effort`` is the retry's own setting: ``None`` on every
-        ordinary request, which keeps the request this reviewer has always sent
-        byte-identical, and the shared retry effort on the second attempt. The
-        output budget is the operation's configured cap on both.
+        ``reasoning_effort`` is the retry's own setting: ``None`` on the
+        ordinary request, and the shared retry effort on the second attempt.
+        The output budget is the operation's configured cap on both.
         """
         return await self._provider.complete_structured(
             messages,
@@ -2127,8 +1516,7 @@ class ReportReviewer:
     ) -> Any:
         """Re-ask a truncated review request once, or report it stayed truncated.
 
-        The same allowance the Critic's review gets, for the same reason: a
-        truncated reply is the one failure a different request can fix, so it
+        A truncated reply is the one failure a different request can fix, so it
         is re-asked once under the same output budget at the effort that leaves
         more of that budget for the answer. A second truncation is re-raised to
         the caller, which is where this reviewer's non-fatal "no judgement
@@ -2187,17 +1575,14 @@ async def review_report(
 ) -> ReportReview:
     """Run one complete semantic review of ``packet`` and record its outcome.
 
-    The review is whole-report: one cross-section request carrying the complete
-    report, every statement, every target, and every evidence batch; then one
-    follow-up request for each batch the cross-section reply did not claim to
-    have read. The report is never re-requested and never clipped, and a batch
-    that never came back leaves the review ``incomplete`` with the omitted ids
-    on the record.
+    The review is one request carrying the complete report, every statement,
+    the cited findings and the deterministic checks, plus one re-ask if the
+    provider truncated it. The report is never re-requested and never clipped.
 
     A provider failure is ``provider_failed``; a reply that is malformed, that
     breaks the defect contract, or that cites a record this packet does not
-    carry is ``incomplete``. Every one of those carries no dimension scores,
-    so none of them can be averaged into an acceptance, and ``tracker`` is
+    carry is ``incomplete``. Every one of those carries no dimension scores, so
+    none of them can be averaged into an acceptance, and ``tracker`` is
     optional only so a unit test can call this without a session span.
     """
     owner = reviewer or ReportReviewer(
@@ -2209,9 +1594,10 @@ async def review_report(
             owner, packet, reviewed_fingerprint=reviewed_fingerprint
         )
 
-    if owner._tracker is None:  # noqa: SLF001  (the reviewer's own tracker)
+    tracker_ = owner._tracker  # noqa: SLF001  (the reviewer's own tracker)
+    if tracker_ is None:
         return await _run()
-    async with owner._tracker.agent_span(owner.name):  # noqa: SLF001
+    async with tracker_.agent_span(owner.name):
         return await _run()
 
 
@@ -2229,9 +1615,6 @@ async def _review_packet(
             dispositions={},
             defects=[],
             derived_statements=[],
-            reviewed_statement_ids=[],
-            reviewed_evidence_ids=[],
-            reviewed_batch_ids=[],
             rationale=(
                 "There is no reader content to review, so no judgement of the "
                 "report exists."
@@ -2245,9 +1628,6 @@ async def _review_packet(
             dispositions={},
             defects=[],
             derived_statements=[],
-            reviewed_statement_ids=[],
-            reviewed_evidence_ids=[],
-            reviewed_batch_ids=[],
             rationale=(
                 "The packet changed under this review: the material judged is "
                 f"not the material the review was opened on "
@@ -2256,16 +1636,8 @@ async def _review_packet(
             status="incomplete",
         )
 
-    dimensions: dict[str, float] | None = None
-    disposition_drafts: list[StatementDispositionDraft] = []
-    defect_drafts: list[CritiqueGapDraft] = []
-    reviewed_statements: list[str] = []
-    reviewed_evidence: list[str] = []
-    reviewed_batches: list[str] = []
-    rationales: list[str] = []
-
     try:
-        cross = await reviewer._request(  # noqa: SLF001
+        reply = await reviewer._request(  # noqa: SLF001
             review_messages(packet), ReportReviewDraft
         )
     except (StructuredOutputError, ValidationError) as error:
@@ -2277,73 +1649,43 @@ async def _review_packet(
     except ReportReviewContractViolation as violation:
         return _failed_review(packet, str(violation), status="incomplete")
 
-    dimensions = cross.dimensions.as_dimensions()
-    disposition_drafts.extend(cross.statement_dispositions)
-    defect_drafts.extend(cross.defects)
-    reviewed_statements.extend(cross.reviewed_statement_ids)
-    reviewed_evidence.extend(cross.reviewed_evidence_ids)
-    rationales.append(cross.rationale)
-    covered_evidence = set(reviewed_evidence)
-    for batch in packet.evidence_batches:
-        if set(batch.evidence_ids).issubset(covered_evidence):
-            reviewed_batches.append(batch.batch_id)
-
-    for batch in packet.evidence_batches:
-        if batch.batch_id in reviewed_batches:
-            continue
-        try:
-            reply = await reviewer._request(  # noqa: SLF001
-                batch_review_messages(packet, batch), ReviewBatchDraft
-            )
-        except (StructuredOutputError, ValidationError) as error:
-            return _failed_review(
-                packet, _schema_reason(error, ReviewBatchDraft), status="incomplete"
-            )
-        except ProviderError as error:
-            return _failed_review(packet, _provider_reason(error))
-        except ReportReviewContractViolation as violation:
-            return _failed_review(packet, str(violation), status="incomplete")
-        disposition_drafts.extend(reply.statement_dispositions)
-        defect_drafts.extend(reply.defects)
-        reviewed_statements.extend(reply.reviewed_statement_ids)
-        reviewed_evidence.extend(reply.reviewed_evidence_ids)
-        if reply.problem.strip():
-            rationales.append(reply.problem)
-        if set(batch.evidence_ids).issubset(set(reply.reviewed_evidence_ids)):
-            reviewed_batches.append(batch.batch_id)
-
     try:
-        dispositions = _dispositions(disposition_drafts, packet=packet)
-        defects = _resolved_defects(defect_drafts, packet=packet)
+        limit = review_defect_limit(packet)
+        if len(reply.defects) > limit:
+            raise ReportReviewContractViolation(
+                f"the reply returned {len(reply.defects)} defects, more than "
+                f"the {limit} this request states; a reply beyond the bound is "
+                "refused whole, never cut."
+            )
+        dispositions = _dispositions(reply.statement_dispositions, packet=packet)
+        defects, notes = _defects(reply.defects, packet=packet)
     except ReportReviewContractViolation as violation:
         return _failed_review(packet, str(violation), status="incomplete")
 
+    for statement_id in packet.expected_statement_ids:
+        dispositions.setdefault(statement_id, UNREVIEWED_STATEMENT_DISPOSITION)
+
     derived, derived_statements = _derived_defects(packet, dispositions, defects)
-    status = _status_for(
-        packet,
-        dimension_scores=dimensions,
-        reviewed_statement_ids=reviewed_statements,
-        reviewed_batch_ids=reviewed_batches,
-        dispositions=dispositions,
-    )
-    rationale = " ".join(rationales).strip() or (
-        "The review returned no rationale."
-    )
+    scores = reply.dimensions.as_dimensions()
+    status = _status_for(packet, dimension_scores=scores, dispositions=dispositions)
+    dimensions: dict[str, float] | None = scores
+    rationale_parts = [
+        reply.rationale.strip() or "The review returned no rationale.",
+        *notes,
+    ]
     if status != "scored":
-        rationale = (
-            " ".join(
-                (
-                    rationale,
-                    _incomplete_reason(
-                        packet,
-                        reviewed_statement_ids=reviewed_statements,
-                        reviewed_batch_ids=reviewed_batches,
-                        dispositions=dispositions,
-                    ),
-                )
+        rationale_parts.append(
+            _incomplete_reason(
+                packet,
+                unreviewed_statement_ids=[
+                    statement_id
+                    for statement_id in packet.expected_statement_ids
+                    if dispositions[statement_id] == UNREVIEWED_STATEMENT_DISPOSITION
+                ],
             )
-        ).strip()
+        )
         dimensions = None
+    rationale = " ".join(part for part in rationale_parts if part).strip()
     try:
         return _merge_review(
             packet,
@@ -2351,9 +1693,6 @@ async def _review_packet(
             dispositions=dispositions,
             defects=[*defects, *derived],
             derived_statements=derived_statements,
-            reviewed_statement_ids=reviewed_statements,
-            reviewed_evidence_ids=reviewed_evidence,
-            reviewed_batch_ids=reviewed_batches,
             rationale=rationale,
             status=status,
         )
@@ -2392,9 +1731,6 @@ def _failed_review(
         dispositions={},
         defects=[],
         derived_statements=[],
-        reviewed_statement_ids=[],
-        reviewed_evidence_ids=[],
-        reviewed_batch_ids=[],
         rationale=reason,
         status=status,
     )
@@ -2431,7 +1767,7 @@ def _schema_reason(error: Exception, schema: type[BaseModel]) -> str:
 
 def review_defects_as_refinement_jobs(
     review: ReportReview | None,
-) -> Iterator[CritiqueGap]:
+) -> Iterator[ReviewDefect]:
     """The material defects of a scored review, in the order it returned them.
 
     Only a ``scored`` review routes: an incomplete or provider-failed review
@@ -2444,6 +1780,255 @@ def review_defects_as_refinement_jobs(
     return iter(review.material_defects)
 
 
+# --- shapes kept for the step-4 sweep (PD-21) --------------------------------
+#
+# ``agents/__init__.py`` exports these names and ``e2e_evaluation/replay.py``
+# imports ``ReviewBatchDraft``, so a parallel step-4 task must not delete them:
+# PD-21 has Task 4.10 remove every name left without a caller, in one sweep,
+# together with the modules that import them. Nothing in the review flow above
+# calls any of it — the packet carries no evidence batch, no checked claim and
+# no ranked row, and one request judges the whole report — so this block is the
+# old packet vocabulary waiting for its sweep, not a second code path.
+
+
+class ReviewEvidenceItem(ContractModel):
+    """One exact read excerpt a review could treat as evidence.
+
+    Kept for the sweep (PD-21): only a registered ``EvidenceUnit`` ever became
+    one of these, and the step-4 packet cites findings and their labels instead
+    of raw excerpts.
+    """
+
+    evidence_id: str = Field(min_length=1)
+    read_id: str = Field(min_length=1)
+    source_url: str = Field(min_length=1)
+    source_title: str = Field(min_length=1)
+    locator: str = Field(min_length=1)
+    excerpt: str = Field(min_length=1)
+    target_ids: list[str] = Field(default_factory=list)
+    badge: str = ""
+    badge_label: str = Field(min_length=1)
+    cited_by_statement_ids: list[str] = Field(default_factory=list)
+
+
+class ReviewEvidenceBatch(ContractModel):
+    """A bounded group of evidence items, rendered under one heading."""
+
+    batch_id: str = Field(min_length=1)
+    items: list[ReviewEvidenceItem] = Field(min_length=1)
+    chars: int = Field(ge=1)
+
+    @property
+    def evidence_ids(self) -> list[str]:
+        return [item.evidence_id for item in self.items]
+
+
+class ReviewTargetView(ContractModel):
+    """One planned obligation, with what the report actually answered."""
+
+    target_id: str = Field(min_length=1)
+    coverage_id: str = Field(min_length=1)
+    coverage_title: str = ""
+    question: str = Field(min_length=1)
+    required: bool = True
+    critical: bool = False
+    required_dimensions: list[str] = Field(default_factory=list)
+    answered_dimension_ids: list[str] = Field(default_factory=list)
+    answered_by_statement_ids: list[str] = Field(default_factory=list)
+    answered: bool = False
+    accounted: bool = False
+    account_reason: str = ""
+
+
+class ReviewClaimView(ContractModel):
+    """One checked claim, as a Critic-era review could see it.
+
+    Deliberately without the recorded confidence: a number the adjudicator
+    produced is a model judgement about the claim, not evidence for it.
+    """
+
+    claim_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    verdict: str = Field(min_length=1)
+    evidence_status: str = ""
+    badge_label: str = Field(min_length=1)
+    source_urls: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+
+
+class ReviewSourceView(ContractModel):
+    """One assessed source, identified without its scores.
+
+    Publisher and work identity are what an independence judgement turns on,
+    so they travel — with the aliases, status, and evidenced lineage that
+    resolved them. The numeric scores do not: they are a model's rating of a
+    source. Retained for the sweep (PD-21); the step-4 review reads findings,
+    not the source registry.
+    """
+
+    url: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    publisher_id: str = ""
+    work_id: str = ""
+    evaluation_status: str = ""
+    source_role: str = ""
+    self_interest: str = ""
+    transport_relation: str = ""
+    temporal: SourceTemporal = Field(default_factory=SourceTemporal)
+    assessment_revision: str = ""
+    identity_status: str = ""
+    """``known``/``unknown``/``conflicting``; empty when none was resolved."""
+    work_aliases: list[str] = Field(default_factory=list)
+    derives_from_work_ids: list[str] = Field(default_factory=list)
+
+
+def review_source_view(source: ScoredSource) -> ReviewSourceView:
+    """The one view of an assessed source a Critic-era packet read and keyed by."""
+    identity = source.work_identity
+    return ReviewSourceView(
+        url=source.url,
+        title=source.title,
+        publisher_id=source.publisher_id or "",
+        work_id=source.work_id or "",
+        evaluation_status=source.evaluation_status,
+        source_role=source.source_role,
+        self_interest=source.self_interest,
+        transport_relation=source.transport_relation,
+        temporal=source.temporal,
+        assessment_revision=source.assessment_revision,
+        identity_status=identity.identity_status if identity is not None else "",
+        work_aliases=list(identity.aliases) if identity is not None else [],
+        derives_from_work_ids=(
+            list(identity.derives_from_work_ids) if identity is not None else []
+        ),
+    )
+
+
+class ReviewRankedRow(ContractModel):
+    """One row of a report's ranked or compared table, in the printed order."""
+
+    rank: int = Field(ge=1)
+    statement_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    cell_texts: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ReviewBatchDraft(ContractModel):
+    """One provider-reported batch review.
+
+    A batch reply carries no dimensions: the seven scores are a judgement of
+    the whole report, and a per-batch score would be an average over sections
+    pretending to be one. Kept for the sweep (PD-21); ``defects`` is typed with
+    this review's own draft, so nothing here imports the Critic.
+    """
+
+    batch_id: str = Field(min_length=1)
+    statement_dispositions: list[StatementDispositionDraft] = Field(
+        default_factory=list
+    )
+    defects: list[ReviewDefectDraft] = Field(default_factory=list)
+    reviewed_statement_ids: list[str] = Field(default_factory=list)
+    reviewed_evidence_ids: list[str] = Field(default_factory=list)
+    problem: str = ""
+
+
+def _batch_evidence(
+    items: Sequence[ReviewEvidenceItem],
+) -> list[ReviewEvidenceBatch]:
+    """Fill bounded batches in order, never dropping or re-cutting an item.
+
+    Kept with the batch shapes above (PD-21): it is what gives
+    ``REPORT_REVIEW_EVIDENCE_BATCH_CHARS`` its meaning, and Task 4.10 removes
+    the words and the shapes together.
+    """
+    batches: list[ReviewEvidenceBatch] = []
+    current: list[ReviewEvidenceItem] = []
+    current_chars = 0
+
+    def rendered_chars(item: ReviewEvidenceItem) -> int:
+        return len(item.excerpt) + len(item.source_title) + len(item.locator) + 64
+
+    def flush() -> None:
+        nonlocal current, current_chars
+        if not current:
+            return
+        batches.append(
+            ReviewEvidenceBatch(
+                batch_id=f"batch-{len(batches) + 1:02d}",
+                items=list(current),
+                chars=max(1, current_chars),
+            )
+        )
+        current = []
+        current_chars = 0
+
+    for item in items:
+        size = rendered_chars(item)
+        if current and current_chars + size > REPORT_REVIEW_EVIDENCE_BATCH_CHARS:
+            flush()
+        current.append(item)
+        current_chars += size
+    flush()
+    return batches
+
+
+def _render_evidence_item(item: ReviewEvidenceItem) -> str:
+    return (
+        f"### {item.evidence_id}\n"
+        f"source: {item.source_title} — {item.source_url}\n"
+        f"read: {item.read_id} locator: {item.locator}\n"
+        f"corroboration: {item.badge_label}\n"
+        f"cited by: {', '.join(item.cited_by_statement_ids) or '-'}\n"
+        f"excerpt:\n{item.excerpt}"
+    )
+
+
+def batch_review_messages(
+    packet: ReportReviewInput,
+    batch: ReviewEvidenceBatch,
+) -> list[ChatMessage]:
+    """The follow-up request for one evidence batch, from the batched era.
+
+    Kept for the sweep (PD-21): nothing in the step-4 flow calls it, because
+    there are no batches to follow up — the reply is one judgement over the
+    whole packet.
+    """
+    sections = [
+        f"# Research question\n{packet.question}",
+        (
+            "# Packet fingerprint\n"
+            f"Packet fingerprint: {packet.fingerprint}\n"
+            f"Evidence batch under review: {batch.batch_id}"
+        ),
+        (
+            "# Reader statements\n"
+            "The statements whose evidence this batch carries, with their "
+            "text.\n" + _render_statements(packet)
+        ),
+        (
+            f"# Evidence — {batch.batch_id}\n"
+            "Read every passage in this batch and record what it supports, "
+            "contradicts, or leaves unestablished.\n"
+            + "\n\n".join(_render_evidence_item(item) for item in batch.items)
+        ),
+        (
+            "# Response contract\n"
+            "Return one JSON object with these fields and no others: "
+            "batch_id (this batch's id), statement_dispositions (one entry per "
+            "statement you can now judge), defects (typed, naming the ids "
+            "above), reviewed_statement_ids, reviewed_evidence_ids (every "
+            "evidence id in this batch that you read), and problem (anything "
+            "that stopped you reading it, or an empty string).\n\n"
+            + _render_defect_contract(packet)
+        ),
+    ]
+    return [
+        ChatMessage(role="developer", content=REPORT_REVIEW_SYSTEM_PROMPT),
+        ChatMessage(role="user", content="\n\n".join(sections)),
+    ]
+
+
 __all__ = [
     "DIMENSION_GUIDANCE",
     "MAX_REVIEW_DEFECTS",
@@ -2451,9 +2036,11 @@ __all__ = [
     "REPORT_REVIEW_EVIDENCE_BATCH_CHARS",
     "REPORT_REVIEW_INSTRUCTION",
     "REPORT_REVIEW_MAX_TOKENS",
+    "REPORT_REVIEW_OPERATION",
     "REPORT_REVIEW_PROMPT_VERSION",
     "REPORT_REVIEW_SYSTEM_PROMPT",
     "REVIEW_DIMENSIONS",
+    "REVIEW_DEFECT_RULES",
     "REVIEW_RUBRIC_VERSION",
     "SEMANTIC_REVIEW_MEAN",
     "ReportReviewContractViolation",
@@ -2462,12 +2049,15 @@ __all__ = [
     "ReportReviewer",
     "ReviewBatchDraft",
     "ReviewClaimView",
+    "ReviewDefectDraft",
     "ReviewDeterministic",
     "ReviewDimensionScores",
     "ReviewEvidenceBatch",
     "ReviewEvidenceItem",
+    "ReviewFindingView",
     "ReviewRankedRow",
     "ReviewSourceView",
+    "ReviewStatementView",
     "ReviewTargetView",
     "StatementDispositionDraft",
     "batch_review_messages",

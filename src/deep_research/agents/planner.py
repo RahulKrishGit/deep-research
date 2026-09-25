@@ -20,12 +20,6 @@ from typing import Literal, TypeAlias, get_args
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
-from deep_research.agents.claim_clusters import (
-    LEGACY_COVERAGE_DIMENSION,
-    METADATA_DIMENSIONS,
-    checkable_dimensions,
-    metadata_dimension_asked_for,
-)
 from deep_research.agents.errors import (
     AgentConfigurationError,
     PlanningError,
@@ -513,53 +507,6 @@ PLAN_INSTRUCTION = (
     "bundling them.\n"
     "Each success criterion must name the evidence type, geography, and "
     "measurement or decision needed to consider the sub-topic answered.\n"
-    # Verification needs a source independent of the one that produced a
-    # claim: ``fact_checker.independent_domains`` refuses to corroborate a
-    # claim with a page on the claim's own publisher's domain, and a claim
-    # with no independent source is recorded as ``insufficient_evidence``.
-    # The demand used to be unconditional, which made every obligation need a
-    # pair — including the figures one agency publishes, where no second
-    # measurement exists. The run spent 139 tool calls and 26 of its 44
-    # minutes on 11 of 14 claims looking for a pair that could not exist, and
-    # ended with 0 of 11 targets answered (audit #3, #10). The demand now
-    # belongs to the policy the evidence earns, and the policy is a field the
-    # plan states per target.
-    #
-    # Pairing a quantity "more than one body measures" was still an invitation
-    # to the wrong pair. The plan read EIA's inventory and, independently, an
-    # industry tracker as two measurements of the same 2024 addition, although
-    # the two publish different segments — so the target demanded a pair that
-    # cannot exist, exactly as the single-issuer figures did (review rank 2).
-    # Two differently scoped figures are two targets. Only a figure named as
-    # one issuer's own series earns that issuer's primary-attribution floor;
-    # an unattributed empirical fact may instead have independent accounts.
-    "Name every target's support_policy, and let the evidence settle it. Use "
-    "independent_pair only when a second, independent account can state the "
-    "whole finding on the same basis — a comparison, a ranking, or a causal "
-    "conclusion — and then require that pair in the success criterion: state "
-    "that at least two sources from different publishers must state the "
-    "finding, and say how a reader would recognise the second one. A count, "
-    "total, capacity, or projection that a named body publishes — an agency's "
-    "inventory, a market monitor's count, a company's filing — is that body's "
-    "own figure: name the issuer in its primary_attribution target. When a "
-    "second body publishes its own count of the same market, give that body "
-    "its own primary_attribution target, so the report shows both figures "
-    "with their scopes side by side. A generic empirical fact with no named "
-    "issuer takes independent_pair only when two independent accounts can "
-    "each state the same fact in full. Two bodies that publish differently "
-    "scoped figures — different segments, units, or vintages — are not a "
-    "pair, because differently scoped figures are different measurements: "
-    "never plan one independent_pair target across two issuers' figures, and "
-    "never name two bodies in one target's source dimension. Use "
-    "primary_attribution when a single authoritative issuer settles the "
-    "fact — its own count, rule, definition, or methodology — and then do not "
-    "demand a second publisher for it: a statistic only one body publishes "
-    "has no second measurer, so name that body. A fact only one source states "
-    "is recorded as unverified no matter how authoritative that source is, "
-    "no independent pair of one agency's figure exists, and a criterion that "
-    "demands one leaves the obligation unanswered. An explicit request for "
-    "independent confirmation is the one demand none of this lowers: keep "
-    "such a target on independent_pair.\n"
     # A source behind a subscription cannot be read at all, and an unanswered
     # required obligation fails acceptance however honest the report is, so a
     # required target must not depend on one (review rank 4).
@@ -568,9 +515,7 @@ PLAN_INSTRUCTION = (
     "obligation out.\n"
     "Aim the queries at primary sources — regulations, standards, filings, "
     "and datasets that state the facts directly — and say which class of "
-    "source each query should reach. For a target planned under "
-    "independent_pair, include a query aimed at its independent second "
-    "source.\n"
+    "source each query should reach.\n"
     # The as-of date and the geographic scope used to be prose the model was
     # asked to write into its own queries, with no field of its own. It wrote
     # whatever year it believed was current — 2024, in a September 2026
@@ -617,10 +562,7 @@ PLAN_INSTRUCTION = (
 # asking two things at once ("Which documented risks does each option carry,
 # and by which issuer?") — both of which the plan review, whose rules the
 # instruction now states, names as defects. Every target here asks one
-# question, and each states the support policy its evidence earns: a
-# ridership figure is the operator's own count (``primary_attribution``),
-# while a capital cost is estimated independently by more than one body
-# (``independent_pair``, whose criterion is the one that asks for the pair).
+# question.
 _PLAN_REPLY_EXAMPLES = (
     (
         "Example input: compare bus and rail options for a city.",
@@ -636,7 +578,7 @@ _PLAN_REPLY_EXAMPLES = (
         'recent reported year?","required_dimensions":["measure: annual '
         'ridership","period: most recent reported year","geography: the '
         'city","source: the operator\'s published ridership report"],'
-        '"critical":true,"support_policy":"primary_attribution",'
+        '"critical":true,'
         '"measure":"annual ridership","unit_dimension":"",'
         '"period":"","kind":"actual",'
         '"geography":"the city","organisation":""},'
@@ -644,7 +586,7 @@ _PLAN_REPLY_EXAMPLES = (
         'recent reported year?","required_dimensions":["measure: annual '
         'ridership","period: most recent reported year","geography: the '
         'city","source: the operator\'s published ridership report"],'
-        '"critical":true,"support_policy":"primary_attribution",'
+        '"critical":true,'
         '"measure":"annual ridership","unit_dimension":"",'
         '"period":"","kind":"actual",'
         '"geography":"the city","organisation":""}]},'
@@ -661,7 +603,7 @@ _PLAN_REPLY_EXAMPLES = (
         'kilometre","period: the most recent published estimate",'
         '"geography: the city","source: the cost analysis each body '
         'publishes"],'
-        '"critical":false,"support_policy":"independent_pair",'
+        '"critical":false,'
         '"measure":"capital cost per route kilometre","unit_dimension":"",'
         '"period":"","kind":"",'
         '"geography":"the city","organisation":""}]},'
@@ -677,7 +619,7 @@ _PLAN_REPLY_EXAMPLES = (
         '"required_dimensions":["measure: on-time performance, in percent",'
         '"period: the most recent reported year","geography: the city",'
         '"source: the operator\'s performance report"],'
-        '"critical":false,"support_policy":"primary_attribution",'
+        '"critical":false,'
         '"measure":"on-time performance","unit_dimension":"percent",'
         '"period":"","kind":"actual",'
         '"geography":"the city","organisation":""}]}'
@@ -691,28 +633,14 @@ class EvidenceTargetDraft(ContractModel):
 
     No ``Field`` constraints, for the same reason ``SubTopicDraft`` has none:
     this model is converted to a strict JSON schema. The planner assigns the
-    id, the support policy, and the contract's own dimensions; the model
-    supplies the question the obligation answers, the dimensions a reader
-    needs, and whether the question can be answered without it.
+    id and the contract's own dimensions; the model supplies the question the
+    obligation answers, the dimensions a reader needs, and whether the
+    question can be answered without it.
     """
 
     question: str
     required_dimensions: list[str]
     critical: bool
-    support_policy: str = ""
-    """The policy the plan proposes for this obligation, or "" to accept the
-    planner's own rule.
-
-    Deliberately a defaulted ``str`` rather than a ``Literal`` or a required
-    field, for the reason ``SubTopicDraft`` declares no constraints at all:
-    this model becomes a strict JSON schema, and a plan whose reply omits a
-    policy is still a plan. Whether independent measurement of a fact exists
-    is a fact about the evidence, not about the question's wording — a figure
-    one agency publishes has no second measurer, while a comparison needs two
-    independent accounts by construction — so the model names it per target,
-    and ``support_policy_for_target`` validates the name and keeps every
-    policy the question's own form earns.
-    """
     # The fields a program checks an answer against; empty when the
     # question does not name one.
     measure: str = ""
@@ -1345,50 +1273,10 @@ def _named_title_series(raw_text: str) -> bool:
     return False
 
 
-def _asks_a_named_issuers_series(
-    question: str,
-    required_dimensions: Sequence[str],
-) -> bool:
-    """Whether the target asks what one named body's series reports.
-
-    Two halves, and both are needed. The *measure* has to be one the binding
-    gate checks as a numeric value (:func:`checkable_dimensions`), because a
-    figure is what an issuer's series reports: an obligation about a
-    classification or a rule is settled by reading the document that states
-    it, not by one body's number. The *attribution* has to be in the target —
-    the question or one of its own requirements has to name the body whose
-    series the figure is — and it has to name it *as* that body's series,
-    either in possessive form (:func:`_named_possessive_series`) or by its own
-    capitalised title (:func:`_named_title_series`). The recorded 2024
-    addition target names its agency only in its source requirement, which is
-    why the requirements are read here and not just the sentence.
-
-    ``question`` is read in *both* forms: casefolded for the possessive
-    check, which is lexical, and raw for the title check, which needs
-    capitalisation to tell a proper-noun issuer from a generic phrase.
-    """
-    if not any(
-        checkable_dimensions(requirement) == ("value",)
-        for requirement in required_dimensions
-    ):
-        return False
-    normalized_text = " ; ".join(
-        [
-            _normalized_question(question),
-            *(_normalized_question(value) for value in required_dimensions),
-        ]
-    )
-    if _named_possessive_series(normalized_text):
-        return True
-    raw_text = " ; ".join([question, *required_dimensions])
-    return _named_title_series(raw_text)
-
-
 def _earned_support_policy(
     normalized: str,
     *,
     comparison_evidence: _ComparisonEvidence,
-    attributed_quantity: bool = False,
     demands_independent_confirmation: bool = False,
 ) -> _SupportPolicy | None:
     """The policy a question's own form earns, or ``None`` when it earns none.
@@ -1409,19 +1297,6 @@ def _earned_support_policy(
     rewritten sentence — the planner always rewrites a target into an atomic
     question, and "independently confirm X" never survives that rewrite
     verbatim (review rank 1, user decision 1).
-
-    ``attributed_quantity`` is the one branch that reads the target's
-    *requirements* rather than its sentence, and it comes last on purpose: a
-    measured quantity that the target itself attributes to a named body's
-    published series (:func:`_asks_a_named_issuers_series`) is that body's own
-    figure. A second body's count of the same market is a differently scoped
-    measurement — a different claim — and a relay or a shared-data reanalysis
-    is never a second measurement, so a verified pair of one figure cannot be
-    formed at all: ``independent_pair`` on it is unanswerable by construction,
-    which is what made the policy on the run's critical 2024 target a
-    sample-to-sample coin flip (review rank 2, user decision 1). Comparison,
-    derivation, ranking, causal and an explicit confirmation request all keep
-    their own policy above this branch.
 
     The ambiguous comparison and the causal branches keep the *floor* the
     fallback used to provide. They change nothing about ``support_policy_for``
@@ -1449,8 +1324,6 @@ def _earned_support_policy(
         return "independent_pair"
     if _mentions(normalized, _CAUSAL_MARKERS):
         return "independent_pair"
-    if attributed_quantity:
-        return "primary_attribution"
     return None
 
 
@@ -1906,7 +1779,7 @@ def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
     and the model does not always obey, so the ordering is established here
     rather than trusted. ``sorted`` is stable, so sub-topics that share a
     priority keep the order the model produced — the same tie-break
-    ``researcher._ordered_sub_topics`` applies downstream. Ids are stamped
+    ``researcher._eligible_sub_topics`` applies downstream. Ids are stamped
     after that ordering, never before it, so an id always names a plan
     position rather than a draft position. Each target's id is re-stamped
     with its sub-topic's, because a target id is namespaced by it.
@@ -1940,25 +1813,13 @@ def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
 def earned_support_policy(
     question: str,
     *,
-    required_dimensions: Sequence[str] = (),
     contract_question: str = "",
 ) -> str | None:
     """The support policy this question's own form earns, or ``None``.
 
-    Published because two consumers have to ask the same question, and
-    ``support_policy_for`` answers a different one: it falls back to
-    ``independent_pair`` wherever the form earns nothing, so a caller judging
-    whether a policy was *lowered* — the evaluation metric that scores a plan's
-    policies, and :func:`support_policy_for_target` itself — cannot tell "the
-    question earns a pair" from "the local rule had nothing to say".
-
-    ``required_dimensions`` is the target's own statement of what its answer
-    has to be, and the floor reads it because the sentence does not always
-    carry the attribution: the run's 2024 addition target names its agency only
-    in its source requirement, and a caller that passed only the question would
-    price the target differently from the planner that stamps it. Callers that
-    have no plan to read — the legacy classifiers — keep passing the question
-    alone, and get the reading they always had.
+    Uncalled since Task 4.4: the plan carries no support policy, so nothing
+    stamps, lowers or judges one. It stays importable until Task 4.10's
+    deletion sweep takes it with the rest of the policy machinery.
 
     ``contract_question`` is the session's own frozen original question, read
     only for an explicit independent-confirmation request. The planner always
@@ -1978,50 +1839,31 @@ def earned_support_policy(
     return _earned_support_policy(
         normalized,
         comparison_evidence=_comparison_evidence_for(question),
-        attributed_quantity=_asks_a_named_issuers_series(
-            question, required_dimensions
-        ),
         demands_independent_confirmation=demands_confirmation,
     )
-
-
 
 
 def support_policy_for_target(
     *,
     question: str,
     proposed: str = "",
-    required_dimensions: Sequence[str] = (),
     contract_question: str = "",
 ) -> str:
     """The binding support policy for one target: the proposal, under the floor.
 
-    Section 2.1 requires the policy to be assigned before any verdict exists,
-    and the planner assigns it here, so no later stage may downgrade an
-    obligation to pass a coverage gate.
+    Uncalled since Task 4.4: ``EvidenceTarget`` carries no support policy, so
+    no caller has a stamp to assign. It stays importable until Task 4.10's
+    deletion sweep.
 
-    Two halves, and the order matters. A question whose own *form* earns a
-    policy keeps it — a comparison is never downgraded to citing one authority
-    because a plan proposed to, a computed quantity stays a derivation, an
-    explicit request for independent confirmation stays a pair however it is
-    phrased or wherever in the contract it is written, and a measured
-    quantity the target attributes to a named body's published series is that
-    body's own figure rather than a pair no evidence can verify. The question
-    is read together with ``required_dimensions``, because a target states its
-    attribution in either place, and with ``contract_question`` because a
-    request for confirmation is not guaranteed to survive the planner's own
-    rewrite of the target's sentence. Where the local rule has no reason to
-    give, the plan's own proposal decides, because whether independent
-    measurement of a fact exists is knowledge about the evidence: the capacity
-    one agency's inventory publishes has no second measurer, so demanding a
-    verified pair makes the target unanswerable, while the run's plan put 10 of
-    its 11 obligations on ``independent_pair`` (audit #3, P0). An unusable
-    proposal keeps the independent-pair default: a generic numeric value
-    cannot become a named issuer's own series merely by being numeric.
+    Where the question's own form earns a policy, that policy is kept — a
+    comparison is never downgraded to citing one authority because a plan
+    proposed to, and an explicit request for independent confirmation stays a
+    pair however it is phrased or wherever in the contract it is written.
+    Where the local rule has no reason to give, the plan's own proposal
+    decides. An unusable proposal keeps the independent-pair default.
     """
     earned = earned_support_policy(
         question,
-        required_dimensions=required_dimensions,
         contract_question=contract_question,
     )
     if earned is not None:
@@ -2054,14 +1896,12 @@ def _draft_targets(
 ) -> list[EvidenceTarget]:
     """Convert one draft's obligations into provisional ``EvidenceTarget``s.
 
-    Provisional in exactly two ways: the ids are positional within the draft
-    (``_assign_coverage_ids`` re-stamps them once the plan is ordered), and the
-    support policy is the planner's own rule applied to the question (the
-    binding policy is stamped by ``apply_answer_contract``). Everything else —
-    the question, the model's dimensions, ``critical`` — is carried through,
-    so a draft that omits a question, lists no dimensions, or proposes more
-    obligations than a sub-topic may carry fails validation here and is
-    reported as a repair problem.
+    Provisional in exactly one way: the ids are positional within the draft
+    (``_assign_coverage_ids`` re-stamps them once the plan is ordered).
+    Everything else — the question, the model's dimensions, ``critical`` — is
+    carried through, so a draft that omits a question, lists no dimensions, or
+    proposes more obligations than a sub-topic may carry fails validation here
+    and is reported as a repair problem.
     """
     return [
         EvidenceTarget(
@@ -2071,11 +1911,6 @@ def _draft_targets(
             required_dimensions=list(target.required_dimensions),
             required=True,
             critical=target.critical,
-            support_policy=support_policy_for_target(
-                question=target.question,
-                proposed=target.support_policy,
-                required_dimensions=target.required_dimensions,
-            ),
             **_structured_fields(target),
         )
         for position, target in enumerate(item.evidence_targets, start=1)
@@ -2279,25 +2114,6 @@ _JUDGEMENT_MARKERS = (
     "should i",
 )
 
-# A success criterion that demands a *second publisher*. Where a single
-# authoritative issuer publishes the fact, no second measurement of it exists,
-# so the demand is one the evidence can never meet — the run's plan asked for
-# independent corroboration of figures only EIA issues, and 11 of 14 claims
-# spent their whole tool budget looking for a pair that does not exist
-# (audit #3 and #10).
-_CORROBORATION_MARKERS = (
-    "independent",
-    "corroborated",
-    "corroborating",
-    "corroboration",
-    "second source",
-    "two sources",
-    "another source",
-    "different publishers",
-    "second publisher",
-    "two publishers",
-)
-
 # The interrogative words that make one demand of a question. A target that
 # conjoins two of them asks two things at once, which is the compound
 # obligation the plan review refuses ("a target that requires two measures,
@@ -2315,38 +2131,6 @@ _DEMAND_MARKERS = (
     "why",
 )
 _CONJUNCTION = re.compile(r"(?i)\s+and\s+|,\s*and\s+")
-
-
-
-def _plan_answerability(
-    target: EvidenceTarget, *, contract: AnswerContract
-) -> list[str] | None:
-    """Name dimensions that no recorded proposition field could ever fill.
-
-    A plan has no evidence yet. Checking a fabricated claim against exact
-    years, units, or publisher classes would confuse its arbitrary example
-    values with structural answerability. Contract-wide answer form and
-    currency obligations are presentation rules, not claim prose.
-    """
-    non_prose = {
-        answer_form_requirement(contract.answer_kind),
-        latest_available_obligation(contract),
-        LEGACY_COVERAGE_DIMENSION,
-    }
-    unanswerable = [
-        requirement
-        for requirement in target.required_dimensions
-        if requirement not in non_prose and not checkable_dimensions(requirement)
-    ]
-    return unanswerable or None
-
-
-def _demands_corroboration(sub_topic: SubTopic) -> bool:
-    """Whether one sub-topic's criteria demand a second publisher."""
-    normalized = _normalized_question(
-        " ".join(sub_topic.success_criteria)
-    )
-    return _mentions(normalized, _CORROBORATION_MARKERS)
 
 
 # The words that turn an independence demand into a demand for a *second body*:
@@ -2688,17 +2472,6 @@ def _plan_problems(
                         "advisory",
                     )
                 )
-            unanswerable = _plan_answerability(target, contract=contract)
-            if unanswerable is not None:
-                problems.append(
-                    _PlanProblem(
-                        f"{target.target_id} cannot be bound to any claim: "
-                        f"{'; '.join(unanswerable)} names no dimension a "
-                        "clause can be credited for. Restate the obligation "
-                        "in terms a claim can state",
-                        "advisory",
-                    )
-                )
             second_body = _demanded_second_body(target)
             if second_body:
                 problems.append(
@@ -2784,20 +2557,6 @@ def _plan_problems(
                     "advisory",
                 )
             )
-        if _demands_corroboration(sub_topic) and any(
-            target.support_policy == "primary_attribution"
-            for target in sub_topic.evidence_targets
-        ):
-            problems.append(
-                _PlanProblem(
-                    f"{sub_topic.coverage_id} requires independent "
-                    "corroboration in a success criterion while it plans a "
-                    "target under primary_attribution; a fact one body "
-                    "publishes has no second measurement, so the criterion "
-                    "asks for evidence that cannot exist",
-                    "advisory",
-                )
-            )
         for criterion in sub_topic.success_criteria:
             stale = stale_year_anchors(
                 criterion,
@@ -2861,7 +2620,7 @@ def apply_answer_contract(
     sub_topics: Sequence[SubTopic],
     contract: AnswerContract,
 ) -> list[SubTopic]:
-    """Attach the contract's binding dimensions and support policy.
+    """Attach the contract's binding dimensions, and decide ``required``.
 
     Every target keeps the dimensions the model proposed and gains the three
     the contract fixes: the answer form, the evidence period, and the
@@ -2898,9 +2657,7 @@ def apply_answer_contract(
                 question=target.question,
                 required_dimensions=unique_phrases(
                     [
-                        *_asked_dimensions(
-                            target.required_dimensions, contract=contract
-                        ),
+                        *_plan_dimensions(target.required_dimensions),
                         form,
                         period,
                         geography,
@@ -2912,12 +2669,6 @@ def apply_answer_contract(
                     or _paywalled_only_sources(target)
                 ),
                 critical=target.critical,
-                support_policy=support_policy_for_target(
-                    question=target.question,
-                    proposed=target.support_policy,
-                    required_dimensions=target.required_dimensions,
-                    contract_question=contract.question,
-                ),
                 measure=target.measure,
                 unit_dimension=target.unit_dimension,
                 period=target.period,
@@ -2947,37 +2698,18 @@ def _checkable_plan_requirement(requirement: str) -> str:
     return requirement
 
 
-def _asked_dimensions(
-    required_dimensions: Sequence[str],
-    *,
-    contract: AnswerContract,
-) -> list[str]:
-    """The obligations to keep, with the metadata the question never asked for gone.
+def _plan_dimensions(required_dimensions: Sequence[str]) -> list[str]:
+    """The obligations a stamped target owes, in the atom vocabulary.
 
-    Section 2.3's metadata rule is that a publication date, data period,
-    forecast horizon, effective date, retrieval date or generation date is
-    context unless the question asks for it — and ``dimension_is_answered``
-    enforces exactly that at binding time. A plan that stamps one anyway owes
-    an obligation no claim can discharge: the run's plan asked when the
-    forecast was published, and no claim could ever be bound to that target
-    (audit #3, replay C10). The requirement is dropped here rather than
-    enforced later, because a target that names a dimension the question never
-    asked for is the same defect as demanding MWh or a second publisher.
-
-    A requirement naming any non-metadata dimension is kept whole: dropping
-    half of a compound requirement would leave an obligation nobody wrote.
+    The plan's own spellings are resolved into the form the later checks read:
+    only a ``measure: …`` requirement is matched as a quantity, so a publisher
+    ``Unit`` ask or a ``Definition: …`` ask is spelled that way here rather
+    than left for a stage that reads dimensions to fail to match.
     """
-    kept: list[str] = []
-    for requirement in required_dimensions:
-        dimensions = checkable_dimensions(requirement)
-        if dimensions and all(
-            dimension in METADATA_DIMENSIONS
-            and not metadata_dimension_asked_for(contract.question, dimension)
-            for dimension in dimensions
-        ):
-            continue
-        kept.append(_checkable_plan_requirement(requirement))
-    return kept
+    return [
+        _checkable_plan_requirement(requirement)
+        for requirement in required_dimensions
+    ]
 
 
 def targets_requiring_replanning(
@@ -3200,33 +2932,6 @@ def format_review_problems(review: PlanReviewDraft) -> str:
     )
 
 
-def _planned_omission(state: ResearchState) -> str | None:
-    """Every original-question omission the graph routed to this node, or None.
-
-    The instruction to extend the plan is the typed ``extend_plan`` jobs in
-    ``state.refinement_targets`` — the same objects the refinement hop's edge
-    dispatched on — so the Planner never re-reads the critique's prose to learn
-    why it was entered, and cannot mistake a re-plan for an extension.
-
-    Every job's omission is named, not just the first. One extension pass is
-    one request, and a request that closes only the most severe omission
-    leaves the other defects exactly where they were: the same critique comes
-    back, and the pass that was bought to close them closed one.
-    """
-    problems = list(
-        dict.fromkeys(
-            job.problem.strip()
-            for job in state.refinement_targets
-            if job.action == "extend_plan" and job.problem.strip()
-        )
-    )
-    if not problems:
-        return None
-    if len(problems) == 1:
-        return problems[0]
-    return "\n".join(f"- {problem}" for problem in problems)
-
-
 def extension_messages(
     contract: AnswerContract,
     existing: Sequence[SubTopic],
@@ -3372,8 +3077,7 @@ def render_plan_for_review(sub_topics: Sequence[SubTopic]) -> str:
         for target in sub_topic.evidence_targets:
             criticality = "critical" if target.critical else "supporting"
             lines.append(
-                f"  {target.target_id} [{criticality}, "
-                f"{target.support_policy}]: {target.question}"
+                f"  {target.target_id} [{criticality}]: {target.question}"
             )
             lines.append(
                 f"    dimensions: {'; '.join(target.required_dimensions)}"
@@ -3665,12 +3369,6 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         ``query_memory`` is offered at all), and whether the session already
         has a frozen answer contract (which decides whether this pass may
         stamp one).
-
-        A third fact decides which of the two jobs this run has. When the
-        graph's refinement hop routed an ``extend_plan`` job here — the typed
-        expression of an original-question omission — the run *extends* the
-        plan already in state and skips the scoping loop entirely. Anything
-        else is a plan: a first plan, or a re-plan of a session that has none.
         """
         self._restricted_toolset = (
             self._toolset.without("query_memory")
@@ -3686,15 +3384,6 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
         ]
-        omission = _planned_omission(state)
-        if (
-            omission is not None
-            and state.sub_topics
-            and state.answer_contract is not None
-        ):
-            return await self._extension_run(
-                state, omission=omission, events=events
-            )
         try:
             outcome = await super().run(state)
         except ProviderError as error:
@@ -3708,92 +3397,6 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             react=outcome.react,
             errors=outcome.errors,
             state_update={**outcome.state_update, "events": events},
-            call_fingerprints=dict(outcome.call_fingerprints),
-        )
-
-    async def _extension_run(
-        self,
-        state: ResearchState,
-        *,
-        omission: str,
-        events: list[ResearchEvent],
-    ) -> AgentRun[ResearchPlan]:
-        """Answer one reviewed omission with added sub-topics, and only.
-
-        The scoping loop is skipped on purpose: this session is already
-        scoped, the omission is already named by the Critic, and the one call
-        that can close it is a structured extension request. Nothing is
-        re-planned, so no existing id, priority, obligation, or the frozen
-        contract can move (Section 2.3) — ``extend_plan`` itself refuses a
-        capacity conflict rather than dropping a difficult topic.
-
-        A failed extension is *recorded*, never raised. This node runs mid-loop,
-        after a report already exists, so letting the ``PlanningError`` escape
-        would halt the run as ``failed`` and discard a publishable artifact —
-        while every other agent treats the same provider outage as a recoverable
-        fact about the pass. ``state_update(None, react)`` surfaces the recorded
-        error, and an ``error_type`` naming the provider is what the graph's
-        ``provider_failure`` stop reason reads.
-        """
-        async with self.tracker.agent_span(self.name) as span:
-            errors: list[ResearchError] = []
-            plan: ResearchPlan | None
-            try:
-                plan = await self.extend_plan(state, omission=omission)
-            except PlanningError as error:
-                plan = None
-                errors.append(
-                    agent_error(
-                        agent_name=self.name,
-                        error_type=(
-                            "planner_extension_provider_error"
-                            if isinstance(error.__cause__, ProviderError)
-                            else "planner_extension_failed"
-                        ),
-                        message=(
-                            "The plan extension for a reviewed omission could "
-                            "not be completed; the plan already in state stands "
-                            "and the report is unaffected."
-                        ),
-                        recoverable=False,
-                        details={
-                            "exception_type": type(error).__name__,
-                            "problems": list(error.problems),
-                        },
-                    )
-                )
-            react = ReActRun(
-                agent_name=self.name,
-                stop_reason="provider_error" if errors else "finished",
-                errors=errors,
-            )
-            span.set_outputs(
-                {
-                    "agent_name": self.name,
-                    "stop_reason": react.stop_reason,
-                    "iterations": react.iterations,
-                    "tool_calls": react.tool_calls,
-                    "produced_result": plan is not None,
-                    "call_fingerprints": dict(self._call_fingerprints),
-                }
-            )
-        outcome: AgentRun[ResearchPlan] = AgentRun(
-            agent_name=self.name,
-            result=plan,
-            react=react,
-            errors=list(errors),
-            state_update=self.state_update(plan, react),
-            call_fingerprints=dict(self._call_fingerprints),
-        )
-        return AgentRun(
-            agent_name=outcome.agent_name,
-            result=outcome.result,
-            react=outcome.react,
-            errors=outcome.errors,
-            state_update={
-                **outcome.state_update,
-                "events": [*events, planning_completed_event(outcome)],
-            },
             call_fingerprints=dict(outcome.call_fingerprints),
         )
 
@@ -4172,24 +3775,19 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     ) -> ResearchStateUpdate:
         """The plan, and for a first plan the frozen contract and inventory.
 
-        An extension reports only what it added: its sub-topics append to the
-        plan already in state, and its targets belong to the *expanded*
-        inventory, so neither the frozen contract nor the initial inventory is
-        rewritten by a later pass.
-
-        A non-extension pass on a session that already carries a plan reports
-        only the sub-topics whose coverage ids the session does not have —
-        which for a re-plan of the same question is none of them. That is what
-        keeps the live topic list and the frozen inventory in agreement:
-        ``sub_topics`` appends, so re-emitting ``topic-01`` beside the existing
-        ``topic-01`` would put two different topics under one id while
+        A pass on a session that already carries a plan reports only the
+        sub-topics whose coverage ids the session does not have — which for a
+        re-plan of the same question is none of them. That is what keeps the
+        live topic list and the frozen inventory in agreement: ``sub_topics``
+        appends, so re-emitting ``topic-01`` beside the existing ``topic-01``
+        would put two different topics under one id while
         ``initial_target_ids`` — union-protected — kept counting both. The plan
         already reviewed stands, and a pass cannot replace or weaken it
         (Section 2.3); only genuinely new ids cross this boundary.
 
-        The contract is stamped only when the session has none. A later
-        non-extension plan therefore cannot re-anchor a session's as-of date
-        or scope: the state keeps the contract it froze, and the pass's own
+        The contract is stamped only when the session has none. A later plan
+        therefore cannot re-anchor a session's as-of date or scope: the state
+        keeps the contract it froze, and the pass's own
         ``result.answer_contract`` is already that frozen one
         (``frozen_contract_for``), so a replay of the same plan is a no-op
         rather than a rewrite.
@@ -4203,68 +3801,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             if sub_topic.coverage_id not in self._planned_coverage_ids
         ]
         target_ids = inventory_target_ids(added)
-        if result.extension:
-            update["sub_topics"] = list(added)
-            update["expanded_target_ids"] = target_ids
-            return update
         if self._frozen_contract is None and result.answer_contract is not None:
             update["answer_contract"] = result.answer_contract
         if added:
             update["sub_topics"] = list(added)
             update["initial_target_ids"] = target_ids
         return update
-
-    async def extend_plan(
-        self,
-        state: ResearchState,
-        *,
-        omission: str,
-    ) -> ResearchPlan:
-        """Add sub-topics for one reviewed omission of the original question.
-
-        Returns a plan carrying **only** the additional sub-topics, with ids
-        continuing after the plan already in state. The frozen contract, the
-        existing ids, and every existing obligation are untouched: this call
-        can add a target and can never remove or weaken one. A capacity
-        conflict is raised as a ``PlanningError`` naming what cannot fit,
-        which is not permission to drop a difficult topic.
-        """
-        if state.answer_contract is None:
-            raise PlanningError(
-                "This session has no frozen answer contract, so no reviewed "
-                "omission can be added to it: plan the session first.",
-                problems=["answer_contract is missing"],
-            )
-        contract = state.answer_contract
-        messages = extension_messages(contract, state.sub_topics, omission)
-        try:
-            self.fingerprint_call(
-                PlanExtensionDraft.__name__,
-                output_limit=self.config.planner_final_max_tokens,
-            )
-            draft = await self.provider.complete_structured(
-                messages,
-                PlanExtensionDraft,
-                agent_name=self.name,
-                max_tokens=self.config.planner_final_max_tokens,
-            )
-        except StructuredOutputError as error:
-            raise planning_provider_error(
-                "extend_plan", problems=structured_output_problems(error)
-            ) from error
-        except ProviderError as error:
-            raise planning_provider_error("extend_plan") from error
-
-        additions, problems = extend_plan(
-            state.sub_topics, draft, contract=contract
-        )
-        if problems:
-            raise PlanningError(
-                "The planner could not add the reviewed omission to the plan.",
-                problems=problems,
-            )
-        return ResearchPlan(
-            sub_topics=additions,
-            answer_contract=contract,
-            extension=True,
-        )

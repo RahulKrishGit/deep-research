@@ -22,6 +22,7 @@ from tests.test_api.fakes import GateRunner, ScriptedRunner
 from tests.test_api.test_app import valid_preflight, wait_until_terminal
 from tests.test_api.test_sessions import (
     EVIDENCE_PATH,
+    MISSING_TARGET_ID,
     QUALITY_PATH,
     REPORT_PATH,
     judged_state,
@@ -228,12 +229,13 @@ def test_status_carries_the_artifacts_and_measurements_of_a_finished_run() -> (
     assert body["semantic_review_status"] == "scored"
     assert body["semantic_review_score"] == 0.75
     assert body["duration_seconds"] == 30.0
-    assert body["coverage"]["planned_topics"] == 2
-    assert body["coverage"]["covered_topics"] == 1
-    assert body["coverage"]["unanswered_critical_target_ids"] == ["t2"]
-    assert body["evidence_counts"]["findings"] == 1
-    assert body["evidence_counts"]["checked_claims"] == 1
-    assert body["evidence_counts"]["corroborated"] == 1
+    assert body["coverage"]["required_targets"] == 3
+    assert body["coverage"]["answered_targets"] == 2
+    assert body["coverage"]["missing_required_target_ids"] == [MISSING_TARGET_ID]
+    assert body["coverage"]["not_found_target_ids"] == [MISSING_TARGET_ID]
+    assert body["evidence_counts"]["verified_findings"] == 2
+    assert body["evidence_counts"]["dropped_findings"] == 1
+    assert body["evidence_counts"]["cited_findings"] == 2
 
 
 def test_status_says_nothing_it_has_not_measured_while_the_session_runs() -> (

@@ -474,6 +474,20 @@ async def compose_written_report(
         if built and title:
             sections.append(ReportSection(title=title, points=built))
 
+    # §6.4 (Task 4.3): the Statement Check's own outcome for every sentence the
+    # reader report prints, keyed by its statement id -- "unchecked" when its
+    # batch failed or its label was omitted (D8). Derived from the printed
+    # points rather than recorded as they are finalized: a section with no
+    # title is dropped whole, and its points are no part of the report.
+    printed = [*summary, *(point for section in sections for point in section.points)]
+    statement_verdicts = {
+        point.statement_id: (
+            "unchecked" if (verdict := verdicts.get(point.statement_id)) is None
+            else verdict.verdict
+        )
+        for point in printed
+    }
+
     return ReportComposition(
         question=task.question, session_id=task.session_id, iteration=task.iteration,
         max_extra_passes=task.max_extra_passes, as_of=task.as_of, scope=task.scope,
@@ -481,6 +495,7 @@ async def compose_written_report(
         summary=summary, sections=sections, rejected=[r.reason for r in rejected],
         rejected_points=rejected, fact_rows=list(task.facts), not_found=list(task.not_found),
         finding_labels={label: finding_id for label, finding_id in ids.items()},
+        statement_verdicts=statement_verdicts,
         generated_on=task.generated_on, errors=check_errors,
     )
 

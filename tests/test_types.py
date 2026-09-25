@@ -901,3 +901,31 @@ def test_extra_passes_default_to_one_and_their_targets_are_replaced() -> None:
     assert advance_research_iteration(state).iteration == 1
     with pytest.raises(ValueError):
         advance_research_iteration(advance_research_iteration(state))
+
+
+from deep_research.utils.types import ReportQualitySnapshot
+
+
+def test_a_bare_quality_snapshot_constructs_with_zeroed_readings() -> None:
+    """Every reading has a zero: a snapshot is filled in as a pass measures it.
+
+    The step-4 contract and Task 4.8's tests build the record before every
+    reading exists, so a required field would make a partially measured pass
+    unrepresentable rather than incomplete.
+    """
+    snapshot = ReportQualitySnapshot()
+
+    assert snapshot.coverage_ratio == 0.0
+    assert snapshot.scored_cited_source_ratio == 0.0
+    assert (snapshot.planned_topics, snapshot.covered_topics) == (0, 0)
+    assert (snapshot.unique_findings, snapshot.unique_sources) == (0, 0)
+    assert (snapshot.verified_claims, snapshot.contradicted_claims) == (0, 0)
+    assert (snapshot.duplicate_claims, snapshot.duplicate_source_rows) == (0, 0)
+    # The step-4 readings a bare record has nothing to say about.
+    assert snapshot.required_target_ids == []
+    assert snapshot.answered_target_ids == []
+    assert snapshot.missing_required_target_ids == []
+    assert snapshot.unjudged_sentences == []
+    assert snapshot.hard_failures == []
+    assert (snapshot.verified_findings, snapshot.dropped_figures) == (0, 0)
+    assert snapshot.forecasts_without_release == 0

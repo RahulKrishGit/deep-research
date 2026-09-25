@@ -36,10 +36,16 @@ class ApiModel(BaseModel):
 
 
 class ResearchRequest(ApiModel):
-    """One validated request to start a research session."""
+    """One validated request to start a research session.
+
+    ``max_iterations`` keeps the name existing clients send (PD-15) and is the
+    ceiling on *extra* research passes: zero is a legitimate request — a run
+    that may buy no extra pass for a missing required target — so the bound is
+    ``>= 0`` rather than ``>= 1``.
+    """
 
     query: str = Field(min_length=1)
-    max_iterations: int | None = Field(default=None, ge=1)
+    max_iterations: int | None = Field(default=None, ge=0)
     output_format: Literal["markdown"] = "markdown"
     config_overrides: dict[str, JsonValue] = Field(default_factory=dict)
 
@@ -59,33 +65,33 @@ class ResearchRequest(ApiModel):
 
 
 class CoverageProgressResponse(ApiModel):
-    """Target and topic progress, kept apart (Section 2.3).
+    """Required-target progress, and what the report could not answer.
 
-    Two denominators and two readings, because they fail differently: most of
-    the targets can be answered while one critical topic is untouched, and one
-    blended ratio hides exactly that. An unanswered critical target is listed
-    whether or not its topic counted as covered.
+    Two readings of one denominator, kept apart: ``missing_required_target_ids``
+    is the gate's own reading — every required target no verified finding
+    answers — while ``not_found_target_ids`` is the report's own account of
+    what it searched for and did not find. A missing target the report lists
+    under Not found is accounted for; a missing target no list names is the
+    gate failure.
     """
 
-    planned_topics: int = Field(ge=0)
-    covered_topics: int = Field(ge=0)
-    substantive_topic_ratio: float
-    planned_targets: int = Field(ge=0)
     required_targets: int = Field(ge=0)
     answered_targets: int = Field(ge=0)
-    critical_targets: int = Field(ge=0)
-    answered_critical_targets: int = Field(ge=0)
-    unanswered_critical_target_ids: list[str] = Field(default_factory=list)
-    unaccounted_target_ids: list[str] = Field(default_factory=list)
+    missing_required_target_ids: list[str] = Field(default_factory=list)
+    not_found_target_ids: list[str] = Field(default_factory=list)
 
 
 class EvidenceCountsResponse(ApiModel):
     """Distinct quantities, each of a different thing (Section 2.5).
 
     A read call is not a work, a work is not a publisher, a source URL is not
-    a finding, and "checked" is not "corroborated". Each field here answers a
+    a finding, and "checked" is not "cited". Each field here answers a
     question the others cannot, which is why none of them is an alias of
     another and why a read-call count never stands in for unique works.
+
+    The five findings-side readings are the Evidence Verifier's own: confirmed
+    as written, kept with corrected context, dropped, kept with an unchecked
+    context, and cited by the reader report.
     """
 
     read_records: int = Field(ge=0)
@@ -97,11 +103,11 @@ class EvidenceCountsResponse(ApiModel):
     findings: int = Field(ge=0)
     assessed_sources: int = Field(ge=0)
     cited_assessed_sources: int = Field(ge=0)
-    checked_claims: int = Field(ge=0)
-    corroborated: int = Field(ge=0)
-    primary_attributed: int = Field(ge=0)
-    contested: int = Field(ge=0)
-    not_established: int = Field(ge=0)
+    verified_findings: int = Field(ge=0)
+    corrected_findings: int = Field(ge=0)
+    dropped_findings: int = Field(ge=0)
+    context_unchecked_findings: int = Field(ge=0)
+    cited_findings: int = Field(ge=0)
 
 
 class ResearchSessionResponse(ApiModel):
