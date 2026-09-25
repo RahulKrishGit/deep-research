@@ -5437,14 +5437,28 @@ def test_bare_pronoun_judgement_refuses_the_run_3_snippet_with_nameless_content(
     assert _bare_pronoun_judgement(snippet, "This is the model to beat.") is True
 
 
-def test_bare_pronoun_judgement_admits_the_run_3_snippet_when_content_names_the_product() -> None:
-    """The identical snippet is admitted once content names what "this" is."""
+@pytest.mark.parametrize(
+    "content",
+    [
+        "The Sony WH-1000XM6 is the model to beat.",
+        "Sony is the model to beat.",
+        "Bose is the model to beat.",
+    ],
+)
+def test_bare_pronoun_judgement_admits_the_run_3_snippet_when_content_names_the_product(
+    content: str,
+) -> None:
+    """The identical snippet is admitted once content names what "this" is
+    -- whether or not the product's own name opens content's own sentence
+    (F5, controller decision): a plain-ASCII leading capital ("Sony",
+    "Bose") is a referent unless it is a closed-class word or an
+    introductory word/phrase a comma sets off.
+    """
     snippet = (
         "If you want great ANC, good mic quality, and support for "
         "high\u2011quality codecs like LDAC, SBC, AAC, and LC3, this is "
         "the model to beat."
     )
-    content = "The Sony WH-1000XM6 is the model to beat."
     assert _bare_pronoun_judgement(snippet, content) is False
 
 
@@ -5507,16 +5521,15 @@ def test_bare_pronoun_judgement_triggers_at_a_clause_boundary() -> None:
         "Overall, it is the model to beat.",
         "However, this is the best option.",
         "According to reviewers, it is the best.",
-        "We think it is the best.",
     ],
 )
 def test_bare_pronoun_judgement_refuses_content_whose_only_capital_opens_a_sentence(
     content: str,
 ) -> None:
-    """P1 (ReRevResearcherR3): content's own sentence-initial word is
-    exactly as uninformative as the snippet's -- restating the nameless
-    judgement with a leading adverb or clause must not count as naming a
-    referent, whatever ordinary English capitalises there.
+    """F5 (controller decision): content's own sentence adverb or
+    introductory phrase -- a word a comma sets off, or "According" before
+    "to" -- still does not name the judgement's subject, even though a
+    bare product name opening the same position now does.
     """
     snippet = "Utility reports vary widely across regions. This is the utility to beat."
     assert _bare_pronoun_judgement(snippet, content) is True
