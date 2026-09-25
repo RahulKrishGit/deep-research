@@ -936,12 +936,15 @@ def test_the_summary_prints_findings_review_and_integrity_lines() -> None:
 
 
 def test_the_findings_line_counts_the_verifier_s_own_readings_apart() -> None:
-    """Four readings of the findings, each its own number.
+    """The four readings are kept apart, and the total is every kept finding.
 
-    A finding kept with corrected context is not one kept as written, a
-    dropped one is not a verified one, and a cited one is not a checked one —
-    so the line prints each count beside the others rather than one blended
-    number that cannot be read back.
+    ``verified_findings`` and ``corrected_findings`` are disjoint sets — one
+    counts findings kept exactly as written, the other those whose context was
+    corrected — so the total the line prints as "checked" is their sum, and the
+    corrected count is a reading *inside* it. A dropped finding is in neither,
+    and a cited one is not a checked one. The numbers below are all different,
+    so a line that printed one reading under another's name would not read
+    back.
     """
     outcome = build_outcome(
         state=quality_state(
@@ -958,7 +961,7 @@ def test_the_findings_line_counts_the_verifier_s_own_readings_apart() -> None:
     joined = "\n".join(render_summary(outcome, verbose=False))
 
     assert (
-        "Findings: 3 checked (1 with corrected context, 4 unchecked context), "
+        "Findings: 4 checked (1 with corrected context, 4 unchecked context), "
         "2 dropped; 2 cited" in joined
     )
 

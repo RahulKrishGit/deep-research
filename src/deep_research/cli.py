@@ -876,11 +876,13 @@ def _evidence_lines(outcome: ResearchOutcome) -> list[str]:
     there are no counts to print, and a row of zeroes would read as a clean
     report rather than as an unjudged one.
 
-    The findings row keeps the verifier's readings apart — confirmed as
-    written, kept with corrected context, kept with an unchecked context,
-    dropped, and cited — because they are five different answers: a finding
-    whose context was corrected is not one confirmed as written, and a dropped
-    finding is neither. The integrity row reads the snapshot's own fields, and
+    The findings row keeps the verifier's readings apart — the total kept,
+    how many of those were kept with corrected context, how many were kept with
+    an unchecked context, how many were dropped, and how many are cited —
+    because they are different answers: a corrected finding is a kept one whose
+    context the verifier amended, so it is *inside* the total rather than
+    beside it; a dropped finding is in neither; and a cited one is not the same
+    as a checked one. The integrity row reads the snapshot's own fields, and
     the unjudged count is the length of the list the quality record publishes,
     so the number and the list can never disagree.
     """
@@ -888,8 +890,9 @@ def _evidence_lines(outcome: ResearchOutcome) -> list[str]:
     quality = outcome.quality
     if counts is None or quality is None:
         return []
+    kept = counts.verified_findings + counts.corrected_findings
     return [
-        f"Findings: {counts.verified_findings} checked "
+        f"Findings: {kept} checked "
         f"({counts.corrected_findings} with corrected context, "
         f"{counts.context_unchecked_findings} unchecked context), "
         f"{counts.dropped_findings} dropped; {counts.cited_findings} cited",
