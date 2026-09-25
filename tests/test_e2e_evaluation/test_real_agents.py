@@ -52,7 +52,7 @@ DECLARED_CASE_IDS: tuple[str, ...] = (
     "blocked-html-pdf-fallback",
     "same-work-mirror",
     "extra-pass-finds-nothing",
-    "relay-labelled-as-relay",
+    "report-relay-labelled-as-relay",
     "forecast-versus-actual-kept-apart",
     "unsupported-mechanism",
     "review-unavailable",
@@ -64,7 +64,7 @@ DECLARED_CASE_IDS: tuple[str, ...] = (
     "missing-target-triggers-one-extra-pass",
     "figure-not-on-page-dropped",
     "evidence-words-not-on-page-rejected",
-    "scope-corrected-to-all-segments",
+    "report-scope-corrected-to-all-segments",
     "revision-noted",
     "statement-check-failure-keeps-sentences",
 )

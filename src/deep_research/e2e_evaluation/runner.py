@@ -30,7 +30,7 @@ from deep_research.e2e_evaluation.replay_matrix import (
     ReplayCaseEntry,
     scenario_by_id,
 )
-from deep_research.utils.types import QUALITY_STATUS_ACCEPTED
+from deep_research.utils.types import QUALITY_STATUS_ACCEPTED, ResearchState
 
 LIVE_TIER_NOT_RUN = (
     "live tier is declared only and has no runner; running it requires a "
@@ -52,7 +52,6 @@ _REPLAY_STORAGE_DIRECTORY = "replay"
 # which agents produced the numbers.
 AGENTS_PRODUCTION = "Agents: production classes through the real graph"
 
-_AS_OF_PREFIX = "*As of "
 _REFERENCE_LINE = re.compile(r"^(\d+)\. (.*)$")
 _CITATION = re.compile(r"\[(\d+)\]")
 _CITATION_RUN = re.compile(r"(?:\[\d+\]){2,}")
@@ -81,31 +80,30 @@ def graph_revision_value() -> str:
 def canonical_report_fingerprint(report: str) -> str:
     """The published report's hash, over the part of it the reader was shown.
 
-    Two things about a published report are facts about the *session* that
-    made it rather than about the report: the byline that opens with ``*As
-    of``, which states the newest timestamp the recorded *evidence* carries
-    and the source/finding counts of that pass rather than anything the
-    reader authored, and the ordinal each source was given, which is the
-    order that session's reads were recorded in. Read identity is
+    One thing about a published report is a fact about the *session* that made
+    it rather than about the report: the ordinal each source was given, which
+    is the order that session's reads were recorded in. Read identity is
     session-scoped by the product's own contract, so two repetitions of one
     fixture cite the same sources numbered in whichever order their own reads
-    landed. Hashing the rendered text as it stands would report a
-    deterministic harness as non-deterministic whenever citation order moved.
+    landed. Hashing the rendered text as it stands would report a deterministic
+    harness as non-deterministic whenever citation order moved.
 
-    So the hash is taken over the canonical form: the byline dropped, and
-    every reference renumbered by its own label. What remains comparable is
-    which sources the reader was shown against which sentences, so a
-    citation set that gained, lost or moved a source still differs here. A
-    replay row is reproducible regardless, because the harness stamps every
-    repetition from one pinned clock (``replay.replay_clock``): the byline
-    the hash drops would be identical across repetitions even if it were
-    kept.
+    So the hash is taken over the canonical form: every reference renumbered by
+    its own label. What remains comparable is which sources the reader was
+    shown against which sentences, so a citation set that gained, lost or moved
+    a source still differs here.
+
+    The byline is hashed with the rest of the report, and deliberately so. It
+    is the reader's own line -- the ``As of`` stamp, the scope, and the counts
+    of what was checked, corrected, dropped or left not found -- so dropping it
+    would hide the one line that states how much of the report was verified.
+    Keeping it costs no determinism: a replay row is reproducible because the
+    harness stamps every repetition from one pinned clock
+    (``replay.replay_clock``), not because the stamp is left out of the hash.
     """
     body: list[str] = []
     references: list[tuple[str, str]] = []
     for line in report.splitlines():
-        if line.startswith(_AS_OF_PREFIX):
-            continue
         match = (
             _REFERENCE_LINE.match(line)
             if references or line[:1].isdigit()
@@ -143,6 +141,34 @@ def canonical_report_fingerprint(report: str) -> str:
     return hashlib.sha256("\n".join(rewritten + listing).encode("utf-8")).hexdigest()
 
 
+def _recorded_state_counts(state: ResearchState) -> dict[str, int | None]:
+    """The seven counts a row records, read from the run's own final state.
+
+    ``state.quality`` is the snapshot ``compute_report_quality`` stamped and
+    ``state.iteration`` is the extra passes the graph spent, so the harness
+    reads the product's own numbers instead of counting anything again: a
+    second count could only disagree with the run it is judging.
+    ``unjudged_sentences`` and ``missing_required_targets`` are recorded as
+    counts of the snapshot's own lists.
+
+    The six the snapshot holds are *absent*, not zero, when no snapshot was
+    stamped: a pass that composed no report judged nothing, and a recorded
+    zero would read as a judgement it never made.
+    """
+    counts: dict[str, int | None] = {"extra_passes": state.iteration}
+    quality = state.quality
+    if quality is not None:
+        counts.update(
+            verified_findings=quality.verified_findings,
+            dropped_findings=quality.dropped_findings,
+            context_unchecked_findings=quality.context_unchecked_findings,
+            duplicate_fact_rows=quality.duplicate_fact_rows,
+            unjudged_sentences=len(quality.unjudged_sentences),
+            missing_required_targets=len(quality.missing_required_target_ids),
+        )
+    return counts
+
+
 def _replay_repetition(
     entry: ReplayCaseEntry, repetition: int, *, storage: Path
 ) -> ReplayRepetitionResult:
@@ -156,6 +182,10 @@ def _replay_repetition(
     below is a fact about the row rather than about the day it ran: three
     repetitions that straddle midnight UTC publish the same report, and the
     determinism requirement is met on the agents' behaviour alone.
+
+    The counts the result carries are read from the state the run finished in
+    (``_recorded_state_counts``), so a row's artifact states the product's own
+    numbers rather than the harness's second count of them.
     """
     session_id = f"replay-{entry.case_id}-r{repetition}"
     with network_denied() as attempts:
@@ -175,6 +205,7 @@ def _replay_repetition(
         answered_target_ids=run.answered_target_ids(),
         network_attempts=list(attempts),
         report_fingerprint=canonical_report_fingerprint(run.report),
+        **_recorded_state_counts(run.state),
     )
 
 
