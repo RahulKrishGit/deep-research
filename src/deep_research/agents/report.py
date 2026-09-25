@@ -26,7 +26,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import JsonValue
 
@@ -100,6 +100,12 @@ _CLAIM_TEXT_CHARS = 240
 _ERROR_MESSAGE_CHARS = 240
 
 _CELL_EMPTY = "—"
+
+#: What ends a sentence in the header. A part that already ends with one keeps
+#: it: the scope text is a sentence of its own ("... state is assumed."), so the
+#: header adds no second stop of its own (the third pre-flight run printed
+#: "is assumed.. 5 sources cited").
+_SENTENCE_ENDS = (".", "!", "?", "…")
 
 _SUB_TOPIC_SKIP_ERROR_TYPE = "researcher_sub_topic_skipped"
 
@@ -927,14 +933,55 @@ def _header_counts(composition: ReportComposition) -> str:
             f"{dropped} dropped; {len(composition.not_found)} required targets not found.")
 
 
+def _sentence(text: str) -> str:
+    """``text`` ended with exactly one stop: one it already ends with is kept.
+
+    The header's parts are sentences, and one of them -- the scope -- is written
+    by ``report_scope``, which ends with its own full stop. Appending another
+    prints two stops in a row, so a part that already ends with a stop is
+    printed as written.
+    """
+    text = text.rstrip()
+    if not text or text.endswith(_SENTENCE_ENDS):
+        return text
+    return f"{text}."
+
+
+def _reader_as_of(value: str) -> str:
+    """A recorded timestamp as the reader meets it, or the value as recorded.
+
+    The record keeps its own precision -- the quality JSON prints ``as_of``
+    exactly as recorded -- and the header prints the instant to the minute in
+    UTC, which is the shape a date and time take in prose. The minute is
+    truncated, never rounded, so no stamp moves to another day: the last second
+    of a day prints as 23:59 of that day. A value that is not a zone-carrying
+    timestamp is printed exactly as it was recorded: a date-only stamp has no
+    time to name, and a zone-less one names no zone the report may claim.
+    """
+    if not value.strip():
+        return "not recorded"
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return value
+    return f"{parsed.astimezone(timezone.utc):%Y-%m-%d %H:%M} UTC"
+
+
 def render_written_report(composition: ReportComposition) -> str:
     """§6.1 items 1-6: header, summary, key facts, findings sections, Not found, sources."""
     index = written_citations(composition)
     by_id = _findings_by_id(composition)
+    scope = composition.scope or "not recorded"
+    header = (
+        f"{_sentence(f'As of {_reader_as_of(composition.as_of)}')} "
+        f"{_sentence(f'Scope: {scope}')} "
+        f"{_header_counts(composition)}"
+    )
     lines = [
         f"# {composition.question}", "",
-        f"*As of {composition.as_of or 'not recorded'}. Scope: {composition.scope or 'not recorded'}. "
-        f"{_header_counts(composition)}*", "",
+        f"*{header}*", "",
         "## Executive summary", "",
     ]
     lines += [_written_point(p, composition, index) for p in composition.summary] or [

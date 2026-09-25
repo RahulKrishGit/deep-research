@@ -12,6 +12,7 @@ from deep_research.agents.report import (
     figure_label,
     render_finding_log,
     render_written_report,
+    report_scope,
     written_citations,
 )
 from deep_research.utils.types import (
@@ -217,6 +218,54 @@ def test_an_undated_pass_says_so_instead_of_reading_a_clock() -> None:
 
     assert "As of not recorded." in header
     assert re.search(r"\d{4}-\d{2}-\d{2}", header) is None
+
+
+def test_the_header_never_prints_two_full_stops_in_a_row() -> None:
+    """The scope text ends with its own full stop, so the header adds none of its own.
+
+    The third pre-flight run's report (line 3) read "... state is assumed..
+    5 sources cited; ..." -- the sentence's own stop plus the header's. A scope
+    the plan did not punctuate still gets one.
+    """
+    base = _composition()
+    planned = report_scope([SubTopic(coverage_id="topic-01", title="2024 capacity additions",
+                                     rationale="r", search_queries=["q"],
+                                     success_criteria=["c"], priority=1)])
+    assert planned.endswith(".")  # the plan's own scope text, as the report prints it
+
+    terminated = render_written_report(
+        base.model_copy(update={"scope": planned})
+    ).splitlines()[2]
+    unterminated = render_written_report(
+        base.model_copy(update={"scope": "United States"})
+    ).splitlines()[2]
+
+    assert ".." not in terminated and ".." not in unterminated
+    assert re.search(r"is assumed\. \d+ sources cited", terminated)
+    assert re.search(r"Scope: United States\. \d+ sources cited", unterminated)
+
+
+def test_the_header_prints_a_recorded_stamp_as_a_utc_time() -> None:
+    """The reader meets a UTC minute, not the raw ISO stamp of the third pre-flight run.
+
+    The record keeps its own precision -- the quality JSON prints ``as_of``
+    exactly as recorded -- and only the rendering loses it. The minute is
+    truncated, never rounded, so no stamp moves to another day; a value that
+    names no zone, or no instant at all, is printed as it was recorded rather
+    than given a zone the evidence never stated.
+    """
+    base = _composition()
+
+    def header(as_of: str) -> str:
+        return render_written_report(base.model_copy(update={"as_of": as_of})).splitlines()[2]
+
+    assert header("2026-09-25T12:44:37.098843+00:00").startswith("*As of 2026-09-25 12:44 UTC.")
+    assert header("2026-09-25T23:59:59.999999+00:00").startswith("*As of 2026-09-25 23:59 UTC.")
+    assert header("2026-09-25T14:44:37+02:00").startswith("*As of 2026-09-25 12:44 UTC.")
+    assert header("2026-09-25").startswith("*As of 2026-09-25.")
+    assert header("2026-09-25T12:44:37").startswith("*As of 2026-09-25T12:44:37.")
+    assert header("sometime in 2026").startswith("*As of sometime in 2026.")
+    assert header("").startswith("*As of not recorded.")
 
 
 def test_a_resolved_period_is_named_on_the_label() -> None:
