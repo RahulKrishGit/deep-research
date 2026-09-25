@@ -49,6 +49,7 @@ from deep_research.utils.types import (
     FigureResult,
     Finding,
     FindingVerification,
+    ReportComposition,
     ResearchState,
     SubTopic,
 )
@@ -543,3 +544,46 @@ def test_two_rows_answering_different_obligations_are_not_duplicates() -> None:
     assert snapshot.duplicate_fact_rows == 0 and snapshot.hard_failures == []
     assert compute_report_quality(*_relinked(
         state, composition, fact_rows=same)).duplicate_fact_rows == 1
+
+
+def _unbound_dated_finding() -> Finding:
+    """One verified figure the extraction bound to no target (the run's shape)."""
+    text = "The obligations apply from 2 August 2025."
+    read = make_read(text, url="https://example-relay.example/law/12",
+                     title="Article 12: Registration | Example Act | Example Relay")
+    finding = make_finding(read, text, figures=[figure("2 August 2025", "date", None, "actual")])
+    finding = finding.model_copy(update={"related_sub_topic": "Topic 3"})
+    result = FigureResult(
+        figure=finding.figures[0], matched=True, evidence_words=text,
+        context=FigureContext(period=None, scope=None, attribution="unattributed",
+                              organisation="Example Relay", kind="actual"),
+    )
+    return finding.model_copy(update={
+        "verification": FindingVerification(status="verified", figure_results=[result])})
+
+
+def test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic() -> None:
+    """Improvement 1A on the run's shape: the live run's figures were all dates
+    and every one carried an empty ``target_ids``, so this gate declared two
+    obligations the report itself answered "Not found". The plan resolves an
+    unbound finding through the sub-topic it names."""
+    when = make_target("topic-03-target-01", question="From what date do the obligations apply?",
+                       measure="application date", unit_dimension=None, period=None,
+                       kind=None, geography=None)
+    dated = _unbound_dated_finding()
+    state = _state([dated]).model_copy(update={"sub_topics": [
+        _topic(1, make_target(organisation=EIA)), _topic(2), _topic(3, when),
+        _topic(4), _topic(5)]})
+    composition = ReportComposition(question=state.original_question,
+                                    session_id=state.session_id, as_of="2026-09-25")
+
+    snapshot = compute_report_quality(state, composition)
+    assert "topic-03-target-01" in snapshot.answered_target_ids
+    assert "topic-03-target-01" not in snapshot.missing_required_target_ids
+
+    # The same run with a finding that names another sub-topic is the run's own
+    # observation: the obligation it answers is declared missing.
+    blind = state.model_copy(update={
+        "verified_findings": [dated.model_copy(update={"related_sub_topic": "Another topic"})]})
+    assert "topic-03-target-01" in compute_report_quality(
+        blind, composition).missing_required_target_ids

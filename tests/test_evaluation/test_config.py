@@ -900,9 +900,15 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
-    # verdict. No other agent's text changed, and the Judge pin is unchanged.
-    "evidence_verifier": "9f5515f04833",
-    "report_writer": "24ccad97fb9f",
+    # verdict.
+    # The caller wiring moved both of them once more: the verifier's
+    # cited-figure line no longer names a body an unattributed figure cannot
+    # claim (`9f5515f04833` -> `a6205ea9c362`), and the writer now hands the
+    # plan to the coverage gate and the Statement Check its cited findings'
+    # bounded passages (`24ccad97fb9f` -> `7972a1f48129`). No other agent's text
+    # changed, and the Judge pin is unchanged.
+    "evidence_verifier": "a6205ea9c362",
+    "report_writer": "7972a1f48129",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

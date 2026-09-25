@@ -68,6 +68,7 @@ from deep_research.agents.sources import publisher_identity
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.verified_facts import (
     _period_stated_in,
+    claimed_organisation,
     resolve_relative_period,
     same_organisation,
     same_period,
@@ -1125,7 +1126,7 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
                         f"{result.figure.value} {result.figure.unit} | period "
                         f"{ctx.period or 'none'} | scope {ctx.scope or 'none'} | "
                         f"subject {ctx.subject or 'none'} | "
-                        f"kind {ctx.kind} | {ctx.attribution} ({ctx.organisation}) | "
+                        f"kind {ctx.kind} | {_cited_attribution(ctx, finding)} | "
                         f"evidence: {result.evidence_words or ''}"
                     )
         body = "; ".join(figures) if figures else "(no kept figures)"
@@ -1145,6 +1146,20 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
         )
         lines.append(f"    attributed to: {name}{quote}")
     return "\n".join(lines)
+
+
+def _cited_attribution(context: FigureContext, finding: Finding) -> str:
+    """The attribution a cited figure's line shows, with no body to claim for none.
+
+    ``claimed_organisation``'s rule for the one line the Statement Check reads
+    (improvement 7): an unattributed figure of a page that serves another body's
+    work has no organisation for this reporter to name, and naming the page's
+    owner is what invites a sentence that credits the relaying site. Every other
+    figure keeps "attribution (organisation)" exactly as before.
+    """
+    organisation = claimed_organisation(context, finding)
+    return f"{context.attribution} ({organisation})" if organisation else context.attribution
+
 
 
 def statement_check_messages(
