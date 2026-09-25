@@ -814,6 +814,7 @@ class ReplayCompleter(AgentCompleter):
                     evidence_targets=[
                         EvidenceTargetDraft(
                             question=topic.question,
+                            required=topic.required,
                             measure=topic.measure,
                             unit_dimension=topic.unit_dimension,
                             period=topic.period,

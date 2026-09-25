@@ -455,8 +455,8 @@ def _planner_script() -> list[object]:
                     evidence_targets=[
                         EvidenceTargetDraft(
                             question=f"What does {title} measure?",
-                            required_dimensions=[f"measure: {title}"],
-                            critical=index == 1,
+                            required=True,
+                            measure=title,
                         )
                     ],
                 )
