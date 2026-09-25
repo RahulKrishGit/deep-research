@@ -63,18 +63,18 @@ from deep_research.agents.report import (
     ReportComposition,
     # The label builders this review must never re-derive (R1): ``_point_labels``
     # is the list a rendered statement ends with, ``_row_label`` is one key
-    # facts row's label (both over ``figure_label``), and
+    # facts row's label, ``_figure_label_for`` is one kept figure's label from
+    # the finding that states it (all three over ``figure_label``), and
     # ``_finding_registry_pairs`` pairs each finding with its *own* registered
     # label — the one walk that survives two revision editions sharing a
     # fingerprint (P2).
+    _figure_label_for,
     _finding_registry_pairs,
     _point_labels,
     _row_label,
 )
 from deep_research.agents.report_writer import (
-    # The other half of R1: one label string per cited finding, and one label
-    # per kept figure of a finding.
-    _figure_label_for,
+    # The other half of R1: one label string per cited finding.
     _finding_label,
 )
 from deep_research.agents.sources import publisher_identity
@@ -288,11 +288,14 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
     "forecast must carry its issuer and its release, and no period, scope, "
     "kind or organisation in the prose may contradict the label. That mismatch "
     "is a defect you record against that statement's id. A sentence that ends "
-    "with no label states no figure: judge it against the snippets of the "
-    "findings it cites, and record as unsupported one that asserts more than "
-    "those snippets state; a pick, ranking or verdict stated as fact, rather "
-    "than as the judgement of the source that made it, asserts more. A "
-    "sentence that credits a body its label does not name — \"according to X\" "
+    "with no label carries no figure label: it states no figure, or one in a "
+    "unit this report does not label (a price, a count, a rating), or one no "
+    "cited finding carries. Judge it against the snippets of the findings it "
+    "cites and against their figure labels, and record as unsupported one that "
+    "asserts more than those findings state; a pick, ranking or verdict stated "
+    "as fact, rather than as the judgement of the source that made it, asserts "
+    "more. A sentence that credits a body its label does not name — "
+    "\"according to X\" "
     "beside a label that reads \"source does not attribute it\" or names "
     "another organisation — is unsupported.\n"
     "\n"

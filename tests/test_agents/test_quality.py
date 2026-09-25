@@ -506,3 +506,40 @@ def test_two_rows_that_differ_only_by_subject_are_not_duplicates() -> None:
             row.model_copy(update={"row_id": "K002", "subject": "Model A"})]
     assert compute_report_quality(*_relinked(state, composition, fact_rows=apart)).duplicate_fact_rows == 0
     assert compute_report_quality(*_relinked(state, composition, fact_rows=same)).duplicate_fact_rows == 1
+
+
+def test_a_row_with_no_subject_is_not_a_duplicate_of_a_row_that_names_one() -> None:
+    """One subject-less row beside a named one is two rows, not a duplicate pair.
+
+    ``same_subject`` treats a row that states no subject as compatible with any
+    -- which is what lets a subject-less figure join its fact's group -- but the
+    gate must not read that as "the same fact": a named row and an unnamed one
+    are the two rows ``fact_rows`` deliberately keeps apart, and counting them
+    would fail a clean report on ``duplicate_fact_rows``.
+    """
+    state, composition = _clean_pair()
+    row = composition.fact_rows[0]
+    paired = [row.model_copy(update={"row_id": "K001", "subject": "Model A"}),
+              row.model_copy(update={"row_id": "K002", "subject": None})]
+    snapshot = compute_report_quality(*_relinked(state, composition, fact_rows=paired))
+    assert snapshot.duplicate_fact_rows == 0
+    assert snapshot.hard_failures == []
+
+
+def test_two_rows_answering_different_obligations_are_not_duplicates() -> None:
+    """I6: rows that answer different targets are two facts, however equal their values.
+
+    ``fact_rows`` keeps a pair of figures apart exactly when each answers a
+    different obligation, so the gate must not call that pair a duplicate: two
+    equal values for two parts of one question are the answer, not a defect.
+    """
+    state, composition = _clean_pair()
+    row = composition.fact_rows[0].model_copy(update={"subject": "Model A"})
+    apart = [row.model_copy(update={"row_id": "K001", "target_ids": [ACTUAL_TARGET]}),
+             row.model_copy(update={"row_id": "K002", "target_ids": [FORECAST_TARGET]})]
+    same = [row.model_copy(update={"row_id": "K001", "target_ids": [ACTUAL_TARGET]}),
+            row.model_copy(update={"row_id": "K002", "target_ids": [ACTUAL_TARGET]})]
+    snapshot = compute_report_quality(*_relinked(state, composition, fact_rows=apart))
+    assert snapshot.duplicate_fact_rows == 0 and snapshot.hard_failures == []
+    assert compute_report_quality(*_relinked(
+        state, composition, fact_rows=same)).duplicate_fact_rows == 1

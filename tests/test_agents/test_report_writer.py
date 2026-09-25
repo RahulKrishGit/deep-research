@@ -949,3 +949,56 @@ async def test_a_comparison_target_does_not_let_an_article_carry_a_restatement(w
         "Model B added a record 4 GW of capacity in 2024.",
         "Model A added 4 GW of capacity in 2024."]
     assert composition.rejected_points == []
+
+
+def _two_period_state() -> ResearchState:
+    """One page stating one value twice: a 2024 actual and a 2025 forecast (PD-9).
+
+    Two periods of one value are two facts, so the page earns two rows whose
+    values are equal and whose periods are not.
+    """
+    target = make_target(measure="sales growth", unit_dimension="percent", period=None, organisation=None)
+    topic = SubTopic(coverage_id=target.coverage_id, title="Sales", rationale="r", search_queries=["q"],
+                     success_criteria=["c"], priority=1, evidence_targets=[target])
+    text = "Sales grew 12 percent in 2024, and the agency expects growth of 12 percent in 2025."
+    read = make_read(text, url="https://agency.example.test/outlook", title="Outlook")
+    figures = [figure("12", "%", "2024", "actual"), figure("12", "%", "2025", "forecast")]
+    finding = make_finding(read, text, figures=figures, target_ids=[target.target_id])
+    results = [
+        FigureResult(figure=figures[0], matched=True, evidence_words=text,
+                     context=FigureContext(period="2024", attribution="own",
+                                           organisation="Example Agency", kind="actual")),
+        FigureResult(figure=figures[1], matched=True, evidence_words=text,
+                     context=FigureContext(period="2025", attribution="own",
+                                           organisation="Example Agency", kind="forecast")),
+    ]
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified",
+                                                                            figure_results=results)})
+    return ResearchState(session_id="s", original_question=target.question,
+                         sub_topics=[topic], verified_findings=[finding])
+
+
+@pytest.mark.asyncio
+async def test_two_periods_of_one_value_are_two_facts_not_a_restatement(writer, checker) -> None:
+    """PD-9: an actual and a later forecast of the same value are two facts.
+
+    Both sentences cite the one finding, and its value alone matches both rows,
+    so the 2024 sentence counted as having stated the 2025 row too and the 2025
+    forecast -- a distinct fact -- was refused as "restates K001, K002" and lost
+    from the reader's summary.
+    """
+    task = writer.build_task(_two_period_state())
+    assert [(row.row_id, row.period) for row in task.facts] == [("K001", "2024"), ("K002", "2025")]
+    [(label, _)] = task.registry
+    draft = ReportWriterDraft(executive_summary=[
+        WriterPointDraft(text="Sales grew 12 percent in 2024.", finding_labels=[label]),
+        WriterPointDraft(text="The agency expects growth of 12 percent in 2025.", finding_labels=[label]),
+    ], sections=[])
+    checker.verdicts = {"S001": _verdict("consistent"), "S002": _verdict("consistent")}
+    composition = await compose_written_report(task, draft, provider=writer.provider,
+                                               fingerprint=writer.fingerprint_call)
+    assert [point.text for point in composition.summary] == [
+        "Sales grew 12 percent in 2024.",
+        "The agency expects growth of 12 percent in 2025.",
+    ]
+    assert composition.rejected_points == []

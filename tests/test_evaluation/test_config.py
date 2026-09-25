@@ -744,12 +744,19 @@ from deep_research.utils.config import (
 # different proposed body.
 # No prompt string was edited, and ``agents.prompts`` was untouched, so the
 # other four target pins and the Judge pin are unchanged.
+# Task FF2 (the final review's report-path fix round, same rule, PD-17): the
+# writer's restatement guard now asks ``report._carried_rows`` -- the one rule
+# the reader's labels ask too -- and ``_figure_label_for`` moved to
+# ``report.py`` beside ``figure_label``, so the Report Writer's module source
+# moved ``5ed194fd4a41`` -> ``6dbc0f346565``. No prompt string in the writer was
+# edited (the reviewer's own prompt, which is not a pinned target, was), and the
+# other four pins are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "46a9cddd0896",
     "researcher": "f9ad12ff184b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "25e9124b78a1",
-    "report_writer": "5ed194fd4a41",
+    "report_writer": "6dbc0f346565",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
@@ -763,7 +770,7 @@ GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
 
 def test_the_baseline_efforts_match_the_approved_profile() -> None:
     """Researcher and Source Evaluator at high; everyone else, and the
-    judge, at max — DeepSeek V4 Flash supports only those two levels."""
+    judge, at max — DeepSeek Flash supports only those two levels."""
     config = EvaluationConfig()
 
     assert resolve_target_effort(config, "planner", override=None) == "max"

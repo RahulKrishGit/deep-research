@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from pydantic import JsonValue
 
-from deep_research.agents.figures import quantities_in, same_quantity
+from deep_research.agents.evidence import cosmetic_text
+from deep_research.agents.figures import parse_figure, quantities_in, same_quantity
 from deep_research.agents.identity import (
     deduplicate_findings,
     finding_fingerprint,
@@ -38,6 +40,7 @@ from deep_research.agents.identity import (
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import summarize_text
 from deep_research.agents.verified_facts import (
+    _period_key,
     release_text,
     subject_names_row,
 )
@@ -46,8 +49,10 @@ from deep_research.utils.types import (
     QUALITY_STATUS_NOT_GATED,
     QUALITY_STATUS_PARTIAL,
     Citation,
+    EvidenceTarget,
     FactRow,
     FigureAttribution,
+    FigureContext,
     FigureKind,
     Finding,
     ReadRecord,
@@ -732,11 +737,118 @@ def figure_label(
     return "; ".join(parts)
 
 
+def _figure_label_for(finding: Finding, context: FigureContext) -> str:
+    """One kept figure's label: ``figure_label`` over the finding that states it.
+
+    The one assembler of a label from a finding (the Report Writer's registry
+    lines and figure labels, and the reviewer's packet, all read this), so a
+    label computed for a sentence and a label computed for a finding can never
+    disagree about who the figure is credited to.
+    """
+    return figure_label(
+        organisation=context.organisation, attribution=context.attribution,
+        relay_host=publisher_identity(finding.source_url) if context.attribution == "relayed" else None,
+        kind=context.kind, release=release_text(finding),
+        unchecked=bool(finding.verification and finding.verification.context_unchecked),
+        period_resolved_from=context.period_resolved_from,
+    )
+
+
 def _row_label(row: FactRow) -> str:
     return figure_label(organisation=row.organisation, attribution=row.attribution,
                         relay_host=row.relay_host, kind=row.kind, release=row.release,
                         unchecked=row.context_unchecked,
                         period_resolved_from=row.period_resolved_from)
+
+
+def _row_finding_ids(row: FactRow) -> list[str]:
+    """Every finding whose page a number in this row comes from, the row's own first.
+
+    A row prints its own value and each earlier edition's, so every printed
+    number is traceable only when both pages are cited (PD-9).
+    """
+    return list(dict.fromkeys([row.finding_id, *(edition.finding_id for edition in row.earlier)]))
+
+
+def _states_period(text: str, period: str | None) -> bool:
+    """Whether ``text`` states ``period``: every word of the period, not only its year.
+
+    The period test the reader's labels and the writer's restatement guard need
+    to tell two rows of one value apart (PD-9). A period this test cannot read
+    in the sentence ("FY2024" for a row's "2024") is simply not stated, which
+    leaves the row in play rather than ruling it out.
+    """
+    key = _period_key(period)
+    if key is None:
+        return False
+    words = set(re.findall(r"[a-z0-9]+", cosmetic_text(text)))
+    return all(word in words for word in key.split())
+
+
+def _cited_figure_context(finding: Finding, row: FactRow) -> FigureContext | None:
+    """The context of ``finding``'s kept figure that states ``row``'s own value."""
+    if finding.verification is None:
+        return None
+    stated = quantities_in(row.value)
+    for result in finding.verification.figure_results:
+        if not result.kept or result.context is None:
+            continue
+        quantity = parse_figure(result.figure.value, result.figure.unit)
+        if quantity is not None and any(same_quantity(quantity, other) for other in stated):
+            return result.context
+        if cosmetic_text(f"{result.figure.value} {result.figure.unit}") == cosmetic_text(row.value):
+            return result.context
+    return None
+
+
+def _row_label_for(row: FactRow, cited_ids: set[str], by_id: Mapping[str, Finding]) -> str:
+    """The row's label as the sentence's own citations read it (D13).
+
+    A sentence that cites a duplicate of a row's fact -- the relayed copy of it,
+    say -- carries *that* page's label, not the row primary's: the reader's
+    marker points at the page the sentence cites, so a relay is never presented
+    as the issuer, and the label is the one the Statement Check read for the
+    same sentence.
+    """
+    if row.finding_id in cited_ids:
+        return _row_label(row)
+    for fingerprint in row.duplicate_finding_ids:
+        finding = by_id.get(fingerprint)
+        if fingerprint not in cited_ids or finding is None:
+            continue
+        context = _cited_figure_context(finding, row)
+        if context is not None:
+            return _figure_label_for(finding, context)
+    return _row_label(row)
+
+
+def _carried_rows(
+    text: str,
+    cited_ids: set[str],
+    rows: Sequence[FactRow],
+    targets: Sequence[EvidenceTarget],
+) -> list[FactRow]:
+    """The fact rows a sentence carries: cited, same value, its subject, its period.
+
+    The one rule the reader's labels (:func:`_point_labels`) and the writer's
+    restatement guard both ask of a sentence (Task 5.6c's seam, kept as one
+    rule). A row is carried when the sentence cites it or a duplicate of it,
+    states its quantity, is about its subject rather than a rival's, and -- where
+    the sentence states a period one of those rows carries -- states that row's
+    period: two periods of one value are two facts (PD-9), so "grew 12 percent
+    in 2024" carries the 2024 row and never the 2025 one. A sentence that states
+    no such period leaves every row in play, as before.
+    """
+    stated = quantities_in(text)
+    candidates = [
+        row for row in rows
+        if (row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids))
+        and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)
+    ]
+    named = [row for row in candidates
+             if subject_names_row(text, row, candidates, targets)]
+    dated = [row for row in named if _states_period(text, row.period)]
+    return dated or named
 
 
 def _table_cell(text: str) -> str:
@@ -761,8 +873,10 @@ def written_citations(composition: ReportComposition) -> list[Citation]:
         for url in point.source_urls:
             add(url)
     for row in composition.fact_rows:
-        if row.finding_id in by_id:
-            add(by_id[row.finding_id].source_url)
+        for fingerprint in _row_finding_ids(row):
+            finding = by_id.get(fingerprint)
+            if finding is not None:
+                add(finding.source_url)
     for section in composition.sections:
         for point in section.points:
             for url in point.source_urls:
@@ -774,27 +888,22 @@ def written_citations(composition: ReportComposition) -> list[Citation]:
 
 
 def _point_labels(point: ReportPoint, composition: ReportComposition) -> list[str]:
-    """The rows a sentence carries: its cited row's quantity, about the subject it names (D11).
+    """The rows a sentence carries: its cited row's quantity, subject and period (D11).
 
-    Only the row whose own subject the sentence names carries its label, and
-    where the candidates' subjects are different things -- a target that names
-    both options, say -- the sentence must also name what distinguishes that
-    row from each rival, so "Kettle K1 scored 4.5" never takes Kettle K2's
-    label (Task 5.6c).
+    Only the row whose own subject and period the sentence states carries its
+    label, and where the candidates' subjects are different things -- a target
+    that names both options, say -- the sentence must also name what
+    distinguishes that row from each rival, so "Kettle K1 scored 4.5" never
+    takes Kettle K2's label (Task 5.6c). Each label is the label of the page the
+    sentence cites, so a sentence that cites the relay of a fact carries the
+    relay's label rather than the own page's (D13).
     """
     cited = set(point.statement.finding_ids) if point.statement is not None else set()
-    stated = quantities_in(point.text)
     targets = [t for topic in composition.sub_topics for t in topic.evidence_targets]
-    candidates = [
-        row for row in composition.fact_rows
-        if (row.finding_id in cited or cited & set(row.duplicate_finding_ids))
-        and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)
-    ]
+    by_id = _findings_by_id(composition)
     labels: list[str] = []
-    for row in candidates:
-        if not subject_names_row(point.text, row, candidates, targets):
-            continue
-        label = _row_label(row)
+    for row in _carried_rows(point.text, cited, composition.fact_rows, targets):
+        label = _row_label_for(row, cited, by_id)
         if label not in labels:
             labels.append(label)
     return labels
@@ -839,7 +948,11 @@ def render_written_report(composition: ReportComposition) -> str:
             if with_subjects else [_FACTS_HEADER, "|---|---|---|---|---|---|---|---|"]
         )
         for row in composition.fact_rows:
-            finding = by_id.get(row.finding_id)
+            source = citation_markers(
+                [by_id[fingerprint].source_url for fingerprint in _row_finding_ids(row)
+                 if fingerprint in by_id],
+                index,
+            )
             organisation = {
                 "own": row.organisation,
                 "relayed": f"{row.organisation} (relayed by {row.relay_host})",
@@ -851,8 +964,7 @@ def render_written_report(composition: ReportComposition) -> str:
             subject = [row.subject or "not stated"] if with_subjects else []
             cells = [organisation, *subject, row.measure, row.period or "not stated", row.value,
                      row.kind + (" (unchecked context)" if row.context_unchecked else ""),
-                     row.scope or "not stated", release,
-                     citation_markers([finding.source_url], index) if finding else ""]
+                     row.scope or "not stated", release, source]
             lines.append("| " + " | ".join(_table_cell(c) for c in cells) + " |")
     else:
         lines.append("No figure passed the Evidence Verifier.")
