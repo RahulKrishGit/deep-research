@@ -153,3 +153,12 @@ def test_a_bracketed_qualifier_that_scales_or_denominates_stays_unparsed() -> No
         assert unit_dimension(unit) is None, unit
 
     assert parse_figure("26", "GW (AC)").dimension == "power"
+
+
+def test_a_slash_joined_qualifier_still_reads_the_unit() -> None:
+    """ReRevFF1p1's N2: a page writing capacity as "MW (AC/DC)" (solar and wind
+    datasheets do) keeps its dimension, so the qualifier is tested with its
+    separators normalised."""
+    for unit in ("MW (AC/DC)", "GW (ac/dc)", "GW (A.C.)", "MW (a/c)"):
+        quantity = parse_figure("26", unit)
+        assert quantity is not None and quantity.dimension == "power", unit

@@ -1724,3 +1724,36 @@ def test_a_period_the_words_abbreviate_beats_a_relative_reading() -> None:
     dropped = _check(item, period="2026", kind="actual", verdict="correct")
 
     assert dropped.dropped_reason == "correction_not_on_page"
+
+
+# ---------------------------------------------------------------------------
+# Round 5: ReRevFF1p1's N1 through the enforcement, and RevFF1p2's D-2 labels.
+# ---------------------------------------------------------------------------
+
+
+def test_a_period_the_words_state_as_an_iso_date_is_stated() -> None:
+    """ReRevFF1p1's N1 through ``_checked``: the year of an ISO date is the
+    period the words state, so a recorded "calendar 2024" is not cleared."""
+    text = "Solar capacity was 18 GW, per the report published 2024-01-15."
+
+    kept = _check(_figure_item(text, figure("18", "GW", "calendar 2024", "actual")),
+                  verdict="correct")
+
+    assert kept.kept and kept.context.period == "calendar 2024"
+
+
+def test_page_owner_keeps_the_body_not_its_programme_or_form() -> None:
+    """RevFF1p2's D-2: the acronym rule is answering-only, so a page's byline is
+    read as the organisation itself -- not as the programme or the form number
+    whose text happens to lead the title."""
+    eia = make_read(
+        "EIA-923 monthly data. Published by the U.S. Energy Information Administration.",
+        url="https://www.eia.gov/electricity/data.php",
+        title="EIA-923 monthly data | EIA")
+    united_nations = make_read(
+        "UN Women calls for action on the report.",
+        url="https://www.un.org/en/desa/report",
+        title="UN Women calls for action | United Nations")
+
+    assert page_owner(eia) == "EIA"
+    assert page_owner(united_nations) == "United Nations"
