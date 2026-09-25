@@ -50,7 +50,11 @@ class WebSearchTool(BaseTool):
     """Search the web with Tavily and return ranked results."""
 
     name = "web_search"
-    description = "Search the web with Tavily and return ranked results."
+    description = (
+        "Search the web and return ranked result links with short snippets. Use it "
+        "to find candidate pages to read; a result is a lead, never evidence. "
+        "Queries may name organisations, standards, years and places."
+    )
     input_schema = {"query": "string", "max_results": "integer|null"}
     output_schema = {"results": "array"}
     required_arguments = ("query",)

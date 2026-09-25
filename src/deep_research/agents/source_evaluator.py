@@ -53,6 +53,7 @@ from deep_research.agents.prompts import (
     render_read_dossier,
     render_source_dossier,
     render_structured_reply_format,
+    render_structured_request,
 )
 from deep_research.agents.sources import (
     SourceGroup,
@@ -857,14 +858,14 @@ def scoring_messages(
     if task.guidance.strip():
         sections.append(f"# Context\n{task.guidance}")
     sections.append("# Sources\n" + "\n\n".join(dossiers))
-    sections.append(f"# Scoring contract\n{SOURCE_SCORING_INSTRUCTION}")
-    sections.append(
+    static = [
+        f"# Scoring contract\n{SOURCE_SCORING_INSTRUCTION}",
         "# Reply format\n"
-        f"{render_structured_reply_format(_SOURCE_SCORE_REPLY_EXAMPLES)}"
-    )
+        f"{render_structured_reply_format(_SOURCE_SCORE_REPLY_EXAMPLES)}",
+    ]
     return [
         ChatMessage(role="developer", content=SOURCE_EVALUATOR_SYSTEM_PROMPT),
-        ChatMessage(role="user", content="\n\n".join(sections)),
+        ChatMessage(role="user", content=render_structured_request(static, sections)),
     ]
 
 

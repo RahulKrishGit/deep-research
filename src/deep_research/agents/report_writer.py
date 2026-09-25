@@ -29,7 +29,11 @@ from deep_research.agents.events import agent_event
 from deep_research.agents.figures import quantities_in, same_quantity
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.planner import Clock, utc_now
-from deep_research.agents.prompts import AgentTask, render_structured_reply_format
+from deep_research.agents.prompts import (
+    AgentTask,
+    render_structured_reply_format,
+    render_structured_request,
+)
 from deep_research.agents.report import (
     figure_label,
     render_finding_log,
@@ -47,6 +51,7 @@ from deep_research.agents.verified_facts import (
     not_found_targets,
     release_text,
 )
+from deep_research.agents.wording import stated_role
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError, ProviderOutputLimitError, StructuredOutputError
@@ -87,7 +92,9 @@ REPORT_WRITER_SYSTEM_PROMPT = (
     "snippet, and each of its figures with the figure's verified period, kind (actual "
     "or forecast), organisation and reader label. Code builds the key facts table, the "
     "Not found list and the sources; you write the executive summary and a few short "
-    "explanatory sections."
+    "explanatory sections. A finding with no figure is listed with its snippet and the "
+    "body it is attributed to; cite it for what the snippet states, attributed as the "
+    "line says."
 )
 
 REPORT_WRITER_INSTRUCTION = (
@@ -97,17 +104,37 @@ REPORT_WRITER_INSTRUCTION = (
     "- State a forecast with a forecast verb (\"projects\", \"expects\", \"forecasts\"), never "
     "as a completed outcome.\n"
     "- Use only the numbers and dates of the cited findings.\n"
-    "- Use the scope words the finding states (\"utility-scale\", \"all segments\"), never "
+    "- Use the scope words the finding states (\"households only\", \"all segments\"), never "
     "the question's.\n"
     "- Name only organisations and publications the cited findings name.\n"
-    "- For a figure one site relays from another organisation, name the organisation and "
-    "the site (\"according to Wood Mackenzie, as reported by Utility Dive\").\n"
-    "- The executive summary answers each part of the question directly, first: the actual "
-    "figure the question asks for; then each organisation's latest forecast with its "
-    "release; then later actuals, labelled as actuals. One point per fact; never state the "
-    "same figure twice.\n"
-    "- At most four sections, explaining segment basis, revisions, units or definitions, "
-    "only as the findings state them.\n"
+    "- A figure belongs to the subject its finding names (a product, a place, a version): "
+    "never move a figure from one subject to another, and name the subject as the finding "
+    "names it.\n"
+    "- For a figure or a statement one site relays from another organisation, name the "
+    "organisation and the site (\"according to the Example Institute, as reported by the "
+    "Example Gazette\").\n"
+    "- Credit a figure the way its label does: a figure labelled as the organisation's own "
+    "is that organisation's; a relay is \"according to <organisation>, as reported by "
+    "<site>\"; a figure whose label says the source does not attribute it is stated as the "
+    "page's figure (\"<site> reports ...\") and is never credited to a body the label does "
+    "not name.\n"
+    "- The executive summary answers the question's parts in the order the "
+    "question asks them, one point per fact, each part in the form its evidence "
+    "takes: a figure with its period and its organisation; a forecast with its "
+    "issuer and release; items with their attributes (an option with its price "
+    "and its rating per criterion, a change with its date) grouped or ordered on "
+    "a basis the question or the findings give — price, date, size — and stated "
+    "as the findings state them; reasons, mechanisms or provisions as the cited "
+    "findings state them. Every judgement, ranking or recommendation is "
+    "attributed to the finding's organisation as its finding names it; where "
+    "findings disagree, give each. The report makes no pick, ranking or verdict "
+    "of its own and adds no criterion the question did not name. When the "
+    "findings hold more items than the summary can carry, give the ones the "
+    "findings themselves rank or emphasise most and say the list is partial. "
+    "Never state the same figure twice.\n"
+    "- At most four sections, each explaining what the findings state and the "
+    "summary needs — basis or scope, revisions, definitions, mechanisms, "
+    "disagreements, caveats — and nothing the findings do not state.\n"
     "- Never write verdict or corroboration words: verified, confirmed, corroborated, "
     "independently, insufficient evidence, contested."
 )
@@ -252,6 +279,12 @@ def registry_lines(label: str, finding: Finding) -> list[str]:
             f"{context.period or 'not stated'} | kind {context.kind} | organisation "
             f"{context.organisation} | label: {_figure_label_for(finding, context)}"
         )
+    if number == 0:
+        name = finding.attributed_issuer or publisher_identity(finding.source_url)
+        lines.append(
+            f"{label} | statement | attributed to {name} | "
+            f"{stated_role(finding.snippet or finding.content)}"
+        )
     return lines
 
 
@@ -276,15 +309,17 @@ def writer_messages(task: ReportWriterTask) -> list[ChatMessage]:
         for t in task.targets if t.required
     ) or "(none)"
     registry = "\n\n".join("\n".join(registry_lines(label, f)) for label, f in task.registry) or "(none)"
-    user = "\n\n".join([
+    static = [
+        f"# Rules\n{REPORT_WRITER_INSTRUCTION}",
+        "# Reply format\n" + render_structured_reply_format(_WRITER_REPLY_EXAMPLES),
+    ]
+    material = [
         f"# Question\n{task.question}",
         f"# Required targets and the findings that answer them\n{targets}",
         f"# Verified findings\n{registry}",
-        f"# Rules\n{REPORT_WRITER_INSTRUCTION}",
-        "# Reply format\n" + render_structured_reply_format(_WRITER_REPLY_EXAMPLES),
-    ])
+    ]
     return [ChatMessage(role="developer", content=REPORT_WRITER_SYSTEM_PROMPT),
-            ChatMessage(role="user", content=user)]
+            ChatMessage(role="user", content=render_structured_request(static, material))]
 
 
 class _Verdict(Protocol):

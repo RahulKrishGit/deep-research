@@ -26,8 +26,10 @@ from deep_research.agents.evidence_verifier import (
     figure_match,
     page_owner,
     resolve_attribution,
+    statement_check_messages,
     verify_finding,
 )
+from deep_research.agents.prompts import STRUCTURED_REQUEST_END
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -325,7 +327,7 @@ def _confirm_reply(messages: list, schema: type) -> ContextCheckDraft:
     """
     del schema
     section = messages[1].content.split("# Figures to check\n", 1)[1]
-    section = section.split("\n\n# Response contract", 1)[0]
+    section = section.split("\n\n" + STRUCTURED_REQUEST_END, 1)[0]
     figures = []
     for block in re.split(r"\n\n(?=## )", section):
         label = re.match(r"## (F\d+)", block).group(1)
@@ -1052,3 +1054,35 @@ async def test_the_context_check_bounds_come_from_the_agent_config(
     assert len(probe.calls) == total // batch_size
     assert probe.max_in_flight == concurrency
     assert len(outcome.state_update["verified_findings"]) == total
+
+
+def test_the_statement_check_shows_each_cited_findings_snippet_and_attribution() -> None:
+    """D10 gap 3: a finding with no figure is judged against its verified words."""
+    text = "Rising rents pushed households out of the centre, according to the Example Institute."
+    finding = make_finding(
+        make_read(text), text,
+        attributed_issuer="Example Institute",
+        attribution_quote="according to the Example Institute",
+    ).model_copy(update={"verification": FindingVerification(status="verified")})
+    body = statement_check_messages(
+        [StatementCheckItem(label="S001", text="Rising rents pushed households out of the centre.",
+                            findings=[finding], labels=["F01"])],
+        question="Why did households leave the centre?",
+    )[1].content
+    assert "  F01: (no kept figures)\n" in body
+    assert f'    snippet: "{text}"' in body
+    assert '    attributed to: Example Institute ("according to the Example Institute")' in body
+
+
+def test_an_own_page_finding_is_attributed_to_its_publisher() -> None:
+    """D10: with no admitted issuer, the Statement Check still sees whose words a snippet is."""
+    text = "Of the five kettles we tested, Model B was the quietest."
+    finding = make_finding(
+        make_read(text, url="https://lab.example.test/kettles", title="Kettles"), text,
+    ).model_copy(update={"verification": FindingVerification(status="verified")})
+    body = statement_check_messages(
+        [StatementCheckItem(label="S001", text="Model B is the quietest kettle.",
+                            findings=[finding], labels=["F01"])],
+        question="Which kettle is the quietest?",
+    )[1].content
+    assert "    attributed to: lab.example.test" in body.splitlines()

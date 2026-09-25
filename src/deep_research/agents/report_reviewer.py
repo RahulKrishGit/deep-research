@@ -55,6 +55,10 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
 )
 from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.prompts import (
+    render_structured_reply_format,
+    render_structured_request,
+)
 from deep_research.agents.report import (
     ReportComposition,
     # The label builders this review must never re-derive (R1): ``_point_labels``
@@ -116,13 +120,15 @@ Preflight validates it exactly like an agent, so a misconfigured reviewer
 fails the run before any collaborator exists.
 """
 
-REPORT_REVIEW_PROMPT_VERSION = "report-review-3"
+REPORT_REVIEW_PROMPT_VERSION = "report-review-4"
 """The prompt and reply contract this review's requests are versioned under.
 
 Version 2 was the whole-report Critic-era packet, which carried checked claims,
 corroboration badges, evidence batches and coverage targets. Version 3 is the
 step-4 review: the statements with their code-built labels and the findings
 behind them, one request, dispositions in the three-valued step-4 vocabulary.
+Version 4 is D10's: the same packet in the static-first layout, with the shared
+reply format and one example, and the rule for sentences that end with no label.
 The version is what keeps a stored judgement of the older packet from being
 read as a judgement of this one.
 """
@@ -213,13 +219,16 @@ DIMENSION_GUIDANCE: tuple[tuple[str, str], ...] = (
     (
         "completeness",
         "Does the report answer the original question, as the answer contract "
-        "frames it, including every part the question actually asked for?",
+        "frames it, including every part the question actually asked for — each "
+        "part in the form its evidence takes: a figure, items with their "
+        "attributes, dated events, reasons, a rule's provisions?",
     ),
     (
         "prioritization",
-        "Are the report's ordering and emphasis justified by the evidence — by "
-        "an evidenced comparison basis — rather than by how much was written "
-        "about something, or by a model's stated confidence?",
+        "Are the report's ordering and emphasis justified by the evidence — a "
+        "basis the question or the sources give: a comparison basis, a price, a "
+        "date, a size — rather than by how much was written about something, or "
+        "by a model's stated confidence?",
     ),
     (
         "evidence_quality",
@@ -278,7 +287,14 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
     "organisation named in the label, an actual must read as an actual, a "
     "forecast must carry its issuer and its release, and no period, scope, "
     "kind or organisation in the prose may contradict the label. That mismatch "
-    "is a defect you record against that statement's id.\n"
+    "is a defect you record against that statement's id. A sentence that ends "
+    "with no label states no figure: judge it against the snippets of the "
+    "findings it cites, and record as unsupported one that asserts more than "
+    "those snippets state; a pick, ranking or verdict stated as fact, rather "
+    "than as the judgement of the source that made it, asserts more. A "
+    "sentence that credits a body its label does not name — \"according to X\" "
+    "beside a label that reads \"source does not attribute it\" or names "
+    "another organisation — is unsupported.\n"
     "\n"
     "Report every defect you find as a typed defect against the ids in this "
     "request, and only against ids in this request. When nothing is wrong, "
@@ -288,7 +304,7 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
 )
 
 REPORT_REVIEW_INSTRUCTION = (
-    "Return one JSON object and nothing else, with these fields:\n"
+    "The reply carries these fields:\n"
     "- dimensions: seven scores in [0,1], one per named dimension.\n"
     "- statement_dispositions: one entry per statement id you were shown, "
     "each with the statement id and its disposition (supported, unsupported, "
@@ -314,6 +330,25 @@ REVIEW_DEFECT_RULES = (
     "accepted while one is open. minor is a real but editorial observation.\n"
     "- Report each distinct problem once. When one problem affects several "
     "statements, name them all in one defect rather than repeating it."
+)
+
+
+_REVIEW_REPLY_EXAMPLES = (
+    (
+        "Example input: statements S001 and S002; S001 restates the actual that "
+        "F01 reports, and S002 calls the actual that F02 reports a forecast.",
+        '{"dimensions":{"completeness":0.7,"prioritization":0.8,'
+        '"evidence_quality":0.5,"attribution":0.6,"uncertainty":0.7,'
+        '"readability":0.9,"actionability":0.7},'
+        '"statement_dispositions":[{"statement_id":"S001","disposition":"supported",'
+        '"problem":""},{"statement_id":"S002","disposition":"unsupported",'
+        '"problem":"F02 reports an actual; the sentence calls it a forecast."}],'
+        '"defects":[{"kind":"contradiction","severity":"major",'
+        '"statement_ids":["S002"],"target_ids":[],'
+        '"problem":"S002 presents the actual F02 reports as a forecast."}],'
+        '"rationale":"S001 is supported by F01; S002 misstates the kind of '
+        'F02\'s figure, a material defect."}',
+    ),
 )
 
 
@@ -967,12 +1002,23 @@ def _render_manifest(packet: ReportReviewInput) -> str:
 def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
     """The one request a review makes: the report, its statements, its findings.
 
+    Static first (PD-29, D10): the response contract, what each dimension
+    means and the reply format lead, so a second review of the same run's
+    packet shares them as a prefix; the packet itself follows.
+
     Nothing here is truncated. The reader content is carried whole in a fence of
     its own — a report whose end is cut off is a report whose closing
     contradiction, invented limitation, or mislabelled sentence cannot be
     judged — and so is every finding snippet the statements rest on.
     """
-    sections = [
+    static = [
+        f"# Response contract\n{REPORT_REVIEW_INSTRUCTION}\n\n{_render_defect_contract(packet)}",
+        "# What each dimension means\n"
+        "Score each dimension in [0,1] against its own definition:\n"
+        + _render_dimension_guidance(),
+        "# Reply format\n" + render_structured_reply_format(_REVIEW_REPLY_EXAMPLES),
+    ]
+    material = [
         f"# Research question\n{packet.question}",
         (
             "# Packet fingerprint\n"
@@ -1026,20 +1072,11 @@ def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
             "fact about the candidate, not a verdict — and none of these "
             "numbers is a target to reach.\n" + _render_deterministic(packet)
         ),
-        (
-            "# What each dimension means\n"
-            "Score each dimension in [0,1] against its own definition:\n"
-            + _render_dimension_guidance()
-        ),
-        (
-            f"# Response contract\n{REPORT_REVIEW_INSTRUCTION}\n\n"
-            f"{_render_defect_contract(packet)}"
-        ),
         f"# Manifest of what you were shown\n{_render_manifest(packet)}",
     ]
     return [
         ChatMessage(role="developer", content=REPORT_REVIEW_SYSTEM_PROMPT),
-        ChatMessage(role="user", content="\n\n".join(sections)),
+        ChatMessage(role="user", content=render_structured_request(static, material)),
     ]
 
 

@@ -73,7 +73,11 @@ class QueryMemoryTool(BaseTool):
     """Query an injected long-term-memory backend."""
 
     name = "query_memory"
-    description = "Query long-term memory for relevant research findings."
+    description = (
+        "Look up findings and source notes saved by earlier research sessions. Call "
+        "it once, early, to avoid repeating research; its matches are leads, not "
+        "evidence."
+    )
     input_schema = {"query": "string", "top_k": "integer", "filters": "object"}
     required_arguments = ("query",)
     output_schema = {"matches": "array"}

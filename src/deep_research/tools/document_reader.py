@@ -53,7 +53,11 @@ class DocumentReaderTool(BaseTool):
     """Read supported local documents or HTTP(S) document responses."""
 
     name = "document_reader"
-    description = "Extract structured text chunks from local or remote documents."
+    description = (
+        "Extract the text of a PDF, spreadsheet or data file at a URL or local path, "
+        "in chunks. Prefer it for primary reports and datasets, which are usually "
+        "published as documents, and when a web page refused access."
+    )
     input_schema = {"source": "string"}
     required_arguments = ("source",)
     output_schema = {

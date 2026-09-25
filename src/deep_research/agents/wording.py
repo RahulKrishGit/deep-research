@@ -105,8 +105,10 @@ def stated_role(text: str) -> Literal["forecast", "actual", "mixed"]:
     return "forecast" if forecast else "actual"
 
 
-# Question-independent segment and basis words (spec §6.2: "no ... scope that the
-# cited findings' verified fields do not carry"). Longest first.
+# Segment and basis words of the one domain the scope check was measured on
+# (energy markets; Fable C-a): bounded, and a no-op for any other question,
+# whose scopes the Statement Check judges in prose (spec §6.2: "no ... scope
+# that the cited findings' verified fields do not carry"). Longest first.
 SCOPE_TERMS: tuple[str, ...] = (
     "commercial and industrial", "front-of-the-meter", "behind-the-meter",
     "utility-scale", "grid-scale", "all segments", "all sectors", "residential",

@@ -23,6 +23,7 @@ from deep_research.agents.report_writer import (
     evidence_report_filename,
     finding_registry,
     quality_report_filename,
+    registry_lines,
     report_filename,
     writer_messages,
 )
@@ -768,3 +769,18 @@ def test_the_quality_filename_derives_from_the_reader_report() -> None:
     )
     with pytest.raises(ValueError, match="iteration"):
         quality_report_filename(session_id="session-1", iteration=-1)
+
+
+def test_a_finding_with_no_figure_is_listed_with_its_attribution_and_its_role() -> None:
+    """D10 gap 4: the writer sees whose statement a prose finding is, and whether it forecasts."""
+    text = "The Example Institute forecasts that rents will keep rising next year."
+    finding = make_finding(
+        make_read(text, url="https://gazette.example.test/rents", title="Rents"), text,
+        attributed_issuer="Example Institute",
+        attribution_quote="The Example Institute forecasts",
+    ).model_copy(update={"verification": FindingVerification(status="verified")})
+    assert registry_lines("F07", finding) == [
+        "## F07: Rents (gazette.example.test)",
+        f"snippet: {text}",
+        "F07 | statement | attributed to Example Institute | forecast",
+    ]
