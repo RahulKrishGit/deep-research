@@ -3603,19 +3603,6 @@ def _supporting_spans(
     return spans
 
 
-# The record's own contract version.
-#
-# ``utils.types.QUALITY_CONTRACT_VERSION`` names the state's evidence/quality
-# contract; this names the *record's* shape, which is what a consumer holding
-# only the published JSON can check. The claim-era record (version "1")
-# published claims, claim clusters and the evidence registry where this record
-# publishes the verified findings, their fact rows and the refused sentences,
-# so a reader that finds ``findings`` here has to be able to tell the two
-# apart. Task 4.10 owns ``utils/types.py`` and can fold the two together once
-# the claim-era names are gone.
-_QUALITY_RECORD_CONTRACT_VERSION = "2"
-
-
 def render_quality_record(
     state: ResearchState,
     composition: ReportComposition | None,
@@ -3691,7 +3678,10 @@ def render_quality_record(
         status = ""
 
     return {
-        "quality_contract_version": _QUALITY_RECORD_CONTRACT_VERSION,
+        # The contract the state carries: new runs stamp
+        # ``utils.types.QUALITY_CONTRACT_VERSION``, and a legacy snapshot keeps
+        # the version it was written under rather than being re-labelled here.
+        "quality_contract_version": state.quality_contract_version,
         "composition_present": composition is not None,
         "session_id": state.session_id,
         "iteration": (
@@ -3742,7 +3732,7 @@ def render_quality_record(
         # the row's shape on this surface.
         "errors": [_quality_error_row(error) for error in state.errors],
         "configuration": {
-            "quality_contract_version": _QUALITY_RECORD_CONTRACT_VERSION,
+            "quality_contract_version": state.quality_contract_version,
             "composition_fingerprint": (
                 composition_semantic_fingerprint(composition)
                 if composition is not None

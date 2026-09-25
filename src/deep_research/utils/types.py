@@ -720,7 +720,8 @@ class EvidencePassage(ContractModel):
 # legacy version and empty registries, so no read provenance is ever
 # synthesized for a run that recorded none, and a consumer can tell a
 # pre-contract snapshot from a current-contract one instead of assuming.
-QUALITY_CONTRACT_VERSION = "1"
+# Contract 2 is the Evidence Verifier's record (spec §6.2): findings, facts, refusals.
+QUALITY_CONTRACT_VERSION = "2"
 LEGACY_QUALITY_CONTRACT_VERSION = "0"
 
 # What ``ReadRecord.content_sha256`` carries when the reader could not hash a

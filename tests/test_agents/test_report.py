@@ -32,7 +32,6 @@ from deep_research.agents.evidence_verifier import (
 from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
-    _QUALITY_RECORD_CONTRACT_VERSION,
     _vintage_key,
     DEFAULT_ANSWER_HEADING,
     DEFAULT_READER_WORD_LIMIT,
@@ -5392,6 +5391,9 @@ def written_state() -> ResearchState:
         original_question=BATTERY_QUESTION,
         sub_topics=topics,
         verified_findings=[EIA_ACTUAL_2024, STEO_FORECAST_2025],
+        # What ``graph.state`` stamps on a new run, so the record publishes the
+        # contract this build writes rather than the legacy default.
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
     )
     completer = ScriptedCompleter(outputs=[_WRITTEN_DRAFT, _statement_check_reply])
     tracker = _record_tracker()
@@ -5437,17 +5439,17 @@ def test_the_quality_record_carries_the_verified_findings_and_refusals() -> None
 
 
 def test_the_quality_record_stamps_the_step_four_contract_version() -> None:
-    """The record moves with its own shape.
+    """The record publishes the contract the state was stamped with.
 
-    A consumer that reads ``findings`` and ``refused_sentences`` has to be
-    able to tell this record from the claim-era one whose ``claims`` and
-    ``claim_clusters`` it replaced, so the version the record stamps is the
-    new one and not the version the claim-era contract wrote.
+    A new run stamps ``utils.types.QUALITY_CONTRACT_VERSION`` onto its state
+    (``graph.state``), and the record must publish exactly that — never the
+    legacy default, which would label a step-4 record as a claim-era one — and
+    the contract this build writes is version 2.
     """
     state = written_state()
     record = json.loads(render_quality_json(state, state.composition, None))
-    assert record["quality_contract_version"] == _QUALITY_RECORD_CONTRACT_VERSION
-    assert _QUALITY_RECORD_CONTRACT_VERSION != QUALITY_CONTRACT_VERSION
+    assert record["quality_contract_version"] == QUALITY_CONTRACT_VERSION
+    assert QUALITY_CONTRACT_VERSION == "2"
 
 
 def test_the_quality_record_publishes_the_review_the_reviewer_recorded() -> None:
