@@ -42,6 +42,7 @@ from deep_research.agents.report import render_written_report
 from deep_research.e2e_evaluation.replay import (
     CaseExpectation,
     ReplayCompleter,
+    ReplayContractError,
     ReplayScenario,
     ReplaySource,
     ReplayTopic,
@@ -175,6 +176,13 @@ def verified(source: ReplaySource, *, organisation: str | None = None) -> Findin
                 status="verified", figure_results=[result]
             )
         }
+    )
+
+
+def _statement_item(source: ReplaySource, text: str) -> StatementCheckItem:
+    """One labelled sentence citing one page's finding, as the writer's pass asks."""
+    return StatementCheckItem(
+        label="S001", text=text, findings=[verified(source)], labels=["F01"]
     )
 
 
@@ -331,6 +339,52 @@ def test_a_figure_whose_unit_is_more_than_one_word_is_read_by_the_context_double
     assert draft.period == "2024"
 
 
+def test_the_context_double_reads_the_subject_a_figure_line_records() -> None:
+    """D11: the request's own `` | recorded subject …`` part decides the reply.
+
+    The real line ends ``… | recorded kind actual | recorded subject Kettle K1``
+    only when the figure carries one (Task 5.7b), so a double that ignores the
+    part would confirm a subject-less figure and the report would lose the one
+    thing that keeps two equal values apart.
+    """
+    source = page("rated", value="4.5", unit="out of 5", period="2026")
+    completer = ReplayCompleter(scenario(source))
+    read, finding = read_and_finding(source)
+    recorded = finding.model_copy(
+        update={
+            "figures": [
+                finding.figures[0].model_copy(update={"subject": "Kettle K1"})
+            ]
+        }
+    )
+    request = context_request([(read, recorded)])
+    assert "| recorded subject Kettle K1" in request
+
+    [draft] = completer._reply_ContextCheckDraft(request).figures
+
+    assert draft.subject == "Kettle K1"
+
+
+def test_a_context_override_names_the_subject_and_the_period_it_resolves() -> None:
+    """The two D11 overrides: a proposal code keeps or drops on the page's words."""
+    source = page(
+        "resolved",
+        value="4",
+        unit="GW",
+        period="2024",
+        context={"period": "2026", "subject": "Kettle K1"},
+    )
+    completer = ReplayCompleter(scenario(source))
+    read, finding = read_and_finding(source)
+
+    [draft] = completer._reply_ContextCheckDraft(
+        context_request([(read, finding)])
+    ).figures
+
+    assert draft.period == "2026"
+    assert draft.subject == "Kettle K1"
+
+
 def test_the_writer_double_keeps_a_multi_word_unit_whole() -> None:
     source = page("units", value="3.4", unit="million units")
     completer = ReplayCompleter(scenario(source))
@@ -358,6 +412,82 @@ def test_the_writer_double_drafts_a_point_for_a_finding_with_no_figure() -> None
 
     assert [point.finding_labels for point in draft.executive_summary] == [["F01"]]
     assert source.excerpt.split()[-3:] == draft.executive_summary[0].text.split()[-3:]
+
+
+def test_the_writer_double_names_a_registry_line_subject_first() -> None:
+    """D11: the drafted sentence names its own row's subject.
+
+    Two products rated the same value are two rows, and the writer's own
+    restatement guard counts a row only for the subject the sentence names
+    (``report_writer.py``), so a draft that omitted the subject would be
+    refused as a restatement of the other row.
+    """
+    source = page("kettle", value="4.5", unit="out of 5", period="2026")
+    completer = ReplayCompleter(scenario(source))
+    finding = verified(source)
+    [result] = finding.verification.figure_results
+    finding = finding.model_copy(
+        update={
+            "verification": finding.verification.model_copy(
+                update={
+                    "figure_results": [
+                        result.model_copy(
+                            update={
+                                "context": result.context.model_copy(
+                                    update={"subject": "Kettle K1"}
+                                )
+                            }
+                        )
+                    ]
+                }
+            )
+        }
+    )
+    request = request_text(writer_task([("F01", finding)]))
+    assert "| subject Kettle K1 |" in request
+
+    draft = completer._reply_ReportWriterDraft(request)
+
+    assert draft.executive_summary[0].text.startswith("Kettle K1")
+    assert "4.5 out of 5" in draft.executive_summary[0].text
+
+
+def test_a_page_refuses_a_subject_list_that_does_not_match_its_figures() -> None:
+    """A fixture typo must fail loudly, not silently drop a subject."""
+    with pytest.raises(ValueError) as raised:
+        page(
+            "mismatch",
+            value="4",
+            figures=(("4", "GW", "2026", "actual"),),
+            figure_subjects=("Kettle K1", "Kettle K2"),
+        )
+
+    assert "Kettle K2" in str(raised.value)
+
+
+def test_a_page_refuses_a_publication_date_quote_its_text_does_not_carry() -> None:
+    """The quote has to be the page's own words, like every other fixture claim."""
+    with pytest.raises(ValueError) as raised:
+        page(
+            "undated",
+            value="4",
+            publication_date=("2026-02-20", "Published 2026-02-20"),
+        )
+
+    assert "2026-02-20" in str(raised.value)
+
+    dated = page(
+        "dated",
+        value="4",
+        excerpt="It added 4 GW in 2026.",
+        text=(
+            "Kettle note. Published 2026-02-20. It added 4 GW in 2026. "
+            "The dated analysis covers the United States."
+        ),
+        publication_date=("2026-02-20", "Published 2026-02-20"),
+    )
+
+    assert dated.publication_date == ("2026-02-20", "Published 2026-02-20")
 
 
 def test_a_context_override_the_verifier_does_not_read_is_refused() -> None:
@@ -448,6 +578,39 @@ async def test_a_statement_override_corrects_or_refuses_through_the_real_writer(
     ]
     assert len(refused_points) == 1
     assert "all segments" in refused_points[0].reason
+
+
+def test_the_statement_double_refuses_a_cited_line_with_no_body() -> None:
+    """R2: a finding with no kept figure is shown with its ``snippet:`` and the
+    body it is ``attributed to:`` (Task 5.7a's shipped format).
+
+    The double judges a sentence against the findings the packet shows for it,
+    so a packet that reads ``(no kept figures)`` with neither sub-line is a
+    shape no production builder emits: refusing it keeps the double from
+    answering a request the agents cannot build.
+    """
+    source = page("plain", value="40", figures=())
+    completer = ReplayCompleter(scenario(source))
+    request = statement_request([_statement_item(source, "Plain states a figure.")])
+    assert "(no kept figures)" in request
+    assert "    attributed to: " in request
+
+    stripped = re.sub(r"(?m)^    (?:snippet|attributed to): .*\n", "", request)
+
+    with pytest.raises(ReplayContractError):
+        completer._reply_StatementCheckDraft(stripped)
+
+
+def test_the_statement_double_answers_a_cited_line_that_states_its_body() -> None:
+    """The shipped format itself passes the check: the same request, unedited."""
+    source = page("plain", value="40", figures=())
+    completer = ReplayCompleter(scenario(source))
+
+    [verdict] = completer._reply_StatementCheckDraft(
+        statement_request([_statement_item(source, "Plain states a figure.")])
+    ).statements
+
+    assert verdict.verdict == "consistent"
 
 
 def test_a_scenario_can_script_the_statement_check_failing() -> None:
