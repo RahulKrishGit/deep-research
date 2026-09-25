@@ -3064,7 +3064,6 @@ def test_a_scoring_dossier_shows_the_passages_that_serve_the_plan() -> None:
                 required_dimensions=["value"],
                 required=True,
                 critical=True,
-                support_policy="primary_attribution",
             )
         ],
     )
@@ -3166,8 +3165,7 @@ def test_a_scoring_dossier_shows_each_obligations_figures_behind_navigation() ->
                     required_dimensions=["value"],
                     required=True,
                     critical=False,
-                    support_policy="primary_attribution",
-                )
+                    )
             ],
         )
 
