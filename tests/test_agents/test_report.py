@@ -978,7 +978,7 @@ def test_the_quality_record_carries_the_verified_findings_and_refusals() -> None
     assert record["refused_sentences"][0]["text"]
     assert record["refused_sentences"][0]["finding_labels"]
     assert all("verification" in row for row in record["findings"])
-    assert "claims" not in record and "claim_clusters" not in record
+    assert not [key for key in record if key.startswith("claim")]
 
 
 def test_the_quality_record_publishes_the_contract_version_the_state_carries() -> (

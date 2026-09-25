@@ -113,7 +113,7 @@ from deep_research.utils.config import (
 # Task 5's fix round then changed the Fact Checker's own module source again,
 # moving ``edd677f57ce8`` -> ``d5c99dbd9a35``. NO prompt string moved: the
 # round persists consumed claim provenance (bounded origin-finding and
-# coverage identities on ``Claim``), deletes the lossy ``_finding_is_new``
+# coverage identities on the claim record), deletes the lossy ``_finding_is_new``
 # text heuristic in favour of that provenance, and takes coverage from
 # recorded coverage ids instead of URL overlap. Because
 # ``agent_prompt_fingerprint`` hashes the agent's own module source, any
@@ -143,7 +143,7 @@ from deep_research.utils.config import (
 # alarm. The later sub-minimum digest-budget contract fix changed only the
 # Synthesizer source value again.
 # Task 7 then replaced the Critic's free-text gaps with targetable
-# ``CritiqueGap`` objects carrying a plan ``coverage_id``, handed it one
+# critique-gap objects carrying a plan ``coverage_id``, handed it one
 # fenced block per reader-report section so no section cap can hide a later
 # one, and added the structured quality snapshot and typed error groups to its
 # prompt. That shared ``agents.prompts`` edit moves all six values together.
@@ -172,7 +172,7 @@ from deep_research.utils.config import (
 # its prompt packet stopped reading the quality snapshot through a defensive
 # ``getattr`` and named the state field that now exists. Task 7's fix round 1
 # then extracted the legacy-gap normalizer duplicated between
-# ``CritiqueDraft`` and ``Critique`` into one shared ``normalize_gap_drafts``,
+# ``CritiqueDraft`` and the critique contract into one shared ``normalize_gap_drafts``,
 # moving the Critic's value a final time, ``141c47557a29`` -> ``e8bb04d10046``.
 # No prompt text was edited in any of those steps and no other value moved.
 # Re-pinned deliberately, after the agent-performance session measured two live
@@ -238,7 +238,7 @@ from deep_research.utils.config import (
 # The claim-reason amendment moved the Fact Checker's own value a further
 # time, ``f13fdde0e8bc`` -> ``1f52e702839d``, and nothing else. NO prompt
 # string moved: ``insufficient_claim`` now records the enumerated reason it
-# was already given on the ``Claim`` it returns — ``Claim.insufficient_reason``
+# was already given on the claim record it returns — its ``insufficient_reason``
 # is a new optional field on the shared contract — so the evidence ledger's
 # claim registry can print why a claim went unjudged instead of leaving that
 # fact in the event log, where no published artifact could carry it. The
@@ -414,7 +414,7 @@ from deep_research.utils.config import (
 # Task 9 fix round 1 re-pinned planner and fact_checker; the other four did not
 # move. Again no prompt text changed: the planner gained the branch that
 # *extends* rather than re-plans when the graph routes an ``extend_plan`` job to
-# it, and the fact checker gained the read of ``refinement_targets`` that makes
+# it, and the fact checker gained the read of the refinement targets that makes
 # an ``adjudicate``/``consolidate`` route land on a node which acts on it.
 #
 # Task 9 fix round 2 re-pinned the planner alone (`f2507b56d0c6`): the routed
@@ -435,7 +435,7 @@ from deep_research.utils.config import (
 # Task 12 re-pinned the researcher and the synthesizer together (`4f68ae8f190d`
 # -> `613603dc5cbd`, `2af90b7ac8a8` -> `97cf77acbb15`). As with Tasks 9 and 11,
 # no prompt instruction changed: the round corrected the orientation of
-# `Claim.evidence_selection`, which is keyed by the evidence id and valued with
+# the claim record's `evidence_selection`, which is keyed by the evidence id and valued with
 # the stance, and one call site in each of those two modules read `.values()`
 # where an evidence id is required, so the stance string was handed to every
 # consumer expecting an id. The shared `agents.prompts` library was not edited,
@@ -453,7 +453,7 @@ from deep_research.utils.config import (
 # `7012a186eb59`). No prompt instruction changed, and no prompt text moved: the
 # claim admission gate now passes the claim's own ``evidence_status`` through
 # ``admitted_target_ids`` into ``claim_meets_support_policy`` — the predicate
-# lives in ``agents/claim_clusters.py``, which this fingerprint does not hash —
+# lives in the since-deleted claim-cluster module, which this fingerprint does not hash —
 # so that a faithful source-supported primary attribution can answer a
 # ``primary_attribution``/``derivation`` target, and the call site says so.
 # The shared `agents.prompts` library was not edited, and the other five pins
@@ -571,7 +571,7 @@ from deep_research.utils.config import (
 # -> ``aedce1ccca9e`` (§2.1): ``CriticTarget.open`` stopped being a second
 # definition of coverage — a boolean the packet derived by pooling
 # ``answered_dimensions`` across every statement naming the target — and the
-# packet now records ``answered`` straight from ``target_is_answered``, the
+# packet now records ``answered`` straight from the target-answered predicate, the
 # gate that decides coverage, with ``open`` as its negation. Again a
 # module-source edit with no prompt instruction and no shared-prompts edit,
 # which the other five pins prove: they hash that same module and none of them

@@ -554,10 +554,9 @@ def test_the_packet_carries_every_statement_and_no_claim_or_batch_field() -> Non
     ]
     assert built.statement("S002") is not None
     fields = set(type(built).model_fields)
+    assert not [name for name in fields if name.startswith("claim")]
     for forbidden in (
-        "claims",
         "verdicts",
-        "claim_clusters",
         "evidence_batches",
         "targets",
         "sources",
