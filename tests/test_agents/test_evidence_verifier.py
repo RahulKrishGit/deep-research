@@ -1141,9 +1141,10 @@ def test_a_kept_figure_states_its_attribution_on_its_own_line_only() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _figure_item(text, figure_, *, page_date=None) -> ContextItem:
+def _figure_item(text, figure_, *, page_date=None, **finding_fields) -> ContextItem:
     read = make_read(text)
-    finding = make_finding(read, text, figures=[figure_], target_ids=["topic-01-target-01"])
+    finding = make_finding(read, text, figures=[figure_], target_ids=["topic-01-target-01"],
+                           **finding_fields)
     return ContextItem(label="F01", finding=finding, read=read, passage=text,
                        match=figure_match(finding, {read.read_id: read}), page_date=page_date)
 
@@ -1160,22 +1161,25 @@ def test_a_relative_period_is_resolved_from_the_page_date() -> None:
     """Spec §5.2, D11 (Gate G4 finding (a)): 'this year' on a page dated 2026-02-20."""
     text = "Operators installed 4 GW this year."
     kept = _check(_figure_item(text, figure("4", "GW"), page_date="2026-02-20"),
-                  period="2026", verdict="correct")
+                  period="2026", kind="forecast", verdict="correct")
     assert kept.kept and (kept.context.period, kept.context.period_resolved_from) == ("2026", "2026-02-20")
-    undated = _check(_figure_item(text, figure("4", "GW")), period="2026", verdict="correct")
+    undated = _check(_figure_item(text, figure("4", "GW")), period="2026", kind="forecast",
+                     verdict="correct")
     assert undated.dropped_reason == "correction_not_on_page"
 
 
 def test_a_subject_is_adopted_only_as_the_page_names_it() -> None:
-    """Ruling N2: an off-page subject never drops a figure unless it disputes a recorded one."""
+    """Ruling N2: an off-page subject never drops a figure unless it disputes a recorded one.
+
+    A real dispute needs neither subject on the page (fix round 1); that case
+    has its own test below.
+    """
     text = "Model B scored 4.5 out of 5 for noise."
     named = _check(_figure_item(text, figure("4.5", "out of 5")), subject="Model B")
     assert named.kept and named.context.subject == "Model B"
     unverified = _check(_figure_item(text, figure("4.5", "out of 5")), subject="Model C", verdict="correct")
     assert unverified.kept and unverified.context.subject is None
     recorded = figure("4.5", "out of 5").model_copy(update={"subject": "Model B"})
-    disputed = _check(_figure_item(text, recorded), subject="Model C", verdict="correct")
-    assert disputed.dropped_reason == "correction_not_on_page"
     misread = figure("4.5", "out of 5").model_copy(update={"subject": "Model A"})
     corrected = _check(_figure_item(text, misread), subject="Model B", verdict="correct")
     assert corrected.kept and corrected.context.subject == "Model B"
@@ -1277,3 +1281,69 @@ def test_a_statement_check_figure_line_names_its_subject() -> None:
         )
         for line in body.splitlines()
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1: explicit periods beat relative ones, a restated or page-backed
+# subject is kept, and the block shows the date the check resolves against.
+# ---------------------------------------------------------------------------
+
+
+def test_an_explicitly_dated_figure_is_never_given_a_relative_period() -> None:
+    """Fix 1: the words date the figure 2024, so "this year" is another clause."""
+    text = "Operators installed 4 GW in 2024; this year they plan more."
+    corrected = _check(
+        _figure_item(text, figure("4", "GW", "2024", "actual"), page_date="2026-02-20"),
+        period="2026", kind="actual", verdict="correct")
+    assert corrected.dropped_reason == "correction_not_on_page"
+
+
+def test_a_restated_subject_never_disputes_the_recorded_one() -> None:
+    """Fix 2a: "X200" against a recorded "Acme X200" name one thing."""
+    text = "The Acme X200 scored 4.5 out of 5 for noise."
+    recorded = figure("4.5", "out of 5").model_copy(update={"subject": "Acme X200"})
+    kept = _check(_figure_item(text, recorded), subject="ACME X200 Inc.", verdict="correct")
+    assert kept.kept and kept.context.subject == "Acme X200"
+
+
+def test_a_page_backed_recorded_subject_is_never_overridden() -> None:
+    """Fix 2b: the page says "U.S.", so an unbacked "United States" cannot displace it."""
+    text = "U.S. operators installed 4 GW in 2024."
+    recorded = figure("4", "GW", "2024", "actual").model_copy(update={"subject": "U.S."})
+    kept = _check(_figure_item(text, recorded), subject="United States", period="2024")
+    assert kept.kept and kept.context.subject == "U.S."
+
+
+def test_a_subject_neither_side_backs_still_drops_the_figure() -> None:
+    """Fix 2c: neither subject is on the page, so the figure's own one is unusable."""
+    text = "The device scored 4.5 out of 5 for noise."
+    recorded = figure("4.5", "out of 5").model_copy(update={"subject": "Model A"})
+    dropped = _check(_figure_item(text, recorded), subject="Model B", verdict="correct")
+    assert dropped.dropped_reason == "correction_not_on_page"
+
+
+def test_the_block_names_the_date_the_check_resolves_against() -> None:
+    """Fix 3: one basis, printed, so a batch reads the date code will use."""
+    text = "Operators installed 4 GW this year."
+    item = _figure_item(text, figure("4", "GW"), release_date="2026-02-20")
+    body = context_check_messages([item])[1].content
+    assert "page date: 2026-02-20 (the finding's release date)" in body.splitlines()
+    kept = _check(item, period="2026", kind="forecast", verdict="correct")
+    assert (kept.context.period, kept.context.period_resolved_from) == ("2026", "2026-02-20")
+
+
+def test_the_block_labels_where_its_page_date_came_from() -> None:
+    """Fix 3: the Source Evaluator first, then the finding's own two dates, then none."""
+    text = "Operators installed 4 GW in 2024."
+    figure_ = figure("4", "GW", "2024", "actual")
+
+    def lines(**dates) -> list[str]:
+        body = context_check_messages([_figure_item(text, figure_, **dates)])[1].content
+        return body.splitlines()
+
+    assert "page date: 2026-02-20 (from the Source Evaluator)" in lines(page_date="2026-02-20")
+    assert "page date: 2025-11-30 (the finding's release date)" in lines(release_date="2025-11-30")
+    assert "page date: 2025-12-01 (the finding's statement date)" in lines(statement_date="2025-12-01")
+    assert "page date: 2025-11-30 (the finding's release date)" in lines(
+        release_date="2025-11-30", statement_date="2025-12-01")
+    assert "page date: not stated" in lines()
