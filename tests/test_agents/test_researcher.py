@@ -102,6 +102,9 @@ EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 # The plan's own target ids: ``planner.target_id_for`` namespaces a target by
 # the sub-topic it belongs to, so an id says which topic it came from.
 PLANNED_TARGET_ID = "topic-01-target-01"
+# Another obligation of the same topic, for the tests that need a binding the
+# caller does not mark required.
+OTHER_TARGET_ID = "topic-01-target-02"
 
 
 def _sub_topic(
@@ -850,6 +853,105 @@ def test_findings_bound_to_a_required_target_are_exempt_from_the_source_cap() ->
     assert budget.sources_retained == 5
 
 
+def test_the_required_target_exemption_has_a_ceiling() -> None:
+    """The exemption guarantees the answer a slot, not every restatement of it.
+
+    Twenty-five findings bind one required target, each from its own page and
+    all less confident than six independent unbound ones. Without a ceiling
+    the exemption keeps all twenty-five and the per-sub-topic cap bounds
+    nothing, which is not an exemption but a hole in the cap: two is the
+    ceiling, the two most confident are the answer, and the rest are evidence
+    like any other, ranked by the caps.
+    """
+    bound = [
+        _finding(
+            "Alpha",
+            f"https://b{index}.test/one",
+            content=f"Bound {index}.",
+            confidence=confidence,
+        ).model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
+        for index, confidence in enumerate(
+            [round(0.10 + 0.02 * step, 2) for step in range(25)], start=1
+        )
+    ]
+    others = [
+        _finding(
+            "Alpha",
+            f"https://s{index}.test/one",
+            content=f"Other {index}.",
+            confidence=confidence,
+        )
+        for index, confidence in enumerate(
+            [0.92, 0.90, 0.88, 0.86, 0.84, 0.82], start=1
+        )
+    ]
+
+    budget = bound_sub_topic_findings(
+        [*bound, *others], required_target_ids=[PLANNED_TARGET_ID]
+    )
+
+    assert budget.findings_retained == 6
+    assert {
+        finding.content for finding in budget.retained if finding.target_ids
+    } == {"Bound 24.", "Bound 25."}
+    assert budget.dropped_cap == 25
+
+
+def test_the_exemption_ceiling_is_counted_per_required_target() -> None:
+    """Two required targets each keep their own two, not two between them.
+
+    Three findings bind each of two required obligations. A ceiling of two
+    overall would let the first target's evidence use up the second's; the
+    guarantee is per obligation, so each keeps its own strongest two.
+    """
+    findings = [
+        _finding(
+            "Alpha",
+            "https://a.test/one",
+            content=f"A{index}.",
+            confidence=confidence,
+        ).model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
+        for index, confidence in enumerate([0.30, 0.20, 0.10], start=1)
+    ] + [
+        _finding(
+            "Alpha",
+            "https://b.test/one",
+            content=f"B{index}.",
+            confidence=confidence,
+        ).model_copy(update={"target_ids": [OTHER_TARGET_ID]})
+        for index, confidence in enumerate([0.60, 0.50, 0.40], start=1)
+    ] + [
+        _finding(
+            "Alpha",
+            f"https://s{index}.test/one",
+            content=f"Other {index}.",
+            confidence=confidence,
+        )
+        for index, confidence in enumerate(
+            [0.95, 0.93, 0.91, 0.89, 0.87, 0.85], start=1
+        )
+    ]
+
+    budget = bound_sub_topic_findings(
+        findings,
+        required_target_ids=[PLANNED_TARGET_ID, OTHER_TARGET_ID],
+    )
+
+    assert budget.findings_retained == 8
+    assert {
+        target_id: {
+            finding.content
+            for finding in budget.retained
+            if target_id in finding.target_ids
+        }
+        for target_id in (PLANNED_TARGET_ID, OTHER_TARGET_ID)
+    } == {
+        PLANNED_TARGET_ID: {"A1.", "A2."},
+        OTHER_TARGET_ID: {"B1.", "B2."},
+    }
+    assert budget.dropped_cap == 4
+
+
 def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
     """Only the ids the caller marks required buy an exemption.
 
@@ -869,7 +971,7 @@ def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
         )
     ]
     bound = [
-        finding.model_copy(update={"target_ids": ["topic-01-target-02"]})
+        finding.model_copy(update={"target_ids": [OTHER_TARGET_ID]})
         for finding in findings[:2]
     ]
 
