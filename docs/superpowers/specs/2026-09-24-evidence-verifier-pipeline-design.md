@@ -499,14 +499,18 @@ independent audit rates it GREAT.
   the question did not name. The step-5 probe checks the benchmark plan; a
   failure is fixed by tightening the general rule (for example the
   primary-publisher sentence), never by quoting the benchmark again.
-- **A subject the page does not carry drops its figure (D11).** Like a
-  period or scope correction, a Context Check subject that is not in the
-  figure's `evidence_words` refuses the figure; the pre-flight's Findings line
-  shows whether that costs figures.
+- **A disputed subject drops its figure (D11).** A Context Check subject the
+  page does not carry (in the figure's evidence words or its passage) is
+  ignored when the extraction recorded none, so an unverified subject never
+  drops a figure; it drops the figure only when it disputes a subject the
+  extraction recorded. The pre-flight's Findings line shows whether that
+  costs figures.
 - **Known limits (D11, deferred).** The researcher reads at most four unique
   sources per sub-topic, so a shortlist that needs more pages is thinner
-  (reported honestly); organisation matching knows English legal suffixes
-  only, so a maker on a country-code host may be named by its host.
+  (reported honestly), and organisation matching knows English legal
+  suffixes only (Fable §8.5, `identity.py`). A maker or agency on a
+  country-code or shared host with no Source-Evaluator issuer is credited
+  under its host label (§8.7-D16, kept): honest, but host-named.
 
 ## 12. Out of scope
 
