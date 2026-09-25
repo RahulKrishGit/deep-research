@@ -996,6 +996,45 @@ def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
     assert not any(finding.target_ids for finding in budget.retained)
 
 
+def test_the_cap_keeps_the_sub_topics_own_obligation_ahead_of_other_target_rows() -> None:
+    """D4: the ordinary cap must not let a more confidently scored row bound
+    to another sub-topic's target crowd out this sub-topic's own obligation
+    -- the audited run's cap kept six of another topic's price rows this way
+    and dropped the sub-topic's own restatement of its required obligation.
+    """
+    exempt_a = _finding(
+        "Alpha", "https://a.test/one", content="Own obligation, first.", confidence=0.9
+    ).model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
+    exempt_b = _finding(
+        "Alpha", "https://a.test/one", content="Own obligation, second.", confidence=0.85
+    ).model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
+    own_overflow = _finding(
+        "Alpha",
+        "https://a.test/one",
+        content="Own obligation, third.",
+        confidence=0.35,
+    ).model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
+    other_topic_rows = [
+        _finding(
+            "Alpha",
+            "https://a.test/one",
+            content=f"Other-target row {index}.",
+            confidence=confidence,
+        ).model_copy(update={"target_ids": [OTHER_TARGET_ID]})
+        for index, confidence in enumerate([0.9, 0.8, 0.7, 0.6, 0.5, 0.4], start=1)
+    ]
+
+    budget = bound_sub_topic_findings(
+        [exempt_a, exempt_b, own_overflow, *other_topic_rows],
+        required_target_ids=[PLANNED_TARGET_ID],
+        own_target_ids=[PLANNED_TARGET_ID],
+    )
+
+    retained_content = {finding.content for finding in budget.retained}
+    assert "Own obligation, third." in retained_content
+    assert "Other-target row 6." not in retained_content
+
+
 def test_extraction_messages_carry_the_sub_topic_criteria_and_evidence() -> None:
     task = SubTopicTask(
         instruction="Gather evidence for Alpha.",
@@ -1062,6 +1101,45 @@ def test_extraction_evidence_keeps_search_payloads_out_of_the_evidence_block() -
     assert "- [web_search]" not in body
     assert "Logical error rates fell below break-even." not in body
     assert "- QEC 2025: https://example.test/qec" in body
+
+
+def test_extraction_confidence_ranks_this_sub_topics_own_obligations_first() -> None:
+    """D4: the model's own confidence score must favour this sub-topic's own
+    obligations over a passage that merely answers another sub-topic's
+    target -- the audited run's cap ranked by that score and kept six of
+    another topic's price rows ahead of the sub-topic's own answer.
+    """
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(agent_name="researcher", stop_reason="finished")
+
+    system_message = extraction_messages(task, run, evidence_chars=200)[0]
+
+    assert system_message.role == "developer"
+    assert "this sub-topic's own" in system_message.content
+
+
+def test_extraction_registry_contract_treats_a_condition_label_as_furniture() -> None:
+    """D8: a caption, player title or condition label a page prints beside a
+    name is furniture, not a judgement -- the audited run turned a caption
+    naming a recording condition into a rating the page never made.
+    """
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(agent_name="researcher", stop_reason="finished")
+
+    body = extraction_messages(
+        task,
+        run,
+        evidence_chars=200,
+        acquisition_context="- evidence_id=ev-1 read_id=read-1 locator=chunk-0",
+    )[1].content
+
+    assert "parenthetical condition label" in body
+    assert "not a judgement" in body
+
 
 def test_drafts_are_stamped_with_the_sub_topic_and_extraction_time() -> None:
     draft = SubTopicFindingsDraft(
@@ -2784,6 +2862,58 @@ def test_the_researcher_prompt_requires_reading_and_prefers_primary_sources(
     assert "a separate extraction step reads" in prompt
     assert "Record publication date" not in prompt
     assert "save_to_memory" not in prompt
+
+
+def test_the_selection_query_is_built_from_target_questions_and_the_research_question(
+    tracker: Tracker,
+) -> None:
+    """D3: the query must ask what a page has to state, in the plan's own
+    target questions and the run's research question -- not the sub-topic's
+    title and success criteria in the planner's words, which the audited run
+    showed miss the pages' own vocabulary.
+    """
+    agent = _researcher(tracker, ScriptedCompleter())
+    target = make_target(
+        target_id="topic-01-target-01",
+        question="Which product has the clearest voice pickup in calls?",
+        required=True,
+    )
+    sub_topic = SubTopic(
+        coverage_id="topic-01",
+        title="Alpha",
+        rationale="Alpha matters.",
+        search_queries=["Alpha 2025"],
+        success_criteria=["A named source about Alpha."],
+        priority=1,
+        evidence_targets=[target],
+    )
+    task = SubTopicTask(instruction="Gather evidence for Alpha.", sub_topic=sub_topic)
+    agent._run_source_state = ResearchState(
+        session_id="session-1",
+        original_question="What has the best call quality in 2026?",
+        sub_topics=[sub_topic],
+    )
+
+    policy = agent._policy_for_task(task)
+
+    assert "clearest voice pickup" in policy.query
+    assert "best call quality" in policy.query
+    assert "Alpha" not in policy.query
+
+
+def test_the_researcher_prompt_requires_one_more_search_before_finishing_a_required_obligation(
+    tracker: Tracker,
+) -> None:
+    """RES-1 (D12): a required obligation is met only by a page about it, and
+    the loop must try once more in the obligation's own words rather than
+    finishing on general pages alone.
+    """
+    agent = _researcher(tracker, ScriptedCompleter())
+
+    prompt = agent.system_prompt(AgentTask(instruction="Gather evidence."))
+
+    assert "answered only by a page about that obligation" in prompt
+    assert "search once more in the obligation's own words" in prompt
 
 
 @pytest.mark.parametrize(
@@ -5300,6 +5430,50 @@ def test_build_findings_refuses_a_snippet_over_the_cap() -> None:
     read = make_read(long_text)
     findings, rejected = _build(read, _draft(read, snippet=long_text.strip()))
     assert findings == [] and f"longer than {MAX_SNIPPET_CHARS}" in rejected[0]
+
+
+def test_build_findings_refuses_a_judgement_snippet_with_a_bare_pronoun_subject() -> None:
+    """RES-4 code guard (D7): a verdict whose subject is a bare pronoun or
+    demonstrative, with no referent anywhere in the quoted snippet, must
+    never become a finding -- the audited run reported "this is the model
+    to beat" and nothing downstream could ever say what "this" was.
+    """
+    text = "Utility reports vary widely across regions. This is the utility to beat."
+    read = make_read(text, passages={"page-1-chunk-0": text})
+    findings, rejected = _build(
+        read,
+        _draft(
+            read,
+            snippet="This is the utility to beat.",
+            content="This is the utility to beat.",
+            figures=[],
+            data_period=None,
+        ),
+    )
+    assert findings == []
+    assert "bare pronoun" in rejected[0]
+
+
+def test_build_findings_admits_a_judgement_snippet_that_carries_its_own_referent() -> None:
+    """The same verdict is admitted once the snippet also carries the
+    neighbouring sentence that names its subject -- the adjacent-sentence
+    rule RES-4 now asks the model to follow.
+    """
+    text = "Meridian Grid reports the most additions this year. This is the utility to beat."
+    read = make_read(text, passages={"page-1-chunk-0": text})
+    findings, rejected = _build(
+        read,
+        _draft(
+            read,
+            snippet=text,
+            content="Meridian Grid is the utility to beat.",
+            figures=[],
+            data_period=None,
+        ),
+    )
+    assert rejected == []
+    [finding] = findings
+    assert finding.snippet == text
 
 
 def test_an_unusable_figure_is_dropped_but_the_finding_is_kept() -> None:
