@@ -56,6 +56,7 @@ from deep_research.agents.report_writer import (
     WriterSectionDraft,
     compose_written_report,
 )
+from deep_research.agents.researcher import sub_topic_skipped_error
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.utils.config import AgentRuntimeConfig
@@ -809,6 +810,132 @@ def test_the_quality_record_is_bounded_json_without_page_payloads() -> None:
     assert record["findings"] and record["statements"]
     assert page not in encoded
     assert json.loads(encoded) == record
+
+
+# --- the errors the record publishes (§6.2) -----------------------------------
+#
+# Two decisions live in ``agents/report.py`` and reach the reader through the
+# quality record: ``_published_details`` decides which error details may be
+# published at all, and ``error_reading`` decides which sentence a record gets
+# when one error type has several causes. Task 4.10's sweep deleted the tests
+# that held both decisions, because the ledger section they were written
+# against is gone; the artifact below publishes both, so these restore them.
+
+
+def test_the_quality_record_publishes_the_bounded_tool_failure_diagnosis() -> None:
+    """A classified tool failure keeps its diagnosis; an unvetted one keeps none.
+
+    The bounded scraper diagnosis is the only reason a ``web_scraper`` failure
+    can be counted by class rather than merely counted, so the public record
+    has to carry it -- otherwise classifying the failure buys the reader
+    nothing. Every other type's details stay out: this artifact is public, and
+    those values are not produced by a projection that revalidates them.
+    """
+    composition = _written_composition(
+        errors=[
+            ResearchError(
+                error_type="agent_tool_failed",
+                source="agent.researcher",
+                message="web_scraper failed; the agent continued.",
+                recoverable=True,
+                details={
+                    "tool": "web_scraper",
+                    "iteration": 3,
+                    "tool_error_type": "HTTPStatusError",
+                    "attempts": 2,
+                    "retries": 1,
+                    "status_code": 503,
+                    "content_type": "text/html",
+                },
+            ),
+            ResearchError(
+                error_type="planner_plan_defects_unresolved",
+                source="agent.planner",
+                message="The plan stands with its recorded defects.",
+                recoverable=True,
+                details={"unvetted": "https://internal.example/secret"},
+            ),
+        ]
+    )
+    state = _record_state(composition, errors=list(composition.errors))
+
+    record = render_quality_record(state, composition, None)
+
+    rows = {row["error_type"]: row for row in record["errors"]}
+    assert "tool_error_type=HTTPStatusError" in rows["agent_tool_failed"]["details"]
+    assert "status_code=503" in rows["agent_tool_failed"]["details"]
+    assert "content_type=text/html" in rows["agent_tool_failed"]["details"]
+    assert "attempts=2" in rows["agent_tool_failed"]["details"]
+    assert rows["agent_tool_failed"]["message"] == (
+        "web_scraper failed; the agent continued."
+    )
+    assert rows["planner_plan_defects_unresolved"]["details"] == "—"
+
+
+def test_the_quality_record_names_the_skipped_sub_topic_and_its_reason() -> None:
+    """A skipped sub-topic must publish *which* one and *why*.
+
+    It is the difference between a coverage gap and a deferral: a sub-topic
+    the pass's own cap pushed out, a sub-topic a provider failure stopped the
+    pass before, and a sub-topic an earlier pass already answered are three
+    different states of the run. The locally-stamped ``coverage_id`` and the
+    enumerated ``reason`` are what let a replay tell them apart, so both are
+    published beside the sentence.
+    """
+    composition = _written_composition(
+        errors=[
+            sub_topic_skipped_error(
+                _topic("topic-04", "Interconnection queue reform"), reason="cap"
+            )
+        ]
+    )
+    state = _record_state(composition, errors=list(composition.errors))
+
+    record = render_quality_record(state, composition, None)
+
+    details = record["errors"][0]["details"]
+    assert "coverage_id=topic-04" in details
+    assert "reason=cap" in details
+    assert "priority=1" in details
+    assert "sub_topic=Interconnection queue reform" in details
+
+
+def test_the_quality_record_reads_each_skip_reason_distinctly() -> None:
+    """One producer message, two readings: the reason decides the sentence.
+
+    ``sub_topic_skipped_error`` writes the same message for every reason, and
+    that message says the sub-topic was never researched -- which is true of a
+    provider failure that stopped the pass and false of a sub-topic the pass's
+    own cap deferred. Publishing the producer's sentence for both reports a
+    capped run as a lost one, so the reading follows the enumerated reason.
+    """
+    composition = _written_composition(
+        errors=[
+            sub_topic_skipped_error(
+                _topic("topic-04", "Interconnection queue reform"), reason="cap"
+            ),
+            sub_topic_skipped_error(
+                _topic("topic-06", "Retirement schedules"),
+                reason="provider_failure_stopped_processing",
+            ),
+        ]
+    )
+    state = _record_state(composition, errors=list(composition.errors))
+
+    record = render_quality_record(state, composition, None)
+
+    assert [row["message"] for row in record["errors"]] == [
+        "This planned sub-topic was deferred: the pass reached its sub-topic "
+        "limit before its turn came up.",
+        "A planned sub-topic was never researched; a provider failure stopped "
+        "the pass before it could run.",
+    ]
+    # The reading is beside the record's own typed details, not instead of
+    # them: which pass stopped, and which sub-topic it cost, are both still
+    # addressable without parsing the sentence.
+    stopped_details = record["errors"][1]["details"]
+    assert "coverage_id=topic-06" in stopped_details
+    assert "reason=provider_failure_stopped_processing" in stopped_details
 
 
 # --- the quality record a written pass publishes (§6.2; Task 4.5) -------------

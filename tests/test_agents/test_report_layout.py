@@ -196,3 +196,19 @@ def test_the_report_shows_an_unattributed_row_reading() -> None:
     composition = base.model_copy(update={"fact_rows": [base.fact_rows[0], unattributed_row]})
     report = render_written_report(composition)
     assert "U.S. Energy Information Administration (source does not attribute it)" in report
+
+
+def test_an_undated_pass_says_so_instead_of_reading_a_clock() -> None:
+    """No recorded timestamp prints as "not recorded", never as a date.
+
+    ``as_of`` is the newest timestamp the *evidence* carries, and a pass whose
+    evidence carries none has an empty one. The header must say so: a report
+    that printed a date there would be asserting currency the evidence never
+    stated, and the README promises the undated session says so instead.
+    """
+    composition = _composition().model_copy(update={"as_of": ""})
+
+    header = render_written_report(composition).splitlines()[2]
+
+    assert "As of not recorded." in header
+    assert re.search(r"\d{4}-\d{2}-\d{2}", header) is None

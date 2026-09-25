@@ -114,6 +114,48 @@ def test_finding_fingerprint_separates_url_topic_and_content() -> None:
         assert finding_fingerprint(variant) != baseline
 
 
+def test_finding_fingerprint_folds_unicode_formatting() -> None:
+    """NFKC folding: full-width digits and a non-breaking space are formatting.
+
+    The two records say the same thing about the same passage, so they are one
+    finding; a fingerprint that keyed on the code points instead would let the
+    same restated evidence pile up once per transcription.
+    """
+    assert finding_fingerprint(finding("Capacity fell in 2024.")) == (
+        finding_fingerprint(finding("Capacity fell in\u00a0\uff12\uff10\uff12\uff14."))
+    )
+
+
+def test_finding_fingerprint_keeps_numbers_units_and_comparisons() -> None:
+    """A comparison is content: ``<400`` is not ``>400``, nor ``400``.
+
+    Every pair below asserts something the baseline does not -- a different
+    number, a different unit, a stricter reading of the same figure, or the
+    opposite side of it -- so a normalization that dropped them would give two
+    contradictory findings one identity and fold one away.
+    """
+    baseline = finding_fingerprint(finding("The queue holds 400 ppm."))
+
+    for different in (
+        "The queue holds 401 ppm.",
+        "The queue holds 400 ppb.",
+        "The queue holds more than 400 ppm.",
+        "The queue holds less than 400 ppm.",
+        "The queue holds <400 ppm.",
+        "The queue holds >400 ppm.",
+    ):
+        assert finding_fingerprint(finding(different)) != baseline
+
+
+def test_finding_fingerprint_keeps_negation_and_geography() -> None:
+    assert finding_fingerprint(finding("The queue did not grow.")) != (
+        finding_fingerprint(finding("The queue did grow."))
+    )
+    assert finding_fingerprint(finding("Adoption rose in India.")) != (
+        finding_fingerprint(finding("Adoption rose in China."))
+    )
+
+
 # --- source snapshots -----------------------------------------------------
 
 
@@ -345,6 +387,25 @@ def test_deduplicate_findings_separates_other_urls_topics_and_content() -> None:
     )
 
     assert len(kept) == 4
+
+
+def test_deduplicate_findings_keeps_both_sides_of_one_comparison() -> None:
+    """``<400 ppm`` and ``>400 ppm`` are two assertions, not one restatement.
+
+    The fold is exact-match only, so the only way these two survive together is
+    that their fingerprints differ -- which they do only because the comparison
+    symbols are kept. Losing that would silently delete whichever side the pass
+    recorded second, and with it the finding a statement may rest on.
+    """
+    below = finding("The queue holds <400 ppm.")
+    above = finding("The queue holds >400 ppm.")
+
+    kept = deduplicate_findings([below, above])
+
+    assert [item.content for item in kept] == [
+        "The queue holds <400 ppm.",
+        "The queue holds >400 ppm.",
+    ]
 
 
 def test_deduplicate_findings_preserves_first_seen_order_of_survivors() -> None:

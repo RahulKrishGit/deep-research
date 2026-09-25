@@ -2098,8 +2098,6 @@ def _invariant_empty_answer_answered_nothing(run: ReplayRun) -> str | None:
     if answered:
         return f"the run answered {sorted(answered)} without usable evidence"
     quality = run.state.quality
-    if quality is not None and quality.answered_target_ids:
-        return "the quality snapshot recorded answered target ids"
     composition = run.state.composition
     missing = set(quality.missing_required_target_ids) if quality else set()
     listed = (

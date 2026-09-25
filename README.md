@@ -918,9 +918,13 @@ session always renders the same date and a session with no dated evidence says
 so instead of printing when it happened to be printed. The ledger states the
 session and the pass instead, and neither document prints the run's own clock
 date: that date is carried as `generated_on` in the quality record. Sources are
-attributed where the report cites them; the ledger keeps the assessments of the
-sources the reader report does not cite, so "what was assessed" and "what was
-cited" stay separately answerable.
+attributed where the report cites them: its **Sources** list carries only the
+pages its own statements cite, while the ledger keeps every finding the pass
+recorded — cited by a statement or not — with the snippet it was read from, its
+read locator and its verification. How many sources were assessed, and how many
+of those the report cited, is published as the counts `assessed_sources` and
+`cited_assessed_sources` in the run's evidence counts, not as rows in either
+document.
 
 ### Quality Semantics
 

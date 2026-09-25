@@ -8,7 +8,10 @@ from collections.abc import Sequence
 from deep_research.agents.events import agent_event
 from deep_research.agents.evidence_verifier import evidence_verified_event
 from deep_research.agents.report_writer import WrittenReport, report_written_event
-from deep_research.agents.researcher import sub_topic_completed_event
+from deep_research.agents.researcher import (
+    sub_topic_completed_event,
+    sub_topic_skipped_error,
+)
 from deep_research.agents.steps import ReActRun
 from deep_research.cli import (
     ProgressStream,
@@ -853,6 +856,47 @@ def test_verbose_warnings_add_the_typed_messages() -> None:
         "  tools.web_search: 1 error",
         "    web_search_failed (non-fatal)",
         "    warning: [web_search_failed] The search provider timed out.",
+    ]
+
+
+def test_a_stopped_pass_is_not_printed_as_a_never_researched_topic() -> None:
+    """``error_reading`` gives a skip's enumerated reason its own sentence.
+
+    ``sub_topic_skipped_error`` writes one message for every reason, and that
+    message says the sub-topic was never researched. A sub-topic the pass's own
+    cap deferred is not that, so the verbose line -- the only place the
+    sentence is printed -- must read each reason's own words rather than the
+    producer's.
+    """
+    deferred = _topic("topic-04", "Interconnection queues")
+    stopped = _topic("topic-06", "Retirement schedules")
+    state = ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        sub_topics=[deferred, stopped],
+        errors=[
+            sub_topic_skipped_error(deferred, reason="cap"),
+            sub_topic_skipped_error(
+                stopped, reason="provider_failure_stopped_processing"
+            ),
+        ],
+    )
+
+    lines = render_warnings(build_outcome(state=state), verbose=True)
+
+    assert lines == [
+        "Warnings: 2 errors (0 recovered, 2 non-fatal, 0 fatal)",
+        "  agent.researcher: 2 errors (coverage topic-04, topic-06)",
+        "    researcher_sub_topic_skipped (non-fatal; reason cap): topic-04 "
+        '"Interconnection queues"',
+        "    researcher_sub_topic_skipped (non-fatal; reason "
+        'provider_failure_stopped_processing): topic-06 "Retirement schedules"',
+        "    warning: [researcher_sub_topic_skipped] This planned sub-topic "
+        "was deferred: the pass reached its sub-topic limit before its turn "
+        "came up.",
+        "    warning: [researcher_sub_topic_skipped] A planned sub-topic was "
+        "never researched; a provider failure stopped the pass before it "
+        "could run.",
     ]
 
 
