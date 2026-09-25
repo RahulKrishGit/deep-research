@@ -67,7 +67,7 @@ def example_payload(
     into the dataset. Reference expectations live under ``outputs``
     because LangSmith shows that block as the reference and evaluators
     read it there. ``state_summary`` carries counts plus the subtopic
-    titles, source URLs, and claim texts: enough to inspect the case in
+    titles, source URLs, and verified finding texts: enough to inspect the case in
     the UI without shipping the whole model.
     """
     state = case.state
@@ -89,8 +89,10 @@ def example_payload(
                 "finding_count": len(state.raw_findings),
                 "source_count": len(state.evaluated_sources),
                 "source_urls": [source.url for source in state.evaluated_sources],
-                "claim_count": len(state.verified_claims),
-                "claim_texts": [claim.text for claim in state.verified_claims],
+                "verified_finding_count": len(state.verified_findings),
+                "verified_finding_texts": [
+                    finding.content for finding in state.verified_findings
+                ],
             },
         },
         "outputs": {

@@ -20,13 +20,9 @@ from typing import TypeAlias
 from langsmith.schemas import Example, Run
 from pydantic import ValidationError
 
-from deep_research.agents.critic import route_decision
-from deep_research.agents.fact_checker import (
-    claimed_domains_for,
-    independent_domains,
-)
-from deep_research.agents.planner import earned_support_policy
-from deep_research.agents.report import build_citation_index, collapse_mirror_urls
+from deep_research.agents.evidence import excerpt_matches
+from deep_research.agents.evidence_verifier import read_text
+from deep_research.agents.report import collapse_mirror_urls
 from deep_research.agents.sources import (
     normalize_source_url,
     publisher_identity,
@@ -44,10 +40,10 @@ from deep_research.evaluation.models import (
 from deep_research.utils.types import (
     MAX_TARGETS_PER_TOPIC,
     AtomicProposition,
-    Claim,
-    Critique,
-    CritiqueGap,
     EvidenceTarget,
+    Finding,
+    FindingVerification,
+    ReadRecord,
     ScoredSource,
     SubTopic,
     UnitScore,
@@ -81,18 +77,6 @@ _CITATION_MARKER_PATTERN = re.compile(r"\[(\d+)\]")
 # compares equal to the canonical ``known_source_urls`` entry.
 _URL_TRAILING_PUNCTUATION = ".,;:!?)]}'\"'"
 _TRANSPORT_FAILURE_TYPE = "langsmith_tracing_failure"
-_PROVIDER_FAILURE_KINDS = frozenset(
-    {
-        "output_limit",
-        "schema_output",
-        "provider_timeout",
-        "provider_rate_limit",
-        "provider_transport",
-        "provider_http",
-        "provider_response",
-        "provider_failure",
-    }
-)
 
 
 class MissingMetricError(RuntimeError):
@@ -367,22 +351,6 @@ def _gate_citations_known(
         url = _field(finding, "source_url")
         if isinstance(url, str):
             allowed.add(_normalized(url))
-    # ``evidence.claims`` is populated from ``state.verified_claims`` (see
-    # targets.py), each of which carries ``source_urls`` (plural — a claim
-    # may be corroborated by more than one source). Those are just as
-    # "known" as sources/findings URLs and belong in ``allowed`` too.
-    #
-    # Latent-only: no currently-registered case exercises a claim-only URL
-    # (one not already surfaced via sources/findings), so the golden-output
-    # regression test below cannot yet cover this branch end-to-end without
-    # a new case. Covered directly instead by a focused unit test.
-    evidence_claims = _field(output.evidence, "claims") or ()
-    for claim in evidence_claims:
-        claim_urls = _field(claim, "source_urls") or ()
-        if isinstance(claim_urls, (list, tuple)):
-            allowed.update(
-                _normalized(url) for url in claim_urls if isinstance(url, str)
-            )
     if case.tier == "live":
         for step in output.trajectory:
             allowed.update(
@@ -633,24 +601,17 @@ AGENT_GATE_IDS: dict[AgentName, tuple[str, ...]] = {
         "bounded_scores",
         "low_confidence_flagged",
     ),
-    "fact_checker": (
-        "valid_verdicts",
-        "evidence_linked",
-        "independent_domains",
-        "conservative_insufficiency",
+    "evidence_verifier": (
+        "verification_recorded",
+        "no_invented_evidence",
+        "drop_reasons_named",
     ),
-    "synthesizer": (
+    "report_writer": (
         "valid_report",
         "citations_known_only",
-        "limitations_represented",
+        "refusals_logged",
         "no_persistence_calls",
         "no_false_publication_claim",
-    ),
-    "critic": (
-        "bounded_component_scores",
-        "critique_actionable",
-        "route_consistent",
-        "review_produced",
     ),
 }
 
@@ -661,7 +622,6 @@ _SCORE_FIELDS: tuple[str, ...] = tuple(
     name for name in ScoredSource.model_fields if name.endswith("_score")
 )
 
-_LIMITATION_PHRASES = ("limitation", "caveat", "what we could not")
 _SIGNAL_KEYWORDS = ("authority", "recency", "relevance", "reputation")
 _YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
 _CAPITALIZED_PATTERN = re.compile(r"\b[A-Z][A-Za-z]+\b")
@@ -719,92 +679,10 @@ def _error_records(output: TargetOutput) -> list[dict[str, object]]:
     return [dict(entry) for entry in entries if isinstance(entry, Mapping)]
 
 
-def _has_typed_provider_fallback(
-    output: TargetOutput, *, operation: str
-) -> bool:
-    """Recognize one allow-listed provider fallback operation."""
-    for entry in _error_records(output):
-        details = entry.get("details")
-        if not isinstance(details, Mapping):
-            continue
-        if details.get("operation") != operation:
-            continue
-        provider_failure = details.get("provider_failure")
-        if not isinstance(provider_failure, Mapping):
-            continue
-        if provider_failure.get("kind") in _PROVIDER_FAILURE_KINDS:
-            return True
-    return False
-
-
-def _typed_critique(output: TargetOutput) -> Critique | None:
-    """The critique as the production contract reads it, or ``None``.
-
-    Production serializes ``run.result.model_dump(mode="json")``, so a typed
-    gap arrives as a dictionary. Parsing it back once here — rather than
-    teaching every evaluator to read dictionaries — means the metrics judge the
-    same contract the agent produced. Before this, eight filters selected only
-    ``isinstance(item, str)``, so every production gap was invisible: a critique
-    with a material typed gap looked like a critique with no gaps,
-    ``critique_actionable`` could fail a real typed gap, and ``no_spurious_gaps``
-    skipped every gap it was meant to judge.
-
-    The legacy string form still parses, because ``Critique`` accepts it, so an
-    old evaluation artifact keeps being gradable. ``None`` means the artifact is
-    not a critique at all, which every caller treats as a failure rather than as
-    an absence of defects.
-    """
-    value = _artifact(output, "critique")
-    if value is None:
-        return None
-    try:
-        return Critique.model_validate(value)
-    except (TypeError, ValidationError):
-        return None
-
-
-def _critique_is_unreviewed(output: TargetOutput, critique: Critique | None) -> bool:
-    """True when no review of this report exists, by either signal.
-
-    ``review_status`` is the contract's own answer and the error ledger is the
-    compatibility one: an artifact written before the field existed still
-    records the fallback as a typed provider failure.
-    """
-    if critique is not None and critique.review_status == "failed":
-        return True
-    return _has_typed_provider_fallback(output, operation="critic_report_review")
-
-
 def _normalized_text(value: object) -> str:
     if not isinstance(value, str):
         return ""
     return " ".join(value.split()).casefold()
-
-
-def _findings_section(report: str) -> str | None:
-    """Return only the narrative between the report's Findings boundaries.
-
-    The reader report opens its narrative at ``## Findings`` and closes it at
-    ``## Uncertainty and conflicting evidence``: the verified-claim registry
-    that used to sit between them now belongs to the evidence ledger, so a
-    report that still carried one would fail this boundary closed.
-    """
-    findings_matches = list(
-        re.finditer(r"(?m)^## Findings[ \t]*\r?$", report)
-    )
-    boundary_matches = list(
-        re.finditer(
-            r"(?m)^## Uncertainty and conflicting evidence[ \t]*\r?$",
-            report,
-        )
-    )
-    if len(findings_matches) != 1 or len(boundary_matches) != 1:
-        return None
-    findings_heading = findings_matches[0]
-    boundary_heading = boundary_matches[0]
-    if findings_heading.end() > boundary_heading.start():
-        return None
-    return report[findings_heading.end() : boundary_heading.start()]
 
 
 _READER_REFERENCE_PATTERN = re.compile(
@@ -872,29 +750,6 @@ def _forbidden_publication_claims(reference: Mapping) -> list[str]:
     if isinstance(claims, list):
         return [str(item) for item in claims]
     return []
-
-
-def _forbidden_persistence_claims(reference: Mapping) -> list[str]:
-    """Backward-compatible alias for older non-Task-6 metric artifacts."""
-    return _forbidden_publication_claims(reference)
-
-
-def _registrable_family_count(
-    domains: Sequence[str], *, family: str | None
-) -> int:
-    """Distinct registrable families among ``domains``.
-
-    ``a.example.com`` and ``b.a.example.com`` are one family; a declared
-    ``dependent_domain_family`` folds subdomains of itself the same way.
-    """
-    families: list[str] = []
-    for domain in sorted(domains, key=len):
-        if any(domain == head or domain.endswith(f".{head}") for head in families):
-            continue
-        if family and (domain == family or domain.endswith(f".{family}")):
-            continue
-        families.append(domain)
-    return len(families)
 
 
 # --- Planner gates ---------------------------------------------------------
@@ -1224,275 +1079,329 @@ def _gate_low_confidence_flagged(
     )
 
 
-# --- Fact checker gates ----------------------------------------------------
+# --- Evidence verifier gates -----------------------------------------------
 
 
-def _gate_valid_verdicts(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
-        return _agent_result("valid_verdicts", False, "verified_claims is not a list")
-    for index, entry in enumerate(claims):
-        try:
-            Claim.model_validate(entry)
-        except ValidationError as error:
-            return _agent_result(
-                "valid_verdicts",
-                False,
-                f"claim at index {index} is not a valid Claim: {error}",
-            )
-    return _agent_result("valid_verdicts", True)
+def _verified_findings(output: TargetOutput) -> list[Finding] | None:
+    """Every finding this run judged, typed, or ``None`` when unreadable.
 
-
-def _read_url_identities(output: TargetOutput) -> set[str] | None:
-    """Identities of the URLs this repetition proved it READ, or ``None``.
-
-    ``None`` means the artifact cannot prove any read at all, and the
-    read-provenance gate must then fail closed: the field is absent, the
-    completeness flag is anything but ``True``, or the payload is not a list
-    of strings. This is the opposite polarity to
-    ``_researcher_live_provenance_incomplete``, whose absent-means-complete
-    default is permissive-additive — acceptable for discovery provenance,
-    wrong for a guarantee that a passage was actually read.
+    The result's ``findings`` is preferred and the state update's
+    ``verified_findings`` is the fallback: both carry the same snapshot, and
+    the result is what the agent itself returned. A payload that does not
+    validate is refused rather than guessed at — these gates exist to prove a
+    judgement happened, and an unreadable snapshot proves nothing.
     """
-    fingerprints = _field(output.dependencies, "read_url_fingerprints")
-    complete = _field(output.dependencies, "read_url_fingerprints_complete")
-    if not isinstance(fingerprints, (list, tuple)) or complete is not True:
+    payload = _artifact(output, "findings")
+    if not isinstance(payload, (list, tuple)):
         return None
-    return {value for value in fingerprints if isinstance(value, str)}
+    try:
+        return [Finding.model_validate(item) for item in payload]
+    except ValidationError:
+        return None
 
 
-def _passage_url_is_read(source_url: str, identities: set[str]) -> bool:
-    """True when ``source_url``'s canonical identity is a recorded read.
+def _finding_reads(case: EvaluationCase) -> dict[str, ReadRecord]:
+    """The pages this case seeded, keyed by read id."""
+    return dict(_field(case.state, "read_records") or {})
 
-    The identity is computed exactly as the recorder computes it, from
-    ``normalize_source_url``, so two spellings of one page compare equal and a
-    URL that was never read — or could never carry an identity — does not.
+
+def _verification_recorded_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every finding this run produced carries the verifier's judgement.
+
+    ``None`` for a finding means the run never judged it, which is exactly
+    what no later pass may treat as evidence, so this fails closed — on an
+    unreadable payload as much as on an unjudged finding.
     """
-    return (
-        sha256(_normalized(source_url).encode("utf-8")).hexdigest()
-        in identities
-    )
-
-
-def _evidence_linked_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
+    del case
+    findings = _verified_findings(output)
+    if not findings:
         return False
-    read_identities: set[str] | None = None
-    for entry in claims:
-        if _field(entry, "verdict") == "insufficient_evidence":
+    return all(finding.verification is not None for finding in findings)
+
+
+def _no_invented_evidence_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every kept figure's evidence words are words its own page carries.
+
+    §5.2's rule, re-derived from the artifact rather than trusted: the run
+    records the words the Context Check returned, and this predicate proves
+    the page the finding cites really contains them. A kept figure with no
+    evidence words is an unchecked context (PD-26) and states nothing to
+    invent; a figure whose words are not on its page is an invention however
+    the checker worded its verdict, and a finding whose read is not among the
+    seeded pages cannot be proven at all.
+    """
+    findings = _verified_findings(output)
+    if not findings:
+        return False
+    reads = _finding_reads(case)
+    for finding in findings:
+        verification = finding.verification
+        if verification is None:
             continue
-        evidence = _field(entry, "evidence")
-        source_urls = _field(entry, "source_urls")
-        passages = _field(entry, "verification_evidence")
-        if (
-            not isinstance(evidence, list)
-            or not isinstance(source_urls, list)
-            or not isinstance(passages, list)
-        ):
-            return False
-        contradictions = _field(entry, "contradictions")
-        if not isinstance(contradictions, list):
-            return False
-        if not any(
-            isinstance(item, str) and item.strip()
-            for item in (*evidence, *contradictions)
-        ):
-            return False
-        if not any(isinstance(item, str) and item.strip() for item in source_urls):
-            return False
-        claim_source_urls = [
-            item for item in source_urls if isinstance(item, str) and item.strip()
-        ]
-        if not passages:
-            return False
-        if read_identities is None:
-            read_identities = _read_url_identities(output)
-            if read_identities is None:
-                return False
-        if _field(entry, "verdict") == "verified" and not any(
-            _field(passage, "stance") == "supports" for passage in passages
-        ):
-            return False
-        if _field(entry, "verdict") == "contradicted" and not any(
-            _field(passage, "stance") == "contradicts" for passage in passages
-        ):
-            return False
-        for passage in passages:
-            source_url = _field(passage, "source_url")
-            source_title = _field(passage, "source_title")
-            locator = _field(passage, "locator")
-            excerpt = _field(passage, "excerpt")
-            stance = _field(passage, "stance")
-            if (
-                not isinstance(source_url, str)
-                or not source_url.strip()
-                or not isinstance(source_title, str)
-                or not source_title.strip()
-                or not isinstance(locator, str)
-                or not locator.strip()
-                or not isinstance(excerpt, str)
-                or not excerpt.strip()
-                or stance not in {"supports", "contradicts"}
-            ):
-                return False
-            # A passage may only cite a URL this repetition actually read.
-            # ``citations_known`` is no substitute: it also admits URLs that
-            # merely appear anywhere in live trajectory text, including
-            # discovery-only search observations.
-            if not _passage_url_is_read(source_url, read_identities):
-                return False
-        if _field(entry, "verdict") in {"verified", "contradicted"}:
-            passage_urls = [
-                source_url
-                for passage in passages
-                for source_url in [_field(passage, "source_url")]
-                if isinstance(source_url, str)
-            ]
-            if not independent_domains(
-                passage_urls,
-                claimed_domains=claimed_domains_for(claim_source_urls),
+        for result in verification.figure_results:
+            if not result.kept or not result.evidence_words:
+                continue
+            read = reads.get(finding.read_id or "")
+            if read is None or not excerpt_matches(
+                read_text(read), result.evidence_words
             ):
                 return False
     return True
 
 
-def _gate_evidence_linked(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
-    passed = _evidence_linked_passes(output, case)
-    return _agent_result(
-        "evidence_linked",
-        passed,
-        (
-            ""
-            if passed
-            else (
-                "a non-insufficient claim lacks evidence or sources, or a "
-                "verification passage cites a URL the run never read"
-            )
-        ),
-    )
-
-
-def _independent_domains_passes(
+def _drop_reasons_named_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    reference = case.expectations.reference
-    # The gate enforces a minimum only for cases that pin one: the ordinary
-    # mixed-verdicts case never declares ``minimum_independent_domains`` and
-    # exercises verdict logic, not the independence rule. Same
-    # auto-pass-on-absent-key pattern as ``_low_confidence_flagged_passes``.
-    minimum = reference.get("minimum_independent_domains")
-    if isinstance(minimum, bool) or not isinstance(minimum, (int, float)):
+    """Every figure a run did not keep names why it did not keep it.
+
+    The typed contract already refuses the shape — ``FindingVerification``
+    insists a dropped finding carries its reason, and ``FigureResult`` refuses
+    a figure that is neither kept (with its confirmed context) nor dropped
+    (with its reason) — so this predicate is the fail-closed re-check on the
+    serialized artifact: a drop a reader cannot explain is a silent loss, and
+    a snapshot that cannot be read back is not evidence that it happened.
+    """
+    del case
+    findings = _verified_findings(output)
+    if not findings:
+        return False
+    for finding in findings:
+        verification = finding.verification
+        if verification is None:
+            return False
+        for result in verification.figure_results:
+            if not result.kept and not result.dropped_reason:
+                return False
+    return True
+
+
+def _expected_outcome_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """The verifier's judgement is the one this case was built to produce.
+
+    Each declared outcome names the page and what a run must record for it:
+    the finding's status, the finding's drop reason where it was dropped, the
+    figure's drop reason where a figure was dropped, and the confirmed
+    period, scope, kind, attribution and organisation of the figure it kept.
+    This is what makes a controlled case a test rather than a fixture — the
+    scope correction, the relay's credit and the invented-words refusal are
+    all pinned here — and it is a metric rather than a gate because a
+    near-miss (the right status, the wrong scope) should cost weight rather
+    than fail the run outright.
+    """
+    outcomes = [
+        item
+        for item in case.expectations.reference.get("expected_outcomes") or []
+        if isinstance(item, Mapping)
+    ]
+    if not outcomes:
+        return False
+    findings = _verified_findings(output)
+    if not findings:
+        return False
+    by_url: dict[str, Finding] = {}
+    for finding in findings:
+        by_url.setdefault(_normalized(finding.source_url), finding)
+    for outcome in outcomes:
+        url = _normalized(str(outcome.get("source_url") or ""))
+        finding = by_url.get(url)
+        if finding is None or finding.verification is None:
+            return False
+        verification = finding.verification
+        status = outcome.get("status")
+        if isinstance(status, str) and verification.status != status:
+            return False
+        finding_reason = outcome.get("finding_drop_reason")
+        if (
+            isinstance(finding_reason, str)
+            and verification.dropped_reason != finding_reason
+        ):
+            return False
+        if not _figure_outcome_matches(verification, outcome):
+            return False
+    return True
+
+
+def _figure_outcome_matches(
+    verification: FindingVerification, outcome: Mapping
+) -> bool:
+    """One declared outcome's figure clauses, against a real verification."""
+    figure_reason = outcome.get("figure_drop_reason")
+    if isinstance(figure_reason, str) and not any(
+        result.dropped_reason == figure_reason
+        for result in verification.figure_results
+    ):
+        return False
+    fields = ("period", "scope", "kind", "attribution", "organisation")
+    declared = {name: outcome[name] for name in fields if name in outcome}
+    if not declared:
         return True
-    minimum = int(minimum)
-    family = reference.get("dependent_domain_family")
-    family = family if isinstance(family, str) else None
-    family_identity = (
-        publisher_identity(f"https://{family}") if family else None
-    )
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
+    kept = [
+        result
+        for result in verification.figure_results
+        if result.kept and result.context is not None
+    ]
+    if not kept:
         return False
-    for entry in claims:
-        if _field(entry, "verdict") != "verified":
-            continue
-        source_urls = [
-            url
-            for url in (_field(entry, "source_urls") or [])
-            if isinstance(url, str)
-        ]
-        claimed = claimed_domains_for(source_urls)
-        evidence_urls = [
-            url
-            for passage in (_field(entry, "verification_evidence") or [])
-            for url in [_field(passage, "source_url")]
-            if isinstance(url, str)
-        ]
-        independent = independent_domains(
-            evidence_urls, claimed_domains=claimed
-        )
-        if _registrable_family_count(
-            independent, family=family_identity
-        ) < minimum:
-            return False
-    return True
+    context = kept[0].context
+    assert context is not None
+    return all(getattr(context, name) == value for name, value in declared.items())
 
 
-def _gate_independent_domains(
+def _gate_verification_recorded(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
-    passed = _independent_domains_passes(output, case)
+    passed = _verification_recorded_passes(output, case)
     return _agent_result(
-        "independent_domains",
+        "verification_recorded",
         passed,
-        "" if passed else "a verified claim rests on too few independent domains",
+        "" if passed else "a finding this run produced carries no verification",
     )
 
 
-def _conservative_insufficiency_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
-        return False
-    for entry in claims:
-        if _field(entry, "verdict") != "insufficient_evidence":
-            continue
-        confidence = _field(entry, "confidence")
-        if (
-            not isinstance(confidence, (int, float))
-            or isinstance(confidence, bool)
-            or confidence > 0.5
-        ):
-            return False
-    return True
-
-
-def _gate_conservative_insufficiency(
+def _gate_no_invented_evidence(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
-    passed = _conservative_insufficiency_passes(output, case)
+    passed = _no_invented_evidence_passes(output, case)
     return _agent_result(
-        "conservative_insufficiency",
+        "no_invented_evidence",
         passed,
-        "" if passed else "an insufficient-evidence claim has confidence above 0.5",
+        ""
+        if passed
+        else "a kept figure's evidence words are not on the page it cites",
     )
 
 
-# --- Synthesizer gates -----------------------------------------------------
+def _gate_drop_reasons_named(
+    output: TargetOutput, case: EvaluationCase
+) -> GateResult:
+    passed = _drop_reasons_named_passes(output, case)
+    return _agent_result(
+        "drop_reasons_named",
+        passed,
+        "" if passed else "a dropped figure or finding names no reason",
+    )
+
+
+# --- Report writer gates -----------------------------------------------------
+
+
+def _required_target_ids(case: EvaluationCase) -> list[str]:
+    """Every required obligation the plan stamped, in plan order."""
+    return [
+        target.target_id
+        for topic in case.state.sub_topics
+        for target in counted_evidence_targets(topic.evidence_targets)
+        if target.required
+    ]
+
+
+def _accounted_target_ids(
+    output: TargetOutput,
+) -> tuple[set[str], set[str]] | None:
+    """The composition's answered and Not-found target ids, or ``None``.
+
+    Read from the composition the writer returned rather than from rendered
+    prose: the Key Facts rows record the targets their figures answer, and the
+    Not found list is the composition's own record of the ones nothing
+    answered.
+    """
+    composition = _artifact(output, "composition")
+    if not isinstance(composition, Mapping):
+        return None
+    answered = {
+        str(target_id)
+        for row in composition.get("fact_rows") or []
+        if isinstance(row, Mapping)
+        for target_id in row.get("target_ids") or []
+    }
+    not_found = {
+        str(target.get("target_id"))
+        for target in composition.get("not_found") or []
+        if isinstance(target, Mapping)
+    }
+    return answered, not_found
+
+
+def _valid_report_passes(output: TargetOutput, case: EvaluationCase) -> bool:
+    """Both artifacts are present, and every required target is accounted for.
+
+    Presence alone would pass a report that silently dropped an obligation,
+    which is the failure §6.1 item 5 exists to prevent: a required target the
+    run could not answer has to be listed under Not found, so it is either
+    answered by a figure or named as missing, never absent from both.
+    """
+    report = _report_body(output)
+    evidence = _evidence_body(output)
+    if not report.strip() or not evidence.strip():
+        return False
+    accounted = _accounted_target_ids(output)
+    if accounted is None:
+        return False
+    answered, not_found = accounted
+    return set(_required_target_ids(case)) <= answered | not_found
 
 
 def _gate_valid_report(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
-    report = _report_body(output)
-    evidence = _evidence_body(output)
-    passed = bool(report.strip()) and bool(evidence.strip())
+    passed = _valid_report_passes(output, case)
     return _agent_result(
         "valid_report",
         passed,
         ""
         if passed
-        else "reader markdown or evidence markdown is missing or blank",
+        else "reader markdown or evidence markdown is missing or blank, or a "
+        "required target is neither answered nor listed under Not found",
     )
+
+
+def _reported_citation_urls(output: TargetOutput) -> set[str]:
+    """Every URL the reader report prints, normalized."""
+    return {
+        normalized
+        for url in _URL_PATTERN.findall(_report_body(output))
+        for normalized in [_normalized(url.rstrip(_URL_TRAILING_PUNCTUATION))]
+        if normalized
+    }
+
+
+def _finding_urls(output: TargetOutput) -> set[str] | None:
+    """Every page the composition's own findings carry, or ``None``.
+
+    This is the writer's whole citation vocabulary: §6.1 renders the
+    reference list from the findings a pass composed, so a URL no finding
+    carries is a citation the report cannot have derived — whatever the case
+    declares as known.
+    """
+    composition = _artifact(output, "composition")
+    if not isinstance(composition, Mapping):
+        return None
+    urls: set[str] = set()
+    for item in composition.get("findings") or []:
+        if not isinstance(item, Mapping):
+            continue
+        url = item.get("source_url")
+        if isinstance(url, str):
+            normalized = _normalized(url)
+            if normalized:
+                urls.add(normalized)
+    return urls
 
 
 def _citations_known_only_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    known = {
-        normalize_source_url(url) for url in case.expectations.known_source_urls
-    }
-    report = _report_body(output)
-    cited = {
-        normalize_source_url(url.rstrip(_URL_TRAILING_PUNCTUATION))
-        for url in _URL_PATTERN.findall(report)
-    }
-    return cited <= known
+    del case
+    allowed = _finding_urls(output)
+    if not allowed:
+        return False
+    return _reported_citation_urls(output) <= allowed
 
 
 def _gate_citations_known_only(
@@ -1506,19 +1415,64 @@ def _gate_citations_known_only(
     )
 
 
-def _limitations_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    report = _report_body(output).casefold()
-    return any(phrase in report for phrase in _LIMITATION_PHRASES)
+def _refusals_logged_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every refusal and every drop is published with the reason it earned.
+
+    §6.1 item 7: the evidence log prints every finding, every drop and every
+    refused sentence. A refusal that reaches no reader, or a drop published
+    without its reason, is a fact quietly removed from the run's record — so
+    the drafted text of each refused point, and the reason of each dropped
+    figure and finding, has to appear in the artifact itself.
+    """
+    del case
+    evidence = _evidence_body(output)
+    if not evidence.strip():
+        return False
+    composition = _artifact(output, "composition")
+    if not isinstance(composition, Mapping):
+        return False
+    printed = " ".join(evidence.split())
+    for refused in composition.get("rejected_points") or []:
+        if not isinstance(refused, Mapping):
+            return False
+        reason = refused.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            return False
+        text = " ".join(str(refused.get("text") or "").split())
+        if text and text not in printed:
+            return False
+    for item in composition.get("findings") or []:
+        if not isinstance(item, Mapping):
+            continue
+        verification = item.get("verification")
+        if not isinstance(verification, Mapping):
+            continue
+        if verification.get("status") == "dropped":
+            reason = verification.get("dropped_reason")
+            if not isinstance(reason, str) or f"dropped ({reason})" not in printed:
+                return False
+        for result in verification.get("figure_results") or []:
+            if not isinstance(result, Mapping):
+                continue
+            reason = result.get("dropped_reason")
+            if reason and f"dropped ({reason})" not in printed:
+                return False
+    return True
 
 
-def _gate_limitations_represented(
+def _gate_refusals_logged(
     output: TargetOutput, case: EvaluationCase
 ) -> GateResult:
-    passed = _limitations_passes(output, case)
+    passed = _refusals_logged_passes(output, case)
     return _agent_result(
-        "limitations_represented",
+        "refusals_logged",
         passed,
-        "" if passed else "no limitations heading in the report body",
+        ""
+        if passed
+        else "a refused sentence or a dropped figure is not published with "
+        "its reason",
     )
 
 
@@ -1567,13 +1521,18 @@ def _no_false_publication_claim_passes(
         return False
     result = output.result if isinstance(output.result, Mapping) else {}
     state_update = _state_update(output)
-    # ``path`` is the current SynthesizedReport publication field.  Task 6
-    # leaves it null; ``evidence_path`` is only a composed future filename and
-    # is intentionally allowed.
-    if result.get("path") is not None or state_update.get("path") is not None:
-        return False
-    if "output_path" in result or "output_path" in state_update:
-        return False
+    # The publication paths are written only by the terminal finalizer, from
+    # a write that actually succeeded. A composition pass that records one has
+    # claimed a publication it never performed.
+    for key in (
+        "path",
+        "output_path",
+        "report_path",
+        "evidence_path",
+        "quality_path",
+    ):
+        if result.get(key) is not None or state_update.get(key) is not None:
+            return False
     return True
 
 
@@ -1604,24 +1563,25 @@ def _gate_no_false_publication_claim(
 def _state_citation_urls(case: EvaluationCase) -> list[str]:
     """Every URL this state's own records can derive a citation from.
 
-    The assessed rows and the checked claims, numbered by production's
-    evidence-level index builder — the same one the evidence ledger uses, not
-    the reader's narrower list — so this cannot drift from the URLs a
-    composing run would derive.
+    The assessed rows and the verified findings, in that order: §6.1 numbers
+    the reader's references from the findings a pass composed, and the
+    assessed rows are what name each page's readable copy, so this cannot
+    drift from the URLs a composing run would derive.
     """
-    sources = _field(case.state, "evaluated_sources") or ()
-    claims = _field(case.state, "verified_claims") or ()
-    try:
-        index = build_citation_index(sources, claims)
-    except (AttributeError, TypeError, ValueError):
-        return []
-    return [
-        normalized
-        for citation in index
-        if isinstance(citation.url, str)
-        for normalized in [_normalized(citation.url)]
-        if normalized
-    ]
+    urls: list[str] = []
+    for source in _field(case.state, "evaluated_sources") or ():
+        url = _field(source, "url")
+        if isinstance(url, str):
+            normalized = _normalized(url)
+            if normalized and normalized not in urls:
+                urls.append(normalized)
+    for finding in _field(case.state, "verified_findings") or ():
+        url = _field(finding, "source_url")
+        if isinstance(url, str):
+            normalized = _normalized(url)
+            if normalized and normalized not in urls:
+                urls.append(normalized)
+    return urls
 
 
 def _listed_citation_urls(output: TargetOutput) -> set[str]:
@@ -1658,6 +1618,64 @@ def _citations_locally_derived_passes(
     return listed <= set(_state_citation_urls(case))
 
 
+def _statements_labelled_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every printed statement cites at least one known finding label.
+
+    §6.2's rule, re-checked from the artifact: code keeps only points that
+    cite a known label and attaches that finding's id to the statement it
+    builds, so a statement with no finding id — or with one no label in the
+    registry points at — is prose the reader has no way to trace.
+    """
+    del case
+    composition = _artifact(output, "composition")
+    if not isinstance(composition, Mapping):
+        return False
+    labels = composition.get("finding_labels")
+    if not isinstance(labels, Mapping) or not labels:
+        return False
+    known = {str(value) for value in labels.values()}
+    points: list[object] = []
+    points.extend(composition.get("summary") or [])
+    for section in composition.get("sections") or []:
+        if isinstance(section, Mapping):
+            points.extend(section.get("points") or [])
+    if not points:
+        return False
+    for point in points:
+        statement = point.get("statement") if isinstance(point, Mapping) else None
+        if not isinstance(statement, Mapping):
+            return False
+        ids = statement.get("finding_ids")
+        if not isinstance(ids, (list, tuple)) or not ids:
+            return False
+        if not {str(item) for item in ids} <= known:
+            return False
+    return True
+
+
+def _conflicting_figures_published_passes(
+    output: TargetOutput, case: EvaluationCase
+) -> bool:
+    """Every page the case names as conflicting appears in the references.
+
+    A report that prints one forecaster's figure and drops the other has
+    resolved a disagreement the evidence did not resolve — the failure this
+    case exists to catch, and one no wording check may make (D8): what is
+    graded is that both findings stayed citable.
+    """
+    conflicting = {
+        normalized
+        for url in _reference_strings(case, "conflicting_urls")
+        for normalized in [_normalized(url)]
+        if normalized
+    }
+    if not conflicting:
+        return False
+    return conflicting <= _listed_citation_urls(output)
+
+
 def _one_reference_per_work_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
@@ -1686,126 +1704,6 @@ def _one_reference_per_work_passes(
     return listed == {_normalized(url) for url in canonical}
 
 
-# --- Critic gates ----------------------------------------------------------
-
-
-def _bounded_score_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    critique = _artifact(output, "critique")
-    score = _field(critique, "score")
-    return (
-        isinstance(score, int)
-        and not isinstance(score, bool)
-        and 1 <= score <= 10
-    )
-
-
-def _gate_bounded_component_scores(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
-    passed = _bounded_score_passes(output, case)
-    return _agent_result(
-        "bounded_component_scores",
-        passed,
-        "" if passed else "critique score is missing or outside 1-10",
-    )
-
-
-def _critique_actionable_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    del case
-    critique = _typed_critique(output)
-    if critique is None:
-        return False
-    if not critique.should_continue:
-        return True
-    return bool(
-        critique.gaps
-        or critique.unsupported_claims
-        or critique.recommended_queries
-    )
-
-
-def _gate_critique_actionable(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
-    passed = _critique_actionable_passes(output, case)
-    return _agent_result(
-        "critique_actionable",
-        passed,
-        "" if passed else "should_continue is True with no gaps or queries",
-    )
-
-
-def _route_consistent_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    critique = _typed_critique(output)
-    if critique is None:
-        return False
-    if _critique_is_unreviewed(output, critique):
-        # No judgement exists, so no routing decision can agree with one: a
-        # stopped fallback is not a critique that happened to route to end.
-        return False
-    try:
-        expected, _ = route_decision(
-            score=critique.score,
-            gaps=critique.gaps,
-            unsupported_claims=critique.unsupported_claims,
-            iteration=case.state.iteration,
-            max_iterations=case.state.max_iterations,
-            has_report=case.state.report is not None,
-        )
-    except (TypeError, ValueError):
-        return False
-    return expected is critique.should_continue
-
-
-def _gate_route_consistent(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
-    passed = _route_consistent_passes(output, case)
-    return _agent_result(
-        "route_consistent",
-        passed,
-        "" if passed else "should_continue disagrees with route_decision",
-    )
-
-
-def _review_produced_passes(output: TargetOutput) -> bool:
-    """A run whose report was never reviewed is not a reviewed run.
-
-    When the structured review call fails, ``fallback_critique`` records a
-    ``failed`` review: a placeholder score of ``1`` with empty
-    gap, unsupported-claim, and recommended-query lists. Those empty lists then
-    satisfy every other gate: ``critique_actionable`` returns ``True`` whenever
-    ``should_continue`` is not ``True``, ``bounded_component_scores`` accepts the
-    placeholder ``1``, and ``route_consistent`` matches the fallback's own stop.
-    A live repetition was
-    observed passing the aggregate quality threshold with no critique at all.
-
-    The fallback remains correct agent behaviour — an outage says nothing about
-    the report and must not buy another research cycle — and the judge remains
-    free to score the fallback's honesty. What this gate forbids is a *quality
-    gate* certifying a run in which the agent produced no review.
-    """
-    critique = _typed_critique(output)
-    if critique is None:
-        return False
-    if _critique_is_unreviewed(output, critique):
-        return False
-    return True
-
-
-def _gate_review_produced(
-    output: TargetOutput, case: EvaluationCase
-) -> GateResult:
-    passed = _review_produced_passes(output)
-    return _agent_result(
-        "review_produced",
-        passed,
-        "" if passed else "the report review fell back; no critique was produced",
-    )
-
-
 _AGENT_GATE_FUNCTIONS: dict[
     AgentName, dict[str, Callable[[TargetOutput, EvaluationCase], GateResult]]
 ] = {
@@ -1826,24 +1724,17 @@ _AGENT_GATE_FUNCTIONS: dict[
         "bounded_scores": _gate_bounded_scores,
         "low_confidence_flagged": _gate_low_confidence_flagged,
     },
-    "fact_checker": {
-        "valid_verdicts": _gate_valid_verdicts,
-        "evidence_linked": _gate_evidence_linked,
-        "independent_domains": _gate_independent_domains,
-        "conservative_insufficiency": _gate_conservative_insufficiency,
+    "evidence_verifier": {
+        "verification_recorded": _gate_verification_recorded,
+        "no_invented_evidence": _gate_no_invented_evidence,
+        "drop_reasons_named": _gate_drop_reasons_named,
     },
-    "synthesizer": {
+    "report_writer": {
         "valid_report": _gate_valid_report,
         "citations_known_only": _gate_citations_known_only,
-        "limitations_represented": _gate_limitations_represented,
+        "refusals_logged": _gate_refusals_logged,
         "no_persistence_calls": _gate_no_persistence_calls,
         "no_false_publication_claim": _gate_no_false_publication_claim,
-    },
-    "critic": {
-        "bounded_component_scores": _gate_bounded_component_scores,
-        "critique_actionable": _gate_critique_actionable,
-        "route_consistent": _gate_route_consistent,
-        "review_produced": _gate_review_produced,
     },
 }
 
@@ -2128,51 +2019,6 @@ def _dimensions_are_checkable_passes(
     )
 
 
-def _support_policy_not_downgraded_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    """No obligation lost the support policy its own question earns.
-
-    Two clauses, because they catch different plans. The first compares each
-    recorded policy against the policy its target *earns* — ``None`` for a
-    descriptive question whose evidence the plan may price itself, which is
-    what lets a plan stamp ``primary_attribution`` on a figure one issuer
-    publishes — and refuses a target recorded under a weaker policy than the
-    one it earns. It reads ``earned_support_policy`` rather than
-    ``support_policy_for``: the latter falls back to ``independent_pair``
-    wherever the form earns nothing, so reading it scored every obligation the
-    planner is meant to stamp as a downgrade. It passes the target's own
-    ``required_dimensions`` with its question, exactly as the planner's floor
-    does, because the attribution a measured quantity rests on is stated in
-    either place, and it passes ``case.state.original_question`` as
-    ``contract_question`` for the same reason the floor does: an explicit
-    "independently confirm X" is written in the session's own question, not
-    in the planner's rewritten atomic target sentence. One notion of "earned"
-    is what keeps this metric and the stamp it scores in step. The second
-    requires the plan's recorded policy set to cover the case's declared set:
-    a plan that dropped the comparative obligation entirely has no downgraded
-    target for the first clause to see.
-    """
-    planned = _planned_targets(output)
-    if not planned:
-        return False
-    targets = [target for group in planned for target in group]
-    for target in targets:
-        if target.support_policy != "independent_pair" and (
-            earned_support_policy(
-                target.question,
-                required_dimensions=target.required_dimensions,
-                contract_question=case.state.original_question or "",
-            )
-            == "independent_pair"
-        ):
-            return False
-    required = _reference_strings(case, "required_support_policies")
-    if not required:
-        return True
-    return set(required) <= {target.support_policy for target in targets}
-
-
 def _no_vague_dimensions_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
@@ -2249,6 +2095,37 @@ def _source_diversity_passes(output: TargetOutput, case: EvaluationCase) -> bool
 # ``citations_known`` accepts it. What separates a reported finding from a
 # remembered one is whether *this run* opened the page, which only the
 # recorded read identities can show.
+
+
+def _read_url_identities(output: TargetOutput) -> set[str] | None:
+    """Identities of the URLs this repetition proved it READ, or ``None``.
+
+    ``None`` means the artifact cannot prove any read at all, and a
+    read-provenance check must then fail closed: the field is absent, the
+    completeness flag is anything but ``True``, or the payload is not a list
+    of strings. This is the opposite polarity to
+    ``_researcher_live_provenance_incomplete``, whose absent-means-complete
+    default is permissive-additive — acceptable for discovery provenance,
+    wrong for a guarantee that a passage was actually read.
+    """
+    fingerprints = _field(output.dependencies, "read_url_fingerprints")
+    complete = _field(output.dependencies, "read_url_fingerprints_complete")
+    if not isinstance(fingerprints, (list, tuple)) or complete is not True:
+        return None
+    return {value for value in fingerprints if isinstance(value, str)}
+
+
+def _passage_url_is_read(source_url: str, identities: set[str]) -> bool:
+    """True when ``source_url``'s canonical identity is a recorded read.
+
+    The identity is computed exactly as the recorder computes it, from
+    ``normalize_source_url``, so two spellings of one page compare equal and a
+    URL that was never read — or could never carry an identity — does not.
+    """
+    return (
+        sha256(_normalized(source_url).encode("utf-8")).hexdigest()
+        in identities
+    )
 
 
 def _findings_are_read_bearing_passes(
@@ -2661,194 +2538,6 @@ def _independent_work_recognized_passes(
     return True
 
 
-def _verdict_correctness_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    """Every claim the case named is present, with the verdict it recorded.
-
-    The reference map is a promise in both directions. It was read one way
-    only — a claim was compared *if* the output carried it — so dropping an
-    expected claim, or returning no claims at all, left this metric and the
-    independence metrics true on an empty list, and a run that answered
-    nothing collected the case's weight by staying silent. That is the
-    abstention ``required_verified_claims`` exists to refuse, and it is the
-    same defect whether the claim is withheld or reworded: a run that
-    paraphrased the claim has not verified the claim the case named.
-
-    Repeated text is judged as strictly: every recorded verdict for one
-    normalized text must be the expected one, because two conflicting
-    records of one claim are not a verdict either.
-    """
-    expected = case.expectations.reference.get("expected_verdicts")
-    required = _reference_strings(case, "required_verified_claims")
-    if not isinstance(expected, Mapping) and not required:
-        return True
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
-        return False
-    recorded: dict[str, set[object]] = {}
-    for entry in claims:
-        text = _field(entry, "text")
-        if isinstance(text, str):
-            recorded.setdefault(" ".join(text.split()), set()).add(
-                _field(entry, "verdict")
-            )
-    if isinstance(expected, Mapping):
-        for text, wanted in expected.items():
-            if not isinstance(text, str):
-                continue
-            if recorded.get(" ".join(text.split())) != {wanted}:
-                return False
-    return all(
-        recorded.get(" ".join(text.split())) == {"verified"} for text in required
-    )
-
-
-def _confidence_calibrated_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
-        return False
-    for entry in claims:
-        verdict = _field(entry, "verdict")
-        confidence = _field(entry, "confidence")
-        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool):
-            return False
-        if verdict == "insufficient_evidence" and confidence > 0.5:
-            return False
-        if verdict == "verified" and confidence < 0.5:
-            return False
-    return True
-
-
-def _no_false_independent_pair_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    """No claim carries an independent-pair judgement its evidence refuses.
-
-    Two clauses, because the defect has two flavours. The case names the
-    claims that must not come back verified — one publisher's two accounts,
-    or a second publisher vouching only for attribution — and no such claim
-    may be marked ``verified`` or carry the ``verified_pair`` badge, since
-    that badge is what every downstream reader takes as "independently
-    corroborated". Then every claim that *is* verified must resolve to at
-    least two independent publishers by the same check the independence gate
-    runs, at this metric's own floor of two rather than the case's declared
-    minimum: a case that declares none would otherwise auto-pass, and there
-    is no reading of "independently corroborated" that survives one
-    publisher.
-
-    This is deliberately not a second name for the domain count. Domain
-    arithmetic cannot see the second flavour — a lab's page on its own
-    registrable domain is one publisher more and still supports only who
-    said the number — so what refuses that pair is the case's declaration
-    that the claim may not be verified at all.
-    """
-    reference = case.expectations.reference
-    forbidden = {
-        " ".join(text.split())
-        for text in _reference_strings(case, "forbidden_verified_claims")
-    }
-    family = reference.get("dependent_domain_family")
-    family_identity = (
-        publisher_identity(f"https://{family}")
-        if isinstance(family, str)
-        else None
-    )
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
-        return False
-    for entry in claims:
-        text = _field(entry, "text")
-        if isinstance(text, str) and " ".join(text.split()) in forbidden:
-            if _field(entry, "verdict") == "verified":
-                return False
-            if _field(entry, "evidence_status") == "verified_pair":
-                return False
-        if _field(entry, "verdict") != "verified":
-            continue
-        source_urls = [
-            url
-            for url in (_field(entry, "source_urls") or [])
-            if isinstance(url, str)
-        ]
-        evidence_urls = [
-            url
-            for passage in (_field(entry, "verification_evidence") or [])
-            for url in [_field(passage, "source_url")]
-            if isinstance(url, str)
-        ]
-        independent = independent_domains(
-            evidence_urls, claimed_domains=claimed_domains_for(source_urls)
-        )
-        if _registrable_family_count(independent, family=family_identity) < 2:
-            return False
-    return True
-
-
-def _sources_known_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    known = {
-        normalize_source_url(url) for url in case.expectations.known_source_urls
-    }
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
-        return False
-    for entry in claims:
-        source_urls = _field(entry, "source_urls")
-        if not isinstance(source_urls, list):
-            return False
-        for url in source_urls:
-            if not isinstance(url, str) or normalize_source_url(url) not in known:
-                return False
-    return True
-
-
-def _conservative_on_failure_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    reference = case.expectations.reference
-    prefix = reference.get("failing_query_prefix")
-    if not isinstance(prefix, str) or not prefix:
-        return True
-    acceptable = {
-        str(item)
-        for item in reference.get(
-            "conservative_verdicts", ["unverified", "insufficient_evidence"]
-        )
-    }
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
-        return False
-    for entry in claims:
-        text = _field(entry, "text")
-        if (
-            isinstance(text, str)
-            and text.startswith(prefix)
-            and _field(entry, "verdict") not in acceptable
-        ):
-            return False
-    return True
-
-
-def _partial_verification_present_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    claims = _artifact(output, "verified_claims")
-    if not isinstance(claims, list):
-        return False
-    return any(
-        _field(entry, "verdict") != "insufficient_evidence" for entry in claims
-    )
-
-
-def _report_present_in_state_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    report = _state_update(output).get("report")
-    return isinstance(report, str) and bool(report.strip())
-
-
 def _reader_markdown_present_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
@@ -2861,418 +2550,6 @@ def _evidence_markdown_present_passes(
 ) -> bool:
     """Task 6's evidence artifact is the result's ``evidence_markdown``."""
     return bool(_evidence_body(output).strip())
-
-
-def _coverage_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    findings = _findings_section(_report_body(output))
-    if findings is None or not findings.strip():
-        return False
-
-    sub_topics = _field(case.state, "sub_topics")
-    if not isinstance(sub_topics, list):
-        return False
-    normalized_findings = _normalized_text(findings)
-    uncovered_topics: list[str] = []
-    for topic in sub_topics:
-        title = _normalized_text(_field(topic, "title"))
-        if not title:
-            return False
-        if title not in normalized_findings:
-            uncovered_topics.append(title)
-    if not uncovered_topics:
-        return True
-
-    raw_findings = _field(case.state, "raw_findings")
-    if not isinstance(raw_findings, list) or not raw_findings:
-        return False
-    evaluated_sources = _field(case.state, "evaluated_sources")
-    verified_claims = _field(case.state, "verified_claims")
-    try:
-        citation_index = build_citation_index(
-            evaluated_sources or (), verified_claims or ()
-        )
-    except (AttributeError, TypeError, ValueError):
-        return False
-    if not citation_index:
-        return False
-    declared_urls = {
-        _normalized(citation.url)
-        for citation in citation_index
-        if isinstance(citation.url, str) and _normalized(citation.url)
-    }
-
-    # The reader report's own reference list is the authority for its
-    # markers; the case's declared evidence is the whitelist those
-    # references must resolve inside. Both directions fail closed.
-    citation_urls = _reader_reference_urls(_report_body(output))
-    citation_numbers = {
-        int(number) for number in _CITATION_MARKER_PATTERN.findall(findings)
-    }
-    if not citation_numbers or not citation_numbers <= citation_urls.keys():
-        return False
-    cited_urls = {citation_urls[number] for number in citation_numbers}
-    if not cited_urls <= declared_urls:
-        return False
-
-    source_topics: dict[str, set[str]] = {}
-    for finding in raw_findings:
-        source_url = _field(finding, "source_url")
-        related_sub_topic = _normalized_text(
-            _field(finding, "related_sub_topic")
-        )
-        if not isinstance(source_url, str) or not related_sub_topic:
-            return False
-        normalized_url = _normalized(source_url)
-        if not normalized_url:
-            return False
-        source_topics.setdefault(normalized_url, set()).add(related_sub_topic)
-
-    return all(
-        any(
-            source_topics.get(url) == {topic_title}
-            for url in cited_urls
-        )
-        for topic_title in uncovered_topics
-    )
-
-
-def _conflict_represented_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    reference = case.expectations.reference
-    signals = [
-        signal
-        for signal in reference.get("required_caveat_signals", [])
-        if isinstance(signal, str)
-    ]
-    texts = [
-        text
-        for text in reference.get("conflicting_claim_texts", [])
-        if isinstance(text, str)
-    ]
-    if not signals and not texts:
-        return True
-    report = _report_body(output).casefold()
-    return any(signal.casefold() in report for signal in signals) or any(
-        text.casefold() in report for text in texts
-    )
-
-
-def _no_overstatement_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    forbidden = [
-        word
-        for word in case.expectations.reference.get("forbidden_overstatement", [])
-        if isinstance(word, str)
-    ]
-    if not forbidden:
-        return True
-    pattern = re.compile(
-        r"\b(" + "|".join(map(re.escape, forbidden)) + r")\b",
-        re.IGNORECASE,
-    )
-    return pattern.search(_report_body(output)) is None
-
-
-def _rationale_present_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    critique = _artifact(output, "critique")
-    rationale = _field(critique, "rationale")
-    if not isinstance(rationale, str) or not rationale.strip():
-        return False
-    themes = [
-        theme
-        for theme in case.expectations.reference.get("reference_themes", [])
-        if isinstance(theme, str)
-    ]
-    if not themes:
-        return True
-    folded = rationale.casefold()
-    if any(theme.casefold() in folded for theme in themes):
-        return True
-    theme_words = {
-        word.casefold()
-        for theme in themes
-        for word in theme.split()
-        if len(word) >= 5
-    }
-    return bool(theme_words & set(folded.split()))
-
-
-def _no_spurious_gaps_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    themes = [
-        theme
-        for theme in case.expectations.reference.get("reference_themes", [])
-        if isinstance(theme, str)
-    ]
-    if not themes:
-        return True
-    stop_words = {
-        "a",
-        "an",
-        "and",
-        "at",
-        "by",
-        "for",
-        "from",
-        "in",
-        "of",
-        "on",
-        "or",
-        "the",
-        "to",
-        "with",
-    }
-
-    def meaningful_tokens(value: str) -> set[str]:
-        return set(re.findall(r"[a-z0-9]+", value.casefold())) - stop_words
-
-    theme_tokens = [
-        meaningful_tokens(theme)
-        for theme in themes
-    ]
-    report = " ".join((case.state.report or "").split()).casefold()
-    report_sentences = re.split(r"(?<=[.!?])\s+", report)
-    report_clauses = [
-        clause
-        for sentence in report_sentences
-        for clause in re.split(r"[,;:]", sentence)
-    ]
-    unresolved_markers = (
-        "absence of",
-        "do not yet exist",
-        "insufficient",
-        "main uncertainty",
-        "not yet",
-        "outstanding question",
-        "still accumulating",
-        "uncertain",
-        "uncertainty",
-        "unresolved",
-    )
-
-    def report_acknowledges_unresolved(tokens: set[str]) -> bool:
-        return any(
-            tokens <= meaningful_tokens(clause)
-            and any(marker in clause for marker in unresolved_markers)
-            for clause in report_clauses
-        )
-
-    critique = _typed_critique(output)
-    if critique is None:
-        return True
-    for gap in critique.gaps:
-        gap_tokens = meaningful_tokens(gap.problem)
-        if any(
-            tokens
-            and tokens <= gap_tokens
-            and not report_acknowledges_unresolved(tokens)
-            for tokens in theme_tokens
-        ):
-            return False
-    return True
-
-
-def _gaps_actionable_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    question = " ".join((case.state.original_question or "").split()).casefold()
-    critique = _artifact(output, "critique")
-    queries = _field(critique, "recommended_queries")
-    if not isinstance(queries, list):
-        return False
-    for query in queries:
-        if not isinstance(query, str) or not query.strip():
-            continue
-        folded = " ".join(query.split()).casefold()
-        if folded and folded not in question and question not in folded:
-            return True
-    return False
-
-
-def _gaps_identified_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    known = [
-        gap
-        for gap in case.expectations.reference.get("known_gaps", [])
-        if isinstance(gap, str)
-    ]
-    if not known:
-        return True
-    critique = _typed_critique(output)
-    candidate_texts = [gap.problem for gap in critique.gaps] if critique else []
-    candidate_texts += [
-        item
-        for item in (_field(_artifact(output, "critique"), "recommended_queries") or [])
-        if isinstance(item, str)
-    ]
-    folded = " ".join(candidate_texts).casefold()
-    return any(gap.casefold() in folded for gap in known)
-
-
-def _route_discipline_passes(output: TargetOutput, case: EvaluationCase) -> bool:
-    critique = _artifact(output, "critique")
-    if _field(critique, "should_continue") is True:
-        return False
-    return case.state.iteration >= case.state.max_iterations
-
-
-def _declared_bound(case: EvaluationCase, key: str) -> float | None:
-    """One numeric band bound the case declared, or ``None``."""
-    value = case.expectations.reference.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
-
-
-def _conservative_score_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    """The score stays inside the band the case declares, both ways.
-
-    The ceiling is what this metric was written for: a review that must reject
-    the report cannot score it like one it accepted. The floor is the other
-    half of the same claim — the defect is real and bounded, and a review that
-    answers it by collapsing to the bottom of the scale has stopped grading
-    the report at all, which a ceiling alone cannot see. A case that declares
-    neither bound is not scored on its score, which is the honest reading of a
-    band nobody stated.
-    """
-    minimum = _declared_bound(case, "minimum_score")
-    maximum = _declared_bound(case, "maximum_score")
-    if minimum is None and maximum is None:
-        return True
-    score = _field(_artifact(output, "critique"), "score")
-    if isinstance(score, bool) or not isinstance(score, (int, float)):
-        return False
-    if maximum is not None and score > maximum:
-        return False
-    if minimum is not None and score < minimum:
-        return False
-    return True
-
-
-def _material_typed_gaps(critique: Critique | None) -> list[CritiqueGap]:
-    """The gaps this case scores: the ones that must be closed."""
-    if critique is None:
-        return []
-    return [gap for gap in critique.gaps if gap.material]
-
-
-def _typed_gaps_answer_with(
-    output: TargetOutput,
-    case: EvaluationCase,
-    *,
-    expected_key: str,
-    forbidden_key: str,
-    selected: Callable[[CritiqueGap], str],
-) -> bool:
-    """Whether every material gap is answered with an allowed value.
-
-    The shape the two typed metrics share, and the shape is the point. A
-    case declares the values its defect may be answered with — the kinds it
-    may be typed as, the repair actions it may be routed to — and the run has
-    to name at least one material gap and stay inside them. A review that
-    names no such gap scores zero rather than passing vacuously: the defect
-    the case exists to carry would otherwise be free to go unnoticed, and
-    saying nothing would be cheaper than saying the wrong thing. That is what
-    makes both metrics fail a confident approval, which is the anti-abstention
-    direction the case needs.
-
-    A case that also declares *where* its defect lives — the claim clusters
-    and targets the seeded defect is in — requires at least one material gap
-    to name one of them. Without that, a correctly phrased gap against an
-    unrelated claim was indistinguishable from the diagnosis the case is
-    calibrating: the words are an answer about an obligation, and the
-    obligation is part of the answer.
-    """
-    expected = {
-        value
-        for value in case.expectations.reference.get(expected_key, [])
-        if isinstance(value, str)
-    }
-    forbidden = {
-        value
-        for value in case.expectations.reference.get(forbidden_key, [])
-        if isinstance(value, str)
-    }
-    if not expected and not forbidden:
-        return False
-    gaps = _material_typed_gaps(_typed_critique(output))
-    if not gaps:
-        return False
-    if not _names_the_declared_defect(gaps, case):
-        return False
-    for gap in gaps:
-        value = selected(gap)
-        if value in forbidden:
-            return False
-        if expected and value not in expected:
-            return False
-    return True
-
-
-def _names_the_declared_defect(
-    gaps: Sequence[CritiqueGap], case: EvaluationCase
-) -> bool:
-    """Whether one material gap names the obligation the case seeded.
-
-    True when the case declares no defective ids at all: a case that does not
-    say where its defect lives is not scored on naming it.
-    """
-    clusters = {
-        value
-        for value in case.expectations.reference.get("defective_cluster_ids", [])
-        if isinstance(value, str)
-    }
-    targets = {
-        value
-        for value in case.expectations.reference.get("defective_target_ids", [])
-        if isinstance(value, str)
-    }
-    if not clusters and not targets:
-        return True
-    return any(
-        clusters.intersection(gap.claim_cluster_ids)
-        or targets.intersection(gap.target_ids)
-        for gap in gaps
-    )
-
-
-def _gap_kind_correct_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    """Every material gap is diagnosed as a kind this defect may be.
-
-    A defect that no number of pages can close — an identity defect, where
-    the evidence the run already holds is not the evidence it claims — is a
-    different failure from a hole in the plan, and the repair it needs is
-    different too. Typing it ``coverage`` sends the run to fetch pages for a
-    question that was never short of them.
-    """
-    return _typed_gaps_answer_with(
-        output,
-        case,
-        expected_key="expected_gap_kinds",
-        forbidden_key="forbidden_gap_kinds",
-        selected=lambda gap: gap.kind,
-    )
-
-
-def _repair_action_routed_passes(
-    output: TargetOutput, case: EvaluationCase
-) -> bool:
-    """Every material gap routes to an action this defect can be closed by.
-
-    Read beside ``gap_kind_correct``: the two are graded separately because
-    a review can diagnose correctly and still route to a search, which is the
-    misroute this case is about, and a case that scored the pair as one could
-    not say which happened.
-    """
-    return _typed_gaps_answer_with(
-        output,
-        case,
-        expected_key="expected_repair_actions",
-        forbidden_key="forbidden_repair_actions",
-        selected=lambda gap: gap.repair_action,
-    )
 
 
 METRIC_FUNCTIONS: dict[str, MetricFunction] = {
@@ -3289,7 +2566,6 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "bounded_recovery": _bounded_recovery_passes,
     "targets_declared": _targets_declared_passes,
     "dimensions_are_checkable": _dimensions_are_checkable_passes,
-    "support_policy_not_downgraded": _support_policy_not_downgraded_passes,
     "no_vague_dimensions": _no_vague_dimensions_passes,
     # researcher
     "sub_topic_coverage": _sub_topic_covered_passes,
@@ -3315,42 +2591,21 @@ METRIC_FUNCTIONS: dict[str, MetricFunction] = {
     "no_fabricated_reputation": _no_fabricated_reputation_passes,
     "mirror_not_a_new_work": _mirror_not_a_new_work_passes,
     "independent_work_recognized": _independent_work_recognized_passes,
-    # fact checker
-    "verdict_correctness": _verdict_correctness_passes,
-    "evidence_linked": _evidence_linked_passes,
-    "confidence_calibrated": _confidence_calibrated_passes,
-    "sources_known": _sources_known_passes,
-    "independence_enforced": _independent_domains_passes,
-    "no_false_independent_pair": _no_false_independent_pair_passes,
-    "conservative_on_failure": _conservative_on_failure_passes,
-    "partial_verification_present": _partial_verification_present_passes,
-    # synthesizer
+    # evidence verifier
+    "verification_recorded": _verification_recorded_passes,
+    "no_invented_evidence": _no_invented_evidence_passes,
+    "drop_reasons_named": _drop_reasons_named_passes,
+    "expected_outcome": _expected_outcome_passes,
+    # report writer
     "reader_markdown_present": _reader_markdown_present_passes,
     "evidence_markdown_present": _evidence_markdown_present_passes,
-    "no_persistence_calls": _no_persistence_calls_passes,
-    "no_false_publication_claim": _no_false_publication_claim_passes,
     "citations_locally_derived": _citations_locally_derived_passes,
     "one_reference_per_work": _one_reference_per_work_passes,
-    # Legacy aliases remain readable for pre-Task-6 artifacts; active Task 6
-    # cases use the explicit composition names above.
-    "report_present": _report_present_in_state_passes,
-    "citations_known": _citations_known_only_passes,
-    "coverage": _coverage_passes,
-    "limitations_present": _limitations_passes,
-    "conflict_represented": _conflict_represented_passes,
-    "no_overstatement": _no_overstatement_passes,
-    "report_present_in_state": _report_present_in_state_passes,
-    # critic
-    "score_bounded": _bounded_score_passes,
-    "route_consistent": _route_consistent_passes,
-    "rationale_present": _rationale_present_passes,
-    "no_spurious_gaps": _no_spurious_gaps_passes,
-    "gaps_actionable": _gaps_actionable_passes,
-    "gaps_identified": _gaps_identified_passes,
-    "route_discipline": _route_discipline_passes,
-    "conservative_score": _conservative_score_passes,
-    "gap_kind_correct": _gap_kind_correct_passes,
-    "repair_action_routed": _repair_action_routed_passes,
+    "statements_labelled": _statements_labelled_passes,
+    "conflicting_figures_published": _conflicting_figures_published_passes,
+    "refusals_logged": _refusals_logged_passes,
+    "no_persistence_calls": _no_persistence_calls_passes,
+    "no_false_publication_claim": _no_false_publication_claim_passes,
 }
 
 _CASE_METRIC_IDS = {

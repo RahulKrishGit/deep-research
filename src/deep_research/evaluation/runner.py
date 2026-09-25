@@ -519,7 +519,8 @@ def build_repetition_result(
         prohibited_call_count=len(output.dependencies.prohibited_calls),
         react_stop_reason=(
             None
-            if output.agent_name in {"source_evaluator", "synthesizer"}
+            if output.agent_name
+            in {"source_evaluator", "evidence_verifier", "report_writer"}
             or output.react is None
             else output.react.stop_reason
         ),

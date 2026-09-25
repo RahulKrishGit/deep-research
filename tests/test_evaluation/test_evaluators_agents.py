@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-from deep_research.agents.critic import fallback_critique
-from deep_research.agents.report import build_citation_index, collapse_mirror_urls
+from deep_research.agents.report import collapse_mirror_urls
+from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActObservation, ReActStep
 from deep_research.evaluation.cases import all_cases
-from deep_research.evaluation.cases.critic import (
-    CALIBRATION_CLUSTER_IDS,
-    CALIBRATION_TARGET_IDS,
-    measure_critic_calibration,
-)
 from deep_research.evaluation.dependencies import (
     bounded_url_fingerprints,
     read_url_fingerprints,
@@ -248,454 +243,129 @@ def test_the_source_evaluator_gate_requires_the_expected_low_confidence_flag(
     ).passed is False
 
 
-# --- Fact Checker ----------------------------------------------------------
+# --- Evidence Verifier -----------------------------------------------------
 
 
-def test_the_fact_checker_gate_enforces_independent_domains(
-    fact_checker_dependent_case, fact_checker_dependent_output
+def test_the_evidence_verifier_gates_pass_on_its_reference_output(
+    evidence_verifier_case, evidence_verifier_output
 ) -> None:
-    """The dependent case declares minimum_independent_domains: a claim
-    whose corroboration is only same-family stays rejected even when the
-    evidence strings paraphrase without pasting URLs — the scripted
-    same-family results the trajectory recorded still resolve to the
-    claim's own family."""
-    assert gate(
-        evaluate_agent_gates(
-            fact_checker_dependent_output, fact_checker_dependent_case
-        ),
-        "independent_domains",
-    ).passed is False
+    results = evaluate_agent_gates(evidence_verifier_output, evidence_verifier_case)
 
-
-def test_two_genuinely_independent_domains_pass_the_gate(
-    fact_checker_dependent_case, fact_checker_dependent_output
-) -> None:
-    """Independent publisher identities must be present on passages."""
-    output = fact_checker_dependent_output.with_verification_passage_urls(
-        [
-            "https://cern.org/outage-audit",
-            "https://eia.gov/outage-bulletin",
-        ]
+    assert [item.gate_id for item in results] == list(
+        AGENT_GATE_IDS["evidence_verifier"]
     )
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_dependent_case),
-        "independent_domains",
-    ).passed is True
+    assert all(item.passed for item in results), results
 
 
-def test_the_mixed_verdicts_case_passes_without_a_declared_minimum(
-    fact_checker_case, fact_checker_output
+def test_a_finding_this_run_never_judged_fails_the_gate(
+    evidence_verifier_case, evidence_verifier_output
 ) -> None:
-    """The ordinary case never declares minimum_independent_domains, so the
-    gate cannot fail a well-supported verified claim whose evidence
-    paraphrases instead of pasting URLs."""
-    output = fact_checker_output.with_evidence_texts(
-        [
-            "The IAEA framework covers SMR designs and the NRC applies the "
-            "same review."
-        ]
-    )
+    output = evidence_verifier_output.without_verification()
 
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case),
-        "independent_domains",
-    ).passed is True
-
-
-def test_the_fact_checker_gate_requires_evidence_on_a_verified_claim(
-    fact_checker_case, fact_checker_output
-) -> None:
-    output = fact_checker_output.with_empty_evidence()
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case), "evidence_linked"
-    ).passed is False
-
-
-def test_the_fact_checker_evidence_gate_rejects_a_claims_own_publisher(
-    fact_checker_case, fact_checker_output
-) -> None:
-    output = fact_checker_output.with_verification_passage_urls(
-        ["https://iaea.org/another-safety-page"]
-    )
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case), "evidence_linked"
-    ).passed is False
-
-
-def test_the_fact_checker_evidence_gate_accepts_contradiction_passages(
-    fact_checker_case, fact_checker_output
-) -> None:
-    result = dict(fact_checker_output.result or {})
-    claims = [dict(item) for item in (result.get("verified_claims") or [])]
-    claim = claims[0]
-    claim["verdict"] = "contradicted"
-    claim["evidence"] = []
-    claim["contradictions"] = ["An independent source disputes the result."]
-    claim["verification_evidence"] = [
-        {
-            **passage,
-            "stance": "contradicts",
-            "excerpt": "An independent source disputes the result.",
-        }
-        for passage in claim["verification_evidence"]
-    ]
-    output = fact_checker_output.model_copy(
-        update={"result": {**result, "verified_claims": claims}}
-    )
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case), "evidence_linked"
-    ).passed is True
-
-
-def test_insufficient_evidence_must_stay_low_confidence(
-    fact_checker_case, fact_checker_output
-) -> None:
-    output = fact_checker_output.with_claim_verdict(
-        "insufficient_evidence", confidence=0.95
-    )
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case),
-        "conservative_insufficiency",
-    ).passed is False
-
-
-# --- Fact Checker: read-bearing passage provenance -------------------------
-#
-# Task 5 review, Important 2: the evidence checks validated passage fields and
-# publisher independence but never bound a passage URL to the run's
-# read-bearing tool results, so a search-only or invented URL could still pass
-# the quality gates. These tests drive the REAL classifier over typed steps —
-# the same one ``targets._success_output`` records the artifact with — and
-# require the gate to agree.
-
-SEARCH_RESULT_URL = "https://third.test/x"
-DOCUMENT_URL = "https://fourth.test/d.csv"
-MEMORY_URL = "https://fifth.test/m"
-
-
-def _typed_step(
-    iteration: int, tool_name: str, data: dict[str, object]
-) -> ReActStep:
-    return ReActStep(
-        iteration=iteration,
-        thought=f"Call {tool_name}.",
-        action="use_tool",
-        tool_name=tool_name,
-        observation=ReActObservation(
-            tool_name=tool_name, success=True, summary=f"{tool_name} ran"
-        ),
-        tool_result=ToolResult(
-            tool_name=tool_name, success=True, data=data, latency_ms=1.0
-        ),
+    assert (
+        gate(
+            evaluate_agent_gates(output, evidence_verifier_case),
+            "verification_recorded",
+        ).passed
+        is False
     )
 
 
-SEARCH_STEP = _typed_step(
-    1,
-    "web_search",
-    {"results": [{"title": "T", "url": SEARCH_RESULT_URL}]},
-)
-SCRAPE_STEP = _typed_step(
-    2, "web_scraper", {"url": SEARCH_RESULT_URL, "text": "Body."}
-)
-DOCUMENT_STEP = _typed_step(
-    3, "document_reader", {"source": DOCUMENT_URL, "chunks": ["a"]}
-)
-MEMORY_STEP = _typed_step(
-    4,
-    "query_memory",
-    {"matches": [{"content": "A remembered passage.", "source_url": MEMORY_URL}]},
-)
-
-
-def _evidence_gate(output, case):
-    return gate(evaluate_agent_gates(output, case), "evidence_linked")
-
-
-def test_the_read_provenance_classifier_excludes_search_only_hits() -> None:
-    """A search result list is discovery: it proves no read."""
-    fingerprints, complete = read_url_fingerprints([SEARCH_STEP])
-
-    assert (fingerprints, complete) == ([], True)
-
-
-def test_the_read_provenance_classifier_keeps_every_read_bearing_tool() -> None:
-    fingerprints, complete = read_url_fingerprints(
-        [SEARCH_STEP, SCRAPE_STEP, DOCUMENT_STEP, MEMORY_STEP]
-    )
-    recorded, _ = bounded_url_fingerprints([SEARCH_RESULT_URL, DOCUMENT_URL])
-
-    assert complete is True
-    assert set(fingerprints) == set(recorded)
-    assert MEMORY_URL not in fingerprints
-
-
-def test_a_search_only_passage_url_fails_the_evidence_gate(
-    fact_checker_case, fact_checker_output
+def test_a_kept_figure_whose_words_are_not_on_its_page_fails_the_gate(
+    evidence_verifier_case, evidence_verifier_output
 ) -> None:
-    """Passages built from a search hit alone: the searched URL was never
-    read, so the classifier records no identity for it."""
-    output = fact_checker_output.with_verification_passage_urls(
-        [SEARCH_RESULT_URL]
-    ).with_read_steps([SEARCH_STEP])
-
-    assert output.dependencies.read_url_fingerprints == []
-    assert _evidence_gate(output, fact_checker_case).passed is False
-
-
-def test_a_scraped_passage_url_passes_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    output = fact_checker_output.with_verification_passage_urls(
-        [SEARCH_RESULT_URL]
-    ).with_read_steps([SEARCH_STEP, SCRAPE_STEP])
-
-    assert read_url_fingerprints([SEARCH_STEP, SCRAPE_STEP])[0] == list(
-        output.dependencies.read_url_fingerprints
-    )
-    assert _evidence_gate(output, fact_checker_case).passed is True
-
-
-def test_a_document_read_passage_url_passes_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    output = fact_checker_output.with_verification_passage_urls(
-        [DOCUMENT_URL]
-    ).with_read_steps([DOCUMENT_STEP])
-
-    assert _evidence_gate(output, fact_checker_case).passed is True
-
-
-def test_a_memory_read_passage_url_fails_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    """A ``query_memory`` match is recall, not a read: it proves nothing.
-
-    The match carries text, a source URL, and a previous "verified" label.
-    None of that is a same-run read or a validated cache entry, so the
-    artifact cannot prove the passage's provenance and the gate fails closed.
-    """
-    output = fact_checker_output.with_verification_passage_urls(
-        [MEMORY_URL]
-    ).with_read_steps([MEMORY_STEP])
-
-    assert read_url_fingerprints([MEMORY_STEP])[0] == []
-    assert _evidence_gate(output, fact_checker_case).passed is False
-
-
-def test_an_artifact_that_cannot_prove_its_reads_fails_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    """Fail closed: an empty provenance field proves nothing."""
-    output = fact_checker_output.with_verification_passage_urls(
-        [SEARCH_RESULT_URL]
-    ).with_read_urls([])
-
-    assert output.dependencies.read_url_fingerprints == []
-    assert _evidence_gate(output, fact_checker_case).passed is False
-
-
-def test_an_incomplete_read_provenance_ledger_fails_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    """A truncated identity list may be missing exactly the passage's URL."""
-    output = fact_checker_output.with_verification_passage_urls(
-        [SEARCH_RESULT_URL]
-    ).with_read_urls([SEARCH_RESULT_URL], complete=False)
-
-    assert output.dependencies.read_url_fingerprints_complete is False
-    assert _evidence_gate(output, fact_checker_case).passed is False
-
-
-def test_a_passage_at_an_unread_independent_domain_fails_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    """The old fixture's exact defect: a CERN URL absent from the run.
-
-    Publisher independence is not provenance: an invented independent domain
-    used to satisfy the evidence gate outright.
-    """
-    output = (
-        fact_checker_output.with_verification_passage_urls(
-            ["https://cern.org/outage-audit"]
-        ).with_read_steps([SEARCH_STEP, SCRAPE_STEP])
+    output = evidence_verifier_output.with_invented_evidence_words(
+        "installations of 18.9 GW of grid-scale batteries in 2025"
     )
 
-    assert _evidence_gate(output, fact_checker_case).passed is False
-
-
-# --- Synthesizer -----------------------------------------------------------
-
-
-def test_the_synthesizer_gate_rejects_an_unknown_citation(
-    synthesizer_case, synthesizer_output
-) -> None:
-    output = synthesizer_output.with_report_citing(
-        "https://invented.example.com/page"
+    assert (
+        gate(
+            evaluate_agent_gates(output, evidence_verifier_case),
+            "no_invented_evidence",
+        ).passed
+        is False
     )
 
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_case), "citations_known_only"
-    ).passed is False
 
-
-def test_the_synthesizer_gate_requires_limitations_to_be_represented(
-    synthesizer_case, synthesizer_output
+def test_a_drop_with_no_reason_fails_the_gate(
+    invented_evidence_case, invented_evidence_output
 ) -> None:
-    output = synthesizer_output.without_limitations()
+    output = invented_evidence_output.without_drop_reason()
 
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_case),
-        "limitations_represented",
-    ).passed is False
-
-
-def test_the_synthesizer_gate_rejects_a_false_publication_claim(
-    synthesizer_composition_case, synthesizer_composition_output
-) -> None:
-    """Task 6 composes artifacts; it must not claim they were published."""
-    output = synthesizer_composition_output.with_report_text(
-        "The full report was published to the output directory."
+    assert (
+        gate(
+            evaluate_agent_gates(output, invented_evidence_case),
+            "drop_reasons_named",
+        ).passed
+        is False
     )
 
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_composition_case),
-        "no_false_publication_claim",
-    ).passed is False
 
-
-def test_the_synthesizer_gate_checks_publication_claims_in_both_artifacts(
-    synthesizer_composition_case, synthesizer_composition_output
+def test_the_evidence_verifier_metrics_are_all_bounded(
+    evidence_verifier_case, evidence_verifier_output
 ) -> None:
-    result = dict(synthesizer_composition_output.result or {})
-    output = synthesizer_composition_output.model_copy(
-        update={
-            "result": {
-                **result,
-                "evidence_markdown": "The evidence ledger was saved to disk.",
-            }
-        }
+    scores = deterministic_metric_scores(
+        evidence_verifier_output,
+        evidence_verifier_case,
+        metric_functions=METRIC_FUNCTIONS,
     )
 
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_composition_case),
-        "no_false_publication_claim",
-    ).passed is False
+    assert scores
+    assert all(0.0 <= score <= 1.0 for score in scores.values()), scores
 
 
-def test_the_synthesizer_gate_rejects_a_persistence_call(
-    synthesizer_case, synthesizer_output
+# --- Report Writer ---------------------------------------------------------
+
+
+def test_the_report_writer_gates_pass_on_its_reference_output(
+    report_writer_case, report_writer_output
 ) -> None:
-    output = synthesizer_output.model_copy(
-        update={
-            "dependencies": synthesizer_output.dependencies.model_copy(
-                update={"document_writes": 1}
-            )
-        }
+    results = evaluate_agent_gates(report_writer_output, report_writer_case)
+
+    assert [item.gate_id for item in results] == list(
+        AGENT_GATE_IDS["report_writer"]
+    )
+    assert all(item.passed for item in results), results
+
+
+def test_evaluate_target_combines_the_writer_gates_and_its_quality(
+    report_writer_case, report_writer_output
+) -> None:
+    report, quality = evaluate_target(
+        report_writer_output, report_writer_case, secrets=()
     )
 
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_case),
-        "no_persistence_calls",
-    ).passed is False
+    ids = {result.gate_id for result in report.results}
+    assert set(AGENT_GATE_IDS["report_writer"]) <= ids
+    assert quality == 1.0, report.failed_gate_ids()
 
 
-# --- Critic ----------------------------------------------------------------
-
-
-def test_the_critic_gate_requires_a_bounded_score(
-    critic_case, critic_output
+def test_a_publication_path_on_a_composition_pass_fails_the_gate(
+    report_writer_case, report_writer_output
 ) -> None:
-    output = critic_output.with_score(0)
+    output = report_writer_output.with_publication_path("report-session-0.md")
 
-    assert gate(
-        evaluate_agent_gates(output, critic_case), "bounded_component_scores"
-    ).passed is False
-
-
-def test_the_critic_gate_uses_the_production_routing_rule(
-    critic_case, critic_output
-) -> None:
-    """The gate calls ``agents.critic.route_decision`` rather than
-    re-deriving the threshold, so the two can never disagree."""
-    output = critic_output.with_score(9).with_should_continue(True)
-
-    assert gate(
-        evaluate_agent_gates(output, critic_case), "route_consistent"
-    ).passed is False
-
-
-def test_the_critic_gate_rejects_a_typed_provider_fallback_stop(
-    critic_case, critic_output
-) -> None:
-    """No review exists, so no routing decision can be consistent with one.
-
-    This test previously asserted the opposite. The fallback's
-    ``should_continue=False`` satisfied ``route_consistent`` — the same reason
-    ``review_produced`` exists — and after Critical 2's fix the critique carries
-    ``review_status="failed"``, which the gate now reads directly.
-    """
-    fallback, _ = fallback_critique(
-        reason="provider_unavailable",
-        iteration=critic_case.state.iteration,
-        max_iterations=critic_case.state.max_iterations,
-    )
-    output = critic_output.model_copy(
-        update={
-            "result": {"critique": fallback.model_dump(mode="json")},
-            "errors": [
-                {
-                    "error_type": "critic_review_provider_error",
-                    "source": "agent.critic",
-                    "message": "provider review fallback used",
-                    "timestamp": "2026-08-01T00:00:00+00:00",
-                    "recoverable": False,
-                    "details": {
-                        "operation": "critic_report_review",
-                        "provider_failure": {
-                            "kind": "provider_failure",
-                            "type": "ProviderError",
-                            "retryable": False,
-                            "status_code": None,
-                        },
-                    },
-                }
-            ],
-        }
+    assert (
+        gate(
+            evaluate_agent_gates(output, report_writer_case),
+            "no_false_publication_claim",
+        ).passed
+        is False
     )
 
-    assert fallback.should_continue is False
-    assert fallback.review_status == "failed"
-    gates = {
-        item.gate_id: item for item in evaluate_agent_gates(output, critic_case)
-    }
-    assert gates["route_consistent"].passed is False
-    assert gates["review_produced"].passed is False
 
-
-def test_the_critic_gate_forbids_continuing_with_no_budget_left(
-    critic_budget_case, critic_budget_output
+def test_a_persistence_call_fails_the_gate(
+    report_writer_case, report_writer_output
 ) -> None:
-    output = critic_budget_output.with_should_continue(True)
+    output = report_writer_output.with_persistence_call("save_to_memory")
 
-    assert gate(
-        evaluate_agent_gates(output, critic_budget_case), "route_consistent"
-    ).passed is False
-
-
-def test_the_critic_gate_requires_actionable_critique(
-    critic_gap_case, critic_gap_output
-) -> None:
-    output = critic_gap_output.with_gaps([]).with_recommended_queries([])
-
-    assert gate(
-        evaluate_agent_gates(output, critic_gap_case), "critique_actionable"
-    ).passed is False
+    assert (
+        gate(
+            evaluate_agent_gates(output, report_writer_case),
+            "no_persistence_calls",
+        ).passed
+        is False
+    )
 
 
 # --- The LangSmith adapter -------------------------------------------------
@@ -813,7 +483,6 @@ def test_a_scoped_plan_scores_its_metrics_one(
     for metric_id in (
         "targets_declared",
         "dimensions_are_checkable",
-        "support_policy_not_downgraded",
         "no_vague_dimensions",
     ):
         assert (
@@ -970,185 +639,6 @@ def test_a_vague_dimension_scores_checkability_and_vagueness_zero(
     )
 
 
-def test_a_policy_downgraded_under_its_own_question_scores_zero(
-    scoped_targets_case, scoped_target_output
-) -> None:
-    """The comparative obligation keeps the wording that earns an independent
-    pair and is recorded under a weaker policy."""
-    target = _scoped_topic(scoped_target_output)["evidence_targets"][0]
-    output = scoped_target_output.with_target_policy(
-        str(target["target_id"]), "primary_attribution"
-    )
-
-    assert (
-        metric_score(
-            output, scoped_targets_case, "support_policy_not_downgraded"
-        )
-        == 0.0
-    )
-
-
-def test_a_single_issuer_obligation_keeps_the_policy_its_question_earns(
-    scoped_targets_case, scoped_target_output
-) -> None:
-    """A descriptive quantity earns no policy, so the plan's own decides.
-
-    ``support_policy_for`` falls back to ``independent_pair`` for any question
-    whose form earns nothing, so reading *it* scored every plan that follows
-    the planner's own instruction — which stamps ``primary_attribution`` on a
-    figure one issuer publishes — as a downgrade. The metric now reads the
-    earned policy, which this question does not earn at all.
-    """
-    topics = scoped_target_output.result["sub_topics"]
-    single_issuer = topics[0]["evidence_targets"][0]["target_id"]
-    measured = topics[1]["evidence_targets"][0]["target_id"]
-    output = scoped_target_output.with_target_policy(
-        str(single_issuer),
-        "primary_attribution",
-        question=(
-            "How much grid-scale battery storage capacity was added in the "
-            "United States in 2024?"
-        ),
-    ).with_target_policy(str(measured), "independent_pair")
-
-    assert (
-        metric_score(
-            output, scoped_targets_case, "support_policy_not_downgraded"
-        )
-        == 1.0
-    )
-
-
-def test_a_comparative_obligation_lowered_to_one_issuer_still_scores_zero(
-    scoped_targets_case, scoped_target_output
-) -> None:
-    """The control: what the question earns is still the floor."""
-    target = _scoped_topic(scoped_target_output)["evidence_targets"][0]
-    output = scoped_target_output.with_target_policy(
-        str(target["target_id"]), "primary_attribution"
-    )
-
-    assert (
-        metric_score(
-            output, scoped_targets_case, "support_policy_not_downgraded"
-        )
-        == 0.0
-    )
-
-
-def test_a_plan_that_lost_its_comparison_scores_zero(
-    scoped_targets_case, scoped_target_output
-) -> None:
-    """Every recorded policy agrees with its question and the comparison is
-    simply gone: the declared policy set is the only clause that can see it."""
-    target = _scoped_topic(scoped_target_output)["evidence_targets"][0]
-    output = scoped_target_output.with_target_policy(
-        str(target["target_id"]),
-        "primary_attribution",
-        question=(
-            "What does the current federal interconnection rule require of "
-            "utility-scale wind projects?"
-        ),
-    )
-
-    assert (
-        metric_score(
-            output, scoped_targets_case, "support_policy_not_downgraded"
-        )
-        == 0.0
-    )
-
-
-def test_a_contract_only_confirmation_demand_is_seen_as_a_downgrade() -> None:
-    """The metric reads the session's own question, exactly as the floor does.
-
-    The planner always rewrites a target into an atomic sentence, so
-    "Independently confirm X" survives only in the contract's original
-    question. Before the metric threaded ``contract_question`` through, a
-    plan that recorded such a target under ``primary_attribution`` could not
-    be told apart from one that earned no policy at all (review rank 1).
-    """
-    case = EvaluationCase(
-        case_id="confirmation-demand-probe",
-        version=1,
-        agent_name="planner",
-        tier="controlled",
-        title="Independent confirmation demanded by the original question",
-        purpose="Probe _support_policy_not_downgraded_passes's contract reading.",
-        state=ResearchState(
-            session_id="evaluation-confirmation-demand-probe",
-            original_question=(
-                "Independently confirm how much grid-scale battery storage "
-                "the US added in 2024."
-            ),
-        ),
-        dependency_scenario="planner-clean-memory",
-        expectations=CaseExpectations(
-            required_output_fields=["sub_topics"],
-            max_iterations=2,
-            max_tool_calls=10,
-            deterministic_metrics=[
-                DeterministicMetric(
-                    metric_id="support_policy_not_downgraded",
-                    weight=1.0,
-                    description="probe",
-                )
-            ],
-        ),
-        judge_rubric=JudgeRubric(
-            rubric_id="confirmation-demand-probe",
-            version=1,
-        ),
-    )
-    output = TargetOutput(
-        case_id=case.case_id,
-        case_version=case.version,
-        agent_name=case.agent_name,
-        tier=case.tier,
-        repetition=1,
-        session_id="evaluation-confirmation-demand-probe",
-        experiment_name="planner-controlled-probe",
-        completed=True,
-        result={
-            "sub_topics": [
-                {
-                    "coverage_id": "topic-01",
-                    "title": "Battery storage additions",
-                    "rationale": "The measured 2024 addition.",
-                    "search_queries": ["battery storage additions 2024"],
-                    "success_criteria": ["The 2024 addition is stated."],
-                    "priority": 1,
-                    "evidence_targets": [
-                        {
-                            "target_id": "topic-01-target-01",
-                            "coverage_id": "topic-01",
-                            "question": (
-                                "How much battery storage capacity was "
-                                "added in the US in 2024?"
-                            ),
-                            "required_dimensions": [
-                                "measure: battery storage capacity added, "
-                                "in MW",
-                                "source: the federal energy statistical "
-                                "agency's published capacity data",
-                            ],
-                            "required": True,
-                            "critical": True,
-                            "support_policy": "primary_attribution",
-                        }
-                    ],
-                }
-            ]
-        },
-        target_model_requested="gpt-5.6-luna",
-        target_reasoning_effort="medium",
-    )
-
-    assert (
-        metric_score(output, case, "support_policy_not_downgraded") == 0.0
-    )
-
-
 def test_the_dimension_probe_fills_every_signal_field() -> None:
     """``dimensions_are_checkable`` is only as good as the proposition it
     probes with.
@@ -1270,100 +760,6 @@ def test_an_empty_finding_list_scores_zero(
         metric_score(output, read_bearing_case, "findings_are_read_bearing")
         == 0.0
     )
-
-
-# --- Task 8: the three calibration error rates, measured separately ----------
-#
-# False acceptance, false rejection, and missed defects are three different
-# mistakes with three different denominators. Folding them into one accuracy
-# number hides which one a change made worse, so each has its own count and
-# its own rate. The denominator is always the cases that could make that
-# mistake: only a case whose answer should be rejected can be falsely
-# accepted, and only a case with a defect can have that defect missed.
-
-
-def test_the_calibration_report_measures_the_three_rates_separately() -> None:
-    report = measure_critic_calibration()
-
-    assert report.false_acceptance_rate == 0.0
-    assert report.false_rejection_rate == 0.0
-    assert report.missed_defect_rate == 0.0
-    assert report.cases_expecting_rejection >= 1
-    assert report.cases_expecting_acceptance >= 1
-    assert report.cases_expecting_a_defect >= 1
-    # Three separate denominators, not one shared accuracy figure.
-    assert report.cases_expecting_a_defect != report.cases_expecting_rejection
-
-
-def test_false_acceptance_is_measured_against_the_rejections_only() -> None:
-    """A review that waves a bad answer through is one specific error.
-
-    The injected override is exactly that mistake, applied to one case: a
-    review that names no defect and scores the candidate at the top of the
-    scale. Only the false-acceptance count may move.
-    """
-    baseline = measure_critic_calibration()
-    injected = measure_critic_calibration(
-        gap_overrides={"calibration-missing-critical-topic": []},
-        score_overrides={"calibration-missing-critical-topic": 9},
-    )
-
-    assert injected.false_acceptances == baseline.false_acceptances + 1
-    assert injected.false_acceptance_rate > baseline.false_acceptance_rate
-    # The other two rates have their own denominators and did not move.
-    assert injected.false_rejections == baseline.false_rejections
-    assert injected.false_rejection_rate == baseline.false_rejection_rate
-    # Accepting a defective answer while naming no defect is both mistakes at
-    # once, and each is counted once, against its own denominator.
-    assert injected.missed_defects == baseline.missed_defects + 1
-    assert injected.cases_expecting_rejection != injected.cases_expecting_a_defect
-
-
-def test_false_rejection_is_measured_against_the_acceptances_only() -> None:
-    """Thin-sourcing a sound answer is a different error from accepting one."""
-    baseline = measure_critic_calibration()
-    injected = measure_critic_calibration(
-        score_overrides={"calibration-strong-answer": 3}
-    )
-
-    assert injected.false_rejections == baseline.false_rejections + 1
-    assert injected.false_rejection_rate > baseline.false_rejection_rate
-    assert injected.false_acceptances == baseline.false_acceptances
-    assert injected.missed_defects == baseline.missed_defects
-
-
-def test_missed_defects_are_measured_against_the_defective_cases_only() -> None:
-    """A defect named nowhere is its own error, scored below the threshold.
-
-    The override drops the gap list and scores the candidate low, so the
-    defect exists, nothing names it, and the answer is still rejected: the
-    missed-defect count moves while neither acceptance count does.
-    """
-    baseline = measure_critic_calibration()
-    injected = measure_critic_calibration(
-        gap_overrides={"calibration-missing-critical-topic": []},
-        score_overrides={"calibration-missing-critical-topic": 4},
-    )
-
-    assert injected.missed_defects == baseline.missed_defects + 1
-    assert injected.missed_defect_rate > baseline.missed_defect_rate
-    assert injected.false_acceptances == baseline.false_acceptances
-    assert injected.false_rejections == baseline.false_rejections
-    assert injected.cases_expecting_a_defect != injected.cases_expecting_acceptance
-
-
-def test_critic_self_agreement_is_recorded_as_not_ground_truth() -> None:
-    """These rates measure the contract, not whether the report is good.
-
-    The Critic scoring its own scripted review cannot establish that the
-    review was right: independent report review and source checks remain
-    required, and the report says so rather than implying a validation it did
-    not perform.
-    """
-    report = measure_critic_calibration()
-
-    assert report.self_agreement_is_ground_truth is False
-    assert "not ground truth" in report.basis
 
 
 # --- Task 12: work-role independence ----------------------------------------
@@ -1587,171 +983,6 @@ def test_an_unknown_relation_carrying_the_original_publisher_is_not_a_new_work(
     assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
 
 
-# --- Task 12: upstream independence -----------------------------------------
-
-
-def test_an_upstream_independent_pair_run_scores_its_metrics_one(
-    upstream_pair_case, upstream_pair_output
-) -> None:
-    for metric_id in (
-        "verdict_correctness",
-        "no_false_independent_pair",
-        "independence_enforced",
-        "sources_known",
-    ):
-        assert (
-            metric_score(upstream_pair_output, upstream_pair_case, metric_id)
-            == 1.0
-        ), metric_id
-    assert (
-        deterministic_quality(
-            upstream_pair_output,
-            upstream_pair_case,
-            metric_functions=METRIC_FUNCTIONS,
-        )
-        == 1.0
-    )
-
-
-def test_one_publishers_two_accounts_are_not_an_independent_pair(
-    upstream_pair_case, upstream_pair_output
-) -> None:
-    """Flavour 1 of the Bug 1 defect class: the agency's order and that same
-    agency's press release. Both rules see it — no publisher may corroborate
-    itself — while the ordinary citation gate passes, because both URLs were
-    legitimately retrieved."""
-    reference = upstream_pair_case.expectations.reference
-    output = upstream_pair_output.with_claim_fields(
-        0, verdict="verified", evidence_status="verified_pair"
-    ).with_claim_passages(0, reference["same_publisher_urls"])
-
-    assert (
-        gate(
-            evaluate_general_gates(output, upstream_pair_case, secrets=()),
-            "citations_known",
-        ).passed
-        is True
-    )
-    assert (
-        metric_score(output, upstream_pair_case, "no_false_independent_pair")
-        == 0.0
-    )
-    assert (
-        metric_score(output, upstream_pair_case, "independence_enforced")
-        == 0.0
-    )
-
-
-def test_a_second_domain_vouching_only_for_attribution_is_not_a_pair(
-    upstream_pair_case, upstream_pair_output
-) -> None:
-    """Flavour 2, and the reason ``no_false_independent_pair`` is not a
-    second name for the domain count.
-
-    The mutated trap claim rests on the commission's order and the policy
-    lab's page: two genuinely distinct registrable domains, neither of them
-    an origin the claim was taken from, so ``independence_enforced`` PASSES —
-    domain arithmetic cannot see that the lab's page vouches only for who
-    said it, carrying neither the value nor the period the claim needs.
-    ``no_false_independent_pair`` FAILS, because that claim is one the case
-    declares must not be verified however many domains its passages span.
-    The two metrics disagree here by design; a metric that only ever agreed
-    with the domain count would be a duplicate and this case would not need
-    it.
-    """
-    reference = upstream_pair_case.expectations.reference
-    agency = reference["same_publisher_urls"][0]
-    lab = reference["dimension_only_urls"][0]
-    output = upstream_pair_output.with_claim_fields(
-        0, verdict="verified", evidence_status="verified_pair"
-    ).with_claim_passages(0, [agency, lab])
-
-    assert (
-        metric_score(output, upstream_pair_case, "independence_enforced") == 1.0
-    )
-    assert (
-        metric_score(output, upstream_pair_case, "no_false_independent_pair")
-        == 0.0
-    )
-
-
-def test_abstaining_on_every_claim_scores_verdict_correctness_zero(
-    upstream_pair_case, upstream_pair_output
-) -> None:
-    """The control claim is mandatory: a run that refuses to verify anything
-    must not collect the case's weight by staying silent."""
-    output = upstream_pair_output.with_claim_fields(
-        0, verdict="insufficient_evidence", evidence_status=None, evidence=[]
-    ).with_claim_fields(
-        1, verdict="insufficient_evidence", evidence_status=None, evidence=[]
-    )
-
-    assert (
-        metric_score(output, upstream_pair_case, "verdict_correctness") == 0.0
-    )
-    assert (
-        metric_score(output, upstream_pair_case, "no_false_independent_pair")
-        == 1.0
-    )
-
-
-def test_a_claim_the_case_requires_must_be_in_the_output(
-    upstream_pair_case, upstream_pair_output
-) -> None:
-    """Abstention by omission is abstention, and a reworded claim is not it.
-
-    The verdict map was read one way only: a claim named by the case was
-    compared *if* the output carried it, and nothing failed when it did not.
-    Dropping the required control claim — or returning no claims at all —
-    left ``verdict_correctness``, ``no_false_independent_pair``,
-    ``independence_enforced`` and ``sources_known`` all true on an empty
-    list, so a run that answered nothing scored 1.0 on a case whose own text
-    says such a run collects nothing. Rewording the claim is the same
-    abstention wearing the claim's shape.
-    """
-    reference = upstream_pair_case.expectations.reference
-    control = reference["required_verified_claims"][0]
-    claims = list(upstream_pair_output.result["verified_claims"])
-    control_index = next(
-        index for index, claim in enumerate(claims) if claim["text"] == control
-    )
-    omitted = [
-        claim for index, claim in enumerate(claims) if index != control_index
-    ]
-    reworded = [
-        (
-            {**claim, "text": f"{control} (as reported by the commission)"}
-            if index == control_index
-            else claim
-        )
-        for index, claim in enumerate(claims)
-    ]
-
-    assert (
-        metric_score(
-            upstream_pair_output, upstream_pair_case, "verdict_correctness"
-        )
-        == 1.0
-    )
-    for label, defective in (
-        ("omitted", upstream_pair_output.with_claims(omitted)),
-        ("empty", upstream_pair_output.with_claims([])),
-        ("reworded", upstream_pair_output.with_claims(reworded)),
-    ):
-        assert (
-            metric_score(defective, upstream_pair_case, "verdict_correctness")
-            == 0.0
-        ), label
-        assert (
-            deterministic_quality(
-                defective,
-                upstream_pair_case,
-                metric_functions=METRIC_FUNCTIONS,
-            )
-            < 1.0
-        ), label
-
-
 # --- Task 12: canonical citation provenance ---------------------------------
 #
 # The synthesizer half of Task 7's risk: the report's references are composed
@@ -1765,14 +996,19 @@ def test_a_claim_the_case_requires_must_be_in_the_output(
 
 
 def _derived_reference_urls(case) -> list[str]:
-    """The reference list production's collapse rule derives from the state."""
+    """The reference list production's collapse rule derives from the state.
+
+    The assessed rows and the verified findings, which is the whole citation
+    vocabulary a composing pass has (§6.1): one entry per recorded work,
+    under the copy the assessments identify as the original.
+    """
     derived = [
-        citation.url
-        for citation in build_citation_index(
-            case.state.evaluated_sources, case.state.verified_claims
-        )
+        normalize_source_url(source.url) for source in case.state.evaluated_sources
+    ] + [
+        normalize_source_url(finding.source_url)
+        for finding in case.state.verified_findings
     ]
-    return collapse_mirror_urls(derived, case.state.evaluated_sources)
+    return collapse_mirror_urls(list(dict.fromkeys(derived)), case.state.evaluated_sources)
 
 
 def test_a_canonically_cited_report_scores_its_metrics_one(
@@ -1781,8 +1017,7 @@ def test_a_canonically_cited_report_scores_its_metrics_one(
     for metric_id in (
         "citations_locally_derived",
         "one_reference_per_work",
-        "coverage",
-        "limitations_present",
+        "statements_labelled",
         "reader_markdown_present",
         "evidence_markdown_present",
     ):
@@ -1805,7 +1040,7 @@ def test_a_canonically_cited_report_scores_its_metrics_one(
 def test_an_invented_reference_url_is_not_locally_derived(
     canonical_report_case, canonical_report_output
 ) -> None:
-    """A URL no assessed source and no checked claim carries.
+    """A URL no assessed source and no verified finding carries.
 
     The known-source gate refuses it too, but for a different reason: that gate
     compares the report against the case's *declaration*, while this metric
@@ -1842,11 +1077,11 @@ def test_a_work_printed_twice_is_one_reference_not_two(
     with ``citations_locally_derived`` would be a duplicate of it.
     """
     case = canonical_report_case
-    canonical, reprint = case.expectations.reference["mirror_pairs"][0]
+    reprint = case.expectations.reference["mirror_url"]
     listed = [source.url for source in case.state.evaluated_sources]
     output = canonical_report_output.with_references(listed)
 
-    assert canonical in listed and reprint in listed
+    assert reprint in listed
     assert len(listed) == len(_derived_reference_urls(case)) + 1
     assert metric_score(output, case, "citations_locally_derived") == 1.0
     assert metric_score(output, case, "one_reference_per_work") == 0.0
@@ -1864,7 +1099,10 @@ def test_printing_the_reprint_instead_of_the_original_is_not_canonical(
     reference to the work itself.
     """
     case = canonical_report_case
-    canonical, reprint = case.expectations.reference["mirror_pairs"][0]
+    reprint = case.expectations.reference["mirror_url"]
+    canonical = normalize_source_url(
+        case.expectations.reference["known_citation_urls"][0]
+    )
     listed = [
         reprint if url == canonical else url
         for url in _derived_reference_urls(case)
@@ -1874,149 +1112,3 @@ def test_printing_the_reprint_instead_of_the_original_is_not_canonical(
     assert reprint in listed and canonical not in listed
     assert metric_score(output, case, "citations_locally_derived") == 1.0
     assert metric_score(output, case, "one_reference_per_work") == 0.0
-
-
-# --- Task 12: typed gap calibration -----------------------------------------
-
-
-def _fixture_gap(typed_gap_output) -> dict:
-    return typed_gap_output.result["critique"]["gaps"][0]
-
-
-def test_a_typed_identity_gap_scores_its_metrics_one(
-    typed_gap_case, typed_gap_output
-) -> None:
-    for metric_id in (
-        "gap_kind_correct",
-        "repair_action_routed",
-        "conservative_score",
-    ):
-        assert (
-            metric_score(typed_gap_output, typed_gap_case, metric_id) == 1.0
-        ), metric_id
-    assert (
-        deterministic_quality(
-            typed_gap_output,
-            typed_gap_case,
-            metric_functions=METRIC_FUNCTIONS,
-        )
-        == 1.0
-    )
-
-
-def test_the_typed_gap_fixture_types_the_defect_its_candidate_carries(
-    typed_gap_case, typed_gap_output
-) -> None:
-    """The scripted gap is the case's own defect.
-
-    It names the claim cluster the candidate's composition really carries, and
-    it is typed and routed the way the case's reference declares. A proof built
-    on a gap naming nothing the candidate has would only measure the fixture.
-    """
-    case = typed_gap_case
-    cluster_id = CALIBRATION_CLUSTER_IDS["emissions"]
-    reference = case.expectations.reference
-    gap = _fixture_gap(typed_gap_output)
-
-    assert gap["claim_cluster_ids"] == [cluster_id]
-    assert cluster_id in case.state.composition.claim_clusters
-    assert gap["kind"] in reference["expected_gap_kinds"]
-    assert gap["repair_action"] in reference["expected_repair_actions"]
-
-
-def test_a_false_pair_typed_as_coverage_routes_the_run_the_wrong_way(
-    typed_gap_case, typed_gap_output
-) -> None:
-    """The misroute in its most literal form.
-
-    The same rejection, the same score, and the same cluster — but typed as a
-    coverage hole and routed to acquisition, with a target and a query the run
-    may search for. That route sends the Researcher to fetch pages for a pair
-    that already sits in the state, and no number of pages closes a defect
-    about what those pages *are*. The typing and the route are what this case
-    scores apart from the score itself.
-    """
-    case = typed_gap_case
-    mistyped = {
-        **_fixture_gap(typed_gap_output),
-        "kind": "coverage",
-        "repair_action": "acquire",
-        "claim_cluster_ids": [],
-        "target_ids": [CALIBRATION_TARGET_IDS["emissions"]],
-        "recommended_queries": ["clinker substitution independent verification"],
-    }
-    output = typed_gap_output.with_typed_gaps([mistyped])
-
-    assert metric_score(output, case, "gap_kind_correct") == 0.0
-    assert metric_score(output, case, "repair_action_routed") == 0.0
-    # The rejection is still calibrated — only the diagnosis is wrong, and a
-    # case that scored the two together could not say which happened.
-    assert metric_score(output, case, "conservative_score") == 1.0
-
-
-def test_approving_the_false_pair_scores_every_metric_zero(
-    typed_gap_case, typed_gap_output
-) -> None:
-    """The anti-abstention proof, at the artifact the case must refuse.
-
-    A confident approval that names no defect: no material gap for either
-    metric to read, and a score above the band's ceiling. Missing the defect
-    has to cost every point this case offers, or abstaining from a judgement
-    would be the cheapest way to collect them.
-    """
-    output = typed_gap_output.with_typed_gaps([]).with_score(9).with_should_continue(
-        False
-    )
-
-    for metric_id in (
-        "gap_kind_correct",
-        "repair_action_routed",
-        "conservative_score",
-    ):
-        assert metric_score(output, typed_gap_case, metric_id) == 0.0, metric_id
-
-
-def test_a_correctly_typed_gap_against_the_wrong_cluster_scores_zero(
-    typed_gap_case, typed_gap_output
-) -> None:
-    """The gap has to name the defect, not merely be phrased like it.
-
-    The case's stated purpose is that "the gap that answers it is therefore
-    typed identity" — the identity defect is the false pair in the emissions
-    cluster. Both typed metrics read only a gap's kind and its route, so a
-    review that raised a correctly typed identity defect against an unrelated
-    claim — and never mentioned the pair the case exists to carry — collected
-    their full weight. The typing and the route are what the case scores, and
-    both are answers *about* an obligation.
-    """
-    case = typed_gap_case
-    misplaced = {
-        **_fixture_gap(typed_gap_output),
-        "claim_cluster_ids": [CALIBRATION_CLUSTER_IDS["cost"]],
-    }
-    output = typed_gap_output.with_typed_gaps([misplaced])
-
-    assert metric_score(output, case, "gap_kind_correct") == 0.0
-    assert metric_score(output, case, "repair_action_routed") == 0.0
-    # The rejection is still calibrated — only its target is wrong, and the
-    # case scores the score separately for exactly that reason.
-    assert metric_score(output, case, "conservative_score") == 1.0
-
-
-def test_answering_the_false_pair_at_the_floor_is_not_calibrated(
-    typed_gap_case, typed_gap_output
-) -> None:
-    """The band's floor is load-bearing, and this is its proof.
-
-    The defect is real and not fatal: it is a rejection, not a run that failed
-    to produce a report, and a review that answers it by collapsing to the
-    floor has stopped grading the report at all. That is a different failure
-    from accepting it — one the ceiling alone cannot see — and the case
-    declares both bounds so the two are told apart.
-    """
-    output = typed_gap_output.with_score(1)
-
-    assert metric_score(output, typed_gap_case, "conservative_score") == 0.0
-    assert metric_score(output, typed_gap_case, "gap_kind_correct") == 1.0
-    assert metric_score(output, typed_gap_case, "repair_action_routed") == 1.0
-

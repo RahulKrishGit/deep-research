@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import os
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -11,6 +13,14 @@ from pathlib import Path
 
 import pytest
 
+from deep_research.agents.evidence_verifier import (
+    EVIDENCE_VERIFIER_NAME,
+    ContextCheckDraft,
+    EvidenceVerifierAgent,
+    FigureCheckDraft,
+    StatementCheckDraft,
+    StatementVerdictDraft,
+)
 from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.planner import (
     EvidenceTargetDraft,
@@ -18,6 +28,13 @@ from deep_research.agents.planner import (
     ResearchPlanDraft,
     SubTopicDraft,
     target_id_for,
+)
+from deep_research.agents.report_writer import (
+    REPORT_WRITER_NAME,
+    ReportWriterAgent,
+    ReportWriterDraft,
+    WriterPointDraft,
+    WriterSectionDraft,
 )
 from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
 from deep_research.agents.steps import ReActDecision, ReActStep
@@ -28,7 +45,6 @@ from deep_research.evaluation.cases import (
     case_by_id,
     cases_for,
 )
-from deep_research.evaluation.cases.critic import CALIBRATION_CLUSTER_IDS
 from deep_research.evaluation.config import (
     GitMetadata,
     build_runtime_config,
@@ -57,17 +73,25 @@ from deep_research.evaluation.models import (
     RepetitionResult,
     SuiteResult,
     TargetOutput,
+    ToolCallSummary,
     TrajectoryStep,
 )
-from deep_research.evaluation.targets import RepetitionCounter, build_target
+from deep_research.evaluation.targets import (
+    RepetitionCounter,
+    _json_safe,
+    build_target,
+)
+from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import OpenAIProviderError
 from deep_research.utils.config import ConfigSettings
+from tests.agent_fakes import ScriptedCompleter
 from tests.evaluation_fakes import (
     FakeEvaluateRunner,
     FakeLangSmithClient,
     FakeStructuredProvider,
 )
+from tests.research_fakes import synthesizer_tools
 
 
 @pytest.fixture
@@ -140,18 +164,8 @@ def planner_case(controlled_case_for):
 
 
 @pytest.fixture
-def critic_live_case(live_case_for):
-    return live_case_for("critic")
-
-
-@pytest.fixture
 def researcher_case(controlled_case_for):
     return controlled_case_for("researcher")
-
-
-@pytest.fixture
-def synthesizer_case(controlled_case_for):
-    return controlled_case_for("synthesizer")
 
 
 @pytest.fixture
@@ -551,31 +565,6 @@ class PlannerOutput(TargetOutput):
             lambda target: {**target, "required_dimensions": list(dimensions)}
         )
 
-    def with_target_policy(
-        self,
-        target_id: str,
-        policy: str,
-        *,
-        question: str | None = None,
-    ) -> "PlannerOutput":
-        """Rewrite one target's support policy, and its question when given.
-
-        The policy is set here rather than derived: these fixtures stage a
-        plan the Planner has already stamped, so the helper writes what the
-        Planner *would* have written for the replacement question.
-        """
-
-        def rewrite(target: dict[str, object]) -> dict[str, object]:
-            updated = dict(target)
-            if updated.get("target_id") != target_id:
-                return updated
-            updated["support_policy"] = policy
-            if question is not None:
-                updated["question"] = question
-            return updated
-
-        return self._map_targets(rewrite)
-
     def _map_sub_topics(
         self, transform: Callable[[dict[str, object]], dict[str, object]]
     ) -> "PlannerOutput":
@@ -714,175 +703,60 @@ class SourceEvaluatorOutput(TargetOutput):
         )
 
 
-class FactCheckerOutput(TargetOutput):
-    """A fact-checker repetition with builder helpers.
+class EvidenceVerifierOutput(TargetOutput):
+    """An evidence-verifier repetition with builder helpers.
 
-    Every helper that adds verification passages also records the read
-    provenance those passages need. Task 5 review: a fixture that moved the
-    claim alone could assert passages at URLs the run never read — or that no
-    run could have read — which is exactly what the read-provenance gate
-    exists to refuse.
+    Every helper mutates the typed snapshot the run returned — never the
+    fixture's expectation — so an assertion about a gate is satisfied by a
+    change to what the agent produced.
     """
 
-    def with_verified_claim_sources(
-        self, urls: Sequence[str]
-    ) -> "FactCheckerOutput":
+    def _finding(self, index: int) -> tuple[list[dict], dict]:
         result = dict(self.result or {})
-        claims = [dict(item) for item in (result.get("verified_claims") or [])]
-        claims[0]["source_urls"] = list(urls)
-        return self.model_copy(
-            update={"result": {**result, "verified_claims": claims}}
-        )
+        findings = [dict(item) for item in (result.get("findings") or [])]
+        return findings, findings[index]
 
-    def with_evidence_texts(self, texts: Sequence[str]) -> "FactCheckerOutput":
-        result = dict(self.result or {})
-        claims = [dict(item) for item in (result.get("verified_claims") or [])]
-        claims[0]["evidence"] = list(texts)
-        return self.model_copy(
-            update={"result": {**result, "verified_claims": claims}}
-        )
-
-    def with_read_urls(
-        self, urls: Sequence[str], *, complete: bool = True
-    ) -> "FactCheckerOutput":
-        """Declare exactly which URLs this repetition READ.
-
-        ``complete=False`` models an artifact that lost read identities, which
-        the gate must treat as unable to prove anything.
-        """
-        fingerprints, derived_complete = bounded_url_fingerprints(urls)
-        return self.model_copy(
-            update={
-                "dependencies": _ledger_with_reads(
-                    self.dependencies,
-                    fingerprints,
-                    complete=complete and derived_complete,
-                )
-            }
-        )
-
-    def with_read_trajectory(self, urls: Sequence[str]) -> "FactCheckerOutput":
-        """Record one web_scraper step per URL: reads, not discovery."""
-        return self.model_copy(
-            update={"trajectory": _read_trajectory(list(urls))}
-        )
-
-    def with_read_steps(self, steps: Sequence[ReActStep]) -> "FactCheckerOutput":
-        """Derive read provenance from typed steps, exactly as the target does.
-
-        Uses the production ``read_url_fingerprints`` classifier, so a fixture
-        can prove — rather than assert — that a search-only step set yields no
-        read identity at all.
-        """
-        fingerprints, complete = read_url_fingerprints(steps)
-        return self.model_copy(
-            update={
-                "dependencies": _ledger_with_reads(
-                    self.dependencies, fingerprints, complete=complete
-                )
-            }
-        )
-
-    def with_verification_passage_urls(
-        self, urls: Sequence[str]
-    ) -> "FactCheckerOutput":
-        result = dict(self.result or {})
-        claims = [dict(item) for item in (result.get("verified_claims") or [])]
-        claims[0]["verification_evidence"] = [
-            {
-                "source_url": url,
-                "source_title": "Independent review",
-                "locator": f"p. {index + 1}",
-                "excerpt": "An independent source reports the same result.",
-                "stance": "supports",
-            }
-            for index, url in enumerate(urls)
-        ]
-        return self.model_copy(
-            update={"result": {**result, "verified_claims": claims}}
-        ).with_read_urls(urls).with_read_trajectory(urls)
-
-    def with_empty_evidence(self) -> "FactCheckerOutput":
-        result = dict(self.result or {})
-        claims = [dict(item) for item in (result.get("verified_claims") or [])]
-        claims[0]["evidence"] = []
-        claims[0]["verification_evidence"] = []
-        return self.model_copy(
-            update={"result": {**result, "verified_claims": claims}}
-        )
-
-    def with_claim_verdict(
-        self, verdict: str, *, confidence: float
-    ) -> "FactCheckerOutput":
-        result = dict(self.result or {})
-        claims = [dict(item) for item in (result.get("verified_claims") or [])]
-        claims[0]["verdict"] = verdict
-        claims[0]["confidence"] = confidence
-        return self.model_copy(
-            update={"result": {**result, "verified_claims": claims}}
-        )
-
-    def with_claims(
-        self, claims: Sequence[Mapping[str, object]]
-    ) -> "FactCheckerOutput":
-        """Replace the whole claim list, as a run that checked another set.
-
-        The helpers above patch ``claims[0]``; a case whose declaration names
-        a claim the output must *carry* needs a fixture that can withhold one
-        — or all of them — without asserting through a mutation that never
-        touched the list.
-        """
+    def _store(self, findings: list[dict]) -> "EvidenceVerifierOutput":
         result = dict(self.result or {})
         return self.model_copy(
-            update={
-                "result": {
-                    **result,
-                    "verified_claims": [dict(claim) for claim in claims],
-                }
-            }
+            update={"result": {**result, "findings": findings}}
         )
 
-    def with_claim_fields(
-        self, index: int, **fields: object
-    ) -> "FactCheckerOutput":
-        """Rewrite one claim record's fields.
+    def without_verification(self, index: int = 0) -> "EvidenceVerifierOutput":
+        """Leave one finding unjudged, as a run that never checked it."""
+        findings, finding = self._finding(index)
+        finding["verification"] = None
+        return self._store(findings)
 
-        The helpers above patch ``claims[0]``; a fixture carrying more than
-        one claim needs to name the record it mutates, or an assertion about
-        the second claim is satisfied by a mutation that never touched it.
-        """
-        result = dict(self.result or {})
-        claims = [dict(item) for item in (result.get("verified_claims") or [])]
-        claims[index].update(fields)
-        return self.model_copy(
-            update={"result": {**result, "verified_claims": claims}}
-        )
+    def with_invented_evidence_words(
+        self, text: str, *, index: int = 0, figure: int = 0
+    ) -> "EvidenceVerifierOutput":
+        """Rewrite one kept figure's evidence words to words of the caller's."""
+        findings, finding = self._finding(index)
+        verification = dict(finding.get("verification") or {})
+        results = [dict(item) for item in (verification.get("figure_results") or [])]
+        results[figure]["evidence_words"] = text
+        verification["figure_results"] = results
+        finding["verification"] = verification
+        return self._store(findings)
 
-    def with_claim_passages(
-        self, index: int, urls: Sequence[str]
-    ) -> "FactCheckerOutput":
-        """Replace one claim's verification passages with one per URL."""
-        result = dict(self.result or {})
-        claims = [dict(item) for item in (result.get("verified_claims") or [])]
-        claims[index]["verification_evidence"] = [
-            {
-                "source_url": url,
-                "source_title": "Second account of the same number",
-                "locator": f"p. {position + 1}",
-                "excerpt": "A second account states the same figure.",
-                "stance": "supports",
-            }
-            for position, url in enumerate(urls)
-        ]
-        return self.model_copy(
-            update={"result": {**result, "verified_claims": claims}}
-        )
+    def without_drop_reason(
+        self, *, index: int = 0, figure: int = 0
+    ) -> "EvidenceVerifierOutput":
+        """Drop one dropped figure's reason, leaving the drop in place."""
+        findings, finding = self._finding(index)
+        verification = dict(finding.get("verification") or {})
+        results = [dict(item) for item in (verification.get("figure_results") or [])]
+        results[figure].pop("dropped_reason", None)
+        verification["figure_results"] = results
+        finding["verification"] = verification
+        return self._store(findings)
 
 
-class SynthesizerOutput(TargetOutput):
-    """A synthesizer repetition with builder helpers."""
+class ReportWriterOutput(TargetOutput):
+    """A report-writer repetition with builder helpers."""
 
-    def with_report_citing(self, url: str) -> "SynthesizerOutput":
+    def with_report_citing(self, url: str) -> "ReportWriterOutput":
         result = dict(self.result or {})
         report = str(result.get("markdown") or "")
         state_update = dict(self.state_update)
@@ -897,24 +771,84 @@ class SynthesizerOutput(TargetOutput):
             }
         )
 
-    def without_limitations(self) -> "SynthesizerOutput":
+    def with_refused_point(
+        self,
+        *,
+        text: str,
+        reason: str,
+        where: str = "summary[0]",
+        finding_labels: Sequence[str] = (),
+    ) -> "ReportWriterOutput":
+        """Record one refused drafted point on the composition.
+
+        Kept in both halves §6.1 item 7 requires: the composition's own
+        reason list and the full record the evidence log prints. A helper
+        that wrote only one of them would let a fixture "pass" a refusal
+        check the artifact never had to satisfy.
+        """
         result = dict(self.result or {})
-        report = str(result.get("markdown") or "")
+        composition = dict(result.get("composition") or {})
+        composition["rejected"] = [
+            *(composition.get("rejected") or []),
+            reason,
+        ]
+        composition["rejected_points"] = [
+            *(composition.get("rejected_points") or []),
+            {
+                "where": where,
+                "text": text,
+                "reason": reason,
+                "finding_labels": list(finding_labels),
+            },
+        ]
+        return self.model_copy(
+            update={"result": {**result, "composition": composition}}
+        )
+
+    def without_refused_sentences(self) -> "ReportWriterOutput":
+        """Cut the evidence log's refusal section out of the artifact."""
+        result = dict(self.result or {})
+        evidence = str(result.get("evidence_markdown") or "")
+        kept = evidence.split("## Refused sentences")[0].rstrip()
         state_update = dict(self.state_update)
-        report = report.split(
-            "## Uncertainty and conflicting evidence"
-        )[0].rstrip()
         return self.model_copy(
             update={
-                "result": {
-                    **result,
-                    "markdown": report,
-                },
-                "state_update": {**state_update, "report": report},
+                "result": {**result, "evidence_markdown": kept},
+                "state_update": {**state_update, "report_evidence": kept},
             }
         )
 
-    def with_report_text(self, text: str) -> "SynthesizerOutput":
+    def with_publication_path(self, path: str) -> "ReportWriterOutput":
+        """Record a published path on a pass that publishes nothing."""
+        result = dict(self.result or {})
+        return self.model_copy(
+            update={"result": {**result, "report_path": path}}
+        )
+
+    def with_persistence_call(self, tool_name: str = "write_document") -> "ReportWriterOutput":
+        """Record one call to a persistence tool in the dependency ledger."""
+        return self.model_copy(
+            update={
+                "dependencies": self.dependencies.model_copy(
+                    update={
+                        "tool_calls": [
+                            *self.dependencies.tool_calls,
+                            ToolCallSummary(
+                                tool_name=tool_name, calls=1, failures=0
+                            ),
+                        ],
+                        "document_writes": (
+                            1 if tool_name == "write_document" else 0
+                        ),
+                        "memory_writes": (
+                            1 if tool_name == "save_to_memory" else 0
+                        ),
+                    }
+                )
+            }
+        )
+
+    def with_report_text(self, text: str) -> "ReportWriterOutput":
         result = dict(self.result or {})
         state_update = dict(self.state_update)
         return self.model_copy(
@@ -924,7 +858,7 @@ class SynthesizerOutput(TargetOutput):
             }
         )
 
-    def with_references(self, urls: Sequence[str]) -> "SynthesizerOutput":
+    def with_references(self, urls: Sequence[str]) -> "ReportWriterOutput":
         """Rewrite the reference list, leaving the prose and its markers.
 
         A run that prints a mirrored copy as a second reference differs from a
@@ -934,12 +868,12 @@ class SynthesizerOutput(TargetOutput):
         """
         result = dict(self.result or {})
         report = str(result.get("markdown") or "")
-        head = report.split("## References")[0].rstrip()
+        head = report.split("## Sources")[0].rstrip()
         listed = "\n".join(
             f"{index}. Reference {index} — {url}"
             for index, url in enumerate(urls, start=1)
         )
-        report = f"{head}\n\n## References\n\n{listed}"
+        report = f"{head}\n\n## Sources\n\n{listed}"
         state_update = dict(self.state_update)
         return self.model_copy(
             update={
@@ -947,44 +881,6 @@ class SynthesizerOutput(TargetOutput):
                 "state_update": {**state_update, "report": report},
             }
         )
-
-
-class CriticOutput(TargetOutput):
-    """A critic repetition with builder helpers."""
-
-    def _critique(self, **updates: object) -> "CriticOutput":
-        result = dict(self.result or {})
-        critique = dict(result.get("critique") or {})
-        critique.update(updates)
-        return self.model_copy(
-            update={"result": {**result, "critique": critique}}
-        )
-
-    def with_score(self, score: int) -> "CriticOutput":
-        return self._critique(score=score)
-
-    def with_should_continue(self, value: bool) -> "CriticOutput":
-        return self._critique(should_continue=value)
-
-    def with_gaps(self, gaps: Sequence[str]) -> "CriticOutput":
-        return self._critique(gaps=list(gaps))
-
-    def with_recommended_queries(
-        self, queries: Sequence[str]
-    ) -> "CriticOutput":
-        return self._critique(recommended_queries=list(queries))
-
-    def with_typed_gaps(
-        self, gaps: Sequence[Mapping[str, object]]
-    ) -> "CriticOutput":
-        """Replace the gap list with typed gap records.
-
-        ``with_gaps`` writes the legacy string form, which predates the typed
-        contract and normalizes to one material ``coverage``/``acquire`` gap
-        scoped to the whole answer. A case that scores what a gap *names* and
-        where it *routes* needs records that carry a kind and a repair action.
-        """
-        return self._critique(gaps=[dict(gap) for gap in gaps])
 
 
 @pytest.fixture
@@ -1006,37 +902,6 @@ def controlled_case_for_id():
 @pytest.fixture
 def source_evaluator_case(controlled_case_for):
     return controlled_case_for("source_evaluator")
-
-
-@pytest.fixture
-def fact_checker_case(controlled_case_for):
-    return controlled_case_for("fact_checker")
-
-
-@pytest.fixture
-def fact_checker_dependent_case(controlled_case_for_id):
-    """The case that genuinely declares minimum_independent_domains."""
-    return controlled_case_for_id("fact_checker", "independent-domain-evidence")
-
-
-@pytest.fixture
-def critic_case(controlled_case_for):
-    return controlled_case_for("critic")
-
-
-@pytest.fixture
-def critic_gap_case(controlled_case_for_id):
-    return controlled_case_for_id("critic", "request-more-research")
-
-
-@pytest.fixture
-def critic_budget_case(controlled_case_for_id):
-    return controlled_case_for_id("critic", "missing-evidence-or-budget-exhausted")
-
-
-@pytest.fixture
-def synthesizer_composition_case(controlled_case_for_id):
-    return controlled_case_for_id("synthesizer", "composition-no-publication")
 
 
 # Task 12's high-risk cases are looked up by id with ``case_by_id``, not
@@ -1066,25 +931,21 @@ def work_role_case() -> EvaluationCase:
 
 
 @pytest.fixture
-def upstream_pair_case() -> EvaluationCase:
-    """The fact-checker case whose contract polices upstream independence."""
-    return case_by_id(
-        "fact_checker", "controlled", "upstream-independent-pair"
-    )
+def evidence_verifier_case(controlled_case_for):
+    return controlled_case_for("evidence_verifier")
+
+
+@pytest.fixture
+def report_writer_case(controlled_case_for):
+    return controlled_case_for("report_writer")
 
 
 @pytest.fixture
 def canonical_report_case() -> EvaluationCase:
-    """The synthesizer case whose contract polices citation provenance."""
+    """The report writer's case whose contract polices citation provenance."""
     return case_by_id(
-        "synthesizer", "controlled", "canonical-evidence-report"
+        "report_writer", "controlled", "canonical-evidence-report"
     )
-
-
-@pytest.fixture
-def typed_gap_case() -> EvaluationCase:
-    """The critic case whose contract polices gap typing and routing."""
-    return case_by_id("critic", "controlled", "typed-gap-calibration")
 
 
 @pytest.fixture
@@ -1160,7 +1021,6 @@ def _stamped_target(
     *,
     question: str,
     required_dimensions: Sequence[str],
-    support_policy: str,
     critical: bool = True,
 ) -> dict[str, object]:
     """One evidence target as the Planner's artifact carries it, id stamped."""
@@ -1171,7 +1031,6 @@ def _stamped_target(
         "required_dimensions": list(required_dimensions),
         "required": True,
         "critical": critical,
-        "support_policy": support_policy,
     }
 
 
@@ -1223,7 +1082,6 @@ def scoped_target_output(scoped_targets_case) -> PlannerOutput:
                                 "period: the most recent reported year",
                                 "geography: the United States",
                             ],
-                            support_policy="independent_pair",
                         )
                     ],
                 },
@@ -1256,7 +1114,6 @@ def scoped_target_output(scoped_targets_case) -> PlannerOutput:
                                 "revision",
                                 "geography: the United States",
                             ],
-                            support_policy="primary_attribution",
                         )
                     ],
                 },
@@ -1286,7 +1143,6 @@ def scoped_target_output(scoped_targets_case) -> PlannerOutput:
                                 "instrument: the official fee schedule",
                                 "geography: the United States",
                             ],
-                            support_policy="primary_attribution",
                         )
                     ],
                 },
@@ -1650,826 +1506,6 @@ def work_role_output(work_role_case) -> SourceEvaluatorOutput:
         target_model_requested="gpt-5.6-luna",
         target_model_returned="gpt-5.6-luna",
         target_reasoning_effort="low",
-    )
-
-
-@pytest.fixture
-def fact_checker_output(fact_checker_case) -> FactCheckerOutput:
-    """One verified claim whose evidence spans two independent domains."""
-    return FactCheckerOutput(
-        case_id=fact_checker_case.case_id,
-        case_version=fact_checker_case.version,
-        agent_name=fact_checker_case.agent_name,
-        tier=fact_checker_case.tier,
-        repetition=1,
-        session_id="evaluation-mixed-verdicts",
-        experiment_name="fact-checker-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/fact-checker-1",
-        completed=True,
-        failure=None,
-        result={
-            "verified_claims": [
-                {
-                    "text": (
-                        "Small modular reactor designs must satisfy the same "
-                        "international safety standards as large reactors."
-                    ),
-                    "claim_id": claim_fingerprint(
-                        "Small modular reactor designs must satisfy the same "
-                        "international safety standards as large reactors."
-                    ),
-                    "source_urls": ["https://iaea.org/smr-safety-assessment"],
-                    "verdict": "verified",
-                    "confidence": 0.85,
-                    "evidence": [
-                        "The IAEA framework covers SMR designs "
-                        "(https://syndication.news.example.com/c).",
-                        "The NRC applies the same review "
-                        "(https://world-nuclear.org/smr-safety-standards).",
-                    ],
-                    "contradictions": [],
-                    "verification_evidence": [
-                        {
-                            "source_url": "https://syndication.news.example.com/c",
-                            "source_title": "Independent safety review",
-                            "locator": "p. 1",
-                            "excerpt": (
-                                "The IAEA framework covers SMR designs."
-                            ),
-                            "stance": "supports",
-                        },
-                        {
-                            "source_url": (
-                                "https://world-nuclear.org/smr-safety-standards"
-                            ),
-                            "source_title": "Independent safety review",
-                            "locator": "p. 2",
-                            "excerpt": "The NRC applies the same review.",
-                            "stance": "supports",
-                        },
-                    ],
-                }
-            ]
-        },
-        state_update={},
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=2,
-            tool_calls=4,
-            stop_reason="finished",
-            max_iterations=fact_checker_case.expectations.max_iterations,
-            tool_budget=fact_checker_case.expectations.max_tool_calls,
-        ),
-        dependencies=_read_ledger(
-            [
-                "https://syndication.news.example.com/c",
-                "https://world-nuclear.org/smr-safety-standards",
-            ]
-        ),
-        evidence=EvidenceContext(),
-        trajectory=_read_trajectory(
-            [
-                "https://syndication.news.example.com/c",
-                "https://world-nuclear.org/smr-safety-standards",
-            ]
-        ),
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="low",
-    )
-
-
-@pytest.fixture
-def fact_checker_dependent_output(
-    fact_checker_dependent_case,
-) -> FactCheckerOutput:
-    """One verified claim whose corroboration is only same-family: the
-    claim's own sources are the four outage findings (three news.example.com
-    hats plus the regulator), the evidence strings paraphrase without
-    pasting URLs, and the scripted verification search's two results —
-    both news-family — are the only URLs the trajectory recorded."""
-    return FactCheckerOutput(
-        case_id=fact_checker_dependent_case.case_id,
-        case_version=fact_checker_dependent_case.version,
-        agent_name=fact_checker_dependent_case.agent_name,
-        tier=fact_checker_dependent_case.tier,
-        repetition=1,
-        session_id="evaluation-independent-domain-evidence",
-        experiment_name="fact-checker-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/fact-checker-2",
-        completed=True,
-        failure=None,
-        result={
-            "verified_claims": [
-                {
-                    "text": (
-                        "The 2025 grid upgrade reduced outage minutes by "
-                        "40 percent."
-                    ),
-                    "claim_id": claim_fingerprint(
-                        "The 2025 grid upgrade reduced outage minutes by "
-                        "40 percent."
-                    ),
-                    "source_urls": [
-                        "https://news.example.com/outage-coverage",
-                        "https://news.example.com/outage-verification",
-                        (
-                            "https://syndication.news.example.com/"
-                            "outage-syndication"
-                        ),
-                        "https://regulator.example.gov/outage-report",
-                    ],
-                    "verdict": "verified",
-                    "confidence": 0.80,
-                    "evidence": [
-                        "A follow-up report confirms outage minutes fell "
-                        "40 percent after the 2025 grid upgrade.",
-                        "Syndicated outage statistics repeat the same "
-                        "40 percent figure.",
-                    ],
-                    "contradictions": [],
-                    "verification_evidence": [
-                        {
-                            "source_url": "https://news.example.com/outage-minutes-fall",
-                            "source_title": "News follow-up",
-                            "locator": "p. 1",
-                            "excerpt": (
-                                "A follow-up report confirms outage minutes fell."
-                            ),
-                            "stance": "supports",
-                        },
-                        {
-                            "source_url": (
-                                "https://syndication.news.example.com/"
-                                "outage-minutes-fall"
-                            ),
-                            "source_title": "Syndicated report",
-                            "locator": "p. 1",
-                            "excerpt": "The same figure is repeated.",
-                            "stance": "supports",
-                        },
-                    ],
-                }
-            ]
-        },
-        state_update={},
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=2,
-            tool_calls=4,
-            stop_reason="finished",
-            max_iterations=fact_checker_dependent_case.expectations.max_iterations,
-            tool_budget=fact_checker_dependent_case.expectations.max_tool_calls,
-        ),
-        dependencies=_read_ledger(
-            [
-                "https://news.example.com/outage-minutes-fall",
-                "https://syndication.news.example.com/outage-minutes-fall",
-            ]
-        ),
-        evidence=EvidenceContext(),
-        trajectory=_read_trajectory(
-            [
-                "https://news.example.com/outage-minutes-fall",
-                "https://syndication.news.example.com/outage-minutes-fall",
-            ]
-        ),
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="low",
-    )
-
-
-@pytest.fixture
-def upstream_pair_output(upstream_pair_case) -> FactCheckerOutput:
-    """The case's two claims as a correct run records them.
-
-    The trap claim is supported by the commission's own order and its own
-    press release — one publisher, so ``insufficient_evidence`` with a
-    ``source_supported`` badge, never a pair. The control claim rests on two
-    separate works by two unrelated publishers, so it carries the pair badge.
-    Both claim texts and every URL come from the case's reference, so a
-    mutation cannot drift from what the case declares.
-    """
-    reference = upstream_pair_case.expectations.reference
-    trap = reference["forbidden_verified_claims"][0]
-    control = reference["required_verified_claims"][0]
-    agency, press = reference["same_publisher_urls"]
-    lab = reference["dimension_only_urls"][0]
-    monitor, university = reference["corroborating_urls"]
-    read_urls = [agency, press, lab, monitor, university]
-    return FactCheckerOutput(
-        case_id=upstream_pair_case.case_id,
-        case_version=upstream_pair_case.version,
-        agent_name=upstream_pair_case.agent_name,
-        tier=upstream_pair_case.tier,
-        repetition=1,
-        session_id="evaluation-upstream-independent-pair",
-        experiment_name="fact-checker-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/fact-checker-3",
-        completed=True,
-        failure=None,
-        result={
-            "verified_claims": [
-                {
-                    "text": trap,
-                    "claim_id": claim_fingerprint(trap),
-                    "source_urls": list(
-                        reference["claim_origin_urls"][trap]
-                    ),
-                    "verdict": "insufficient_evidence",
-                    "confidence": 0.40,
-                    "evidence": [
-                        "Order 2026-14 records non-revenue water at "
-                        "12 percent of supply in 2025.",
-                        "The commission's press release repeats the "
-                        "12 percent of supply figure for 2025.",
-                    ],
-                    "contradictions": [],
-                    "evidence_status": "source_supported",
-                    "verification_evidence": [
-                        {
-                            "source_url": agency,
-                            "source_title": "Commission order 2026-14",
-                            "locator": "p. 3",
-                            "excerpt": (
-                                "Order 2026-14 requires the authority to "
-                                "reduce non-revenue water to 8 percent of "
-                                "supply by 2030, from the 12 percent of "
-                                "supply measured in 2025."
-                            ),
-                            "stance": "supports",
-                        },
-                        {
-                            "source_url": press,
-                            "source_title": "Commission press release",
-                            "locator": "p. 1",
-                            "excerpt": (
-                                "The commission confirmed that non-revenue "
-                                "water in the authority's network measured "
-                                "12 percent of supply in 2025."
-                            ),
-                            "stance": "supports",
-                        },
-                    ],
-                },
-                {
-                    "text": control,
-                    "claim_id": claim_fingerprint(control),
-                    "source_urls": list(
-                        reference["claim_origin_urls"][control]
-                    ),
-                    "verdict": "verified",
-                    "confidence": 0.85,
-                    "evidence": [
-                        "The monitor's 2025 audit records 41 kilometres of "
-                        "leaking mains replaced.",
-                        "The university's regional study records 41 "
-                        "kilometres of mains replaced.",
-                    ],
-                    "contradictions": [],
-                    "evidence_status": "verified_pair",
-                    "verification_evidence": [
-                        {
-                            "source_url": monitor,
-                            "source_title": "Utility monitor: 2025 audit",
-                            "locator": "p. 2",
-                            "excerpt": (
-                                "The 2025 network audit records 41 "
-                                "kilometres of leaking mains replaced by "
-                                "the authority."
-                            ),
-                            "stance": "supports",
-                        },
-                        {
-                            "source_url": university,
-                            "source_title": "University regional study",
-                            "locator": "p. 4",
-                            "excerpt": (
-                                "The regional study records 41 kilometres "
-                                "of leaking mains replaced in the "
-                                "authority's network during 2025."
-                            ),
-                            "stance": "supports",
-                        },
-                    ],
-                },
-            ]
-        },
-        state_update={},
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=4,
-            tool_calls=5,
-            stop_reason="finished",
-            max_iterations=upstream_pair_case.expectations.max_iterations,
-            tool_budget=upstream_pair_case.expectations.max_tool_calls,
-        ),
-        dependencies=_read_ledger(read_urls),
-        evidence=EvidenceContext(
-            scripted_search_urls=list(
-                upstream_pair_case.expectations.known_source_urls
-            )
-        ),
-        trajectory=_read_trajectory(read_urls),
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="low",
-    )
-
-
-@pytest.fixture
-def synthesizer_output(synthesizer_case) -> SynthesizerOutput:
-    """Both Task 6 Markdown artifacts, citing only known sources."""
-    urls = synthesizer_case.expectations.known_source_urls
-    report = (
-        "# Research report: What is the evidence base for congestion pricing "
-        "reducing urban travel times?\n\n"
-        "**As of:** 2026-08-01T00:00:00+00:00\n\n"
-        "**Scope:** the supplied urban congestion-pricing evidence.\n\n"
-        "**Quality status:** not yet quality-gated\n\n"
-        "## Executive summary\n\n"
-        f"- London congestion charging evidence shows travel times fell "
-        f"after the charge was introduced. [{1}]\n\n"
-        "## Constraint ranking\n\n"
-        "(no constraint was ranked for this pass)\n\n"
-        "## Findings\n\n"
-        "### London congestion charging evidence\n\n"
-        f"- London results show travel-time reductions. [{1}]\n\n"
-        "### New York congestion pricing evidence\n\n"
-        f"- New York results point to similar reductions. [{2}]\n\n"
-        "### International congestion-pricing evidence\n\n"
-        f"- Evidence beyond London and New York is thinner. [{3}]\n\n"
-        "## Uncertainty and conflicting evidence\n\n"
-        "The evidence is limited to a few cities and short evaluation windows.\n\n"
-        "## Methodology\n\n"
-        "- Claims and citations were composed from the supplied evidence.\n\n"
-        "## References\n\n"
-        f"1. London monitoring — {urls[0]}\n"
-        f"2. New York evaluation — {urls[1]}\n"
-        f"3. Comparative review — {urls[2]}"
-    )
-    evidence = (
-        "# Evidence ledger: evaluation-complete\n\n"
-        "## Claim registry\n\n"
-        "The controlled fixture's checked claims and source assessments."
-    )
-    state_update = {
-        "report": report,
-        "report_evidence": evidence,
-        "evidence_path": "report-evaluation-complete-1-evidence.md",
-        "unique_source_count": len(urls),
-        "unique_claim_count": 4,
-    }
-    return SynthesizerOutput(
-        case_id=synthesizer_case.case_id,
-        case_version=synthesizer_case.version,
-        agent_name=synthesizer_case.agent_name,
-        tier=synthesizer_case.tier,
-        repetition=1,
-        session_id="evaluation-complete-cited-report",
-        experiment_name="synthesizer-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/synthesizer-1",
-        completed=True,
-        failure=None,
-        result={
-            "markdown": report,
-            "path": None,
-            "evidence_markdown": evidence,
-            "evidence_path": "report-evaluation-complete-1-evidence.md",
-            "section_count": 3,
-            "citation_count": 3,
-            "unique_source_count": len(urls),
-            "unique_claim_count": 4,
-        },
-        state_update=state_update,
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=2,
-            tool_calls=3,
-            stop_reason="finished",
-            max_iterations=synthesizer_case.expectations.max_iterations,
-            tool_budget=synthesizer_case.expectations.max_tool_calls,
-        ),
-        dependencies=DependencyLedger(),
-        evidence=EvidenceContext(),
-        trajectory=[],
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="medium",
-    )
-
-
-@pytest.fixture
-def synthesizer_composition_output(
-    synthesizer_composition_case,
-) -> SynthesizerOutput:
-    """A composition-only output with no publication claim or side effect."""
-    urls = synthesizer_composition_case.expectations.known_source_urls
-    report = (
-        "# Research report: How much does building retrofit depth affect "
-        "realized energy savings?\n\n"
-        "**As of:** 2026-08-01T00:00:00+00:00\n\n"
-        "**Scope:** the supplied retrofit evidence.\n\n"
-        "**Quality status:** not yet quality-gated\n\n"
-        "## Executive summary\n\n"
-        f"- Deep retrofit results are mixed across the supplied studies. [1]\n\n"
-        "## Constraint ranking\n\n"
-        "(no constraint was ranked for this pass)\n\n"
-        "## Findings\n\n"
-        "### Retrofit depth and realized savings\n\n"
-        f"- Realized savings can fall below modeled values. [1]\n\n"
-        "## Uncertainty and conflicting evidence\n\n"
-        "The evidence base is still limited.\n\n"
-        "## Methodology\n\n"
-        "- Claims were composed from the supplied checked evidence.\n\n"
-        "## References\n\n"
-        f"1. Retrofit study — {urls[0]}"
-    )
-    evidence = (
-        "# Evidence ledger: composition-no-publication\n\n"
-        "## Claim registry\n\n"
-        "The controlled fixture's checked claims and source assessments."
-    )
-    state_update = {
-        "report": report,
-        "report_evidence": evidence,
-        "evidence_path": "report-composition-no-publication-1-evidence.md",
-        "unique_source_count": len(urls),
-        "unique_claim_count": 3,
-    }
-    return SynthesizerOutput(
-        case_id=synthesizer_composition_case.case_id,
-        case_version=synthesizer_composition_case.version,
-        agent_name=synthesizer_composition_case.agent_name,
-        tier=synthesizer_composition_case.tier,
-        repetition=1,
-        session_id="evaluation-composition-no-publication",
-        experiment_name="synthesizer-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/synthesizer-composition-1",
-        completed=True,
-        failure=None,
-        result={
-            "markdown": report,
-            "path": None,
-            "evidence_markdown": evidence,
-            "evidence_path": "report-composition-no-publication-1-evidence.md",
-            "section_count": 1,
-            "citation_count": 1,
-            "unique_source_count": len(urls),
-            "unique_claim_count": 3,
-        },
-        state_update=state_update,
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=2,
-            tool_calls=3,
-            stop_reason="finished",
-            max_iterations=synthesizer_composition_case.expectations.max_iterations,
-            tool_budget=synthesizer_composition_case.expectations.max_tool_calls,
-        ),
-        dependencies=DependencyLedger(),
-        evidence=EvidenceContext(),
-        trajectory=[],
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="medium",
-    )
-
-
-@pytest.fixture
-def canonical_report_output(canonical_report_case) -> SynthesizerOutput:
-    """A report that prints one canonical reference per work.
-
-    The list is the case's own declaration, not a second copy of it: each
-    assessed source prints the canonical URL the case records for its work, so
-    the fixture cannot drift from the trap its state carries. The reprint
-    resolves to the original's URL and collapses into that one entry, which is
-    what a run composing its references from the evidence registry produces.
-    """
-    case = canonical_report_case
-    canonical = case.expectations.reference["canonical_url_for_work"]
-    listed: list[tuple[str, str]] = []
-    for source in case.state.evaluated_sources:
-        url = canonical.get(source.work_id, source.url)
-        if url not in [entry[0] for entry in listed]:
-            listed.append((url, source.title))
-    references = "\n".join(
-        f"{index}. {title} — {url}"
-        for index, (url, title) in enumerate(listed, start=1)
-    )
-    report = (
-        "# Research report: What do measured field studies show about the "
-        "effect of cover crops on nitrate loss to groundwater?\n\n"
-        "**As of:** 2026-08-01T00:00:00+00:00\n\n"
-        "**Scope:** the supplied cover-crop nitrate evidence.\n\n"
-        "**Quality status:** not yet quality-gated\n\n"
-        "## Executive summary\n\n"
-        "- Measured field trials report lower nitrate loss to tile drains "
-        "under cereal rye cover crops, and how much lower depends on how the "
-        "cover crop was established. [1][2]\n\n"
-        "## Constraint ranking\n\n"
-        "(no constraint was ranked for this pass)\n\n"
-        "## Findings\n\n"
-        "### Measured nitrate loss reductions\n\n"
-        "- Twelve site-years of field trials report nitrate loss to tile "
-        "drains 30 to 45 percent lower under cereal rye than under the "
-        "preceding cash crop alone. [1][2]\n\n"
-        "### Field conditions behind the measured effects\n\n"
-        "- A meta-analysis of 41 leaching studies finds the reduction depends "
-        "on establishing the cover crop before the preceding crop's window, "
-        "and a vendor guide names the same conditions without reporting "
-        "measurements of its own. [2][4]\n\n"
-        "### Regional monitoring evidence\n\n"
-        "- Regional monitoring records nitrate above the drinking-water limit "
-        "at 3 of 18 sampled wells, with no trend across the four monitored "
-        "years. [3]\n\n"
-        "## Uncertainty and conflicting evidence\n\n"
-        "The records cover few catchments and a short monitoring window. "
-        "Limitations: the vendor guide is not peer reviewed, and the trials "
-        "network's report is also carried by a reprint that adds no "
-        "measurement of its own.\n\n"
-        "## Methodology\n\n"
-        "- Claims and citations were composed from the supplied evidence.\n\n"
-        "## References\n\n"
-        f"{references}"
-    )
-    evidence = (
-        "# Evidence ledger: canonical-evidence-report\n\n"
-        "## Claim registry\n\n"
-        "Three checked claims resolved through the evidence registry, and one "
-        "reference per work however many copies of it were retrieved."
-    )
-    state_update = {
-        "report": report,
-        "report_evidence": evidence,
-        "evidence_path": "report-canonical-evidence-report-1-evidence.md",
-        "unique_source_count": len(case.state.evaluated_sources),
-        "unique_claim_count": len(case.state.verified_claims),
-    }
-    return SynthesizerOutput(
-        case_id=case.case_id,
-        case_version=case.version,
-        agent_name=case.agent_name,
-        tier=case.tier,
-        repetition=1,
-        session_id="evaluation-canonical-evidence-report",
-        experiment_name="synthesizer-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/synthesizer-canonical-1",
-        completed=True,
-        failure=None,
-        result={
-            "markdown": report,
-            "path": None,
-            "evidence_markdown": evidence,
-            "evidence_path": "report-canonical-evidence-report-1-evidence.md",
-            "section_count": 3,
-            "citation_count": len(listed),
-            "unique_source_count": len(case.state.evaluated_sources),
-            "unique_claim_count": len(case.state.verified_claims),
-        },
-        state_update=state_update,
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=1,
-            tool_calls=3,
-            stop_reason="finished",
-            max_iterations=case.expectations.max_iterations,
-            tool_budget=case.expectations.max_tool_calls,
-        ),
-        dependencies=DependencyLedger(),
-        evidence=EvidenceContext(),
-        trajectory=[],
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="medium",
-    )
-
-
-@pytest.fixture
-def critic_output(critic_case) -> CriticOutput:
-    """A strong-report approval: score 9, end routing, no gaps."""
-    return CriticOutput(
-        case_id=critic_case.case_id,
-        case_version=critic_case.version,
-        agent_name=critic_case.agent_name,
-        tier=critic_case.tier,
-        repetition=1,
-        session_id="evaluation-approve-strong-report",
-        experiment_name="critic-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/critic-1",
-        completed=True,
-        failure=None,
-        result={
-            "critique": {
-                "score": 9,
-                "gaps": [],
-                "unsupported_claims": [],
-                "recommended_queries": [],
-                "should_continue": False,
-                "rationale": (
-                    "The report covers the measured surface temperature "
-                    "reductions and states its limitations."
-                ),
-            }
-        },
-        state_update={},
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=1,
-            tool_calls=0,
-            stop_reason="finished",
-            max_iterations=critic_case.expectations.max_iterations,
-            tool_budget=critic_case.expectations.max_tool_calls,
-        ),
-        dependencies=DependencyLedger(),
-        evidence=EvidenceContext(),
-        trajectory=[],
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="medium",
-    )
-
-
-@pytest.fixture
-def critic_gap_output(critic_gap_case) -> CriticOutput:
-    """A request for more research: low score with actionable gaps."""
-    return CriticOutput(
-        case_id=critic_gap_case.case_id,
-        case_version=critic_gap_case.version,
-        agent_name=critic_gap_case.agent_name,
-        tier=critic_gap_case.tier,
-        repetition=1,
-        session_id="evaluation-request-more-research",
-        experiment_name="critic-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/critic-gap-1",
-        completed=True,
-        failure=None,
-        result={
-            "critique": {
-                "score": 5,
-                "gaps": [
-                    "participation rates",
-                    "methane measurement methodology",
-                ],
-                "unsupported_claims": [],
-                "recommended_queries": [
-                    "municipal composting mandates participation rates"
-                ],
-                "should_continue": True,
-                "rationale": (
-                    "Participation rates and measurement methodology are "
-                    "missing from the evidence."
-                ),
-            }
-        },
-        state_update={},
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=1,
-            tool_calls=0,
-            stop_reason="finished",
-            max_iterations=critic_gap_case.expectations.max_iterations,
-            tool_budget=critic_gap_case.expectations.max_tool_calls,
-        ),
-        dependencies=DependencyLedger(),
-        evidence=EvidenceContext(),
-        trajectory=[],
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="medium",
-    )
-
-
-@pytest.fixture
-def critic_budget_output(critic_budget_case) -> CriticOutput:
-    """Budget exhausted: the critique stops because no iteration remains.
-
-    The error ledger is empty on purpose. This fixture used to record a
-    ``search_unavailable`` failure from the spot-check loop Task 8 removed,
-    while the same fixture declared ``tool_calls=0`` — an artifact no
-    tool-free Critic can produce. The case no longer requires a recoverable
-    error either, so the fabricated one is gone rather than left to be read as
-    live coverage.
-    """
-    return CriticOutput(
-        case_id=critic_budget_case.case_id,
-        case_version=critic_budget_case.version,
-        agent_name=critic_budget_case.agent_name,
-        tier=critic_budget_case.tier,
-        repetition=1,
-        session_id="evaluation-missing-evidence-or-budget-exhausted",
-        experiment_name="critic-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/critic-budget-1",
-        completed=True,
-        failure=None,
-        result={
-            "critique": {
-                "score": 4,
-                "gaps": [],
-                "unsupported_claims": [],
-                "recommended_queries": [],
-                "should_continue": False,
-                "rationale": "The evidence is thin and no iteration budget remains.",
-            }
-        },
-        state_update={},
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=3,
-            tool_calls=0,
-            stop_reason="finished",
-            max_iterations=critic_budget_case.expectations.max_iterations,
-            tool_budget=critic_budget_case.expectations.max_tool_calls,
-        ),
-        dependencies=DependencyLedger(),
-        evidence=EvidenceContext(),
-        trajectory=[],
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="medium",
-    )
-
-
-@pytest.fixture
-def typed_gap_output(typed_gap_case) -> CriticOutput:
-    """The false pair rejected as the identity defect it is.
-
-    The gap names the emission cluster the candidate's own composition
-    carries, and it is typed ``identity``/``adjudicate``: the two passages
-    behind the reduction were retrieved, so no acquisition or plan extension
-    can close a defect about what those passages *are*. The score is the one
-    Task 8's calibration label gives this candidate — a rejection that still
-    grades the report, which is why the case declares a floor as well as a
-    ceiling.
-    """
-    return CriticOutput(
-        case_id=typed_gap_case.case_id,
-        case_version=typed_gap_case.version,
-        agent_name=typed_gap_case.agent_name,
-        tier=typed_gap_case.tier,
-        repetition=1,
-        session_id="evaluation-typed-gap-calibration",
-        experiment_name="critic-controlled-20260816T101500Z-abc1234",
-        trace_url="https://smith.langchain.com/o/x/r/critic-typed-gap-1",
-        completed=True,
-        failure=None,
-        result={
-            "critique": {
-                "score": 3,
-                "gaps": [
-                    {
-                        "target_ids": [],
-                        "statement_ids": [],
-                        "claim_cluster_ids": [
-                            CALIBRATION_CLUSTER_IDS["emissions"]
-                        ],
-                        "kind": "identity",
-                        "severity": "major",
-                        "repair_action": "adjudicate",
-                        "problem": (
-                            "The corroboration behind the 0.4-tonne reduction "
-                            "is not independent: both passages resolve to one "
-                            "publisher's identity, so the independent pair the "
-                            "report implies does not exist."
-                        ),
-                        "recommended_queries": [],
-                    }
-                ],
-                "unsupported_claims": [],
-                "recommended_queries": [],
-                "should_continue": True,
-                "rationale": (
-                    "The measured reduction is presented as corroborated when "
-                    "its two passages share one origin."
-                ),
-            }
-        },
-        state_update={},
-        errors=[],
-        tracker_errors=[],
-        react=ReActSummary(
-            iterations=1,
-            tool_calls=0,
-            stop_reason="finished",
-            max_iterations=typed_gap_case.expectations.max_iterations,
-            tool_budget=typed_gap_case.expectations.max_tool_calls,
-        ),
-        dependencies=DependencyLedger(),
-        evidence=EvidenceContext(),
-        trajectory=[],
-        target_model_requested="gpt-5.6-luna",
-        target_model_returned="gpt-5.6-luna",
-        target_reasoning_effort="medium",
     )
 
 
@@ -3186,14 +2222,14 @@ def failing_experiment_result() -> ExperimentResult:
         lowest_scoring_trace_url=repetition.trace_url,
     )
     return ExperimentResult(
-        agent_name="synthesizer",
+        agent_name="report_writer",
         tier="controlled",
-        experiment_name="synthesizer-controlled-20260816T101500Z-abc1234",
+        experiment_name="report-writer-controlled-20260816T101500Z-abc1234",
         experiment_url=(
-            "https://smith.langchain.com/o/x/experiments/synthesizer-1"
+            "https://smith.langchain.com/o/x/experiments/report-writer-1"
         ),
-        dataset_name="deep-research-synthesizer-controlled-v1",
-        dataset_url="https://smith.langchain.com/o/x/datasets/synthesizer-1",
+        dataset_name="deep-research-report-writer-controlled-v1",
+        dataset_url="https://smith.langchain.com/o/x/datasets/report-writer-1",
         cases=[case_result],
         status="FAILED",
         metadata=dict(_REPORTING_METADATA),
@@ -3724,7 +2760,7 @@ def suite_harness() -> _SuiteHarness:
 
 @pytest.fixture
 def partially_failing_suite_harness(monkeypatch) -> _SuiteHarness:
-    """The fact-checker's own runtime-config build fails; the other five
+    """The evidence verifier's own runtime-config build fails; the other
     agents build and run normally.
 
     ``agent_prompt_fingerprint`` is the seam ``build_runtime_config``
@@ -3741,7 +2777,7 @@ def partially_failing_suite_harness(monkeypatch) -> _SuiteHarness:
     real_fingerprint = config_module.agent_prompt_fingerprint
 
     def flaky_fingerprint(agent_name: str) -> str:
-        if agent_name == "fact_checker":
+        if agent_name == "evidence_verifier":
             raise RuntimeError("scripted agent-prompt-fingerprint failure")
         return real_fingerprint(agent_name)
 
@@ -3756,19 +2792,24 @@ def partially_failing_suite_harness(monkeypatch) -> _SuiteHarness:
 
 
 @pytest.fixture
-def critic_experiment_result(repetition_result) -> ExperimentResult:
-    """A minimal, real critic ``ExperimentResult`` for the suite rendering
-    tests -- same shape as the ``experiment_result`` (planner) fixture."""
+def evidence_verifier_experiment_result(repetition_result) -> ExperimentResult:
+    """A minimal, real evidence-verifier ``ExperimentResult`` for the suite
+    rendering tests -- same shape as the ``experiment_result`` (planner)
+    fixture."""
     return ExperimentResult(
-        agent_name="critic",
+        agent_name="evidence_verifier",
         tier="controlled",
-        experiment_name="critic-controlled-20260816T101500Z-abc1234",
-        experiment_url="https://smith.langchain.com/o/x/experiments/critic-1",
-        dataset_name="deep-research-critic-controlled-v1",
-        dataset_url="https://smith.langchain.com/o/x/datasets/critic-1",
+        experiment_name="evidence-verifier-controlled-20260816T101500Z-abc1234",
+        experiment_url=(
+            "https://smith.langchain.com/o/x/experiments/evidence-verifier-1"
+        ),
+        dataset_name="deep-research-evidence-verifier-controlled-v1",
+        dataset_url=(
+            "https://smith.langchain.com/o/x/datasets/evidence-verifier-1"
+        ),
         cases=[
             CaseResult(
-                case_id="approve-strong-report",
+                case_id="relay-labelled-as-relay",
                 case_version=1,
                 repetitions=[repetition_result],
                 average_quality=0.9,
@@ -3783,18 +2824,325 @@ def critic_experiment_result(repetition_result) -> ExperimentResult:
 
 @pytest.fixture
 def suite_result(
-    experiment_result, researcher_experiment_result, critic_experiment_result
+    experiment_result,
+    researcher_experiment_result,
+    evidence_verifier_experiment_result,
 ) -> SuiteResult:
-    """A three-agent ``SuiteResult`` (planner, researcher, critic), all
-    ``REVIEW REQUIRED`` -- enough for the rendering test's assertions
-    without needing all six agents represented."""
+    """A three-agent ``SuiteResult`` (planner, researcher, evidence
+    verifier), all ``REVIEW REQUIRED`` -- enough for the rendering test's
+    assertions without needing all five agents represented."""
     return SuiteResult(
         suite_id="suite-20260816T101500Z-abc1234",
         experiments=[
             experiment_result,
             researcher_experiment_result,
-            critic_experiment_result,
+            evidence_verifier_experiment_result,
         ],
         status="REVIEW REQUIRED",
         metadata={"git_commit": "abc1234def", "git_dirty": False},
     )
+
+
+# --- The Evidence Verifier and the Report Writer ---------------------------
+#
+# These two agents run no ReAct loop: the Evidence Verifier's judgement is a
+# structured Context Check and the Report Writer's prose is a structured
+# draft followed by the Statement Check. Their fixtures therefore drive the
+# real agents with a ``ScriptedCompleter`` answering those calls, so an
+# evaluator test operates on an artifact the agent actually produced rather
+# than on a hand-written shape that could drift from it.
+
+
+def _case_tracker() -> Tracker:
+    """Records locally and never opens a LangSmith client."""
+    return Tracker(
+        LangSmithRuntimeConfig(
+            tracing_enabled=False,
+            project="evaluation-tests",
+            api_key=None,
+        )
+    )
+
+
+def _scripted_scratchpad(case: EvaluationCase, agent_name: str) -> ScratchpadMemory:
+    return ScratchpadMemory(
+        session_id=f"evaluation-{case.case_id}",
+        agent_name=agent_name,
+        max_entries=20,
+    )
+
+
+def _wrap_output(
+    case: EvaluationCase,
+    *,
+    run,
+    dependencies: DependencyLedger | None = None,
+    evidence: EvidenceContext | None = None,
+) -> TargetOutput:
+    """One repetition's typed output, built the way ``targets.py`` builds it."""
+    return TargetOutput(
+        case_id=case.case_id,
+        case_version=case.version,
+        agent_name=case.agent_name,
+        tier=case.tier,
+        repetition=1,
+        session_id=f"evaluation-{case.case_id}",
+        experiment_name=f"{case.agent_name}-controlled-20260816T101500Z-abc1234",
+        trace_url=f"https://smith.langchain.com/o/x/r/{case.case_id}",
+        completed=run.result is not None,
+        failure=None,
+        result=(
+            run.result.model_dump(mode="json") if run.result is not None else None
+        ),
+        state_update=dict(_json_safe(dict(run.state_update))),
+        errors=[_json_safe(error) for error in run.errors],
+        tracker_errors=[],
+        react=ReActSummary(
+            iterations=run.react.iterations,
+            tool_calls=run.react.tool_calls,
+            stop_reason=run.react.stop_reason,
+            max_iterations=case.expectations.max_iterations,
+            tool_budget=case.expectations.max_tool_calls,
+        ),
+        dependencies=dependencies or DependencyLedger(),
+        evidence=evidence
+        or EvidenceContext(
+            sources=[
+                source.model_dump(mode="json")
+                for source in case.state.evaluated_sources
+            ],
+            findings=[
+                finding.model_dump(mode="json")
+                for finding in case.state.raw_findings
+            ],
+        ),
+        trajectory=[],
+        target_model_requested="gpt-5.6-luna",
+        target_model_returned="gpt-5.6-luna",
+        target_reasoning_effort="medium",
+    )
+
+
+def _context_check_reply(
+    case: EvaluationCase, **overrides: object
+) -> ContextCheckDraft:
+    """The Context Check reply the case's own reference declares."""
+    finding = case.state.raw_findings[0]
+    item = finding.figures[0]
+    fields: dict[str, object] = dict(
+        finding="F01",
+        figure=1,
+        period=item.period,
+        scope=finding.measure_scope,
+        attribution="own",
+        organisation="",
+        kind=item.kind,
+        evidence_words=case.expectations.reference["context_check_evidence_words"],
+        verdict="confirm",
+        reason="As stated on the page.",
+    )
+    fields.update(overrides)
+    return ContextCheckDraft(figures=[FigureCheckDraft(**fields)])
+
+
+async def _run_evidence_verifier(
+    case: EvaluationCase, replies: Sequence[object]
+) -> "EvidenceVerifierOutput":
+    completer = ScriptedCompleter(outputs=list(replies))
+    agent = EvidenceVerifierAgent(
+        provider=completer,
+        tracker=_case_tracker(),
+        scratchpad=_scripted_scratchpad(case, EVIDENCE_VERIFIER_NAME),
+    )
+    state = case.fresh_state()
+    async with agent.tracker.session_span(state.session_id, state.original_question):
+        run = await agent.run(state)
+    return EvidenceVerifierOutput.model_validate(
+        _wrap_output(case, run=run).model_dump(mode="json")
+    )
+
+
+def _writer_draft(case: EvaluationCase, tools: Sequence[object]) -> ReportWriterDraft:
+    """One drafted point per citable label, in the summary and in a section.
+
+    The points quote their own finding's content, which is what makes the
+    Statement Check's input — and the fact rows a point restates — real
+    rather than empty.
+    """
+    agent = ReportWriterAgent(
+        provider=ScriptedCompleter(),
+        tracker=_case_tracker(),
+        scratchpad=_scripted_scratchpad(case, REPORT_WRITER_NAME),
+        tools=tools,
+    )
+    registry = agent.build_task(case.fresh_state()).registry
+    points = [
+        WriterPointDraft(text=finding.content, finding_labels=[label])
+        for label, finding in registry
+    ]
+    return ReportWriterDraft(
+        executive_summary=list(points),
+        sections=[WriterSectionDraft(title="Findings", points=list(points))],
+    )
+
+
+def _statement_check_reply(messages, schema) -> StatementCheckDraft:
+    """Answer one batch of the Statement Check by the labels it lists."""
+    del schema
+    labels = re.findall(r"## (S\d+)", messages[-1].content)
+    return StatementCheckDraft(
+        statements=[
+            StatementVerdictDraft(
+                label=label,
+                verdict="consistent",
+                reason="consistent with its findings",
+            )
+            for label in labels
+        ]
+    )
+
+
+class _ScriptedWriterProvider:
+    """Answers the Report Writer's two structured calls, however many batches.
+
+    The writer drafts once and then sends every candidate sentence to the
+    Statement Check, which batches at ``CONTEXT_CHECK_BATCH_SIZE``: a provider
+    that served one queued reply per call would need the test to know the
+    candidate count in advance, so this one answers the draft once and derives
+    each Statement Check batch from the request it is handed.
+    """
+
+    def __init__(
+        self,
+        draft: ReportWriterDraft,
+        checker: Callable[[Sequence[object], object], StatementCheckDraft],
+    ) -> None:
+        self._draft = draft
+        self._checker = checker
+        self.calls: list[tuple[str, list[object]]] = []
+
+    async def complete_structured(
+        self,
+        messages,
+        schema,
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+    ):
+        del agent_name, max_tokens, reasoning_effort
+        self.calls.append((schema.__name__, list(messages)))
+        if schema is ReportWriterDraft:
+            return self._draft
+        return self._checker(list(messages), schema)
+
+    async def complete_react(self, *args: object, **kwargs: object):
+        raise AssertionError("the report writer runs no ReAct loop")
+
+
+async def _run_report_writer(
+    case: EvaluationCase,
+    *,
+    tools: Sequence[object],
+    draft: ReportWriterDraft | None = None,
+    checker: Callable[[Sequence[object], object], StatementCheckDraft] | None = None,
+) -> "ReportWriterOutput":
+    completer = _ScriptedWriterProvider(
+        draft or _writer_draft(case, tools), checker or _statement_check_reply
+    )
+    agent = ReportWriterAgent(
+        provider=completer,
+        tracker=_case_tracker(),
+        scratchpad=_scripted_scratchpad(case, REPORT_WRITER_NAME),
+        tools=tools,
+    )
+    state = case.fresh_state()
+    async with agent.tracker.session_span(state.session_id, state.original_question):
+        run = await agent.run(state)
+    return ReportWriterOutput.model_validate(
+        _wrap_output(case, run=run).model_dump(mode="json")
+    )
+
+
+@pytest.fixture
+def evidence_verifier_output(evidence_verifier_case) -> "EvidenceVerifierOutput":
+    """The verifier's own judgement of the scope-correction case."""
+    return asyncio.run(
+        _run_evidence_verifier(
+            evidence_verifier_case,
+            [
+                _context_check_reply(
+                    evidence_verifier_case,
+                    scope="all segments",
+                    verdict="correct",
+                )
+            ],
+        )
+    )
+
+
+@pytest.fixture
+def invented_evidence_case() -> EvaluationCase:
+    """The case whose figure is dropped for words the page does not carry."""
+    return case_by_id(
+        "evidence_verifier", "controlled", "invented-evidence-words-rejected"
+    )
+
+
+@pytest.fixture
+def invented_evidence_output(invented_evidence_case) -> "EvidenceVerifierOutput":
+    """The verifier's own judgement of the invented-evidence case."""
+    return asyncio.run(
+        _run_evidence_verifier(
+            invented_evidence_case, [_context_check_reply(invented_evidence_case)]
+        )
+    )
+
+
+@pytest.fixture
+def report_writer_output_for(tracker, tmp_path):
+    """Build the writer's repetition for any registered controlled case.
+
+    ``draft`` replaces the fixture's own summary-and-findings draft and
+    ``checker`` replaces the permissive default Statement Check, so a case
+    test can stage a sentence the check has to refuse. The agent is built with
+    the two tools it declares — the real ``WriteDocumentTool`` under
+    ``tmp_path`` and a fake memory — because a writer assembled without them
+    cannot compose a report at all.
+    """
+
+    def factory(
+        case: EvaluationCase,
+        *,
+        draft: ReportWriterDraft | None = None,
+        checker: Callable[[Sequence[object], object], StatementCheckDraft]
+        | None = None,
+    ) -> "ReportWriterOutput":
+        tools = synthesizer_tools(
+            tracker, output_root=tmp_path / case.case_id
+        )
+        return asyncio.run(
+            _run_report_writer(case, tools=tools, draft=draft, checker=checker)
+        )
+
+    return factory
+
+
+@pytest.fixture
+def evidence_verifier_output_for():
+    """Build the verifier's repetition for any controlled case, with replies."""
+
+    def factory(case: EvaluationCase, replies: Sequence[object]):
+        return asyncio.run(_run_evidence_verifier(case, replies))
+
+    return factory
+
+
+@pytest.fixture
+def report_writer_output(report_writer_case, report_writer_output_for):
+    return report_writer_output_for(report_writer_case)
+
+
+@pytest.fixture
+def canonical_report_output(canonical_report_case, report_writer_output_for):
+    return report_writer_output_for(canonical_report_case)

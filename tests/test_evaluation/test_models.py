@@ -37,22 +37,20 @@ from deep_research.evaluation.models import (
 from deep_research.utils.types import ResearchState, SubTopic
 
 
-def test_the_six_agent_names_are_fixed_and_ordered() -> None:
+def test_the_five_agent_names_are_fixed_and_ordered() -> None:
     assert AGENT_NAMES == (
         "planner",
         "researcher",
         "source_evaluator",
-        "fact_checker",
-        "synthesizer",
-        "critic",
+        "evidence_verifier",
+        "report_writer",
     )
     assert CLI_AGENT_NAMES == (
         "planner",
         "researcher",
         "source-evaluator",
-        "fact-checker",
-        "synthesizer",
-        "critic",
+        "evidence-verifier",
+        "report-writer",
     )
 
 
@@ -62,7 +60,8 @@ def test_the_six_agent_names_are_fixed_and_ordered() -> None:
         ("planner", "planner"),
         ("source-evaluator", "source_evaluator"),
         ("source_evaluator", "source_evaluator"),
-        ("  Fact-Checker  ", "fact_checker"),
+        ("  Evidence-Verifier  ", "evidence_verifier"),
+        ("report_writer", "report_writer"),
     ],
 )
 def test_parse_agent_name_canonicalizes(given: str, expected: str) -> None:

@@ -13,12 +13,7 @@ from collections.abc import Sequence
 from pydantic import JsonValue
 
 from deep_research.agents.evidence import build_read_record
-from deep_research.agents.fact_checker import (
-    claimed_domains_for,
-)
-from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.planner import coverage_id_for
-from deep_research.agents.sources import publisher_identity
 from deep_research.evaluation.models import (
     AGENT_NAMES,
     AgentName,
@@ -31,10 +26,15 @@ from deep_research.evaluation.models import (
     UnknownCaseError,
 )
 from deep_research.utils.types import (
-    Claim,
-    Critique,
-    EvidencePassage,
+    EvidenceTarget,
+    FigureAttribution,
+    FigureContext,
+    FigureKind,
+    FigureResult,
     Finding,
+    FindingFigure,
+    FindingStatus,
+    FindingVerification,
     MemorySnapshot,
     ReadRecord,
     ResearchState,
@@ -91,23 +91,16 @@ EXPECTED_CONTROLLED_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
         "reputation-provider-failure",
         "work-role-independence",
     ),
-    "fact_checker": (
-        "mixed-verdicts",
-        "independent-domain-evidence",
-        "verification-search-failure",
-        "upstream-independent-pair",
+    "evidence_verifier": (
+        "scope-corrected-to-all-segments",
+        "relay-labelled-as-relay",
+        "invented-evidence-words-rejected",
     ),
-    "synthesizer": (
+    "report_writer": (
         "complete-cited-report",
         "conflict-and-limitations",
         "composition-no-publication",
         "canonical-evidence-report",
-    ),
-    "critic": (
-        "approve-strong-report",
-        "request-more-research",
-        "missing-evidence-or-budget-exhausted",
-        "typed-gap-calibration",
     ),
 }
 
@@ -115,9 +108,8 @@ EXPECTED_LIVE_CASE_IDS: dict[AgentName, tuple[str, ...]] = {
     "planner": ("planner-live-scope",),
     "researcher": ("researcher-live-evidence",),
     "source_evaluator": ("source-evaluator-live-ranking",),
-    "fact_checker": ("fact-checker-live-verification",),
-    "synthesizer": ("synthesizer-live-report",),
-    "critic": ("critic-live-review",),
+    "evidence_verifier": ("evidence-verifier-live-benchmark",),
+    "report_writer": ("report-writer-live-report",),
 }
 
 # A fixed timestamp so a case fixture is byte-identical between runs and a
@@ -144,7 +136,15 @@ def sub_topic(
     criteria: Sequence[str],
     priority: int,
     coverage_id: str = UNSTAMPED_COVERAGE_ID,
+    targets: Sequence[EvidenceTarget] = (),
 ) -> SubTopic:
+    """One curated sub-topic, with the evidence targets a plan stamped on it.
+
+    ``targets`` are the obligations a later pass answers; a case that grades
+    target accounting (the Report Writer's Not found section, the Evidence
+    Verifier's target binding) seeds them here, because ``evaluation_state``
+    stamps only the coverage ids and never invents a target.
+    """
     return SubTopic(
         coverage_id=coverage_id,
         title=title,
@@ -152,6 +152,50 @@ def sub_topic(
         search_queries=list(queries),
         success_criteria=list(criteria),
         priority=priority,
+        evidence_targets=list(targets),
+    )
+
+
+def target(
+    target_id: str,
+    *,
+    question: str,
+    measure: str | None = None,
+    unit_dimension: str | None = None,
+    period: str | None = None,
+    kind: str | None = None,
+    geography: str | None = None,
+    organisation: str | None = None,
+    required: bool = True,
+    critical: bool = False,
+) -> EvidenceTarget:
+    """One curated evidence target, under the id its own plan stamps.
+
+    ``target_id`` is ``<coverage_id>-target-NN`` exactly as ``PlannerAgent``
+    derives it, and the coverage id is read back out of it rather than
+    supplied twice: a target whose two ids disagreed would bind to a topic
+    that does not own it.
+    """
+    coverage_id, _, suffix = target_id.rpartition("-target-")
+    if not coverage_id or not suffix:
+        raise CaseRegistryError(
+            f"target id {target_id!r} must be <coverage-id>-target-NN"
+        )
+    return EvidenceTarget(
+        target_id=target_id,
+        coverage_id=coverage_id,
+        question=question,
+        required_dimensions=[
+            f"measure: {measure}" if measure else f"question: {question}"
+        ],
+        required=required,
+        critical=critical,
+        measure=measure,
+        unit_dimension=unit_dimension,  # type: ignore[arg-type]
+        period=period,
+        kind=kind,  # type: ignore[arg-type]
+        geography=geography,
+        organisation=organisation,
     )
 
 
@@ -162,7 +206,27 @@ def finding(
     title: str,
     sub_topic_title: str,
     confidence: float = 0.8,
+    snippet: str | None = None,
+    read_id: str | None = None,
+    locator: str | None = None,
+    figures: Sequence[FindingFigure] = (),
+    target_ids: Sequence[str] = (),
+    vintage: str | None = None,
+    statement_date: str | None = None,
+    data_period: str | None = None,
+    attributed_issuer: str | None = None,
+    measure_scope: str | None = None,
+    release_date: str | None = None,
 ) -> Finding:
+    """One curated, not-yet-verified finding fixture.
+
+    ``snippet``, ``read_id`` and ``locator`` are the evidence binding the
+    Evidence Verifier checks: a finding whose ``read_id`` names no seeded read
+    is dropped as ``read_not_found``, and one whose ``snippet`` is not on that
+    read's page as ``snippet_not_on_page``, so a fixture that means to be
+    verified states both. ``figures``, ``measure_scope``, ``data_period`` and
+    the attribution fields are what the Context Check judges.
+    """
     return Finding(
         content=content,
         source_url=url,
@@ -170,6 +234,114 @@ def finding(
         extracted_at=FIXED_TIMESTAMP,
         confidence=confidence,
         related_sub_topic=sub_topic_title,
+        snippet=snippet,
+        read_id=read_id,
+        locator=locator,
+        figures=list(figures),
+        target_ids=list(target_ids),
+        vintage=vintage,
+        statement_date=statement_date,
+        data_period=data_period,
+        attributed_issuer=attributed_issuer,
+        measure_scope=measure_scope,
+        release_date=release_date,
+    )
+
+
+def figure(
+    value: str,
+    unit: str,
+    *,
+    period: str | None = None,
+    kind: FigureKind | None = None,
+) -> FindingFigure:
+    """One figure a finding's snippet states, exactly as the page writes it."""
+    return FindingFigure(value=value, unit=unit, period=period, kind=kind)
+
+
+def context(
+    *,
+    organisation: str,
+    kind: FigureKind,
+    attribution: FigureAttribution = "own",
+    period: str | None = None,
+    scope: str | None = None,
+) -> FigureContext:
+    """The context a Context Check confirmed for one kept figure."""
+    return FigureContext(
+        period=period,
+        scope=scope,
+        attribution=attribution,
+        organisation=organisation,
+        kind=kind,
+    )
+
+
+def kept(
+    item: FindingFigure,
+    confirmed: FigureContext,
+    *,
+    evidence_words: str | None = None,
+    corrected: bool = False,
+    reason: str | None = None,
+) -> FigureResult:
+    """One figure the Context Check kept, with the context it confirmed."""
+    return FigureResult(
+        figure=item,
+        matched=True,
+        context=confirmed,
+        evidence_words=evidence_words,
+        corrected=corrected,
+        reason=reason,
+    )
+
+
+def dropped(
+    item: FindingFigure,
+    reason: str,
+    *,
+    evidence_words: str | None = None,
+    text: str | None = None,
+) -> FigureResult:
+    """One figure the Context Check dropped, naming why.
+
+    ``reason`` is the enumerated drop reason the verifier can emit
+    (``FigureDropReason``); ``text`` is the checker's own sentence, carried
+    only where a case wants to pin it.
+    """
+    return FigureResult(
+        figure=item,
+        matched=True,
+        evidence_words=evidence_words,
+        dropped_reason=reason,  # type: ignore[arg-type]
+        reason=text,
+    )
+
+
+def verified(
+    item: Finding,
+    figure_results: Sequence[FigureResult],
+    *,
+    status: FindingStatus,
+    dropped_reason: str | None = None,
+    context_unchecked: bool = False,
+) -> Finding:
+    """The same finding carrying the Evidence Verifier's judgement of it.
+
+    ``FindingVerification`` refuses an inconsistent pair — a ``verified``
+    finding with a corrected or dropped figure, a ``verified`` finding whose
+    every figure was dropped, a dropped finding with no reason — so a case
+    that declares one here is corrected by the type rather than by review.
+    """
+    return item.model_copy(
+        update={
+            "verification": FindingVerification(
+                status=status,
+                figure_results=list(figure_results),
+                dropped_reason=dropped_reason,  # type: ignore[arg-type]
+                context_unchecked=context_unchecked,
+            )
+        }
     )
 
 
@@ -257,118 +429,6 @@ def read_record(
     )
 
 
-# Verdicts that assert independent evidence. An ``insufficient_evidence``
-# claim carries no passage at all — that is what makes it insufficient — so
-# only these three require independent verification sources.
-EVIDENCE_BEARING_VERDICTS = frozenset(
-    {"verified", "unverified", "contradicted"}
-)
-
-
-def claim(
-    text: str,
-    *,
-    urls: Sequence[str],
-    verdict: str,
-    confidence: float,
-    evidence: Sequence[str] = (),
-    contradictions: Sequence[str] = (),
-    verification_urls: Sequence[str] = (),
-) -> Claim:
-    """One curated claim fixture.
-
-    ``urls`` are the ORIGIN sources that made the claim, exactly as
-    ``Claim.source_urls`` means in production. ``verification_urls`` are the
-    independent sources whose passages judged it, and they are required by
-    every claim that builds a passage — not only by every evidence-bearing
-    verdict: Task 5 review found this builder cycling origin URLs into
-    ``EvidencePassage.source_url``, which produced verified snapshots
-    production could not legitimately emit. Origin URLs are never cycled into
-    a passage here, and a non-independent verification URL is rejected
-    outright rather than left for a downstream gate to notice.
-
-    Passages are built by cycling ``verification_urls`` over the given
-    ``evidence`` (``supports``) and ``contradictions`` (``contradicts``)
-    excerpts, so the excerpts and the URLs that carry them are supplied
-    together.
-    """
-    source_urls = list(urls)
-    verification = list(verification_urls)
-    support_texts = list(evidence)
-    contradiction_texts = list(contradictions)
-    if verdict in {"verified", "unverified"} and not support_texts:
-        support_texts = ["Case fixture evidence."]
-    # The guard belongs to building a passage, not to the verdict's class:
-    # both loops below cycle ``verification_urls`` with ``index % len(...)``,
-    # so a claim of ANY verdict that carries an excerpt and no verification URL
-    # raises ``ZeroDivisionError`` at import time. That is a collection error,
-    # so the verdict and passage invariants that would have caught the
-    # malformed fixture never get to run, and a typo'd verdict is the
-    # realistic trigger.
-    if (support_texts or contradiction_texts) and not verification:
-        raise CaseRegistryError(
-            f"a {verdict!r} claim fixture must supply explicit "
-            "verification_urls; its origin source_urls are not "
-            "independent verification"
-        )
-    if verdict in EVIDENCE_BEARING_VERDICTS:
-        claimed = {
-            publisher.casefold() for publisher in claimed_domains_for(source_urls)
-        }
-        shared = [
-            url
-            for url in verification
-            if publisher_identity(url).casefold() in claimed
-        ]
-        if shared:
-            raise CaseRegistryError(
-                "a claim's verification passage cites one of its own "
-                f"publishers: {', '.join(shared)}"
-            )
-    passages: list[EvidencePassage] = []
-    for index, excerpt in enumerate(support_texts):
-        passages.append(
-            EvidencePassage(
-                source_url=verification[index % len(verification)],
-                source_title="Case fixture evidence",
-                locator=f"support-{index + 1}",
-                excerpt=excerpt,
-                stance="supports",
-            )
-        )
-    for index, excerpt in enumerate(contradiction_texts):
-        passages.append(
-            EvidencePassage(
-                source_url=verification[index % len(verification)],
-                source_title="Case fixture evidence",
-                locator=f"contradiction-{index + 1}",
-                excerpt=excerpt,
-                stance="contradicts",
-            )
-        )
-    return Claim(
-        claim_id=claim_fingerprint(text),
-        text=text,
-        source_urls=source_urls,
-        verdict=verdict,
-        confidence=confidence,
-        evidence=support_texts,
-        contradictions=contradiction_texts,
-        verification_evidence=passages,
-        # An evaluation fixture's premise is a claim that already carries the
-        # badge under test, so the fixture declares it. ``Claim`` refuses a
-        # verified verdict with no ``verified_pair`` behind it, which is what
-        # keeps the invariant from depending on every caller remembering it.
-        evidence_status=(
-            "verified_pair"
-            if verdict == "verified"
-            else "source_supported"
-            if verdict == "insufficient_evidence" and support_texts
-            else None
-        ),
-    )
-
-
 def evaluation_state(
     *,
     case_id: str,
@@ -376,12 +436,11 @@ def evaluation_state(
     sub_topics: Sequence[SubTopic] = (),
     findings: Sequence[Finding] = (),
     sources: Sequence[ScoredSource] = (),
-    claims: Sequence[Claim] = (),
+    verified_findings: Sequence[Finding] = (),
     reads: Sequence[ReadRecord] = (),
     report: str | None = None,
-    critique: Critique | None = None,
     iteration: int = 0,
-    max_iterations: int = 3,
+    max_extra_passes: int = 1,
     memory_context: MemorySnapshot | None = None,
 ) -> ResearchState:
     """One curated starting state.
@@ -393,6 +452,11 @@ def evaluation_state(
     is a fingerprint of the session that made it, so rewriting the session
     here would leave every seeded read identifying itself as something it
     was not.
+
+    ``max_extra_passes`` is the step-4 field (it replaces the removed
+    ``max_iterations``): the number of extra researcher passes the state
+    allows on top of the first, never a lower bound on the first pass, and
+    ``ResearchState`` refuses a state whose ``iteration`` exceeds it.
 
     Task 7 review: the controlled memory double drops a scripted
     ``"timestamp"`` field from a seeded entry and falls back to the real
@@ -425,13 +489,12 @@ def evaluation_state(
             )
         ],
         raw_findings=list(findings),
+        verified_findings=list(verified_findings),
         evaluated_sources=list(sources),
-        verified_claims=list(claims),
         read_records={read.read_id: read for read in reads},
         report=report,
-        critique=critique,
         iteration=iteration,
-        max_iterations=max_iterations,
+        max_extra_passes=max_extra_passes,
         memory_context=memory_context or MemorySnapshot(),
     )
 
@@ -501,21 +564,19 @@ def build_case(
 
 
 from deep_research.evaluation.cases import (  # noqa: E402
-    critic,
-    fact_checker,
+    evidence_verifier,
     planner,
+    report_writer,
     researcher,
     source_evaluator,
-    synthesizer,
 )
 
 _MODULES = {
     "planner": planner,
     "researcher": researcher,
     "source_evaluator": source_evaluator,
-    "fact_checker": fact_checker,
-    "synthesizer": synthesizer,
-    "critic": critic,
+    "evidence_verifier": evidence_verifier,
+    "report_writer": report_writer,
 }
 
 

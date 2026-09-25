@@ -161,10 +161,6 @@ _SCOPED = build_case(
             # The contract's own ceiling, declared here as well so a reader
             # of the case sees the bound the metric polices.
             "maximum_targets_per_sub_topic": 4,
-            "required_support_policies": [
-                "independent_pair",
-                "primary_attribution",
-            ],
             "vague_dimension_phrases": list(_VAGUE_DIMENSION_PHRASES),
         },
         known_source_urls=[],
@@ -178,26 +174,19 @@ _SCOPED = build_case(
             ),
             (
                 "targets_declared",
-                0.25,
+                0.30,
                 "Every subtopic carries 1-4 counted evidence targets; a "
                 "reserved omission marker is not an obligation.",
             ),
             (
                 "dimensions_are_checkable",
-                0.20,
+                0.25,
                 "Every required dimension of every target is one a recorded "
                 "proposition can credit.",
             ),
             (
-                "support_policy_not_downgraded",
-                0.20,
-                "No target's recorded support policy is weaker than the "
-                "policy its own question earns, and the plan covers the "
-                "declared policy set.",
-            ),
-            (
                 "no_vague_dimensions",
-                0.15,
+                0.25,
                 "No target rests on a dimension that names nothing "
                 "answerable.",
             ),
