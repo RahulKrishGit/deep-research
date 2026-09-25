@@ -25,6 +25,8 @@ from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
     HIGH_PRIORITY_THRESHOLD,
     MAX_FINDINGS_PER_SUB_TOPIC,
+    MAX_OWED_BATCHES,
+    MAX_OWED_PASSAGES_PER_BATCH,
     MAX_UNIQUE_SOURCES_PER_SUB_TOPIC,
     FindingDraft,
     FindingFigureDraft,
@@ -1346,6 +1348,67 @@ def test_a_statement_date_the_page_does_not_state_is_dropped() -> None:
     assert findings[0].statement_date is None
 
 
+def test_a_date_is_not_admitted_as_a_figure() -> None:
+    """A date names a day, not a measure, however the page spells it.
+
+    The audited run recorded five application dates as stated figures, and the
+    verifier then "corrected" each figure's period to the date it already was.
+    The date belongs in the excerpt and the statement date, where it is
+    evidence; a figure slot is for a quantity, and code refuses the date shape
+    at admission rather than letting a later stage read it as a measurement.
+    """
+    figures, dropped = _admitted_figures(
+        [
+            FindingFigureDraft(value="1 August 2024", unit="date"),
+            FindingFigureDraft(value="2027-08-02", unit="deadline"),
+            FindingFigureDraft(value="2 Aug 2025", unit="in force"),
+            FindingFigureDraft(value="10.4", unit="GW"),
+        ],
+        index=2,
+    )
+
+    assert [(figure.value, figure.unit) for figure in figures] == [("10.4", "GW")]
+    assert dropped == [
+        "finding 2: figure 1 states a date, not a measure",
+        "finding 2: figure 2 states a date, not a measure",
+        "finding 2: figure 3 states a date, not a measure",
+    ]
+
+
+def test_a_finding_whose_figure_is_a_date_keeps_its_text_and_date() -> None:
+    """Refusing the figure must not cost the finding that states the date.
+
+    The date is what the page says about when something applies: it stays in
+    the excerpt the finding rests on and in its own statement date and data
+    period, and only the figure slot is refused.
+    """
+    dropped_figures: list[str] = []
+
+    findings, rejected = build_findings(
+        _registry_draft(
+            figures=[FindingFigureDraft(value="1 August 2025", unit="date")],
+            statement_date="2025",
+            data_period="2025",
+        ),
+        sub_topic=_sub_topic("Alpha"),
+        extracted_at=EXTRACTED_AT,
+        known_urls=("https://example.test/qec",),
+        known_reads={QEC_READ.read_id: QEC_READ},
+        valid_target_ids=(PLANNED_TARGET_ID,),
+        dropped_figures=dropped_figures,
+    )
+
+    assert rejected == []
+    (finding,) = findings
+    assert finding.figures == []
+    assert finding.statement_date == "2025"
+    assert finding.data_period == "2025"
+    assert finding.snippet == QEC_PASSAGE
+    assert dropped_figures == [
+        "finding 1: figure 1 states a date, not a measure"
+    ]
+
+
 def test_a_statement_date_the_page_states_is_kept() -> None:
     """The counterpart: the page's own date at its own precision stays."""
     findings, _ = _build_admitted(_registry_draft(statement_date="2025"))
@@ -2630,6 +2693,7 @@ def _researcher(
     config: AgentRuntimeConfig | None = None,
     tools: Sequence[BaseTool] | None = None,
     sub_topic_concurrency: int | None = None,
+    selected_passages_per_read: int | None = None,
 ) -> ResearcherAgent:
     return ResearcherAgent(
         provider=completer,
@@ -2645,6 +2709,7 @@ def _researcher(
         config=config or AgentRuntimeConfig(max_iterations=4, tool_budget=4),
         max_sub_topics=max_sub_topics,
         sub_topic_concurrency=sub_topic_concurrency,
+        selected_passages_per_read=selected_passages_per_read,
         clock=_clock,
     )
 
@@ -4739,14 +4804,21 @@ def _owed_reply(
     )
 
 
-def _owed_agent(tracker: Tracker, completer: ScriptedCompleter) -> ResearcherAgent:
+def _owed_agent(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    body: str | None = None,
+    selected: int | None = None,
+) -> ResearcherAgent:
     return _researcher(
         tracker,
         completer,
         search=FakeSearchClient(
             [search_response(title=_OWED_TITLE, url=_OWED_URL)]
         ),
-        http=page_client(title=_OWED_TITLE, body=_OWED_BODY),
+        http=page_client(title=_OWED_TITLE, body=body or _OWED_BODY),
+        selected_passages_per_read=selected,
     )
 
 
@@ -4755,9 +4827,11 @@ async def _run_owed_topic(
     completer: ScriptedCompleter,
     *,
     unit_dimension: str | None = None,
+    body: str | None = None,
+    selected: int | None = None,
 ) -> AgentRun[ResearchFindings]:
     """Run one required-target topic to its end and return the whole outcome."""
-    agent = _owed_agent(tracker, completer)
+    agent = _owed_agent(tracker, completer, body=body, selected=selected)
     async with tracker.session_span("session-1", "q"):
         return await agent.run(
             _state(sub_topics=[_owed_topic(unit_dimension=unit_dimension)])
@@ -4972,6 +5046,121 @@ async def test_a_required_figure_target_is_not_re_asked_for_its_words(
     assert len(requests) == 1
     assert "Passages owed a finding" not in requests[0]
     assert outcome.result.findings == []
+
+
+# ---------------------------------------------------------------------------
+# The bounded packets the re-extraction asks about
+# ---------------------------------------------------------------------------
+#
+# Pre-flights 2-4 each ended at a 32,768- or 49,152-token output from about
+# 10,000 tokens of input: the re-extraction was handed every owed passage of
+# every read its topic had made, so one call became the whole read's packet.
+# The input is bounded instead — at most MAX_OWED_PASSAGES_PER_BATCH passages
+# per packet, at most MAX_OWED_BATCHES packets — and the passages that owe the
+# most are the ones asked about.
+
+_OWED_STRONG = (
+    "A registrant that registered before the rule took effect must first file "
+    "its renewal return by 30 June 2027, the notice states."
+)
+_OWED_WEAK = "A registrant must file its annual return with the registry."
+_OWED_PADDING = (
+    "The registry publishes its annual return notices for every category it "
+    "covers, and this cycle is no exception."
+)
+
+
+def _owed_bulk_body(paragraphs: int = 60) -> str:
+    """One notice whose selected passages outnumber a single batch.
+
+    Every paragraph states at least one of the target's own words, so every
+    passage the read selects is owed; the first paragraph states the most, so
+    the packet that leads with the strongest passage leads with it.
+    """
+    return "\n\n".join(
+        _OWED_STRONG
+        if index == 0
+        else (_OWED_WEAK if index % 2 else _OWED_PADDING)
+        for index in range(paragraphs)
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_owed_re_ask_asks_about_at_most_one_batch_at_a_time(
+    tracker: Tracker,
+) -> None:
+    """The re-ask's input is bounded, so its packet order is its focus.
+
+    A read with more owed passages than one batch buys one packet per batch and
+    no more: the pass that handed a single call the whole read ran away to a
+    32,768-token output, and what a bounded packet cannot hold stays unmined
+    rather than being asked about in a packet that cannot hold it.
+    """
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    outcome = await _run_owed_topic(
+        tracker,
+        completer,
+        body=_owed_bulk_body(),
+        selected=MAX_OWED_PASSAGES_PER_BATCH + 2,
+    )
+
+    requests = _extraction_requests(completer)
+    # The first extraction, then one request per batch, and never a third.
+    assert len(requests) == 1 + MAX_OWED_BATCHES
+    units = outcome.state_update["evidence_units"]
+    first = _packet_evidence_locators(requests[1])
+    second = _packet_evidence_locators(requests[2])
+    assert len(first) == MAX_OWED_PASSAGES_PER_BATCH
+    assert 0 < len(second) <= MAX_OWED_PASSAGES_PER_BATCH
+    # Every selected passage is asked about exactly once...
+    assert sorted([*first, *second]) == sorted(
+        unit.locator for unit in units.values()
+    )
+    # ...and the passage that states the most of the target leads the packet.
+    strongest = next(
+        unit.locator
+        for unit in units.values()
+        if _OWED_STRONG[:40] in unit.excerpt
+    )
+    assert first[0] == strongest
+
+
+@pytest.mark.asyncio
+async def test_a_failed_owed_batch_costs_only_that_batch(tracker: Tracker) -> None:
+    """A packet the provider cannot answer is the end of that packet alone.
+
+    Each batch is a bounded improvement on evidence already in hand, so a
+    provider failure in the first costs the first: the second is still asked,
+    and the failure is recorded once for the ledger.
+    """
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            ProviderTimeoutError("timed out"),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    outcome = await _run_owed_topic(
+        tracker,
+        completer,
+        body=_owed_bulk_body(),
+        selected=MAX_OWED_PASSAGES_PER_BATCH + 2,
+    )
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 1 + MAX_OWED_BATCHES
+    recorded = [error.error_type for error in outcome.errors]
+    assert recorded.count("researcher_re_extraction_provider_error") == 1
+    # Neither packet yielded a finding, so the topic reports that too.
+    assert "researcher_sub_topic_without_findings" in recorded
 
 
 _SNIPPET = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"

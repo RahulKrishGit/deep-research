@@ -1172,10 +1172,12 @@ class AcquisitionPolicy:
 
         ``unmined_target_ids`` is the same fact for the other bounded
         re-extraction: the units that state the words of a required target the
-        pass answered nowhere yet and yielded no finding even when the
-        extraction was asked again over them alone. They keep their own reason
-        for the same purpose (a unit in both lists keeps the figure's: a unit
-        that carries the target's own unit carries the sharper fact).
+        pass answered nowhere yet and yielded no finding even after the pass
+        asked about them. They keep their own reason for the same purpose (a
+        unit in both lists keeps the figure's: a unit that carries the target's
+        own unit carries the sharper fact). A unit the bounded packets never
+        asked about is not named here: the reason says the extraction was asked
+        again over that passage, and only a packet that carried it can say so.
         """
         used = {(read_id, locator) for read_id, locator in admitted}
         unmined_quantities = set(unmined_quantity_ids)

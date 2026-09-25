@@ -917,7 +917,16 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # target, so it can no longer make the per-sub-topic cap meaningless. No
     # prompt string was edited, and ``agents.prompts`` was untouched, so the
     # other four target pins and the Judge pin are unchanged.
-    "researcher": "37bb78b1eca8",
+    # Code-only round (FixSelection, items 3 and 4): `_admitted_figures`
+    # refuses a date-shaped figure (`figures.is_a_date`) and the owed-passage
+    # re-extraction sends at most MAX_OWED_BATCHES packets of at most
+    # MAX_OWED_PASSAGES_PER_BATCH passages, most-owing first, so the researcher
+    # source moved `37bb78b1eca8` -> `0acf612e952f`. No prompt string was
+    # edited and ``agents.prompts`` was untouched: the only new string a model
+    # could ever read is the code-generated drop reason "states a date, not a
+    # measure", which travels in the run's error details, not in a request. The
+    # other four target pins and the Judge pin are unchanged.
+    "researcher": "0acf612e952f",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
