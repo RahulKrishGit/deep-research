@@ -165,9 +165,13 @@ RESEARCHER_SYSTEM_PROMPT = (
     "tool fails, try another query or another source.\n"
     "Finish once the sub-topic's obligations are answered — the obligations "
     "line lists what this sub-topic owes — or once no further source is worth "
-    "retrieving. Write one line saying that you are stopping and why: no "
-    "other text you write is read, because a separate extraction step reads "
-    "the pages this loop read and its findings are what the run keeps."
+    "retrieving. A required obligation is answered only by a page about that "
+    "obligation, not one that merely mentions it in passing: when your first "
+    "search for a required obligation returns only general pages, search once "
+    "more in the obligation's own words before you finish. Write one line "
+    "saying that you are stopping and why: no other text you write is read, "
+    "because a separate extraction step reads the pages this loop read and "
+    "its findings are what the run keeps."
 )
 
 EXTRACTION_SYSTEM_PROMPT = (
@@ -176,10 +180,12 @@ EXTRACTION_SYSTEM_PROMPT = (
     "only what those pages state, and cite every finding to the exact read it "
     "came from — its read_id, locator, source_url and source_title. Return an "
     "empty list rather than inventing a source. Confidence is how directly "
-    "the passage states what a planned target asks for: a passage that states "
-    "it outright scores high, one that mentions it in passing scores low, and "
-    "code ranks findings by it when a sub-topic holds more evidence than it "
-    "may keep."
+    "the passage states what a planned target asks for, this sub-topic's own "
+    "targets first: a passage that states one of this sub-topic's own targets "
+    "outright scores highest, one that states another sub-topic's target "
+    "outright scores next, and one that only mentions either in passing "
+    "scores low; code ranks findings by it when a sub-topic holds more "
+    "evidence than it may keep."
 )
 
 
@@ -1016,7 +1022,11 @@ def extraction_messages(
         "Return one finding per distinct fact the passages state that bears on "
         "the research question or on any planned target. "
         "Navigation, site furniture, counters, carts, subscription prompts and "
-        "legal boilerplate are never findings.\n"
+        "legal boilerplate are never findings. Neither is a caption, a player "
+        "title or a parenthetical condition label a page prints beside a name: "
+        "a label reading \"(test conditions)\" states how or where something "
+        "was measured, not a judgement of it, and reporting that label as a "
+        "verdict is the same error as reporting page furniture.\n"
         "- Every finding MUST copy read_id and locator exactly as the "
         "# Retrieved evidence section below prints them, and MUST carry a "
         "snippet: one or two sentences copied character for character from "
@@ -1026,11 +1036,17 @@ def extraction_messages(
         "it across findings at a sentence or clause boundary rather than "
         "cutting inside a clause, and never let a snippet end where the "
         "sentence continues into a condition, an exception or an object it "
-        "does not carry.\n"
+        "does not carry. A snippet that reports a judgement MUST carry the "
+        "subject that judgement is about: when the passage names that subject "
+        "in the sentence next to it, take the neighbouring sentence into the "
+        "snippet too, within the character limit above, rather than quoting "
+        "the judgement alone.\n"
         "- content is one sentence restating the snippet's fact in the page's "
-        "own terms and carrying nothing the snippet does not. It is what tells "
-        "one finding from another, so two findings that restate one passage "
-        "the same way are one finding.\n"
+        "own terms and carrying nothing the snippet does not, except that it "
+        "may name a judgement's subject when the passage names it, even where "
+        "the snippet itself quotes only the pronoun or demonstrative standing "
+        "for that name. It is what tells one finding from another, so two "
+        "findings that restate one passage the same way are one finding.\n"
         "- List in figures every measured quantity the snippet states: value "
         "exactly as the snippet writes it, with its qualifier when it has one "
         "(\"nearly 65\", \"up to 30\"), unit as the snippet writes it "
@@ -1277,6 +1293,55 @@ def _snippet_admitted_at(read: ReadRecord, locator: str, snippet: str) -> bool:
     return excerpt_matches(neighbouring_passage_text(read, locator), snippet)
 
 
+# RES-4's snippet rule: a verdict must carry the thing it judges. A bare
+# pronoun or demonstrative ("this", "that", "these", "those", "it", "they")
+# standing alone as a sentence's whole subject, immediately before a linking
+# verb, states a judgement about something the snippet never names — the
+# audited run reported "this is the model to beat" with no way for anything
+# downstream to say what "this" was. Deliberately structural, not a word
+# list about any one domain: a subject with its own noun ("this model")
+# already names a kind of thing, and a snippet that carries a capitalised
+# word outside the closed set of ordinary sentence-starters already names
+# its referent, wherever in the snippet that word sits.
+_BARE_JUDGEMENT_SUBJECT = re.compile(
+    r"(?:^|(?<=[.!?])\s+)(?:This|That|These|Those|It|They)\s+(?:is|are|was|"
+    r"were|has|have|had|remains?|stays?|becomes?|seems?|looks?|sounds?)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_STARTER_WORDS = frozenset(
+    {
+        "this", "that", "these", "those", "it", "they", "the", "a", "an",
+        "in", "on", "at", "for", "with", "and", "but", "or", "so", "as",
+        "by", "of", "to", "from", "its", "their", "his", "her",
+    }
+)
+_CAPITALIZED_WORD = re.compile(r"\b[A-Z][A-Za-z0-9&'-]*\b")
+
+
+def _names_a_referent(snippet: str) -> bool:
+    """True when a capitalised word in ``snippet`` could name its subject."""
+    return any(
+        word.lower() not in _SENTENCE_STARTER_WORDS
+        for word in _CAPITALIZED_WORD.findall(snippet)
+    )
+
+
+def _bare_pronoun_judgement(snippet: str) -> bool:
+    """True when ``snippet`` states a judgement with no named subject.
+
+    Triggered only by a sentence whose whole subject is a bare pronoun or
+    demonstrative (``_BARE_JUDGEMENT_SUBJECT``); a snippet that never makes
+    that shape of claim is never refused here, whatever else it says. Once
+    triggered, the snippet is refused unless it also carries a referent — a
+    capitalised word the pronoun could stand for, from the same sentence or
+    from one beside it — because RES-4 asks the model to take that
+    neighbouring sentence into the snippet when the referent sits there.
+    """
+    if _BARE_JUDGEMENT_SUBJECT.search(snippet) is None:
+        return False
+    return not _names_a_referent(snippet)
+
+
 def build_findings(
     draft: SubTopicFindingsDraft,
     *,
@@ -1367,6 +1432,12 @@ def build_findings(
             if not _snippet_admitted_at(read, item.locator, item.snippet):
                 rejected.append(
                     f"finding {index}: snippet was not admitted at locator"
+                )
+                continue
+            if _bare_pronoun_judgement(item.snippet):
+                rejected.append(
+                    f"finding {index}: snippet's subject is a bare pronoun "
+                    "with no referent"
                 )
                 continue
             if valid_target_ids is not None:
@@ -1604,6 +1675,7 @@ def bound_sub_topic_findings(
     *,
     reads: Sequence[ReadRecord] = (),
     required_target_ids: Collection[str] = (),
+    own_target_ids: Collection[str] = (),
     max_findings: int = MAX_FINDINGS_PER_SUB_TOPIC,
     max_sources: int = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC,
     max_exempt_per_target: int = MAX_EXEMPT_PER_REQUIRED_TARGET,
@@ -1630,12 +1702,18 @@ def bound_sub_topic_findings(
     it — twenty-five restatements of one obligation, and a per-sub-topic cap
     that bounds nothing.
 
-    Selection is by confidence, but not by confidence alone. Findings are
-    grouped by *publisher* — not by URL — ranked by their strongest finding and
-    then taken round-robin, so one verbose publisher cannot fill the whole
-    allowance and push an independent second source out of the report. Within a
-    publisher the strongest findings go first, duplicates keep their highest
-    confidence, and the retained list comes back strongest-first.
+    Selection is not by confidence alone. Findings are grouped by
+    *publisher* — not by URL — ranked by their strongest finding and then
+    taken round-robin, so one verbose publisher cannot fill the whole
+    allowance and push an independent second source out of the report.
+    Within a publisher a finding bound to this sub-topic's own obligations
+    goes first, one bound to an obligation that is also required ahead of
+    that, and confidence orders the rest and breaks every tie; duplicates
+    keep their highest confidence, and the retained list comes back ranked
+    the same way. ``own_target_ids`` names those obligations — this
+    sub-topic's own evidence targets, required or not — so a finding bound
+    to another sub-topic's target cannot outrank this sub-topic's own
+    answer merely because the model scored it more directly.
 
     Grouping by URL did not do that, whatever this docstring said: four pages
     from one publisher were four groups, so they could take all four of
@@ -1677,6 +1755,27 @@ def bound_sub_topic_findings(
         for index, finding in enumerate(deduplicated)
         if index not in exempt_indexes
     ]
+    own = set(own_target_ids)
+
+    def _cap_rank(finding: Finding) -> tuple[bool, bool, float]:
+        """How ``finding`` ranks for the ordinary, non-exempt cap.
+
+        A finding bound to this sub-topic's own obligations outranks one
+        that is not, whatever the model's confidence score says: a page's
+        own paragraphs must not lose their slot to another sub-topic's
+        price or spec row the model scored more directly. One bound to an
+        obligation that is both this sub-topic's own and required ranks
+        first of those, because that is the answer the run was sent to
+        get. Confidence still orders findings that tie on both.
+        """
+        bound = set(finding.target_ids)
+        bound_to_own = bool(bound & own)
+        return (
+            bound_to_own and bool(bound & required),
+            bound_to_own,
+            finding.confidence,
+        )
+
     groups: dict[str, list[Finding]] = {}
     for finding in bounded_pool:
         groups.setdefault(
@@ -1685,11 +1784,11 @@ def bound_sub_topic_findings(
 
     by_source = sorted(
         groups.values(),
-        key=lambda group: max(finding.confidence for finding in group),
+        key=lambda group: max(_cap_rank(finding) for finding in group),
         reverse=True,
     )[:max_sources]
     for group in by_source:
-        group.sort(key=lambda finding: finding.confidence, reverse=True)
+        group.sort(key=_cap_rank, reverse=True)
 
     retained: list[Finding] = list(exempt)
     depth = 0
@@ -1704,7 +1803,7 @@ def bound_sub_topic_findings(
                 break
         depth += 1
 
-    retained.sort(key=lambda finding: finding.confidence, reverse=True)
+    retained.sort(key=_cap_rank, reverse=True)
     return BoundedFindings(
         retained=retained,
         dropped_duplicate=len(findings) - len(deduplicated),
@@ -2309,9 +2408,18 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             ),
             target_id=target_id,
             query=(
-                f"{task.sub_topic.title} "
-                + " ".join(task.sub_topic.success_criteria)
-            ),
+                " ".join(
+                    target.question
+                    for target in counted_evidence_targets(
+                        task.sub_topic.evidence_targets
+                    )
+                )
+                + (
+                    f" {self._run_source_state.original_question}"
+                    if self._run_source_state is not None
+                    else ""
+                )
+            ).strip(),
             origin="researcher",
             reads=self._run_reads,
             evidence=self._run_evidence,
@@ -2869,6 +2977,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     target.target_id
                     for target in self._planned_targets()
                     if target.required
+                },
+                own_target_ids={
+                    target.target_id
+                    for target in counted_evidence_targets(
+                        sub_topic.evidence_targets
+                    )
                 },
             )
             span.set_outputs(

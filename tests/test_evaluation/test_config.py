@@ -1007,7 +1007,21 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # module source moved `cb4dd2d828c8` -> `449114f4b1ef`; no prompt string
     # was edited, and the other four target pins and the Judge pin are
     # unchanged.
-    "researcher": "449114f4b1ef",
+    # Run-3 content wave (Fable's run-3 audit, agent://AuditRun3Fable,
+    # D3/D4/D7/D8/D12): the selection query is built from the sub-topic's
+    # target questions and the research question rather than the title
+    # and success criteria; the extraction confidence definition ranks
+    # this sub-topic's own obligations first and the per-sub-topic cap
+    # ranks by them too, required first; RES-4 asks a judgement snippet
+    # to carry its subject (taking the neighbouring sentence when the
+    # referent sits there) and a code guard refuses one whose subject is
+    # a bare pronoun with no referent; a caption, player title or
+    # condition label is furniture, never a judgement; RES-1 asks one
+    # more search in a required obligation's own words when the first
+    # search returns only general pages. The module source moved
+    # `449114f4b1ef` -> `3bbe364fcd0d`; no other agent's text changed, so
+    # the other four target pins and the Judge pin are unchanged.
+    "researcher": "3bbe364fcd0d",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
