@@ -323,3 +323,102 @@ def test_a_figure_answers_only_its_own_subjects_sibling_target() -> None:
                                               kind="actual", subject="Italy"))
     assert set(answered_target_ids([italian], [spain, italy])) == {italy.target_id}
     assert finding_answers(italian, spain)
+
+
+# Fix round 1 (CRITICAL 1): a target whose question carries an article.
+ARTICLE_RATING = {**RATING, "question": "What noise rating did testers give a kettle?"}
+
+
+def test_an_article_in_the_targets_question_never_strips_a_subject() -> None:
+    """Fix round 1 (CRITICAL 1): "a" is filler in the target's words, never in the subject's."""
+    target = make_target(**ARTICLE_RATING)
+    assert len(fact_rows([_rated("Model A"), _rated("Model B", page="news")], [target])) == 2
+    early = _rated("Model A").model_copy(update={"release_date": "2026-01-10"})
+    late = _rated("Model B", "4.7", page="news").model_copy(update={"release_date": "2026-02-10"})
+    rows = fact_rows([early, late], [target])
+    assert len(rows) == 2 and all(not row.earlier for row in rows)
+
+
+def test_a_group_admits_only_figures_that_are_one_fact_with_every_member() -> None:
+    """Fix round 1 (IMPORTANT 3): a subject-less figure is not a wildcard for its group."""
+    target = make_target(**RATING)
+    nothing = _rated(None, period="2026").model_copy(update={"release_date": "2026-01-05"})
+    model_a = _rated("Model A", period="2026").model_copy(update={"release_date": "2026-02-05"})
+    model_b = _rated("Model B", period="2026").model_copy(update={"release_date": "2026-02-06"})
+
+    def rows(findings):
+        return [(row.value, row.subject, len(row.duplicate_finding_ids))
+                for row in fact_rows(findings, [target])]
+
+    assert rows([nothing, model_a, model_b]) == rows([model_a, model_b, nothing])
+    assert rows([nothing, model_a, model_b]) == [("4.5 out of 5", "Model A", 1),
+                                                 ("4.5 out of 5", "Model B", 0)]
+
+
+def test_a_revision_needs_the_same_subject_not_merely_a_nested_spelling() -> None:
+    """Fix round 1 (Minor 4 ruling): a fold claims a release history; only one subject earns it."""
+    target = make_target(**RATING)
+    x200 = _rated("X200", period="2026").model_copy(update={"release_date": "2026-01-10"})
+    x200_pro = _rated("X200 Pro", "4.7", page="news", period="2026").model_copy(
+        update={"release_date": "2026-02-10"})
+    rows = fact_rows([x200, x200_pro], [target])
+    assert len(rows) == 2 and all(not row.earlier for row in rows)
+    acme = _rated("Acme X200", period="2026")
+    assert len(fact_rows([acme, _rated("X200", page="news", period="2026")], [target])) == 1
+
+
+SPAIN, ITALY = "topic-01-target-01", "topic-01-target-02"
+
+
+def _siblings():
+    """Two targets asking one thing of two places (D11, Fable §8.5)."""
+    return (make_target(SPAIN, question="What was Spain's unemployment rate in 2024?",
+                        measure="unemployment rate", unit_dimension="percent", geography="Spain",
+                        organisation="Example Statistical Agency"),
+            make_target(ITALY, question="What was Italy's unemployment rate in 2024?",
+                        measure="unemployment rate", unit_dimension="percent", geography="Italy",
+                        organisation="Example Statistical Agency"))
+
+
+def _unemployment_figure(subject, page, targets):
+    """One 6.5 percent 2024 figure about ``subject``, bound to every target given."""
+    text = "Spain and Italy both recorded 6.5 percent unemployment in 2024."
+    read = make_read(text, url=f"https://{page}.example.test/{subject.casefold()}",
+                     title="Labour statistics")
+    finding = make_finding(read, text,
+                           figures=[figure("6.5", "percent", "2024", "actual").model_copy(
+                               update={"subject": subject})],
+                           target_ids=[target.target_id for target in targets])
+    return verified(finding, FigureContext(period="2024", scope=None, attribution="own",
+                                           organisation="Example Statistical Agency",
+                                           kind="actual", subject=subject))
+
+
+def test_a_finding_bound_to_both_sibling_targets_keeps_its_own_subject() -> None:
+    """Fix round 1 (IMPORTANT 2): the shared targets' words are their intersection, not their union."""
+    spain, italy = _siblings()
+    figures = [_unemployment_figure("Spain", "lab", [spain, italy]),
+               _unemployment_figure("Italy", "news", [spain, italy])]
+    rows = fact_rows(figures, [spain, italy])
+    assert [row.subject for row in rows] == ["Spain", "Italy"]
+    assert len(answered_target_ids(figures, [spain, italy])) == 2
+
+
+def test_an_article_in_sibling_questions_does_not_mix_the_subjects() -> None:
+    """Fix round 1 (CRITICAL 1, the sibling rule): the questions' "a" never strips "Model A"."""
+    a_lab = make_target("topic-01-target-01", question="What did testers score Model A in a lab?",
+                        measure="noise rating", unit_dimension="rating", period=None,
+                        geography=None, organisation="Example Test Lab")
+    b_lab = make_target("topic-01-target-02", question="What did testers score Model B in a lab?",
+                        measure="noise rating", unit_dimension="rating", period=None,
+                        geography=None, organisation="Example Test Lab")
+    text = "In our tests Model A scored 4.5 out of 5 for noise."
+    read = make_read(text, url="https://lab.example.test/model-a", title="Kettle tests")
+    finding = make_finding(read, text,
+                           figures=[figure("4.5", "out of 5", None, "actual").model_copy(
+                               update={"subject": "Model A"})],
+                           target_ids=[a_lab.target_id, b_lab.target_id])
+    scored = verified(finding, FigureContext(period=None, scope=None, attribution="own",
+                                             organisation="Example Test Lab", kind="actual",
+                                             subject="Model A"))
+    assert set(answered_target_ids([scored], [a_lab, b_lab])) == {a_lab.target_id}

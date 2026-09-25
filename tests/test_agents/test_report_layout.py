@@ -25,8 +25,9 @@ from deep_research.utils.types import (
     ReportPoint,
     ReportSection,
     ReportStatement,
+    SubTopic,
 )
-from tests.evidence_fakes import figure, make_finding, make_read
+from tests.evidence_fakes import figure, make_finding, make_read, make_target
 
 VERDICT_WORDS = re.compile(r"\b(verified|unverified|corroborat\w*|independently|insufficient evidence|contested|contradicted|not established)\b", re.I)
 
@@ -241,5 +242,21 @@ def test_a_sentence_carries_the_label_of_the_subject_it_names() -> None:
             row.model_copy(update={"row_id": "K002", "subject": "Model B",
                                    "organisation": "Example Test Lab"})]
     composition = base.model_copy(update={"fact_rows": rows})
+    point = base.summary[0].model_copy(update={"text": f"Model B had {row.value}."})
+    assert _point_labels(point, composition) == [_row_label(rows[1])]
+
+
+def test_an_article_in_the_targets_question_keeps_a_sentence_to_its_subject() -> None:
+    """Fix round 1 (CRITICAL 1): a target's "a" never strips the subject's "A" from a label."""
+    base = _composition()
+    target = make_target(question="What noise rating did testers give a kettle?")
+    topic = SubTopic(coverage_id="topic-01", title="Kettle noise", rationale="r",
+                     search_queries=["kettle noise rating"], success_criteria=["c"], priority=1,
+                     evidence_targets=[target])
+    row = base.fact_rows[0].model_copy(update={"target_ids": [target.target_id]})
+    rows = [row.model_copy(update={"row_id": "K001", "subject": "Model A"}),
+            row.model_copy(update={"row_id": "K002", "subject": "Model B",
+                                   "organisation": "Example Test Lab"})]
+    composition = base.model_copy(update={"fact_rows": rows, "sub_topics": [topic]})
     point = base.summary[0].model_copy(update={"text": f"Model B had {row.value}."})
     assert _point_labels(point, composition) == [_row_label(rows[1])]
