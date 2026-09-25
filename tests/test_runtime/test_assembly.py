@@ -889,6 +889,46 @@ async def test_build_runtime_creates_one_collector_for_the_run(
     assert built["graph_telemetry"] is runtime.run_telemetry
 
 
+@pytest.mark.asyncio
+async def test_an_injected_chat_provider_gets_no_collector(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """A run whose provider this build did not construct was never measured.
+
+    An injected provider is the caller's — the e2e replay hands in a scripted
+    completer — and nothing here wraps it, so a collector beside it would record
+    nothing for the whole run. Publishing those zeroes would print "peak 0
+    provider calls in flight" for a run that made real (scripted) calls, and a
+    row of zeroes reads as a measured idle run; ``None`` is the honest answer
+    and the one the state, the quality record and the CLI all read.
+    """
+    built: dict[str, object] = {}
+    real_compile = assembly.compile_research_graph
+
+    def recording_compile(agents, *, checkpointer=None, **kwargs):
+        built["graph_telemetry"] = kwargs.get("run_telemetry")
+        return real_compile(agents, checkpointer=checkpointer)
+
+    monkeypatch.setattr(assembly, "compile_research_graph", recording_compile)
+
+    runtime = await build_runtime(
+        ConfigSettings.model_validate(
+            {"output": {"directory": str(tmp_path)}}
+        ),
+        session_id="session-1",
+        tracker=tracker,
+        chat_provider=RecordingProvider(),
+        long_term=LongTermMemory(
+            collection=FakeCollection(), embeddings=FakeEmbeddings()
+        ),
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+        search_client=FakeSearchClient(),
+    )
+
+    assert runtime.run_telemetry is None
+    assert built["graph_telemetry"] is None
+
+
 class CountingProceduralMemory(ProceduralMemory):
     """A strategy store that counts how many times it was loaded."""
 

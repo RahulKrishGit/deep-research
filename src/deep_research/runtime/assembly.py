@@ -316,9 +316,11 @@ class ResearchRuntime:
     on the budget's observer: the assembly builds it but never observes with
     it, because the observer slot belongs to whoever starts the run.
 
-    Defaulted rather than required so a runtime assembled without one — a
-    test's, a harness's — still builds, and so "no collector" is a value the
-    runtime can carry instead of a case it cannot express.
+    ``None`` means no call of this run reports to a collector at all: the
+    runtime was built with an injected chat provider, or assembled by a test
+    or a harness that carries none. Defaulted rather than required so such a
+    runtime still builds, and so "no collector" is a value the runtime can
+    carry instead of a case it cannot express.
     """
 
 
@@ -415,7 +417,17 @@ async def build_runtime(
     # each other, so a collector per collaborator would report a peak of one
     # forever. It is handed to the providers exactly as the budget is, and to
     # the graph, whose terminal finalizer stamps its snapshot into the state.
-    run_telemetry = RunTelemetryCollector()
+    #
+    # And only when this build constructs the provider itself. An injected
+    # provider is the caller's -- the e2e replay hands in a scripted completer
+    # -- and nothing here wraps it, so a collector beside it would record
+    # nothing for the whole run: it would print "peak 0 provider calls in
+    # flight" and publish a row of zeroes where the honest answer is that there
+    # is no measurement. ``None`` is that answer, and it reaches the state, the
+    # quality record (``telemetry: null``) and the CLI (no line at all).
+    run_telemetry = (
+        RunTelemetryCollector() if chat_provider is None else None
+    )
 
     try:
         provider = chat_provider or build_chat_provider(
