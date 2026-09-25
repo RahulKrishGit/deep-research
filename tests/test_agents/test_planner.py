@@ -990,7 +990,8 @@ async def test_planner_preserves_final_plan_provider_cause_without_reachability_
         tracker,
         ScriptedCompleter(
             decisions=[finish("No lookup needed.", "Three angles matter.")],
-            outputs=[provider_error],
+            # A truncated draft is re-asked once; the retry truncates too.
+            outputs=[provider_error, _output_limit_error()],
         ),
     )
 
@@ -998,7 +999,10 @@ async def test_planner_preserves_final_plan_provider_cause_without_reachability_
         async with tracker.session_span("session-1", "q"):
             await agent.run(_state())
 
-    assert caught.value.__cause__ is provider_error
+    # The cause is the retry's own truncation, as a redacted copy: the typed
+    # provider cause is kept, the provider response it was read from is not.
+    assert isinstance(caught.value.__cause__, ProviderOutputLimitError)
+    assert caught.value.__cause__ is not provider_error
     assert "reach" not in str(caught.value).casefold()
     assert "plan" in str(caught.value).casefold()
 
@@ -1260,7 +1264,12 @@ async def test_a_failed_lint_repair_keeps_a_usable_draft(tracker: Tracker) -> No
     """
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
-        outputs=[_stale_draft(), _output_limit_error(), _review()],
+        outputs=[
+            _stale_draft(),
+            _output_limit_error(),
+            _output_limit_error(),
+            _review(),
+        ],
     )
     agent = _planner(tracker, completer)
 
@@ -1276,6 +1285,7 @@ async def test_a_failed_lint_repair_keeps_a_usable_draft(tracker: Tracker) -> No
     ]
     assert outcome.result.repair_attempted is True
     assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
         "ResearchPlanDraft",
         "ResearchPlanDraft",
         "PlanReviewDraft",
@@ -3567,6 +3577,7 @@ async def test_a_truncated_review_repair_falls_back_to_the_reviewed_plan(
                 repair_instruction="Add a sub-topic for siting and permitting.",
             ),
             _output_limit_error(),
+            _output_limit_error(),
         ],
     )
     agent = _planner(tracker, completer)
@@ -3586,6 +3597,7 @@ async def test_a_truncated_review_repair_falls_back_to_the_reviewed_plan(
     assert [call[0] for call in completer.calls] == [
         "ResearchPlanDraft",
         "PlanReviewDraft",
+        "ResearchPlanDraft",
         "ResearchPlanDraft",
     ]
     records = _plan_defects(outcome.state_update["errors"])
@@ -3626,7 +3638,7 @@ async def test_a_first_plan_review_that_cannot_be_produced_keeps_the_plan(
     """
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
-        outputs=[_sorting_plan(), _output_limit_error()],
+        outputs=[_sorting_plan(), _output_limit_error(), _output_limit_error()],
     )
     agent = _planner(tracker, completer)
 
@@ -3644,6 +3656,7 @@ async def test_a_first_plan_review_that_cannot_be_produced_keeps_the_plan(
     assert outcome.result.repair_attempted is False
     assert [call[0] for call in completer.calls] == [
         "ResearchPlanDraft",
+        "PlanReviewDraft",
         "PlanReviewDraft",
     ]
     records = _plan_defects(outcome.state_update["errors"])
@@ -5079,3 +5092,90 @@ def test_the_instruction_says_which_targets_are_optional_and_which_body_is_the_a
     for phrase in (
     ):
         assert phrase in body
+
+
+# Run 2's plan call ended at 59,064 of 65,536 output tokens (90% of its cap) and
+# smoke 2 at 77%: a plan-side request that reasons past the cap raises
+# ``ProviderOutputLimitError``, which is not retryable, so a truncated first
+# draft ended the run before any research. The reviewer and the writer already
+# re-ask a truncated request once at the shared retry effort under the same
+# budget; the planner's structured calls now do the same.
+@pytest.mark.asyncio
+async def test_a_truncated_plan_draft_is_re_asked_once_at_the_retry_effort(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_output_limit_error(), _sorting_plan(), _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What limits grid-scale battery storage deployment?")
+        )
+
+    assert outcome.result is not None
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+    ]
+    # The same request, the same output budget, the lower effort.
+    assert completer.calls[0][2] == completer.calls[1][2]
+    assert completer.budgets[0] == completer.budgets[1] is not None
+    assert completer.efforts[:2] == [None, "high"]
+    retries = [
+        error
+        for error in outcome.state_update["errors"]
+        if error.error_type == "planner_output_limit_retry"
+    ]
+    assert [error.recoverable for error in retries] == [True]
+    assert "reasoning_effort high" in retries[0].message
+    assert "the retry returned a reply" in retries[0].message
+
+
+@pytest.mark.asyncio
+async def test_a_plan_draft_truncated_twice_fails_as_it_did_before(
+    tracker: Tracker,
+) -> None:
+    """One retry, never a loop: a second truncation keeps today's failure."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_output_limit_error(), _output_limit_error()],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError, match="model provider"):
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(
+                _state("What limits grid-scale battery storage deployment?")
+            )
+
+    assert completer.efforts == [None, "high"]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_plan_review_is_re_asked_once_at_the_retry_effort(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_sorting_plan(), _output_limit_error(), _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What limits grid-scale battery storage deployment?")
+        )
+
+    assert outcome.result is not None
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+        "PlanReviewDraft",
+    ]
+    assert completer.efforts == [None, None, "high"]
+    assert completer.budgets[1] == completer.budgets[2]
+    assert _plan_defects(outcome.state_update["errors"]) == []
