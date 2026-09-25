@@ -75,7 +75,7 @@ def make_finding(
 
 
 def make_target(target_id: str = "topic-01-target-01", **fields: Any) -> EvidenceTarget:
-    """A target that validates in the current phase (Task 5.1 deletes the legacy branch)."""
+    """A target that validates in the current phase."""
     base: dict[str, Any] = {
         "target_id": target_id,
         "coverage_id": target_id.rsplit("-target-", 1)[0],
@@ -88,10 +88,5 @@ def make_target(target_id: str = "topic-01-target-01", **fields: Any) -> Evidenc
         "organisation": None,
         "required": True,
     }
-    if "required_dimensions" in EvidenceTarget.model_fields:
-        base.update(
-            required_dimensions=["measure: battery storage power capacity added"],
-            critical=False,
-        )
     base.update(fields)
     return EvidenceTarget(**base)

@@ -27,36 +27,6 @@ from deep_research.utils.types import (
 )
 
 
-def test_an_evidence_target_requires_its_obligation() -> None:
-    target = EvidenceTarget(
-        target_id="target-1",
-        coverage_id="topic-01",
-        question="How much interconnection capacity was withheld in 2025?",
-        required_dimensions=["fact", "time", "magnitude"],
-        required=True,
-        critical=True,
-    )
-
-    assert target.critical is True
-
-    with pytest.raises(ValidationError):
-        EvidenceTarget(
-            target_id="target-1",
-            coverage_id="topic-01",
-            question="How much?",
-            required_dimensions=["fact"],
-        )
-    with pytest.raises(ValidationError):
-        EvidenceTarget(
-            target_id="target-1",
-            coverage_id="topic-01",
-            question="How much?",
-            required_dimensions=[],
-            required=True,
-            critical=False,
-        )
-
-
 def test_an_answer_contract_freezes_the_scope_form_and_as_of_date() -> None:
     """The contract is the frozen half of Section 2.3.
 
@@ -116,9 +86,8 @@ def test_a_legacy_sub_topic_without_targets_still_loads() -> None:
         target_id="target-01-01",
         coverage_id="topic-01",
         question="What does Alpha measure?",
-        required_dimensions=["fact", "time"],
+        measure="the Alpha measure",
         required=True,
-        critical=True,
     )
     stamped = SubTopic.model_validate(
         {**sub_topic.model_dump(), "evidence_targets": [target]}
@@ -133,9 +102,8 @@ def test_a_sub_topic_carries_at_most_four_targets() -> None:
             target_id=f"target-01-{index:02d}",
             coverage_id="topic-01",
             question=f"What does Alpha measure ({index})?",
-            required_dimensions=["fact"],
+            measure=f"the Alpha measure ({index})",
             required=True,
-            critical=False,
         )
 
     with pytest.raises(ValidationError):
@@ -162,17 +130,15 @@ def test_the_omission_reference_target_is_not_a_counted_target() -> None:
         target_id="target-01-01",
         coverage_id="topic-01",
         question=ORIGINAL_QUESTION_OMISSION_REFERENCE,
-        required_dimensions=["original question coverage"],
+        measure="original question coverage",
         required=True,
-        critical=True,
     )
     real = EvidenceTarget(
         target_id="target-01-02",
         coverage_id="topic-01",
         question="What does Alpha measure?",
-        required_dimensions=["fact"],
+        measure="the Alpha measure",
         required=True,
-        critical=False,
     )
 
     assert counted_evidence_targets([omission, real]) == [real]
@@ -782,3 +748,12 @@ def test_a_bare_quality_snapshot_constructs_with_zeroed_readings() -> None:
     assert snapshot.unaccounted_target_ids == []
     assert snapshot.unjudged_sentences == []
     assert snapshot.hard_failures == []
+
+
+def test_a_target_is_its_structured_fields_and_needs_a_measure() -> None:
+    target = make_target()
+
+    assert not hasattr(target, "required_dimensions")
+    assert not hasattr(target, "critical")
+    with pytest.raises(ValidationError):
+        make_target(measure="")
