@@ -468,7 +468,8 @@ def test_the_summary_agrees_with_the_records_it_describes() -> None:
         in joined
     )
     assert (
-        f"Findings: {snapshot.verified_findings} checked "
+        f"Findings: "
+        f"{snapshot.verified_findings + snapshot.corrected_findings} checked "
         f"({snapshot.corrected_findings} with corrected context, "
         f"{snapshot.context_unchecked_findings} unchecked context), "
         f"{snapshot.dropped_findings} dropped; "

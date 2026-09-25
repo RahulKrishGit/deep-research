@@ -487,15 +487,18 @@ tools; reputation reaches it through an injected `ReputationSource`, which
 Two stages, and both are needed:
 
 - **Figure Match** (code). For every finding, the snippet must appear on the
-  page it cites and the figure must be read out of that snippet. A finding whose
-  snippet is not on its read is dropped (`snippet_not_on_page`), and a finding
-  with no read at all is dropped (`read_not_found`). Nothing is checked against
-  the report prose here, and no code pattern decides whether the wording
-  "really" states the figure — that is the Context Check's job.
+  page it cites: `figure_match` answers exactly two questions, `read_found` and
+  `snippet_on_page`. A finding whose snippet is not on its read is dropped
+  (`snippet_not_on_page`), and a finding with no read at all is dropped
+  (`read_not_found`). It does *not* judge the figure against the snippet — a
+  code pattern reading "is this number in that sentence" was the thing D8
+  deleted — so every figure that survives goes to the Context Check.
 - **Context Check** (one batched, tool-free AI call). Every figure that
-  survived Figure Match goes to the model with its snippet and its passage, and
-  the reply confirms the figure's period, scope, kind (actual or forecast),
-  attribution and the page's own organisation, or rejects it. Batches hold
+  survived Figure Match goes to the model with the snippet it was copied from,
+  the surrounding passage, and the fields the extractor recorded, and the model
+  judges whether the snippet or passage actually states it — confirming its
+  period, scope, kind (actual or forecast), attribution and the page's own
+  organisation, or rejecting it. Batches hold
   `agents.verifier_batch_size` findings (5) and at most
   `agents.verifier_concurrency` batches are in flight (8). Code then applies
   the checks that cannot be a judgement: the corrected wording must be on the
@@ -503,13 +506,18 @@ Two stages, and both are needed:
   own organisation only when code confirms the host is that organisation's own.
 
 A finding's `verification.status` is one of `verified`, `verified_corrected` or
-`dropped`. A figure the Context Check rejected or that could not be confirmed
-is dropped with an enumerated reason — `evidence_not_on_page`,
-`correction_not_on_page`, `context_rejected`, `context_unavailable` — and a
-finding whose every figure was dropped becomes `verified_corrected` or
-`dropped` with its own reason. A finding whose batch failed keeps its Figure
-Match result, is marked `context_unchecked`, and is cited only as "unchecked
-context" (PD-26); nothing is ever promoted by a Context Check it never got.
+`dropped`, exactly as the code decides it: with **every** figure dropped the
+finding is `dropped` with reason `all_figures_dropped`; with **some** figure
+dropped, or one whose context was corrected, it is `verified_corrected`; with
+every figure kept as written it is `verified`. A figure the Context Check
+rejected or that could not be confirmed is dropped with an enumerated reason —
+`evidence_not_on_page`, `correction_not_on_page`, `context_rejected`,
+`context_unavailable` — and a figure with no reply at all is kept as
+"unchecked context" only when its own value appears in the snippet; otherwise
+it is dropped as `context_unavailable`. A finding whose batch failed keeps its
+Figure Match result, is marked `context_unchecked`, and is cited only as
+"unchecked context" (PD-26); nothing is ever promoted by a Context Check it
+never got.
 
 Reader labels are built by code (D7, §6.1) from the verified fields, and they
 are the only provenance the reader sees: the report prints the label beside the
@@ -838,17 +846,19 @@ Quality: partial (review scored 0.86)
 Quality reasons: 1 gate failure (unjudged_sentences)
 Required targets: 6/7 answered
 Not found: topic-02-target-01
-Sources: 10 assessed, 8 cited; reads 14 (network 11, cache reuse 3), works 10, publishers 6, findings 12
+Sources: 10 assessed, 8 cited; reads 14 (network 11, cache reuse 3), works 10, publishers 6, findings 10
 Review: scored (fingerprint 8f2c1d…)
-Findings: 9 checked (1 with corrected context, 2 unchecked context), 3 dropped; 11 cited
+Findings: 7 checked (1 with corrected context, 2 unchecked context), 3 dropped; 6 cited
 Integrity: 0 duplicate fact rows; 0 uncited statements; 1 unjudged sentences; 2 forecasts without release
 Unresolved: 1 missing required target (topic-02-target-01)
 ```
 
-`Findings` counts the Evidence Verifier's own readings — confirmed as written,
-kept with a corrected context, kept with an unchecked context, dropped, cited —
-and `Integrity` counts the structural invariants the quality gates judge;
-`forecasts without release` is counted and printed but is not a gate (PD-24).
+`Findings` counts the Evidence Verifier's own readings: the total is every
+finding it kept (7), one of which it kept with a corrected context and two with
+an unchecked context, and three more it dropped; six of the kept findings are
+cited by the report. `Integrity` counts the structural invariants the quality
+gates judge; `forecasts without release` is counted and printed but is not a
+gate (PD-24).
 
 ### Lowering parallelism when a provider throttles (spec 7.3)
 
