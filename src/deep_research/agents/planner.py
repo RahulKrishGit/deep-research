@@ -278,6 +278,7 @@ _COMPARATIVE_COUNT_YEAR_PATTERNS = (
 _CONSTRAINTS_MARKERS = (
     "constraint",
     "requirement",
+    "obligation",
     "regulation",
     "regulatory",
     "rule",
@@ -627,26 +628,26 @@ _PLAN_REPLY_EXAMPLES = (
     (
         "Example input: why did measles cases rise in the region in 2024?",
         '{"sub_topics":['
+        '{"title":"outbreak investigation findings",'
+        '"rationale":"The causes the investigating body itself identified.",'
+        '"search_queries":["regional health authority measles outbreak report 2024 causes"],'
+        '"success_criteria":["A published outbreak report naming the causes it identified, with its release date."],'
+        '"priority":1,"evidence_targets":['
+        '{"question":"What causes of the 2024 rise do published outbreak '
+        'investigations identify?","required":true,'
+        '"measure":"causes identified by the outbreak investigations","unit_dimension":"",'
+        '"period":"2024","kind":"",'
+        '"geography":"the region","organisation":""}]},'
         '{"title":"vaccination coverage",'
         '"rationale":"Establish whether coverage fell before the rise.",'
         '"search_queries":["regional health authority MMR first dose coverage 2024"],'
         '"success_criteria":["A reported first-dose coverage figure for 2024 from '
         'the regional health authority."],'
-        '"priority":1,"evidence_targets":['
+        '"priority":2,"evidence_targets":['
         '{"question":"What MMR first-dose coverage did the regional health '
         'authority report for 2024?","required":false,'
         '"measure":"MMR first-dose coverage","unit_dimension":"percent",'
         '"period":"2024","kind":"actual",'
-        '"geography":"the region","organisation":""}]},'
-        '{"title":"outbreak investigation findings",'
-        '"rationale":"The causes the investigating body itself identified.",'
-        '"search_queries":["regional health authority measles outbreak report 2024 causes"],'
-        '"success_criteria":["A published outbreak report naming the causes it identified, with its release date."],'
-        '"priority":2,"evidence_targets":['
-        '{"question":"What causes of the 2024 rise do published outbreak '
-        'investigations identify?","required":true,'
-        '"measure":"causes identified by the outbreak investigations","unit_dimension":"",'
-        '"period":"2024","kind":"",'
         '"geography":"the region","organisation":""}]},'
         '{"title":"immunity threshold",'
         '"rationale":"Background the reader needs to judge the coverage figure.",'

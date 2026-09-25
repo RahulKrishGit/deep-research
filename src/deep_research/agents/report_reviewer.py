@@ -1007,12 +1007,21 @@ def _render_dimension_guidance() -> str:
 
 
 def _render_manifest(packet: ReportReviewInput) -> str:
+    required = set(packet.required_target_ids)
     return "\n".join(
         (
             "Statement ids in this packet: "
             + (", ".join(packet.expected_statement_ids) or "(none)"),
             "Target ids in this packet: "
-            + (", ".join(packet.known_target_ids) or "(none)"),
+            + (
+                ", ".join(
+                    f"{target_id} [required]"
+                    if target_id in required
+                    else target_id
+                    for target_id in packet.known_target_ids
+                )
+                or "(none)"
+            ),
             "Finding registry labels in this packet: "
             + (", ".join(finding.label for finding in packet.findings) or "(none)"),
         )

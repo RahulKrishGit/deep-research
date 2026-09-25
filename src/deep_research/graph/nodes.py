@@ -82,6 +82,7 @@ from deep_research.graph.state import (
     REPORT_WRITER_NODE,
     ResearchGraphState,
     dump_state,
+    extra_pass_target_ids,
     graph_quality_status,
     graph_route,
     graph_status,
@@ -764,9 +765,7 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
                         reason=reason,
                         iteration=started.iteration,
                         max_extra_passes=started.max_extra_passes,
-                        missing_required_target_ids=list(
-                            review.missing_required_target_ids
-                        ),
+                        missing_required_target_ids=extra_pass_target_ids(merged),
                     ),
                     node_completed_event(
                         REPORT_REVIEWER_NODE,
@@ -979,10 +978,13 @@ async def extra_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
     but cannot write, and both the macro-iteration increment and the pass's
     job list have to happen somewhere the graph can see and a test can call.
 
-    The job list is the targets the review recorded as missing a verified
-    finding. It is *replaced*, never merged: the pass that is about to run
-    exists for those targets and no others, so a target an earlier pass owed
-    cannot keep the run alive after the newest decision dropped it.
+    The job list is ``extra_pass_target_ids(state)`` (D10): the targets the
+    code-stamped gate recorded as missing a verified finding, plus any
+    required target a reviewer's own ``coverage`` defect named even though
+    that gate already counted it answered. It is *replaced*, never merged:
+    the pass that is about to run exists for those targets and no others, so
+    a target an earlier pass owed cannot keep the run alive after the newest
+    decision dropped it.
 
     The iteration bound is the graph's law and a second lock on the door: the
     router already refuses to reach this node once the ceiling is spent, and a
@@ -1007,12 +1009,7 @@ async def extra_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
             ),
         )
 
-    review = state.report_review
-    targets = (
-        list(review.missing_required_target_ids)
-        if review is not None
-        else []
-    )
+    targets = extra_pass_target_ids(state)
     advanced = advance_research_iteration(started)
     return _with(
         advanced,

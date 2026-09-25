@@ -3056,6 +3056,19 @@ def test_an_unrelated_derived_word_does_not_match_standard_constraint_marker() -
     assert answer_kind_for(question, clock_year=2026) == "factual"
 
 
+def test_an_obligations_question_gets_the_constraints_answer_form() -> None:
+    """A "what obligations…" question is a constraints question (spec Q2).
+
+    "obligation"/"obligations" names a binding constraint exactly as
+    "requirement"/"rule" already do: a question asking what a body's
+    obligations are should get the constraints answer form, not the generic
+    factual one.
+    """
+    question = "What obligations does the new ordinance place on landlords?"
+
+    assert answer_kind_for(question, clock_year=2026) == "constraints"
+
+
 def test_lowercase_eu_and_uk_aliases_resolve_without_us_substring_matches() -> None:
     """Lowercase ``eu``/``uk`` aliases return jurisdictions safely.
 

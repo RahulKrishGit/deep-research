@@ -96,9 +96,11 @@ GRAPH_ROUTES = {
         "remains; the researcher runs for those targets only."
     ),
     "extra_passes_exhausted": (
-        "Required targets still have no verified finding, no extra pass "
-        "remains, and the report was not accepted; the targets are listed "
-        "under Not found."
+        "Required targets are still missing a verified finding, or the "
+        "terminal review's own coverage defect still names one, no extra "
+        "pass remains, and the report was not accepted; a target with no "
+        "verified finding is listed under Not found, and one the review's "
+        "own defect names keeps that defect in the record."
     ),
     "redraft_requested": (
         "The Report Reviewer scored the report and named a material defect, "
@@ -220,6 +222,34 @@ def is_halted(state: ResearchState) -> bool:
     )
 
 
+def extra_pass_target_ids(state: ResearchState) -> list[str]:
+    """The obligations the next extra pass exists for (D10, spec §6.5).
+
+    ``missing_required_target_ids`` is the code-stamped gate: a required
+    target with no verified finding at all. A reviewer's own ``coverage``
+    defect can name a required target that gate already counts as answered,
+    when the answer it found does not actually settle the question — that
+    target owes the pass too. The two lists are combined, in order, with
+    duplicates dropped, so ``graph_route``'s decision and the pass's own job
+    list can never diverge: whichever one is asked "is anything missing?" or
+    "for what?", both read the same targets.
+    """
+    review = state.report_review
+    if review is None:
+        return []
+    required = set(state.quality.required_target_ids) if state.quality else set()
+    coverage_target_ids = [
+        target_id
+        for defect in review.defects
+        if defect.kind == "coverage"
+        for target_id in defect.target_ids
+        if target_id in required
+    ]
+    return list(
+        dict.fromkeys([*review.missing_required_target_ids, *coverage_target_ids])
+    )
+
+
 def graph_route(state: ResearchState) -> tuple[str, str]:
     """Where the graph goes after the Report Reviewer, and why (spec §6.3-§6.5).
 
@@ -256,16 +286,7 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     if is_halted(state):
         return ROUTE_END, "halted"
     review = state.report_review
-    required_target_ids = (
-        set(state.quality.required_target_ids) if state.quality else set()
-    )
-    reviewer_named_missing_coverage = review is not None and any(
-        defect.kind == "coverage" and set(defect.target_ids) & required_target_ids
-        for defect in review.defects
-    )
-    missing = review is not None and (
-        bool(review.missing_required_target_ids) or reviewer_named_missing_coverage
-    )
+    missing = review is not None and bool(extra_pass_target_ids(state))
     if missing and state.iteration < state.max_extra_passes:
         return ROUTE_EXTRA_PASS, "extra_pass_requested"
     if review is None or review.status != "scored":

@@ -762,6 +762,54 @@ async def test_the_extra_pass_hop_replaces_the_worklist_it_inherits() -> None:
     assert advanced.extra_pass_target_ids == ["topic-01-target-02"]
 
 
+def _coverage_defect_only_state(**overrides: object) -> ResearchState:
+    """A judged pass whose coverage defect, not the code-stamped gate, owes a
+    target: ``missing_required_target_ids`` is empty, but the reviewer's own
+    ``coverage`` defect names ``topic-01-target-02`` as a required target.
+    """
+    two_topics = fake_sub_topic(
+        targets=[
+            fake_target(),
+            fake_target("topic-01-target-02", question="What did it cost?"),
+        ]
+    )
+    base = _writer_state(sub_topics=[two_topics])
+    payload: dict[str, object] = {
+        "report_review": fake_report_review(
+            missing_required_target_ids=[],
+            defects=[
+                ReviewDefect(
+                    defect_id="review-01",
+                    kind="coverage",
+                    severity="major",
+                    target_ids=["topic-01-target-02"],
+                    problem="The question's second part names no answer.",
+                )
+            ],
+        )
+    }
+    payload.update(overrides)
+    return base.model_copy(update=payload)
+
+
+@pytest.mark.asyncio
+async def test_the_extra_pass_hop_targets_a_reviewers_own_coverage_defect() -> None:
+    """D10 fix (P0): a coverage defect, not only the code-stamped gate, funds
+    the pass and names the pass's job list.
+
+    Before this fix ``extra_pass_node`` read only
+    ``review.missing_required_target_ids``, which this review leaves empty, so
+    the hop opened with an empty job list and the researcher re-ran every
+    planned sub-topic instead of the one target the review actually named.
+    """
+    state = _coverage_defect_only_state(iteration=0, max_extra_passes=1)
+
+    advanced = load_state(await extra_pass_node(dump_state(state)))
+
+    assert advanced.extra_pass_target_ids == ["topic-01-target-02"]
+
+
+
 @pytest.mark.asyncio
 async def test_the_extra_pass_hop_refuses_to_spend_a_pass_it_lacks() -> None:
     """The router never sends the hop past the ceiling; the hop still guards it.
