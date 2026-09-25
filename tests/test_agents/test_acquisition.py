@@ -1215,6 +1215,35 @@ def test_a_short_access_denied_page_keeps_its_shell_label() -> None:
     assert reasons[f"{url}#web_scraper#1"] == "unusable_content_shell"
 
 
+def test_a_client_rendered_page_records_its_own_reason() -> None:
+    """A page whose body the browser renders is a failed extraction, named so.
+
+    The scraper refuses such a page with its own error type: the response
+    arrived, but everything readable in it was navigation. Recording that as
+    a transport failure would tell the model to retry a page that will serve
+    the same HTML again, when the useful move is a different source.
+    """
+    url = "https://agency.example/client-rendered"
+    policy = _gateway_policy(candidate_urls=[url], remaining_calls=2)
+
+    policy.after_action(
+        _failed_read_step(
+            "web_scraper",
+            url,
+            error_type="client_rendered_page",
+            iteration=1,
+        ),
+        {"url": url},
+    )
+
+    reasons = {
+        item.item_id: item.reason
+        for item in policy.dispositions
+        if item.stage == "read-selection"
+    }
+    assert reasons[f"{url}#web_scraper#1"] == "client_rendered_page"
+
+
 # ---------------------------------------------------------------------------
 # the local extract gate: a bounded continuation batch that terminates
 # ---------------------------------------------------------------------------

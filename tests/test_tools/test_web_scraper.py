@@ -1,4 +1,6 @@
 import asyncio
+import html
+import json
 from contextlib import asynccontextmanager
 
 import httpx
@@ -179,6 +181,259 @@ async def test_an_empty_page_is_not_evidence(tracker) -> None:
     assert result.error.type == "empty_page_content"
     assert "text" in result.error.message
     assert "challenge" not in result.model_dump_json()
+
+
+# A client-rendered page as it is served: markup in the hundreds of kilobytes,
+# navigation words as the visible text, and the body only in the data the
+# browser renders it from. Each prose string below carries well over the
+# minimum length and space count, and each is about a neutral fixture subject.
+_SCRIPT_BUNDLE = "var module = {};" * 4000
+
+# The words the static read sees: the page's own navigation labels.
+_SHELL_NAV = "Charts Methods About Contact"
+
+_DESCRIPTION_PROSE = (
+    "The lightest load-bearing bracket in the survey carried more than every "
+    "laminated alternative, the Example Institute's own testing found."
+)
+_SOCIAL_PROSE = (
+    "A laminated bracket failed at its joint long before the solid one did, "
+    "so the solid bracket wins wherever a load repeats."
+)
+_DATA_PROSE = (
+    "Folding the sheet instead of welding it keeps the bracket's stiffness "
+    "and removes the joint that cracks first under repeated loading."
+)
+_ARTICLE_PROSE = (
+    "Nine hundred loading cycles later every folded bracket was still true "
+    "to the shape it was stamped in, the Example Institute reported."
+)
+_LD_PROSE = (
+    "A field trial of folded brackets ran nine hundred loading cycles and "
+    "recorded the deflection of each bracket after every one of them."
+)
+# Long and spaced like prose, but it is a string inside a plain script: code,
+# not page data, and never the document's words.
+_SCRIPT_PROSE = (
+    "This alert text is long enough and spaced enough to read like prose but "
+    "it is only a string inside a script element."
+)
+# Too short to be prose, though it is spaced like a sentence.
+_SHORT_PROSE = "Loading the chart data now please"
+
+
+def _client_rendered_page(*, head: str = "", body: str = "") -> str:
+    """The served markup of a page whose own scripts render its body."""
+    return (
+        "<html><head><title>Example Charts</title>"
+        f"{head}<script>{_SCRIPT_BUNDLE}"
+        f'var notice = "{_SCRIPT_PROSE}";</script>'
+        "</head><body>"
+        "<nav><a href='/charts'>Charts</a><a href='/methods'>Methods</a>"
+        "<a href='/about'>About</a><a href='/contact'>Contact</a></nav>"
+        f"{body}</body></html>"
+    )
+
+
+def _props_attribute(payload: object) -> str:
+    """A ``data-props`` attribute carrying ``payload`` as a server escapes it."""
+    return f'data-props="{html.escape(json.dumps(payload))}"'
+
+
+async def _read_served_page(
+    tracker, page: str, *, url: str = "https://example.test/charts"
+) -> ToolResult:
+    """Read ``page`` as the one HTML response of a host that allows every path."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            text=page,
+            request=request,
+        )
+
+    async with _client(handler) as client:
+        async with tracker.session_span("session-1", "question"):
+            return await WebScraperTool(tracker, client=client).execute(url=url)
+
+
+@pytest.mark.asyncio
+async def test_a_client_rendered_page_recovers_its_body_from_its_data(
+    tracker,
+) -> None:
+    """Chrome is not the page: its body sits in the data the browser renders.
+
+    A client-rendered page serves a large script bundle, its navigation words
+    as visible text, and its document as JSON in element attributes and JSON
+    scripts. Reading only the visible strings recorded chunks of menu as a
+    complete read of a real page; the page's own prose is in the response, and
+    a read must return it.
+    """
+    props = {"props": {"lead": f'<p class="lead">{_DATA_PROSE}</p>'}}
+    repeated = {"meta": {"description": _DESCRIPTION_PROSE}}
+    serialized = json.dumps(
+        {"caption": "a caption long enough and spaced enough to pass for prose"}
+    )
+    not_prose = {"label": _SHORT_PROSE, "digest": "x" * 80, "blob": serialized}
+    article = json.dumps({"article": {"verdict": _ARTICLE_PROSE}})
+    linked = json.dumps({"@type": "Article", "description": _LD_PROSE})
+
+    page = _client_rendered_page(
+        head=(
+            f'<meta name="description" content="{_DESCRIPTION_PROSE}">'
+            f'<meta property="og:description" content="{_SOCIAL_PROSE}">'
+        ),
+        body=(
+            f"<div {_props_attribute(props)}></div>"
+            f"<div {_props_attribute(not_prose)}></div>"
+            f'<script type="application/json">{article}</script>'
+            f'<script type="application/ld+json">{linked}</script>'
+            f"<div {_props_attribute(repeated)}></div>"
+        ),
+    )
+    result = await _read_served_page(tracker, page)
+
+    assert result.success is True
+    text = result.data["text"]
+    # The visible navigation is kept; the recovered body is added to it.
+    assert _SHELL_NAV in text
+    for prose in (
+        _DESCRIPTION_PROSE,
+        _SOCIAL_PROSE,
+        _DATA_PROSE,
+        _ARTICLE_PROSE,
+        _LD_PROSE,
+    ):
+        assert prose in text
+    # Tags and attribute JSON are not carried into the text.
+    assert "<p" not in text
+    assert '"lead"' not in text
+    # One string held by two payloads is contributed once.
+    assert text.count(_DESCRIPTION_PROSE) == 1
+    # A short string, a space-poor digest and a serialized JSON blob are not
+    # prose, and a string inside a plain script is code, not data.
+    assert _SHORT_PROSE not in text
+    assert "x" * 80 not in text
+    assert '{"caption"' not in text
+    assert _SCRIPT_PROSE not in text
+    assert result.data["extraction_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_client_rendered_page_with_no_recoverable_body_is_a_failed_read(
+    tracker,
+) -> None:
+    """Navigation is not a body: a menu must never stand in for a document.
+
+    The visible text is the site's chrome and the served data holds no prose,
+    so there is no document to read. Returning the chrome as a complete read
+    is how a menu becomes evidence and how a page that was read is reported as
+    though its subject had not been found.
+    """
+    page = _client_rendered_page(
+        head='<meta charset="utf-8"><style>body { margin: 0; }</style>',
+        body="<div id='app'></div>",
+    )
+    result = await _read_served_page(tracker, page)
+
+    _assert_failure_is_bounded(result, ("example.test", "https://", _SHELL_NAV))
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.type == "client_rendered_page"
+    assert result.error.message == (
+        "the page served its navigation but not its body; read the same "
+        "material from another source"
+    )
+    assert result.error.details == {}
+
+
+@pytest.mark.asyncio
+async def test_a_page_with_its_own_visible_text_is_read_unchanged(tracker) -> None:
+    """Recovery repairs a shell; it never adds to a page that has a body.
+
+    The fixture carries the same large markup and the same data as the shell
+    page, with one difference: its body is served as visible paragraphs. That
+    text is the whole read — the description, the attribute JSON and the JSON
+    scripts must not be appended to it.
+    """
+    paragraph = (
+        "The Example Institute publishes its method beside every result it "
+        "reports, so any reader can repeat the comparison from the published "
+        "data alone."
+    )
+    paragraphs = f"<p>{paragraph}</p>" * 16
+    props = {"props": {"lead": _DATA_PROSE}}
+    article = json.dumps({"verdict": _ARTICLE_PROSE})
+    page = (
+        "<html><head><title>Example Charts</title>"
+        f'<meta name="description" content="{_DESCRIPTION_PROSE}">'
+        f"<script>{_SCRIPT_BUNDLE}</script>"
+        f"</head><body>{paragraphs}"
+        f"<div {_props_attribute(props)}></div>"
+        f'<script type="application/json">{article}</script>'
+        "</body></html>"
+    )
+    result = await _read_served_page(tracker, page)
+
+    assert result.success is True
+    assert result.data["text"] == (
+        "Example Charts " + " ".join([paragraph] * 16)
+    )
+    assert _DESCRIPTION_PROSE not in result.data["text"]
+    assert _DATA_PROSE not in result.data["text"]
+    assert _ARTICLE_PROSE not in result.data["text"]
+    assert result.data["extraction_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_short_page_in_small_markup_is_read_unchanged(tracker) -> None:
+    """A short notice is not a shell: the gate also needs large markup.
+
+    Nothing is recoverable here because there is nothing to recover: the
+    served HTML is most of what the page carries. Refusing it a read would
+    lose a short authoritative page.
+    """
+    page = (
+        "<html><head><title>Harbour Notice</title></head><body>"
+        "<p>The harbour ferry moves to its winter timetable on the first "
+        "Sunday of next month.</p></body></html>"
+    )
+    result = await _read_served_page(
+        tracker, page, url="https://example.test/notice"
+    )
+
+    assert result.success is True
+    assert result.data["text"] == (
+        "Harbour Notice The harbour ferry moves to its winter timetable on "
+        "the first Sunday of next month."
+    )
+    assert result.data["extraction_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_client_rendered_page_with_no_visible_text_reads_its_data(
+    tracker,
+) -> None:
+    """A page that renders every word from data is a page with a body.
+
+    Its visible text is empty, which the old read reported as no readable
+    text at all; the words it renders from are in the response it served.
+    """
+    verdict = json.dumps({"article": {"verdict": _ARTICLE_PROSE}})
+    page = (
+        "<html><head><title>Example Charts</title>"
+        f"<script>{_SCRIPT_BUNDLE}</script>"
+        f'<script type="application/json">{verdict}</script>'
+        "</head><body><div id='app'></div></body></html>"
+    )
+    result = await _read_served_page(tracker, page)
+
+    assert result.success is True
+    assert result.data["text"] == f"Example Charts {_ARTICLE_PROSE}"
+    assert result.data["extraction_complete"] is True
 
 
 @pytest.mark.asyncio
