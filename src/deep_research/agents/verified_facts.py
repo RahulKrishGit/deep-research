@@ -147,6 +147,11 @@ def _initials_variants(tokens: Sequence[str]) -> set[str]:
     return variants
 
 
+# A leading article is the page's grammar, not part of the name: "the IPCC" is
+# "IPCC", and the article must not stop it being read as the acronym it is.
+_LEADING_ARTICLES = frozenset({"the", "a", "an"})
+
+
 def _single_token(value: str) -> str | None:
     """The one token a host label or an all-capitals acronym stands for, else
     ``None``.
@@ -161,7 +166,7 @@ def _single_token(value: str) -> str | None:
     if _HOST.fullmatch(text):
         label, _, suffix = publisher_identity(f"https://{text}").partition(".")
         return label if suffix.rsplit(".", 1)[-1] in _NAMEABLE_SUFFIXES else None
-    tokens = _tokens(value)
+    tokens = [t for t in _tokens(value) if t.casefold() not in _LEADING_ARTICLES]
     if len(tokens) == 1 and tokens[0].isupper() and len(tokens[0]) > 1:
         return tokens[0].casefold()
     return None
@@ -202,6 +207,20 @@ def same_organisation(left: str, right: str) -> bool:
         core_words = _core(tokens)
         joined = "".join(core_words)
         if token in _initials_variants(tokens) | {joined}:
+            return True
+        # An all-capitals first word the other name writes in capitals too stands
+        # for that name ("TIOBE" for "TIOBE Software", "IEEE" for "IEEE
+        # Spectrum"): an organisation's acronym leads its own name. A Title Case
+        # first word never does -- "Energy" is not "Energy Information
+        # Administration", and energy.gov is still not the EIA -- and neither is
+        # a country word.
+        if (
+            len(tokens) > 1
+            and tokens[0].isupper()
+            and len(tokens[0]) > 1
+            and token == tokens[0].casefold()
+            and token not in _COUNTRY_WORDS
+        ):
             return True
         # The four-letters-or-more prefix reading is for a host label that
         # blends several of the name's words ("woodmac" for Wood Mackenzie):
@@ -759,6 +778,20 @@ def finding_answers(finding: Finding, target: EvidenceTarget, *,
     if target.target_id not in finding.target_ids:
         return False
     if target.unit_dimension is None:
+        # A qualitative target's organisation is the plan's preference, not a
+        # gate on the page's own statements (Defect C): a host name is not
+        # evidence of who a page speaks for (playvalorant.com is Riot Games's,
+        # github.blog is GitHub's, every EU body is europa.eu), so requiring the
+        # finding's own names to spell it refused the organisation's own pages
+        # and reported the obligation "Not found" against its own evidence.
+        #
+        # The one thing the page's own credit decides is a relay: a finding the
+        # page states as another body's answers that body's obligations. A
+        # qualitative finding carries no Context Check organisation, so there is
+        # nothing else to weigh -- and the report labels every row with its own
+        # source, so no statement is credited to the target's body by this.
+        if not finding.attributed_issuer:
+            return True
         return target.organisation is None or any(
             same_organisation(target.organisation, name) for name in _finding_organisations(finding)
         )
