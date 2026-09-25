@@ -36,6 +36,7 @@ from deep_research.agents.report import (
 from deep_research.agents.report_reviewer import (
     _fact_row_line,
     REPORT_REVIEWER_ROLE,
+    REPORT_REVIEW_SYSTEM_PROMPT,
     REVIEW_DIMENSIONS,
     REVIEW_RUBRIC_VERSION,
     SEMANTIC_REVIEW_MEAN,
@@ -2006,3 +2007,21 @@ def test_a_fact_row_line_names_its_subject() -> None:
     row = _fact_row("finding-1")
     assert "| subject Model B |" in _fact_row_line(row.model_copy(update={"subject": "Model B"}))
     assert "| subject not stated |" in _fact_row_line(row)
+
+
+def test_the_prompt_never_claims_a_sentence_without_a_label_states_no_figure() -> None:
+    """Final review I-1: the premise the reviewer reads must be true of every sentence.
+
+    The label builder labels only the units ``figures.quantities_in`` parses
+    (power, energy, percent), so a sentence stating a price, a count or a rating
+    ends with no label while stating a figure — the row is in the Key facts
+    table with no label beside the sentence. The prompt used to read "A sentence
+    that ends with no label states no figure", which told the model to read such
+    a sentence as figure-free and skip the provenance check the label exists for.
+    The prompt states the premise truly instead, and sends the sentence to the
+    cited findings' own figure labels, which the packet prints for every unit.
+    """
+    assert "A sentence that ends with no label states no figure:" not in REPORT_REVIEW_SYSTEM_PROMPT
+    assert "a unit this report does not label" in REPORT_REVIEW_SYSTEM_PROMPT
+    assert "or one no cited finding carries" in REPORT_REVIEW_SYSTEM_PROMPT
+    assert "against their figure labels" in REPORT_REVIEW_SYSTEM_PROMPT

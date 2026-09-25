@@ -733,12 +733,19 @@ from deep_research.utils.config import (
 # ``subject_named_in``/``subject_context`` directly, so its module source moved
 # ``c58bc58d74fe`` -> ``5ed194fd4a41``; no prompt string was edited and the other
 # four pins are unchanged.
+# Task FF2 (the final review's report-path fix round, same rule, PD-17): the
+# writer's restatement guard now asks ``report._carried_rows`` -- the one rule
+# the reader's labels ask too -- and ``_figure_label_for`` moved to
+# ``report.py`` beside ``figure_label``, so the Report Writer's module source
+# moved ``5ed194fd4a41`` -> ``6dbc0f346565``. No prompt string in the writer was
+# edited (the reviewer's own prompt, which is not a pinned target, was), and the
+# other four pins are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "46a9cddd0896",
     "researcher": "f9ad12ff184b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "21c413e91f94",
-    "report_writer": "5ed194fd4a41",
+    "report_writer": "6dbc0f346565",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

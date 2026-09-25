@@ -15,6 +15,7 @@ from deep_research.agents.report import (
     written_citations,
 )
 from deep_research.utils.types import (
+    EarlierEdition,
     FactRow,
     FigureContext,
     FigureResult,
@@ -309,3 +310,120 @@ def test_an_article_in_the_sentence_never_hands_a_label_to_the_other_subject() -
     about_a = base.summary[0].model_copy(update={"text": f"Model A scored a {row.value} noise rating."})
     assert _point_labels(about_b, composition) == [_row_label(rows[1])]
     assert _point_labels(about_a, composition) == [_row_label(rows[0])]
+
+
+def _two_period_composition() -> ReportComposition:
+    """One page stating one value twice: a 2024 actual and a 2025 forecast.
+
+    Two periods of one value are two facts (PD-9), so the page earns two Key
+    facts rows, K001 and K002, and either sentence cites the same finding.
+    """
+    text = "Sales grew 12 percent in 2024, and the agency expects growth of 12 percent in 2025."
+    read = make_read(text, url="https://agency.example.test/outlook", title="Outlook")
+    figures = [figure("12", "%", "2024", "actual"), figure("12", "%", "2025", "forecast")]
+    finding = make_finding(read, text, figures=figures, target_ids=["topic-01-target-01"])
+    results = [
+        FigureResult(figure=figures[0], matched=True, evidence_words=text,
+                     context=FigureContext(period="2024", attribution="own",
+                                           organisation="Example Agency", kind="actual")),
+        FigureResult(figure=figures[1], matched=True, evidence_words=text,
+                     context=FigureContext(period="2025", attribution="own",
+                                           organisation="Example Agency", kind="forecast")),
+    ]
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified",
+                                                                            figure_results=results)})
+    fingerprint = finding_fingerprint(finding)
+    rows = [
+        FactRow(row_id="K001", organisation="Example Agency", attribution="own", measure="sales growth",
+                period="2024", value="12 %", kind="actual", finding_id=fingerprint),
+        FactRow(row_id="K002", organisation="Example Agency", attribution="own", measure="sales growth",
+                period="2025", value="12 %", kind="forecast", finding_id=fingerprint),
+    ]
+
+    def point(n: int, text: str) -> ReportPoint:
+        return ReportPoint(text=text, source_urls=[finding.source_url],
+                           statement=ReportStatement(statement_id=f"S00{n}", text=text,
+                                                     finding_ids=[fingerprint]))
+
+    return ReportComposition(
+        question="How did sales grow in 2024, and what does the agency expect for 2025?",
+        session_id="s", as_of="2026-09-24T00:00:00+00:00", scope="Example",
+        findings=[finding], fact_rows=rows, finding_labels={"F01": fingerprint},
+        summary=[point(1, "Sales grew 12 percent in 2024."),
+                 point(2, "The agency expects growth of 12 percent in 2025.")],
+    )
+
+
+def test_a_sentence_carries_only_the_row_of_the_period_it_states() -> None:
+    """The period a sentence states picks its row: two rows of one value are not interchangeable.
+
+    With the value alone both rows match every sentence that states it, so the
+    2024 sentence took the 2025 forecast's label too (a kind the sentence never
+    states) and the 2025 sentence was refused as restating both.
+    """
+    composition = _two_period_composition()
+    current, forecast = composition.summary
+    assert _point_labels(current, composition) == [_row_label(composition.fact_rows[0])]
+    assert _point_labels(forecast, composition) == [_row_label(composition.fact_rows[1])]
+
+
+def test_an_earlier_editions_value_cites_its_own_page() -> None:
+    """A row printing an earlier edition's value must carry that page's citation (PD-9).
+
+    ``earlier`` names the finding the value came from; the reader cannot trace
+    "18.2 GW" to any page unless the row's source markers and the Sources list
+    carry it beside the row's own.
+    """
+    latest = _finding("https://agency.example.test/outlook", "19.6 GW is expected in 2026.",
+                      "19.6", "GW", organisation="Example Agency", kind="forecast", period="2026")
+    earlier = _finding("https://agency.example.test/outlook-jan", "18.2 GW was expected.",
+                       "18.2", "GW", organisation="Example Agency", kind="forecast", period="2025")
+    composition = ReportComposition(
+        question="What capacity is expected?", session_id="s", as_of="2026-09-24T00:00:00+00:00",
+        scope="Example", findings=[latest, earlier],
+        fact_rows=[FactRow(row_id="K001", organisation="Example Agency", attribution="own",
+                           measure="capacity", period="2026", value="19.6 GW", kind="forecast",
+                           release="released 2025-06-14", finding_id=finding_fingerprint(latest),
+                           earlier=[EarlierEdition(value="18.2 GW", release="released 2025-01-14",
+                                                   finding_id=finding_fingerprint(earlier))])],
+    )
+    assert [citation.url for citation in written_citations(composition)] == [
+        latest.source_url, earlier.source_url]
+    report = render_written_report(composition)
+    row = next(line for line in report.splitlines() if line.startswith("| Example Agency"))
+    assert row.rstrip().endswith("| [1][2] |")
+    assert earlier.source_url in report
+
+
+def test_a_sentence_citing_a_relay_copy_carries_the_relays_label() -> None:
+    """D13: the label beside a sentence is its own cited page's, not the row primary's.
+
+    One fact, two pages: the organisation's own page (the row's primary, hence
+    the row's own label) and a relay of it. A sentence that cites the relay
+    must not be labelled "Example Agency's own figure" -- its marker points at
+    the relay, and a relay is never presented as the issuer.
+    """
+    own_page = _finding("https://agency.example.test/own-release",
+                        "The agency expects 14 GW of additions in 2025.",
+                        "14", "GW", organisation="Example Agency", kind="forecast", period="2025")
+    relay_page = _finding("https://gazette.example.test/story",
+                          "According to the Example Agency, as reported by the Example Gazette, "
+                          "14 GW of additions are expected in 2025.",
+                          "14", "GW", organisation="Example Agency", attribution="relayed",
+                          kind="forecast", period="2025")
+    primary = finding_fingerprint(own_page)
+    row = FactRow(row_id="K001", organisation="Example Agency", attribution="own", measure="additions",
+                  period="2025", value="14 GW", kind="forecast", finding_id=primary,
+                  duplicate_finding_ids=[finding_fingerprint(relay_page)])
+    text = "According to the Example Agency, as reported by the Example Gazette, 14 GW of additions are expected in 2025."
+    point = ReportPoint(text=text, source_urls=[relay_page.source_url],
+                        statement=ReportStatement(statement_id="S001", text=text,
+                                                  finding_ids=[finding_fingerprint(relay_page)]))
+    composition = ReportComposition(
+        question="What is the outlook for additions?", session_id="s", as_of="2026-09-24T00:00:00+00:00",
+        scope="Example", findings=[own_page, relay_page], fact_rows=[row], summary=[point],
+    )
+    assert _point_labels(point, composition) == [
+        "relayed by gazette.example.test from Example Agency; "
+        "forecast (release not stated on the page)"
+    ]

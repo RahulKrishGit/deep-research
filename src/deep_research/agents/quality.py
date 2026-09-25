@@ -10,6 +10,8 @@ inspects Markdown.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import ReportComposition
 from deep_research.agents.verified_facts import (
@@ -19,10 +21,45 @@ from deep_research.agents.verified_facts import (
     same_period,
 )
 from deep_research.utils.types import (
+    EvidenceTarget,
+    FactRow,
     ReportQualitySnapshot,
     ReportReview,
     ResearchState,
 )
+
+
+def _one_fact(left: FactRow, right: FactRow,
+              targets: Iterable[EvidenceTarget]) -> bool:
+    """Whether two rows would be one fact to ``fact_rows`` (F11, PD-9, D11).
+
+    Invariant (F11): ``fact_rows()`` already merges same-fact rows, so this
+    guards hand-built compositions and future producers, and it may only count a
+    pair the rows path would have merged. Two of its rules keep rows apart, and
+    both are mirrored here (the final review's P2-3 and I6):
+
+    * a row that states no subject is not the same fact as a row that names one.
+      ``same_subject`` treats no subject as compatible with any, which is what
+      lets a subject-less figure join its fact's group, but as a duplicate test
+      it would fail a clean report for two rows the rows path deliberately kept
+      apart;
+    * two rows answering different obligations are two facts, however equal
+      their values -- the two parts of one question, not one fact stated twice.
+
+    The subject term is asked over the same context the rows path builds
+    (Task 5.6c fix round 1).
+    """
+    if left.kind != right.kind or left.value != right.value:
+        return False
+    if not same_period(left.period, right.period):
+        return False
+    if not same_organisation(left.organisation, right.organisation):
+        return False
+    if (left.subject is None) != (right.subject is None):
+        return False
+    if left.target_ids and right.target_ids and not set(left.target_ids) & set(right.target_ids):
+        return False
+    return _rows_share_a_subject(left, right, targets)
 
 
 def compute_report_quality(
@@ -68,14 +105,8 @@ def compute_report_quality(
         and not (verdict == "unchecked" and failure_recorded)
     ]
     rows = composition.fact_rows
-    # Invariant (F11): fact_rows() already merges same-fact rows, so this guards
-    # hand-built compositions and future producers; the subject term is what
-    # keeps two products' equal values apart (D11), over the same context the
-    # rows path builds (Task 5.6c fix round 1).
     duplicates = sum(1 for n, a in enumerate(rows) for b in rows[n + 1:]
-                     if a.kind == b.kind and a.value == b.value and same_period(a.period, b.period)
-                     and same_organisation(a.organisation, b.organisation)
-                     and _rows_share_a_subject(a, b, targets))
+                     if _one_fact(a, b, targets))
     statuses = [f.verification for f in state.verified_findings if f.verification is not None]
     failures = [name for name, failed in (
         ("unresolved_citations", unresolved > 0), ("uncited_settled_points", uncited > 0),

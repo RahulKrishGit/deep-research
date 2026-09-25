@@ -26,7 +26,6 @@ from deep_research.agents.base import (
 )
 from deep_research.agents.errors import AgentConfigurationError, agent_error
 from deep_research.agents.events import agent_event
-from deep_research.agents.figures import quantities_in, same_quantity
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.planner import Clock, utc_now
 from deep_research.agents.prompts import (
@@ -35,7 +34,8 @@ from deep_research.agents.prompts import (
     render_structured_request,
 )
 from deep_research.agents.report import (
-    figure_label,
+    _carried_rows,
+    _figure_label_for,
     render_finding_log,
     render_written_report,
     report_as_of,
@@ -49,8 +49,6 @@ from deep_research.agents.verified_facts import (
     citable_findings,
     fact_rows,
     not_found_targets,
-    release_text,
-    subject_names_row,
 )
 from deep_research.agents.wording import stated_role
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -63,7 +61,6 @@ from deep_research.utils.types import (
     EvidenceTarget,
     FactRow,
     Finding,
-    FigureContext,
     NotFoundTarget,
     RejectedDraftPoint,
     ReportComposition,
@@ -261,16 +258,6 @@ def quality_report_filename(*, session_id: str, iteration: int) -> str:
     """
     stem = report_filename(session_id=session_id, iteration=iteration)
     return f"{stem.removesuffix('.md')}-quality.json"
-
-
-def _figure_label_for(finding: Finding, context: FigureContext) -> str:
-    return figure_label(
-        organisation=context.organisation, attribution=context.attribution,
-        relay_host=publisher_identity(finding.source_url) if context.attribution == "relayed" else None,
-        kind=context.kind, release=release_text(finding),
-        unchecked=bool(finding.verification and finding.verification.context_unchecked),
-        period_resolved_from=context.period_resolved_from,
-    )
 
 
 def registry_lines(label: str, finding: Finding) -> list[str]:
@@ -518,14 +505,7 @@ async def compose_written_report(
                 reject(verdict.reason)
                 return None
         cited_ids = {ids[label] for label in candidate.finding_labels}
-        stated = quantities_in(text)
-        candidate_rows = [
-            row for row in task.facts
-            if (row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids))
-            and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)
-        ]
-        rows = {row.row_id for row in candidate_rows
-                if subject_names_row(text, row, candidate_rows, task.targets)}
+        rows = {row.row_id for row in _carried_rows(text, cited_ids, task.facts, task.targets)}
         if dedup and rows and rows <= stated_rows:
             reject("restates " + ", ".join(sorted(rows)))
             return None
