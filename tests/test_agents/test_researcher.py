@@ -1788,6 +1788,20 @@ async def test_a_reads_own_target_line_never_costs_the_run_its_evidence(
     ]
 
 
+def _acquisition_state_line(completer: ScriptedCompleter) -> str:
+    """The packet's own acquisition state row, as the model read it."""
+    packet = completer.react_calls[0].messages[1].content
+    for line in packet.splitlines():
+        if "remaining_model_turns=" in line:
+            return line
+    raise AssertionError("the packet carried no acquisition state line")
+
+
+def _turn_field(line: str) -> str:
+    """The turn count one rendered state row carries."""
+    return line.split("remaining_model_turns=")[1].split()[0]
+
+
 @pytest.mark.asyncio
 async def test_an_extra_pass_whose_topics_have_spent_their_budget_opens_no_loop(
     tracker: Tracker,
@@ -1835,6 +1849,63 @@ async def test_an_extra_pass_whose_topics_have_spent_their_budget_opens_no_loop(
         if event.event_type == "researcher.research.completed"
     ]
     assert [event.metadata["sub_topics_researched"] for event in completed] == [0]
+
+
+@pytest.mark.asyncio
+async def test_a_reused_acquisition_state_gets_the_new_loops_turn_cap(
+    tracker: Tracker,
+) -> None:
+    """The turn cap is per loop; the call budget is the run's.
+
+    ``start_turn`` decrements ``remaining_model_turns`` once per model turn, so
+    the state a later pass resumes carries the *previous* loop's countdown —
+    zero, for a target an earlier pass worked through — while the packet renders
+    it beside "Iteration 1 of 4". The model then reads a loop with no turns left
+    over a loop that has all of them, which invites it to stop before spending
+    the budget the pass was bought for. The assertion below is the equality that
+    matters: the resumed loop's first request reads the same turn count as a
+    fresh loop's first request, while ``remaining_calls`` stays the run's.
+    """
+    fresh_completer = ScriptedCompleter(
+        decisions=[finish("Nothing more is needed.", "Not established.")]
+    )
+    fresh_agent = _researcher(
+        tracker, fresh_completer, sub_topic_concurrency=1, max_sub_topics=1
+    )
+    async with tracker.session_span("session-1", "q"):
+        await fresh_agent.run(_planned_state())
+
+    resumed_completer = ScriptedCompleter(
+        decisions=[finish("Nothing more is needed.", "Not established.")]
+    )
+    resumed_agent = _researcher(
+        tracker, resumed_completer, sub_topic_concurrency=1, max_sub_topics=1
+    )
+    state = _planned_state(
+        extra_pass_target_ids=["topic-02-target-01"],
+        acquisition_state_by_target={
+            "topic-02": AcquisitionState(
+                target_id="topic-02",
+                remaining_calls=3,
+                remaining_model_turns=0,
+            )
+        },
+    )
+
+    async with tracker.session_span("session-2", "q"):
+        outcome = await resumed_agent.run(state)
+
+    fresh_line = _acquisition_state_line(fresh_completer)
+    resumed_line = _acquisition_state_line(resumed_completer)
+    cap = resumed_agent.config.max_iterations
+
+    assert "remaining_model_turns=0" not in resumed_line
+    assert _turn_field(resumed_line) == _turn_field(fresh_line)
+    assert _turn_field(resumed_line) == str(cap - 1)
+
+    resumed = outcome.state_update["acquisition_state_by_target"]["topic-02"]
+    assert resumed.remaining_calls == 3
+    assert resumed.remaining_model_turns == cap - 1
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ from deep_research.agents.acquisition import (
     ManifestSequence,
     WEB_PASSAGE_CHARS,
     admit_read_result,
+    allowed_acquisition_actions,
     build_acquisition_context,
     build_read_record_from_tool_result,
     cache_reuse_problem,
@@ -135,6 +136,7 @@ def test_two_searches_in_a_row_and_the_last_call_still_force_a_read() -> None:
     spent = _policy(
         candidate_urls=["https://lab.example/queued"],
         remaining_calls=5,
+        remaining_model_turns=7,
     )
     spent.state = spent.state.model_copy(update={"consecutive_searches": 2})
     refused_after_two = spent.before_action(
@@ -142,7 +144,9 @@ def test_two_searches_in_a_row_and_the_last_call_still_force_a_read() -> None:
     )
 
     last = _policy(
-        candidate_urls=["https://lab.example/queued"], remaining_calls=1
+        candidate_urls=["https://lab.example/queued"],
+        remaining_calls=1,
+        remaining_model_turns=7,
     )
     refused_on_the_last_call = last.before_action(
         _search_decision("search on the last call"), {"query": "search on the last call"}
@@ -152,6 +156,45 @@ def test_two_searches_in_a_row_and_the_last_call_still_force_a_read() -> None:
     assert "requires read before search" in refused_after_two.reason
     assert refused_on_the_last_call.allowed is False
     assert "requires read before search" in refused_on_the_last_call.reason
+
+
+def test_the_last_model_turn_is_a_read_even_with_calls_left() -> None:
+    """The turn cap is the budget that actually binds, so it bounds a search.
+
+    ``remaining_calls`` is 20 in the shipped configuration and the binding limit
+    is the seven-turn cap, so the call-count guard almost never fires live: a
+    search admitted on the loop's last turn queues candidates no turn is left to
+    read, which is the same "candidates and no evidence" outcome the last-call
+    guard exists to prevent. The guard therefore reads the turn counter too, and
+    the review's own case — candidates queued, calls left, one turn to go —
+    admits a read and nothing else.
+    """
+    last_turn = _policy(
+        candidate_urls=["https://lab.example/queued"],
+        remaining_calls=14,
+        remaining_model_turns=1,
+    )
+
+    assert allowed_acquisition_actions(last_turn.state) == ("read",)
+    assert next_acquisition_action(last_turn.state) == "read"
+    refused = last_turn.before_action(
+        _search_decision("search on the last turn"),
+        {"query": "search on the last turn"},
+    )
+    assert refused.allowed is False
+
+    # One turn earlier the same state admits both, so the guard is the turn
+    # count and not a blanket refusal once the queue is non-empty.
+    one_turn_earlier = _policy(
+        candidate_urls=["https://lab.example/queued"],
+        remaining_calls=14,
+        remaining_model_turns=2,
+    )
+
+    assert allowed_acquisition_actions(one_turn_earlier.state) == (
+        "read",
+        "search",
+    )
 
 
 def test_the_decision_context_names_every_action_the_policy_accepts() -> None:
@@ -1249,6 +1292,11 @@ def test_a_client_rendered_page_records_its_own_reason() -> None:
 # ---------------------------------------------------------------------------
 
 _STUDY_URL = "https://agency.example/queue-study.pdf"
+# The shipped ReAct turn cap (``agents.max_iterations``): a state that a live
+# loop would hand a policy always carries a turn count beside its call budget,
+# so the fixtures here do too. A zero is the state of a *finished* loop, and it
+# would make every search inadmissible for the wrong reason.
+_MODEL_TURNS = 7
 
 
 def _paged_result(pages: int, *, text: str) -> ToolResult:
@@ -1291,6 +1339,7 @@ def _policy(
     query: str = "queue delay commissioning",
     candidate_urls: Sequence[str] = (_STUDY_URL,),
     remaining_calls: int = 5,
+    remaining_model_turns: int = _MODEL_TURNS,
     selected_passages_per_read: int = 4,
     target_id: str | None = "target-1",
     reads: dict[str, ReadRecord] | None = None,
@@ -1302,6 +1351,7 @@ def _policy(
             target_id=target_id,
             candidate_urls=list(candidate_urls),
             remaining_calls=remaining_calls,
+            remaining_model_turns=remaining_model_turns,
         ),
         session_id="session-1",
         target_id=target_id,
