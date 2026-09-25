@@ -264,15 +264,15 @@ def test_agent_model_overrides_support_string_and_structured_forms() -> None:
     assert llm.resolve_for("researcher") == llm.resolve_for(None)
 
 
-def test_report_judge_timeout_and_retries_leave_other_roles_on_transport_defaults() -> None:
+def test_report_reviewer_timeout_and_retries_leave_other_roles_on_transport_defaults() -> None:
     llm = LLMConfig(
         timeout=60.0,
         retry_count=5,
-        model_overrides={"report_judge": {"timeout": 360.0, "retry_count": 1}},
+        model_overrides={"report_reviewer": {"timeout": 360.0, "retry_count": 1}},
     )
 
-    assert llm.resolve_for("report_judge").timeout == 360.0
-    assert llm.resolve_for("report_judge").retry_count == 1
+    assert llm.resolve_for("report_reviewer").timeout == 360.0
+    assert llm.resolve_for("report_reviewer").retry_count == 1
     assert llm.resolve_for("critic").timeout is None
     assert llm.resolve_for("critic").retry_count is None
 
@@ -285,7 +285,7 @@ def test_role_transport_bounds_reject_nonpositive_timeout_or_negative_retries(
     invalid_override: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        LLMConfig(model_overrides={"report_judge": invalid_override})
+        LLMConfig(model_overrides={"report_reviewer": invalid_override})
 
 
 def test_effective_model_config_is_immutable() -> None:

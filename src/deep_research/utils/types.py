@@ -1381,19 +1381,23 @@ class ReportQualitySnapshot(ContractModel):
     read from the plan, and no missing record shrinks it.
     """
 
-    coverage_ratio: UnitScore
-    planned_topics: int = Field(ge=0)
-    covered_topics: int = Field(ge=0)
+    # Every reading below carries a zero, including the claim-era ones: the
+    # step-4 contract (and Task 4.8's tests) build the record before each
+    # reading exists, so a partially measured pass is representable as
+    # incomplete rather than unconstructible. The bounds are unchanged.
+    coverage_ratio: UnitScore = 0.0
+    planned_topics: int = Field(default=0, ge=0)
+    covered_topics: int = Field(default=0, ge=0)
     unresolved_topic_ids: list[str] = Field(default_factory=list)
-    unique_findings: int = Field(ge=0)
-    unique_sources: int = Field(ge=0)
-    cited_sources: int = Field(ge=0)
-    scored_cited_source_ratio: UnitScore
-    verified_claims: int = Field(ge=0)
-    contradicted_claims: int = Field(ge=0)
-    duplicate_claims: int = Field(ge=0)
-    duplicate_source_rows: int = Field(ge=0)
-    uncited_settled_points: int = Field(ge=0)
+    unique_findings: int = Field(default=0, ge=0)
+    unique_sources: int = Field(default=0, ge=0)
+    cited_sources: int = Field(default=0, ge=0)
+    scored_cited_source_ratio: UnitScore = 0.0
+    verified_claims: int = Field(default=0, ge=0)
+    contradicted_claims: int = Field(default=0, ge=0)
+    duplicate_claims: int = Field(default=0, ge=0)
+    duplicate_source_rows: int = Field(default=0, ge=0)
+    uncited_settled_points: int = Field(default=0, ge=0)
     hard_failures: list[str] = Field(default_factory=list)
     # --- Task 10: the substantive reading of the same denominator -----------
     substantive_topic_ratio: UnitScore = 0.0
@@ -3918,15 +3922,19 @@ def answering_statement_for(
 
     Deliberately strict, and deliberately not "some evidence exists": the
     statement has to name the target, assert something (``context`` and
-    ``contested`` are not answers), resolve at least one checked claim
-    cluster, and fill every required dimension the target declared. A state
-    with no composition answers nothing — a pass that composed no report has
-    shown no reader statement for any obligation.
+    ``contested`` are not answers), rest on adjudicated evidence, and fill
+    every required dimension the target declared. A state with no composition
+    answers nothing — a pass that composed no report has shown no reader
+    statement for any obligation.
 
-    No support-policy check remains (PD-16, D2): step 4 removes the pair and
-    support-policy fields with the Fact Checker, so nothing here asks for a
-    second source or for an attribution badge. What an obligation owes is the
-    dimensions the target declared, filled by a statement that cites it.
+    The evidence floor survives the policy field (PD-16, D2). What left is
+    ``EvidenceTarget.support_policy`` and with it the *independent pair*: no
+    obligation asks for a second source any more, and nothing here counts
+    sources. What stays is the floor all three policies shared — the claim
+    behind the statement must have been adjudicated and attributed, which is
+    exactly the reading ``statement_satisfies_support_policy`` applies for
+    ``"primary_attribution"`` ("a source said this", spec §2.1). An unbadged
+    or unverified claim is not evidence that an obligation is met.
 
     This is the single definition of whether an obligation is answered; every
     reader names it, so the Critic's view of what is still open cannot drift
@@ -3958,11 +3966,22 @@ def answering_statement_for(
             # behind it is evidence and it answers no obligation — the same
             # refusal a claimless statement always got.
             continue
+        # The floor every policy shared, with no policy field left to read: a
+        # cluster qualifies when its claims were adjudicated and attributed,
+        # which is what ``primary_attribution`` tests. The strict
+        # ``independent_pair`` reading is deliberately not applied (D2).
+        qualifying = {
+            cluster_id
+            for cluster_id, claims in by_cluster.items()
+            if statement_satisfies_support_policy(
+                statement, claims, support_policy="primary_attribution"
+            )
+        }
         if statement.dimension_support:
             # Attributed path: a statement derived with per-cluster dimension
             # tracking. Every required dimension must name at least one
-            # cluster the statement actually resolves to, not any cluster the
-            # statement happens to mention.
+            # cluster that itself qualifies — not any cluster the statement
+            # happens to resolve to.
             support_by_dimension: dict[str, list[str]] = {}
             for dimension, cluster_ids in statement.dimension_support.items():
                 support_by_dimension.setdefault(
@@ -3971,11 +3990,34 @@ def answering_statement_for(
             if not all(
                 dimension in support_by_dimension
                 and any(
-                    cluster_id in by_cluster
+                    cluster_id in qualifying
                     for cluster_id in support_by_dimension[dimension]
                 )
                 for dimension in required
             ):
+                continue
+        else:
+            # Fallback path: a legacy statement (a snapshot, a fixture, or a
+            # hand-built record) with no recorded per-dimension attribution.
+            # Scope to the clusters that actually name this target — by the
+            # resolved claim's own ``target_ids``, or by the cluster registry's
+            # ``target_ids`` when the composition carries one — and require
+            # every one of them to qualify, not just any: a weak cluster that
+            # names the obligation cannot be vouched for by a strong one that
+            # happens to sit behind the same sentence.
+            scoped = {
+                cluster_id
+                for cluster_id, claims in by_cluster.items()
+                if any(target.target_id in claim.target_ids for claim in claims)
+                or (
+                    (registered := composition.claim_clusters.get(cluster_id))
+                    is not None
+                    and target.target_id in registered.target_ids
+                )
+            }
+            if not scoped:
+                scoped = set(by_cluster.keys())
+            if not all(cluster_id in qualifying for cluster_id in scoped):
                 continue
         return statement
     return None
