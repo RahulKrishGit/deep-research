@@ -133,43 +133,52 @@ RESEARCHER_SYSTEM_PROMPT = (
     "promising page, document_reader for PDFs and data files, and "
     "query_memory to avoid repeating research a previous session already "
     "did.\n"
+    "The acquisition state line in this request is binding: only the actions "
+    "it lists under allowed_actions can run, and anything else is refused "
+    "before it reaches a tool. Two searches in a row are followed by a read, "
+    "a search on the last turn or in the last call of the budget is refused, "
+    "and only a URL a search result, a memory lead or a document link "
+    "discovered can be read.\n"
+    "Spend your calls on reading, not on repeating searches: after a search, "
+    "read the most promising result it returned before searching again, and "
+    "when the state lists both read and search, read.\n"
     "Prefer primary sources: laws and regulator orders, standards bodies, "
     "official datasets, original research, and issuer filings. Use secondary "
     "analysis to find or interpret primary material, not as the default "
-    "support for load-bearing numbers. Read a source before reporting a "
-    "finding from it. Record publication date and geographic applicability "
-    "when the source provides them.\n"
-    "A search result is a lead, never evidence: every claim you report must "
-    "come from a page or document you actually read in this loop. If a tool "
-    "fails, try another query or another source rather than giving up.\n"
-    "Spend your calls on reading, not on repeating searches. After the first "
-    "search for a sub-topic, read the most promising result it returned before "
-    "searching again — web_scraper for a page, document_reader for a PDF or "
-    "data file — and keep alternating until the sub-topic's success criteria "
-    "are met. If a search returned nothing worth reading, search again instead. "
-    "One page you have read is worth more than several more queries.\n"
-    "Read the organisation's own page first. When a figure belongs to an "
-    "organisation - an agency's statistics, an institute's report, a "
-    "company's filing - read that organisation's own page or document (its own "
-    "site, report page or filing) before any story that repeats it. Use a "
-    "relay only when the original is not reachable, and record it as a relay: "
-    "cite the page where you read it and name the organisation it credits in "
-    "attributed_issuer. Do not search for a second source to confirm a figure "
-    "its own organisation publishes.\n"
-    "If a publisher refuses automated access to a page, do not try that page "
-    "or that host again. Read the same material as a document instead — "
-    "document_reader handles PDFs, spreadsheets and data files, and primary "
-    "reports are usually published that way — or find the same fact from a "
-    "different publisher.\n"
-    "Finish once the sub-topic's success criteria are met, or once no "
-    "further source is worth retrieving."
+    "support for load-bearing numbers.\n"
+    "Read the organisation's own page first, reached through a search that "
+    "names that organisation: when a figure belongs to an organisation - an "
+    "agency's statistics, an institute's report, a company's filing - read "
+    "that organisation's own site, report page or filing before any story "
+    "that repeats it, and use a relay only when the original is not "
+    "reachable. Do not search for a second source to confirm a figure its own "
+    "organisation publishes.\n"
+    "A search result is a lead, never evidence: only a page or document you "
+    "read in this loop is evidence. For a rule, a list or a set of items, "
+    "read the page section that states the whole provision, with its "
+    "conditions and exceptions, rather than a summary that mentions it.\n"
+    "If a page is refused, empty or a challenge page, the refusal is a fact "
+    "about that URL and not about the publisher: read the same document at "
+    "another URL or another official host, or read it as a document — "
+    "document_reader handles PDFs, spreadsheets and data files — and if a "
+    "tool fails, try another query or another source.\n"
+    "Finish once the sub-topic's obligations are answered — the obligations "
+    "line lists what this sub-topic owes — or once no further source is worth "
+    "retrieving. Write one line saying that you are stopping and why: no "
+    "other text you write is read, because a separate extraction step reads "
+    "the pages this loop read and its findings are what the run keeps."
 )
 
 EXTRACTION_SYSTEM_PROMPT = (
-    "You extract findings from a completed research transcript. Report only "
-    "what the retrieved sources state, and attribute every finding to the "
-    "exact source URL and title it came from. Return an empty list rather "
-    "than inventing a source. Confidence is a number between 0 and 1."
+    "You extract findings from the pages a research loop read. The research "
+    "question and the sub-topic's planned targets are in this request. Report "
+    "only what those pages state, and cite every finding to the exact read it "
+    "came from — its read_id, locator, source_url and source_title. Return an "
+    "empty list rather than inventing a source. Confidence is how directly "
+    "the passage states what a planned target asks for: a passage that states "
+    "it outright scores high, one that mentions it in passing scores low, and "
+    "code ranks findings by it when a sub-topic holds more evidence than it "
+    "may keep."
 )
 
 
@@ -399,8 +408,12 @@ def render_sub_topic_guidance(
     """Render one sub-topic's brief, including sources already collected.
 
     The queries are the plan's own; a sub-topic's searches are what its
-    ``search_queries`` say, and the success criteria below state when it is
-    done.
+    ``search_queries`` say. Its planned targets are printed as the obligations
+    the loop owes, because coverage is judged on those and not on the
+    criteria: a loop that stopped when the criteria looked met left required
+    targets unanswered, and it cannot aim at an obligation it was never shown.
+    The success criteria still follow — they say what the evidence has to
+    establish — but the obligations decide when the loop is done.
     """
     lines = [
         f"Sub-topic: {sub_topic.title}",
@@ -409,6 +422,13 @@ def render_sub_topic_guidance(
         "Suggested search queries:",
     ]
     lines.extend(f"- {query}" for query in sub_topic.search_queries)
+    obligations = counted_evidence_targets(sub_topic.evidence_targets)
+    if obligations:
+        lines.append(
+            "The answers this sub-topic owes (its obligations; [required] "
+            "ones decide coverage):"
+        )
+        lines.append(render_planned_targets(obligations, fields=False))
     lines.append("This sub-topic is done when:")
     lines.extend(f"- {criterion}" for criterion in sub_topic.success_criteria)
     if existing_sources:
@@ -521,31 +541,56 @@ def retrieved_finding_urls(run: ReActRun) -> tuple[str, ...]:
 # own (``topic-01-target-01``) rather than a bare ``target-01``, because the
 # one thing the model must copy from the Planned targets list is the id, and
 # an example whose id could never come from that list teaches the wrong shape.
+# Two examples, and neither fills a field its passage does not state: the
+# first is a figure finding whose only date is the period the page writes, and
+# the second is a text finding — no figures at all — bound to a required
+# target, with the body the page's own words credit put in attributed_issuer.
+# The second exists because the first cannot teach that shape: a rule, a
+# reproduced instrument or a relayed statement is usually all a run has for a
+# qualitative target, and an example set of figures alone taught restating.
 _FINDING_REPLY_EXAMPLES = (
     (
         "Example input: passage read-111111111111111111111111 locator page-4-"
         "chunk-0 of the example report at "
         "https://evidence.example.test/report (fetched for topic-01); the "
-        "passage reads \"The measured reduction was 12 percent, according to "
-        "the Example Statistical Agency, across all classes.\"; the Planned "
-        "targets list names topic-01-target-01 (what was the measured "
-        "reduction in 2024?).",
-        '{"findings":[{"content":"The example report relays the Example '
-        "Statistical Agency's measurement: a 12 percent reduction in 2024 "
-        'across all classes, from the agency\'s January 2025 preliminary '
-        'inventory.","source_url":"https://evidence.example.test/report",'
-        '"source_title":"Example report","confidence":0.8,'
+        "passage reads \"The latest edition of the survey puts the median "
+        "annual premium at 480 euros in 2024, up from 455 euros in 2023.\"; "
+        "the Planned targets list names topic-01-target-01 [required] (the "
+        "median annual premium the survey reports for 2024).",
+        '{"findings":[{"content":"The survey\'s latest edition puts the median '
+        "annual premium at 480 euros in 2024, up from 455 euros in 2023.\","
+        '"source_url":"https://evidence.example.test/report",'
+        '"source_title":"Example report","confidence":0.9,'
         '"read_id":"read-111111111111111111111111","locator":"page-4-chunk-0",'
-        '"snippet":"The measured reduction was 12 percent, according to the '
-        'Example Statistical Agency, across all classes.",'
-        '"figures":[{"value":"12","unit":"percent","period":"2024","kind":"actual",'
-        '"subject":null}],'
+        '"snippet":"The latest edition of the survey puts the median annual '
+        'premium at 480 euros in 2024, up from 455 euros in 2023.",'
+        '"figures":[{"value":"480","unit":"euros","period":"2024",'
+        '"kind":"actual","subject":"median annual premium"},'
+        '{"value":"455","unit":"euros","period":"2023","kind":"actual",'
+        '"subject":"median annual premium"}],'
         '"target_ids":["topic-01-target-01"],"data_period":"2024",'
-        '"statement_date":"2025-03-12",'
-        '"vintage":"January 2025 preliminary inventory",'
-        '"attributed_issuer":"Example Statistical Agency",'
-        '"attribution_quote":"according to the Example Statistical Agency",'
-        '"measure_scope":"all classes","release_date":"2025-03-12"}]}',
+        '"vintage":"the survey\'s latest edition"}]}',
+    ),
+    (
+        "Example input: passage read-222222222222222222222222 locator page-2-"
+        "chunk-1 of the page served at https://record.example.test/notice "
+        "(fetched for topic-02); the passage reads \"According to the record "
+        "office's circular, a filing is late when it arrives after the last "
+        "day of the second month that follows the period it covers.\"; the "
+        "Planned targets list names topic-02-target-01 [required] (when a "
+        "filing counts as late).",
+        '{"findings":[{"content":"According to the record office\'s circular, '
+        "a filing is late when it arrives after the last day of the second "
+        "month that follows the period it covers.\","
+        '"source_url":"https://record.example.test/notice",'
+        '"source_title":"Example notice","confidence":0.85,'
+        '"read_id":"read-222222222222222222222222","locator":"page-2-chunk-1",'
+        '"snippet":"According to the record office\'s circular, a filing is '
+        'late when it arrives after the last day of the second month that '
+        'follows the period it covers.","figures":[],'
+        '"target_ids":["topic-02-target-01"],'
+        '"attributed_issuer":"the record office",'
+        '"attribution_quote":"According to the record office\'s circular"}]}',
     ),
 )
 
@@ -554,20 +599,25 @@ _FINDING_REPLY_EXAMPLES = (
 # acquisition-specific: a statement of a quantity with no date beside it
 # cannot be ranked against a later or earlier statement of the same quantity.
 _FINDING_DATES_CONTRACT = (
-    "\n- For every figure you report, fill in data_period with the period the "
-    "figure applies to, statement_date with the date the source states or "
-    "carries for it, and vintage with the dated edition of the data it rests "
-    "on — each written as the source writes it (dates as YYYY, YYYY-MM, or "
-    "YYYY-MM-DD) and each null when the source does not state it.\n"
-    "- A period is what the source dates the figure *with*, never a phrase "
-    "that dates it against the page: record \"2024\", \"Q1 2024\" or "
-    "\"2024-03\", and leave it null when the source only says \"this year\", "
-    "\"the latest quarter\" or \"so far this year\". Those phrases are the "
-    "page's own relative wording, the excerpt carries them, and code resolves "
-    "the period they name from the page's own date and records which date it "
-    "came from.\n"
-    "- The vintage is what tells the latest statement of a quantity from an "
-    "older one."
+    "\n- Fill in the date fields for every finding, with or without figures: "
+    "data_period with the period the finding's statement applies to, "
+    "statement_date with a date the page gives for that statement itself — "
+    "never the page's own date, and never the day you read it — vintage with "
+    "the edition the page names for the data it rests on, and, per figure, "
+    "period with the period that figure applies to. Write each as the page "
+    "writes it, in any form that carries a number (\"2024\", \"Q1 2024\", "
+    "\"2024-03\", \"Q1'25\", \"2024-2026\"), and null when the page states "
+    "none of it.\n"
+    "- A period is what the page dates the statement or figure *with*, never "
+    "a phrase that dates it against the page: leave it null when the page "
+    "only says \"this year\", \"the latest quarter\" or \"so far this "
+    "year\". Those phrases are the page's own relative wording, the excerpt "
+    "carries them, and code resolves the period they name from the page's own "
+    "date and records which date it came from. A level the page puts at a "
+    "point in time takes that reference as its period (\"28 GW at the end of "
+    "Q1'25\" is a Q1'25 figure).\n"
+    "- The vintage is only what the page names as the edition, and it is what "
+    "tells the latest statement of a quantity from an older one."
 )
 
 # Who a figure belongs to, and what it is measured over. Both are properties
@@ -578,51 +628,72 @@ _FINDING_DATES_CONTRACT = (
 # the segment the release states. A relay's copy is that body's measurement,
 # and a total over every segment is not the segment a target asks about.
 _FINDING_PROVENANCE_CONTRACT = (
-    "\n- Name the body the page attributes it to, separately from the page "
-    "that served it: a release, a news story, or a data dive that repeats "
-    "another organisation's figure credits that organisation, so put it in "
+    "\n- Name the body the page's words give the statement or figure to, "
+    "separately from the page that served it, for every finding and not only "
+    "for figures: a release, a news story or a data dive that repeats another "
+    "organisation's work credits that organisation, so put it in "
     "attributed_issuer and the page's own words for the attribution in "
     "attribution_quote — \"according to the Example Statistical Agency "
-    "(ESA)\" — and never credit the host that repeated it.\n"
-    "- The page's words for the attribution may sit beside the excerpt "
-    "rather than inside it: copy them from the excerpt's own passage, or from "
-    "the passage immediately before or after it — never from further down the "
-    "page, which no check can read as attributing this excerpt and which "
-    "leaves the figure credited to nobody. A sentence carrying on from an "
-    "attributed one — \"the Example Statistical Agency projects that road "
-    "freight will grow by another 3.2 percent in 2027. And ... a record 41,000 "
-    "new registrations ... are projected this year\" — is still that body's "
-    "figure. Quote the page's own words for it, copied from the read rather "
-    "than written in your own.\n"
-    "- Leave both null when the page states the figure as its own "
+    "(ESA)\" — and never credit the host that repeated it. The body that "
+    "wrote the words is what counts: a page serving another body's document, "
+    "even one printing that body's own first-person words, is still that "
+    "body's, and \"own\" never means the host that served a copy.\n"
+    "- attribution_quote is copied character for character from the read: "
+    "from the excerpt's own passage, from the passage immediately before or "
+    "after it, or from the page's own title or section heading where that "
+    "names the body or the instrument. Words further down the page attribute "
+    "nothing. A naming becomes an attribution through a cue beside the name: "
+    "a preposition phrase (\"according to\", \"reported by\", \"reporting "
+    "from\"), a possessive (\"the agency's figure\"), a body's own source "
+    "noun (\"agency data\", \"the institute's report\") or a title opening on "
+    "its name (\"ESA: capacity to reach 30 GW\"). A sentence carrying on from "
+    "an attributed one — \"the agency projects that the price will rise by "
+    "another 3.2 percent next year, and a record 41,000 transactions are "
+    "projected this year\" — is still that body's. Copy the page's words "
+    "rather than writing your own.\n"
+    "- Leave both null when the page states the statement as its own "
     "publisher's, and never state an attribution the passage does not carry, "
-    "and keep the page's own words for what the figure measures: a broader "
+    "and keep the page's own words for what the finding measures: a broader "
     "category on the page never becomes the narrower one a target asks for — "
-    "\"all vehicles\" does not become \"electric vehicles\" — and a count of "
-    "installations does not become a count of something else.\n"
-    "- When the page states the scope, segment, or basis a figure covers, "
-    "state the segment or basis the figure covers in measure_scope — \"all "
-    "segments\", \"households only\", \"firms above a stated size "
-    "threshold\" — and when the body the figure belongs to released it on a "
-    "date the page states, record that date in release_date.\n"
-    "- A figure whose own scope differs from a target's wording is still a "
-    "finding for the target whose measure it matches: record it with the "
-    "scope the page states rather than dropping it, and never restate it in "
-    "the target's own terms."
+    "\"all sites\" does not become \"sites in the north\" — and a count of "
+    "one thing does not become a count of another.\n"
+    "- When the page states the scope, segment or basis a statement covers, "
+    "state that wording in measure_scope — \"all sites\", \"the northern "
+    "region only\", \"bodies above a stated size\" — and record release_date "
+    "only when the page ties a date to the release or edition of the body the "
+    "statement belongs to, never the page's own date.\n"
+    "- A statement whose own scope differs from a target's wording is "
+    "recorded with the scope the page states and never restated in the "
+    "target's own terms, but it does not answer that target: bind a figure "
+    "only when the same thing is measured."
 )
 
 
-def render_planned_targets(targets: Sequence[EvidenceTarget]) -> str:
+def render_planned_targets(
+    targets: Sequence[EvidenceTarget],
+    *,
+    coverage_titles: Mapping[str, str] | None = None,
+    fields: bool = True,
+) -> str:
     """One line per planned target a finding may be bound to, in plan order.
 
-    The id is what the reply has to copy, so it leads the line; the question
-    is what decides the binding, so it follows in full, and the structured
-    fields the plan set (measure, unit, period, kind, organisation) follow it
-    so the model can bind a figure to the target it actually describes.
-    Whether an obligation is required stays off the line: an extractor binds
-    content to a question, and that flag decides how coverage is judged, not
-    what a passage states.
+    The id is what the reply has to copy, so it leads the line; whether the
+    run must answer the target is marked beside it, because code exempts a
+    required target's findings from the per-sub-topic caps and re-asks for the
+    ones left unanswered, so a binding to one matters more than a binding to
+    an optional neighbour; the question is what decides the binding, so it
+    follows in full, with the sub-topic that owns the target where the caller
+    can name it, so the model can bind a statement to a topic by its subject.
+
+    The structured fields the plan set (measure, unit, period, kind,
+    organisation) follow where the caller wants them: they describe the
+    evidence a target expects, and the section that prints them says so,
+    because a field read as a restriction refuses evidence from the body that
+    actually carries the answer. ``fields=False`` is for a caller that prints
+    the list as the obligations a loop owes rather than as a binding
+    vocabulary.
     """
+    titles = coverage_titles or {}
     lines: list[str] = []
     for target in targets:
         details = "; ".join(
@@ -636,8 +707,17 @@ def render_planned_targets(targets: Sequence[EvidenceTarget]) -> str:
             )
             if value
         )
-        line = f"- {target.target_id} [{target.coverage_id}]: {target.question}"
-        lines.append(f"{line} ({details})" if details else line)
+        coverage = titles.get(target.coverage_id)
+        owner = (
+            f"{target.coverage_id}: {coverage}"
+            if coverage
+            else target.coverage_id
+        )
+        marker = " [required]" if target.required else ""
+        line = f"- {target.target_id} [{owner}]{marker}: {target.question}"
+        lines.append(
+            f"{line} ({details})" if details and fields else line
+        )
     return "\n".join(lines)
 
 
@@ -888,6 +968,8 @@ def extraction_messages(
     planned_targets: Sequence[EvidenceTarget] = (),
     owed_passages: bool = False,
     owed_targets: Sequence[EvidenceTarget] = (),
+    question: str | None = None,
+    coverage_titles: Mapping[str, str] | None = None,
 ) -> list[ChatMessage]:
     """Build the messages that extract findings from one finished loop.
 
@@ -911,48 +993,77 @@ def extraction_messages(
     answers rather than re-reporting it unbound: a passage that states a
     required target's own words is exactly the evidence a binding can be made
     from, and the target's question is the binding instruction.
+
+    ``question`` is the run's original question. The extraction judges what
+    bears on the question and what merely sits on the page, and until this
+    parameter existed it saw only the sub-topic's title, criteria and target
+    questions — never the question they all serve — so a page's own furniture
+    could look as relevant as its evidence.
+
+    ``coverage_titles`` maps a coverage id to the sub-topic's title, so a
+    planned-target line names the subject of the topic that owns it. A
+    statement can then be bound by what it is about ("when the obligations
+    apply") rather than by the id alone.
     """
     criteria = "\n".join(
         f"- {criterion}" for criterion in task.sub_topic.success_criteria
     )
     registry_contract = (
-        "Return one finding per distinct, source-backed figure or fact.\n"
-        "- Every finding MUST copy read_id and locator exactly as the acquisition "
-        "context below prints them, and MUST carry a snippet: one or two sentences "
-        "copied character for character from that passage, containing the finding's "
-        f"figures (at most {MAX_SNIPPET_CHARS} characters).\n"
-        "- List every figure the snippet states for the finding in figures: value "
-        "exactly as the snippet writes it (\"7.25\", \"12,314\"), unit as the snippet "
-        "writes it (\"tonnes\", \"per cent\", \"USD million\", \"MW\"), the period it "
-        "applies to, kind: actual for a measured or reported outcome, forecast for "
-        "a projection, plan or expectation, and subject: the thing the figure is about, "
-        "as the page names it — a product model, a place, a company, a patch or "
-        "version, a named item — copied from the page, or null when the page names "
-        "none and the figure is about the topic as a whole. One snippet may carry "
-        "several figures with different subjects; give each its own subject rather "
-        "than splitting the snippet.\n"
-        "- Figures that measure different things - a yearly addition and a cumulative "
-        "total - belong in separate findings.\n"
-        "- A finding MUST name in target_ids every planned target from the Planned "
-        "targets list whose question its content answers — copy those ids from that "
+        "Return one finding per distinct fact the passages state that bears on "
+        "the research question and on what this sub-topic asks for. "
+        "Navigation, site furniture, counters, carts, subscription prompts and "
+        "legal boilerplate are never findings.\n"
+        "- Every finding MUST copy read_id and locator exactly as the "
+        "# Retrieved evidence section below prints them, and MUST carry a "
+        "snippet: one or two sentences copied character for character from "
+        "that passage, stating what the finding reports completely — a rule "
+        "with its conditions, exceptions and object — and at most "
+        f"{MAX_SNIPPET_CHARS} characters. When the statement is longer, split "
+        "it across findings at a sentence or clause boundary rather than "
+        "cutting inside a clause, and never let a snippet end where the "
+        "sentence continues into a condition, an exception or an object it "
+        "does not carry.\n"
+        "- content is one sentence restating the snippet's fact in the page's "
+        "own terms and carrying nothing the snippet does not. It is what tells "
+        "one finding from another, so two findings that restate one passage "
+        "the same way are one finding.\n"
+        "- List in figures every measured quantity the snippet states: value "
+        "exactly as the snippet writes it, with its qualifier when it has one "
+        "(\"nearly 65\", \"up to 30\"), unit as the snippet writes it "
+        "(\"kilometres\", \"per cent\", \"euros\", \"days\"), the period it "
+        "applies to, kind: actual for a measured or reported outcome, forecast "
+        "for a projection, plan or expectation, and subject: the thing the "
+        "figure is about, as the page names it — a model, a place, a body, a "
+        "version, a named item — copied from the page, or null when the page "
+        "names none and the figure is about the topic as a whole. A date is "
+        "not a figure: record it in the snippet and in the date fields below, "
+        "never in figures. One snippet may carry several figures with "
+        "different subjects; give each its own subject rather than splitting "
+        "the snippet. Quantities that measure different things — a monthly "
+        "figure and a total for the year — belong in separate findings, each "
+        "with the snippet that carries it.\n"
+        "- Bind in an ordered step. For each finding, walk the whole Planned "
+        "targets list, one target at a time, and name in target_ids every "
+        "target whose question its content answers — copy those ids from that "
         "list, never the targets= line of a read, which names only the "
-        "sub-topic that fetched it, and mine each passage for every planned "
-        "target rather than only the one that fetched it.\n"
-        "- A finding names a planned target only when its content states the fact, "
-        "item, mechanism or provision the target asks for, not when it merely "
-        "concerns the topic.\n"
-        "- A target id that is not in that list is dropped from the finding, and a "
-        "finding with no planned target left is kept but can then be attributed only "
-        "through the sub-topic that fetched its read.\n"
+        "sub-topic that fetched it. The measure, unit, period, kind and "
+        "organisation on a target line describe the evidence that target "
+        "expects; they never restrict which body, unit or period may answer "
+        "it.\n"
+        "- A finding names a planned target only when its content states the "
+        "fact, item, mechanism or provision the target asks for, not when it "
+        "merely concerns the topic.\n"
+        "- A target id that is not in that list is dropped from the finding, "
+        "and a finding with no planned target left is kept but can then be "
+        "attributed only through the sub-topic that fetched its read.\n"
         "- A finding whose snippet the locator does not contain is dropped.\n"
-        "- Copy source_url and source_title from the same read record, never from "
-        "memory, a search snippet, or another finding's text; never substitute the URL "
-        "or title the document names as its origin — a copy served from another host is "
-        "cited where you read it, and the body it came from belongs in "
-        "attributed_issuer — and never rewrite the read's title, not to drop "
-        "the reader's own markers and not to put the document's own headline "
-        "in their place.\n"
-        "- Never invent a content hash.\n"
+        "- Copy source_url and source_title from the same read record, never "
+        "from memory, a search snippet, or another finding's text; never "
+        "substitute the URL or title the document names as its origin — a "
+        "copy served from another host is cited where you read it, and the "
+        "body it came from belongs in attributed_issuer — and never rewrite "
+        "the read's title, not to drop the reader's own markers and not to "
+        "put the document's own headline in their place.\n"
         "- Return an empty list when the evidence supports nothing."
         if acquisition_context is not None
         else "Return one finding per distinct, source-backed claim. Use the "
@@ -963,37 +1074,42 @@ def extraction_messages(
         f"# Sub-topic\n{task.sub_topic.title}",
         f"# Success criteria\n{criteria}",
     ]
+    if question:
+        sections.insert(0, f"# Research question\n{question}")
     if planned_targets:
         sections.append(
             "# Planned targets\n"
-            "Every planned target of this run, in plan order. A finding whose "
-            "content answers one of these questions names it in target_ids, "
-            "whichever sub-topic the read was fetched for:\n"
-            + render_planned_targets(planned_targets)
+            "Every planned target of this run, in plan order, marked required "
+            "when the run must answer it. The question decides the binding: "
+            "the fields on a line describe the evidence that target expects "
+            "and never restrict which body, unit or period may answer it. A "
+            "finding whose content answers one of these questions names it in "
+            "target_ids, whichever sub-topic the read was fetched for:\n"
+            + render_planned_targets(
+                planned_targets, coverage_titles=coverage_titles
+            )
         )
     if owed_passages:
         owed_lines = [
             "# Passages owed a finding",
             "The passages below are selected evidence a previous extraction "
-            "returned no finding for.",
+            "returned no finding for. They are candidates, not answers: each "
+            "shares a word with an obligation this pass has not answered, or "
+            "states a number in a power or energy unit a planned target asks "
+            "for.",
         ]
         if owed_targets:
+            owed_lines.append("The unanswered obligations are:")
             owed_lines.append(
-                "Each states the words of a required obligation this pass has "
-                "answered nowhere yet, or a number in a unit a planned target "
-                "asks for. The unanswered obligations are:"
-            )
-            owed_lines.append(render_planned_targets(owed_targets))
-        else:
-            owed_lines.append(
-                "Each states a number in a unit one of the planned targets "
-                "asks for — the figure a target needs and the extraction "
-                "walked past."
+                render_planned_targets(
+                    owed_targets, coverage_titles=coverage_titles
+                )
             )
         owed_lines.append(
-            "Mine every passage here for every planned target whose question "
-            "its content answers, in the same registry shape and with the "
-            "same target ids the contract above requires."
+            "Return an empty list when none of these passages states one of "
+            "them. Mine every passage that does for every planned target "
+            "whose question its content answers, in the same registry shape "
+            "and with the same target ids the contract above requires."
         )
         sections.append("\n".join(owed_lines))
     sections.append(
@@ -1053,8 +1169,15 @@ def _admitted_attribution(
     phrase = quote.strip() if isinstance(quote, str) else ""
     if not name or not phrase:
         return None, None
-    document = neighbouring_passage_text(read, locator or "")
-    if not excerpt_matches(document, phrase):
+    # Three admissible windows, each the page's own words about this excerpt:
+    # the excerpt's passage, its immediate neighbour, and the page's own title
+    # or heading, where an instrument or a body is named rather than described.
+    # The title is read because a reproduced document is often attributed by
+    # the card, heading or masthead that introduces it — a label naming the
+    # instrument — and a rule that read only the two passages left such a page
+    # crediting the host that served it (review RES-6 §3).
+    windows = [neighbouring_passage_text(read, locator or ""), read.title]
+    if not any(excerpt_matches(window, phrase) for window in windows):
         return None, None
     name_match = re.search(_issuer_name_pattern(name), phrase, re.IGNORECASE)
     if name_match is None or not attribution_cue_adjacent(phrase, name_match):
@@ -1946,6 +2069,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
     name = RESEARCHER_NAME
     description = "Gather source-backed findings for planned sub-topics."
+    # The prompt-fix wave changed this agent's prompt contract: the loop is
+    # told the rules the policy enforces and stops on the sub-topic's
+    # obligations, and the extraction binds in an ordered step with its date,
+    # provenance and completeness rules restated. An artifact therefore says
+    # which researcher instructions produced it.
+    prompt_version = "researcher-2"
     # The four read/discovery tools, and nothing that writes: a finding kept
     # in long-term memory before the pass is complete is a write nothing
     # downstream has validated. `save_to_memory` belongs to the agents that
@@ -2277,6 +2406,19 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             policy.extract_passage_batch()
 
         planned_targets = self._planned_targets() if policy is not None else []
+        coverage_titles = {
+            sub_topic.coverage_id: sub_topic.title
+            for sub_topic in (
+                self._run_source_state.sub_topics
+                if self._run_source_state is not None
+                else ()
+            )
+        }
+        question = (
+            self._run_source_state.original_question
+            if self._run_source_state is not None
+            else None
+        )
         try:
             draft = await self.provider.complete_structured(
                 extraction_messages(
@@ -2289,6 +2431,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         else None
                     ),
                     planned_targets=planned_targets,
+                    question=question,
+                    coverage_titles=coverage_titles,
                 ),
                 SubTopicFindingsDraft,
                 agent_name=self.name,
@@ -2428,6 +2572,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                                 planned_targets=planned_targets,
                                 owed_passages=True,
                                 owed_targets=unanswered,
+                                question=question,
+                                coverage_titles=coverage_titles,
                             ),
                             SubTopicFindingsDraft,
                             agent_name=self.name,

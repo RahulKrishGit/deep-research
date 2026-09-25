@@ -21,6 +21,7 @@ from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.evidence import build_read_record
 from deep_research.agents.prompts import STRUCTURED_REQUEST_END, AgentTask
 from deep_research.agents.researcher import (
+    _admitted_attribution,
     _admitted_figures,
     DEFAULT_MAX_SUB_TOPICS,
     HIGH_PRIORITY_THRESHOLD,
@@ -196,10 +197,19 @@ QEC_SCRAPE = {
 # no admitted read is now dropped instead of admitted on its URL alone.
 QEC_READ = qec_read_record()
 
-_FINDING_EXAMPLE_OUTPUT = (
-    "Example JSON output:\n"
-    """{"findings":[{"attributed_issuer":"Example Statistical Agency","attribution_quote":"according to the Example Statistical Agency","confidence":0.8,"content":"The example report relays the Example Statistical Agency's measurement: a 12 percent reduction in 2024 across all classes, from the agency's January 2025 preliminary inventory.","data_period":"2024","figures":[{"kind":"actual","period":"2024","subject":null,"unit":"percent","value":"12"}],"locator":"page-4-chunk-0","measure_scope":"all classes","read_id":"read-111111111111111111111111","release_date":"2025-03-12","snippet":"The measured reduction was 12 percent, according to the Example Statistical Agency, across all classes.","source_title":"Example report","source_url":"https://evidence.example.test/report","statement_date":"2025-03-12","target_ids":["topic-01-target-01"],"vintage":"January 2025 preliminary inventory"}]}"""
-)
+def _rendered_example_payloads(body: str) -> list[dict]:
+    """The JSON payloads the reply-example block rendered, decoded.
+
+    The examples are part of the request, so a test of what they teach reads
+    them back the way the model does: each ``Example JSON output:`` line is one
+    JSON object, compacted by ``render_structured_reply_format``.
+    """
+    rendered: list[dict] = []
+    for chunk in body.split("Example JSON output:\n")[1:]:
+        payload = chunk.splitlines()[0]
+        rendered.append(json.loads(payload))
+    return rendered
+
 
 
 def _tool_step(
@@ -1009,8 +1019,23 @@ def test_extraction_messages_carry_the_sub_topic_criteria_and_evidence() -> None
     assert "# Sub-topic\nAlpha" in body
     assert "- A named source about Alpha." in body
     assert '- [web_scraper] {"url": "https://example.test/qec"' in body
-    assert _FINDING_EXAMPLE_OUTPUT in body
     assert body.rstrip().endswith(STRUCTURED_REQUEST_END)
+
+    # Both examples are part of the request, and each states only what its own
+    # passage carries: the figure finding reports no date its passage never
+    # wrote, and the text finding carries no figures and names the body the
+    # page's words credit (review RES-5 §1, RES-6 §1, EXTRA-2).
+    figure_example, rule_example = _rendered_example_payloads(body)
+    (figure_finding,) = figure_example["findings"]
+    assert figure_finding["data_period"] == "2024"
+    assert "statement_date" not in figure_finding
+    assert "release_date" not in figure_finding
+    assert "attributed_issuer" not in figure_finding
+    (rule_finding,) = rule_example["findings"]
+    assert rule_finding["figures"] == []
+    assert rule_finding["attributed_issuer"] == "the record office"
+    assert rule_finding["target_ids"] == ["topic-02-target-01"]
+    assert "statement_date" not in rule_finding
 
 
 def test_extraction_evidence_keeps_search_payloads_out_of_the_evidence_block() -> None:
@@ -1925,9 +1950,9 @@ def test_extraction_contract_requires_the_attribution_and_the_scope() -> None:
         planned_targets=_forecast_plan_targets(),
     )[1].content
 
-    assert "the body the page attributes it to" in body
-    assert "keep the page's own words for what the figure measures" in body
-    assert "state the segment or basis the figure covers" in body
+    assert "Name the body the page's words give the statement or figure to" in body
+    assert "keep the page's own words for what the finding measures" in body
+    assert "state that wording in measure_scope" in body
 
 
 def test_extraction_contract_requires_the_registry_copy_it_checks() -> None:
@@ -1995,11 +2020,20 @@ def test_extraction_names_every_planned_target_a_read_may_serve() -> None:
         planned_targets=_forecast_plan_targets(),
     )[1].content
 
-    assert f"- {PLANNED_TARGET_ID} [topic-01]: {_FIXTURE_TARGET_QUESTION}" in body
-    assert f"- {FORECAST_TARGET_ID} [topic-02]: {FORECAST_TARGET_QUESTION}" in body
-    # A legacy request that was told no plan keeps no target list to copy from.
+    assert (
+        f"- {PLANNED_TARGET_ID} [topic-01] [required]: "
+        f"{_FIXTURE_TARGET_QUESTION}" in body
+    )
+    assert (
+        f"- {FORECAST_TARGET_ID} [topic-02] [required]: "
+        f"{FORECAST_TARGET_QUESTION}" in body
+    )
+    # A legacy request that was told no plan keeps no target list to copy
+    # from: the reply example carries an id of its own, but no list to
+    # bind against and no target question to answer.
     legacy_body = extraction_messages(task, run, evidence_chars=200)[1].content
-    assert FORECAST_TARGET_ID not in legacy_body
+    assert "# Planned targets" not in legacy_body
+    assert FORECAST_TARGET_QUESTION not in legacy_body
 
 
 @pytest.mark.asyncio
@@ -2416,8 +2450,9 @@ async def test_a_read_fetched_for_one_topic_yields_another_topics_finding(
     # And the request the model answered carried both.
     request_body = completer.calls[0][2][1].content
     assert EIA_64705_FORECAST_SENTENCE in request_body
-    assert f"- {FORECAST_TARGET_ID} [topic-02]: {FORECAST_TARGET_QUESTION}" in (
-        request_body
+    assert (
+        f"- {FORECAST_TARGET_ID} [topic-02: {TOPIC_02_TITLE}] [required]: "
+        f"{FORECAST_TARGET_QUESTION}" in request_body
     )
 
 
@@ -2737,9 +2772,17 @@ def test_the_researcher_prompt_requires_reading_and_prefers_primary_sources(
 
     prompt = agent.system_prompt(AgentTask(instruction="Gather evidence."))
 
-    assert "Read a source before reporting a finding from it." in prompt
+    assert "only a page or document you read in this loop is evidence" in prompt
     assert "Prefer primary sources" in prompt
-    assert "Record publication date and geographic applicability" in prompt
+    # The loop the policy actually enforces is stated: the packet's own
+    # allowed_actions line governs, two searches are followed by a read, and
+    # only a discovered URL can be read (review RES-1 §1, RES-2 §1).
+    assert "The acquisition state line in this request is binding" in prompt
+    assert "Two searches in a row are followed by a read" in prompt
+    # The loop reports no finding and records no date: an extraction step
+    # reads the pages it read (review RES-1 §3).
+    assert "a separate extraction step reads" in prompt
+    assert "Record publication date" not in prompt
     assert "save_to_memory" not in prompt
 
 
@@ -4876,8 +4919,8 @@ async def test_an_unanswered_required_target_buys_one_re_ask_for_its_words(
     # what its packet is for; the first request says neither.
     assert _OWED_TARGET_QUESTION in requests[1]
     assert "Passages owed a finding" not in requests[0]
-    assert "answered nowhere yet" in requests[1]
-    assert "answered nowhere yet" not in requests[0]
+    assert "they are candidates, not answers" in requests[1].casefold()
+    assert "they are candidates, not answers" not in requests[0].casefold()
 
     (finding,) = outcome.result.findings
     assert finding.target_ids == [PLANNED_TARGET_ID]
@@ -5257,8 +5300,87 @@ def test_a_model_reported_plan_kind_normalizes_to_forecast() -> None:
 
 def test_planned_targets_render_their_structured_fields() -> None:
     line = render_planned_targets([make_target(organisation="EIA")])
-    assert line.startswith("- topic-01-target-01 [topic-01]: How much")
+    assert line.startswith(
+        "- topic-01-target-01 [topic-01] [required]: How much"
+    )
     assert "unit: power" in line and "period: 2024" in line and "organisation: EIA" in line
+
+
+def test_the_sub_topic_guidance_prints_the_obligations_the_loop_owes() -> None:
+    """A loop cannot aim at an obligation it was never shown.
+
+    Coverage is judged on the plan's targets, not on the criteria printed
+    beside them, so the guidance carries the sub-topic's own targets with
+    their required flags (review RES-1 §2).
+    """
+    target = make_target()
+    sub_topic = _sub_topic("Alpha").model_copy(
+        update={"evidence_targets": [target]}
+    )
+
+    guidance = render_sub_topic_guidance(sub_topic, ())
+
+    assert "The answers this sub-topic owes" in guidance
+    assert (
+        f"- {target.target_id} [{target.coverage_id}] [required]: "
+        f"{target.question}" in guidance
+    )
+
+
+def test_the_extraction_request_carries_the_research_question() -> None:
+    """The extractor judges what bears on the question, so it is shown it.
+
+    Until this section existed the request carried the sub-topic's title,
+    criteria and target questions but never the question they serve, so a
+    page's furniture could look as relevant as its evidence (review RES-3 §3).
+    """
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.",
+        sub_topic=_sub_topic("Alpha"),
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    body = extraction_messages(
+        task,
+        run,
+        evidence_chars=200,
+        question="How much capacity was added?",
+    )[1].content
+
+    assert "# Research question\nHow much capacity was added?" in body
+
+
+def test_a_page_title_may_carry_the_attribution_quote() -> None:
+    """The heading that introduces a reproduced document is the page's words.
+
+    A card label, a section heading or a masthead names the instrument or the
+    body a page is serving, and a rule that read only the excerpt's two
+    passages left such a page crediting the host that served it (review
+    RES-6 §3).
+    """
+    read = make_read(
+        "The filing is late when it arrives after the last day of the second month.",
+        title="According to the record office: filing deadlines",
+        passages={
+            "chunk-0": (
+                "The filing is late when it arrives after the last day of the "
+                "second month."
+            )
+        },
+    )
+
+    assert _admitted_attribution(
+        "the record office",
+        "According to the record office",
+        read=read,
+        locator="chunk-0",
+    ) == ("the record office", "According to the record office")
 
 
 # ---------------------------------------------------------------------------
@@ -5357,7 +5479,10 @@ async def test_an_extra_pass_researches_only_the_missing_targets_owner(
     assert started == [TOPIC_02_TITLE]
 
     request_body = completer.calls[0][2][1].content
-    assert f"- {FORECAST_TARGET_ID} [topic-02]" in request_body
+    assert (
+        f"- {FORECAST_TARGET_ID} [topic-02: {TOPIC_02_TITLE}] [required]"
+        in request_body
+    )
     assert f"- {PLANNED_TARGET_ID} [topic-01]" not in request_body
 
     (finding,) = outcome.result.findings

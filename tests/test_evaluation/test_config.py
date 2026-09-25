@@ -926,7 +926,20 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # could ever read is the code-generated drop reason "states a date, not a
     # measure", which travels in the run's error details, not in a request. The
     # other four target pins and the Judge pin are unchanged.
-    "researcher": "0acf612e952f",
+    # The prompt-fix wave (Fable's review, RES-1..RES-8, EXTRA-2, EXTRA-8,
+    # and cross-block 6/10/11/12/13) rewrote the researcher's model-read
+    # text: the loop is told the rules the policy enforces and stops on the
+    # sub-topic's obligations, the extraction request carries the research
+    # question and each target's sub-topic and required flag, the registry
+    # contract binds in an ordered step and defines confidence and content,
+    # the date and provenance contracts state what the page must carry, the
+    # owed-passage heading presents its passages as candidates, and the
+    # reply examples fill only what their passages state. The module source
+    # moved `0acf612e952f` -> `bce3b184f341`.
+    # No other agent's module changed and ``agents.prompts`` was untouched
+    # (RES-2's fixes are stated by the agents that read the shared contract),
+    # so the other four target pins and the Judge pin are unchanged.
+    "researcher": "bce3b184f341",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read

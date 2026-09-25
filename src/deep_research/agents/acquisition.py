@@ -2248,7 +2248,7 @@ def build_acquisition_context(
             + (
                 "target-bearing passage"
                 if state.pending_passage_ids
-                else "independent source"
+                else "another source"
                 if not state.candidate_urls
                 else "read candidate"
             ),

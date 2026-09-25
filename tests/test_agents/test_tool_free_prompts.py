@@ -546,7 +546,12 @@ def test_every_synthetic_url_uses_the_reserved_test_domain(examples, schema) -> 
 # evaluator's weak and strong ends of one scale, and the judge's pair.
 PLANNED_OPERATION_INVENTORY = {
     "plan finalization": ("planner", 2),
-    "finding extraction": ("researcher", 1),
+    # The extraction's second example is the text-finding shape: the first
+    # teaches a figure finding whose fields are all stated by its passage, and
+    # a rule, a reproduced instrument or a relayed statement — what a
+    # qualitative target usually rests on — carries no figure at all
+    # (EXTRA-2, review RES-6 §1).
+    "finding extraction": ("researcher", 2),
     "source scoring": ("source_evaluator", 2),
     "evaluation verdict": ("judge", 2),
     # The evidence-verifier pipeline's four tool-free requests (Task 4.10d).
