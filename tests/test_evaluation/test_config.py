@@ -1006,7 +1006,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Evidence Verifier's four model-read blocks and added the reproduced-document
     # credit: `a6205ea9c362` -> `90e57af30cd8`. No other agent's text changed, and
     # the Judge pin is unchanged.
-    "evidence_verifier": "90e57af30cd8",
+    # Re-review round 1 (C1..C4): the Statement Check's block prints each cited
+    # finding's own page title, its no-issuer line is `read at: <host>`, VER-2's
+    # evidence_words is one contiguous span, and VER-4's one rule agrees with its
+    # example: `90e57af30cd8` -> `aacdca45c69f`.
+    "evidence_verifier": "aacdca45c69f",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;

@@ -1104,7 +1104,8 @@ def test_the_statement_check_shows_each_cited_findings_snippet_and_attribution()
 
 
 def test_an_own_page_finding_is_attributed_to_its_publisher() -> None:
-    """D10: with no admitted issuer, the Statement Check still sees whose words a snippet is."""
+    """D10, relabelled by the re-review (C1): with no admitted issuer the checker
+    still sees where a snippet was read -- as the site, never as its author."""
     text = "Of the five kettles we tested, Model B was the quietest."
     finding = make_finding(
         make_read(text, url="https://lab.example.test/kettles", title="Kettles"), text,
@@ -1114,7 +1115,9 @@ def test_an_own_page_finding_is_attributed_to_its_publisher() -> None:
                             findings=[finding], labels=["F01"])],
         question="Which kettle is the quietest?",
     )[1].content
-    assert "    attributed to: lab.example.test" in body.splitlines()
+    assert "    read at: lab.example.test" in body.splitlines()
+    assert not any(line.strip().startswith("attributed to:")
+                   for line in body.splitlines())
 
 
 def test_a_kept_figure_states_its_attribution_on_its_own_line_only() -> None:
@@ -2001,5 +2004,32 @@ def test_the_statement_check_is_told_no_body_for_an_unattributed_relay_figure() 
                             labels=["F01"])],
         question="What does the grant cover?")[1].content
 
-    assert "| unattributed |" in relayed_body and "Example Relay" not in relayed_body
+    # The figure's own line claims no body for a page that serves another body's
+    # work, while the page line (which the checker needs to allow naming the
+    # served document, C1) prints the title and host it was read on.
+    relayed_line = next(line for line in relayed_body.splitlines()
+                        if line.strip().startswith("two") or "| unattributed |" in line)
+    assert "| unattributed |" in relayed_line and "Example Relay" not in relayed_line
+    assert "    page: Article 12: Registration | Example Act | Example Relay" in relayed_body
     assert "unattributed (Example Lab)" in own_body
+
+
+def test_the_statement_check_sees_the_page_title_a_sentence_may_name_a_document_from() -> None:
+    """Re-review C1: the checker must see the page's own title, or a sentence
+    naming the document the page reproduces is refused by construction."""
+    snippet = "Providers shall register each widget."
+    page = snippet + " Registration is made before the widget is placed."
+    read = make_read(page, url="https://example-register.example/rules",
+                     title="Article 12: Registration of widgets | Example Act | Example Register")
+    finding = make_finding(read, snippet).model_copy(
+        update={"verification": FindingVerification(status="verified")})
+
+    body = statement_check_messages(
+        [StatementCheckItem(label="S001",
+                            text="Article 12 of the Example Act requires registration.",
+                            findings=[finding], labels=["F01"])],
+        question="What does the Act require?")[1].content
+
+    assert ("    page: Article 12: Registration of widgets | Example Act | Example Register "
+            "(example-register.example)") in body
+    assert "    read at: example-register.example" in body

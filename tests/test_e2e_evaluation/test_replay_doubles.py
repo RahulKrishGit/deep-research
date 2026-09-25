@@ -581,8 +581,10 @@ async def test_a_statement_override_corrects_or_refuses_through_the_real_writer(
 
 
 def test_the_statement_double_refuses_a_cited_line_with_no_body() -> None:
-    """R2: a finding with no kept figure is shown with its ``snippet:`` and the
-    body it is ``attributed to:`` (Task 5.7a's shipped format).
+    """R2: a finding with no kept figure is shown with its ``snippet:`` and then
+    the body it is ``attributed to:``, or -- when the extraction admitted no body
+    -- the site it was ``read at:`` (the re-review's C1; a host is where a
+    statement was read).
 
     The double judges a sentence against the findings the packet shows for it,
     so a packet that reads ``(no kept figures)`` with neither sub-line is a
@@ -593,9 +595,9 @@ def test_the_statement_double_refuses_a_cited_line_with_no_body() -> None:
     completer = ReplayCompleter(scenario(source))
     request = statement_request([_statement_item(source, "Plain states a figure.")])
     assert "(no kept figures)" in request
-    assert "    attributed to: " in request
+    assert "    attributed to: " in request or "    read at: " in request
 
-    stripped = re.sub(r"(?m)^    (?:snippet|attributed to): .*\n", "", request)
+    stripped = re.sub(r"(?m)^    (?:snippet|attributed to|read at): .*\n", "", request)
 
     with pytest.raises(ReplayContractError):
         completer._reply_StatementCheckDraft(stripped)
