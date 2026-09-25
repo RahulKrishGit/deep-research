@@ -8,6 +8,7 @@ import pytest
 
 from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.config import contains_secret
+from deep_research.evaluation.models import AGENT_NAMES
 from deep_research.evaluation.runner import run_agent_evaluation
 from deep_research.utils.config import ConfigSettings
 
@@ -63,7 +64,7 @@ async def test_a_controlled_repetition_never_touches_production_memory(
 
 @pytest.mark.asyncio
 async def test_no_evaluation_run_writes_into_the_production_output_directory(
-    settings, tracker, tmp_path, runtime_config_for, synthesizer_case
+    settings, tracker, tmp_path, runtime_config_for, report_writer_case
 ) -> None:
     from deep_research.evaluation.dependencies import (
         build_controlled_dependencies,
@@ -71,8 +72,8 @@ async def test_no_evaluation_run_writes_into_the_production_output_directory(
 
     before = sorted(p.name for p in tmp_path.iterdir())
     bundle = build_controlled_dependencies(
-        runtime_config_for("synthesizer"),
-        synthesizer_case,
+        runtime_config_for("report_writer"),
+        report_writer_case,
         tracker=tracker,
         settings=settings,
         root=tmp_path,
@@ -87,7 +88,7 @@ def test_every_experiment_metadata_block_is_secret_free(
 ) -> None:
     from deep_research.evaluation.config import experiment_metadata
 
-    for agent_name in ("planner", "researcher", "critic"):
+    for agent_name in AGENT_NAMES:
         metadata = experiment_metadata(
             runtime_config_for(agent_name), settings
         )
