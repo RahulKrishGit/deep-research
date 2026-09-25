@@ -909,6 +909,44 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
     )
 
 
+def _names_the_targets_sub_topic(finding: Finding, target: EvidenceTarget,
+                                 sub_topics: Sequence[SubTopic]) -> bool:
+    """Whether the finding names the sub-topic this target belongs to.
+
+    ``types.Finding.target_ids`` documents the fallback an unbound extraction
+    is answered through: "a finding with no planned target left is kept but can
+    then be attributed only through the sub-topic that fetched its read". The
+    extraction stamps that sub-topic's own title on the finding
+    (``related_sub_topic``), so the plan's sub-topics resolve it back to the
+    coverage id a target carries.
+    """
+    if not sub_topics or not target.coverage_id:
+        return False
+    name = cosmetic_text(finding.related_sub_topic)
+    return any(
+        sub_topic.coverage_id == target.coverage_id
+        and cosmetic_text(sub_topic.title) == name
+        for sub_topic in sub_topics
+    )
+
+
+def _binds_target(finding: Finding, target: EvidenceTarget,
+                  sub_topics: Sequence[SubTopic]) -> bool:
+    """Whether this target is the finding's to answer: its own binding, or the fallback.
+
+    The extraction's binding is the authority: a finding that names *any*
+    target answers only the ones it names, and one that names none is answered
+    through its own sub-topic alone (improvement 1A). Never "answers
+    everything": a finding with no target id of a different sub-topic, or with
+    a target id that does not include this one, is refused exactly as before.
+    """
+    if target.target_id in finding.target_ids:
+        return True
+    return not finding.target_ids and _names_the_targets_sub_topic(
+        finding, target, sub_topics
+    )
+
+
 def _finding_organisations(finding: Finding) -> list[str]:
     names = [figure.context.organisation for figure in verified_figures([finding])]
     if finding.attributed_issuer:
@@ -918,11 +956,12 @@ def _finding_organisations(finding: Finding) -> list[str]:
 
 
 def finding_answers(finding: Finding, target: EvidenceTarget, *,
-                    plan_targets: Sequence[EvidenceTarget] = ()) -> bool:
+                    plan_targets: Sequence[EvidenceTarget] = (),
+                    sub_topics: Sequence[SubTopic] = ()) -> bool:
     """§6.6, plus PD-7 for a target with no unit dimension, and D11's sibling rule."""
     if finding.verification is None or finding.verification.status == "dropped":
         return False
-    if target.target_id not in finding.target_ids:
+    if not _binds_target(finding, target, sub_topics):
         return False
     if target.unit_dimension is None:
         # A qualitative target's organisation is the plan's preference, not a
@@ -951,13 +990,20 @@ def finding_answers(finding: Finding, target: EvidenceTarget, *,
 
 
 def answered_target_ids(
-    findings: Sequence[Finding], targets: Sequence[EvidenceTarget]
+    findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
+    sub_topics: Sequence[SubTopic] = (),
 ) -> dict[str, list[str]]:
-    """Target id -> the ids of the findings that answer it (answered targets only)."""
+    """Target id -> the ids of the findings that answer it (answered targets only).
+
+    ``sub_topics`` is the plan the findings were extracted under: it is what
+    resolves an unbound finding's own ``related_sub_topic`` to the coverage id
+    its targets carry (improvement 1A). A caller that omits it keeps the
+    extraction-binding-only behaviour every caller had before.
+    """
     answered: dict[str, list[str]] = {}
     for target in targets:
         ids = [finding_fingerprint(f) for f in findings
-               if finding_answers(f, target, plan_targets=targets)]
+               if finding_answers(f, target, plan_targets=targets, sub_topics=sub_topics)]
         if ids:
             answered[target.target_id] = ids
     return answered
@@ -1101,16 +1147,19 @@ def _figures_share_a_subject(left: VerifiedFigure, right: VerifiedFigure,
                         target_fields=_target_fields(shared, by_id.values()))
 
 
-def _answered_targets(figure: VerifiedFigure,
-                      targets: Sequence[EvidenceTarget]) -> frozenset[str]:
+def _answered_targets(figure: VerifiedFigure, targets: Sequence[EvidenceTarget],
+                      sub_topics: Sequence[SubTopic] = ()) -> frozenset[str]:
     """The targets this figure answers: the ids its finding binds and the fields fit.
 
-    The same rule ``fact_rows`` builds a row's own ``target_ids`` with, so what
-    two figures share here is exactly the obligation their row would answer.
+    "Binds" is ``_binds_target``: the extraction's own target ids, or -- for a
+    finding extracted with none -- the targets of the sub-topic the finding
+    names (improvement 1A). The same rule ``fact_rows`` builds a row's own
+    ``target_ids`` with, so what two figures share here is exactly the
+    obligation their row would answer.
     """
     return frozenset(
         target.target_id for target in targets
-        if target.target_id in figure.finding.target_ids
+        if _binds_target(figure.finding, target, sub_topics)
         and _figure_answers(figure, target, targets)
     )
 
@@ -1148,10 +1197,11 @@ def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
 
 
 def _figure_answer_ids(figure: VerifiedFigure, targets: Sequence[EvidenceTarget],
-                       answered: Mapping[tuple[str, int], frozenset[str]] | None) -> frozenset[str]:
+                       answered: Mapping[tuple[str, int], frozenset[str]] | None,
+                       sub_topics: Sequence[SubTopic] = ()) -> frozenset[str]:
     """``_answered_targets`` for one figure, reusing ``fact_rows``' own computation."""
     if answered is None:
-        return _answered_targets(figure, targets)
+        return _answered_targets(figure, targets, sub_topics)
     return answered.get((figure.finding_id, figure.index), frozenset())
 
 
@@ -1171,13 +1221,20 @@ def _primary(group: Sequence[VerifiedFigure]) -> VerifiedFigure:
     return min(group, key=rank)
 
 
-def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) -> list[FactRow]:
-    """§5.3 and PD-9: one row per fact; revisions folded; row ids K001, K002, ..."""
+def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
+              sub_topics: Sequence[SubTopic] = ()) -> list[FactRow]:
+    """§5.3 and PD-9: one row per fact; revisions folded; row ids K001, K002, ...
+
+    ``sub_topics`` is the plan the findings were extracted under; a row's
+    ``target_ids`` then include the targets an unbound finding answers through
+    its own sub-topic (improvement 1A), which is what lets the writer cite that
+    obligation from this row.
+    """
     by_id = {target.target_id: target for target in targets}
     figures = verified_figures(findings)
     # What each figure answers, computed once: the group test and the row's own
     # target ids ask the same question of the same figures (I6).
-    answered = {(figure.finding_id, figure.index): _answered_targets(figure, list(targets))
+    answered = {(figure.finding_id, figure.index): _answered_targets(figure, list(targets), sub_topics)
                 for figure in figures}
     groups: list[list[VerifiedFigure]] = []
     for figure in figures:
