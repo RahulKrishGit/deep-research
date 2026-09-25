@@ -1040,7 +1040,6 @@ def _declared_obligation(
         # the only gate a run of this fixture can fail is the coverage floor.
         required=True,
         critical=False,
-        support_policy=policy,
     )
     topic = _topic(
         coverage_id, title, position, evidence_targets=[target]
