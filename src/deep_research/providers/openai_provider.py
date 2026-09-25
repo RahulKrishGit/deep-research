@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from time import perf_counter
 from types import SimpleNamespace
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
+from deep_research.observability.metrics import LLMOperation
+from deep_research.observability.run_telemetry import RunTelemetryCollector
 from deep_research.providers.capabilities import (
     resolve_request_settings,
     with_reasoning_effort,
@@ -212,6 +215,20 @@ def _fresh_provider_error(error: ProviderResponseError) -> ProviderResponseError
 ALLOWED_OUTPUT_ITEM_TYPES = frozenset({"reasoning", "function_call", "message"})
 
 
+def _truncated_response(response: Any) -> bool:
+    """True when the provider stopped because the output budget ran out.
+
+    Responses reports this as an incomplete run whose known reason is the
+    output limit; every other incomplete reason is a different failure and is
+    rejected as one.
+    """
+    if getattr(response, "status", None) != "incomplete":
+        return False
+    incomplete = getattr(response, "incomplete_details", None)
+    reason = getattr(incomplete, "reason", None) if incomplete is not None else None
+    return reason == "max_output_tokens"
+
+
 def _native_response_outcome(
     response: Any,
     *,
@@ -244,27 +261,18 @@ def _native_response_outcome(
     and the same defect.
     """
     status = getattr(response, "status", None)
-    if status == "incomplete":
-        incomplete = getattr(response, "incomplete_details", None)
-        reason = (
-            getattr(incomplete, "reason", None) if incomplete is not None else None
-        )
-        if reason == "max_output_tokens":
-            return (
-                (),
-                None,
-                ProviderOutputLimitError(
-                    ProviderResponseTelemetry(
-                        finish_reason_category="length",
-                        configured_max_tokens=configured_max_tokens,
-                        usage=usage,
-                        request_attempt=request_attempt,
-                    )
-                ),
-            )
-        return (), None, ProviderResponseError(
-            "OpenAI response did not complete",
-            failure_origin="local_response",
+    if _truncated_response(response):
+        return (
+            (),
+            None,
+            ProviderOutputLimitError(
+                ProviderResponseTelemetry(
+                    finish_reason_category="length",
+                    configured_max_tokens=configured_max_tokens,
+                    usage=usage,
+                    request_attempt=request_attempt,
+                )
+            ),
         )
     if status != "completed":
         return (), None, ProviderResponseError(
@@ -359,14 +367,16 @@ class OpenAIChatProvider:
         api_key: str | None = None,
         client: Any | None = None,
         request_budget: RequestBudget | None = None,
+        telemetry: RunTelemetryCollector | None = None,
     ) -> None:
         self._config = config
         self._tracker = tracker
         self._client = _build_client(config, api_key=api_key, client=client)
         self._request_budget = request_budget
+        self._telemetry = telemetry or RunTelemetryCollector()
         self._last_model_returned: str | None = None
 
-    def _reserve_attempt(self) -> None:
+    def _reserve_attempt(self, agent_name: str | None) -> None:
         """Reserve one OpenAI transport attempt before any network I/O.
 
         Called from *inside* the retried operation, because each retry is a
@@ -377,15 +387,41 @@ class OpenAIChatProvider:
         hard run boundary -- escapes instead of being rewritten into an
         ordinary, retryable provider error.
 
-        A ``None`` budget reserves nothing: this is today's uncounted
-        behaviour, and every existing caller keeps it.
+        The caller is announced before the reservation because the budget's
+        update carries no agent, and the telemetry attributes the peak to the
+        call that set it. A ``None`` budget reserves nothing: this is today's
+        uncounted behaviour, and every existing caller keeps it.
         """
+        self._telemetry.note_call_starting(agent_name)
         budget = self._request_budget
         if budget is None:
             return
         budget.reserve("openai")
 
-    def _record_tokens(self, usage: TokenUsage) -> None:
+    def _read_usage(self, response: Any) -> TokenUsage:
+        """Read a response's reported usage, releasing the attempt if it cannot.
+
+        ``with_retries`` releases the attempts whose transport failed. A
+        response that arrived but carries no readable usage is the one failure
+        it cannot see: no token report follows, so the in-flight gauge would
+        stay a call high without this.
+        """
+        try:
+            return _usage_from_response(response)
+        except ProviderResponseError:
+            self._telemetry.note_attempt_finished()
+            raise
+
+    def _record_tokens(
+        self,
+        usage: TokenUsage,
+        *,
+        agent_name: str | None,
+        operation: LLMOperation,
+        seconds: float,
+        configured_cap: int,
+        truncated: bool,
+    ) -> None:
         """Record reported usage, and only for a response that arrived.
 
         Never called for a transport failure, and never for a response whose
@@ -394,14 +430,25 @@ class OpenAIChatProvider:
         ``responses.parse`` validation exception returns no response at all,
         so it consumes an attempt and reports no tokens -- there is nothing to
         measure, and zero is only honest because nothing is added.
+
+        The same rule is what makes the §7.3 per-call record honest: this call
+        is the run's slowest, its operation's largest reply and its truncation
+        count only when the response really carried the numbers.
         """
         budget = self._request_budget
-        if budget is None:
-            return
-        budget.record_tokens(
-            "openai",
-            input_tokens=usage.input_tokens,
+        if budget is not None:
+            budget.record_tokens(
+                "openai",
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+        self._telemetry.record_call(
+            agent=agent_name,
+            operation=operation,
+            seconds=seconds,
             output_tokens=usage.output_tokens,
+            configured_cap=configured_cap,
+            truncated=truncated,
         )
 
     @property
@@ -478,7 +525,7 @@ class OpenAIChatProvider:
                 _sdk = _openai_errors()
 
                 async def _request() -> Any:
-                    self._reserve_attempt()
+                    self._reserve_attempt(agent_name)
                     try:
                         return await self._client.responses.create(
                             **{**request, "input": payload}
@@ -496,6 +543,7 @@ class OpenAIChatProvider:
                             failure_origin="sdk",
                         ) from error
 
+                started_at = perf_counter()
                 response = await with_retries(
                     _request,
                     retry_count=(
@@ -504,12 +552,20 @@ class OpenAIChatProvider:
                     ),
                     initial_delay=self._config.retry_initial_delay,
                     max_delay=self._config.retry_max_delay,
+                    telemetry=self._telemetry,
                 )
                 # Usage is parsed and recorded as soon as a response exists, so
                 # spend the provider really reported is counted even when the
                 # response is then rejected locally for its output.
-                usage = _usage_from_response(response)
-                self._record_tokens(usage)
+                usage = self._read_usage(response)
+                self._record_tokens(
+                    usage,
+                    agent_name=agent_name,
+                    operation="chat",
+                    seconds=perf_counter() - started_at,
+                    configured_cap=self._config.max_tokens,
+                    truncated=_truncated_response(response),
+                )
                 output_text = getattr(response, "output_text", None)
                 if not isinstance(output_text, str):
                     raise ProviderResponseError(
@@ -538,6 +594,8 @@ class OpenAIChatProvider:
         model: str,
         request: dict[str, object],
         metadata: dict[str, JsonValue],
+        agent_name: str | None,
+        configured_max_tokens: int,
         attempt: int,
         retry_count: int | None = None,
     ) -> SchemaT:
@@ -554,7 +612,7 @@ class OpenAIChatProvider:
             _sdk = _openai_errors()
 
             async def _request() -> Any:
-                self._reserve_attempt()
+                self._reserve_attempt(agent_name)
                 try:
                     return await self._client.responses.parse(
                         **{**request, "input": payload, "text_format": schema}
@@ -579,6 +637,7 @@ class OpenAIChatProvider:
                         ),
                     ) from None
 
+            started_at = perf_counter()
             response = await with_retries(
                 _request,
                 retry_count=(
@@ -586,9 +645,17 @@ class OpenAIChatProvider:
                 ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
+                telemetry=self._telemetry,
             )
-            usage = _usage_from_response(response)
-            self._record_tokens(usage)
+            usage = self._read_usage(response)
+            self._record_tokens(
+                usage,
+                agent_name=agent_name,
+                operation="structured_output",
+                seconds=perf_counter() - started_at,
+                configured_cap=configured_max_tokens,
+                truncated=_truncated_response(response),
+            )
             _set_span_result(span, response, usage)
             parsed = getattr(response, "output_parsed", None)
             if not isinstance(parsed, schema):
@@ -646,7 +713,7 @@ class OpenAIChatProvider:
                 # The reservation comes first so this existing local counter --
                 # the one the telemetry reports -- counts only attempts the
                 # budget actually permitted, rather than attempts requested.
-                self._reserve_attempt()
+                self._reserve_attempt(agent_name)
                 request_attempt += 1
                 try:
                     return await self._client.responses.create(
@@ -678,6 +745,7 @@ class OpenAIChatProvider:
                         failure_origin="sdk",
                     ) from error
 
+            started_at = perf_counter()
             response = await with_retries(
                 _request,
                 retry_count=(
@@ -686,13 +754,15 @@ class OpenAIChatProvider:
                 ),
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
+                telemetry=self._telemetry,
             )
             usage: TokenUsage | None = None
             tool_calls: tuple[NativeToolCall, ...] = ()
             final_answer: str | None = None
             failure: ProviderError | None = None
+            truncated = _truncated_response(response)
             try:
-                usage = _usage_from_response(response)
+                usage = self._read_usage(response)
             except ProviderResponseError as error:
                 # A malformed usage shape is rejected *before* the clearing
                 # block below, so the rejection has to be replaced with a
@@ -700,7 +770,14 @@ class OpenAIChatProvider:
                 # the frames that still hold the raw response.
                 failure = _fresh_provider_error(error)
             if failure is None:
-                self._record_tokens(usage)
+                self._record_tokens(
+                    usage,
+                    agent_name=agent_name,
+                    operation="react_tool_turn",
+                    seconds=perf_counter() - started_at,
+                    configured_cap=resolved_max_tokens,
+                    truncated=truncated,
+                )
                 _set_span_result(span, response, usage)
                 tool_calls, final_answer, failure = _native_response_outcome(
                     response,
@@ -768,6 +845,8 @@ class OpenAIChatProvider:
                     model=effective.model,
                     request=request,
                     metadata=metadata,
+                    agent_name=agent_name,
+                    configured_max_tokens=resolved_max_tokens,
                     attempt=attempt,
                     retry_count=effective.retry_count,
                 )

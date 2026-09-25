@@ -35,7 +35,13 @@ from deep_research.e2e_evaluation.replay import (
 )
 from deep_research.memory.entries import MemoryEntry
 
-REPLAY_CASE_MANIFEST_VERSION = 2
+REPLAY_CASE_MANIFEST_VERSION = 3
+# Bumped for the review's F4: two rows were renamed with the ``report-``
+# prefix (``report-relay-labelled-as-relay``,
+# ``report-scope-corrected-to-all-segments``) because their old ids collided
+# with per-agent cases of the same name in ``evaluation.cases``, where a case
+# id keys a LangSmith dataset. A whole-report row and a per-agent case may
+# cover one real-world scenario, but they are never one identity.
 
 # The case-schema version each case's semantics are pinned at. Bumping a case
 # means changing its declaration here and in its own builder together, so a
@@ -884,7 +890,7 @@ def _relay_labelled_as_relay() -> ReplayScenario:
         ) in enumerate(authored, start=1)
     )
     return ReplayScenario(
-        case_id="relay-labelled-as-relay",
+        case_id="report-relay-labelled-as-relay",
         version=REPLAY_CASE_VERSION,
         question=(
             "What measured efficiency does the official Acme Institute "
@@ -1793,7 +1799,7 @@ def _scope_corrected_to_all_segments() -> ReplayScenario:
         "across all segments"
     )
     return ReplayScenario(
-        case_id="scope-corrected-to-all-segments",
+        case_id="report-scope-corrected-to-all-segments",
         version=REPLAY_CASE_VERSION,
         question=(
             "How much battery energy storage did the United States install in 2025?"
@@ -2065,7 +2071,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         build=_extra_pass_finds_nothing,
     ),
     ReplayCaseEntry(
-        case_id="relay-labelled-as-relay",
+        case_id="report-relay-labelled-as-relay",
         version=REPLAY_CASE_VERSION,
         title="Official measurement answered as primary attribution",
         expected_product_result="accepted / 0",
@@ -2202,7 +2208,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         build=_evidence_words_not_on_page_rejected,
     ),
     ReplayCaseEntry(
-        case_id="scope-corrected-to-all-segments",
+        case_id="report-scope-corrected-to-all-segments",
         version=REPLAY_CASE_VERSION,
         title="An all-segment figure written as grid-scale is corrected",
         expected_product_result="accepted / 0",
