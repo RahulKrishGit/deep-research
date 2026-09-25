@@ -949,8 +949,10 @@ def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
     assert raw["llm"]["model_overrides"] == {
-        "planner": {"reasoning_effort": "max"},
-        "researcher": {"reasoning_effort": "high"},
+        # Their structured requests reason past the 60 s transport default,
+        # and a timed-out attempt restarts the whole generation.
+        "planner": {"reasoning_effort": "max", "timeout": 360.0},
+        "researcher": {"reasoning_effort": "high", "timeout": 240.0},
         "source_evaluator": {"reasoning_effort": "high"},
         # Review item 13 / F8: G2's live run measured a 75.9 s Context Check
         # against the 60 s transport default.

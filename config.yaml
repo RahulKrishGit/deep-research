@@ -22,10 +22,19 @@ llm:
   # measured to be at least as good, not proof that `max` is always better for
   # every question.
   model_overrides:
+    # Planner and researcher (2026-09-25): their structured requests reason
+    # well past the 60 s transport default -- a 19,346-token plan draft took
+    # 90 s, a 26,317-token extraction 289 s over four attempts -- and a
+    # timed-out attempt restarts the whole generation. The live smoke's plan
+    # requests timed out at 61-63 s and were re-run from scratch, and the
+    # planning probe spent up to 23 minutes on one plan. Same headroom as the
+    # roles below whose calls are this long.
     planner:
       reasoning_effort: max
+      timeout: 360.0
     researcher:
       reasoning_effort: high
+      timeout: 240.0
     source_evaluator:
       reasoning_effort: high
     # The Context Check and Statement Check (spec 5.2, 5.4): batched, tool-free
@@ -34,8 +43,8 @@ llm:
       reasoning_effort: high
       # Review item 13 / F8: Gate G2's live run recorded a Context Check call
       # of 75.9 s against the 60 s transport default below. A timed-out batch
-      # leaves every figure in it unchecked, so this role alone gets more
-      # room; other roles keep the transport default.
+      # leaves every figure in it unchecked, so this role gets more room; the
+      # source evaluator and the writer keep the transport default.
       timeout: 240.0
     # The writer's first attempt runs at this effort; a truncated draft is asked
     # once more at high (Task 3.4). This entry is the only effort source (F10).
