@@ -6,6 +6,9 @@ import re
 
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import (
+    _FACTS_HEADER,
+    _point_labels,
+    _row_label,
     figure_label,
     render_finding_log,
     render_written_report,
@@ -221,3 +224,22 @@ def test_a_resolved_period_is_named_on_the_label() -> None:
         "Example Statistical Agency's own figure; actual; "
         "period resolved from the page date 2026-02-20"
     )
+
+
+def test_the_subject_column_appears_only_when_a_row_has_a_subject() -> None:
+    base = _composition()
+    assert _FACTS_HEADER in render_written_report(base)
+    named = base.fact_rows[0].model_copy(update={"subject": "Model A"})
+    report = render_written_report(base.model_copy(update={"fact_rows": [named, *base.fact_rows[1:]]}))
+    assert "| Organisation | Subject | Measure |" in report and "| Model A |" in report
+
+
+def test_a_sentence_carries_the_label_of_the_subject_it_names() -> None:
+    base = _composition()
+    row = base.fact_rows[0]
+    rows = [row.model_copy(update={"row_id": "K001", "subject": "Model A"}),
+            row.model_copy(update={"row_id": "K002", "subject": "Model B",
+                                   "organisation": "Example Test Lab"})]
+    composition = base.model_copy(update={"fact_rows": rows})
+    point = base.summary[0].model_copy(update={"text": f"Model B had {row.value}."})
+    assert _point_labels(point, composition) == [_row_label(rows[1])]

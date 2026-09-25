@@ -495,3 +495,14 @@ def test_a_recorded_batch_failure_keeps_the_sentence_but_is_not_a_gate_failure(
 
 def test_report_quality_snapshot_is_exported_from_typed_layers() -> None:
     assert AgentReportQualitySnapshot is UtilsReportQualitySnapshot
+
+
+def test_two_rows_that_differ_only_by_subject_are_not_duplicates() -> None:
+    state, composition = _clean_pair()
+    row = composition.fact_rows[0]
+    apart = [row.model_copy(update={"row_id": "K001", "subject": "Model A"}),
+             row.model_copy(update={"row_id": "K002", "subject": "Model B"})]
+    same = [row.model_copy(update={"row_id": "K001", "subject": "Model A"}),
+            row.model_copy(update={"row_id": "K002", "subject": "Model A"})]
+    assert compute_report_quality(*_relinked(state, composition, fact_rows=apart)).duplicate_fact_rows == 0
+    assert compute_report_quality(*_relinked(state, composition, fact_rows=same)).duplicate_fact_rows == 1

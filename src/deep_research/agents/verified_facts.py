@@ -8,7 +8,7 @@ figures only. Nothing here parses a finding's ``content``.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import get_args
 
@@ -231,6 +231,112 @@ def same_period(left: str | None, right: str | None) -> bool:
     return key is not None and key == _period_key(right)
 
 
+# Fable §8.6 step 2's filler words, less "a" and "an": a single letter can be a
+# model's name ("Model A"), and the subset rule already tolerates an article.
+_SUBJECT_FILLER = frozenset({"the", "of", "for", "in", "on", "and", "or", "its", "this", "that"})
+
+
+def _subject_tokens(text: str | None) -> tuple[str, ...]:
+    """Fable §8.6 step 2, in order: casefolded words, "U.S." as "us", punctuation as spaces, filler dropped."""
+    if not text or not text.strip():
+        return ()
+    folded = re.sub(r"\bu\.s\.", "us", text.casefold())
+    return tuple(word for word in re.sub(r"[\W_]+", " ", folded).split() if word not in _SUBJECT_FILLER)
+
+
+def _subject_words(text: str | None) -> frozenset[str]:
+    return frozenset(_subject_tokens(text))
+
+
+def subject_context(target_ids: Iterable[str], targets: Iterable[EvidenceTarget]) -> frozenset[str]:
+    """Fable §8.6 step 3: the words of these targets' measure, question and geography.
+
+    A subject that only restates what its targets already say ("United States"
+    on a target about the United States) names nothing, so it matches any subject.
+    """
+    wanted = set(target_ids)
+    words: set[str] = set()
+    for target in targets:
+        if target.target_id in wanted:
+            for text in (target.measure, target.question, target.geography):
+                words |= _subject_words(text)
+    return frozenset(words)
+
+
+def same_subject(left: str | None, right: str | None, *,
+                 context_words: frozenset[str] = frozenset()) -> bool:
+    """Fable §8.6 steps 1-5: whether two subjects can name one thing.
+
+    Compatible when either names nothing beyond the context, or when one set of
+    words contains the other ("X200" and "Acme X200"). Overlap is not enough:
+    "version 10.02" and "version 10.03" share "version" and stay apart.
+    """
+    left_words = _subject_words(left) - context_words
+    right_words = _subject_words(right) - context_words
+    if not left_words or not right_words:
+        return True
+    return left_words <= right_words or right_words <= left_words
+
+
+def _periods_match(left_period: str | None, right_period: str | None,
+                   left_subject: str | None, right_subject: str | None, *,
+                   context_words: frozenset[str] = frozenset()) -> bool:
+    """PD-9's period test, plus controller ruling N1.
+
+    Two figures that both state no period (a current price, a product rating)
+    are one period only when both carry a subject and it is the same one, so
+    one product's rating on its own page and on a relay is one fact and a
+    re-test folds as a revision. Without subjects, no period never matches, as
+    before, so a single-subject run is unchanged.
+    """
+    if _period_key(left_period) is None and _period_key(right_period) is None:
+        return bool(left_subject and right_subject) and same_subject(
+            left_subject, right_subject, context_words=context_words)
+    return same_period(left_period, right_period)
+
+
+def subject_named_in(text: str, subject: str | None, *,
+                     context_words: frozenset[str] = frozenset()) -> bool:
+    """Whether ``text`` names ``subject``: its distinctive words as one run of words.
+
+    A run, not a set (PlanCheck F9): "Model B scored a 4.5" does not name
+    "Model A", although both of its words occur there. True with no subject.
+    """
+    wanted = tuple(word for word in _subject_tokens(subject) if word not in context_words)
+    if not wanted:
+        return True
+    words = tuple(word for word in _subject_tokens(text) if word not in context_words)
+    return any(words[i:i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
+
+
+def _asks_the_same(left: EvidenceTarget, right: EvidenceTarget) -> bool:
+    return (
+        " ".join(left.measure.casefold().split()) == " ".join(right.measure.casefold().split())
+        and _period_key(left.period) == _period_key(right.period)
+        and left.kind == right.kind and left.unit_dimension == right.unit_dimension
+        and (left.organisation or "").casefold() == (right.organisation or "").casefold()
+    )
+
+
+def _subject_fits(figure: VerifiedFigure, target: EvidenceTarget,
+                  plan_targets: Sequence[EvidenceTarget]) -> bool:
+    """D11 (Fable §8.5): of targets asking one thing of different subjects, a figure answers its own.
+
+    Siblings share measure, period, kind, unit dimension and organisation, so
+    the words of a target's question and geography that not all of them share
+    name its subject ("Spain", "Model A"). A plan without siblings, or a figure
+    without a subject, is never refused here.
+    """
+    siblings = [t for t in plan_targets if t.target_id != target.target_id and _asks_the_same(t, target)]
+    if not siblings or not figure.context.subject:
+        return True
+    shared = frozenset.intersection(
+        *(_subject_words(f"{t.question} {t.geography or ''}") for t in (target, *siblings))
+    )
+    return same_subject(figure.context.subject, f"{target.question} {target.geography or ''}",
+                        context_words=shared)
+
+
 def canonical_scopes(text: str | None) -> set[str]:
     """The scope terms ``text`` states, with grid-scale/utility-scale folded
     into one term; empty for no stated scope."""
@@ -239,7 +345,8 @@ def canonical_scopes(text: str | None) -> set[str]:
     return {_SCOPE_EQUIVALENTS.get(term, term) for term in stated_scopes(text)}
 
 
-def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget) -> bool:
+def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
+                    plan_targets: Sequence[EvidenceTarget] = ()) -> bool:
     target_scopes = canonical_scopes(target.measure)
     figure_scopes = canonical_scopes(figure.context.scope)
     if target_scopes and figure_scopes and target_scopes.isdisjoint(figure_scopes):
@@ -258,6 +365,7 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget) -> bool:
         and (target.period is None or same_period(figure.context.period, target.period))
         and (target.kind is None or figure.context.kind == target.kind)
         and (target.organisation is None or same_organisation(target.organisation, figure.context.organisation))
+        and _subject_fits(figure, target, plan_targets)
     )
 
 
@@ -269,8 +377,9 @@ def _finding_organisations(finding: Finding) -> list[str]:
     return names
 
 
-def finding_answers(finding: Finding, target: EvidenceTarget) -> bool:
-    """§6.6, plus PD-7 for a target with no unit dimension."""
+def finding_answers(finding: Finding, target: EvidenceTarget, *,
+                    plan_targets: Sequence[EvidenceTarget] = ()) -> bool:
+    """§6.6, plus PD-7 for a target with no unit dimension, and D11's sibling rule."""
     if finding.verification is None or finding.verification.status == "dropped":
         return False
     if target.target_id not in finding.target_ids:
@@ -279,7 +388,7 @@ def finding_answers(finding: Finding, target: EvidenceTarget) -> bool:
         return target.organisation is None or any(
             same_organisation(target.organisation, name) for name in _finding_organisations(finding)
         )
-    return any(_figure_answers(figure, target) for figure in verified_figures([finding]))
+    return any(_figure_answers(figure, target, plan_targets) for figure in verified_figures([finding]))
 
 
 def answered_target_ids(
@@ -288,7 +397,8 @@ def answered_target_ids(
     """Target id -> the ids of the findings that answer it (answered targets only)."""
     answered: dict[str, list[str]] = {}
     for target in targets:
-        ids = [finding_fingerprint(f) for f in findings if finding_answers(f, target)]
+        ids = [finding_fingerprint(f) for f in findings
+               if finding_answers(f, target, plan_targets=targets)]
         if ids:
             answered[target.target_id] = ids
     return answered
@@ -387,10 +497,15 @@ def _value_text(figure: FindingFigure) -> str:
     return f"{figure.value} {figure.unit}"
 
 
-def _same_fact(left: VerifiedFigure, right: VerifiedFigure) -> bool:
+def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
+               by_id: Mapping[str, EvidenceTarget]) -> bool:
     if left.context.kind != right.context.kind:
         return False
-    if not same_period(left.context.period, right.context.period):
+    words = subject_context(set(left.finding.target_ids) & set(right.finding.target_ids), by_id.values())
+    if not same_subject(left.context.subject, right.context.subject, context_words=words):
+        return False
+    if not _periods_match(left.context.period, right.context.period,
+                          left.context.subject, right.context.subject, context_words=words):
         return False
     if not same_organisation(left.context.organisation, right.context.organisation):
         return False
@@ -413,7 +528,7 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
     groups: list[list[VerifiedFigure]] = []
     for figure in verified_figures(findings):
         for group in groups:
-            if _same_fact(group[0], figure):
+            if _same_fact(group[0], figure, by_id):
                 group.append(figure)
                 break
         else:
@@ -424,7 +539,7 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
         primary = _primary(group)
         target_ids = sorted(
             {t for figure in group for t in figure.finding.target_ids
-             if t in by_id and _figure_answers(figure, by_id[t])}
+             if t in by_id and _figure_answers(figure, by_id[t], targets)}
         )
         dimension = primary.quantity.dimension if primary.quantity is not None else None
         measure = next((by_id[t].measure for t in target_ids if by_id[t].measure), None)
@@ -435,6 +550,7 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
                 attribution=primary.context.attribution,
                 relay_host=publisher_identity(primary.finding.source_url)
                 if primary.context.attribution == "relayed" else None,
+                subject=primary.context.subject,
                 measure=measure or _MEASURE_BY_DIMENSION.get(dimension or "", "stated figure"),
                 period=primary.context.period,
                 value=_value_text(primary.figure),
@@ -449,16 +565,30 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
             )
         )
         row_findings.append(primary.finding)
-    folded = _fold_revisions(list(zip(rows, row_findings)))
+    folded = _fold_revisions(list(zip(rows, row_findings)), by_id)
     return [row.model_copy(update={"row_id": f"K{n:03d}"}) for n, row in enumerate(folded, start=1)]
 
 
-def _fold_revisions(rows: Sequence[tuple[FactRow, Finding]]) -> list[FactRow]:
-    """PD-9: same organisation, target, period and kind, both released, releases differ.
+def _same_period_and_subject(left: FactRow, right: FactRow,
+                             by_id: Mapping[str, EvidenceTarget]) -> bool:
+    """Whether two rows state one period and one subject (PD-9, ruling N1).
 
-    Pairs a row with the ``Finding`` its own primary figure came from, rather
-    than re-looking it up by ``finding_fingerprint`` afterward: two distinct
-    revisions of one page can share a fingerprint (their content text is
+    The context words come from the targets the two rows share, so two rows
+    that restate one target still fold, while two versions of one product
+    ("version 10.02", "version 10.03") never do.
+    """
+    words = subject_context(set(left.target_ids) & set(right.target_ids), by_id.values())
+    return same_subject(left.subject, right.subject, context_words=words) and _periods_match(
+        left.period, right.period, left.subject, right.subject, context_words=words)
+
+
+def _fold_revisions(rows: Sequence[tuple[FactRow, Finding]],
+                    by_id: Mapping[str, EvidenceTarget]) -> list[FactRow]:
+    """PD-9: same organisation, target, period, subject and kind, both released, releases differ.
+
+    Pairs a row with the ``Finding`` its own primary figure came from,
+    rather than re-looking it up by ``finding_fingerprint`` afterward: two
+    distinct revisions of one page can share a fingerprint (their content text is
     unchanged; only the structured figure and its release differ), so a
     fingerprint-keyed map would collapse them and could never tell which of
     two colliding rows is the later edition.
@@ -468,7 +598,7 @@ def _fold_revisions(rows: Sequence[tuple[FactRow, Finding]]) -> list[FactRow]:
         pair = next(
             ((a, b) for a in kept for b in kept
              if a is not b and set(a[0].target_ids) & set(b[0].target_ids)
-             and a[0].kind == b[0].kind and same_period(a[0].period, b[0].period)
+             and a[0].kind == b[0].kind and _same_period_and_subject(a[0], b[0], by_id)
              and same_organisation(a[0].organisation, b[0].organisation)
              and (ka := release_key(a[1])) is not None
              and (kb := release_key(b[1])) is not None and ka > kb),
