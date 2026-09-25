@@ -332,6 +332,8 @@ class FindingFigure(ContractModel):
     unit: str = Field(min_length=1)
     period: str | None = None
     kind: FigureKind | None = None
+    subject: str | None = None
+    """The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole (spec §4, D11)."""
 
 
 # The Evidence Verifier's own vocabulary (spec §5). ``FigureAttribution`` is
@@ -356,6 +358,8 @@ class FigureContext(ContractModel):
 
     period: str | None = None
     scope: str | None = None
+    subject: str | None = None
+    """The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole (spec §4, D11)."""
     attribution: FigureAttribution
     organisation: str = Field(min_length=1)
     """``own``: the publisher; ``relayed``: the originator; ``unattributed``: the page's owner (host)."""
@@ -1411,6 +1415,8 @@ class FactRow(ContractModel):
     organisation: str
     attribution: FigureAttribution
     relay_host: str | None = None       # the relaying site when attribution == "relayed"
+    subject: str | None = None
+    """The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole (spec §4, D11)."""
     measure: str                        # the answered target's measure, else the unit label
     period: str | None = None
     value: str                          # "10.4 GW", as written

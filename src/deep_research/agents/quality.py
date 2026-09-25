@@ -16,6 +16,8 @@ from deep_research.agents.verified_facts import (
     answered_target_ids,
     same_organisation,
     same_period,
+    same_subject,
+    subject_context,
 )
 from deep_research.utils.types import (
     ReportQualitySnapshot,
@@ -68,10 +70,13 @@ def compute_report_quality(
     ]
     rows = composition.fact_rows
     # Invariant (F11): fact_rows() already merges same-fact rows, so this guards
-    # hand-built compositions and future producers; no test fixture is spent on it.
+    # hand-built compositions and future producers; the subject term is what
+    # keeps two products' equal values apart (D11).
     duplicates = sum(1 for n, a in enumerate(rows) for b in rows[n + 1:]
                      if a.kind == b.kind and a.value == b.value and same_period(a.period, b.period)
-                     and same_organisation(a.organisation, b.organisation))
+                     and same_organisation(a.organisation, b.organisation)
+                     and same_subject(a.subject, b.subject, context_words=subject_context(
+                         set(a.target_ids) & set(b.target_ids), targets)))
     statuses = [f.verification for f in state.verified_findings if f.verification is not None]
     failures = [name for name, failed in (
         ("unresolved_citations", unresolved > 0), ("uncited_settled_points", uncited > 0),

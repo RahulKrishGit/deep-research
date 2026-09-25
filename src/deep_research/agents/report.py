@@ -37,7 +37,11 @@ from deep_research.agents.identity import (
 )
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import summarize_text
-from deep_research.agents.verified_facts import release_text
+from deep_research.agents.verified_facts import (
+    release_text,
+    subject_context,
+    subject_named_in,
+)
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_NOT_GATED,
@@ -695,6 +699,7 @@ def render_quality_json(
 
 
 _FACTS_HEADER = "| Organisation | Measure | Period | Value | Kind | Scope | Release or edition | Source |"
+_FACTS_HEADER_WITH_SUBJECT = "| Organisation | Subject | Measure | Period | Value | Kind | Scope | Release or edition | Source |"
 
 
 def figure_label(
@@ -770,11 +775,16 @@ def written_citations(composition: ReportComposition) -> list[Citation]:
 
 
 def _point_labels(point: ReportPoint, composition: ReportComposition) -> list[str]:
+    """The rows a sentence carries: its cited row's quantity, about the subject it names (D11)."""
     cited = set(point.statement.finding_ids) if point.statement is not None else set()
     stated = quantities_in(point.text)
+    targets = [t for topic in composition.sub_topics for t in topic.evidence_targets]
     labels: list[str] = []
     for row in composition.fact_rows:
         if row.finding_id not in cited and not cited & set(row.duplicate_finding_ids):
+            continue
+        if not subject_named_in(point.text, row.subject,
+                               context_words=subject_context(row.target_ids, targets)):
             continue
         if any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated):
             label = _row_label(row)
@@ -816,7 +826,11 @@ def render_written_report(composition: ReportComposition) -> str:
     ]
     lines += ["", "## Key facts", ""]
     if composition.fact_rows:
-        lines += [_FACTS_HEADER, "|---|---|---|---|---|---|---|---|"]
+        with_subjects = any(row.subject for row in composition.fact_rows)
+        lines += (
+            [_FACTS_HEADER_WITH_SUBJECT, "|---|---|---|---|---|---|---|---|---|"]
+            if with_subjects else [_FACTS_HEADER, "|---|---|---|---|---|---|---|---|"]
+        )
         for row in composition.fact_rows:
             finding = by_id.get(row.finding_id)
             organisation = {
@@ -827,7 +841,8 @@ def render_written_report(composition: ReportComposition) -> str:
             release = "; ".join([row.release or "not stated", *(
                 f"earlier edition {e.value}" + (f" ({e.release})" if e.release else "") for e in row.earlier
             )])
-            cells = [organisation, row.measure, row.period or "not stated", row.value,
+            subject = [row.subject or "not stated"] if with_subjects else []
+            cells = [organisation, *subject, row.measure, row.period or "not stated", row.value,
                      row.kind + (" (unchecked context)" if row.context_unchecked else ""),
                      row.scope or "not stated", release,
                      citation_markers([finding.source_url], index) if finding else ""]

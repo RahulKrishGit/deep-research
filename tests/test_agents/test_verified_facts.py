@@ -14,6 +14,9 @@ from deep_research.agents.verified_facts import (
     resolve_relative_period,
     same_organisation,
     same_period,
+    same_subject,
+    subject_context,
+    subject_named_in,
 )
 from deep_research.utils.types import (
     AcquisitionState,
@@ -241,3 +244,82 @@ def test_a_resolved_period_reaches_its_key_facts_row() -> None:
                              period_resolved_from="2026-02-20")
     [row] = fact_rows([verified(finding, resolved)], [make_target(period="2026")])
     assert (row.period, row.period_resolved_from) == ("2026", "2026-02-20")
+
+
+def _rated(subject, value="4.5", *, period=None, page="lab"):
+    text = f"In our tests {subject or 'the kettle'} scored {value} out of 5 for noise."
+    slug = (subject or "kettle").casefold().replace(" ", "-")
+    read = make_read(text, url=f"https://{page}.example.test/{slug}", title="Kettle tests")
+    finding = make_finding(read, text,
+                           figures=[figure(value, "out of 5", period, "actual").model_copy(
+                               update={"subject": subject})],
+                           target_ids=["topic-01-target-01"])
+    return verified(finding, FigureContext(period=period, scope=None, attribution="own",
+                                           organisation="Example Test Lab", kind="actual",
+                                           subject=subject))
+
+
+RATING = {"question": "Which kettles do testers rate quietest?", "measure": "noise rating",
+          "unit_dimension": "rating", "period": None, "geography": None}
+
+
+@pytest.mark.parametrize(("left", "right", "rows"), [
+    ("Model A", "Model B", 2),
+    ("X200", "Acme X200", 1),
+    (None, "kettle noise", 1),
+    ("version 10.02", "version 10.03", 2),
+])
+def test_equal_values_about_different_subjects_stay_apart(left, right, rows) -> None:
+    target = make_target(**RATING)
+    assert len(fact_rows([_rated(left, period="2026"), _rated(right, period="2026")], [target])) == rows
+
+
+def test_figures_with_no_period_are_one_fact_only_on_a_shared_subject() -> None:
+    """Ruling N1: one rating on its own page and on a relay; a re-test is a revision."""
+    target = make_target(**RATING)
+    assert len(fact_rows([_rated("Kettle K1"), _rated("Kettle K1", page="news")], [target])) == 1
+    assert len(fact_rows([_rated("Kettle K1"), _rated("Kettle K2", page="news")], [target])) == 2
+    assert len(fact_rows([_rated(None), _rated(None, page="news")], [target])) == 2
+    early = _rated("Kettle K1").model_copy(update={"release_date": "2026-01-10"})
+    retest = _rated("Kettle K1", "4.7", page="news").model_copy(update={"release_date": "2026-02-10"})
+    [row] = fact_rows([early, retest], [target])
+    assert row.value == "4.7 out of 5" and [e.value for e in row.earlier] == ["4.5 out of 5"]
+
+
+def test_a_subject_that_restates_the_target_names_nothing() -> None:
+    target = make_target()
+    words = subject_context([target.target_id], [target])
+    assert not subject_named_in("Model B scored a 4.5.", "Model A")
+    assert same_subject("United States", "battery storage", context_words=words)
+    assert not same_subject("Spain", "Italy", context_words=words)
+    assert subject_named_in("The Acme X200 scored 4.5.", "Acme X200")
+    assert not subject_named_in("Model B scored 4.5.", "Model A")
+    assert subject_named_in("Anything at all.", None)
+
+
+def test_two_releases_about_two_versions_are_not_one_revision() -> None:
+    target = make_target(**RATING)
+    early = _rated("version 10.02", period="2026").model_copy(update={"release_date": "2026-01-10"})
+    late = _rated("version 10.03", period="2026").model_copy(update={"release_date": "2026-02-10"})
+    rows = fact_rows([early, late], [target])
+    assert len(rows) == 2 and all(not row.earlier for row in rows)
+
+
+def test_a_figure_answers_only_its_own_subjects_sibling_target() -> None:
+    """D11 (Fable §8.5): two targets that ask one thing of two places."""
+    spain = make_target("topic-01-target-01", question="What was Spain's unemployment rate in 2024?",
+                        measure="unemployment rate", unit_dimension="percent", geography="Spain",
+                        organisation="Example Statistical Agency")
+    italy = make_target("topic-01-target-02", question="What was Italy's unemployment rate in 2024?",
+                        measure="unemployment rate", unit_dimension="percent", geography="Italy",
+                        organisation="Example Statistical Agency")
+    text = "Italy's unemployment rate was 6.5 percent in 2024."
+    finding = make_finding(make_read(text), text,
+                           figures=[figure("6.5", "percent", "2024", "actual").model_copy(
+                               update={"subject": "Italy"})],
+                           target_ids=[spain.target_id, italy.target_id])
+    italian = verified(finding, FigureContext(period="2024", scope=None, attribution="own",
+                                              organisation="Example Statistical Agency",
+                                              kind="actual", subject="Italy"))
+    assert set(answered_target_ids([italian], [spain, italy])) == {italy.target_id}
+    assert finding_answers(italian, spain)
