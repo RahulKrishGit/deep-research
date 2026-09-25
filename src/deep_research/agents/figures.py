@@ -110,7 +110,11 @@ def _canonical_unit(unit: str) -> str:
     if bracketed:
         halves = [bracketed.group(part).strip() for part in ("outer", "inner")]
         units = [_known_unit(half) for half in halves]
-        qualified = [half.replace(" ", "") in _UNIT_QUALIFIERS for half in halves]
+        # The ac/dc qualifier is written with whatever separator the page uses
+        # ("AC/DC", "a/c", "A.C."), so it is tested with them all removed
+        # (ReRevFF1p1's N2).
+        qualified = [re.sub(r"[^a-z]", "", half.casefold()) in _UNIT_QUALIFIERS
+                     for half in halves]
         if units[0] is not None and units[0] == units[1]:
             return units[0]
         if units[0] is not None and qualified[1]:

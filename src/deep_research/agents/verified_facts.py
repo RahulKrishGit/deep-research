@@ -208,20 +208,6 @@ def same_organisation(left: str, right: str) -> bool:
         joined = "".join(core_words)
         if token in _initials_variants(tokens) | {joined}:
             return True
-        # An all-capitals first word the other name writes in capitals too stands
-        # for that name ("TIOBE" for "TIOBE Software", "IEEE" for "IEEE
-        # Spectrum"): an organisation's acronym leads its own name. A Title Case
-        # first word never does -- "Energy" is not "Energy Information
-        # Administration", and energy.gov is still not the EIA -- and neither is
-        # a country word.
-        if (
-            len(tokens) > 1
-            and tokens[0].isupper()
-            and len(tokens[0]) > 1
-            and token == tokens[0].casefold()
-            and token not in _COUNTRY_WORDS
-        ):
-            return True
         # The four-letters-or-more prefix reading is for a host label that
         # blends several of the name's words ("woodmac" for Wood Mackenzie):
         # restricted to host labels, and refused when the token merely
@@ -236,6 +222,56 @@ def same_organisation(left: str, right: str) -> bool:
         ):
             return True
     return False
+
+
+def _acronym_leads_the_name(left: str, right: str) -> bool:
+    """Whether one name is the all-capitals first word of the other.
+
+    "TIOBE" is "TIOBE Software" and "IEEE" is "IEEE Spectrum": an
+    organisation's acronym leads its own name. This is an *answering* rule, not
+    a name identity (RevFF1p2's D-1): it says a figure whose own organisation is
+    "TIOBE" may answer a target the plan addressed to "TIOBE Software", and it
+    deliberately does not reach the matcher every merge, fold and page label
+    reads, where "IEA" and "IEA PVPS" are two bodies with different numbers for
+    one year.
+
+    Four guards keep it to that reading: a Title Case first word never stands
+    for the rest ("Energy" is not "Energy Information Administration"), a
+    country word is not an organisation, the token side is never a host label
+    (a host is what ``page_owner`` falls back to, not a name), and the longer
+    name's own remaining words must carry no all-capitals or digit-bearing
+    token -- "IEA PVPS", "IEA Wind TCP", "NREL ATB" and "EIA-923" name
+    programmes and a form, not the body whose acronym leads them.
+    """
+    for one, other in ((left, right), (right, left)):
+        if _HOST.fullmatch(one.strip().casefold()):
+            continue
+        token = _single_token(one)
+        if token is None or token in _COUNTRY_WORDS:
+            continue
+        tokens = _tokens(other)
+        if len(tokens) < 2 or not tokens[0].isupper() or token != tokens[0].casefold():
+            continue
+        if any(
+            (part.isupper() and len(part) > 1) or any(ch.isdigit() for ch in part)
+            for part in tokens[1:]
+        ):
+            continue
+        return True
+    return False
+
+
+def _answers_organisation(target_organisation: str, name: str) -> bool:
+    """Whether ``name`` answers a target's organisation (the answering paths only).
+
+    Two rules, and nothing else: ``same_organisation``'s identity, and the
+    acronym that leads an organisation's own name. The second is answering-only
+    (RevFF1p2's D-1/D-2), so no merge, revision fold, page label or attribution
+    resolution reads it.
+    """
+    return same_organisation(target_organisation, name) or _acronym_leads_the_name(
+        target_organisation, name
+    )
 
 
 def _period_key(value: str | None) -> str | None:
@@ -299,9 +335,12 @@ def same_period(left: str | None, right: str | None) -> bool:
     return key is not None and key == _period_key(right)
 
 
-# A period the text continues as a range: "FY2024-25", "FY24-25", "FY25/26",
-# "2024–25". The year a range starts in is not the period the range states.
-_RANGE_CONTINUATION = re.compile(r"^\s*[-/\u2013]\s*\d")
+# A period the text continues as a *year span*: "FY2024-25", "FY24-25",
+# "FY25/26", "2024–25". The year a range starts in is not the period the range
+# states -- while the year part of a date ("2024-01-15") is a year the text
+# states, so the continuation has to be the whole span, not any dash and digit
+# (ReRevFF1p1's N1).
+_RANGE_CONTINUATION = re.compile(r"^\s*[-/\u2013]\s*(?:\d{2}|\d{4})(?!\d)(?!\s*[-/\u2013]\s*\d)")
 
 
 def _period_stated_in(text: str, period: str | None) -> bool:
@@ -756,7 +795,8 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
         fits
         and (target.period is None or same_period(figure.context.period, target.period))
         and (target.kind is None or figure.context.kind == target.kind)
-        and (target.organisation is None or same_organisation(target.organisation, figure.context.organisation))
+        and (target.organisation is None
+             or _answers_organisation(target.organisation, figure.context.organisation))
         and _subject_names_the_measure(figure, target)
         and _subject_fits(figure, target, plan_targets)
     )
@@ -786,14 +826,19 @@ def finding_answers(finding: Finding, target: EvidenceTarget, *,
         # and reported the obligation "Not found" against its own evidence.
         #
         # The one thing the page's own credit decides is a relay: a finding the
-        # page states as another body's answers that body's obligations. A
-        # qualitative finding carries no Context Check organisation, so there is
-        # nothing else to weigh -- and the report labels every row with its own
-        # source, so no statement is credited to the target's body by this.
-        if not finding.attributed_issuer:
+        # page states as another body's -- through the finding's admitted issuer
+        # or through a figure the Context Check read as that body's -- answers
+        # that body's obligations. A finding with neither credit carries no
+        # organisation of its own to weigh -- and the report labels every row
+        # with its own source, so no statement is credited to the target's body
+        # by this.
+        if not finding.attributed_issuer and not any(
+            figure.context.attribution == "relayed" for figure in verified_figures([finding])
+        ):
             return True
         return target.organisation is None or any(
-            same_organisation(target.organisation, name) for name in _finding_organisations(finding)
+            _answers_organisation(target.organisation, name)
+            for name in _finding_organisations(finding)
         )
     return any(_figure_answers(figure, target, plan_targets) for figure in verified_figures([finding]))
 

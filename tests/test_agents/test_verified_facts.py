@@ -1016,13 +1016,18 @@ def test_not_found_does_not_list_a_qualitative_target_its_bound_finding_answers(
     ("the IPCC", "IPCC"),
     ("the IPCC", "Intergovernmental Panel on Climate Change"),
     ("IPCC", "the Intergovernmental Panel on Climate Change"),
-    ("TIOBE", "TIOBE Software"),
-    ("IEEE", "IEEE Spectrum"),
     ("the EIA", "U.S. Energy Information Administration"),
 ])
-def test_a_leading_article_or_an_all_capitals_first_word_still_matches(left, right) -> None:
-    """Defect D: a leading article never blocks a match, and an all-capitals first
-    word the other name also writes in capitals stands for that name."""
+def test_a_leading_article_never_blocks_a_match(left, right) -> None:
+    """Defect D (i): a leading article is the page's grammar, not part of the
+    name.
+
+    The all-capitals-first-word rule is no longer part of this matcher
+    (RevFF1p2's D-1): it lives in ``_answers_organisation``, which only the
+    answering paths read, and
+    ``test_an_acronym_leads_its_own_name_when_the_obligation_is_answered``
+    covers it where it belongs.
+    """
     assert same_organisation(left, right)
     assert same_organisation(right, left)
 
@@ -1038,3 +1043,93 @@ def test_a_title_case_first_word_never_stands_for_the_rest(left, right) -> None:
     """The bound on the rule above: only an all-capitals word does."""
     assert not same_organisation(left, right)
     assert not same_organisation(right, left)
+
+
+# ---------------------------------------------------------------------------
+# Round 5: RevFF1p2's C-1, D-1 and D-2, and ReRevFF1p1's N1.
+# ---------------------------------------------------------------------------
+
+
+def test_a_relayed_figure_does_not_answer_a_qualitative_target() -> None:
+    """RevFF1p2's C-1: a figure the Context Check read as another body's relay
+    credits that body, so the finding answers that body's obligation and not the
+    target's other organisation."""
+    text = "Additions reached 15 GW in 2025, the firm said."
+    read = make_read(text, url="https://storage-news.test/x", title="Storage")
+    finding = verified(
+        make_finding(read, text, figures=[figure("15", "GW", "2025", "forecast")],
+                     target_ids=["topic-01-target-01"]),
+        ctx(attribution="relayed", organisation="Wood Mackenzie", period="2025", kind="forecast"))
+    target = make_target("topic-01-target-01", organisation="U.S. Energy Information Administration",
+                         **TEXT_TARGET)
+    own = make_target("topic-01-target-01", organisation="Wood Mackenzie", **TEXT_TARGET)
+
+    assert not finding_answers(finding, target)
+    assert finding_answers(finding, own)
+    assert not finding_answers(finding, make_target("topic-01-target-01",
+                                                    organisation="Wood Mackenzie Inc",
+                                                    **{**TEXT_TARGET, "measure": "storage added"}))
+
+
+def test_two_bodies_whose_names_share_an_acronym_stay_two_rows() -> None:
+    """RevFF1p2's D-1: the acronym rule is answering-only, so the IEA's figure
+    and IEA PVPS's are two facts -- never one row with the other printed as its
+    earlier edition, which would hide their disagreement as a revision."""
+    iea = verified(
+        make_finding(make_read(), "Generators added 553 GW of capacity in 2024,",
+                     figures=[figure("553", "GW", "2024", "actual")],
+                     target_ids=["topic-01-target-01"], release_date="2025-01-15"),
+        ctx(organisation="IEA", period="2024"))
+    pvps = verified(
+        make_finding(make_read(), "Installations reached 600 GW of capacity in 2024,",
+                     figures=[figure("600", "GW", "2024", "actual")],
+                     target_ids=["topic-01-target-01"], release_date="2025-04-10"),
+        ctx(organisation="IEA PVPS", period="2024"))
+
+    rows = fact_rows([iea, pvps], [make_target()])
+
+    assert [(row.organisation, row.value) for row in rows] == [("IEA", "553 GW"),
+                                                              ("IEA PVPS", "600 GW")]
+    assert all(not row.earlier for row in rows)
+
+
+def test_an_acronym_leads_its_own_name_when_the_obligation_is_answered() -> None:
+    """RevFF1p2's D-2 fix: the acronym rule survives where it belongs -- a figure
+    whose organisation is the all-capitals first word of the target's does answer
+    it -- and a programme is not the body whose acronym leads it."""
+    read = make_read()
+    rated = verified(
+        make_finding(read, "The index rated it 4.5 out of 5 in 2024.",
+                     figures=[figure("4.5", "out of 5", "2024", "actual")],
+                     target_ids=["topic-01-target-01"]),
+        ctx(organisation="TIOBE", period="2024"))
+    programme = verified(
+        make_finding(read, "The programme counted 600 GW of capacity in 2024,",
+                     figures=[figure("600", "GW", "2024", "actual")],
+                     target_ids=["topic-01-target-01"]),
+        ctx(organisation="IEA PVPS", period="2024"))
+
+    def ranked(organisation: str):
+        return make_target("topic-01-target-01", question="How was it rated in 2024?",
+                           measure="ranking score", unit_dimension="rating", period="2024",
+                           kind="actual", geography=None, organisation=organisation)
+
+    def capacity(organisation: str):
+        return make_target("topic-01-target-01", question="How much capacity in 2024?",
+                           measure="capacity added", unit_dimension="power", period="2024",
+                           kind="actual", geography=None, organisation=organisation)
+
+    assert finding_answers(rated, ranked("TIOBE Software"))
+    assert not finding_answers(rated, ranked("Tiobe Software"))
+    assert finding_answers(programme, capacity("IEA PVPS"))
+    assert not finding_answers(programme, capacity("IEA"))
+    assert not finding_answers(programme, capacity("IEA Wind TCP"))
+
+
+def test_a_date_that_is_an_iso_date_states_its_year() -> None:
+    """ReRevFF1p1's N1: the range guard reads a *year span*, so the year part of
+    an ISO date is stated while a fiscal range still is not."""
+    assert _period_stated_in("Solar capacity was 18 GW, per the report published 2024-01-15.",
+                             "calendar 2024")
+    assert _period_stated_in("Additions reached 18 GW in 2024-25.", "2024") is False
+    assert _period_stated_in("Additions reached 18 GW in 2024\u201325.", "2024") is False
