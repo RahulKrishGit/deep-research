@@ -404,11 +404,25 @@ async def test_findings_are_checked_five_per_call(tracker: Tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_failed_batch_marks_findings_context_unchecked(tracker: Tracker) -> None:
-    read = make_read()
+    # Three findings from one page, and three *statements*: a record is one
+    # piece of evidence, so three restatements of one sentence would be one
+    # finding (``identity.deduplicate_findings``) and the batch would have
+    # nothing to mark. One passage per measure keeps them three.
+    texts = {
+        f"page-1-chunk-{index}": (
+            f"Reported capacity rose by {index}.5 GW in 2024."
+        )
+        for index in range(3)
+    }
+    read = make_read("\n".join(texts.values()), passages=texts)
     findings = [
-        make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")],
-                    content=f"Finding {i}")
-        for i in range(3)
+        make_finding(
+            read,
+            texts[f"page-1-chunk-{index}"],
+            figures=[figure(f"{index}.5", "GW", "2024", "actual")],
+            content=f"Finding {index}",
+        )
+        for index in range(3)
     ]
     completer = ScriptedCompleter(outputs=[ProviderTimeoutError("timed out")])
     agent = _evidence_verifier(tracker, completer)

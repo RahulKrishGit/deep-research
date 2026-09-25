@@ -38,10 +38,13 @@ from deep_research.providers import (
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    REVIEW_DIMENSIONS,
     FigureContext,
     FigureResult,
     FindingVerification,
+    ReportReview,
     ResearchState,
+    ReviewDefect,
     SubTopic,
 )
 from tests.agent_fakes import ScriptedCompleter
@@ -213,6 +216,64 @@ def test_the_registry_labels_citable_findings_answers_first() -> None:
     registry = finding_registry(state.verified_findings, targets)
     assert [label for label, _ in registry] == ["F01", "F02", "F03"]
     assert registry[2][1] is WOODMAC_ALL   # answers only an optional target
+
+
+def test_a_material_defect_reaches_the_writers_request_word_for_word(writer) -> None:
+    """The re-draft is asked about the defects it exists to fix.
+
+    A writer re-run that is handed the same packet as the first draft can only
+    repeat it. The review that bought the re-run names what is wrong and where
+    (its kind, its scope, its own sentence), so that record is what the second
+    request carries — bounded, because it is one more thing the packet spends
+    characters on.
+    """
+    defect = ReviewDefect(
+        defect_id="review-01",
+        kind="coverage",
+        severity="major",
+        target_ids=["topic-01-target-01"],
+        problem="A promised obligation is stated nowhere in the report.",
+    )
+    state = _task_state().model_copy(
+        update={
+            "report_review": ReportReview(
+                status="scored",
+                dimensions={name: 0.9 for name in REVIEW_DIMENSIONS},
+                defects=[defect],
+                reviewed_statement_ids=["S001"],
+                per_statement_dispositions={"S001": "supported"},
+                input_fingerprint="packet-1",
+            )
+        }
+    )
+
+    body = writer_messages(writer.build_task(state))[-1].content
+
+    assert "# Defects to fix" in body
+    assert "review-01" in body
+    assert "coverage" in body
+    assert "topic-01-target-01" in body
+    assert defect.problem in body
+
+
+def test_a_clean_review_adds_no_defect_section(writer) -> None:
+    """A first draft is not asked to fix anything: no review, no section."""
+    state = _task_state().model_copy(
+        update={
+            "report_review": ReportReview(
+                status="scored",
+                dimensions={name: 0.9 for name in REVIEW_DIMENSIONS},
+                reviewed_statement_ids=["S001"],
+                per_statement_dispositions={"S001": "supported"},
+                input_fingerprint="packet-1",
+            )
+        }
+    )
+
+    body = writer_messages(writer.build_task(state))[-1].content
+
+    assert "# Defects to fix" not in body
+    assert "# Defects to fix" not in writer_messages(writer.build_task(_task_state()))[-1].content
 
 
 def test_writer_messages_list_every_figure_in_the_fixed_format(writer) -> None:

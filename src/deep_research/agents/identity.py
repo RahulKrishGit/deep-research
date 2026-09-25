@@ -95,6 +95,28 @@ def finding_fingerprint(finding: Finding) -> str:
     )
 
 
+def _passage_key(finding: Finding) -> tuple[str, str, str, str, str] | None:
+    """The identity of the evidence one finding carries, or ``None``.
+
+    A finding the acquisition path produced names the read and locator it was
+    mined from and quotes the page verbatim, so ``(url, sub-topic, read,
+    locator, snippet)`` says exactly which sentence of which page this is. Two
+    records with that key are one piece of evidence however each restated it:
+    the restatement is the model's prose, and prose is not identity. A record
+    that names no passage (a legacy or raw caller) has no such key, and nothing
+    folds on it.
+    """
+    if not finding.read_id or not finding.locator or not finding.snippet:
+        return None
+    return (
+        normalize_source_url(finding.source_url),
+        _normalized_text(finding.related_sub_topic),
+        finding.read_id,
+        finding.locator,
+        _normalized_text(finding.snippet),
+    )
+
+
 def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
     """Fold ``findings`` onto one record per identity, in first-seen order.
 
@@ -102,6 +124,15 @@ def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
     so the result does not depend on how a caller ordered equal-confidence
     restatements. Deliberately exact-match only — no embeddings and no fuzzy
     thresholds, because a near-miss merge would silently drop evidence.
+
+    Identity is read twice, and the second reading is what makes a re-read
+    free. ``finding_fingerprint`` keys the record on the page, the sub-topic
+    and the prose, which is right when two records are the same *statement*.
+    ``_passage_key`` then folds the records that are the same *evidence*: one
+    passage of one page, quoted identically, restated twice — the shape a later
+    pass produces when it re-reads a page the run already read and mines the
+    sentence it already holds. Two different sentences of one passage stay two
+    findings, because the fold is on the sentence and not on the passage alone.
 
     The fold keeps the record, and not its silences. ``raw_findings`` is
     append-only across research rounds, and a later extraction of the same
@@ -126,6 +157,18 @@ def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
         else:
             winner, loser = existing, finding
         kept[fingerprint] = _merge_duplicate_findings(winner, loser)
+
+    by_passage: dict[tuple[str, str, str, str, str], str] = {}
+    for fingerprint, finding in list(kept.items()):
+        key = _passage_key(finding)
+        if key is None:
+            continue
+        held = by_passage.get(key)
+        if held is None:
+            by_passage[key] = fingerprint
+            continue
+        kept[held] = _merge_duplicate_findings(kept[held], finding)
+        del kept[fingerprint]
     return list(kept.values())
 
 

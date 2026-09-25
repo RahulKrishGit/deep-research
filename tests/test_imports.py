@@ -524,6 +524,7 @@ def test_the_graph_nodes_cover_the_designed_sequence() -> None:
         EXTRA_PASS_NODE,
         FINALIZE_NODE,
         NODE_NAMES,
+        REDRAFT_NODE,
         REPORT_REVIEWER_NODE,
         REPORT_WRITER_NODE,
     )
@@ -538,7 +539,8 @@ def test_the_graph_nodes_cover_the_designed_sequence() -> None:
     assert EVIDENCE_VERIFIER_NODE == "evidence_verifier"
     assert REPORT_WRITER_NODE == "report_writer"
     assert REPORT_REVIEWER_NODE == "report_reviewer"
-    assert NODE_NAMES[-2] == EXTRA_PASS_NODE == "extra_pass"
+    assert NODE_NAMES[-3] == EXTRA_PASS_NODE == "extra_pass"
+    assert NODE_NAMES[-2] == REDRAFT_NODE == "writer_redraft"
     assert NODE_NAMES[-1] == FINALIZE_NODE == "finalize_report"
 
 

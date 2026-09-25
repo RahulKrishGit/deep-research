@@ -42,14 +42,16 @@ EVIDENCE_VERIFIER_NODE = "evidence_verifier"
 REPORT_WRITER_NODE = "report_writer"
 REPORT_REVIEWER_NODE = "report_reviewer"
 EXTRA_PASS_NODE = "extra_pass"
+REDRAFT_NODE = "writer_redraft"
 FINALIZE_NODE = "finalize_report"
 
-# Execution order, with the terminal review, the one-hop extra pass, and the
-# terminal publication step last. Node names deliberately equal agent names so
-# a LangSmith trace reads the same as this tuple; ``report_reviewer`` is the
-# graph's own reviewer rather than one of the five agents, ``extra_pass`` is
-# the hop that carries the iteration increment, and ``finalize_report`` is the
-# one node with no model call at all.
+# Execution order, with the terminal review, the two one-hop continuations,
+# and the terminal publication step last. Node names deliberately equal agent
+# names so a LangSmith trace reads the same as this tuple; ``report_reviewer``
+# is the graph's own reviewer rather than one of the five agents,
+# ``extra_pass`` is the hop that carries the iteration increment,
+# ``writer_redraft`` is the hop that hands the reviewer's defects back to the
+# writer, and ``finalize_report`` is the one node with no model call at all.
 NODE_NAMES = (
     PLANNER_NODE,
     RESEARCHER_NODE,
@@ -58,10 +60,18 @@ NODE_NAMES = (
     REPORT_WRITER_NODE,
     REPORT_REVIEWER_NODE,
     EXTRA_PASS_NODE,
+    REDRAFT_NODE,
     FINALIZE_NODE,
 )
 
+# How many writer re-runs a scored review with a material defect may buy. One:
+# the defect list is addressed to the writer, and a reviewer that keeps naming
+# defects cannot be allowed to loop the writer — the run publishes as not
+# accepted after the single re-run.
+MAX_WRITER_REDRAFTS = 1
+
 ROUTE_EXTRA_PASS = "extra_pass"
+ROUTE_REDRAFT = "redraft"
 ROUTE_FINALIZE = "finalize"
 ROUTE_END = "end"
 
@@ -89,6 +99,11 @@ GRAPH_ROUTES = {
         "remains, and the report was not accepted; the targets are listed "
         "under Not found."
     ),
+    "redraft_requested": (
+        "The Report Reviewer scored the report and named a material defect, "
+        "and the one writer re-run a defect list buys has not been spent; the "
+        "writer drafts again with those defects fed back."
+    ),
     "halted": "The run stopped on a non-recoverable error.",
 }
 
@@ -109,6 +124,10 @@ _STATUS_BY_ROUTE_REASON = {
     # is this status's own vocabulary and keeps its name in the CLI and the
     # API (PD-11).
     "extra_passes_exhausted": "max_iterations",
+    # The run is continuing, not ending: the writer has been asked for one
+    # more draft, so this is the same "not accepted yet" reading an extra pass
+    # carries.
+    "redraft_requested": "incomplete",
     "halted": "failed",
 }
 
@@ -206,9 +225,11 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     Pure, so the conditional edge, the recorded route event, the final status,
     and the terminal quality status all read the same decision.
 
-    There are three destinations. ``ROUTE_EXTRA_PASS`` buys the one extra
+    There are four destinations. ``ROUTE_EXTRA_PASS`` buys the one extra
     research pass the targets still missing a verified finding justify, and it
-    is bought only for those targets. ``ROUTE_FINALIZE`` publishes and stops.
+    is bought only for those targets. ``ROUTE_REDRAFT`` buys the one writer
+    re-run a scored review's *material* defects justify — no research, one
+    draft, with the defects fed back. ``ROUTE_FINALIZE`` publishes and stops.
     ``ROUTE_END`` skips publication entirely, and is reached only by a halted
     run: a failed run publishes nothing rather than a stale earlier pass's
     artifact.
@@ -216,14 +237,18 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     The order is the order of certainty. A halt outranks everything: the run
     could not finish, so no verdict about the report is owed. The extra pass
     is read next, because "these obligations have nowhere to come from" is a
-    defect with somewhere to go while the budget holds. Then the review: a
-    report no reviewer scored is published as partial rather than judged, and a
-    scored report that cleared the gates and the reviewer is accepted
-    (PD-23) — even when the pass bought for a missing target found nothing,
-    since §6.4 accepts a report whose remaining obligations are *listed* under
-    Not found. Only a scored report that was not accepted and still owes a
-    target that the ceiling can no longer buy for ends as
-    ``extra_passes_exhausted`` (status ``max_iterations``).
+    defect with somewhere to go while the budget holds — and the redraft is
+    read after it, because a re-draft cannot answer a target no verified
+    finding answers. Then the review: a report no reviewer scored is published
+    as partial rather than judged; a scored report a reviewer explicitly
+    refused buys its one re-draft before the run gives up, since that is the
+    only lever left once research cannot help; and a scored report that cleared
+    the gates and the reviewer is accepted (PD-23) — even when the pass bought
+    for a missing target found nothing, since §6.4 accepts a report whose
+    remaining obligations are *listed* under Not found. Only a scored report
+    that was not accepted and still owes a target that the ceiling can no
+    longer buy for ends as ``extra_passes_exhausted`` (status
+    ``max_iterations``).
     """
     if is_halted(state):
         return ROUTE_END, "halted"
@@ -233,6 +258,12 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
         return ROUTE_EXTRA_PASS, "extra_pass_requested"
     if review is None or review.status != "scored":
         return ROUTE_FINALIZE, "review_unavailable"
+    if state.writer_redrafts < MAX_WRITER_REDRAFTS and review.material_defects:
+        # A material defect blocks acceptance whatever else the review said, so
+        # this route would otherwise be ``report_not_accepted`` — publishing a
+        # report the run's own reviewer named as materially wrong while one
+        # draft with the defect list fed back was still unspent.
+        return ROUTE_REDRAFT, "redraft_requested"
     if (
         state.quality is not None
         and not state.quality.hard_failures

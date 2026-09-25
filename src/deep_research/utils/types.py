@@ -1728,6 +1728,16 @@ class ResearchState(ContractModel):
     list, so a target an earlier pass owed but the newest decision does not
     name cannot keep the run alive.
     """
+    writer_redrafts: int = Field(default=0, ge=0)
+    """How many writer re-runs this run has bought, at most one.
+
+    A scored review that named a material defect buys one writer re-run with
+    those defects fed back, before the run publishes as not accepted: the
+    defect list is addressed to the writer, and no research pass can fix a
+    contradiction or an omitted obligation the evidence already supports. The
+    count is what bounds it — and it is recorded, so the second review reads a
+    state that says the re-run was spent rather than drafting again.
+    """
     memory_context: MemorySnapshot = Field(default_factory=MemorySnapshot)
     events: list[ResearchEvent] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
@@ -1766,6 +1776,7 @@ class ResearchStateUpdate(TypedDict, total=False):
     run_telemetry: RunTelemetry | None
     max_extra_passes: int
     extra_pass_target_ids: list[str]
+    writer_redrafts: int
     memory_context: MemorySnapshot
     events: list[ResearchEvent]
     errors: list[ResearchError]

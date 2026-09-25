@@ -144,6 +144,34 @@ def extra_pass_started_event(
     )
 
 
+def redraft_requested_event(
+    *,
+    iteration: int,
+    redrafts: int,
+    material_defects: int,
+) -> ResearchEvent:
+    """Announce the writer re-run a review's material defects just bought.
+
+    Counts only: how many re-runs the run has now bought, and how many material
+    defects the review that bought this one named. The defects themselves are
+    provider text and stay in the review record, which is what the writer is
+    handed; this event is what makes the re-run visible in the run's own
+    history without copying a reviewer's prose into it.
+    """
+    return graph_event(
+        event_type="graph.report.redraft_requested",
+        message=(
+            f"Writer re-run {redrafts} requested for one materially defective "
+            "report."
+        ),
+        metadata={
+            "iteration": iteration,
+            "redrafts": redrafts,
+            "material_defects": material_defects,
+        },
+    )
+
+
 def quality_assessed_event(
     *,
     iteration: int,

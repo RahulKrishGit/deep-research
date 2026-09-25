@@ -33,11 +33,17 @@ from deep_research.request_budget import (
     RequestBudgetSnapshot,
 )
 from deep_research.utils.config import GraphConfig
-from deep_research.utils.types import MemorySnapshot, ResearchError, ResearchState
+from deep_research.utils.types import (
+    MemorySnapshot,
+    ResearchError,
+    ResearchState,
+    ReviewDefect,
+)
 from tests.graph_fakes import (
     FakeAgent,
     FakePublisher,
     FakeReviewer,
+    fake_report_review,
     fake_research_agents,
     fake_research_state,
     fake_scored_source,
@@ -732,6 +738,67 @@ async def test_an_unaskable_reviewer_still_publishes_the_report(
     assert "input_tokens" not in serialized
     assert run.state.quality is not None
     assert run.state.quality.semantic_review_status == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_a_material_defect_re_drafts_the_report_once(tracker: Tracker) -> None:
+    """A judged report its own reviewer refused is re-drafted, once, then published.
+
+    The second draft is the whole point: the reviewer's defects name what is
+    wrong with a report the evidence already supports, so the run cannot fix
+    them with research and must not publish them unanswered. The bound is the
+    other half — exactly one re-run, so a reviewer that keeps naming defects
+    cannot loop the writer — and the writer composing the second draft is
+    handed the review that asked for it, which is where the defects it must
+    address come from.
+    """
+    defect = ReviewDefect(
+        defect_id="review-01",
+        kind="contradiction",
+        severity="major",
+        statement_ids=["S001"],
+        problem="The summary contradicts the findings below it.",
+    )
+    reviewer = FakeReviewer(
+        [
+            fake_report_review(
+                defects=[defect],
+                reviewed_statement_ids=("S001",),
+            )
+        ]
+    )
+    writer = FakeAgent(
+        "report_writer", [], update_factory=fake_writer_update
+    )
+    publisher = FakePublisher()
+    agents = fake_research_agents(
+        publisher=publisher, report_reviewer=reviewer, report_writer=writer
+    )
+
+    run = await run_research_graph(
+        graph=compile_research_graph(agents),
+        tracker=tracker,
+        session_id="session-1",
+        question=QUESTION,
+    )
+
+    # One re-run: the writer ran twice, and never three times.
+    assert len(writer.calls) == 2
+    first, second = writer.calls
+    assert first.writer_redrafts == 0
+    assert second.writer_redrafts == 1
+    assert second.report_review is not None
+    assert [
+        defect.defect_id for defect in second.report_review.material_defects
+    ] == ["review-01"]
+    # The re-run is recorded, and the run still publishes its artifacts.
+    assert [
+        event.event_type
+        for event in run.state.events
+        if event.event_type == "graph.report.redraft_requested"
+    ] == ["graph.report.redraft_requested"]
+    assert len(publisher.written_paths) == 3
+    assert run.state.writer_redrafts == 1
 
 
 def test_the_graph_config_default_matches_the_graph_module_default() -> None:

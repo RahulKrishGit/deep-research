@@ -22,12 +22,14 @@ from deep_research.graph.state import (
     HALTING_ERROR_TYPES,
     NODE_NAMES,
     PLANNER_NODE,
+    REDRAFT_NODE,
     REPORT_REVIEWER_NODE,
     REPORT_WRITER_NODE,
     RESEARCHER_NODE,
     ROUTE_END,
     ROUTE_EXTRA_PASS,
     ROUTE_FINALIZE,
+    ROUTE_REDRAFT,
     SOURCE_EVALUATOR_NODE,
     dump_state,
     graph_quality_status,
@@ -50,6 +52,7 @@ from deep_research.utils.types import (
     ReportReview,
     ResearchError,
     ResearchState,
+    ReviewDefect,
     SubTopic,
 )
 from tests.graph_fakes import (
@@ -272,6 +275,117 @@ def _routed(**fields: object) -> tuple[str, str]:
     )
 
 
+def test_a_material_defect_buys_one_writer_redraft_before_a_not_accepted_verdict() -> (
+    None
+):
+    """A review that named what is wrong is acted on, once, before publishing.
+
+    ``semantic_review_passes`` refuses to accept a report whose review carries
+    a material defect, and nothing downstream could do anything about it: the
+    run published a report its own reviewer had just named as wrong, and the
+    only lever left was the next research pass — which cannot fix a
+    self-contradiction or an omitted obligation that the evidence already
+    supports. The defect list is addressed to the writer, so it buys exactly
+    one writer re-run: no new research, one draft, and then the terminal route
+    whatever the second review says.
+    """
+    defect = ReviewDefect(
+        defect_id="review-01",
+        kind="contradiction",
+        severity="major",
+        statement_ids=["S001"],
+        problem="The report states a rule its own findings qualify.",
+    )
+    material = ReportReview(
+        status="scored",
+        dimensions={d: 0.9 for d in REVIEW_DIMENSIONS},
+        input_fingerprint="packet-1",
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        defects=[defect],
+    )
+
+    assert _routed(review=material) == ("redraft", "redraft_requested")
+    # One re-run, and the second verdict is terminal: the same review with the
+    # re-run spent publishes rather than drafting again.
+    assert _routed(review=material, writer_redrafts=1) == (
+        "finalize",
+        "report_not_accepted",
+    )
+
+
+def test_a_minor_defect_does_not_buy_a_redraft() -> None:
+    """Only a defect that blocks acceptance is worth a draft.
+
+    A minor observation is not a reason to re-run the writer: the review passed
+    with it recorded, so the route accepts the report it judged and the
+    operator still reads the defect in the record.
+    """
+    minor = ReportReview(
+        status="scored",
+        dimensions={d: 0.9 for d in REVIEW_DIMENSIONS},
+        input_fingerprint="packet-1",
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        defects=[
+            ReviewDefect(
+                defect_id="review-01",
+                kind="presentation",
+                severity="minor",
+                statement_ids=["S001"],
+                problem="A sentence reads awkwardly.",
+            )
+        ],
+    )
+
+    assert _routed(review=minor) == ("finalize", "report_accepted")
+
+
+def test_a_redraft_never_outranks_research_the_budget_can_still_buy() -> None:
+    """A missing target with a pass left still buys the pass.
+
+    The redraft cannot answer a target no verified finding answers, so the
+    pass comes first and the writer re-run is what the *next* review's defects
+    buy. The prefixed `extra_pass_requested` route is also what keeps the
+    existing missing-target behaviour unchanged for a review that names a
+    material defect beside a missing target.
+    """
+    both = ReportReview(
+        status="scored",
+        missing_required_target_ids=["t2"],
+        dimensions={d: 0.9 for d in REVIEW_DIMENSIONS},
+        input_fingerprint="packet-1",
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        defects=[
+            ReviewDefect(
+                defect_id="review-01",
+                kind="coverage",
+                severity="major",
+                target_ids=["t2"],
+                problem="A promised obligation is not stated.",
+            )
+        ],
+    )
+
+    assert _routed(review=both, iteration=0, max_extra_passes=1) == (
+        "extra_pass",
+        "extra_pass_requested",
+    )
+    assert _routed(review=both, iteration=1, max_extra_passes=1) == (
+        "redraft",
+        "redraft_requested",
+    )
+
+
+def test_an_unscored_review_buys_no_redraft() -> None:
+    """No judgement is not a defect list: a partial review has nothing to feed."""
+    assert _routed(review=ReportReview(status="provider_failed")) == (
+        "finalize",
+        "review_unavailable",
+    )
+
+
 def test_missing_targets_buy_one_extra_pass_then_publish() -> None:
     missing = ReportReview(
         status="scored",
@@ -380,9 +494,19 @@ def test_a_paused_run_cannot_buy_a_pass_it_cannot_pay_for() -> None:
 
 
 def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
-    """``graph_route`` has exactly the six enumerated reasons (spec 6.3-6.5)."""
+    """``graph_route`` has exactly the seven enumerated reasons (spec 6.3-6.5)."""
     missing = fake_report_review(missing_required_target_ids=["t2"])
     rejected = fake_report_review(dimensions={d: 0.5 for d in REVIEW_DIMENSIONS})
+    defective = fake_report_review(
+        defects=[
+            ReviewDefect(
+                defect_id="review-01",
+                kind="contradiction",
+                severity="major",
+                problem="The summary contradicts the findings below it.",
+            )
+        ]
+    )
     states = (
         fake_research_state(errors=[halting_error()]),
         fake_research_state(
@@ -396,6 +520,7 @@ def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
         fake_research_state(report_review=missing),
         fake_research_state(iteration=1, report_review=missing),
         fake_research_state(iteration=1, report_review=rejected),
+        fake_research_state(quality=fake_quality(), report_review=defective),
     )
 
     reasons = {graph_route(state)[1] for state in states}
@@ -407,6 +532,7 @@ def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
         "review_unavailable",
         "extra_pass_requested",
         "extra_passes_exhausted",
+        "redraft_requested",
         "halted",
     }
     for reason in GRAPH_ROUTES:
@@ -435,6 +561,19 @@ def _reason_status(reason: str) -> str:
             report_review=fake_report_review(
                 missing_required_target_ids=["t2"],
                 dimensions={d: 0.5 for d in REVIEW_DIMENSIONS},
+            ),
+        ),
+        "redraft_requested": fake_research_state(
+            quality=fake_quality(),
+            report_review=fake_report_review(
+                defects=[
+                    ReviewDefect(
+                        defect_id="review-01",
+                        kind="contradiction",
+                        severity="major",
+                        problem="The summary contradicts the findings.",
+                    )
+                ]
             ),
         ),
     }[reason]
@@ -498,12 +637,16 @@ def test_the_node_names_are_unique_and_ordered() -> None:
         REPORT_WRITER_NODE,
         REPORT_REVIEWER_NODE,
         EXTRA_PASS_NODE,
+        REDRAFT_NODE,
         FINALIZE_NODE,
     )
-    # The extra-pass hop and the terminal publication are the last two: the
-    # hop is the only node the loop back into the researcher passes through,
-    # and the finalizer is the only writer.
-    assert NODE_NAMES[-2] == EXTRA_PASS_NODE == ROUTE_EXTRA_PASS == "extra_pass"
+    # The two hops and the terminal publication are the last three: the
+    # extra-pass hop is the only node the loop back into the researcher passes
+    # through, the redraft hop is the only one that leads to the writer alone,
+    # and the finalizer is the only writer of the artifacts.
+    assert NODE_NAMES[-3] == EXTRA_PASS_NODE == ROUTE_EXTRA_PASS == "extra_pass"
+    assert NODE_NAMES[-2] == REDRAFT_NODE == "writer_redraft"
+    assert ROUTE_REDRAFT == "redraft"
     assert NODE_NAMES[-1] == FINALIZE_NODE == "finalize_report"
 
 

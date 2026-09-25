@@ -49,6 +49,7 @@ from deep_research.graph.nodes import (
     report_reviewer_node,
     report_writer_node,
     route_after_review,
+    writer_redraft_node,
 )
 from deep_research.graph.state import (
     DEFAULT_MAX_EXTRA_PASSES,
@@ -57,12 +58,14 @@ from deep_research.graph.state import (
     FINALIZE_NODE,
     NODE_NAMES,
     PLANNER_NODE,
+    REDRAFT_NODE,
     REPORT_REVIEWER_NODE,
     REPORT_WRITER_NODE,
     RESEARCHER_NODE,
     ROUTE_END,
     ROUTE_EXTRA_PASS,
     ROUTE_FINALIZE,
+    ROUTE_REDRAFT,
     SOURCE_EVALUATOR_NODE,
     ResearchGraphState,
     dump_state,
@@ -170,6 +173,7 @@ def build_research_graph(
         REPORT_REVIEWER_NODE, report_reviewer_node(agents.report_reviewer)
     )
     builder.add_node(EXTRA_PASS_NODE, extra_pass_node)
+    builder.add_node(REDRAFT_NODE, writer_redraft_node)
     builder.add_node(
         FINALIZE_NODE,
         finalize_report_node(
@@ -191,6 +195,7 @@ def build_research_graph(
         route_after_review,
         {
             ROUTE_EXTRA_PASS: EXTRA_PASS_NODE,
+            ROUTE_REDRAFT: REDRAFT_NODE,
             ROUTE_FINALIZE: FINALIZE_NODE,
             ROUTE_END: END,
         },
@@ -199,6 +204,10 @@ def build_research_graph(
     # exists for the targets that were missing, and the topics that already
     # answered their own obligations are not part of it.
     builder.add_edge(EXTRA_PASS_NODE, RESEARCHER_NODE)
+    # The redraft hop loops back to the writer alone: its defects are about the
+    # report, not about the evidence, so no research or verification re-runs —
+    # the writer drafts again and the reviewer judges that draft.
+    builder.add_edge(REDRAFT_NODE, REPORT_WRITER_NODE)
     builder.add_edge(FINALIZE_NODE, END)
     return builder
 

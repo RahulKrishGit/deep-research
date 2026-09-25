@@ -44,7 +44,7 @@ from deep_research.agents.report import (
     written_citations,
 )
 from deep_research.agents.sources import publisher_identity
-from deep_research.agents.steps import ReActRun
+from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.verified_facts import (
     answered_target_ids,
     citable_findings,
@@ -68,12 +68,14 @@ from deep_research.utils.types import (
     RejectedDraftPoint,
     ReportComposition,
     ReportPoint,
+    ReportReview,
     ReportSection,
     ReportStatement,
     ResearchError,
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
+    ReviewDefect,
     ScoredSource,
     SubTopic,
 )
@@ -82,6 +84,10 @@ REPORT_WRITER_NAME = "report_writer"
 DEFAULT_MAX_SECTIONS = 4
 MAX_POINT_CHARS = 600
 _SECTION_TITLE_CHARS = 120
+# One defect's own sentence as the re-draft's request carries it: enough to
+# state what is wrong, bounded because the packet spends characters on it and
+# the defect's id, kind and scope ids are what identify it.
+_DEFECT_PROBLEM_CHARS = 400
 # F10: the first attempt runs at the resolved profile's effort (config.yaml
 # model_overrides.report_writer, the one effort source); a truncated draft is
 # asked once more at high, the retry this writer's own call makes.
@@ -203,6 +209,16 @@ class ReportWriterTask(AgentTask):
     """Read id -> the page it read, so the Statement Check can see each cited
     finding's bounded passage (improvement 8). Empty for a caller with no reads
     in hand, which shows the snippet alone as before."""
+    defects: list[ReviewDefect] = Field(default_factory=list)
+    """The material defects this draft must answer, in the review's own order.
+
+    Empty for a first draft. Non-empty means the graph bought this writer
+    re-run *for* these defects: the run already composed a report, the terminal
+    review scored it and named what is materially wrong, and no research pass
+    can fix it from the same evidence — so the defect list is what the request
+    adds, and a re-draft that ignored it could only repeat the draft it
+    replaces.
+    """
 
 
 class WrittenReport(ContractModel):
@@ -360,6 +376,38 @@ def _answering_labels(task: ReportWriterTask, target_id: str) -> str:
     return ", ".join(labels) or "not found"
 
 
+def material_defects(review: ReportReview | None) -> list[ReviewDefect]:
+    """The defects one stored review says must be closed before acceptance.
+
+    Read from the review record, never re-derived: the reviewer's own severity
+    decides what is material (``ReviewDefect.material``), and an unscored review
+    has no defect list to act on. This is the same reader the routing decision
+    uses, so the writer is asked about exactly the defects that bought its
+    re-run.
+    """
+    if review is None or review.status != "scored":
+        return []
+    return list(review.material_defects)
+
+
+def _defect_lines(defects: Sequence[ReviewDefect]) -> str:
+    """One bounded line per defect: its id, kind, scope, and its own sentence.
+
+    The sentence is the reviewer's own text and is clamped here rather than
+    passed through whole: it is model output, and the packet spends characters
+    on everything it carries. The id, the kind and the scope ids are enumerated
+    or plan-minted, so the writer can act on a defect whose sentence was cut.
+    """
+    lines: list[str] = []
+    for defect in defects:
+        scope = ", ".join([*defect.target_ids, *defect.statement_ids]) or "the whole report"
+        lines.append(
+            f"- {defect.defect_id} ({defect.kind}; {scope}): "
+            + summarize_text(defect.problem, limit=_DEFECT_PROBLEM_CHARS)
+        )
+    return "\n".join(lines)
+
+
 def writer_messages(task: ReportWriterTask) -> list[ChatMessage]:
     targets = "\n".join(
         f"- {t.target_id}: {t.question} (" + _answering_labels(task, t.target_id) + ")"
@@ -373,8 +421,10 @@ def writer_messages(task: ReportWriterTask) -> list[ChatMessage]:
     material = [
         f"# Question\n{task.question}",
         f"# Required targets and the findings that answer them\n{targets}",
-        f"# Verified findings\n{registry}",
     ]
+    if task.defects:
+        material.append(f"# Defects to fix\n{_defect_lines(task.defects)}")
+    material.append(f"# Verified findings\n{registry}")
     return [ChatMessage(role="developer", content=REPORT_WRITER_SYSTEM_PROMPT),
             ChatMessage(role="user", content=render_structured_request(static, material))]
 
@@ -774,6 +824,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             not_found=not_found_targets(state.sub_topics, answered, state.acquisition_state_by_target),
             answered=answered,
             reads=dict(state.read_records),
+            defects=material_defects(state.report_review),
         )
 
     async def draft(self, task: ReportWriterTask) -> tuple[ReportWriterDraft | None, list[ResearchError]]:
