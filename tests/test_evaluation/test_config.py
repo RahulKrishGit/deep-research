@@ -948,7 +948,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # edited, so the writer's value moved `1bfcd866e32f` -> `11dde57775b2` and
     # the other four pins and the Judge pin are unchanged.
     # FF1 (review F2) and FF2 (review F3) both moved the writer; merged `9387d2a0d77a`.
-    "report_writer": "9387d2a0d77a",
+    # The evidence-log item (review F5) moved the writer once more: the
+    # Statement Check's bounded passages are computed once for the items and
+    # kept on the published record (`9387d2a0d77a` -> `e81da5da252b`).
+    "report_writer": "e81da5da252b",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

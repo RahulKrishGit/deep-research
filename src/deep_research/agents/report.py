@@ -1116,7 +1116,14 @@ def render_finding_log(composition: ReportComposition) -> str:
                 status += "; context unchecked"
         lines += [f"### {label} — {finding.source_title}", "", f"- Source: {finding.source_url}",
                   f"- Read: {finding.read_id or 'none'}, locator {finding.locator or 'none'}",
-                  f'- Snippet: "{finding.snippet or ""}"', f"- Verification: {status}"]
+                  f'- Snippet: "{finding.snippet or ""}"']
+        passage = composition.statement_passages.get(finding_id)
+        if passage:
+            # Review F5: a snippet is cut at its passage's boundary, so a
+            # verdict can rest on the sentence just past the cut. The ledger
+            # prints the same bounded passage the Statement Check read.
+            lines.append(f'- Passage: "{passage}"')
+        lines.append(f"- Verification: {status}")
         for result in verification.figure_results if verification else []:
             text = f"{result.figure.value} {result.figure.unit}"
             if result.kept and result.context is not None:

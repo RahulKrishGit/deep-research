@@ -619,6 +619,7 @@ async def compose_written_report(
     all_candidates = summary_candidates + [c for _, points in section_candidates for c in points]
     verdicts: Mapping[str, _Verdict | None] = {}
     check_errors: list[ResearchError] = []
+    checked_passages: dict[str, str] = {}
     if all_candidates:
         # Imported at call time, not at module scope: the unit tests and the
         # offline audit harness both substitute the checker by assigning
@@ -632,10 +633,16 @@ async def compose_written_report(
             StatementCheckItem,
             check_statements,
         )
+        # One map for every item and for the published record (review F5): the
+        # evidence log prints exactly the words each verdict was made on.
+        checked_passages = statement_passages(
+            [finding for candidate in all_candidates for finding in candidate.findings],
+            task.reads,
+        )
         items = [
             StatementCheckItem(label=c.key, text=c.text, findings=c.findings,
                                labels=[_finding_label(f) for f in c.findings],
-                               passages=statement_passages(c.findings, task.reads))
+                               passages=checked_passages)
             for c in all_candidates
         ]
         try:
@@ -743,6 +750,7 @@ async def compose_written_report(
         rejected_points=rejected, fact_rows=list(task.facts), not_found=list(task.not_found),
         finding_labels={label: finding_id for label, finding_id in ids.items()},
         statement_verdicts=statement_verdicts,
+        statement_passages=checked_passages,
         generated_on=task.generated_on, errors=check_errors,
     )
 
