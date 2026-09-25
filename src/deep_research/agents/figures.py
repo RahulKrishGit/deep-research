@@ -76,8 +76,8 @@ class Quantity:
     end: int = 0
 
 
-def _canonical_unit(unit: str) -> str:
-    text = " ".join(cosmetic_text(unit).replace("-", " ").split())
+def _known_unit(text: str) -> str | None:
+    """The canonical spelling ``text`` names, or ``None`` for a unit not known."""
     if text in {"%", "percent", "per cent"}:
         return "%"
     spelled = re.fullmatch(r"(kilo|mega|giga|tera)watts?( ?hours?)?", text)
@@ -86,6 +86,30 @@ def _canonical_unit(unit: str) -> str:
     abbreviated = re.fullmatch(r"([kmgt]wh?)(?:ac|dc)?", text.replace(" ", ""))
     if abbreviated:
         return abbreviated.group(1)
+    return None
+
+
+# A unit written with its own abbreviation in brackets ("gigawatts (GW)",
+# "GW (gigawatts)", "megawatt hours (MWh)"): the two spellings name one unit,
+# so either half may carry it. Pages in every domain write units this way, and
+# without this the unit had no dimension at all — so the figure could not answer
+# a power or energy target, could not be compared, and its Key facts row fell
+# back to "stated figure".
+_BRACKETED_UNIT = re.compile(r"^(?P<outer>[^()]+?)\((?P<inner>[^()]+)\)$")
+
+
+def _canonical_unit(unit: str) -> str:
+    text = " ".join(cosmetic_text(unit).replace("-", " ").split())
+    known = _known_unit(text)
+    if known is not None:
+        return known
+    bracketed = _BRACKETED_UNIT.fullmatch(text)
+    if bracketed:
+        named = {
+            _known_unit(bracketed.group(part).strip()) for part in ("outer", "inner")
+        } - {None}
+        if len(named) == 1:
+            return named.pop()
     return text
 
 

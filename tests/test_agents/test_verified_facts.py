@@ -12,6 +12,7 @@ from deep_research.agents.evidence_verifier import (
 )
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.verified_facts import (
+    _period_stated_in,
     _rows_share_a_subject,
     _target_fields,
     answered_target_ids,
@@ -838,3 +839,61 @@ def test_the_row_label_agrees_with_the_pages_own_attribution() -> None:
 
     assert (row.attribution, row.organisation, row.relay_host) == (
         "relayed", "U.S. Energy Information Administration", "power-eng.com")
+
+
+# ---------------------------------------------------------------------------
+# Round 3, Defect A: a period the words state in another spelling.
+# ---------------------------------------------------------------------------
+
+
+def test_a_two_digit_year_reads_as_its_four_digit_year() -> None:
+    """Round 3 (pre-flight run 3): the page dates its figure "at the end of
+    Q1'25", and "Q1 2025" has to read as the same period — an apostrophe or a
+    period abbreviation attaches a two-digit year, which folds by the usual
+    pivot (00-49 is 20xx, 50-99 is 19xx). A bare two-digit number is not a year.
+    """
+    assert same_period("Q1 2025", "Q1\u201925")
+    assert same_period("Q1 2025", "Q1'25")
+    assert same_period("fiscal 2025", "FY25")
+    assert same_period("fiscal 2025", "FY\u201925")
+    assert same_period("H1 2025", "H1\u201925")
+    assert same_period("Q4 1998", "Q4'98")
+
+    assert not same_period("Q1 2025", "Q2\u201925")
+    assert not same_period("fiscal 2025", "2025")
+    assert not same_period("Q1 2025", "Q1 25")
+
+
+def test_the_words_state_a_period_however_they_spell_it() -> None:
+    """The words state a period when their folded tokens carry its key as one run."""
+    words = ("The report says domestic storage capacity will rise from about 28 GW at the end "
+             "of Q1\u201925 to 64.9 GW at the end of 2026.")
+
+    assert _period_stated_in(words, "Q1 2025")
+    assert _period_stated_in(words, "quarter 1 2025")
+    assert _period_stated_in(words, "2026")
+
+    assert not _period_stated_in(words, "Q2 2025")
+    assert not _period_stated_in(words, "fiscal 2025")
+    assert not _period_stated_in(words, None)
+
+
+def test_a_bracketed_unit_answers_the_target_it_belongs_to() -> None:
+    """Round 3 (pre-flight run 3): the Key facts row read `26 gigawatts (GW)`
+    under the measure "stated figure", because the bracketed unit had no
+    dimension for the target's own dimension to match."""
+    text = ("Cumulative utility-scale battery storage capacity exceeded 26 gigawatts (GW) "
+            "in 2024.")
+    read = make_read(text, url="https://eia.gov/todayinenergy/detail.php?id=64705")
+    finding = make_finding(read, text,
+                           figures=[figure("26", "gigawatts (GW)", "2024", "actual")],
+                           target_ids=["topic-01-target-01"])
+    target = make_target("topic-01-target-01", question=(
+        "How much utility-scale battery storage capacity was there in 2024?"),
+        measure="utility-scale battery storage capacity", unit_dimension="power", period="2024",
+        kind="actual", geography=None, organisation=None)
+
+    [row] = fact_rows([verified(finding, ctx(organisation="eia.gov", period="2024"))], [target])
+
+    assert row.measure == "utility-scale battery storage capacity"
+    assert row.target_ids == ["topic-01-target-01"]

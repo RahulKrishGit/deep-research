@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from deep_research.agents.figures import (
@@ -98,3 +100,39 @@ def test_same_quantity_compares_across_scales() -> None:
     assert ten_gw is not None and same_quantity(ten_gw, found)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Round 3, Defect B: a unit written with its own abbreviation in brackets.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("unit", "dimension", "base"),
+    [
+        ("gigawatts (GW)", "power", Decimal("26e9")),
+        ("GW (gigawatts)", "power", Decimal("26e9")),
+        ("megawatt hours (MWh)", "energy", Decimal("26e6")),
+    ],
+)
+def test_a_bracketed_unit_keeps_its_dimension(unit: str, dimension: str, base: Decimal) -> None:
+    """Round 3 (pre-flight run 3): the page writes "26 gigawatts (GW)", and the
+    unit then had no dimension at all — so the figure could not answer a power
+    or energy target, could not be compared, and its row fell back to "stated
+    figure". Pages in every domain write a unit with its abbreviation in
+    brackets, in either order.
+    """
+    quantity = parse_figure("26", unit)
+
+    assert quantity is not None
+    assert (quantity.dimension, quantity.base) == (dimension, base)
+    assert unit_dimension(unit) == dimension
+
+
+def test_a_bracketed_unit_naming_two_known_units_stays_unparsed() -> None:
+    """The bound: "GW (MWh)" names two different units, so nothing is read from
+    it — the same as any other unit this rule set does not know."""
+    quantity = parse_figure("26", "GW (MWh)")
+
+    assert quantity is not None and quantity.dimension is None
+    assert unit_dimension("GW (MWh)") is None

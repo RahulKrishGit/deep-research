@@ -233,25 +233,68 @@ def _period_key(value: str | None) -> str | None:
 # "fiscal" but never onto a bare calendar year: only the spellings of *one*
 # fiscal period are made to agree.
 _PERIOD_ABBREVIATION = re.compile(r"\b(fy|q|h)(?=\d)")
+_PERIOD_FOLDS = {"fy": "fiscal", "q": "quarter", "h": "half"}
 _ORDINAL_NUMBER = {"first": "1", "second": "2", "third": "3", "fourth": "4"}
 _SPELLED_ORDINAL_PERIOD = re.compile(r"\b(first|second|third|fourth)[\s-]+(quarter|half)\b")
+# A two-digit year reads as its four-digit one when the page attaches it to a
+# period abbreviation or marks it with an apostrophe ("Q1'25", "FY25",
+# "H1'25"): 00-49 is 20xx and 50-99 is 19xx. A bare two-digit number is not a
+# year -- "Q1 25" and "25 GW" state none -- so nothing folds without one of
+# those markers, and a four-digit year is never touched.
+_TWO_DIGIT_YEAR = re.compile(r"(?P<lead>['\u2019]|\bfy|\bq[1-4]?|\bh[1-2]?)(?P<year>\d{2})(?!\d)")
+
+
+def _full_year(year: str) -> str:
+    """The four-digit year a two-digit one stands for, by the usual pivot."""
+    return ("20" if int(year) <= 49 else "19") + year
 
 
 def _folded_period(value: str) -> str:
     text = _SPELLED_ORDINAL_PERIOD.sub(
         lambda match: f"{match.group(2)} {_ORDINAL_NUMBER[match.group(1)]}", cosmetic_text(value)
     )
-    text = _PERIOD_ABBREVIATION.sub(lambda match: f"{match.group(1)} ", text)
-    return " ".join(
-        {"fy": "fiscal", "q": "quarter", "h": "half"}.get(word, word)
-        for word in text.split()
+    text = _TWO_DIGIT_YEAR.sub(
+        lambda match: f"{match.group('lead')} {_full_year(match.group('year'))}", text
     )
+    return " ".join(_PERIOD_FOLDS.get(word, word) for word in _split_period_words(text))
+
+
+def _split_period_words(text: str) -> list[str]:
+    """``text``'s words, with the abbreviation folded and no apostrophe left in a word.
+
+    An apostrophe between an abbreviation and its year ("fy' 2025", "q1' 2025")
+    is the page's own spelling of the gap the fold inserts, so it is dropped
+    before the abbreviation is split: without this, the bare token "fy'" never
+    reaches the fold table and "FY'25" would keep a key of its own.
+    """
+    words: list[str] = []
+    for word in text.split():
+        cleaned = re.sub(r"['\u2019]+", "", word)
+        words.extend(_PERIOD_ABBREVIATION.sub(lambda m: f"{m.group(1)} ", cleaned).split())
+    return words
 
 
 def same_period(left: str | None, right: str | None) -> bool:
     """Equal after cosmetic normalisation, or both the same bare year."""
     key = _period_key(left)
     return key is not None and key == _period_key(right)
+
+
+def _period_stated_in(text: str, period: str | None) -> bool:
+    """Whether ``text`` states ``period``, however either one spells it.
+
+    The period and the text fold to one key ("Q4 2025" is "fourth quarter of
+    2025"), and the key counts as stated when the text's own folded tokens carry
+    it as a contiguous run: a sentence that dates a figure "at the end of Q1'25"
+    states the period a page or a reply writes "Q1 2025".
+    """
+    key = _period_key(period)
+    if key is None:
+        return False
+    wanted = key.split()
+    words = [w for w in re.findall(r"[a-z0-9]+", _folded_period(text))
+             if w not in _PERIOD_FILLER]
+    return any(words[i : i + len(wanted)] == wanted for i in range(len(words) - len(wanted) + 1))
 
 
 # Fable §8.6 step 2's filler words, less "a" and "an": a single letter can be a
