@@ -526,6 +526,28 @@ def test_the_writer_double_drafts_prose_no_page_states_and_the_checker_refuses_i
     assert verdict.reason
 
 
+def test_every_manifest_entry_declares_the_result_its_builder_expects() -> None:
+    """R4 (review-4.9): the entry's published result and the scenario's own
+    expectation are one fact, and the runner reprints the entry's.
+
+    ``runner.py`` copies ``expected_product_result`` into the recorded result,
+    so an entry whose string disagrees with its builder's ``CaseExpectation``
+    publishes a result the row was never measured against.
+    """
+    from deep_research.e2e_evaluation.replay_matrix import REPLAY_CASE_MANIFEST
+
+    drifted: dict[str, tuple[str, str]] = {}
+    for entry in REPLAY_CASE_MANIFEST:
+        if entry.build is None:
+            continue
+        expectation = entry.build().expectation
+        declared = f"{expectation.terminal_quality} / {expectation.exit_code}"
+        if entry.expected_product_result != declared:
+            drifted[entry.case_id] = (entry.expected_product_result, declared)
+
+    assert drifted == {}
+
+
 # --- the Report Reviewer double ---------------------------------------------
 
 

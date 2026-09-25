@@ -5,10 +5,10 @@ against. Each row names a case id, the version of its semantics, the product
 result the plan expects, the decisive assertion that makes it that result, and
 the scenario builder that drives the real stack.
 
-Every case runs the production agents through the real graph. The
-``ScriptedGraphAgent`` cases in :mod:`deep_research.e2e_evaluation.cases`
-remain as graph-only historical regression tests; nothing here instantiates
-that double.
+Every case runs the production agents through the real graph. The retired
+scripted-double harness (a six-agent double replaying a graph that no longer
+exists) is gone (PD-14): this matrix is the only controlled harness, and it
+covers the new graph end to end.
 
 Two things about the fixtures are worth stating once, because every case
 depends on them. A page states its own claim in prose, and the excerpt the run
@@ -35,12 +35,14 @@ from deep_research.e2e_evaluation.replay import (
 )
 from deep_research.memory.entries import MemoryEntry
 
-REPLAY_CASE_MANIFEST_VERSION = 1
+REPLAY_CASE_MANIFEST_VERSION = 2
 
 # The case-schema version each case's semantics are pinned at. Bumping a case
 # means changing its declaration here and in its own builder together, so a
-# recorded result names the semantics it was produced under.
-REPLAY_CASE_VERSION = 1
+# recorded result names the semantics it was produced under. Bumped for the
+# 4.9 re-review's N1 fix: ``extra-pass-recovers-missing-target`` now takes a
+# real extra pass instead of a second discovery round inside the first pass.
+REPLAY_CASE_VERSION = 2
 
 HTML = "text/html; charset=utf-8"
 PDF = "application/pdf"
@@ -293,7 +295,7 @@ def _broad_constraints() -> ReplayScenario:
             "What do the six published measures say about the Acme widget in 2024?"
         ),
         topics=tuple(topics),
-        max_extra_passes=3,
+        max_extra_passes=1,
         # Six obligations need six researched sub-topics: pinned independent
         # of the production default (spec §7.2 caps that default at 5) so
         # this case stays a real test of a six-topic plan regardless of it.
@@ -422,15 +424,33 @@ def _comparative_conflict() -> ReplayScenario:
 
 
 def _extra_pass_recovers_missing_target() -> ReplayScenario:
-    """The missing account is published later, and the repair round finds it.
+    """The missing account is unreachable in the opening round; the extra pass finds it.
 
-    The opening round can read one publisher: the claim is competent but
-    uncorroborated, so its obligation is not met and the run owes itself a
-    repair. The second round's search is what surfaces the second publisher,
-    which is the only way the target can be answered - so a run that recovered
-    it did so by acquiring new evidence, not by re-reading what it had.
+    Six rosters answer the opening round's search and all refuse the read,
+    which spends the sub-topic's whole turn budget before the pair that
+    states the figure -- reachable only by the follow-up search -- can be
+    asked for. The opening round therefore ends with the obligation missing,
+    code buys exactly one extra pass for it (D4, §6.5), and that pass issues
+    the search the opening round could not: both independent accounts of the
+    pair are read together, and it is that read which turns the obligation
+    into an answer, never a second search folded into the first pass.
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    rosters = tuple(
+        _page(
+            f"roster{position}.example.test",
+            f"entry-{position}",
+            f"Adoption roster {position}",
+            "the adoption roster lists a title and a publication date and "
+            "states no measured value",
+            issuer=f"Acme Roster {position}",
+            # A roster that refuses the read spends a turn and yields no
+            # finding, which is what leaves the turn budget to be exhausted
+            # without also filling the per-extraction finding cap.
+            status=403,
+        )
+        for position in range(1, 7)
+    )
     return ReplayScenario(
         case_id="extra-pass-recovers-missing-target",
         version=REPLAY_CASE_VERSION,
@@ -442,7 +462,17 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
                 "What was the Acme widget adoption rate in the United States in 2024?",
                 "rate",
                 "Acme widget adoption rate United States 2024",
-                _pair(1, "adoption-2024", "Adoption survey", claim, discovered_b=2),
+                (
+                    *rosters,
+                    *_pair(
+                        1,
+                        "adoption-2024",
+                        "Adoption survey",
+                        claim,
+                        discovered_a=2,
+                        discovered_b=2,
+                    ),
+                ),
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
                 follow_up_queries=(
@@ -456,7 +486,7 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -464,6 +494,13 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
                 "topic-01-target-01",
                 "topic-02-target-01",
                 "topic-03-target-01",
+            ),
+            # The rosters' refusals are the case's own machinery: they are
+            # what spends the opening round's turns, and a topic whose whole
+            # opening round was refused produces no findings to extract.
+            allowed_failure_classes=(
+                "error:agent_tool_failed",
+                "error:researcher_sub_topic_without_findings",
             ),
             required_invariants=("extra_pass_recovers_missing_target",),
         ),
@@ -547,7 +584,7 @@ def _blocked_html_pdf_fallback() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -625,7 +662,7 @@ def _same_work_mirror() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -694,7 +731,7 @@ def _extra_pass_finds_nothing() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             # PD-23 again: the published report lists the unanswered
             # obligation, and that is an accepted result. The row's assertion
@@ -938,7 +975,7 @@ def _forecast_versus_actual_kept_apart() -> ReplayScenario:
                 labels=("Acme widget", "adoption rate"),
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -969,9 +1006,14 @@ def _unsupported_mechanism() -> ReplayScenario:
     the two places it can. The recommendation is prose the composer is able to
     recognise - it never reaches the reader, and the case names the phrase as
     forbidden so a run that published it fails here. The invented cause cannot
-    be recognised that way, so what the run refuses is the *answer*: the
-    mechanism obligation stays outstanding, and the pair of pages the topic
-    really did read cannot fill it, because a citation is not a cause.
+    be recognised that way, so what the run refuses is the drafted *sentence*:
+    the invariant pins the reader-visible refusal (the drafted cause is
+    refused by the Statement Check, and no causal marker reaches the report).
+    Under PD-7, an outcome-only claim about the same topic still counts
+    ``topic-02-target-01`` answered, because the target's dimension carries no
+    unit for the Context Check to test the claim against; whether a mechanism
+    obligation needs a substance test of its own is a plan-level question this
+    row does not decide (escalated in the Task 4.9 review).
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
     return ReplayScenario(
@@ -1014,7 +1056,7 @@ def _unsupported_mechanism() -> ReplayScenario:
             ),
         ),
         invented_prose="the agency should subsidise Acme widget deployment",
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             # The pages state an outcome and the question asks for a cause: the
             # row's assertion is that no reader sentence states one and that
@@ -1060,7 +1102,7 @@ def _review_unavailable() -> ReplayScenario:
             ),
         ),
         review_failure=True,
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="partial",
             exit_code=4,
@@ -1106,7 +1148,7 @@ def _non_constraint_answer() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1177,9 +1219,15 @@ def _empty_but_clean() -> ReplayScenario:
             _topic(
                 2,
                 "Widget funding",
-                "How much funding did the Acme widget programme raise in 2024?",
-                "amount",
-                "Acme widget funding round United States 2024",
+                # A share question, because that is the only shape of a funding
+                # obligation this contract can dimension: ``UnitDimension`` has
+                # no money, so a "how much" question would have to stay
+                # qualitative (PD-7) and a register that states no value would
+                # answer it.
+                "What share of the Acme widget programme's 2024 funding was "
+                "public?",
+                "share",
+                "Acme widget funding round United States 2024 public share",
                 (_bare(2, "Funding"),),
                 critical=True,
                 labels=("record", "publication date"),
@@ -1190,9 +1238,9 @@ def _empty_but_clean() -> ReplayScenario:
             _topic(
                 3,
                 "Widget exports",
-                "What was the Acme widget export volume in the United States in 2024?",
-                "value",
-                "Acme widget export volume United States 2024",
+                "What share of Acme widget exports went to Europe in 2024?",
+                "share",
+                "Acme widget export share Europe 2024",
                 (_bare(3, "Export"),),
                 critical=False,
                 labels=("record", "publication date"),
@@ -1201,14 +1249,17 @@ def _empty_but_clean() -> ReplayScenario:
                 kind="actual",
             ),
         ),
-        max_extra_passes=2,
+        max_extra_passes=1,
+        # PD-23 needs a semantic judgement before a report is accepted, so this
+        # row scripts the review a report of nothing is worth: 0.4 on every
+        # dimension is below §6.3's 0.80 floor, and the run finishes partial.
+        review_score=0.4,
         expectation=CaseExpectation(
-            # PD-23: the report publishes, every obligation it could not
-            # answer is listed under Not found, and the run finishes accepted.
-            # The row's assertion is that *nothing* was answered, not that the
-            # publication was withheld.
-            terminal_quality="accepted",
-            exit_code=0,
+            # The report still publishes and lists every obligation it could
+            # not answer under Not found -- and the review refuses it, which is
+            # the run's own verdict on a report that says nothing.
+            terminal_quality="partial",
+            exit_code=4,
             allowed_failure_classes=(
                 "missing_required_target",
                 "no_quality_snapshot",
@@ -1275,7 +1326,7 @@ def _memory_is_not_read() -> ReplayScenario:
             )
             for content, url in zip(remembered, lead_urls)
         ),
-        max_extra_passes=2,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1390,7 +1441,7 @@ def _validated_cache_reuse() -> ReplayScenario:
             ),
             replace(funding, sources=(funding.sources[0], forged)),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1483,7 +1534,7 @@ def _decision_context_late_candidate() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1502,20 +1553,38 @@ def _decision_context_late_candidate() -> ReplayScenario:
 
 
 def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
-    """A missing required target, and nothing else, buys the one extra pass.
+    """The missing obligation buys one extra pass, and the pass answers it.
 
-    PD-5: the missing targets are computed by code and the Report Reviewer
-    node stamps them on the record, so the run goes back for exactly the
-    obligation that is missing — never for a judgement. The page that answers
-    it is only published in the second round, so the extra pass is what turns
-    the obligation into an answer, and the answer comes from a statement the
-    evidence supports rather than from metadata the first round found.
+    The opening round's one search surfaces six registers, and every one of
+    them refuses the read: the refusals consume the sub-topic's whole turn
+    budget, so the second search is never issued and the page that states the
+    figure -- which only that second search returns -- is never reached. The
+    opening pass therefore ends with ``topic-01-target-01`` missing, code buys
+    exactly one extra pass for it (D4, §6.5), and that pass issues the search
+    the opening round could not: the read that follows is what turns the
+    obligation into an answer.
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    registers = tuple(
+        _page(
+            f"register{position}.example.test",
+            f"record-{position}",
+            f"Adoption register {position}",
+            "the adoption register lists a title and a publication date and "
+            "states no measured value",
+            issuer=f"Acme Registry {position}",
+            # A register that refuses the read spends a turn and yields no
+            # finding, which is what leaves the turn budget to be exhausted
+            # without also filling the per-extraction finding cap.
+            status=403,
+        )
+        for position in range(1, 7)
+    )
     return ReplayScenario(
         case_id="missing-target-triggers-one-extra-pass",
         version=REPLAY_CASE_VERSION,
         question="What was the Acme widget adoption rate in the United States in 2024?",
+        max_extra_passes=1,
         topics=(
             _topic(
                 1,
@@ -1524,47 +1593,26 @@ def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
                 "rate",
                 "Acme widget adoption rate United States 2024",
                 (
+                    *registers,
                     _page(
-                        "agency13.example.test",
-                        "record-2024",
-                        "Adoption record",
-                        # The record names what it is a record of — the answer
-                        # row's subject and dimension are checked against the
-                        # row's own evidence, so a page that withheld even the
-                        # subject would be refused as a drafted answer rather
-                        # than as an unsupported figure.
-                        "the Acme widget adoption rate record lists a title "
-                        "and a publication date and states no measured value",
-                        issuer="Acme Registry 13",
-                        verdict="insufficient_evidence",
-                    ),
-                    _page(
-                        "bureau13.example.test",
-                        "adoption-2024",
-                        "Adoption panel",
-                        claim,
-                        issuer="Independent Bureau 13",
-                        discovered=2,
-                    ),
-                    _page(
-                        "agency13.example.test",
+                        "agency17.example.test",
                         "adoption-2024",
                         "Adoption survey",
                         claim,
-                        issuer="Acme Institute 13",
+                        issuer="Acme Institute 17",
                         discovered=2,
                     ),
                 ),
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
-                # The obligation asks for a measurement, so the first
-                # round's record page -- which states none -- cannot answer
-                # it, and only the second round's pages can.
+                # The obligation asks for a measurement, so no register could
+                # answer it even if it had been read: only the page the second
+                # search returns states a figure.
                 unit_dimension="percent",
                 period="2024",
                 kind="actual",
                 follow_up_queries=(
-                    "Acme widget adoption rate United States 2024 second source",
+                    "Acme widget adoption rate United States 2024 survey",
                 ),
             ),
             _filler(
@@ -1574,7 +1622,6 @@ def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1583,13 +1630,16 @@ def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
+            # The registers' refusals are the case's own machinery: they are
+            # what spends the opening round's turns, and a topic whose whole
+            # opening round was refused produces no findings to extract.
+            allowed_failure_classes=(
+                "error:agent_tool_failed",
+                "error:researcher_sub_topic_without_findings",
+            ),
             required_invariants=("missing_target_triggers_one_extra_pass",),
         ),
     )
-
-
-# --- the manifest ------------------------------------------------------------
-
 
 def _figure_not_on_page_dropped() -> ReplayScenario:
     """A figure the passage does not state is refused, and never published.
@@ -1645,7 +1695,7 @@ def _figure_not_on_page_dropped() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1712,7 +1762,7 @@ def _evidence_words_not_on_page_rejected() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1790,11 +1840,12 @@ def _scope_corrected_to_all_segments() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
-            # The refusal is the case: the sentence that overstated the scope
-            # never reaches the reader, so the obligation it carried publishes
-            # under Not found rather than as an answer.
+            # The obligation is answered, by the finding the Context Check
+            # corrected (its scope is all segments), while the sentence that
+            # overstated the scope is refused: the reader gets the figure and
+            # never the wrong basis.
             terminal_quality="accepted",
             exit_code=0,
             required_target_ids=("topic-02-target-01", "topic-03-target-01"),
@@ -1866,7 +1917,7 @@ def _revision_noted() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1903,7 +1954,7 @@ def _statement_check_failure_keeps_sentences() -> ReplayScenario:
             ),
         ),
         statement_failure=True,
-        max_extra_passes=3,
+        max_extra_passes=1,
         expectation=CaseExpectation(
             # §5.4 and PD-10: a recorded batch failure keeps the sentences
             # legitimately, so the run publishes and finishes accepted -- the
@@ -1926,14 +1977,7 @@ def _statement_check_failure_keeps_sentences() -> ReplayScenario:
 
 
 class ReplayCaseEntry:
-    """One declared matrix row: identity, expectation, and its builder.
-
-    ``build`` is ``None`` for exactly the rows the matrix cannot replay: a
-    historical row records what the product did when the six agents were
-    scripted doubles, and there is no real-agent scenario to build for it.
-    The two facts are the same fact, so the constructor refuses the pairings
-    that would let them disagree.
-    """
+    """One declared matrix row: identity, expectation, and its builder."""
 
     def __init__(
         self,
@@ -1943,21 +1987,14 @@ class ReplayCaseEntry:
         title: str,
         expected_product_result: str,
         decisive_assertion: str,
-        build: Callable[[], ReplayScenario] | None,
-        graph_only_historical: bool = False,
+        build: Callable[[], ReplayScenario],
     ) -> None:
-        if graph_only_historical != (build is None):
-            raise ValueError(
-                f"{case_id!r}: graph_only_historical must be True exactly "
-                "when build is None"
-            )
         self.case_id = case_id
         self.version = version
         self.title = title
         self.expected_product_result = expected_product_result
         self.decisive_assertion = decisive_assertion
         self.build = build
-        self.graph_only_historical = graph_only_historical
 
 
 REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
@@ -2019,11 +2056,11 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
     ReplayCaseEntry(
         case_id="extra-pass-finds-nothing",
         version=REPLAY_CASE_VERSION,
-        title="A repair round that buys nothing stops",
-        expected_product_result="partial / 4",
+        title="An extra pass that buys nothing stops, and says what is missing",
+        expected_product_result="accepted / 0",
         decisive_assertion=(
-            "Fully processed unchanged repair stops; correct unresolved "
-            "target/cause"
+            "One extra pass is bought for the missing obligation and finds "
+            "nothing; the report publishes once with the target under Not found"
         ),
         build=_extra_pass_finds_nothing,
     ),
@@ -2042,10 +2079,10 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         case_id="forecast-versus-actual-kept-apart",
         version=REPLAY_CASE_VERSION,
         title="A projection is not the current figure",
-        expected_product_result="partial / 4",
+        expected_product_result="accepted / 0",
         decisive_assertion=(
-            "Historical observation/future forecast cannot satisfy a required "
-            "current estimate"
+            "The 2024 actual keeps its own obligation and reaches Not found; "
+            "the 2030 projection is never published as the current rate"
         ),
         build=_forecast_versus_actual_kept_apart,
     ),
@@ -2053,10 +2090,11 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         case_id="unsupported-mechanism",
         version=REPLAY_CASE_VERSION,
         title="An invented mechanism never reaches the reader",
-        expected_product_result="partial / 4",
+        expected_product_result="accepted / 0",
         decisive_assertion=(
-            "Citations/formatting cannot rescue invented causal mechanism or "
-            "recommendation"
+            "The pages state an outcome and no cause; the drafted causal "
+            "recommendation is refused by the Statement Check, and no reader "
+            "sentence states a cause"
         ),
         build=_unsupported_mechanism,
     ),
@@ -2088,8 +2126,9 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         title="Tidy headings around an empty answer",
         expected_product_result="partial / 4",
         decisive_assertion=(
-            "Zero findings, clean headings, and 'should' never constitute a "
-            "high-quality answer"
+            "No obligation is answered and every one reaches Not found; the "
+            "review refuses the report (0.4 < 0.80), and clean headings with a "
+            "'should' never make it an answer"
         ),
         build=_empty_but_clean,
     ),
@@ -2097,11 +2136,11 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         case_id="memory-is-not-read",
         version=REPLAY_CASE_VERSION,
         title="A remembered claim is a lead, never a read",
-        expected_product_result="partial / 4",
+        expected_product_result="accepted / 0",
         decisive_assertion=(
-            "Two remembered generated claims with different source URLs "
-            "cannot establish a read or independent support; legacy memory "
-            "remains a lead"
+            "Two remembered claims with different source URLs reach a decision "
+            "packet and are never recorded as reads of this run or cited as a "
+            "finding's source; the topic's obligation reaches Not found"
         ),
         build=_memory_is_not_read,
     ),
@@ -2166,7 +2205,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         case_id="scope-corrected-to-all-segments",
         version=REPLAY_CASE_VERSION,
         title="An all-segment figure written as grid-scale is corrected",
-        expected_product_result="partial / 4",
+        expected_product_result="accepted / 0",
         decisive_assertion=(
             "The kept figure's scope is all segments, the finding is marked "
             "corrected, the overstated sentence is refused, and no reader "
@@ -2189,10 +2228,11 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         case_id="statement-check-failure-keeps-sentences",
         version=REPLAY_CASE_VERSION,
         title="A failed Statement Check keeps every sentence as drafted",
-        expected_product_result="partial / 4",
+        expected_product_result="accepted / 0",
         decisive_assertion=(
-            "The failure is recorded, the sentences publish as drafted, and "
-            "the unjudged sentences keep the run from passing strict mode"
+            "The failure is recorded, every sentence publishes as drafted, and "
+            "the composition records every printed sentence as unchecked -- "
+            "the error is the record, not a gate"
         ),
         build=_statement_check_failure_keeps_sentences,
     ),
@@ -2216,101 +2256,15 @@ def manifest_entry(case_id: str) -> ReplayCaseEntry:
 
 
 def scenario_by_id(case_id: str) -> ReplayScenario:
-    entry = manifest_entry(case_id)
-    if entry.build is None:  # pragma: no cover - the manifest's own invariant
-        raise KeyError(f"replay case {case_id!r} declares no scenario")
-    return entry.build()
-
-
-# The scripted-double half of the controlled inventory: the rows the
-# graph-historical harness runs. Three of them are the cases the whole-report
-# campaign ran before the real-agent matrix existed — scripted dependencies, a
-# scripted six-agent double, and a recorded product result — and two declare
-# counted obligations, which is the shape the product's coverage gate reads.
-# They are declared *beside* the manifest rather than inside it because they
-# have no scenario to replay, and because the first three cases' ids are the
-# same strings as the first three matrix rows — inside ``REPLAY_CASE_MANIFEST``
-# they would collide with real-agent rows, and the manifest's own contract is
-# that it is exactly the plan's twenty-one. The ``-graph`` suffix names the
-# harness that produced the result, so one inventory's evidence can never be
-# read as the other's.
-GRAPH_ONLY_HISTORICAL_MANIFEST: tuple[ReplayCaseEntry, ...] = (
-    ReplayCaseEntry(
-        case_id="broad-constraints-graph",
-        version=REPLAY_CASE_VERSION,
-        title="Six obligations, five-item batching, all answered",
-        expected_product_result="accepted / 0",
-        decisive_assertion=(
-            "graph-only historical regression: scripted six-agent double"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-    ReplayCaseEntry(
-        case_id="comparative-conflict-graph",
-        version=REPLAY_CASE_VERSION,
-        title="Three groups measured on one basis, no invented winner",
-        expected_product_result="accepted / 0",
-        decisive_assertion=(
-            "graph-only historical regression: scripted six-agent double"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-    ReplayCaseEntry(
-        case_id="refinement-evidence-recovery-graph",
-        version=REPLAY_CASE_VERSION,
-        title="The missing account is acquired in the repair round",
-        expected_product_result="accepted / 0",
-        decisive_assertion=(
-            "graph-only historical regression: scripted six-agent double"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-    ReplayCaseEntry(
-        case_id="claimed-coverage-open-obligation-graph",
-        version=REPLAY_CASE_VERSION,
-        title="A claimed topic whose obligation the evidence cannot answer",
-        expected_product_result="partial / coverage_below_0.80",
-        decisive_assertion=(
-            "A checked claim consumes the topic while the plan's independent "
-            "pair stands open: the campaign reports the substantive ratio "
-            "(0.75, not the claimed 1.00) and records coverage_below_0.80"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-    ReplayCaseEntry(
-        case_id="declared-obligations-answered-graph",
-        version=REPLAY_CASE_VERSION,
-        title="Every declared obligation answered",
-        expected_product_result="accepted / 0",
-        decisive_assertion=(
-            "The control: four topics whose declared obligations are all "
-            "answered by independently corroborated statements reach the "
-            "passing coverage verdict, so the stricter reading is not "
-            "'always fails'"
-        ),
-        build=None,
-        graph_only_historical=True,
-    ),
-)
-
-
-def controlled_suite_inventory() -> tuple[ReplayCaseEntry, ...]:
-    """The declared controlled inventory: the twenty-one rows, then the five."""
-    return (*REPLAY_CASE_MANIFEST, *GRAPH_ONLY_HISTORICAL_MANIFEST)
+    return manifest_entry(case_id).build()
 
 
 __all__ = [
-    "GRAPH_ONLY_HISTORICAL_MANIFEST",
     "REPLAY_CASE_IDS",
     "REPLAY_CASE_MANIFEST",
     "REPLAY_CASE_MANIFEST_VERSION",
     "REPLAY_CASE_VERSION",
     "ReplayCaseEntry",
-    "controlled_suite_inventory",
     "manifest_entry",
     "replay_scenarios",
     "scenario_by_id",

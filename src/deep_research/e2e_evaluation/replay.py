@@ -350,7 +350,7 @@ class ReplayScenario:
     topics: tuple[ReplayTopic, ...]
     expectation: CaseExpectation
     version: int = 1
-    max_extra_passes: int = 2
+    max_extra_passes: int = 1
     # What a scripted reply may assert about the packets it is handed. Empty
     # means "the defaults the completer always enforces".
     expected_request_ids: tuple[str, ...] = ()
@@ -2008,12 +2008,27 @@ def _invariant_both_accounts_cited(run: ReplayRun) -> str | None:
 
 
 def _invariant_extra_pass_recovers_missing_target(run: ReplayRun) -> str | None:
-    """The second round's new page is what turned the obligation into an answer.
+    """The obligation is really missing after pass 0, and the extra pass answers it.
 
-    A recovery that is real is a recovery the ledger shows: the late page was
-    acquired, and the obligation its topic carried is answered at the end. A
-    run that had the answer in hand before the extra pass recovered nothing.
+    A recovery that is real is a recovery the ledger shows, on all three legs:
+    the run bought exactly one extra pass for the one obligation that was
+    missing (D4, §6.5), the late page was acquired only once that pass ran,
+    and the obligation its topic carried is answered at the end. A run that
+    had the answer in hand before the extra pass -- because a second
+    discovery round happened inside the first pass, which is a different fact
+    from an extra pass -- recovered nothing.
     """
+    extra = list(run.state.extra_pass_target_ids)
+    if extra != ["topic-01-target-01"]:
+        return (
+            "the extra pass was not bought for the missing obligation alone: "
+            f"{extra}"
+        )
+    if run.state.iteration != 1:
+        return (
+            f"the run spent {run.state.iteration} extra passes, where D4's cap "
+            "and the product default are one"
+        )
     late = _late_pages(run)
     if not late:
         return "the scenario declared no page a later round had to find"
@@ -2030,6 +2045,12 @@ def _invariant_extra_pass_recovers_missing_target(run: ReplayRun) -> str | None:
             return (
                 f"the obligation {target_id} the late page was bought for is "
                 "still unanswered"
+            )
+    for source in _opening_pages(run, late):
+        if source.figures:
+            return (
+                f"the opening round's page {source.url} states a figure, so the "
+                "obligation was met before the extra pass"
             )
     return None
 
@@ -2277,34 +2298,43 @@ def _invariant_public_summary_stayed_short(run: ReplayRun) -> str | None:
 
 
 def _invariant_missing_target_triggers_one_extra_pass(run: ReplayRun) -> str | None:
-    """The obligation, and not the opening round's material, sends the run back.
+    """The missing obligation buys one extra pass, and the pass answers it.
 
-    Two halves. The opening round's pages state no figure, so nothing that
-    round could acquire answers a figure-shaped obligation -- that is what
-    makes the target missing rather than already met. And the page that
-    answers it is only acquired by a second discovery round for that topic,
-    which the outstanding obligation is what buys.
-
-    The pass count is asserted by ``extra-pass-finds-nothing``, the fixture
-    that observes a bought extra pass. This row's second discovery round
-    happens inside the first pass, because the harness's scripted acquisition
-    consumes a topic's planned queries in one loop; claiming a graph pass here
-    would assert the harness's turn accounting rather than the obligation.
+    Three halves, all readable from the run. The opening round ends with
+    ``topic-01-target-01`` missing -- code chose it, not a judgement -- and
+    spends exactly one extra pass for it (D4, §6.5). The page that answers it
+    was not read before that pass: the opening round's search surfaced the
+    topic's records and ran out of turns before reaching the page that states
+    the figure, so the answering page was still an unread candidate when the
+    pass began. And the pass is what turns the obligation into an answer.
     """
+    extra = list(run.state.extra_pass_target_ids)
+    if extra != ["topic-01-target-01"]:
+        return (
+            "the extra pass was not bought for the missing obligation alone: "
+            f"{extra}"
+        )
+    if run.state.iteration != 1:
+        return (
+            f"the run spent {run.state.iteration} extra passes, where D4's cap "
+            "and the product default are one"
+        )
     late = _late_pages(run)
     if not late:
-        return "the scenario declared no page only a second round could find"
+        return "the scenario declared no page the opening round could not reach"
     for source in late:
         if source.url not in run.replay.http.fetched:
-            return f"the second-round page was never read: {source.url}"
-    rounds = run.replay.search.rounds
-    if not rounds or max(rounds.values()) < 2:
-        return "the run never issued a second discovery round"
+            return (
+                f"the page the extra pass was bought for was never read: "
+                f"{source.url}"
+            )
+    if "topic-01-target-01" not in run.answered_target_ids():
+        return "the extra pass did not turn the obligation into an answer"
     for source in _opening_pages(run, late):
         if source.figures:
             return (
                 f"the opening round's page {source.url} states a figure, so the "
-                "obligation was met before the second round"
+                "obligation was met before the extra pass"
             )
     return None
 
@@ -2320,8 +2350,11 @@ def _invariant_extra_pass_finds_nothing(run: ReplayRun) -> str | None:
     extra = list(run.state.extra_pass_target_ids)
     if not extra:
         return "the run never chose a target for an extra pass"
-    if len(extra) > 1:
-        return f"the run bought {len(extra)} extra passes, where the cap is one"
+    if run.state.iteration != 1:
+        return (
+            f"the run spent {run.state.iteration} extra passes, where D4's cap "
+            "and the product default are one"
+        )
     answered = set(run.answered_target_ids())
     still_missing = [target_id for target_id in extra if target_id not in answered]
     if not still_missing:
@@ -2463,12 +2496,12 @@ def _invariant_evidence_words_not_on_page_rejected(run: ReplayRun) -> str | None
 def _invariant_statement_failure_keeps_sentences(run: ReplayRun) -> str | None:
     """A Statement Check that could not be made keeps every sentence as drafted.
 
-    §5.4: the checker never stops the run. The failure is recorded, the
-    sentences publish as drafted, and nothing records them as judged -
-    "no judgement" must not read as "judged consistent". The comparison is the
-    composition's own ``statement_verdicts``; while nothing writes the map it
-    is empty, which passes, and a verdict recorded by a check that never ran
-    fails.
+    §5.4: the checker never stops the run. The failure is recorded, every
+    kept sentence's own verdict is ``"unchecked"`` -- never any other value,
+    and never absent -- no point is refused, the printed text is exactly what
+    the writer drafted (a correction is something only a check that ran could
+    have made), and PD-10 counts a recorded batch failure's ``"unchecked"``
+    verdict as answered, so it must never trip the ``unjudged_sentences`` gate.
     """
     if "evidence_verifier_statement_check_failed" not in run.error_types():
         return "the run recorded no Statement Check failure"
@@ -2481,30 +2514,44 @@ def _invariant_statement_failure_keeps_sentences(run: ReplayRun) -> str | None:
     ]
     if not points:
         return "no drafted sentence survived the failed check"
-    printed = [
+    if composition.rejected_points:
+        return "a sentence was refused by a check that never ran"
+    printed = {
         point.statement.statement_id
         for point in points
         if point.statement is not None
-    ]
+    }
     if not printed:
         return "the published points carry no statement id"
-    unrecorded = [sid for sid in printed if sid not in composition.statement_verdicts]
-    if unrecorded:
-        return f"a kept sentence has no recorded verdict: {unrecorded}"
-    judged = sorted(
-        {
-            verdict
-            for verdict in composition.statement_verdicts.values()
-            if verdict != "unchecked"
-        }
+    verdicts = composition.statement_verdicts
+    if not verdicts:
+        return "the composition recorded no statement verdict at all"
+    if set(verdicts) != printed:
+        return (
+            f"the verdict map's keys {sorted(verdicts)} do not match the "
+            f"printed statement ids {sorted(printed)}"
+        )
+    not_unchecked = sorted(
+        {verdict for verdict in verdicts.values() if verdict != "unchecked"}
     )
-    if judged:
+    if not_unchecked:
         return (
             "a sentence was recorded as judged by a check that never ran: "
-            f"{judged}"
+            f"{not_unchecked}"
         )
-    if composition.rejected_points:
-        return "a sentence was refused by a check that never ran"
+    drafted = run.replay.completer.drafted_sources
+    for point in points:
+        if point.statement is None:
+            continue
+        if " ".join(point.text.split()) not in drafted:
+            return (
+                f"the printed text of {point.statement.statement_id!r} does "
+                "not match what the writer drafted, so a check that never "
+                "ran somehow corrected it"
+            )
+    quality = run.state.quality
+    if quality is not None and "unjudged_sentences" in quality.hard_failures:
+        return "a recorded batch failure tripped the unjudged_sentences gate"
     return None
 
 
