@@ -36,17 +36,15 @@ _SAMPLE_CASE_IDS = {
     "planner": "focused-decomposition",
     "researcher": "multi-source-coverage",
     "source_evaluator": "strong-and-weak-sources",
-    "fact_checker": "mixed-verdicts",
-    "synthesizer": "complete-cited-report",
-    "critic": "approve-strong-report",
+    "evidence_verifier": "relay-labelled-as-relay",
+    "report_writer": "complete-cited-report",
 }
 _SAMPLE_SCENARIOS = {
     "planner": "planner-clean-memory",
     "researcher": "researcher-multi-source",
     "source_evaluator": "source-evaluator-mixed",
-    "fact_checker": "fact-checker-mixed",
-    "synthesizer": "synthesizer-complete",
-    "critic": "critic-strong-report",
+    "evidence_verifier": "evidence-verifier-relay",
+    "report_writer": "report-writer-complete",
 }
 
 
@@ -120,8 +118,8 @@ def researcher_case():
 
 
 @pytest.fixture
-def synthesizer_case():
-    return _controlled_case("synthesizer")
+def report_writer_case():
+    return _controlled_case("report_writer")
 
 
 def test_every_case_scenario_has_a_script(all_cases) -> None:
@@ -145,10 +143,10 @@ def test_controlled_memory_is_an_isolated_collection(
 
 
 def test_controlled_documents_land_in_an_evaluation_only_directory(
-    tracker, settings, tmp_path, runtime_config_for, synthesizer_case
+    tracker, settings, tmp_path, runtime_config_for, report_writer_case
 ) -> None:
     bundle = build(
-        runtime_config_for, tracker, settings, tmp_path, synthesizer_case
+        runtime_config_for, tracker, settings, tmp_path, report_writer_case
     )
 
     assert tmp_path in bundle.document_directory.parents

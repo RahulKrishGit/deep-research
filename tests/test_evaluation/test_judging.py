@@ -721,12 +721,12 @@ async def test_judge_provider_failure_and_schema_reasons_are_distinct(
 
 def _fallback_error() -> dict[str, object]:
     return {
-        "error_type": "critic_review_provider_error",
-        "source": "agent.critic",
-        "message": "provider review fallback used",
+        "error_type": "evidence_verifier_context_check_failed",
+        "source": "agent.evidence_verifier",
+        "message": "provider context-check fallback used",
         "recoverable": False,
         "details": {
-            "operation": "critic_report_review",
+            "operation": "evidence_verifier_context_check",
             "provider_failure": {
                 "kind": "schema_output",
                 "exception_type": "StructuredOutputError",
@@ -742,74 +742,45 @@ def _fallback_error() -> dict[str, object]:
     }
 
 
-def critic_live_case_output(case) -> TargetOutput:
-    """A completed, healthy critic repetition for the live case."""
-    critique = {
-        "score": 8,
-        "gaps": [],
-        "unsupported_claims": [],
-        "recommended_queries": [],
-        "should_continue": False,
-        "rationale": "The report covers commercial-scale deployment.",
-    }
-    return TargetOutput(
-        case_id=case.case_id,
-        case_version=case.version,
-        agent_name=case.agent_name,
-        tier=case.tier,
-        repetition=1,
-        session_id="evaluation-critic-live-review",
-        experiment_name="critic-live-review-control",
-        completed=True,
-        result={"critique": critique},
-        state_update={"critique": critique},
-        errors=[],
-        react=ReActSummary(
-            iterations=1,
-            tool_calls=0,
-            stop_reason="finished",
-            max_iterations=case.expectations.max_iterations,
-            tool_budget=case.expectations.max_tool_calls,
-        ),
-        target_model_requested="deepseek-v4-flash",
-        target_model_returned="deepseek-v4-flash",
-        target_reasoning_effort="max",
-    )
-
-
 def _judge_input_for(output, case, *, fallback=None):
     return build_judge_input(
         output, case, GateReport(), secrets=(), fallback=fallback
     )
 
 
-def test_the_judge_input_names_a_provider_fallback(critic_live_case) -> None:
-    output = critic_live_case_output(critic_live_case).model_copy(
+def test_the_judge_input_names_a_provider_fallback(evidence_verifier_live_case,
+    evidence_verifier_live_output,
+) -> None:
+    output = evidence_verifier_live_output.model_copy(
         update={"errors": [_fallback_error()]}
     )
 
     judge_input = _judge_input_for(
         output,
-        critic_live_case,
+        evidence_verifier_live_case,
         fallback=fallback_provider_diagnostic(output),
     )
 
     assert judge_input.provider_fallback is not None
     assert judge_input.provider_fallback["kind"] == "schema_output"
-    assert judge_input.provider_fallback["operation"] == "critic_report_review"
+    assert (
+        judge_input.provider_fallback["operation"]
+        == "evidence_verifier_context_check"
+    )
     assert judge_input.provider_fallback["diagnostics"][0]["category"] == (
         "json_invalid"
     )
 
 
 def test_the_judge_input_omits_the_fallback_block_for_a_healthy_run(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
-    output = critic_live_case_output(critic_live_case)
+    output = evidence_verifier_live_output
 
     judge_input = _judge_input_for(
         output,
-        critic_live_case,
+        evidence_verifier_live_case,
         fallback=fallback_provider_diagnostic(output),
     )
 
@@ -822,22 +793,23 @@ def test_every_judge_input_field_is_rendered_as_a_block() -> None:
 
 
 def test_the_fallback_block_is_rendered_in_the_judge_prompt(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
-    output = critic_live_case_output(critic_live_case).model_copy(
+    output = evidence_verifier_live_output.model_copy(
         update={"errors": [_fallback_error()]}
     )
 
     messages = render_judge_messages(
         _judge_input_for(
             output,
-            critic_live_case,
+            evidence_verifier_live_case,
             fallback=fallback_provider_diagnostic(output),
         )
     )
 
     assert "## provider_fallback" in messages[1].content
-    assert "critic_report_review" in messages[1].content
+    assert "evidence_verifier_context_check" in messages[1].content
 
 
 def test_the_judge_is_told_how_to_read_a_fallback() -> None:
@@ -868,11 +840,13 @@ def test_the_judge_prompt_fingerprint_supersedes_the_pre_fallback_value() -> Non
     assert judge_prompt_fingerprint(rubric_version=1) != "93edb1729cbb"
 
 
-def _critic_live_judge_body(critic_live_case) -> str:
-    """The rendered judge request body for the registered live critic case."""
+def _live_judge_body(
+    evidence_verifier_live_case, evidence_verifier_live_output
+) -> str:
+    """The rendered judge request body for the registered live verifier case."""
     judge_input = build_judge_input(
-        critic_live_case_output(critic_live_case),
-        critic_live_case,
+        evidence_verifier_live_output,
+        evidence_verifier_live_case,
         GateReport(),
         secrets=(),
     )
@@ -898,7 +872,9 @@ def _prose(body: str) -> str:
     return " ".join(body.split())
 
 
-def test_the_judge_prompt_states_the_response_contract(critic_live_case) -> None:
+def test_the_judge_prompt_states_the_response_contract(evidence_verifier_live_case,
+    evidence_verifier_live_output,
+) -> None:
     """The prose must state the object's fields, not leave it to the schema.
 
     Measured: the judge schema bounds ``rationale`` at 2000 characters, but the
@@ -908,7 +884,7 @@ def test_the_judge_prompt_states_the_response_contract(critic_live_case) -> None
     characters — 265 short of the cap. The constraint is unenforceable by the
     transport: adding ``strict`` to the request returns HTTP 400.
     """
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     prose = _prose(body)
 
     assert "exactly one JSON object" in prose
@@ -922,7 +898,8 @@ def test_the_judge_prompt_states_the_response_contract(critic_live_case) -> None
 
 
 def test_the_contract_forbids_the_extra_fields_the_model_actually_added(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
     """Naming the fields invited elaboration, so the ban has to be explicit.
 
@@ -932,7 +909,7 @@ def test_the_contract_forbids_the_extra_fields_the_model_actually_added(
     again. With no field named at all, the same probe recorded 0 extra keys in 30
     attempts. The prohibition therefore names the shapes actually observed.
     """
-    prose = _prose(_critic_live_judge_body(critic_live_case))
+    prose = _prose(_live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output))
 
     assert "Do not add any other field" in prose
     for temptation in ("note", "comment", "summary", "explanation"):
@@ -941,7 +918,8 @@ def test_the_contract_forbids_the_extra_fields_the_model_actually_added(
 
 
 def test_the_request_uses_markdown_heading_levels_not_a_flat_list(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
     """This instruction owns H1; the judged run's blocks stay H2 beneath it.
 
@@ -950,7 +928,7 @@ def test_the_request_uses_markdown_heading_levels_not_a_flat_list(
     section of this instruction rather than as part of the material being
     judged — the same collision the Critic request had with its report.
     """
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     lines = body.splitlines()
     envelope = [line for line in lines if line.startswith("# ")]
     blocks = [line for line in lines if line.startswith("## ")]
@@ -980,14 +958,15 @@ def test_the_request_uses_markdown_heading_levels_not_a_flat_list(
 
 
 def test_the_judge_prompt_gives_guidance_across_the_whole_scale(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
     """Not just the endpoints: a rubric anchors 1.0 and 0.0 and nothing between.
 
     Two judges can agree on the endpoints and still differ by 0.3 on a middling
     run, which is why the middle of the range needs instruction of its own.
     """
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     prose = _prose(body)
 
     assert "## How to choose each score" in body
@@ -999,7 +978,8 @@ def test_the_judge_prompt_gives_guidance_across_the_whole_scale(
 
 
 def test_the_judge_bands_cover_the_whole_declared_range_without_overlap_or_gaps(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
     """Step 3: [0.0, 1.0] with no hole and no score claimed twice.
 
@@ -1009,7 +989,7 @@ def test_the_judge_bands_cover_the_whole_declared_range_without_overlap_or_gaps(
     reservation, which is what keeps the best scores from becoming the default.
     """
     bands = _JUDGE_SCORE_BANDS
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
 
     assert bands[0][0] == 0.0
     assert bands[-1][1] == 1.0
@@ -1026,8 +1006,9 @@ def test_the_judge_bands_cover_the_whole_declared_range_without_overlap_or_gaps(
 
 
 def test_every_example_score_sits_inside_its_band_and_brackets_the_threshold(
-    critic_live_case,
+    evidence_verifier_live_case,
     runtime_config_for,
+    evidence_verifier_live_output,
 ) -> None:
     """Step 3: the labelled pair straddles the threshold the release gate uses.
 
@@ -1035,7 +1016,7 @@ def test_every_example_score_sits_inside_its_band_and_brackets_the_threshold(
     the band their own label claims, and the pair must straddle the live
     threshold: one profile below it and one clearly above.
     """
-    weak, strong = _example_instances(_critic_live_judge_body(critic_live_case))
+    weak, strong = _example_instances(_live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output))
     threshold = runtime_config_for("planner").live_threshold
 
     def band_index(value: float) -> int:
@@ -1055,15 +1036,16 @@ def test_every_example_score_sits_inside_its_band_and_brackets_the_threshold(
     for example in (weak, strong):
         JudgeVerdict.model_validate(example)
     # Labelled illustrative, never a target to copy.
-    prose = _prose(_critic_live_judge_body(critic_live_case))
-    assert "Weak run:" in _critic_live_judge_body(critic_live_case)
-    assert "Strong run:" in _critic_live_judge_body(critic_live_case)
+    prose = _prose(_live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output))
+    assert "Weak run:" in _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
+    assert "Strong run:" in _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     assert "placeholders" in prose
     assert "not a target to match" in prose
 
 
 def test_the_weighted_formula_matches_the_frozen_table_exactly(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
     """Step 3: the stated formula is the weight table, term for term.
 
@@ -1072,7 +1054,7 @@ def test_the_weighted_formula_matches_the_frozen_table_exactly(
     with its frozen weight, and no agent-specific dimension may appear at all:
     those are reported for diagnosis and never enter the final score.
     """
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     section = body[
         body.index("## How the final score is computed") : body.index(
             "# How to read the run"
@@ -1084,19 +1066,21 @@ def test_the_weighted_formula_matches_the_frozen_table_exactly(
     assert {name: float(weight) for weight, name in terms} == COMMON_DIMENSION_WEIGHTS
     # Rendered in the frozen table's own order, so the arithmetic reads top down.
     assert [name for _, name in terms] == list(COMMON_DIMENSION_WEIGHTS)
-    for dimension in critic_live_case.judge_rubric.agent_dimensions:
+    for dimension in evidence_verifier_live_case.judge_rubric.agent_dimensions:
         assert dimension.dimension_id not in section
     assert "carry no weight at all" in _prose(section)
 
 
-def test_the_weighting_is_stated_as_explicit_arithmetic(critic_live_case) -> None:
+def test_the_weighting_is_stated_as_explicit_arithmetic(evidence_verifier_live_case,
+    evidence_verifier_live_output,
+) -> None:
     """Which dimension carries which weight must be readable, not implied.
 
     Groundedness at 0.25 outweighs any single agent dimension, and agent
     dimensions carry no weight at all. Stating that as a formula is what stops a
     run being rewarded for prose.
     """
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
 
     assert "## How the final score is computed" in body
     for name, weight in COMMON_DIMENSION_WEIGHTS.items():
@@ -1105,7 +1089,9 @@ def test_the_weighting_is_stated_as_explicit_arithmetic(critic_live_case) -> Non
     assert "carry no weight at all" in body
 
 
-def test_the_stated_limit_is_harder_than_the_enforced_one(critic_live_case) -> None:
+def test_the_stated_limit_is_harder_than_the_enforced_one(evidence_verifier_live_case,
+    evidence_verifier_live_output,
+) -> None:
     """The prompt states a stricter rule than the system enforces, on purpose.
 
     The statement is the steering device: a credible hard limit is what keeps the
@@ -1118,7 +1104,7 @@ def test_the_stated_limit_is_harder_than_the_enforced_one(critic_live_case) -> N
     compliance pressure; tightening enforcement restores the failures this change
     exists to remove. Both are pinned here so that edit has to be deliberate.
     """
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     prose = _prose(body)
     contract = _prose(body.partition("# Response contract")[2])
     schema_property = JudgeVerdict.model_json_schema()["properties"]["rationale"]
@@ -1140,7 +1126,8 @@ def test_the_stated_limit_is_harder_than_the_enforced_one(critic_live_case) -> N
 
 
 def test_the_transmitted_schema_states_no_rationale_length(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
     """The request must carry exactly one length signal, not two.
 
@@ -1155,7 +1142,7 @@ def test_the_transmitted_schema_states_no_rationale_length(
     assert schema_property["minLength"] == 1
     assert "maxLength" not in schema_property
     # And the number the prose states is the only length the model is shown.
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     assert str(JUDGE_RATIONALE_SCHEMA_MAX) not in _prose(body)
 
 
@@ -1267,14 +1254,16 @@ def test_the_relaxation_is_scoped_to_the_verdict() -> None:
         )
 
 
-def test_the_judge_prompt_shows_valid_json_examples(critic_live_case) -> None:
+def test_the_judge_prompt_shows_valid_json_examples(evidence_verifier_live_case,
+    evidence_verifier_live_output,
+) -> None:
     """The examples must be real instances, not placeholder skeletons.
 
     Angle-bracket placeholders are not valid JSON, so they show the model
     something that is neither a schema nor an example. The provider supplies the
     schema in a trailing system message; these supply instances.
     """
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     examples = _example_instances(body)
 
     assert len(examples) == 2
@@ -1293,7 +1282,8 @@ def test_the_judge_prompt_shows_valid_json_examples(critic_live_case) -> None:
 
 
 def test_the_two_examples_demonstrate_opposite_ends_of_the_scale(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
     """One weak and one strong, so no single value reads as the target.
 
@@ -1301,19 +1291,20 @@ def test_the_two_examples_demonstrate_opposite_ends_of_the_scale(
     first: the model aims at the illustrated number instead of judging. The pair
     must actually straddle the scale, and each must sit inside one named band.
     """
-    weak, strong = _example_instances(_critic_live_judge_body(critic_live_case))
+    weak, strong = _example_instances(_live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output))
 
     assert max(weak["scores"].values()) <= 0.4
     assert min(strong["scores"].values()) >= 0.8
-    assert "Weak run:" in _critic_live_judge_body(critic_live_case)
-    assert "Strong run:" in _critic_live_judge_body(critic_live_case)
+    assert "Weak run:" in _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
+    assert "Strong run:" in _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     # Values vary within each example, so no single number is the apparent answer.
     assert len(set(weak["scores"].values())) > 1
     assert len(set(strong["scores"].values())) > 1
 
 
 def test_the_examples_score_every_rubric_dimension_by_its_real_id(
-    critic_live_case,
+    evidence_verifier_live_case,
+    evidence_verifier_live_output,
 ) -> None:
     """Agent-specific keys must be the rubric's own ids, not invented ones.
 
@@ -1321,10 +1312,10 @@ def test_the_examples_score_every_rubric_dimension_by_its_real_id(
     rubric in hand. A hard-coded id would be wrong for every other agent, and a
     wrong id in an example is a wrong id in the answer.
     """
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
     rubric_ids = [
         dimension.dimension_id
-        for dimension in critic_live_case.judge_rubric.agent_dimensions
+        for dimension in evidence_verifier_live_case.judge_rubric.agent_dimensions
     ]
 
     assert rubric_ids, "the live critic rubric must carry agent dimensions"
@@ -1332,7 +1323,9 @@ def test_the_examples_score_every_rubric_dimension_by_its_real_id(
         assert sorted(example["agent_specific"]) == sorted(rubric_ids)
 
 
-def test_the_examples_are_labelled_as_illustrative(critic_live_case) -> None:
+def test_the_examples_are_labelled_as_illustrative(evidence_verifier_live_case,
+    evidence_verifier_live_output,
+) -> None:
     """Illustrative values must not read as a target score.
 
     The examples introduce numbers the prompt did not carry before, so the
@@ -1340,7 +1333,7 @@ def test_the_examples_are_labelled_as_illustrative(critic_live_case) -> None:
     anchor on them the way the Critic's single example invited splitting the
     difference.
     """
-    body = _critic_live_judge_body(critic_live_case)
+    body = _live_judge_body(evidence_verifier_live_case, evidence_verifier_live_output)
 
     assert "placeholders" in _prose(body)
     assert "not a target to match" in _prose(body)

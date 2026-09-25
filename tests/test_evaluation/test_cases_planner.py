@@ -36,10 +36,9 @@ _METRICS = {
     ),
     "scoped-evidence-targets": (
         ("subtopic_count", 0.20),
-        ("targets_declared", 0.25),
-        ("dimensions_are_checkable", 0.20),
-        ("support_policy_not_downgraded", 0.20),
-        ("no_vague_dimensions", 0.15),
+        ("targets_declared", 0.30),
+        ("dimensions_are_checkable", 0.25),
+        ("no_vague_dimensions", 0.25),
     ),
     "planner-live-scope": (
         ("subtopic_count", 0.25),
@@ -94,7 +93,6 @@ _REFERENCES = {
         "maximum_sub_topics": 7,
         "minimum_targets_per_sub_topic": 1,
         "maximum_targets_per_sub_topic": 4,
-        "required_support_policies": ["independent_pair", "primary_attribution"],
         "vague_dimension_phrases": _SCOPED_VAGUE_DIMENSION_PHRASES,
     },
 }

@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
-from deep_research.agents.fact_checker import claimed_domains_for
-from deep_research.agents.identity import claim_fingerprint
-from deep_research.agents.sources import publisher_identity
 from deep_research.evaluation.cases import (
     CASE_REGISTRY_VERSION,
     FIXED_TIMESTAMP,
@@ -18,13 +13,13 @@ from deep_research.evaluation.cases import (
     case_by_id,
     case_by_identity,
     cases_for,
-    claim,
     evaluation_state,
     finding,
     metrics,
     rubric,
     scored_source,
     sub_topic,
+    target,
     validate_registry,
 )
 from deep_research.evaluation.models import (
@@ -176,226 +171,6 @@ def test_the_registry_version_is_recorded() -> None:
     assert CASE_REGISTRY_VERSION == 2
 
 
-# --- Claim snapshot invariants across the whole registry -------------------
-#
-# Task 5 review, Important 3 / R7: a controlled case seeds ``verified_claims``
-# that downstream evaluations treat as a legitimate production snapshot. Every
-# claim in the registry must therefore be one the production Fact Checker
-# could itself have emitted: canonical identity, a verdict compatible with its
-# passage stances, and passages on publishers independent of the claim's own.
-
-
-def _registry_claims():
-    for case in all_cases():
-        for item in case.state.verified_claims:
-            yield case, item
-
-
-def _registry_claims_an_honest_run_could_emit():
-    """The seeded claims that must be snapshots production could have emitted.
-
-    A case whose state *is* the defect under review declares it
-    (``CaseExpectations.state_is_the_defect``): what it seeds is a candidate no
-    honest pass would have produced, and the two invariants built on this
-    generator exist to hold a *run's* records to shapes the pipeline can
-    really emit. Reading the declaration rather than naming an exempt case
-    here keeps this file from becoming a second source of truth for which
-    cases are excused.
-
-    The declaration excuses the defective claims and no others: a case earns
-    the flag with one claim an honest pass could not emit, so a state that
-    also carried sound claims would still have those held to the invariants.
-    """
-    for case, item in _registry_claims():
-        if not case.expectations.state_is_the_defect:
-            yield case, item
-        elif not _carries_an_impossible_claim(item):
-            yield case, item
-
-
-def _carries_an_impossible_claim(item) -> bool:
-    """A claim shape no honest pass emits: a passage behind a verdict that
-    has none, or a passage on one of the claim's own publishers."""
-    if item.verdict == "insufficient_evidence" and item.verification_evidence:
-        return True
-    claimed = {
-        domain.casefold() for domain in claimed_domains_for(item.source_urls)
-    }
-    passage_publishers = {
-        publisher_identity(passage.source_url).casefold()
-        for passage in item.verification_evidence
-    }
-    return bool(passage_publishers & claimed)
-
-
-def test_every_registry_claim_id_is_its_canonical_fingerprint() -> None:
-    """``merge_claim_snapshot`` recomputes the fingerprint from text, so an
-    arbitrary fixture id would pass unnoticed and guard nothing."""
-    wrong = [
-        (case.case_id, item.claim_id)
-        for case, item in _registry_claims()
-        if item.claim_id != claim_fingerprint(item.text)
-    ]
-
-    assert wrong == []
-
-
-def test_every_registry_claim_verdict_matches_its_passage_stances() -> None:
-    """Exactly the verdicts ``fact_checker.resolve_verdict`` can produce."""
-    for case, item in _registry_claims_an_honest_run_could_emit():
-        stances = {passage.stance for passage in item.verification_evidence}
-        where = f"{case.case_id}: {item.text[:40]!r}"
-        if item.verdict == "insufficient_evidence":
-            assert not item.verification_evidence, where
-        elif item.verdict == "verified":
-            assert "supports" in stances and "contradicts" not in stances, where
-        elif item.verdict == "unverified":
-            assert "supports" in stances and "contradicts" not in stances, where
-        else:
-            assert item.verdict == "contradicted", where
-            assert "contradicts" in stances, where
-
-
-def test_every_registry_verification_passage_is_independent() -> None:
-    """A passage on the claim's own publisher is not verification."""
-    for case, item in _registry_claims_an_honest_run_could_emit():
-        claimed = {
-            domain.casefold() for domain in claimed_domains_for(item.source_urls)
-        }
-        passage_publishers = {
-            publisher_identity(passage.source_url).casefold()
-            for passage in item.verification_evidence
-        }
-        assert not passage_publishers & claimed, (
-            f"{case.case_id}: {item.text[:40]!r} verifies itself on "
-            f"{sorted(passage_publishers & claimed)}"
-        )
-
-
-def test_a_defective_state_really_carries_a_defect() -> None:
-    """The declaration excuses two invariants, so it has to be earned.
-
-    A case that declares its state is the defect must seed a claim no honest
-    pass could emit — otherwise the flag is a way to silence two integrity
-    checks on a state that never needed either excused, and an unused
-    exemption should be deleted rather than left lying in the registry.
-    """
-    declared = [
-        case
-        for case in all_cases()
-        if case.expectations.state_is_the_defect
-    ]
-
-    assert [case.case_id for case in declared]
-    for case in declared:
-        assert any(
-            _carries_an_impossible_claim(item)
-            for item in case.state.verified_claims
-        ), case.case_id
-
-
-def test_a_declared_defective_state_still_holds_its_honest_claims(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The exemption excuses the defect, not every claim beside it.
-
-    A case earns ``state_is_the_defect`` by seeding one claim an honest pass
-    could not emit, so that is the only claim it can excuse: a state that
-    mixed one defective claim with honest ones would otherwise have both
-    invariants lifted from the honest ones too, silently. Every registered
-    state is defective throughout today, which is why this drives the
-    generator over a mixed state directly rather than waiting for one to
-    land.
-    """
-    import tests.test_evaluation.test_cases_registry as registry_module
-
-    defective = SimpleNamespace(
-        verdict="insufficient_evidence",
-        source_urls=[],
-        verification_evidence=[SimpleNamespace(source_url="https://a.example.com/")],
-    )
-    honest = SimpleNamespace(
-        verdict="verified",
-        source_urls=["https://news.example.com/report"],
-        verification_evidence=[
-            SimpleNamespace(
-                source_url="https://independent.example.org/response",
-                stance="supports",
-            )
-        ],
-    )
-    case = SimpleNamespace(
-        case_id="synthetic-mixed-state",
-        expectations=SimpleNamespace(state_is_the_defect=True),
-        state=SimpleNamespace(verified_claims=[defective, honest]),
-    )
-    monkeypatch.setattr(
-        registry_module,
-        "_registry_claims",
-        lambda: iter([(case, defective), (case, honest)]),
-    )
-
-    assert list(_registry_claims_an_honest_run_could_emit()) == [(case, honest)]
-
-
-def test_the_claim_builder_requires_independent_verification_passages() -> None:
-    """The builder fails loudly rather than seeding a self-verified claim."""
-    with pytest.raises(CaseRegistryError) as caught:
-        claim(
-            "A claim.",
-            urls=["https://example.com/a"],
-            verdict="verified",
-            confidence=0.9,
-        )
-
-    assert "verification_urls" in str(caught.value)
-
-    with pytest.raises(CaseRegistryError) as caught:
-        claim(
-            "A claim.",
-            urls=["https://news.example.com/a"],
-            verdict="unverified",
-            confidence=0.5,
-            verification_urls=["https://docs.example.com/b"],
-        )
-
-    assert "own publishers" in str(caught.value)
-
-
-def test_any_claim_that_builds_passages_requires_verification_urls() -> None:
-    """The emptiness guard is a property of building passages, not a verdict.
-
-    The passage loops cycle ``verification_urls`` with ``index % len(...)``,
-    so a claim of any verdict that carries an excerpt and no verification URL
-    raises ``ZeroDivisionError`` at *import* time rather than
-    ``CaseRegistryError``. That failure is a collection error, so the
-    verdict/passage invariants in this file — which are exactly what would
-    have caught the malformed fixture — never run. A typo'd verdict is the
-    realistic trigger; a clear error is what has to come out.
-    """
-    with pytest.raises(CaseRegistryError) as caught:
-        claim(
-            "A claim.",
-            urls=["https://example.com/a"],
-            verdict="insufficient_evidence",
-            confidence=0.0,
-            evidence=["An independent review found no support."],
-        )
-
-    assert "verification_urls" in str(caught.value)
-
-    with pytest.raises(CaseRegistryError) as caught:
-        claim(
-            "A claim.",
-            urls=["https://example.com/a"],
-            verdict="not_a_verdict",
-            confidence=0.0,
-            contradictions=["An independent review disputes this."],
-        )
-
-    assert "verification_urls" in str(caught.value)
-
-
 # The shared fixture builders are the API every case file (Tasks 10-15)
 # imports, and the validation rules are this task's deliverable, so both
 # get exercised here on synthetic catalogs rather than waiting for the
@@ -425,21 +200,12 @@ def test_the_fixture_builders_construct_a_complete_case() -> None:
         overall=0.85,
         rationale="strong domain fit",
     )
-    item_claim = claim(
-        "The claim.",
-        urls=["https://example.com/a"],
-        verdict="verified",
-        confidence=0.9,
-        evidence=["source text"],
-        verification_urls=["https://independent.org/review"],
-    )
     state = evaluation_state(
         case_id="focused-decomposition",
         question="A question?",
         sub_topics=[topic],
         findings=[item],
         sources=[source],
-        claims=[item_claim],
         memory_context=MemorySnapshot(
             similar_findings=[item],
             known_source_reputations={"https://example.com/a": 0.9},
@@ -476,6 +242,7 @@ def test_the_fixture_builders_construct_a_complete_case() -> None:
     assert case.identity == ("focused-decomposition", 1)
     assert case.state.session_id == "evaluation-focused-decomposition"
     assert case.state.raw_findings[0].extracted_at == FIXED_TIMESTAMP
+    assert case.state.verified_findings == []
     assert case.state.memory_context.known_source_reputations == {
         "https://example.com/a": 0.9
     }

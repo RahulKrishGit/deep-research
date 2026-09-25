@@ -34,8 +34,7 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import JsonValue
 
-from deep_research.agents.critic import CriticAgent
-from deep_research.agents.fact_checker import FactCheckerAgent
+from deep_research.agents.evidence_verifier import EvidenceVerifierAgent
 from deep_research.agents.planner import PlannerAgent
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.agents.source_evaluator import (
@@ -44,7 +43,7 @@ from deep_research.agents.source_evaluator import (
 )
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.agents.steps import ReActStep, read_evidence_urls
-from deep_research.agents.synthesizer import SynthesizerAgent
+from deep_research.agents.report_writer import ReportWriterAgent
 from deep_research.evaluation.config import (
     EvaluationRuntimeConfig,
     target_llm_config,
@@ -224,9 +223,8 @@ _AGENT_CLASSES: dict[AgentName, type[Any]] = {
     "planner": PlannerAgent,
     "researcher": ResearcherAgent,
     "source_evaluator": SourceEvaluatorAgent,
-    "fact_checker": FactCheckerAgent,
-    "synthesizer": SynthesizerAgent,
-    "critic": CriticAgent,
+    "evidence_verifier": EvidenceVerifierAgent,
+    "report_writer": ReportWriterAgent,
 }
 
 
@@ -1542,326 +1540,41 @@ def _source_evaluator_scenarios() -> dict[str, ScenarioScript]:
     }
 
 
-def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
-    # The scenario search keys are exactly the claim texts the cases pin as
-    # expected verdicts (or failing-query anchors) in their references; the
-    # case tests assert equality between the two sides.
-    return {
-        "fact-checker-mixed": ScenarioScript(
-            search_responses={
-                (
-                    "Small modular reactor designs must satisfy the same "
-                    "international safety standards as large reactors."
-                ): {
-                    "results": [
-                        {
-                            "url": "https://nrc.gov/smr-licensing-framework",
-                            "title": "NRC: SMR licensing framework",
-                            "content": (
-                                "SMR designs undergo the same safety "
-                                "assessment and licensing requirements as "
-                                "large reactors."
-                            ),
-                        },
-                        {
-                            "url": "https://ans.org/smr-safety-assessment",
-                            "title": "ANS: SMR safety assessment",
-                            "content": (
-                                "The ANS confirms that international safety "
-                                "standards apply equally to SMR designs."
-                            ),
-                        },
-                    ]
-                },
-                "No small modular reactor has operated commercially.": {
-                    "results": [
-                        {
-                            "url": "https://nei.org/pevek-floating-plant",
-                            "title": "NEI: Pevek floating plant",
-                            "content": (
-                                "The Akademik Lomonosov floating plant has "
-                                "operated commercially at Pevek since 2020, "
-                                "powered by two KLT-40S small modular "
-                                "reactor units."
-                            ),
-                        },
-                    ]
-                },
-                (
-                    "Small modular reactors will be cheaper to build than "
-                    "large reactors at scale."
-                ): {
-                    "results": [],
-                },
-            },
-            http_pages={
-                "https://nrc.gov/smr-licensing-framework": (
-                    "SMR designs undergo the same safety assessment and "
-                    "licensing requirements as large reactors."
-                ),
-                "https://ans.org/smr-safety-assessment": (
-                    "International safety standards apply equally to SMR "
-                    "designs."
-                ),
-                "https://nei.org/pevek-floating-plant": (
-                    "The Akademik Lomonosov floating plant has operated "
-                    "commercially at Pevek since 2020, powered by two "
-                    "small modular reactor units."
-                ),
-            },
-            scripted_search_urls=(
-                "https://nrc.gov/smr-licensing-framework",
-                "https://ans.org/smr-safety-assessment",
-                "https://nei.org/pevek-floating-plant",
-            ),
-        ),
-        "fact-checker-dependent-domains": ScenarioScript(
-            search_responses={
-                "The 2025 grid upgrade reduced outage minutes by 40 percent.": {
-                    "results": [
-                        {
-                            "url": "https://news.example.com/outage-minutes-fall",
-                            "title": "News: outage minutes fall after upgrade",
-                            "content": (
-                                "A follow-up confirms outage minutes fell "
-                                "40 percent after the 2025 grid upgrade."
-                            ),
-                        },
-                        {
-                            "url": (
-                                "https://syndication.news.example.com/"
-                                "outage-minutes-fall"
-                            ),
-                            "title": "Syndicated: outage statistics",
-                            "content": (
-                                "The same 40 percent figure appears in the "
-                                "syndicated outage statistics."
-                            ),
-                        },
-                    ]
-                },
-            },
-            http_pages={
-                "https://news.example.com/outage-minutes-fall": (
-                    "A follow-up confirms outage minutes fell 40 percent "
-                    "after the 2025 grid upgrade."
-                ),
-                "https://syndication.news.example.com/outage-minutes-fall": (
-                    "The same 40 percent figure appears in syndicated "
-                    "outage statistics."
-                ),
-            },
-            scripted_search_urls=(
-                "https://news.example.com/outage-minutes-fall",
-                "https://syndication.news.example.com/outage-minutes-fall",
-            ),
-        ),
-        "fact-checker-search-failure": ScenarioScript(
-            search_responses={
-                "Ocean heat content is still rising at the rate reported in 2023.": (
-                    RuntimeError("search backend unavailable")
-                ),
-                (
-                    "The recent acceleration in ocean heat content is "
-                    "driven primarily by greenhouse gas forcing."
-                ): {
-                    "results": [
-                        {
-                            "url": "https://agu.org/ocean-heat-attribution",
-                            "title": "AGU: ocean heat attribution study",
-                            "content": (
-                                "An AGU study attributes the post-2020 "
-                                "ocean heat acceleration primarily to "
-                                "greenhouse gas forcing."
-                            ),
-                        },
-                        {
-                            "url": "https://gcos.wmo.int/ocean-heat-bulletin",
-                            "title": "GCOS: ocean heat bulletin",
-                            "content": (
-                                "The GCOS bulletin reports greenhouse gas "
-                                "forcing as the dominant driver of the "
-                                "recent ocean heat increase."
-                            ),
-                        },
-                    ]
-                },
-            },
-            http_pages={
-                "https://agu.org/ocean-heat-attribution": (
-                    "An AGU study attributes the post-2020 ocean heat "
-                    "acceleration primarily to greenhouse gas forcing."
-                ),
-                "https://gcos.wmo.int/ocean-heat-bulletin": (
-                    "The GCOS bulletin reports greenhouse gas forcing as "
-                    "the dominant driver of the recent ocean heat increase."
-                ),
-            },
-            scripted_search_urls=(
-                "https://agu.org/ocean-heat-attribution",
-                "https://gcos.wmo.int/ocean-heat-bulletin",
-            ),
-        ),
-        # Both claim-keyed searches serve their own claim's pages: the trap's
-        # search returns the commission's order, the same commission's press
-        # release, and the lab's attribution-only page — one publisher and one
-        # comment, never a pair — while the control's search returns the two
-        # unrelated works that do corroborate it. All six URLs are readable,
-        # the case's own findings included, so a run can always reach the page
-        # behind a passage it wants to cite.
-        "fact-checker-upstream-independent-pair": ScenarioScript(
-            search_responses={
-                (
-                    "Non-revenue water in Northfield's network measured 12 "
-                    "percent of supply in 2025."
-                ): {
-                    "results": [
-                        {
-                            "url": "https://commission.example.gov/order-2026-14",
-                            "title": "Commission order 2026-14",
-                            "content": (
-                                "Order 2026-14 requires the authority to "
-                                "reduce non-revenue water to 8 percent of "
-                                "supply by 2030, from the 12 percent of "
-                                "supply measured in 2025."
-                            ),
-                        },
-                        {
-                            "url": (
-                                "https://commission.example.gov/press/"
-                                "losses-target-2030"
-                            ),
-                            "title": "Commission press release",
-                            "content": (
-                                "The commission confirmed that non-revenue "
-                                "water in the authority's network measured "
-                                "12 percent of supply in 2025."
-                            ),
-                        },
-                        {
-                            "url": (
-                                "https://leakagelab.example.org/"
-                                "commission-target"
-                            ),
-                            "title": "Leakage lab: the commission's target",
-                            "content": (
-                                "The leakage lab credits the commission's "
-                                "order 2026-14 as the source of the 12 "
-                                "percent figure and reports no measurement "
-                                "of its own."
-                            ),
-                        },
-                    ]
-                },
-                (
-                    "Northfield Water Authority replaced 41 kilometres of "
-                    "leaking mains in 2025."
-                ): {
-                    "results": [
-                        {
-                            "url": (
-                                "https://lossesmonitor.example.net/2025-audit"
-                            ),
-                            "title": "Utility monitor: 2025 audit",
-                            "content": (
-                                "The 2025 network audit records 41 "
-                                "kilometres of leaking mains replaced by "
-                                "the authority."
-                            ),
-                        },
-                        {
-                            "url": (
-                                "https://audits.example.edu/"
-                                "2025-losses-study"
-                            ),
-                            "title": "University regional study",
-                            "content": (
-                                "The regional study records 41 kilometres "
-                                "of leaking mains replaced in the "
-                                "authority's network during 2025."
-                            ),
-                        },
-                    ]
-                },
-            },
-            http_pages={
-                "https://commission.example.gov/order-2026-14": (
-                    "Commission order 2026-14. Non-revenue water in the "
-                    "Northfield Water Authority's network measured 12 "
-                    "percent of supply in 2025, against a target of 8 "
-                    "percent of supply by 2030."
-                ),
-                "https://commission.example.gov/press/losses-target-2030": (
-                    "Commission press release. Non-revenue water in the "
-                    "authority's network measured 12 percent of supply in "
-                    "2025; the commission restates its 8 percent target for "
-                    "2030."
-                ),
-                "https://leakagelab.example.org/commission-target": (
-                    "Leakage lab commentary. The commission's order "
-                    "2026-14 is the source of the 12 percent figure. This "
-                    "commentary carries no measurement of its own."
-                ),
-                "https://waterdesk.example.com/commission-losses-order": (
-                    "Water desk report. The commission's order states that "
-                    "non-revenue water in the authority's network reached "
-                    "12 percent of supply in 2025."
-                ),
-                "https://lossesmonitor.example.net/2025-audit": (
-                    "Utility monitor, 2025 network audit. The authority "
-                    "replaced 41 kilometres of leaking mains during the "
-                    "year."
-                ),
-                "https://audits.example.edu/2025-losses-study": (
-                    "University regional study. The study records 41 "
-                    "kilometres of leaking mains replaced in the authority's "
-                    "network during 2025."
-                ),
-            },
-            scripted_search_urls=(
-                "https://commission.example.gov/order-2026-14",
-                "https://commission.example.gov/press/losses-target-2030",
-                "https://leakagelab.example.org/commission-target",
-                "https://waterdesk.example.com/commission-losses-order",
-                "https://lossesmonitor.example.net/2025-audit",
-                "https://audits.example.edu/2025-losses-study",
-            ),
-        ),
-    }
+def _evidence_verifier_scenarios() -> dict[str, ScenarioScript]:
+    """Three scripted Evidence Verifier scenarios with no service scripted.
 
+    The Evidence Verifier declares no tools at all: it judges the seeded
+    findings against the seeded reads, and the Context Check is a structured
+    model call rather than a service. What a controlled scenario scripts is
+    therefore *nothing*, which is the honest fixture for an agent whose
+    ``allowed_tools`` is empty and whose ``LIVE_DEPENDENCIES`` entry is
+    empty too. The scenarios stay registered because a case must name one
+    (``test_every_case_scenario_has_a_script``), and an empty script keeps
+    that invariant true without pretending the wiring is live.
 
-def _synthesizer_scenarios() -> dict[str, ScenarioScript]:
-    # The Synthesizer composes both Markdown artifacts and never calls a
-    # persistence tool. Keep every controlled scenario empty: publication is
-    # a later terminal concern and Task 6 must not encode write/memory
-    # failures as evaluation dependencies.
-    return {
-        "synthesizer-complete": ScenarioScript(),
-        "synthesizer-conflicted": ScenarioScript(),
-        "synthesizer-composition": ScenarioScript(),
-        "synthesizer-canonical-evidence": ScenarioScript(),
-    }
-
-
-def _critic_scenarios() -> dict[str, ScenarioScript]:
-    """Four scripted Critic scenarios with no service scripted at all.
-
-    They used to register search results and memory entries for a spot-check
-    loop that opened pages it could not read. Task 8 removed that loop: the
-    Critic reviews the candidate's packet and reaches no service, so what these
-    scenarios script now is *nothing* — which is the honest fixture for an
-    agent whose ``allowed_tools`` is empty and whose ``LIVE_DEPENDENCIES``
-    entry is therefore empty too.
-
-    The scenarios stay registered because a case must name one
-    (``test_every_case_scenario_has_a_script``), and an empty script keeps that
-    invariant true without pretending the wiring is live.
+    The Context Check's own replies are scripted by the tests that drive
+    these cases: a case's expected verdict is an input to the run, not a
+    dependency of it.
     """
     return {
-        "critic-strong-report": ScenarioScript(),
-        "critic-gappy-report": ScenarioScript(),
-        "critic-budget-exhausted": ScenarioScript(),
-        "critic-typed-gap": ScenarioScript(),
+        "evidence-verifier-scope-correction": ScenarioScript(),
+        "evidence-verifier-relay": ScenarioScript(),
+        "evidence-verifier-invented-evidence": ScenarioScript(),
+    }
+
+
+def _report_writer_scenarios() -> dict[str, ScenarioScript]:
+    # The Report Writer composes both Markdown artifacts and publishes
+    # nothing: publication is the terminal pass's job, and the writer's own
+    # ``write_document``/``save_to_memory`` calls belong to that finalizer,
+    # not to a controlled composition. Keep every controlled scenario empty
+    # so a persistence call is a scenario miss rather than a scripted
+    # success, and no case encodes write or memory failure as a dependency.
+    return {
+        "report-writer-complete": ScenarioScript(),
+        "report-writer-conflicted": ScenarioScript(),
+        "report-writer-composition": ScenarioScript(),
+        "report-writer-canonical-evidence": ScenarioScript(),
     }
 
 
@@ -1869,7 +1582,6 @@ SCENARIOS: dict[str, ScenarioScript] = {
     **_planner_scenarios(),
     **_researcher_scenarios(),
     **_source_evaluator_scenarios(),
-    **_fact_checker_scenarios(),
-    **_synthesizer_scenarios(),
-    **_critic_scenarios(),
+    **_evidence_verifier_scenarios(),
+    **_report_writer_scenarios(),
 }
