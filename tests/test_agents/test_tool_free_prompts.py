@@ -614,6 +614,18 @@ OPERATIONS = (
         examples=_labelled_examples,
         static_headings=("# Plan requirements",),
     ),
+    # PD-29's one recorded exemption (final-review fix round, slice 3): the
+    # plan review is the single tool-free pipeline request that is not
+    # rendered static-first. Rebuilding it that way is not a request-shaped
+    # edit: this matrix's pipeline assertions require the envelope to carry
+    # exactly one "# Reply format" and one "JSON object", which is what
+    # ``render_structured_reply_format`` prints from one or two examples —
+    # and the plan review's reply is a four-field verdict the system prompt
+    # already describes, with no example to show. Adding one to satisfy a
+    # matrix would be inventing a prompt this request never needed, so the
+    # exemption is recorded here instead, and the request keeps its own
+    # envelope. A future change that does give it a reply format adds the row
+    # with ``static_headings=("# Review requirements",)``.
     StructuredOperation(
         operation="finding extraction",
         agent="researcher",

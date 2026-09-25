@@ -1866,6 +1866,26 @@ def test_a_requested_word_limit_is_recorded() -> None:
     assert _contract("What are the rules?").requested_word_limit is None
 
 
+@pytest.mark.parametrize(
+    "question",
+    (
+        "What did the 2 024 words of the act change in 2025?",
+        "In 2024 words like \"carbon border\" entered the debate; what changed?",
+        "What were the 2025 words of the treaty, and what do they require?",
+    ),
+)
+def test_a_year_before_words_is_not_a_reader_length(question: str) -> None:
+    """A length frame is what asks for a length, not a number near "words".
+
+    The pattern read any two-to-seven digit number followed by "words", so a
+    question whose own subject sits in that shape ("the 2025 words of the
+    treaty", "in 2024 words like ... entered the debate") handed the writer's
+    contract a four-digit "reader length" of 2024 or 2025 words — a limit
+    nobody asked for, published as the reader's own request.
+    """
+    assert _contract(question).requested_word_limit is None
+
+
 def test_a_naive_clock_is_rejected_at_construction(tracker: Tracker) -> None:
     with pytest.raises(AgentConfigurationError, match="timezone-aware"):
         PlannerAgent(
@@ -3436,6 +3456,54 @@ async def test_a_truncated_review_repair_falls_back_to_the_reviewed_plan(
 
 
 @pytest.mark.asyncio
+async def test_a_first_plan_review_that_cannot_be_produced_keeps_the_plan(
+    tracker: Tracker,
+) -> None:
+    """The one tool-free planning request that could still end a live run.
+
+    A provider failure, a truncation or a schema failure on the *first* plan
+    review raised out of ``finalize``: the run ended at ``graph_planning_failed``
+    with nothing published, while the confirming review, the lint repair and the
+    review repair were each already guarded. The review is a request like any
+    other, so its failure is recorded as an ordinary plan defect and the plan it
+    never judged — structurally valid, and researched nothing yet — stands.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_sorting_plan(), _output_limit_error()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(
+            _state("What limits grid-scale battery storage deployment?")
+        )
+
+    assert outcome.result is not None
+    assert [sub_topic.title for sub_topic in outcome.result.sub_topics] == [
+        "Cryptography",
+        "Hardware timelines",
+        "Mitigations",
+    ]
+    assert outcome.result.repair_attempted is False
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+    ]
+    records = _plan_defects(outcome.state_update["errors"])
+    assert [record.details for record in records] == [
+        {
+            "stage": "plan_review",
+            "plan": "draft",
+            "problems": [
+                "draft: the plan review raised ProviderOutputLimitError",
+                "draft: the planner provider failed while reviewing the plan",
+            ],
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_an_unusable_review_repair_keeps_the_reviewed_plan(
     tracker: Tracker,
 ) -> None:
@@ -4254,6 +4322,42 @@ def test_a_subtopic_the_question_never_asked_for_is_named() -> None:
     assert [problem.split()[0] for problem in named] == ["topic-01"]
 
 
+# The live P4 probe's EU AI Act plan: the statute's own term for the models it
+# regulates is "systemic risk", so a sub-topic the question itself calls for
+# carried that word, the widening lint fired, and a max-effort repair call was
+# bought for a plan the model then kept — with the documented D14 risk that a
+# repair deletes the very dimension the question asked for.
+_AI_ACT_QUESTION = (
+    "What obligations does the EU AI Act impose on providers of "
+    "general-purpose AI models?"
+)
+
+
+def test_the_questions_own_domain_vocabulary_is_not_a_widening_demand() -> None:
+    """A dimension is a pairing, not one word: a single marker is the domain's.
+
+    "systemic risk" is what the question's own subject matter is called; the
+    lint exists for the sub-topic an earlier instruction *mandated* (benefits
+    and risks together), so one marker is left to the plan review, which judges
+    scope widening with meaning.
+    """
+    stamped = _one_topic_plan(
+        _AI_ACT_QUESTION,
+        title="obligations for models posing systemic risk",
+        criteria=[
+            "The obligations that apply to models posing systemic risk are "
+            "stated."
+        ],
+        target=_MEASURED_TARGET,
+    )
+
+    assert [
+        problem
+        for problem in target_problems(stamped, _contract(_AI_ACT_QUESTION))
+        if "never asks about" in problem
+    ] == []
+
+
 def test_a_subtopic_the_question_does_ask_for_is_not_named() -> None:
     """The control: a value-judgement question is asking about benefits."""
     question = "Are grid-scale batteries good for the grid?"
@@ -4561,6 +4665,63 @@ def test_the_plan_instruction_states_the_floor() -> None:
                    "required only for what the question names",
                    "optional", "paywalled"):
         assert phrase in PLAN_INSTRUCTION
+
+
+# The live P3/P4 plan probe stamped bodies the question never named by
+# *describing* them where a body's name belongs — "the manufacturer of
+# semaglutide" for the maker of a drug, and a join of two institutions for the
+# bodies that enacted a rule. §6.6 binds a target's answer to a finding through
+# the strict ``same_organisation`` match, and neither phrase is any page's own
+# organisation label, so the target was reported Not found for the whole run
+# while the report held its answer, and an extra pass was bought for it.
+_QUESTION_NAMING_NO_BODY = (
+    "How much did semaglutide sales grow in 2024, and what is projected for 2025?"
+)
+
+# A body the plan may only have *described*: a role named through what it makes,
+# owns, publishes or authors; a relative clause; or two bodies joined into one
+# label.
+_DESCRIBED_BODIES = (
+    "the manufacturer of semaglutide",
+    "the drug's maker",
+    "the manufacturer",
+    "the body that publishes the primary record",
+    "the company responsible for the trial",
+    "European Parliament and Council of the European Union",
+)
+
+
+@pytest.mark.parametrize("organisation", _DESCRIBED_BODIES)
+def test_a_body_the_plan_can_only_describe_is_left_empty(organisation: str) -> None:
+    assert (
+        _stamped(_QUESTION_NAMING_NO_BODY, _target(organisation=organisation)).organisation
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "organisation",
+    (
+        "U.S. Energy Information Administration",
+        "EIA",
+        "the European Chemicals Agency",
+        "the regional health authority",
+        "Novo Nordisk",
+    ),
+)
+def test_a_body_the_plan_names_is_stamped_by_name(organisation: str) -> None:
+    """The counterpart the guard must not break: a name is not a description.
+
+    The question names no body in either case, so every one of these is the
+    plan's own inference of the body that publishes the primary record — which
+    the plan instruction asks for and §6.6 is then able to match against a
+    page's own label. A guard that emptied these would refuse that inference
+    and loosen every figure target's provenance.
+    """
+    assert (
+        _stamped(_QUESTION_NAMING_NO_BODY, _target(organisation=organisation)).organisation
+        == organisation
+    )
 
 
 def test_the_models_required_flag_is_what_the_plan_stamps() -> None:

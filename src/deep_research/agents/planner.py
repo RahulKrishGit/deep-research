@@ -111,6 +111,10 @@ _PLAN_DEFECT_MESSAGES: dict[str, str] = {
         "The plan review reported defects that no repair removed, so they are "
         "recorded against the plan that stands"
     ),
+    "plan_review": (
+        "The plan review could not be produced, so the plan it never judged "
+        "stands"
+    ),
     "review_repair": (
         "The repair of the plan review's findings was not usable, so the plan "
         "the review judged stands"
@@ -378,7 +382,15 @@ _PERCENTAGE_POINTS_PATTERN = re.compile(
 )
 _YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
 _ISO_DATE_PATTERN = re.compile(r"\b(?:19|20)\d{2}-\d{2}-\d{2}\b")
-_WORD_LIMIT_PATTERN = re.compile(r"\b(\d{2,7})[- ]words?\b", re.IGNORECASE)
+# A reader length is asked for by a length frame, never by a number that
+# happens to sit before "words": the frame words are what say the question is
+# about how long the answer should be, and without one a question's own subject
+# ("the 2025 words of the treaty") becomes a four-digit limit nobody asked for.
+_WORD_LIMIT_PATTERN = re.compile(
+    r"(?i)\b(?:in|under|within|of|about|around|at most|no more than|fewer than|"
+    r"less than|up to|maximum of|limit of|limited to)\s+"
+    r"(\d[\d,]{0,8})\s*[- ]?\s*words?\b"
+)
 
 
 # What makes a stated tolerance legitimate: the criterion names the
@@ -502,7 +514,12 @@ PLAN_INSTRUCTION = (
     "the question names as its source; when it names none, the body that "
     "publishes the primary or official record of that measure for that geography "
     "— a statistical agency, a regulator, the company for its own filing — or "
-    "empty when no single body does). Plan one target per organisation, measure, "
+    "empty when no single body does). Write that body's own name, as a page "
+    "prints it — \"Novo Nordisk\", \"Eurostat\", \"the European Chemicals "
+    "Agency\" — and never a description of its role: \"the manufacturer of "
+    "semaglutide\" names no body any page carries, and a target stamped that way "
+    "is reported Not found however much evidence the run collects. Name one body "
+    "per target; never join two. Plan one target per organisation, measure, "
     "period and kind the question asks for.\n"
     "A target is required only for what the question names. Read the question as "
     "its parts: each figure, period, body, option, place or item it names, and "
@@ -984,254 +1001,6 @@ def _comparison_evidence_for(question: str) -> _ComparisonEvidence:
     return "absent"
 
 
-# A question that asks what caused something, or what effect something had, is
-# answered by an argument rather than by one issuer's figure. The vocabulary is
-# wider than ``_EXPLANATION_MARKERS``, which also decides the *answer form*: a
-# causal question's policy has to be protected even where its form is still
-# factual ("Does battery storage reduce wholesale electricity prices?").
-_CAUSAL_MARKERS = (
-    "why",
-    "how does",
-    "how do",
-    "how did",
-    "explain",
-    "mechanism",
-    "reason for",
-    "reason that",
-    "cause",
-    "causes",
-    "caused",
-    "effect",
-    "effects",
-    "impact",
-    "impacts",
-    "affect",
-    "affects",
-    "reduce",
-    "reduces",
-    "reduced",
-    "drive",
-    "drives",
-    "drove",
-    "led to",
-    "leads to",
-    "lead to",
-    "result of",
-    "results in",
-    "resulting in",
-    "determine",
-    "determines",
-    "influence",
-    "influences",
-    "because",
-    "due to",
-)
-
-
-# A question that ranks or weighs things is a comparison even where the
-# syntactic detector cannot prove the relation: "Which state added the most
-# battery capacity?" is a ranking, and "Is lithium-ion safer than flow
-# batteries?" is a weighing. Both are answered by comparing two accounts, so
-# the plan may not lower them to one issuer's figure (review F5).
-_RANKING_MARKERS = (
-    "best",
-    "better",
-    "biggest",
-    "fewer",
-    "greatest",
-    "highest",
-    "largest",
-    "least",
-    "lowest",
-    "safer",
-    "safest",
-    "smallest",
-    "worse",
-    "worst",
-)
-
-# "most" is the one ranking word that also heads every phrase a question about
-# a current figure uses. "the most recently published outlook", "the most
-# recent inventory" and "the most current data" rank nothing: they name one
-# body's vintage. Matching the bare word read the question under audit as a
-# ranking and stamped ``independent_pair`` on all three of its forecast
-# targets, whose single-agency figures no second measurement can corroborate —
-# the plan override that keeps a target unanswerable (review rank 2). The word
-# is therefore matched on its own, by a pattern that only fires when a
-# currency word does not follow it (hyphenated or spaced): "added the most
-# capacity" still ranks.
-_MOST_CURRENCY_FOLLOWERS = ("current", "currently", "recent", "recently")
-_MOST_RANKING_PATTERN = re.compile(
-    r"(?<![a-z0-9])most(?![a-z0-9])(?![\s-]+(?:"
-    + "|".join(_MOST_CURRENCY_FOLLOWERS)
-    + r")(?![a-z0-9]))"
-)
-
-
-def _mentions_ranking(normalized: str) -> bool:
-    """True when the question ranks measured quantities against each other.
-
-    Two halves, because "most" is two words: a superlative determiner that
-    ranks ("added the most capacity"), and the head of a currency phrase that
-    does not ("the most recently published outlook"). The other markers rank
-    in every form they take, so they are matched as tokens.
-    """
-    return _mentions(normalized, _RANKING_MARKERS) or (
-        _MOST_RANKING_PATTERN.search(normalized) is not None
-    )
-
-
-# plan itself writes for it, followed — within a few words — by one of the
-# publication nouns such a series is published as. "the agency's published
-# capacity data", "the market monitor's latest published outlook" and "the
-# operator's published ridership report" are all one named body's own series,
-# while "the city's population" is a property the question describes and "the
-# cost analysis each body publishes" names no single body at all. A quantity
-# nobody in particular reports — "how many people live in New York City?" —
-# names no series, so the plan's own proposal keeps deciding it: there is no
-# blanket "it has a number" rule (user decision 1).
-_REPORTED_SERIES_NOUNS = (
-    "accounts",
-    "analysis",
-    "count",
-    "counts",
-    "data",
-    "database",
-    "dataset",
-    "documentation",
-    "estimate",
-    "estimates",
-    "figures",
-    "filing",
-    "filings",
-    "forecast",
-    "forecasts",
-    "inventory",
-    "methodology",
-    "numbers",
-    "outlook",
-    "outlooks",
-    "projection",
-    "projections",
-    "publication",
-    "publications",
-    "record",
-    "records",
-    "release",
-    "releases",
-    "report",
-    "reports",
-    "series",
-    "statistics",
-    "study",
-    "survey",
-    "surveys",
-)
-# The pronouns whose "'s" is never a body's own series ("it's", "there's"),
-# and the possessors that name a time, an indefinite person, or a collective
-# concept rather than any particular body — "today's figures", "last year's
-# figures", "anyone's published data", "the world's best estimates", "the
-# market's latest data" all read as an attribution but name no issuer at all,
-# and the same guard catches the planner's own evidence-period sentence
-# ("never substitute today's figures"). The rest of the pattern is what
-# decides: a possessive followed by a publication noun is an attribution, and
-# these are the possessives that only look like one. An indefinite article
-# ("a reputable publisher's report") is filtered separately, by the
-# ``article`` group rather than the guard set: it names no one in particular
-# regardless of its head noun.
-_SERIES_POSSESSIVE_GUARDS = frozenset(
-    {
-        "it",
-        "that",
-        "this",
-        "there",
-        "these",
-        "those",
-        "today",
-        "yesterday",
-        "tomorrow",
-        "year",
-        "week",
-        "month",
-        "day",
-        "anyone",
-        "someone",
-        "everyone",
-        "world",
-        "market",
-    }
-)
-_POSSESSIVE_SERIES_PATTERN = re.compile(
-    r"\b(?:(?P<article>a|an)\s+|the\s+)?"
-    r"(?P<possessor>[a-z][a-z-]*(?:\s+[a-z][a-z-]*){0,3})"
-    r"(?:'s|’s)\s+(?:[a-z][a-z-]*\s+){0,4}(?:"
-    + "|".join(_REPORTED_SERIES_NOUNS)
-    + r")(?![a-z0-9])"
-)
-
-
-def _named_possessive_series(text: str) -> bool:
-    """A body's own series named in possessive form, or a false one filtered.
-
-    "a reputable publisher's report" is filtered by its indefinite article,
-    and "the world's best estimates" is filtered because "world" is the
-    possessor's own last word, not a body (:data:`_SERIES_POSSESSIVE_GUARDS`).
-    "the federal energy statistical agency's published capacity data" keeps
-    neither guard: its possessor is definite and its last word, "agency",
-    names a kind of issuing body rather than a time or a generic concept.
-    ``text`` must already be normalized (:func:`_normalized_question`).
-    """
-    for match in _POSSESSIVE_SERIES_PATTERN.finditer(text):
-        if match.group("article") is not None:
-            continue
-        possessor_words = match.group("possessor").split()
-        if possessor_words[-1] in _SERIES_POSSESSIVE_GUARDS:
-            continue
-        return True
-    return False
-
-
-# A body named by its own proper-noun title instead of a possessive: "the
-# Census Bureau population estimates" and "the US Energy Storage Monitor"
-# name their issuer with no "'s" at all. Case-sensitive and read from the
-# *raw* text — never the casefolded form the rest of this module matches
-# against — because capitalisation is the only signal here: a generic
-# descriptive phrase such as "the federal energy statistical agency" is
-# deliberately left to the possessive form above, not this one.
-_TITLE_ENTITY_PATTERN = re.compile(
-    r"\bthe\s+(?P<entity>[A-Z][\w&]*(?:\s+[A-Z][\w&]*){1,4})"
-    r"(?:\s+(?P<tail>(?:[a-z][a-z-]*\s+){0,3}(?:"
-    + "|".join(_REPORTED_SERIES_NOUNS)
-    + r"))(?![a-zA-Z0-9]))?"
-)
-
-
-_GEOGRAPHIC_TITLE_HEADS = frozenset(
-    {"city", "county", "kingdom", "province", "region", "republic", "state", "states", "union"}
-)
-_PUBLICATION_TITLE_HEADS = frozenset(
-    {"bulletin", "inventory", "monitor", "outlook", "report", "survey", "tracker"}
-)
-
-
-def _named_title_series(raw_text: str) -> bool:
-    """Recognise an issuer's title, not every capitalised geographic name.
-
-    A publisher's proper name must modify a publication noun (``Census
-    Bureau population estimates``), or itself end in a publication title
-    (``US Energy Storage Monitor``). A jurisdiction such as ``United States``
-    is a geographic scope, even when followed by ``figures``; it is not the
-    body that published those figures.
-    """
-    for match in _TITLE_ENTITY_PATTERN.finditer(raw_text):
-        head = match.group("entity").split()[-1].casefold()
-        if head not in _GEOGRAPHIC_TITLE_HEADS and (
-            match.group("tail") is not None or head in _PUBLICATION_TITLE_HEADS
-        ):
-            return True
-    return False
-
-
 def _question_classification(
     question: str,
     *,
@@ -1374,11 +1143,25 @@ def geographic_scope_for(question: str) -> tuple[str, list[str]]:
 
 
 def requested_word_limit_for(question: str) -> int | None:
-    """The reader length the question explicitly asks for, or ``None``."""
+    """The reader length the question explicitly asks for, or ``None``.
+
+    A length is asked for by a length *frame* — "in under 500 words", "of about
+    800 words" — never by a number that happens to sit before the word
+    "words". Reading the bare shape, a question whose own subject filled it
+    ("the 2025 words of the treaty", "in 2024 words like ... entered the
+    debate") handed the writer's contract a four-digit reader length nobody
+    asked for, and the writer's own request line then published it.
+    """
     match = _WORD_LIMIT_PATTERN.search(question)
     if match is None:
         return None
-    limit = int(match.group(1))
+    raw = match.group(1).replace(",", "")
+    if _YEAR_PATTERN.fullmatch(raw):
+        # "in 2024 words like ... entered the debate" wears the length frame
+        # without asking for a length: no reader asks for exactly a year's
+        # worth of words, and the year is the question's own subject.
+        return None
+    limit = int(raw)
     return limit if limit >= 1 else None
 
 
@@ -1964,7 +1747,18 @@ def _conjoined_demands(question: str) -> list[str]:
 
 
 def _demanded_widening(sub_topic: SubTopic) -> list[str]:
-    """The benefits-and-risks content one sub-topic demands, if it demands any."""
+    """The benefits-and-risks *dimension* one sub-topic demands, if it demands one.
+
+    A dimension is a pairing, not a word. The check exists for the sub-topic an
+    earlier instruction *mandated* — benefits and risks together — and a single
+    marker is a domain word as often as it is a demand: "systemic risk" is what
+    the EU AI Act calls the subject matter it regulates, so a live plan whose
+    sub-topic used it bought a max-effort repair call for a good plan, and a
+    repair can delete the dimension the question asked for (D14). Two distinct
+    markers are the pairing; one marker is left to the plan review, which
+    judges scope widening with meaning. The words are counted here, not judged,
+    which is why the count has to be the shape the check was written for.
+    """
     demanded = " ".join(
         [
             sub_topic.title,
@@ -1978,11 +1772,12 @@ def _demanded_widening(sub_topic: SubTopic) -> list[str]:
         ]
     )
     normalized = _normalized_question(demanded)
-    return [
+    found = [
         marker
         for marker in _WIDENING_MARKERS
         if _mentions(normalized, (marker,))
     ]
+    return found if len(found) > 1 else []
 
 
 _EDITION_DATE = re.compile(
@@ -2066,7 +1861,6 @@ def _unrequested_forecast_vintage(
         if match.group(0).casefold() not in question:
             return match.group(0)
     return ""
-
 
 
 def _plan_problems(
@@ -2246,16 +2040,138 @@ def target_problems(
     return [problem.text for problem in _plan_problems(sub_topics, contract)]
 
 
+# What a body is described *through* when the plan does not name it: the words
+# that name a body only by its relationship to the thing measured. The
+# vocabulary is explicit and small, like the currency, tolerance and widening
+# tables below, and it is deliberately made of relational words alone — a
+# statistical agency, a department or a ministry is a body a page carries as
+# itself ("the Department of Energy"), while "the manufacturer of semaglutide"
+# is a role, and no page's organisation label is one.
+_BODY_ROLE_WORDS = frozenset(
+    {
+        "maker", "makers", "manufacturer", "manufacturers", "producer",
+        "producers", "publisher", "publishers", "author", "authors", "issuer",
+        "issuers", "writer", "writers", "creator", "creators", "developer",
+        "developers", "owner", "owners", "operator", "operators", "supplier",
+        "suppliers", "vendor", "vendors", "seller", "sellers", "provider",
+        "providers", "distributor", "distributors", "importer", "importers",
+        "exporter", "exporters", "filer", "filers",
+        # A legal form on its own names no body either ("the company for its
+        # own filing"); beside a name's own word it is part of one ("Ford
+        # Motor Company"), which the identifying-word test below keeps.
+        "company", "companies", "firm", "firms", "business", "businesses",
+        "body", "bodies", "entity", "entities", "organisation",
+        "organisations", "organization", "organizations",
+    }
+)
+
+# The words that make a role word a description rather than a title: what the
+# body makes, owns, publishes or is responsible for.
+_BODY_DESCRIPTION_FRAME = re.compile(
+    r"(?i)\b(?:of|for|behind|responsible|making|manufacturing|producing|"
+    r"publishing|issuing|writing|authoring|developing|selling|supplying|"
+    r"operating|owning)\b"
+)
+
+# A relative clause: a name never carries one, a description always may.
+_BODY_RELATIVE_CLAUSE = re.compile(r"(?i)\b(?:that|which|who|whose)\b")
+
+# Two bodies joined into one label. A single page's organisation label names
+# one body, and §6.6 matches one label against one label; a joined pair matches
+# neither of its halves ("European Parliament and Council of the European
+# Union" is two institutions, not a name).
+_BODY_JOINED_BODIES = re.compile(
+    r"(?i)\b[^\W\d_]{2,}\s+[^\W\d_]{2,}\s+(?:and|&)\s+[^\W\d_]{2,}"
+)
+
+# The words of a name that are not capitalised and carry no identity of their
+# own. A name's remaining words are what tell a name from a bare role: "the
+# Utility Regulator" keeps a body, "the regulator" is a role.
+_BODY_FILLER_WORDS = frozenset(
+    {"the", "a", "an", "its", "their", "this", "that", "these", "those", "own"}
+)
+
+_BODY_WORD = re.compile(r"[^\W\d_][\w'’-]*")
+
+
+def _names_a_body(value: str) -> bool:
+    """Whether ``value`` names a body, as a page's organisation label does.
+
+    §6.6 binds a target's answer to a finding through ``same_organisation``,
+    which matches names: a page's own organisation label, its acronym, or its
+    host. A *description* of a body's role matches none of those, so a target
+    stamped with one was reported Not found for the whole run while the report
+    held its answer, and an extra pass was bought for it (live probe P3/P4 —
+    "the manufacturer of semaglutide" for a drug's maker, and two institutions
+    joined into one label for the bodies that enacted a rule).
+
+    Four shapes are descriptions, and each is a shape no page's label has: a
+    relative clause ("the body that publishes the record"), two bodies joined
+    ("A and B"), a role word described through what it makes or publishes
+    ("the manufacturer **of** semaglutide"), and a role word left with nothing
+    that identifies it ("the manufacturer", "the drug's maker"). A role word
+    beside an identifying word is a name and stays ("Novo Nordisk
+    manufacturer" is legible, "the manufacturer" is not), which is what keeps
+    real names that carry one — "Association of British Insurers", "the
+    Utility Regulator" — untouched.
+
+    The vocabulary is explicit and small, like the currency, tolerance and
+    widening tables: judging whether a *name* is the right publisher is the
+    plan review's, and this check only refuses a description the match can
+    never accept.
+    """
+    if _BODY_RELATIVE_CLAUSE.search(value) or _BODY_JOINED_BODIES.search(value):
+        return False
+    words = _BODY_WORD.findall(value)
+    roles = [word for word in words if word.casefold() in _BODY_ROLE_WORDS]
+    if not roles:
+        return True
+    # A lower-case role word with a frame is the description the live plans
+    # wrote. A capitalised one ("Organisation for Economic Co-operation and
+    # Development") is a name's own first word, and the identifying-word test
+    # below is what decides those.
+    if any(word.islower() for word in roles) and _BODY_DESCRIPTION_FRAME.search(value):
+        return False
+    return any(
+        index > 0
+        and any(character.isupper() for character in word)
+        and word.casefold() not in _BODY_ROLE_WORDS
+        and word.casefold() not in _BODY_FILLER_WORDS
+        for index, word in enumerate(words)
+    )
+
+
+def _stamped_organisation(value: str | None) -> str | None:
+    """The organisation a plan may stamp: a body's name, or nothing.
+
+    The ruling the check implements: a plan may stamp an organisation only when
+    it is a name — one the question states, or the name of the body that
+    publishes the primary record — and never a description of a role. A
+    description is left empty, which is exactly the state the plan instruction
+    already defines for a measure no single body publishes: the target is then
+    answered on its measure, period and kind alone rather than pre-failed on a
+    label no page carries.
+    """
+    if value is None:
+        return None
+    name = " ".join(value.split())
+    if not name or not _names_a_body(name):
+        return None
+    return name
+
+
 def apply_answer_contract(
     sub_topics: Sequence[SubTopic],
     contract: AnswerContract,
 ) -> list[SubTopic]:
-    """Re-stamp each target's id and decide ``required`` (spec §7.1).
+    """Re-stamp each target's id, organisation and ``required`` flag (spec §7.1).
 
     The model marks a target required only when the question names it. One
-    bounded code rule remains (Fable C-d): a target that asks for an energy
-    figure (MWh) a capacity question never named is optional, whatever the
-    draft said. Nothing else is added to a target.
+    bounded code rule remains for the flag (Fable C-d): a target that asks for
+    an energy figure (MWh) a capacity question never named is optional, whatever
+    the draft said. The organisation is the other: a body the plan can only
+    *describe* is emptied, so a target is never bound to a label §6.6 can never
+    match (``_stamped_organisation``). Nothing else is added to a target.
     """
     stamped: list[SubTopic] = []
     for sub_topic in sub_topics:
@@ -2271,7 +2187,7 @@ def apply_answer_contract(
                 period=target.period,
                 kind=target.kind,
                 geography=target.geography,
-                organisation=target.organisation,
+                organisation=_stamped_organisation(target.organisation),
             )
             for position, target in enumerate(sub_topic.evidence_targets, start=1)
         ]
@@ -2497,40 +2413,6 @@ def format_review_problems(review: PlanReviewDraft) -> str:
         "unchanged and must not be rephrased, narrowed, or widened. Fix every "
         f"defect listed below and return a corrected plan.\n{listed}"
     )
-
-
-def extension_messages(
-    contract: AnswerContract,
-    existing: Sequence[SubTopic],
-    omission: str,
-) -> list[ChatMessage]:
-    """Build the request for additional sub-topics closing one omission.
-
-    The existing plan is printed with its ids and obligations so the model
-    can see what is already covered; the instruction then asks for *only*
-    what is missing. Nothing in this request invites a replacement plan, and
-    ``extend_plan`` refuses one that arrives anyway.
-    """
-    sections = [
-        f"# Original question (frozen)\n{contract.question}",
-        f"# Answer contract\n{render_answer_contract(contract)}",
-        "# Plan so far (already frozen; never restate or replace it)\n"
-        f"{render_plan_for_review(existing)}",
-        "# Original-question omission to close\n"
-        f"{omission.strip()}",
-        "# Requirements\n"
-        "Return ONLY the additional sub-topics that close this omission, in "
-        "the same format as the plan above. Do not repeat a sub-topic or a "
-        "target that already exists; the ids you would give them belong to "
-        "the planner. Every added sub-topic carries between 1 and 4 atomic "
-        "evidence_targets, each written as a question. Stay inside the frozen "
-        "scope and as-of date.",
-        f"# Reply format\n{render_structured_reply_format(_PLAN_REPLY_EXAMPLES)}",
-    ]
-    return [
-        ChatMessage(role="developer", content=PLANNER_PLAN_SYSTEM_PROMPT),
-        ChatMessage(role="user", content="\n\n".join(sections)),
-    ]
 
 
 def _render_notes(run: ReActRun) -> str:
@@ -3264,7 +3146,26 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             problems=attempt.labelled_advisory,
         )
 
-        review = await self._review_plan(contract, attempt.sub_topics)
+        try:
+            review = await self._review_plan(contract, attempt.sub_topics)
+        except PlanningError as error:
+            # The review that runs on every planning pass is a request like any
+            # other, and this one was the last unguarded call in the cycle: a
+            # provider failure, a truncation or a schema failure on it raised
+            # out of ``finalize`` and ended the run at ``graph_planning_failed``
+            # with nothing published. The plan it never judged is structurally
+            # valid and researched nothing yet, so it stands and the failure is
+            # recorded as an ordinary plan defect — the same fallback the
+            # confirming review, the lint repair and the review repair take.
+            self._record_defects(
+                run,
+                stage="plan_review",
+                plan=attempt.plan,
+                problems=_raised_problems(
+                    error, label=attempt.plan, what="the plan review"
+                ),
+            )
+            return self._plan_from(attempt, contract=contract, repaired=repaired)
         if review.sound:
             return self._plan_from(attempt, contract=contract, repaired=repaired)
 
