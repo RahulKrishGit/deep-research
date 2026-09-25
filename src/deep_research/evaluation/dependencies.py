@@ -36,6 +36,7 @@ from pydantic import JsonValue
 
 from deep_research.agents.evidence_verifier import EvidenceVerifierAgent
 from deep_research.agents.planner import PlannerAgent
+from deep_research.agents.report_writer import ReportWriterAgent
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.agents.source_evaluator import (
     ReputationSource,
@@ -43,7 +44,6 @@ from deep_research.agents.source_evaluator import (
 )
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.agents.steps import ReActStep, read_evidence_urls
-from deep_research.agents.report_writer import ReportWriterAgent
 from deep_research.evaluation.config import (
     EvaluationRuntimeConfig,
     target_llm_config,

@@ -22,7 +22,6 @@ from deep_research.agents.report import collapse_mirror_urls
 from deep_research.agents.report_writer import (
     ReportWriterDraft,
     WriterPointDraft,
-    WriterSectionDraft,
 )
 from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import (
@@ -300,7 +299,10 @@ def test_a_refused_sentence_is_published_in_full_with_its_reason(
                 finding_labels=["F01"],
             ),
             WriterPointDraft(
-                text="Wood Mackenzie forecasts 13.3 GW of grid-scale installations in 2025.",
+                text=(
+                    "Wood Mackenzie forecasts 13.3 GW of grid-scale "
+                    "installations in 2025."
+                ),
                 finding_labels=["F02"],
             ),
             WriterPointDraft(text=conflated, finding_labels=["F01", "F02"]),
