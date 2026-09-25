@@ -70,6 +70,7 @@ from deep_research.providers import (
 )
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import BaseTool, ToolResult
+from deep_research.tools.passage_selection import _tokens
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     _ENERGY_UNIT,
@@ -726,6 +727,80 @@ def _units_owing_a_figure(
     return owing
 
 
+def _unbound_required_targets(
+    targets: Sequence[EvidenceTarget], findings: Sequence[Finding]
+) -> list[EvidenceTarget]:
+    """This topic's required obligations no admitted finding answers yet.
+
+    Only the ones with no unit dimension: a figure target asks for a figure,
+    and whether a passage owes it one is the unit test's decision above, not
+    its own words'. Only this topic's own targets: the read was fetched for
+    one sub-topic, and a passage fetched for another is that topic's business.
+    """
+    bound = {
+        target_id for finding in findings for target_id in finding.target_ids
+    }
+    return [
+        target
+        for target in targets
+        if target.required
+        and target.unit_dimension is None
+        and target.target_id not in bound
+    ]
+
+
+def _units_owing_own_words(
+    evidence: Mapping[str, EvidenceUnit],
+    *,
+    target_ids: Sequence[str],
+    targets: Sequence[EvidenceTarget],
+    used: Collection[tuple[str, str]],
+) -> list[EvidenceUnit]:
+    """Selected units that state an unanswered target's own words, unmined.
+
+    A target with no unit of measure carries no figure to look for (PD-7), so
+    what a passage states instead is the target's own words: the passage must
+    carry at least one word of a required question this topic has not answered
+    and no admitted finding used.
+
+    One word, and deliberately not a majority. The obligation a passage
+    answers is stated in the passage's own vocabulary — a statutory
+    application clause names the article and the date and little else — so
+    every word of the target's wording is exactly what such a sentence does
+    not repeat; a majority floor would refuse the passage a legal text needs
+    and the run would answer "Not found" with its evidence in hand. The floor
+    is there to keep an unrelated page out: a read that shares not one word
+    with the target owes it nothing, and the bounded re-ask is not spent on
+    it. What is left is the only claim this test makes — the passage states
+    the target's words — and the extraction still decides whether it answers
+    the question.
+
+    Order is the focus, because the floor cannot be one: the request is bounded
+    by its character budget, so the packet leads with the units that state the
+    target's words most completely and the tail is what a budget cuts. Ties
+    keep the read's own order, so a packet differs only where its words do.
+    """
+    if not targets:
+        return []
+    admitted = set(used)
+    own = {target.target_id: frozenset(_tokens(target.question)) for target in targets}
+    owing: list[tuple[int, EvidenceUnit]] = []
+    for unit in evidence.values():
+        if target_ids and not set(target_ids).intersection(unit.target_ids):
+            continue
+        if (unit.read_id, unit.locator) in admitted:
+            continue
+        stated = set(_tokens(unit.excerpt))
+        stated_words = max(
+            (len(stated.intersection(words)) for words in own.values()), default=0
+        )
+        if not stated_words:
+            continue
+        owing.append((stated_words, unit))
+    owing.sort(key=lambda row: row[0], reverse=True)
+    return [unit for _, unit in owing]
+
+
 def extraction_messages(
     task: SubTopicTask,
     run: ReActRun,
@@ -734,6 +809,7 @@ def extraction_messages(
     acquisition_context: str | None = None,
     planned_targets: Sequence[EvidenceTarget] = (),
     owed_passages: bool = False,
+    owed_targets: Sequence[EvidenceTarget] = (),
 ) -> list[ChatMessage]:
     """Build the messages that extract findings from one finished loop.
 
@@ -748,8 +824,15 @@ def extraction_messages(
     ``owed_passages`` marks the one bounded re-extraction's request. Its packet
     carries the selected passages a previous extraction returned no finding
     for even though each states a number in a unit a planned target asks for,
+    or the words of a required obligation the pass has answered nowhere yet,
     so the request says what the packet is for instead of looking like a
     second helping of the evidence the model already declined.
+
+    ``owed_targets`` names those unanswered obligations, in the plan's own
+    words. It is what lets the model bind an owed passage to the obligation it
+    answers rather than re-reporting it unbound: a passage that states a
+    required target's own words is exactly the evidence a binding can be made
+    from, and the target's question is the binding instruction.
     """
     criteria = "\n".join(
         f"- {criterion}" for criterion in task.sub_topic.success_criteria
@@ -811,16 +894,30 @@ def extraction_messages(
             + render_planned_targets(planned_targets)
         )
     if owed_passages:
-        sections.append(
-            "# Passages owed a finding\n"
+        owed_lines = [
+            "# Passages owed a finding",
             "The passages below are selected evidence a previous extraction "
-            "returned no finding for, and each states a number in a unit one "
-            "of the planned targets asks for — the figure a target needs and "
-            "the extraction walked past. Mine every passage here for every "
-            "planned target whose question its content answers, in the same "
-            "registry shape and with the same target ids the contract above "
-            "requires."
+            "returned no finding for.",
+        ]
+        if owed_targets:
+            owed_lines.append(
+                "Each states the words of a required obligation this pass has "
+                "answered nowhere yet, or a number in a unit a planned target "
+                "asks for. The unanswered obligations are:"
+            )
+            owed_lines.append(render_planned_targets(owed_targets))
+        else:
+            owed_lines.append(
+                "Each states a number in a unit one of the planned targets "
+                "asks for — the figure a target needs and the extraction "
+                "walked past."
+            )
+        owed_lines.append(
+            "Mine every passage here for every planned target whose question "
+            "its content answers, in the same registry shape and with the "
+            "same target ids the contract above requires."
         )
+        sections.append("\n".join(owed_lines))
     sections.append(
         (
             "# Retrieved evidence\n"
@@ -1269,6 +1366,7 @@ def bound_sub_topic_findings(
     findings: Sequence[Finding],
     *,
     reads: Sequence[ReadRecord] = (),
+    required_target_ids: Collection[str] = (),
     max_findings: int = MAX_FINDINGS_PER_SUB_TOPIC,
     max_sources: int = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC,
 ) -> BoundedFindings:
@@ -1277,6 +1375,14 @@ def bound_sub_topic_findings(
     The cap bounds *useful evidence*, never planned coverage: every planned
     sub-topic still gets its turn, and what a sub-topic could not keep is
     reported rather than silently discarded.
+
+    A finding bound to a required target is exempt from both caps: it is the
+    answer the run was sent to get, not corroborating volume, and a
+    confidence ranking over a page's findings can otherwise drop it — the
+    audited run lost two required answers to a per-sub-topic cap while a
+    menu's own paragraphs kept their slots. Exempt findings are kept in
+    addition to the capped set rather than counted inside it, so an answer
+    never spends a slot another finding needed.
 
     Selection is by confidence, but not by confidence alone. Findings are
     grouped by *publisher* — not by URL — ranked by their strongest finding and
@@ -1300,8 +1406,16 @@ def bound_sub_topic_findings(
         raise ValueError("max_findings and max_sources must be at least 1")
 
     deduplicated = deduplicate_findings(findings)
-    groups: dict[str, list[Finding]] = {}
+    required = set(required_target_ids)
+    exempt: list[Finding] = []
+    bounded_pool: list[Finding] = []
     for finding in deduplicated:
+        if required and required.intersection(finding.target_ids):
+            exempt.append(finding)
+        else:
+            bounded_pool.append(finding)
+    groups: dict[str, list[Finding]] = {}
+    for finding in bounded_pool:
         groups.setdefault(
             publisher_identity(finding.source_url), []
         ).append(finding)
@@ -1314,16 +1428,16 @@ def bound_sub_topic_findings(
     for group in by_source:
         group.sort(key=lambda finding: finding.confidence, reverse=True)
 
-    retained: list[Finding] = []
+    retained: list[Finding] = list(exempt)
     depth = 0
-    while len(retained) < max_findings and any(
+    while len(retained) < len(exempt) + max_findings and any(
         len(group) > depth for group in by_source
     ):
         for group in by_source:
             if depth >= len(group):
                 continue
             retained.append(group[depth])
-            if len(retained) == max_findings:
+            if len(retained) == len(exempt) + max_findings:
                 break
         depth += 1
 
@@ -2056,20 +2170,40 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         findings, rejected = mine(draft)
         errors: list[ResearchError] = []
         owed: list[EvidenceUnit] = []
+        unanswered: list[EvidenceTarget] = []
         if policy is not None:
+            own_targets = counted_evidence_targets(task.sub_topic.evidence_targets)
             # The selected passages this sub-topic's own targets ask a figure
             # for and no admitted finding used. Only the units selected for
             # this target are asked, and only its own targets' measure units
             # decide what a passage owes.
-            owed = _units_owing_a_figure(
+            owed_figures = _units_owing_a_figure(
                 policy.evidence,
                 target_ids=(
                     () if policy.target_id is None else (policy.target_id,)
                 ),
-                bases=_measure_bases(
-                    counted_evidence_targets(task.sub_topic.evidence_targets)
-                ),
+                bases=_measure_bases(own_targets),
                 used=admitted_keys,
+            )
+            # The same bounded re-ask for a required obligation this pass left
+            # unanswered: a target with no unit of measure has no figure to
+            # look for, so the passages that state its own words are what can
+            # bind it, and an extraction that walked past them is the run
+            # answering half a question.
+            unanswered = _unbound_required_targets(own_targets, findings)
+            owed_own_words = _units_owing_own_words(
+                policy.evidence,
+                target_ids=(
+                    () if policy.target_id is None else (policy.target_id,)
+                ),
+                targets=unanswered,
+                used=admitted_keys,
+            )
+            owed = list(
+                {
+                    unit.evidence_id: unit
+                    for unit in (*owed_figures, *owed_own_words)
+                }.values()
             )
             if owed:
                 # ONE bounded second extraction, never a loop: a first packet
@@ -2097,6 +2231,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                             ),
                             planned_targets=planned_targets,
                             owed_passages=True,
+                            owed_targets=unanswered,
                         ),
                         SubTopicFindingsDraft,
                         agent_name=self.name,
@@ -2110,9 +2245,15 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # Unit-level, so a passage is "used" only when that exact passage
             # produced an admitted finding. Whatever the re-extraction left
             # unmined says so in its own reason rather than "irrelevant".
+            owed_figure_ids = [unit.evidence_id for unit in owed_figures]
             policy.record_extraction_dispositions(
                 admitted_keys,
-                unmined_quantity_ids=[unit.evidence_id for unit in owed],
+                unmined_quantity_ids=owed_figure_ids,
+                unmined_target_ids=[
+                    unit.evidence_id
+                    for unit in owed_own_words
+                    if unit.evidence_id not in set(owed_figure_ids)
+                ],
             )
             # The obligation this pass completed is the ACTIVE topic's, and a
             # finding bound to another topic's target does not complete it.
@@ -2362,7 +2503,13 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             else:
                 policy.complete_extraction()
             bounded = bound_sub_topic_findings(
-                sub_findings, reads=list(self._run_reads.values())
+                sub_findings,
+                reads=list(self._run_reads.values()),
+                required_target_ids={
+                    target.target_id
+                    for target in self._planned_targets()
+                    if target.required
+                },
             )
             span.set_outputs(
                 {
