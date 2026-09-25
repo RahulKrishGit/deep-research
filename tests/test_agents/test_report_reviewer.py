@@ -1,17 +1,25 @@
-"""Task 10: the terminal, source-bound semantic report review.
+"""Task 4.2, spec §6.2-§6.3: the terminal report review, one call per review.
 
-Every named adversarial case from the task brief and the controller's
-carried-forward rulings is its own test function, because a review that
-"looks right" is exactly what the structural proxy already provided. The
-review under test is offline: scripted provider replies, no network.
+The reviewer reads one packet — the reader report, every reader statement with
+its code-built label, the cited findings' snippets and labels, the key facts,
+Not found, and the deterministic gate results — and returns the seven
+dimensions, one disposition per statement, and its typed defects. There are no
+claims, no verdict badges, no evidence batches, and no Critic here: the critic
+and the fact checker left with step 4 (D6, PD-16, PD-21).
+
+Every named case is its own test function, because a review that "looks right"
+is exactly what the formula this review replaced already provided. The review
+under test is offline: scripted provider replies, no network.
 """
 
 from __future__ import annotations
 
 import math
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Callable
 
 import httpx
 import yaml
@@ -19,16 +27,22 @@ from openai import APITimeoutError
 
 import pytest
 
-from deep_research.agents.critic import CritiqueGapDraft
-from deep_research.agents.quality import compute_report_quality
-from deep_research.agents.report import ReportComposition, ReportPoint
+from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.report import (
+    ReportComposition,
+    ReportPoint,
+    ReportSection,
+    render_written_report,
+)
 from deep_research.agents.report_reviewer import (
     REPORT_REVIEWER_ROLE,
     REVIEW_DIMENSIONS,
     REVIEW_RUBRIC_VERSION,
     SEMANTIC_REVIEW_MEAN,
     ReportReviewer,
+    ReviewDefectDraft,
     build_report_review_input,
+    composition_semantic_fingerprint,
     report_review_input_fingerprint,
     review_messages,
     review_report,
@@ -49,26 +63,37 @@ from deep_research.utils.config import LLMConfig
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     UNREVIEWED_STATEMENT_DISPOSITION,
-    AcquisitionState,
-    Claim,
-    CritiqueGap,
-    EvidenceDisposition,
-    EvidenceTarget,
-    EvidenceUnit,
+    FigureContext,
+    FigureResult,
+    FindingVerification,
+    NotFoundTarget,
     ReportQualitySnapshot,
     ReportReview,
     ReportStatement,
     ResearchState,
-    ScoredSource,
-    SourceTemporal,
+    ReviewDefect,
     SubTopic,
+    FactRow,
 )
 from tests.agent_fakes import ScriptedCompleter
+from tests.evidence_fakes import (
+    EIA_PAGE,
+    EIA_TITLE,
+    EIA_URL,
+    figure,
+    make_finding,
+    make_read,
+    make_target,
+)
 
 SESSION_ID = "session-review"
-QUESTION = "How mature is quantum error correction?"
-_URL = "https://example.test/qec"
-_URL_B = "https://example.test/other"
+QUESTION = "How much battery storage capacity was added in 2024?"
+EIA = "U.S. Energy Information Administration"
+EIA_SNIPPET = (
+    "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024"
+)
+TARGET_ID = "topic-01-target-01"
+FORECAST_TARGET_ID = "topic-02-target-01"
 
 DIMENSION_NAMES = (
     "completeness",
@@ -79,6 +104,22 @@ DIMENSION_NAMES = (
     "readability",
     "actionability",
 )
+
+# The three sentences one written report composes: S001 in the summary, S002
+# and S003 in the one findings section, in the writer's own numbering order.
+WRITTEN_SENTENCES = {
+    "S001": (
+        "Generators added 10.4 gigawatts of battery storage capacity in the "
+        "United States in 2024."
+    ),
+    "S002": (
+        "Battery storage was the second-largest source of new generating "
+        "capacity that year."
+    ),
+    "S003": (
+        "Capacity growth from battery storage could set a record in 2025."
+    ),
+}
 
 
 def _tracker() -> Tracker:
@@ -101,174 +142,177 @@ def _output_limit_error() -> ProviderOutputLimitError:
     )
 
 
-def _unit(
-    evidence_id: str,
-    *,
-    excerpt: str = "Logical error rates fell below break-even.",
-    url: str = _URL,
-    target_ids: tuple[str, ...] = ("t1",),
-) -> EvidenceUnit:
-    return EvidenceUnit(
-        evidence_id=evidence_id,
-        read_id=f"read-{evidence_id}",
-        source_url=url,
-        source_title="QEC 2025",
-        locator="chunk-0",
-        excerpt=excerpt,
-        target_ids=list(target_ids),
-        origin="researcher",
+# --- the written report this review judges ----------------------------------
+
+
+def _written_finding():
+    """The EIA 2024 actual, verified with its figure's own context."""
+    read = make_read(url=EIA_URL, title=EIA_TITLE)
+    finding = make_finding(
+        read,
+        EIA_SNIPPET,
+        figures=[figure("10.4", "GW", "2024", "actual")],
+        target_ids=[TARGET_ID],
+        release_date="2025-03-12",
     )
-
-
-def _claim(
-    text: str,
-    *,
-    url: str = _URL,
-    verdict: str = "verified",
-    evidence_status: str | None = "verified_pair",
-    cluster_id: str = "cluster-1",
-    target_ids: tuple[str, ...] = ("t1",),
-) -> Claim:
-    from deep_research.agents.identity import claim_fingerprint
-
-    return Claim(
-        claim_id=claim_fingerprint(text),
-        text=text,
-        source_urls=[url],
-        verdict=verdict,
-        confidence=0.8,
-        evidence=["An independent review states the same figure."],
-        contradictions=[],
-        verification_evidence=[],
-        evidence_status=evidence_status,
-        cluster_id=cluster_id,
-        target_ids=list(target_ids),
+    result = FigureResult(
+        figure=finding.figures[0],
+        matched=True,
+        evidence_words=EIA_SNIPPET,
+        context=FigureContext(
+            period="2024",
+            scope=None,
+            attribution="own",
+            organisation=EIA,
+            kind="actual",
+        ),
     )
-
-
-def _statement(
-    statement_id: str,
-    text: str,
-    *,
-    mode: str = "settled",
-    clusters: tuple[str, ...] = ("cluster-1",),
-    evidence: tuple[str, ...] = ("e1",),
-    targets: tuple[str, ...] = ("t1",),
-    dimensions: tuple[str, ...] = ("finding",),
-    basis: str | None = None,
-) -> ReportStatement:
-    return ReportStatement(
-        statement_id=statement_id,
-        text=text,
-        mode=mode,
-        claim_cluster_ids=list(clusters),
-        evidence_ids=list(evidence),
-        target_ids=list(targets),
-        answered_dimensions=list(dimensions),
-        basis=basis,
-    )
-
-
-def _topic(
-    *,
-    coverage_id: str = "topic-01",
-    target_id: str = "t1",
-    critical: bool = False,
-    required_dimensions: tuple[str, ...] = ("finding",),
-    support_policy: str = "independent_pair",
-) -> SubTopic:
-    return SubTopic(
-        coverage_id=coverage_id,
-        title="Error correction",
-        rationale="It is the bottleneck.",
-        search_queries=["qec 2025"],
-        success_criteria=["a logical error rate is quoted"],
-        priority=1,
-        evidence_targets=[
-            EvidenceTarget(
-                target_id=target_id,
-                coverage_id=coverage_id,
-                question="What is the logical error rate?",
-                required_dimensions=list(required_dimensions),
-                required=True,
-                critical=critical,
-                support_policy=support_policy,
+    return finding.model_copy(
+        update={
+            "verification": FindingVerification(
+                status="verified", figure_results=[result]
             )
-        ],
+        }
     )
 
 
-def _composition(
+def _fact_row(finding_id: str) -> FactRow:
+    return FactRow(
+        row_id="K001",
+        organisation=EIA,
+        attribution="own",
+        measure="battery storage power capacity added",
+        period="2024",
+        value="10.4 GW",
+        kind="actual",
+        scope=None,
+        release="January 2025 Preliminary Monthly Electric Generator Inventory",
+        finding_id=finding_id,
+        target_ids=[TARGET_ID],
+    )
+
+
+def _topic() -> SubTopic:
+    target = make_target(TARGET_ID)
+    return SubTopic(
+        coverage_id=target.coverage_id,
+        title="Battery storage additions",
+        rationale="It is the question asked.",
+        search_queries=["battery storage capacity additions 2024"],
+        success_criteria=["a capacity addition is quoted"],
+        priority=1,
+        evidence_targets=[target],
+    )
+
+
+def _quality(**overrides: object) -> ReportQualitySnapshot:
+    fields: dict[str, object] = {
+        "coverage_ratio": 1.0,
+        "planned_topics": 1,
+        "covered_topics": 1,
+        "unique_findings": 1,
+        "unique_sources": 1,
+        "cited_sources": 1,
+        "scored_cited_source_ratio": 1.0,
+        "verified_claims": 0,
+        "contradicted_claims": 0,
+        "duplicate_claims": 0,
+        "duplicate_source_rows": 0,
+        "uncited_settled_points": 0,
+        "hard_failures": [],
+    }
+    fields.update(overrides)
+    return ReportQualitySnapshot(**fields)
+
+
+def _written_composition(
     *,
-    statements: tuple[ReportStatement, ...] | None = None,
-    units: dict[str, EvidenceUnit] | None = None,
-    claims: tuple[Claim, ...] | None = None,
-    sub_topics: tuple[SubTopic, ...] | None = None,
-    answer_kind: str = "factual",
     quality_status: str = "not yet quality-gated",
+    not_found: bool = True,
 ) -> ReportComposition:
-    """A small, correctly cited composition with one settled statement."""
-    claims = claims if claims is not None else (_claim("Break-even was reached."),)
-    units = units if units is not None else {"e1": _unit("e1")}
-    statements = (
-        statements
-        if statements is not None
-        else (_statement("S001", "Break-even was reached."),)
-    )
+    """The composition ``compose_written_report`` produces for three sentences.
+
+    Built here in the writer's own shape — the labels, key facts row, Not found
+    entry and statement ids are the writer's — so the packet tests need no
+    provider call. ``test_a_real_written_report_builds_the_same_packet`` runs
+    the writer's real ``compose_written_report`` and checks this fixture
+    against it.
+    """
+    finding = _written_finding()
+    finding_id = finding_fingerprint(finding)
+    statements = {
+        statement_id: ReportStatement(
+            statement_id=statement_id,
+            text=text,
+            finding_ids=[finding_id],
+            target_ids=[TARGET_ID],
+        )
+        for statement_id, text in WRITTEN_SENTENCES.items()
+    }
+
+    def point(statement_id: str) -> ReportPoint:
+        return ReportPoint(
+            text=statements[statement_id].text,
+            source_urls=[EIA_URL],
+            statement=statements[statement_id],
+        )
+
     return ReportComposition(
         question=QUESTION,
         session_id=SESSION_ID,
         iteration=0,
-        max_iterations=3,
+        max_extra_passes=1,
         as_of="2026-08-01",
-        scope="Global",
+        scope="United States",
         quality_status=quality_status,
-        sub_topics=list(sub_topics if sub_topics is not None else (_topic(),)),
-        claims=list(claims),
-        sources=[],
-        findings=[],
-        evidence_units=units,
-        summary=[
-            ReportPoint(
-                text=statement.text,
-                claim_ids=[claim.claim_id for claim in claims],
-                source_urls=[_URL],
-                statement=statement,
-            )
-            for statement in statements
+        sub_topics=[_topic()],
+        findings=[finding],
+        fact_rows=[_fact_row(finding_id)],
+        not_found=(
+            [
+                NotFoundTarget(
+                    target_id=FORECAST_TARGET_ID,
+                    question="What is the 2025 capacity addition forecast?",
+                    queries=["battery storage forecast 2025"],
+                    pages_read=[EIA_URL],
+                    searched=True,
+                )
+            ]
+            if not_found
+            else []
+        ),
+        finding_labels={"F01": finding_id},
+        summary=[point("S001")],
+        sections=[
+            ReportSection(title="Additions in 2024", points=[point("S002"), point("S003")])
         ],
-        answer_kind=answer_kind,
     )
 
 
-def _state(
-    *,
-    composition: ReportComposition | None = None,
-    report: str | None = None,
-    **overrides: object,
-) -> ResearchState:
+def state_with_written_report(**overrides: object) -> ResearchState:
+    """The state a writer node leaves behind: report, composition, quality.
+
+    The reader report is ``render_written_report``'s own output, so the packet's
+    reader content and the composition it was rendered from cannot drift.
+    """
+    composition = overrides.pop("composition", None) or _written_composition()
+    report = overrides.pop("report", None) or render_written_report(composition)
     payload: dict[str, object] = {
         "session_id": SESSION_ID,
         "original_question": QUESTION,
         "composition": composition,
         "report": report,
-        "initial_target_ids": ["t1"],
+        "quality": _quality(),
+        "sub_topics": list(composition.sub_topics),
+        "initial_target_ids": [TARGET_ID],
     }
-    # Production keeps the frozen plan on the state and copies it into the
-    # composition; the fixtures do the same, so coverage is read from the plan
-    # rather than from whatever the report happened to render.
-    if composition is not None:
-        payload.setdefault("sub_topics", list(composition.sub_topics))
     payload.update(overrides)
     return ResearchState.model_validate(payload)
 
 
-def _packet(state: ResearchState):
-    return build_report_review_input(state)
-
-
-def _reviewer(completer: ScriptedCompleter, tracker: Tracker | None = None):
-    return ReportReviewer(provider=completer, tracker=tracker)
+def packet():
+    """The packet one review of the written report judges."""
+    return build_report_review_input(state_with_written_report())
 
 
 def _scores(value: float = 1.0) -> dict[str, float]:
@@ -291,23 +335,69 @@ def _scored_review(**overrides: object) -> ReportReview:
     return ReportReview.model_validate(payload)
 
 
-def _unsupported_defect(statement_id: str = "S001") -> CritiqueGap:
-    return CritiqueGap(
-        gap_id="gap-01",
-        target_ids=["t1"],
+def _unsupported_defect(statement_id: str = "S001") -> ReviewDefect:
+    return ReviewDefect(
+        defect_id="review-01",
+        target_ids=[TARGET_ID],
         statement_ids=[statement_id],
         kind="missing_support",
         severity="critical",
-        repair_action="adjudicate",
         problem="This statement is not carried by the cited passage.",
     )
 
 
-def _render(packet) -> str:
-    return "\n\n".join(message.content for message in review_messages(packet))
+def _render(built) -> str:
+    return "\n\n".join(message.content for message in review_messages(built))
 
 
-# --- the verbatim contract from the plan ------------------------------------
+def _defect_draft(
+    *,
+    statement_ids: tuple[str, ...] = ("S001",),
+    target_ids: tuple[str, ...] = (TARGET_ID,),
+    kind: str = "missing_support",
+    severity: str = "major",
+    problem: str = "The cited passage does not establish this sentence.",
+) -> ReviewDefectDraft:
+    return ReviewDefectDraft(
+        kind=kind,
+        severity=severity,
+        statement_ids=list(statement_ids),
+        target_ids=list(target_ids),
+        problem=problem,
+    )
+
+
+def _draft(
+    *,
+    dimensions: dict[str, float] | None = None,
+    dispositions: list[tuple[str, str]] | None = None,
+    defects: list[ReviewDefectDraft] | None = None,
+    rationale: str = "Reviewed the report against the findings behind it.",
+):
+    """One provider reply for the written report's three statements."""
+    from deep_research.agents.report_reviewer import (
+        ReportReviewDraft,
+        ReviewDimensionScores,
+        StatementDispositionDraft,
+    )
+
+    entries = (
+        [(statement_id, "supported") for statement_id in WRITTEN_SENTENCES]
+        if dispositions is None
+        else dispositions
+    )
+    return ReportReviewDraft(
+        dimensions=ReviewDimensionScores(**_scores() if dimensions is None else dimensions),
+        statement_dispositions=[
+            StatementDispositionDraft(statement_id=statement_id, disposition=disposition)
+            for statement_id, disposition in entries
+        ],
+        defects=list(defects or []),
+        rationale=rationale,
+    )
+
+
+# --- dimension scoring and the pass rule ------------------------------------
 
 
 def test_a_scored_review_that_is_refused_is_never_a_pass() -> None:
@@ -328,14 +418,11 @@ async def test_the_review_opens_an_agent_span_when_one_is_wired() -> None:
     """The reviewer is observable exactly where a tracker is wired to it."""
     from tests.agent_fakes import agent_scope
 
-    state = _state(composition=_composition(), report="Break-even was reached.")
     tracker = _tracker()
-    completer = ScriptedCompleter(outputs=[_draft_payload()])
+    completer = ScriptedCompleter(outputs=[_draft()])
 
     async with agent_scope(tracker, agent_name=REPORT_REVIEWER_ROLE):
-        review = await review_report(
-            completer, _packet(state), tracker=tracker
-        )
+        review = await review_report(completer, packet(), tracker=tracker)
 
     assert review.status == "scored"
 
@@ -351,22 +438,19 @@ def test_review_cannot_average_away_a_major_false_claim() -> None:
         status="scored",
         dimensions={key: 1.0 for key in REVIEW_DIMENSIONS},
         defects=[
-            CritiqueGap(
-                gap_id="g1",
-                target_ids=["t1"],
-                claim_cluster_ids=["c1"],
-                statement_ids=["s1"],
+            ReviewDefect(
+                defect_id="review-01",
+                target_ids=[TARGET_ID],
+                statement_ids=["S001"],
                 kind="missing_support",
                 severity="critical",
-                repair_action="adjudicate",
                 problem="The main number is not in the source.",
-                recommended_queries=[],
             )
         ],
-        per_statement_dispositions={"s1": "unsupported"},
-        reviewed_statement_ids=["s1"],
+        per_statement_dispositions={"S001": "supported"},
+        reviewed_statement_ids=["S001"],
         input_fingerprint="packet1",
-        rubric_version=2,
+        rubric_version=REVIEW_RUBRIC_VERSION,
         rationale="A central unsupported assertion.",
     )
     assert not semantic_review_passes(review)
@@ -375,9 +459,7 @@ def test_review_cannot_average_away_a_major_false_claim() -> None:
 def test_a_perfect_mean_still_fails_when_a_dimension_is_missing() -> None:
     assert semantic_review_passes(_scored_review())
 
-    six = {
-        name: 1.0 for name in DIMENSION_NAMES if name != "uncertainty"
-    }
+    six = {name: 1.0 for name in DIMENSION_NAMES if name != "uncertainty"}
     assert not semantic_review_passes(
         _scored_review().model_copy(update={"dimensions": six})
     )
@@ -408,695 +490,849 @@ def test_an_unscored_review_never_passes_whatever_its_dimensions_say() -> None:
         )
 
 
-# --- the deterministic proxy this task replaces -----------------------------
+def test_an_unsettled_statement_without_a_material_defect_is_refused() -> None:
+    """The type boundary: "not established" cannot be recorded as a clean score."""
+    with pytest.raises(ValueError):
+        _scored_review(
+            per_statement_dispositions={
+                "S001": UNREVIEWED_STATEMENT_DISPOSITION
+            },
+            reviewed_statement_ids=[],
+        )
 
 
-def test_directive_language_alone_cannot_buy_a_pass() -> None:
-    """A polished non-answer: "should", ranked bullets, no substantive answer.
+def test_a_scored_review_cannot_declare_an_unreviewed_statement() -> None:
+    with pytest.raises(ValueError):
+        _scored_review(
+            unreviewed_statement_ids=["S002"],
+            defects=[_unsupported_defect("S002")],
+            per_statement_dispositions={"S002": "unsupported"},
+        )
 
-    The deterministic gates must be unchanged by the word "should" — removing
-    that keyword cannot alter deterministic acceptance — so the semantic review
-    is the only gate that can fail an answer-shaped text.
+
+def test_a_scored_review_must_disposition_every_statement_it_reviewed() -> None:
+    """Reading a statement is not judging it, at the type boundary too."""
+    with pytest.raises(ValueError):
+        _scored_review(
+            reviewed_statement_ids=["S001", "S002"],
+            per_statement_dispositions={"S001": "supported"},
+        )
+
+
+def test_a_scored_review_needs_the_seven_dimensions_and_a_fingerprint() -> None:
+    with pytest.raises(ValueError):
+        _scored_review(dimensions={"completeness": 1.0})
+    with pytest.raises(ValueError):
+        _scored_review(input_fingerprint="")
+
+
+def test_a_review_that_is_not_scored_carries_no_scores() -> None:
+    with pytest.raises(ValueError):
+        _scored_review(status="incomplete")
+    assert _scored_review().model_copy(update={"status": "incomplete"}).dimensions
+
+
+# --- the packet: the whole report, no claims, no batches --------------------
+
+
+def test_the_packet_holds_statements_findings_and_facts_but_no_claims() -> None:
+    built = build_report_review_input(
+        state_with_written_report(), state_with_written_report().composition
+    )
+    assert built.expected_statement_ids == ["S001", "S002", "S003"]
+    assert "Generators added 10.4 gigawatts" in built.reader_content or built.findings
+    assert not hasattr(built, "claims")
+
+
+def test_the_packet_carries_every_statement_and_no_claim_or_batch_field() -> None:
+    built = packet()
+    assert [statement.statement_id for statement in built.statements] == [
+        "S001",
+        "S002",
+        "S003",
+    ]
+    assert built.statement("S002") is not None
+    fields = set(type(built).model_fields)
+    for forbidden in (
+        "claims",
+        "verdicts",
+        "claim_clusters",
+        "evidence_batches",
+        "targets",
+        "sources",
+        "ranked_rows",
+    ):
+        assert forbidden not in fields
+
+
+def test_a_statement_carries_its_code_built_label_and_its_findings_labels() -> None:
+    """The labels are the reader's own: never re-derived, only carried.
+
+    S001 states the figure, so it ends with the key facts row's label, and every
+    statement carries the label of each finding it cites.
     """
-    composition = _composition()
-    with_should = ReportComposition.model_validate(
-        {
-            **composition.model_dump(mode="python"),
-            "summary": [
-                {
-                    **composition.summary[0].model_dump(mode="python"),
-                    "text": "Operators should adopt this approach.",
-                }
-            ],
-        }
+    built = packet()
+    summary = built.statement("S001")
+    second = built.statement("S002")
+
+    assert summary is not None and second is not None
+    assert f"{EIA}'s own figure" in summary.label
+    assert "actual" in summary.label
+    assert "January 2025 Preliminary Monthly Electric Generator Inventory" in summary.label
+    assert summary.finding_labels
+    assert all(f"{EIA}'s own figure" in label for label in summary.finding_labels)
+    # A sentence that states no figure gets no key facts label, and still knows
+    # the labels of the findings it cites.
+    assert second.label == ""
+    assert second.finding_labels == summary.finding_labels
+    assert summary.label in built.reader_content
+
+
+def test_the_finding_block_carries_the_snippet_host_and_figure_labels() -> None:
+    built = packet()
+    [finding] = built.findings
+
+    assert finding.label == "F01"
+    assert finding.source_title == EIA_TITLE
+    assert finding.host == "eia.gov"
+    assert finding.snippet == EIA_SNIPPET
+    assert [label for label in finding.figure_labels] == [
+        f"{EIA}'s own figure; actual; released 2025-03-12"
+    ]
+    assert EIA_SNIPPET in _render(built)
+
+
+def test_the_key_facts_and_not_found_lines_reach_the_request() -> None:
+    built = packet()
+
+    assert built.fact_rows and "10.4 GW" in built.fact_rows[0]
+    assert "battery storage power capacity added" in built.fact_rows[0]
+    assert built.not_found == ["What is the 2025 capacity addition forecast?"]
+    rendered = _render(built)
+    assert "10.4 GW" in rendered
+    assert "What is the 2025 capacity addition forecast?" in rendered
+
+
+def test_the_deterministic_block_reports_unjudged_sentences_not_untraced_figures() -> None:
+    """PD-10, D8: ``unjudged_sentences`` replaced ``untraced_figures``."""
+    state = state_with_written_report(
+        quality=_quality(
+            hard_failures=["missing_reader_report"],
+            unjudged_sentences=["S003"],
+            duplicate_fact_rows=0,
+            unresolved_citations=1,
+            uncited_settled_points=2,
+        )
     )
-    state_a = _state(composition=composition, report="Break-even was reached.")
-    state_b = _state(composition=with_should, report="Operators should act.")
+    built = build_report_review_input(state)
 
-    quality_a = compute_report_quality(state_a, composition)
-    quality_b = compute_report_quality(state_b, with_should)
-
-    assert quality_a.hard_failures == quality_b.hard_failures
-    assert quality_a.covered_topics == quality_b.covered_topics
-    assert quality_a.substantive_topic_ratio == quality_b.substantive_topic_ratio
-
-    no_answer = _scored_review(
-        dimensions={
-            **{name: 0.95 for name in DIMENSION_NAMES},
-            "completeness": 0.2,
-        },
-        defects=[
-            CritiqueGap(
-                gap_id="gap-01",
-                coverage_id="topic-01",
-                target_ids=["t1"],
-                statement_ids=["S001"],
-                kind="coverage",
-                severity="critical",
-                repair_action="acquire",
-                problem="The report never states the logical error rate.",
-                recommended_queries=["qec logical error rate 2025"],
-            )
-        ],
-        per_statement_dispositions={"S001": "unsupported"},
-    )
-    assert not semantic_review_passes(no_answer)
-
-
-# --- substantive coverage ---------------------------------------------------
-
-
-def test_a_cutoff_date_claim_does_not_cover_a_technical_constraint() -> None:
-    """A publication/cutoff date is not evidence for a technical obligation."""
-    composition = _composition(
-        statements=(
-            _statement(
-                "S001",
-                "This survey covers publications up to 2025.",
-                dimensions=("date",),
-            ),
-        ),
-        sub_topics=(_topic(required_dimensions=("constraint",)),),
-    )
-    state = _state(composition=composition, report="This survey covers 2025.")
-    quality = compute_report_quality(state, composition)
-
-    assert quality.required_targets == 1
-    assert quality.answered_targets == 0
-    assert quality.substantive_topic_ratio == 0.0
-    assert "broad_plan_coverage_below_0.80" not in quality.hard_failures
-
-    target = _packet(state).targets[0]
-    assert target.answered is False
-    assert target.required_dimensions == ["constraint"]
-
-
-def test_an_unsupported_topic_association_does_not_count() -> None:
-    """A claim that consumed a topic id is not an answered obligation."""
-    composition = _composition(
-        claims=(
-            _claim(
-                "Break-even was reached.",
-                evidence_status="source_supported",
-                verdict="insufficient_evidence",
-            ),
-        ),
-        sub_topics=(_topic(support_policy="independent_pair"),),
-    )
-    state = _state(composition=composition, report="Break-even was reached.")
-    quality = compute_report_quality(state, composition)
-
-    # The statement answers the dimension, but the evidence behind it is
-    # primary-source attribution, which is not the independent pair the target
-    # declared. The target stays unanswered.
-    assert quality.answered_targets == 0
-    assert quality.substantive_topic_ratio == 0.0
-
-
-def test_an_unanswered_critical_target_blocks_acceptance() -> None:
-    composition = _composition(
-        statements=(
-            _statement("S001", "Something else entirely.", targets=("t1",)),
-        ),
-        sub_topics=(
-            _topic(critical=True, required_dimensions=("finding", "constraint")),
-        ),
-    )
-    state = _state(composition=composition, report="Something else entirely.")
-    quality = compute_report_quality(state, composition)
-
-    assert quality.unanswered_critical_target_ids == ["t1"]
-    assert "unanswered_critical_targets" in quality.hard_failures
-
-
-def test_an_unaccounted_target_is_reported_separately_from_the_ratio() -> None:
-    """The original denominator is kept, and target/topic metrics are apart."""
-    topics = tuple(
-        _topic(coverage_id=f"topic-{index:02d}", target_id=f"t{index}")
-        for index in range(1, 4)
-    )
-    composition = _composition(
-        statements=(
-            _statement("S001", "Only the first is answered.", targets=("t1",)),
-        ),
-        sub_topics=topics,
-    )
-    state = _state(
-        composition=composition,
-        report="Only the first is answered.",
-        initial_target_ids=["t1", "t2", "t3"],
-    )
-    quality = compute_report_quality(state, composition)
-
-    assert quality.planned_topics == 3
-    assert quality.required_targets == 3
-    assert quality.answered_targets == 1
-    assert quality.substantive_topic_ratio == pytest.approx(1 / 3)
-    assert quality.unaccounted_target_ids == ["t2", "t3"]
-
-
-def test_a_reason_in_the_evidence_audit_trail_accounts_for_a_target() -> None:
-    """Section 2.6: insufficiency reasons are the local evidence for coverage."""
-    composition = _composition(
-        statements=(
-            _statement("S001", "Only the first is answered.", targets=("t1",)),
-        ),
-        sub_topics=(
-            _topic(coverage_id="topic-01", target_id="t1"),
-            _topic(coverage_id="topic-02", target_id="t2"),
-        ),
-    )
-    state = _state(
-        composition=composition,
-        report="Only the first is answered.",
-        initial_target_ids=["t1", "t2"],
-        evidence_dispositions=[
-            EvidenceDisposition(
-                item_id="t2",
-                stage="evidence_admission",
-                reason="every candidate for this obligation was denied",
-                target_ids=["t2"],
-            )
-        ],
-    )
-    quality = compute_report_quality(state, composition)
-
-    assert quality.answered_targets == 1
-    assert quality.unaccounted_target_ids == []
-
-
-def test_the_expanded_inventory_is_a_union_never_a_smaller_denominator() -> None:
-    from deep_research.utils.types import merge_research_state
-
-    composition = _composition()
-    state = _state(composition=composition, report="Break-even was reached.")
-    merged = merge_research_state(
-        state, {"initial_target_ids": ["t1", "t2"], "expanded_target_ids": ["t3"]}
-    )
-    assert merged.initial_target_ids == ["t1", "t2"]
-    assert merged.expanded_target_ids == ["t3"]
-
-
-# --- the packet: full report, no clipping, complete manifest ----------------
+    assert built.deterministic.hard_checks == ["missing_reader_report"]
+    assert built.deterministic.unjudged_sentences == ["S003"]
+    assert built.deterministic.unresolved_citations == 1
+    assert built.deterministic.uncited_settled_points == 2
+    assert not hasattr(built.deterministic, "untraced_figures")
+    rendered = _render(built)
+    assert "S003" in rendered
+    assert "untraced figures" not in rendered.casefold()
 
 
 def test_the_report_is_never_prefix_clipped() -> None:
     closing = "The final row contradicts the opening claim."
-    composition = _composition()
+    composition = _written_composition()
     report = f"{'Filler sentence. ' * 1_200}\n{closing}"
     assert len(report) > 16_000
 
-    state = _state(composition=composition, report=report)
-    packet = _packet(state)
+    built = build_report_review_input(
+        state_with_written_report(composition=composition, report=report)
+    )
 
-    assert packet.reader_content == report
-    assert packet.reader_content.rstrip().endswith(closing)
-    assert closing in _render(packet)
+    assert built.reader_content == report
+    assert built.reader_content.rstrip().endswith(closing)
+    assert closing in _render(built)
 
 
 def test_a_late_contradiction_beyond_16000_characters_is_reviewed() -> None:
-    composition = _composition()
     late = "Break-even was later disputed."
     report = f"{'Filler sentence. ' * 1_200}\n{late}"
-    state = _state(composition=composition, report=report)
 
-    assert late in _render(_packet(state))
-
-
-def test_evidence_beyond_the_packet_budget_is_batched_with_a_manifest() -> None:
-    units = {
-        f"e{index}": _unit(f"e{index}", excerpt="X" * 400)
-        for index in range(1, 40)
-    }
-    statements = tuple(
-        _statement(f"S{index:03d}", f"Fact {index}.", evidence=(f"e{index}",))
-        for index in range(1, 40)
-    )
-    composition = _composition(statements=statements, units=units)
-    state = _state(composition=composition, report="A long report.")
-    packet = _packet(state)
-
-    batched = [
-        item.evidence_id
-        for batch in packet.evidence_batches
-        for item in batch.items
-    ]
-    assert len(packet.evidence_batches) > 1
-    assert sorted(batched) == sorted(units)
-    assert len(batched) == len(set(batched))
-    assert packet.omitted_evidence_ids == []
-    assert packet.expected_batch_ids == [
-        batch.batch_id for batch in packet.evidence_batches
-    ]
-    assert packet.total_batches == len(packet.evidence_batches)
-
-
-def test_the_packet_carries_every_statement_and_target() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    packet = _packet(state)
-
-    assert [statement.statement_id for statement in packet.statements] == ["S001"]
-    assert [target.target_id for target in packet.targets] == ["t1"]
-    assert packet.expected_statement_ids == ["S001"]
-
-
-def test_terminal_threads_into_the_review_packets_own_coverage() -> None:
-    """P1-a: ``build_report_review_input`` must agree with the terminal gate.
-
-    A target's acquisition can still hold a queued candidate at the terminal
-    pass even after it has been recorded ``pursued_unmet`` (nothing drains a
-    queue mid-write). ``compute_substantive_coverage``'s own ``terminal``
-    flag is what tells ``_has_outstanding_work`` that queue can never resume
-    — the same fact ``compute_report_quality`` already reads at the terminal
-    pass — so the review packet must be told the same thing, or its own
-    per-target view would disagree with the quality snapshot about a target
-    the run already recorded a reason for.
-    """
-    topic = _topic(coverage_id="topic-02", target_id="t2")
-    composition = _composition(sub_topics=(topic,))
-    state = _state(
-        composition=composition,
-        report="Break-even was reached.",
-        evidence_dispositions=[
-            EvidenceDisposition(
-                item_id="t2",
-                stage="acquisition",
-                reason="pursued_unmet",
-                target_ids=["t2"],
-            )
-        ],
-        acquisition_state_by_target={
-            "topic-02": AcquisitionState(
-                target_id="topic-02",
-                candidate_urls=["https://example.test/still-queued"],
-            )
-        },
+    assert late in _render(
+        build_report_review_input(state_with_written_report(report=report))
     )
 
-    mid_run = build_report_review_input(state)
-    (mid_run_view,) = [
-        target for target in mid_run.targets if target.target_id == "t2"
-    ]
-    assert mid_run_view.accounted is False
 
-    terminal = build_report_review_input(state, terminal=True)
-    (terminal_view,) = [
-        target for target in terminal.targets if target.target_id == "t2"
-    ]
-    assert terminal_view.accounted is True
-
-
-def test_a_sentinel_or_context_statement_is_never_offered_for_disposition() -> (
-    None
-):
-    """A 'not stated' cell (or any context statement) asserts nothing about
-    the world, so it is never asked for a per-statement disposition.
+def test_a_sentinel_or_context_statement_is_never_offered_for_disposition() -> None:
+    """A 'not stated' cell (or any context statement) asserts nothing.
 
     ``ReportStatement.substantive`` is exactly this distinction already:
-    ``context`` is "framing this pass composed rather than a research
-    finding", so a review that asked the model to judge one "supported" or
-    "unsupported" would be asking a question the statement was never built
-    to answer. It is still visible in ``packet.statements`` — the reviewer
-    can read it as context — but it is not in ``expected_statement_ids``, so
-    the review is never marked incomplete for skipping it and a reply that
-    dispositions it anyway cannot make it count.
+    ``context`` is "framing this pass composed rather than a research finding",
+    so a review that asked the model to judge one "supported" or "unsupported"
+    would be asking a question the statement was never built to answer. It is
+    still visible in ``packet.statements`` — the reviewer can read it as
+    context — but it is not in ``expected_statement_ids``, so the review is
+    never marked incomplete for skipping it.
     """
-    sentinel = _statement(
-        "C001",
-        "not stated",
+    sentinel = ReportStatement(
+        statement_id="C001",
+        text="not stated",
         mode="context",
-        clusters=(),
-        evidence=(),
-        targets=(),
-        dimensions=(),
         basis="the row's evidence does not state this cell",
     )
-    composition = _composition(
-        statements=(
-            _statement("S001", "Break-even was reached."),
-            sentinel,
-        ),
+    composition = _written_composition()
+    composition = composition.model_copy(
+        update={
+            "sections": [
+                *composition.sections,
+                ReportSection(
+                    title="Not stated",
+                    points=[
+                        ReportPoint(
+                            text=sentinel.text,
+                            source_urls=[EIA_URL],
+                            statement=sentinel,
+                        )
+                    ],
+                ),
+            ]
+        }
     )
-    state = _state(composition=composition, report="Break-even was reached.")
+    built = build_report_review_input(state_with_written_report(composition=composition))
 
-    packet = _packet(state)
-
-    assert [statement.statement_id for statement in packet.statements] == [
+    assert [statement.statement_id for statement in built.statements] == [
         "S001",
+        "S002",
+        "S003",
         "C001",
     ]
-    assert packet.expected_statement_ids == ["S001"]
-    assert packet.statement("C001") is not None
+    assert built.expected_statement_ids == ["S001", "S002", "S003"]
+    assert built.statement("C001") is not None
 
 
-def test_the_review_request_cannot_see_the_critic_score_or_the_threshold() -> None:
-    from deep_research.agents.critic import Critique
+def test_the_review_request_cannot_see_another_reviewers_score_or_the_threshold() -> None:
+    """The packet carries no coaching: no score, no bar, no prior judgement."""
+    rendered = _render(packet()).casefold()
 
-    composition = _composition()
-    low = _state(
-        composition=composition,
-        report="Break-even was reached.",
-        critique=Critique(
-            score=2,
-            gaps=[],
-            unsupported_claims=[],
-            recommended_queries=[],
-            should_continue=True,
-            rationale="Weak.",
-        ),
-    )
-    high = _state(
-        composition=composition,
-        report="Break-even was reached.",
-        critique=Critique(
-            score=9,
-            gaps=[],
-            unsupported_claims=[],
-            recommended_queries=[],
-            should_continue=False,
-            rationale="Strong.",
-        ),
-    )
-    assert review_messages(_packet(low)) == review_messages(_packet(high))
-
-    text = _render(_packet(high)).casefold()
-    # Word-bounded: "critical target" is a plan concept, not coaching, and the
-    # check is for the *other* reviewer's score rather than for a substring.
-    assert re.search(r"\bcritic\b", text) is None
+    # Word-bounded: "critical target" is a plan concept and "critical" is a
+    # defect severity, not coaching — the check is for the *other* reviewer.
+    assert re.search(r"\bcritic\b", rendered) is None
     for forbidden in (
+        "fact checker",
         "acceptance threshold",
         "suggested verdict",
         "should_continue",
         "prior run",
+        "mean score",
     ):
-        assert forbidden not in text
+        assert forbidden not in rendered
 
 
 def test_the_review_packet_carries_no_score_field_at_all() -> None:
-    fields = set(
-        type(_packet(_state(composition=_composition()))).model_fields
-    )
+    fields = set(type(packet()).model_fields)
     for forbidden in ("critic_score", "score", "threshold", "verdict", "quality"):
         assert forbidden not in fields
 
 
 def test_the_request_names_the_exact_fingerprint_it_reviews() -> None:
-    packet = _packet(_state(composition=_composition(), report="A report."))
-    assert packet.fingerprint in _render(packet)
+    built = packet()
+    assert built.fingerprint in _render(built)
+
+
+def test_the_review_module_binds_no_critic_object() -> None:
+    """Acceptance: no critic dependency (brief, PD-21).
+
+    An import probe cannot state this yet: importing any submodule of this
+    package executes ``agents/__init__.py``, which imports the Critic until
+    Task 4.10 sweeps it, so "the reviewer imports without the Critic" is not
+    observable while the package still re-exports it. This is the next
+    strongest thing, and it fails on the exact regression — a re-added critic
+    import — by inspecting what the module actually *bound*: any object defined
+    by ``agents.critic`` that the review module holds, under any name.
+    """
+    import inspect
+    from deep_research.agents import report_reviewer as report_reviewer_module
+
+    critic = sys.modules["deep_research.agents.critic"]
+    bound = {
+        name
+        for name, value in vars(report_reviewer_module).items()
+        if inspect.getmodule(value) is critic
+    }
+
+    assert bound == set()
+
+
+@pytest.mark.asyncio
+async def test_a_real_written_report_builds_the_same_packet(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The fixture is the writer's shape: proved against the writer itself.
+
+    ``compose_written_report`` numbers its candidates S001… in summary-then-
+    sections order, and a real composition must produce the same three
+    statement ids, the same label and the same key facts line the hand-built
+    fixture does.
+    """
+    from deep_research.agents.report_writer import (
+        ReportWriterDraft,
+        ReportWriterTask,
+        WriterPointDraft,
+        WriterSectionDraft,
+        compose_written_report,
+    )
+
+    class _Verdict:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.verdict = "consistent"
+            self.corrected_text = ""
+            self.reason = "the finding states it"
+
+    async def consistent(provider, items, *, question, fingerprint=None):
+        del provider, question, fingerprint
+        return {item.label: _Verdict(item.label) for item in items}, []
+
+    monkeypatch.setattr(
+        "deep_research.agents.evidence_verifier.check_statements", consistent
+    )
+    finding = _written_finding()
+    task = ReportWriterTask(
+        session_id=SESSION_ID,
+        instruction=QUESTION,
+        question=QUESTION,
+        iteration=0,
+        max_extra_passes=1,
+        as_of="2026-08-01",
+        scope="United States",
+        generated_on="2026-08-01",
+        sub_topics=[_topic()],
+        targets=[make_target(TARGET_ID)],
+        findings=[finding],
+        sources=[],
+        registry=[("F01", finding)],
+        facts=[_fact_row(finding_fingerprint(finding))],
+        not_found=[],
+        answered={TARGET_ID: [finding_fingerprint(finding)]},
+    )
+    draft = ReportWriterDraft(
+        executive_summary=[
+            WriterPointDraft(text=WRITTEN_SENTENCES["S001"], finding_labels=["F01"])
+        ],
+        sections=[
+            WriterSectionDraft(
+                title="Additions in 2024",
+                points=[
+                    WriterPointDraft(text=WRITTEN_SENTENCES["S002"], finding_labels=["F01"]),
+                    WriterPointDraft(text=WRITTEN_SENTENCES["S003"], finding_labels=["F01"]),
+                ],
+            )
+        ],
+    )
+    composition = await compose_written_report(
+        task, draft, provider=ScriptedCompleter(), fingerprint=None
+    )
+    built = build_report_review_input(
+        state_with_written_report(
+            composition=composition, report=render_written_report(composition)
+        )
+    )
+
+    assert built.expected_statement_ids == ["S001", "S002", "S003"]
+    assert built.statements[0].label == packet().statements[0].label
+    assert built.fact_rows == packet().fact_rows
+    assert built.findings[0].snippet == packet().findings[0].snippet
 
 
 # --- fingerprint semantics --------------------------------------------------
 
 
 def test_a_cosmetic_status_badge_does_not_invalidate_the_fingerprint() -> None:
-    composition = _composition()
-    state = _state(composition=composition, report="Break-even was reached.")
-    before = report_review_input_fingerprint(_packet(state))
+    before = report_review_input_fingerprint(packet())
 
-    badged = composition.model_copy(update={"quality_status": "accepted"})
-    after = report_review_input_fingerprint(
-        _packet(_state(composition=badged, report="Break-even was reached."))
+    badged = build_report_review_input(
+        state_with_written_report(
+            composition=_written_composition(quality_status="accepted")
+        )
     )
-    assert before == after
+    assert before == report_review_input_fingerprint(badged)
 
 
 def test_a_content_change_invalidates_the_fingerprint() -> None:
-    composition = _composition()
-    state = _state(composition=composition, report="Break-even was reached.")
-    before = report_review_input_fingerprint(_packet(state))
+    before = report_review_input_fingerprint(packet())
 
+    composition = _written_composition()
     changed = composition.model_copy(
         update={
-            "summary": [
-                ReportPoint(
-                    text="Break-even was never reached.",
-                    claim_ids=list(composition.summary[0].claim_ids),
-                    source_urls=[_URL],
-                    statement=composition.summary[0].statement,
+            "sections": [
+                ReportSection(
+                    title="Additions in 2024",
+                    points=[
+                        ReportPoint(
+                            text="Battery storage additions were never confirmed.",
+                            source_urls=[EIA_URL],
+                            statement=ReportStatement(
+                                statement_id="S002",
+                                text="Battery storage additions were never confirmed.",
+                                finding_ids=list(
+                                    composition.sections[0].points[0].statement.finding_ids
+                                ),
+                                target_ids=[TARGET_ID],
+                            ),
+                        ),
+                        composition.sections[0].points[1],
+                    ],
                 )
             ]
         }
     )
-    after = report_review_input_fingerprint(
-        _packet(_state(composition=changed, report="Break-even was never reached."))
+    after = build_report_review_input(
+        state_with_written_report(composition=changed)
     )
-    assert before != after
+
+    assert before != report_review_input_fingerprint(after)
 
 
-def test_a_target_change_invalidates_the_fingerprint() -> None:
-    composition = _composition()
-    state = _state(composition=composition, report="Break-even was reached.")
-    before = report_review_input_fingerprint(_packet(state))
+def test_a_statement_change_invalidates_the_fingerprint() -> None:
+    """The statements are judged, so a change to one is a change of material."""
+    composition = _written_composition()
+    before = report_review_input_fingerprint(packet())
 
-    fewer = composition.model_copy(update={"sub_topics": []})
+    retitled = composition.model_copy(
+        update={
+            "summary": [
+                composition.summary[0].model_copy(
+                    update={
+                        "statement": composition.summary[0].statement.model_copy(
+                            update={"text": "Battery storage additions were 10.4 GW."}
+                        )
+                    }
+                )
+            ]
+        }
+    )
+
     assert before != report_review_input_fingerprint(
-        _packet(_state(composition=fewer, report="Break-even was reached."))
+        build_report_review_input(
+            state_with_written_report(composition=retitled)
+        )
+    )
+
+
+def test_a_not_found_change_invalidates_the_fingerprint() -> None:
+    """A target the run could not answer is part of what the reviewer reads."""
+    before = report_review_input_fingerprint(packet())
+
+    assert before != report_review_input_fingerprint(
+        build_report_review_input(
+            state_with_written_report(
+                composition=_written_composition(not_found=False)
+            )
+        )
     )
 
 
 def test_a_reference_change_invalidates_the_fingerprint() -> None:
-    composition = _composition()
-    state = _state(composition=composition, report="Break-even was reached.")
-    before = report_review_input_fingerprint(_packet(state))
+    """The cited finding's snippet is the evidence the reviewer reads."""
+    before = report_review_input_fingerprint(packet())
 
-    re_excerpted = composition.model_copy(
+    finding = _written_finding().model_copy(
+        update={"snippet": EIA_PAGE.replace("66%", "67%")}
+    )
+    composition = _written_composition().model_copy(update={"findings": [finding]})
+    after = build_report_review_input(
+        state_with_written_report(composition=composition)
+    )
+
+    assert before != report_review_input_fingerprint(after)
+
+
+def test_the_composition_fingerprint_ignores_the_presentation_badge() -> None:
+    """A stamp the finalizer writes is not a content change."""
+    composition = _written_composition()
+    before = composition_semantic_fingerprint(composition)
+
+    assert before
+    assert (
+        composition_semantic_fingerprint(
+            composition.model_copy(update={"quality_status": "accepted"})
+        )
+        == before
+    )
+
+
+def test_the_composition_fingerprint_moves_with_content_and_references() -> None:
+    composition = _written_composition()
+    before = composition_semantic_fingerprint(composition)
+
+    reworded = composition.model_copy(
         update={
-            "evidence_units": {
-                "e1": _unit("e1", excerpt="A different passage.")
-            }
+            "sections": [
+                ReportSection(
+                    title="Additions in 2024",
+                    points=[
+                        composition.sections[0].points[0].model_copy(
+                            update={
+                                "statement": composition.sections[0]
+                                .points[0]
+                                .statement.model_copy(
+                                    update={"text": "Something else entirely."}
+                                )
+                            }
+                        ),
+                        composition.sections[0].points[1],
+                    ],
+                )
+            ]
         }
     )
-    assert before != report_review_input_fingerprint(
-        _packet(_state(composition=re_excerpted, report="Break-even was reached."))
+    assert composition_semantic_fingerprint(reworded) != before
+
+    re_registered = composition.model_copy(
+        update={
+            "findings": [
+                _written_finding().model_copy(update={"content": "Other text."})
+            ]
+        }
+    )
+    assert composition_semantic_fingerprint(re_registered) != before
+
+    re_facted = composition.model_copy(
+        update={
+            "fact_rows": [
+                composition.fact_rows[0].model_copy(update={"value": "10.3 GW"})
+            ]
+        }
+    )
+    assert composition_semantic_fingerprint(re_facted) != before
+
+    re_not_found = composition.model_copy(update={"not_found": []})
+    assert composition_semantic_fingerprint(re_not_found) != before
+
+    # The plan is not part of what the reviewer judges: it never sees it, and
+    # the same report judged by the same packet is the same judgement.
+    re_planned = composition.model_copy(update={"sub_topics": []})
+    assert composition_semantic_fingerprint(re_planned) == before
+
+
+def test_replacing_the_composition_invalidates_a_mismatched_review() -> None:
+    """The state rule: a judgement belongs to the report it judged."""
+    from deep_research.utils.types import merge_research_state
+
+    composition = _written_composition()
+    stored = _scored_review(
+        composition_fingerprint=composition_semantic_fingerprint(composition)
+    )
+    state = state_with_written_report(composition=composition, report_review=stored)
+
+    # The same content, re-stamped: the review survives.
+    restamped = composition.model_copy(update={"quality_status": "accepted"})
+    kept = merge_research_state(state, {"composition": restamped})
+    assert kept.report_review is not None
+    assert kept.report_review.input_fingerprint == "packet-1"
+
+    # Different content: the review is gone, and gone is never "passed".
+    changed = composition.model_copy(
+        update={
+            "fact_rows": [
+                composition.fact_rows[0].model_copy(update={"value": "10.3 GW"})
+            ]
+        }
+    )
+    dropped = merge_research_state(state, {"composition": changed})
+    assert dropped.report_review is None
+
+
+def test_the_composition_fingerprint_covers_cells_as_statements() -> None:
+    """Table cells are reader-visible content and part of the identity."""
+    from deep_research.utils.types import ReportAnswerRow, ReportConstraint
+
+    composition = _written_composition()
+    mechanism = ReportStatement(
+        statement_id="C001",
+        text="A capacity market pays for availability.",
+        finding_ids=list(composition.summary[0].statement.finding_ids),
+        target_ids=[TARGET_ID],
+    )
+    geography = ReportStatement(
+        statement_id="C002",
+        text="The scheme covers Great Britain.",
+        finding_ids=list(composition.summary[0].statement.finding_ids),
+        target_ids=[TARGET_ID],
+    )
+    row_statement = ReportStatement(
+        statement_id="S004",
+        text="Interconnection queue delays dominate.",
+        finding_ids=list(composition.summary[0].statement.finding_ids),
+        target_ids=[TARGET_ID],
+    )
+    row = ReportConstraint(
+        text=row_statement.text,
+        source_urls=[EIA_URL],
+        statement=row_statement,
+        deployment_mechanism=mechanism.text,
+        geography=geography.text,
+        mechanism_statement=mechanism,
+        geography_statement=geography,
+    )
+    with_rows = composition.model_copy(
+        update={
+            "constraints": [row],
+            "answer_rows": [ReportAnswerRow(cells=[geography, mechanism])],
+        }
     )
 
+    before = composition_semantic_fingerprint(with_rows)
+    assert before
 
-# --- review_report: coverage, batching, failures ----------------------------
-
-
-def _draft_payload(
-    *,
-    dimensions: dict[str, float] | None = None,
-    defects: list[CritiqueGapDraft] | None = None,
-    dispositions: dict[str, str] | None = None,
-    reviewed_statements: list[str] | None = None,
-    reviewed_evidence: list[str] | None = None,
-    rationale: str = "Reviewed the report and its evidence.",
-):
-    from deep_research.agents.report_reviewer import (
-        ReportReviewDraft,
-        ReviewDimensionScores,
-        StatementDispositionDraft,
+    reworded_cell = with_rows.model_copy(
+        update={
+            "constraints": [
+                row.model_copy(
+                    update={
+                        "geography_statement": geography.model_copy(
+                            update={"text": "The scheme covers Ireland."}
+                        )
+                    }
+                )
+            ]
+        }
     )
+    assert composition_semantic_fingerprint(reworded_cell) != before
 
-    scores = _scores() if dimensions is None else dimensions
-    return ReportReviewDraft(
-        dimensions=ReviewDimensionScores(**scores),
-        statement_dispositions=[
-            StatementDispositionDraft(
-                statement_id=statement_id, disposition=disposition
+    # ...and so is the row's own point content: the row's statement record
+    # carries the text the reader sees, so rewording it is a content change.
+    reworded_row = with_rows.model_copy(
+        update={
+            "constraints": [
+                row.model_copy(
+                    update={
+                        "text": "Something else dominates.",
+                        "statement": row_statement.model_copy(
+                            update={"text": "Something else dominates."}
+                        ),
+                    }
+                )
+            ]
+        }
+    )
+    assert composition_semantic_fingerprint(reworded_row) != before
+
+
+def test_the_composition_fingerprint_covers_section_points() -> None:
+    """A themed findings bullet is reader-visible content, like the summary."""
+    composition = _written_composition()
+    bullet = ReportStatement(
+        statement_id="S004",
+        text="Break-even was reached in the survey's own wording.",
+        finding_ids=list(composition.summary[0].statement.finding_ids),
+        target_ids=[TARGET_ID],
+    )
+    section = ReportSection(
+        title="Error correction",
+        points=[
+            ReportPoint(
+                text=bullet.text,
+                source_urls=[EIA_URL],
+                statement=bullet,
             )
-            for statement_id, disposition in (
-                {"S001": "supported"} if dispositions is None else dispositions
-            ).items()
         ],
-        defects=list(defects or []),
-        reviewed_statement_ids=(
-            ["S001"] if reviewed_statements is None else reviewed_statements
-        ),
-        reviewed_evidence_ids=(
-            ["e1"] if reviewed_evidence is None else reviewed_evidence
-        ),
-        rationale=rationale,
     )
+    with_sections = composition.model_copy(
+        update={"sections": [*composition.sections, section]}
+    )
+    before = composition_semantic_fingerprint(with_sections)
+    assert before
+
+    reworded = with_sections.model_copy(
+        update={
+            "sections": [
+                *composition.sections,
+                ReportSection(
+                    title="Error correction",
+                    points=[
+                        ReportPoint(
+                            text="Break-even was never reached.",
+                            source_urls=[EIA_URL],
+                            statement=bullet.model_copy(
+                                update={"text": "Break-even was never reached."}
+                            ),
+                        )
+                    ],
+                ),
+            ]
+        }
+    )
+    assert composition_semantic_fingerprint(reworded) != before
+
+
+# --- one call per review ----------------------------------------------------
+
+
+@pytest.fixture
+def reviewer_with_reply() -> Callable[..., tuple[ReportReviewer, ScriptedCompleter]]:
+    """A reviewer whose one provider call answers with a scripted reply."""
+
+    def build(
+        *,
+        all_supported: bool = True,
+        unsupported: tuple[str, ...] = (),
+        skip: tuple[str, ...] = (),
+        contradicting: tuple[str, ...] = (),
+        defects: tuple[ReviewDefectDraft, ...] = (),
+    ) -> tuple[ReportReviewer, ScriptedCompleter]:
+        dispositions = [
+            (
+                statement_id,
+                "unsupported"
+                if statement_id in unsupported or not all_supported
+                else "supported",
+            )
+            for statement_id in WRITTEN_SENTENCES
+            if statement_id not in skip
+        ]
+        reply = _draft(
+            dispositions=dispositions,
+            defects=[
+                *(
+                    [
+                        _defect_draft(
+                            statement_ids=tuple(contradicting),
+                            kind="presentation",
+                            problem=(
+                                "The sentence's prose contradicts its own "
+                                "code-built label."
+                            ),
+                        )
+                    ]
+                    if contradicting
+                    else []
+                ),
+                *defects,
+            ],
+        )
+        completer = ScriptedCompleter(outputs=[reply])
+        return ReportReviewer(provider=completer), completer
+
+    return build
+
+
+@pytest.fixture
+def reviewer_truncating() -> ReportReviewer:
+    """A reviewer whose request is truncated twice: the re-ask, then a failure."""
+    return ReportReviewer(
+        provider=ScriptedCompleter(
+            outputs=[_output_limit_error(), _output_limit_error()]
+        ),
+        config=AgentRuntimeConfig(report_review_max_tokens=4096),
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_call_judges_every_statement(reviewer_with_reply) -> None:
+    reviewer, completer = reviewer_with_reply(all_supported=True)
+    review = await reviewer.review(packet(), previous=None)
+    assert review.status == "scored" and [n for n, _, _ in completer.calls] == ["ReportReviewDraft"]
+    assert set(review.per_statement_dispositions.values()) == {"supported"}
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_statement_is_a_material_defect(reviewer_with_reply) -> None:
+    reviewer, _ = reviewer_with_reply(unsupported=["S002"])
+    review = await reviewer.review(packet(), previous=None)
+    assert "S002" in review.derived_defect_statement_ids and not semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_a_missing_disposition_leaves_the_review_incomplete(reviewer_with_reply) -> None:
+    reviewer, _ = reviewer_with_reply(skip=["S003"])
+    assert (await reviewer.review(packet(), previous=None)).status == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_a_defect_for_prose_against_its_label_is_kept(reviewer_with_reply) -> None:
+    reviewer, _ = reviewer_with_reply(contradicting=["S001"])
+    review = await reviewer.review(packet(), previous=None)
+    assert [d.statement_ids for d in review.defects if d.material] == [["S001"]]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_reply_is_asked_once_more_then_a_failure_is_recorded(reviewer_truncating) -> None:
+    review = await reviewer_truncating.review(packet(), previous=None)
+    assert review.status == "provider_failed" and len(reviewer_truncating.provider.calls) == 2
 
 
 @pytest.mark.asyncio
 async def test_a_complete_review_is_scored() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    packet = _packet(state)
-    completer = ScriptedCompleter(outputs=[_draft_payload()])
+    built = packet()
+    completer = ScriptedCompleter(outputs=[_draft()])
 
-    review = await review_report(completer, packet)
+    review = await review_report(completer, built)
 
     assert review.status == "scored"
     assert set(review.dimensions) == REVIEW_DIMENSIONS
-    assert review.input_fingerprint == packet.fingerprint
+    assert review.input_fingerprint == built.fingerprint
     assert review.rubric_version == REVIEW_RUBRIC_VERSION
-    assert review.reviewed_statement_ids == ["S001"]
+    assert review.reviewed_statement_ids == ["S001", "S002", "S003"]
     assert review.unreviewed_statement_ids == []
-    assert review.per_statement_dispositions == {"S001": "supported"}
-    assert review.reviewed_batch_ids == packet.expected_batch_ids
+    assert review.per_statement_dispositions == {
+        statement_id: "supported" for statement_id in WRITTEN_SENTENCES
+    }
     assert len(completer.calls) == 1
     assert semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_a_missing_statement_review_is_incomplete_not_a_default_pass() -> None:
-    composition = _composition(
-        statements=(
-            _statement("S001", "Break-even was reached."),
-            _statement("S002", "A second claim.", evidence=("e2",)),
-        ),
-        units={"e1": _unit("e1"), "e2": _unit("e2")},
-    )
-    state = _state(composition=composition, report="Two statements.")
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                reviewed_statements=["S001"],
-                reviewed_evidence=["e1", "e2"],
-            )
-        ]
-    )
-
-    review = await review_report(completer, _packet(state))
-
-    assert review.status == "incomplete"
-    assert review.unreviewed_statement_ids == ["S002"]
-    assert not semantic_review_passes(review)
 
 
 @pytest.mark.asyncio
 async def test_a_reply_that_records_no_statement_disposition_is_incomplete() -> None:
-    """Claiming the reading is not the review: the judgement has to be recorded.
+    """Claiming nothing read is not the review: the judgement has to be recorded.
 
-    ``reviewed_statement_ids`` is the reply's own account of what it read; a
-    disposition is the judgement it reached about that statement. A reply that
-    lists every statement id and records a disposition for none of them has
-    skipped the per-statement support review the Task 7 brief demanded and this
-    task exists to perform — and with a perfect mean and no defects it would
-    otherwise be recorded ``scored`` and accepted, publishing a judgement that
-    was never made. Missing statement review is incomplete, not a default pass.
+    A reply with a perfect mean and no dispositions has skipped the
+    per-statement review this task exists to perform. Missing statement
+    dispositions are incomplete, not a default pass.
     """
-    composition = _composition(
-        statements=(
-            _statement("S001", "Break-even was reached."),
-            _statement("S002", "A second claim.", evidence=("e2",)),
-        ),
-        units={"e1": _unit("e1"), "e2": _unit("e2")},
-    )
-    state = _state(composition=composition, report="Two statements.")
-    packet = _packet(state)
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                dispositions={},
-                reviewed_statements=["S001", "S002"],
-                reviewed_evidence=["e1", "e2"],
-            )
-        ]
-    )
+    built = packet()
+    completer = ScriptedCompleter(outputs=[_draft(dispositions=[])])
 
-    review = await review_report(completer, packet)
+    review = await review_report(completer, built)
 
     assert len(completer.calls) == 1
     assert review.status == "incomplete"
     assert review.dimensions == {}
-    assert review.per_statement_dispositions == {}
+    assert review.unreviewed_statement_ids == ["S001", "S002", "S003"]
+    assert review.per_statement_dispositions == {
+        statement_id: UNREVIEWED_STATEMENT_DISPOSITION
+        for statement_id in WRITTEN_SENTENCES
+    }
     assert not semantic_review_passes(review)
     assert "S001" in review.rationale
-    assert "S002" in review.rationale
+    assert "S003" in review.rationale
 
 
 @pytest.mark.asyncio
-async def test_a_complete_review_of_several_statements_is_still_scored() -> None:
-    """The inverse failure, pinned: a complete review must not be refused.
+async def test_a_missing_statement_review_is_incomplete_not_a_default_pass() -> None:
+    built = packet()
+    completer = ScriptedCompleter(outputs=[_draft(dispositions=[("S001", "supported")])])
 
-    The rule this adds is "one disposition per statement the packet carries",
-    so a review that records one for every statement it read is scored and
-    accepted exactly as before — the requirement cannot be satisfied by
-    refusing every multi-statement report.
-    """
-    composition = _composition(
-        statements=(
-            _statement("S001", "Break-even was reached."),
-            _statement("S002", "A second claim.", evidence=("e2",)),
-        ),
-        units={"e1": _unit("e1"), "e2": _unit("e2")},
-    )
-    state = _state(composition=composition, report="Two statements.")
-    packet = _packet(state)
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                dispositions={"S001": "supported", "S002": "attributed"},
-                reviewed_statements=["S001", "S002"],
-                reviewed_evidence=["e1", "e2"],
-            )
-        ]
-    )
-
-    review = await review_report(completer, packet)
-
-    assert review.status == "scored"
-    assert review.per_statement_dispositions == {
-        "S001": "supported",
-        "S002": "attributed",
-    }
-    assert review.reviewed_statement_ids == ["S001", "S002"]
-    assert semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_a_missing_evidence_batch_is_incomplete_not_a_default_pass() -> None:
-    units = {"e1": _unit("e1"), "e2": _unit("e2")}
-    statements = (
-        _statement("S001", "One.", evidence=("e1",)),
-        _statement("S002", "Two.", evidence=("e2",)),
-    )
-    composition = _composition(statements=statements, units=units)
-    state = _state(composition=composition, report="Two statements.")
-    # The cross-section reply covers only ``e1``, so ``batch-01`` is re-asked —
-    # and its own reply also leaves ``e2`` unreviewed. A batch that never came
-    # back with its evidence is what "missing evidence batch" means.
-    from deep_research.agents.report_reviewer import ReviewBatchDraft
-
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                reviewed_statements=["S001", "S002"],
-                reviewed_evidence=["e1"],
-            ),
-            ReviewBatchDraft(
-                batch_id="batch-01",
-                statement_dispositions=[],
-                defects=[],
-                reviewed_statement_ids=[],
-                reviewed_evidence_ids=["e1"],
-                problem="",
-            ),
-        ]
-    )
-
-    review = await review_report(completer, _packet(state))
+    review = await review_report(completer, built)
 
     assert review.status == "incomplete"
-    assert "e2" in review.omitted_evidence_ids
-    assert review.reviewed_batch_ids == []
+    assert review.reviewed_statement_ids == ["S001"]
+    assert review.unreviewed_statement_ids == ["S002", "S003"]
     assert not semantic_review_passes(review)
 
 
 @pytest.mark.asyncio
 async def test_a_truncated_review_call_is_re_asked_once_at_a_high_effort() -> None:
-    """The output-limit rule's terminal-review half, and its record.
+    """A truncated request is re-asked once, at the effort that leaves budget.
 
-    A truncated cross-section request is re-asked once under the same output
-    budget at the effort that leaves more of that budget for the answer, and
-    the judgement then proceeds normally. The retry is recorded because it was
-    a second paid call: without the record nothing in the artifacts tells this
-    review apart from one that took a single request.
+    The retry is recorded because it was a second paid call: without the record
+    nothing in the artifacts tells this review apart from one that took a
+    single request.
     """
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    completer = ScriptedCompleter(
-        outputs=[_output_limit_error(), _draft_payload()]
-    )
+    completer = ScriptedCompleter(outputs=[_output_limit_error(), _draft()])
     reviewer = ReportReviewer(
         provider=completer,
         config=AgentRuntimeConfig(report_review_max_tokens=4096),
     )
 
-    review = await reviewer.review(_packet(state))
+    review = await reviewer.review(packet())
 
     assert review.status == "scored"
     assert completer.budgets == [4096, 4096]
@@ -1110,58 +1346,10 @@ async def test_a_truncated_review_call_is_re_asked_once_at_a_high_effort() -> No
     assert retry.details["outcome"] == "answered"
     assert retry.details["max_tokens"] == 4096
 
-@pytest.mark.asyncio
-async def test_a_full_size_review_has_room_to_finish_after_an_output_limit() -> None:
-    """A provider-verified budget must leave room for a second structured reply."""
-    class BudgetSensitiveCompleter(ScriptedCompleter):
-        def __init__(self):
-            super().__init__(outputs=[_draft_payload()])
-            self.truncated = False
-
-        async def complete_structured(
-            self, messages, schema, *, agent_name=None,
-            max_tokens=None, reasoning_effort=None,
-        ):
-            if max_tokens is None or max_tokens < 65536 or not self.truncated:
-                self.truncated = True
-                raise ProviderOutputLimitError(
-                    ProviderResponseTelemetry(
-                        finish_reason_category="length",
-                        configured_max_tokens=max_tokens or 32768,
-                        usage=TokenUsage(
-                            input_tokens=18000, output_tokens=max_tokens or 32768
-                        ),
-                        request_attempt=1,
-                    )
-                )
-            return await super().complete_structured(
-                messages,
-                schema,
-                agent_name=agent_name,
-                max_tokens=max_tokens,
-                reasoning_effort=reasoning_effort,
-            )
-
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    reviewer = ReportReviewer(provider=BudgetSensitiveCompleter())
-
-    review = await reviewer.review(_packet(state))
-
-    assert review.status == "scored"
-    assert review.reviewed_batch_ids == ["batch-01"]
-    assert reviewer.review_records[0].details["outcome"] == "answered"
-
 
 @pytest.mark.asyncio
 async def test_a_review_retry_that_hits_an_outage_is_recorded_as_failed() -> None:
-    """A retry that fails at the provider is recorded, and the path is unchanged.
-
-    The cross-section request was truncated and its retry hit an outage, so the
-    review is ``provider_failed`` exactly as an outage always made it — and the
-    second paid call is in the records, with an outcome that says no reply
-    arrived.
-    """
-    state = _state(composition=_composition(), report="Break-even was reached.")
+    """A retry that fails at the provider is recorded, and the path is unchanged."""
     completer = ScriptedCompleter(
         outputs=[
             _output_limit_error(),
@@ -1179,7 +1367,7 @@ async def test_a_review_retry_that_hits_an_outage_is_recorded_as_failed() -> Non
         config=AgentRuntimeConfig(report_review_max_tokens=4096),
     )
 
-    review = await reviewer.review(_packet(state))
+    review = await reviewer.review(packet())
 
     assert completer.efforts == [None, "high"]
     assert review.status == "provider_failed"
@@ -1187,61 +1375,13 @@ async def test_a_review_retry_that_hits_an_outage_is_recorded_as_failed() -> Non
     assert [error.error_type for error in reviewer.review_records] == [
         "report_review_output_limit_retry"
     ]
-    retry = reviewer.review_records[0]
-    assert retry.details["outcome"] == "failed"
-    assert retry.recoverable is True
-
-
-@pytest.mark.asyncio
-async def test_a_truncated_batch_with_an_invalid_retry_is_incomplete() -> None:
-    """A schema-invalid retry did not deliver a judgement, not an outage."""
-    from deep_research.providers import StructuredOutputError
-
-    composition = _composition(
-        statements=(
-            _statement("S001", "One.", evidence=("e1",)),
-            _statement("S002", "Two.", evidence=("e2",)),
-        ),
-        units={"e1": _unit("e1"), "e2": _unit("e2")},
-    )
-    packet = _packet(_state(composition=composition, report="Two statements."))
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                reviewed_statements=["S001", "S002"], reviewed_evidence=["e1"]
-            ),
-            _output_limit_error(),
-            StructuredOutputError(
-                "DeepSeek output failed ReviewBatchDraft validation after repair"
-            ),
-        ]
-    )
-    reviewer = ReportReviewer(provider=completer)
-
-    review = await reviewer.review(packet)
-
-    assert review.status == "incomplete"
-    assert review.dimensions == {}
-    assert not semantic_review_passes(review)
-    assert "StructuredOutputError" in review.rationale
-    assert [call[0] for call in completer.calls] == [
-        "ReportReviewDraft",
-        "ReviewBatchDraft",
-        "ReviewBatchDraft",
-    ]
     assert reviewer.review_records[0].details["outcome"] == "failed"
+    assert reviewer.review_records[0].recoverable is True
+
 
 @pytest.mark.asyncio
 async def test_a_second_truncation_keeps_the_non_fatal_unjudged_path() -> None:
-    """Two truncations leave the report unjudged, and never fail the run.
-
-    This reviewer's double-truncation outcome is the one it already had for a
-    provider failure: no score, no judgement, and the graph's
-    ``graph_report_review_unavailable`` record beside it. What the retry adds
-    is one more attempt and its record — not a new terminal state and never a
-    fatal one.
-    """
-    state = _state(composition=_composition(), report="Break-even was reached.")
+    """Two truncations leave the report unjudged, and never fail the run."""
     completer = ScriptedCompleter(
         outputs=[_output_limit_error(), _output_limit_error()]
     )
@@ -1250,7 +1390,7 @@ async def test_a_second_truncation_keeps_the_non_fatal_unjudged_path() -> None:
         config=AgentRuntimeConfig(report_review_max_tokens=4096),
     )
 
-    review = await reviewer.review(_packet(state))
+    review = await reviewer.review(packet())
 
     assert review.status == "provider_failed"
     assert review.dimensions == {}
@@ -1263,167 +1403,45 @@ async def test_a_second_truncation_keeps_the_non_fatal_unjudged_path() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_reused_review_records_no_retry() -> None:
-    """Records describe the review just made, never the one it reused.
-
-    A stored judgement of identical material costs nothing, so a second pass
-    over unchanged content must not report a retry it did not make.
-    """
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    completer = ScriptedCompleter(
-        outputs=[_output_limit_error(), _draft_payload()]
-    )
-    reviewer = ReportReviewer(
-        provider=completer,
-        config=AgentRuntimeConfig(report_review_max_tokens=4096),
-    )
-
-    first = await reviewer.review(_packet(state))
-    second = await reviewer.review(_packet(state), previous=first)
-
-    assert second is first
-    assert len(completer.calls) == 2
-    assert reviewer.review_records == ()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("generation_seconds", "expected_status"),
-    [(240, "scored"), (400, "provider_failed")],
-)
-async def test_report_judge_generation_respects_its_own_request_deadline(
-    generation_seconds: int, expected_status: str
-) -> None:
-    """A long complete review must be scored; a later transport timeout cannot be."""
-    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
-    config = LLMConfig.model_validate(raw["llm"]).model_copy(
-        update={"retry_count": 0}
-    )
-
-    class TimedResponses:
-        async def create(self, **kwargs):
-            if generation_seconds > kwargs.get("timeout", config.timeout):
-                raise APITimeoutError(
-                    request=httpx.Request("POST", "https://api.deepseek.com/responses")
-                )
-            return SimpleNamespace(
-                status="completed",
-                incomplete_details=None,
-                output_text=_draft_payload().model_dump_json(),
-                model="deepseek-v4-flash",
-                usage=SimpleNamespace(
-                    input_tokens=100, output_tokens=1000, total_tokens=1100
-                ),
-            )
-
-    tracker = _tracker()
-    provider = DeepSeekSchemaChatProvider(
-        config, tracker, client=SimpleNamespace(responses=TimedResponses())
-    )
-    async with tracker.session_span(SESSION_ID, QUESTION):
-        review = await ReportReviewer(provider=provider).review(
-            _packet(_state(composition=_composition(), report="Break-even was reached."))
-        )
-
-    assert review.status == expected_status
-    if expected_status == "scored":
-        assert semantic_review_passes(review)
-    else:
-        assert review.dimensions == {}
-        assert "ProviderTimeoutError" in review.rationale
-        assert not semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
 async def test_a_provider_failure_is_recorded_provider_failed_never_scored() -> None:
     from deep_research.providers import ProviderError
 
-    state = _state(composition=_composition(), report="Break-even was reached.")
     completer = ScriptedCompleter(outputs=[ProviderError("the provider is down")])
 
-    review = await review_report(completer, _packet(state))
+    review = await review_report(completer, packet())
 
     assert review.status == "provider_failed"
     assert review.dimensions == {}
     assert not semantic_review_passes(review)
     assert review.rationale.strip()
+    assert len(completer.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_a_complete_review_keeps_all_distinct_material_defects() -> None:
-    """One defect per statement must not lose the thirteenth finding."""
-    statement_ids = [f"S{number:03d}" for number in range(1, 14)]
-    composition = _composition(
-        statements=tuple(
-            _statement(statement_id, f"Unsupported assertion {index}.")
-            for index, statement_id in enumerate(statement_ids, start=1)
-        )
-    )
-    packet = _packet(_state(composition=composition, report="Thirteen assertions."))
-    payload = _draft_payload(
-        dimensions=_scores(0.2),
-        dispositions=dict.fromkeys(statement_ids, "unsupported"),
-        reviewed_statements=statement_ids,
-    ).model_dump(mode="python")
-    payload["defects"] = [
-        CritiqueGapDraft(
-            target_ids=["t1"],
-            statement_ids=[statement_id],
-            kind="missing_support",
-            severity="major",
-            repair_action="adjudicate",
-            problem=f"No cited passage establishes assertion {index}.",
-        ).model_dump(mode="python")
-        for index, statement_id in enumerate(statement_ids, start=1)
-    ]
-    completer = ScriptedCompleter(outputs=[payload])
+async def test_a_schema_failure_is_incomplete_not_a_default_pass() -> None:
+    completer = ScriptedCompleter(outputs=[{"not": "a draft"}])
 
-    review = await review_report(completer, packet)
+    review = await review_report(completer, packet())
 
-    assert review.status == "scored"
-    assert [gap.statement_ids for gap in review.material_defects] == [
-        [statement_id] for statement_id in statement_ids
-    ]
-    assert not semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_a_reply_over_the_stated_defect_bound_is_refused_not_cut() -> None:
-    """The request states the defect bound it enforces, and beyond it refuses."""
-    statement_ids = [f"S{number:03d}" for number in range(1, 14)]
-    composition = _composition(
-        statements=tuple(
-            _statement(statement_id, f"Unsupported assertion {index}.")
-            for index, statement_id in enumerate(statement_ids, start=1)
-        )
-    )
-    packet = _packet(_state(composition=composition, report="Thirteen assertions."))
-    stated = re.search(r"at most (\d+) defects", _render(packet))
-    assert stated is not None
-    bound = int(stated.group(1))
-    payload = _draft_payload(
-        dimensions=_scores(0.2),
-        dispositions=dict.fromkeys(statement_ids, "unsupported"),
-        reviewed_statements=statement_ids,
-    ).model_dump(mode="python")
-    payload["defects"] = [
-        CritiqueGapDraft(
-            target_ids=["t1"],
-            statement_ids=["S001"],
-            kind="missing_support",
-            severity="major",
-            repair_action="adjudicate",
-            problem=f"Distinct unsupported reading number {index}.",
-        ).model_dump(mode="python")
-        for index in range(bound + 1)
-    ]
-
-    review = await review_report(ScriptedCompleter(outputs=[payload]), packet)
-
-    assert bound >= len(statement_ids)
     assert review.status == "incomplete"
-    assert review.defects == []
     assert not semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_a_fingerprint_mismatch_is_incomplete_not_a_default_pass() -> None:
+    built = packet()
+    completer = ScriptedCompleter(outputs=[_draft()])
+
+    review = await review_report(
+        completer,
+        built,
+        reviewed_fingerprint="a-different-packet",
+    )
+
+    assert review.status == "incomplete"
+    assert review.input_fingerprint == built.fingerprint
+    assert not semantic_review_passes(review)
+    assert completer.calls == []
 
 
 @pytest.mark.asyncio
@@ -1454,10 +1472,7 @@ async def test_failed_review_records_validation_fields_without_provider_values()
         ]
     )
 
-    review = await review_report(
-        completer,
-        _packet(_state(composition=_composition(), report="Break-even was reached.")),
-    )
+    review = await review_report(completer, packet())
 
     assert review.status == "incomplete"
     assert review.dimensions == {}
@@ -1495,9 +1510,7 @@ async def test_an_invalid_retry_after_truncation_keeps_its_validation_fields() -
         config=AgentRuntimeConfig(report_review_max_tokens=4096),
     )
 
-    review = await reviewer.review(
-        _packet(_state(composition=_composition(), report="Break-even was reached."))
-    )
+    review = await reviewer.review(packet())
 
     assert review.status == "incomplete"
     assert (
@@ -1507,45 +1520,156 @@ async def test_an_invalid_retry_after_truncation_keeps_its_validation_fields() -
 
 
 @pytest.mark.asyncio
-async def test_a_schema_failure_is_incomplete_not_a_default_pass() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    completer = ScriptedCompleter(outputs=[{"not": "a draft"}])
-
-    review = await review_report(completer, _packet(state))
-
-    assert review.status == "incomplete"
-    assert not semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_a_fingerprint_mismatch_is_incomplete_not_a_default_pass() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    packet = _packet(state)
-    completer = ScriptedCompleter(outputs=[_draft_payload()])
-
-    review = await review_report(
-        completer,
-        packet,
-        reviewed_fingerprint="a-different-packet",
+@pytest.mark.parametrize(
+    ("generation_seconds", "expected_status"),
+    [(240, "scored"), (400, "provider_failed")],
+)
+async def test_report_judge_generation_respects_its_own_request_deadline(
+    generation_seconds: int, expected_status: str
+) -> None:
+    """A long complete review must be scored; a later transport timeout cannot be."""
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    config = LLMConfig.model_validate(raw["llm"]).model_copy(
+        update={"retry_count": 0}
     )
 
+    class TimedResponses:
+        async def create(self, **kwargs):
+            if generation_seconds > kwargs.get("timeout", config.timeout):
+                raise APITimeoutError(
+                    request=httpx.Request("POST", "https://api.deepseek.com/responses")
+                )
+            return SimpleNamespace(
+                status="completed",
+                incomplete_details=None,
+                output_text=_draft().model_dump_json(),
+                model="deepseek-v4-flash",
+                usage=SimpleNamespace(
+                    input_tokens=100, output_tokens=1000, total_tokens=1100
+                ),
+            )
+
+    tracker = _tracker()
+    provider = DeepSeekSchemaChatProvider(
+        config, tracker, client=SimpleNamespace(responses=TimedResponses())
+    )
+    async with tracker.session_span(SESSION_ID, QUESTION):
+        review = await ReportReviewer(provider=provider).review(packet())
+
+    assert review.status == expected_status
+    if expected_status == "scored":
+        assert semantic_review_passes(review)
+    else:
+        assert review.dimensions == {}
+        assert "ProviderTimeoutError" in review.rationale
+        assert not semantic_review_passes(review)
+
+
+# --- the reply's defects ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_complete_review_keeps_all_distinct_material_defects() -> None:
+    """One defect per statement must not lose the thirteenth finding."""
+    statement_ids = [f"S{number:03d}" for number in range(1, 14)]
+    sentences = {
+        statement_id: f"Unsupported assertion number {index}."
+        for index, statement_id in enumerate(statement_ids, start=1)
+    }
+    composition = _many_statement_composition(sentences)
+    built = build_report_review_input(state_with_written_report(composition=composition))
+    reply = _draft(
+        dimensions=_scores(0.2),
+        dispositions=[(statement_id, "unsupported") for statement_id in statement_ids],
+        defects=[
+            _defect_draft(
+                statement_ids=(statement_id,),
+                problem=f"No cited passage establishes assertion {index}.",
+            )
+            for index, statement_id in enumerate(statement_ids, start=1)
+        ],
+    )
+    completer = ScriptedCompleter(outputs=[reply])
+
+    review = await review_report(completer, built)
+
+    assert review.status == "scored"
+    assert [defect.statement_ids for defect in review.material_defects] == [
+        [statement_id] for statement_id in statement_ids
+    ]
+    assert not semantic_review_passes(review)
+
+
+def _many_statement_composition(sentences: dict[str, str]) -> ReportComposition:
+    """A composition with one summary point per sentence, in id order."""
+    composition = _written_composition()
+    statements = {
+        statement_id: ReportStatement(
+            statement_id=statement_id,
+            text=text,
+            finding_ids=list(composition.summary[0].statement.finding_ids),
+            target_ids=[TARGET_ID],
+        )
+        for statement_id, text in sentences.items()
+    }
+    return composition.model_copy(
+        update={
+            "summary": [
+                ReportPoint(
+                    text=text,
+                    source_urls=[EIA_URL],
+                    statement=statements[statement_id],
+                )
+                for statement_id, text in sentences.items()
+            ],
+            "sections": [],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_reply_over_the_stated_defect_bound_is_refused_not_cut() -> None:
+    """The request states the defect bound it enforces, and beyond it refuses."""
+    built = packet()
+    stated = re.search(r"at most (\d+) defects", _render(built))
+    assert stated is not None
+    bound = int(stated.group(1))
+    reply = _draft(
+        defects=[
+            _defect_draft(
+                statement_ids=("S001",),
+                problem=f"Distinct unsupported reading number {index}.",
+            )
+            for index in range(bound + 1)
+        ]
+    )
+
+    review = await review_report(ScriptedCompleter(outputs=[reply]), built)
+
+    assert bound >= len(built.expected_statement_ids)
     assert review.status == "incomplete"
-    assert review.input_fingerprint == packet.fingerprint
+    assert review.defects == []
     assert not semantic_review_passes(review)
 
 
 @pytest.mark.asyncio
-async def test_a_defect_outside_the_packet_is_refused() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
+async def test_a_defect_with_an_unknown_id_keeps_its_problem_and_loses_the_id() -> None:
+    """A scope id this packet does not carry is dropped; the problem stays.
+
+    The reviewer found something real; what it got wrong was the address. Losing
+    the address must not lose the finding, and a phantom id must never enter the
+    record as a resolvable scope.
+    """
+    built = packet()
     completer = ScriptedCompleter(
         outputs=[
-            _draft_payload(
+            _draft(
                 defects=[
-                    CritiqueGapDraft(
-                        target_ids=["t-does-not-exist"],
+                    _defect_draft(
+                        statement_ids=("S999",),
+                        target_ids=("t-does-not-exist",),
                         kind="coverage",
                         severity="critical",
-                        repair_action="acquire",
                         problem="A topic nobody planned is missing.",
                     )
                 ]
@@ -1553,79 +1677,148 @@ async def test_a_defect_outside_the_packet_is_refused() -> None:
         ]
     )
 
-    review = await review_report(completer, _packet(state))
+    review = await review_report(completer, built)
 
-    assert review.status == "incomplete"
-    assert review.defects == []
+    assert review.status == "scored"
+    assert [defect.statement_ids for defect in review.defects] == [[]]
+    assert review.defects[0].target_ids == []
+    assert review.defects[0].problem == "A topic nobody planned is missing."
     assert not semantic_review_passes(review)
 
+
+@pytest.mark.asyncio
+async def test_a_defect_with_an_unknown_kind_is_dropped_and_the_drop_is_recorded() -> None:
+    """The defect vocabulary is closed: a new kind is not a new category."""
+    built = packet()
+    completer = ScriptedCompleter(
+        outputs=[
+            _draft(
+                defects=[
+                    _defect_draft(kind="vibes", problem="This feels wrong."),
+                    _defect_draft(
+                        statement_ids=("S002",),
+                        severity="minor",
+                        kind="presentation",
+                        problem="This sentence reads awkwardly.",
+                    ),
+                ]
+            )
+        ]
+    )
+
+    review = await review_report(completer, built)
+
+    assert review.status == "scored"
+    assert [defect.problem for defect in review.defects] == [
+        "This sentence reads awkwardly."
+    ]
+    assert "vibes" in review.rationale
+    assert semantic_review_passes(review)
 
 
 @pytest.mark.asyncio
 async def test_a_defect_naming_a_context_statement_is_accepted() -> None:
     """A defect may still name a context statement, unlike a disposition.
 
-    ``expected_statement_ids`` (change 5) excludes a sentinel/context
-    statement from what a review must *disposition* — there is nothing to
-    judge "supported" or "unsupported" about a statement that asserts
-    nothing. That is a different question from whether a returned *defect*
-    may reference it: a reviewer can still observe a real problem with a
-    context statement's own wording (a confusing "not stated" cell, a
-    misleading uncertainty note), and that defect's scope must resolve
-    against every statement the packet carries, not only the dispositionable
-    ones.
+    ``expected_statement_ids`` excludes a sentinel/context statement from what a
+    review must *disposition* — there is nothing to judge "supported" or
+    "unsupported" about a statement that asserts nothing. That is a different
+    question from whether a returned *defect* may reference it: a reviewer can
+    still observe a real problem with a context statement's own wording.
     """
-    sentinel = _statement(
-        "C001",
-        "not stated",
+    sentinel = ReportStatement(
+        statement_id="C001",
+        text="not stated",
         mode="context",
-        clusters=(),
-        evidence=(),
-        targets=(),
-        dimensions=(),
         basis="the row's evidence does not state this cell",
     )
-    composition = _composition(
-        statements=(
-            _statement("S001", "Break-even was reached."),
-            sentinel,
-        ),
+    composition = _written_composition()
+    composition = composition.model_copy(
+        update={
+            "sections": [
+                *composition.sections,
+                ReportSection(
+                    title="Not stated",
+                    points=[
+                        ReportPoint(
+                            text=sentinel.text,
+                            source_urls=[EIA_URL],
+                            statement=sentinel,
+                        )
+                    ],
+                ),
+            ]
+        }
     )
-    state = _state(composition=composition, report="Break-even was reached.")
+    built = build_report_review_input(state_with_written_report(composition=composition))
     completer = ScriptedCompleter(
         outputs=[
-            _draft_payload(
+            _draft(
                 defects=[
-                    CritiqueGapDraft(
-                        statement_ids=["C001"],
+                    _defect_draft(
+                        statement_ids=("C001",),
                         kind="presentation",
                         severity="minor",
-                        repair_action="synthesize",
                         problem="The 'not stated' cell reads confusingly.",
                     )
-                ],
+                ]
             )
         ]
     )
 
-    review = await review_report(completer, _packet(state))
+    review = await review_report(completer, built)
 
     assert review.status == "scored"
-    assert any(gap.statement_ids == ["C001"] for gap in review.defects)
+    assert any(defect.statement_ids == ["C001"] for defect in review.defects)
     assert semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_a_disposition_outside_the_packet_is_refused() -> None:
+    """A judgement about a record this packet does not carry is not a judgement."""
+    built = packet()
+    completer = ScriptedCompleter(
+        outputs=[
+            _draft(
+                dispositions=[
+                    *[(sid, "supported") for sid in WRITTEN_SENTENCES],
+                    ("S999", "supported"),
+                ]
+            )
+        ]
+    )
+
+    review = await review_report(completer, built)
+
+    assert review.status == "incomplete"
+    assert review.per_statement_dispositions == {}
+    assert "S999" in review.rationale
+    assert not semantic_review_passes(review)
+
+
+# --- dispositions and the defects they derive -------------------------------
+
 
 @pytest.mark.asyncio
 async def test_an_unsettled_disposition_always_blocks_acceptance() -> None:
     """A reply that says "unsupported" cannot also claim a clean review."""
-    state = _state(composition=_composition(), report="Break-even was reached.")
+    built = packet()
     completer = ScriptedCompleter(
-        outputs=[_draft_payload(dispositions={"S001": "unsupported"}, defects=[])]
+        outputs=[
+            _draft(
+                dispositions=[
+                    ("S001", "unsupported"),
+                    ("S002", "supported"),
+                    ("S003", "supported"),
+                ]
+            )
+        ]
     )
 
-    review = await review_report(completer, _packet(state))
+    review = await review_report(completer, built)
 
     assert review.status == "scored"
-    assert review.per_statement_dispositions == {"S001": "unsupported"}
+    assert review.per_statement_dispositions["S001"] == "unsupported"
     assert review.derived_defect_statement_ids == ["S001"]
     assert review.material_defects
     assert not semantic_review_passes(review)
@@ -1633,96 +1826,151 @@ async def test_an_unsettled_disposition_always_blocks_acceptance() -> None:
 
 @pytest.mark.asyncio
 async def test_a_minor_defect_cannot_suppress_the_derived_material_defect() -> None:
-    """C-1: a contract-valid reply is recorded, never left to crash the run.
+    """A contract-valid reply is recorded, never left to crash the run.
 
     ``minor`` is not material, so a reply that dispositions a statement
-    ``unsupported`` and returns only a *minor* defect naming it has not
-    satisfied the record contract's rule that an unsettled statement be named
-    by a material defect. The skip test in ``_derived_defects`` asked whether
-    *any* defect named the statement, derived nothing, and ``_merge_review``
-    raised a ``ValidationError`` straight out of ``review_report`` — no review,
-    no status, and neither exit 4 nor exit 3. The judgement did happen; it must
-    be recorded, with the material defect it needs derived for it.
+    ``unsupported`` and returns only a *minor* defect naming it must still get
+    the material defect the record contract requires derived for it, rather
+    than a ``ValidationError`` out of ``review_report``.
     """
-    state = _state(composition=_composition(), report="Break-even was reached.")
+    built = packet()
     completer = ScriptedCompleter(
         outputs=[
-            _draft_payload(
+            _draft(
+                dispositions=[
+                    ("S001", "unsupported"),
+                    ("S002", "supported"),
+                    ("S003", "supported"),
+                ],
                 defects=[
-                    CritiqueGapDraft(
-                        target_ids=["t1"],
-                        statement_ids=["S001"],
+                    _defect_draft(
+                        statement_ids=("S001",),
                         kind="presentation",
                         severity="minor",
-                        repair_action="synthesize",
                         problem="The sentence reads awkwardly.",
                     )
                 ],
-                dispositions={"S001": "unsupported"},
             )
         ]
     )
 
-    review = await review_report(completer, _packet(state))
+    review = await review_report(completer, built)
 
     assert review.status == "scored"
-    assert review.per_statement_dispositions == {"S001": "unsupported"}
     assert review.derived_defect_statement_ids == ["S001"]
     (derived,) = [
-        gap for gap in review.defects if gap.gap_id.startswith("review-")
+        defect for defect in review.defects if defect.defect_id.startswith("review-")
+        and defect.material
     ]
     assert derived.material
     assert derived.statement_ids == ["S001"]
+    assert derived.target_ids == [TARGET_ID]
+    assert derived.kind == "missing_support"
     assert not semantic_review_passes(review)
 
 
-
 @pytest.mark.asyncio
-async def test_a_disposition_on_a_sentinel_statement_derives_no_material_defect() -> (
-    None
-):
-    """Change 5 (the review part): a 'not stated' cell derives no defect.
-
-    A reply that names the sentinel statement anyway — reading it, or even
-    dispositioning it ``unsupported`` — cannot turn "this cell was repaired
-    to 'not stated' because its row's evidence is silent" into a material
-    finding: the statement never asserted anything for the disposition to be
-    about. The recorded review reads exactly as if the reply had never
-    mentioned it.
-    """
-    sentinel = _statement(
-        "C001",
-        "not stated",
+async def test_a_disposition_on_a_sentinel_statement_derives_no_material_defect() -> None:
+    """A 'not stated' cell derives no defect, however it is dispositioned."""
+    sentinel = ReportStatement(
+        statement_id="C001",
+        text="not stated",
         mode="context",
-        clusters=(),
-        evidence=(),
-        targets=(),
-        dimensions=(),
         basis="the row's evidence does not state this cell",
     )
-    composition = _composition(
-        statements=(
-            _statement("S001", "Break-even was reached."),
-            sentinel,
-        ),
+    composition = _written_composition()
+    composition = composition.model_copy(
+        update={
+            "sections": [
+                *composition.sections,
+                ReportSection(
+                    title="Not stated",
+                    points=[
+                        ReportPoint(
+                            text=sentinel.text,
+                            source_urls=[EIA_URL],
+                            statement=sentinel,
+                        )
+                    ],
+                ),
+            ]
+        }
     )
-    state = _state(composition=composition, report="Break-even was reached.")
+    built = build_report_review_input(state_with_written_report(composition=composition))
     completer = ScriptedCompleter(
         outputs=[
-            _draft_payload(
-                dispositions={"S001": "supported", "C001": "unsupported"},
-                reviewed_statements=["S001", "C001"],
+            _draft(
+                dispositions=[
+                    *[(sid, "supported") for sid in WRITTEN_SENTENCES],
+                    ("C001", "unsupported"),
+                ]
             )
         ]
     )
 
-    review = await review_report(completer, _packet(state))
+    review = await review_report(completer, built)
 
     assert review.status == "scored"
-    assert review.per_statement_dispositions == {"S001": "supported"}
+    assert review.per_statement_dispositions == {
+        statement_id: "supported" for statement_id in WRITTEN_SENTENCES
+    }
     assert review.derived_defect_statement_ids == []
     assert not review.material_defects
     assert semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_a_later_supported_cannot_overwrite_an_earlier_unsupported() -> None:
+    """Two readings of one statement resolve to the less settled one.
+
+    A reply that says both "this sentence is not in its source" and "this
+    sentence is supported" has not agreed with itself, and recording the
+    agreement is the one reading that must never happen.
+    """
+    built = packet()
+    completer = ScriptedCompleter(
+        outputs=[
+            _draft(
+                dispositions=[
+                    ("S001", "unsupported"),
+                    ("S001", "supported"),
+                    ("S002", "supported"),
+                    ("S003", "supported"),
+                ]
+            )
+        ]
+    )
+
+    review = await review_report(completer, built)
+
+    assert review.per_statement_dispositions["S001"] == "unsupported"
+    assert review.derived_defect_statement_ids == ["S001"]
+    assert not semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_a_later_unsupported_reading_displaces_an_earlier_supported() -> None:
+    """The same rule in the other order: the doubt is never the one dropped."""
+    built = packet()
+    completer = ScriptedCompleter(
+        outputs=[
+            _draft(
+                dispositions=[
+                    ("S001", "supported"),
+                    ("S001", "unsupported"),
+                    ("S002", "supported"),
+                    ("S003", "supported"),
+                ]
+            )
+        ]
+    )
+
+    review = await review_report(completer, built)
+
+    assert review.per_statement_dispositions["S001"] == "unsupported"
+    assert review.derived_defect_statement_ids == ["S001"]
+    assert not semantic_review_passes(review)
+
 
 @pytest.mark.asyncio
 async def test_a_judgement_that_cannot_be_recorded_is_incomplete_not_a_crash(
@@ -1730,24 +1978,19 @@ async def test_a_judgement_that_cannot_be_recorded_is_incomplete_not_a_crash(
 ) -> None:
     """The backstop: the merge is the last place a contract violation can land.
 
-    Fixing the materiality test makes C-1's reply shape unreachable, so the
-    guard is tested where it lives. Assembling the record is the one step that
-    can still fail on the record contract; a ``ValidationError`` there must be
-    recorded as ``incomplete`` — no dimensions, no defects, the reason in the
-    rationale — rather than propagating to a caller that has no exit code for
-    it. An unrecorded judgement is not an acceptance.
+    Assembling the record is the one step that can still fail on the record
+    contract; a ``ValidationError`` there must be recorded as ``incomplete`` —
+    no dimensions, no defects, the reason in the rationale — rather than
+    propagating to a caller that has no exit code for it.
     """
     from deep_research.agents import report_reviewer as report_reviewer_module
 
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    packet = _packet(state)
-    completer = ScriptedCompleter(outputs=[_draft_payload()])
+    built = packet()
+    completer = ScriptedCompleter(outputs=[_draft()])
     merge = report_reviewer_module._merge_review  # noqa: SLF001
 
     def refuse_to_record_a_judgement(*args: object, **kwargs: object) -> ReportReview:
         if kwargs.get("status") != "incomplete":
-            # A genuine pydantic failure from the real record contract, not a
-            # hand-made exception: this is the shape C-1 produced.
             return ReportReview.model_validate({"status": "scored"})
         return merge(*args, **kwargs)
 
@@ -1755,7 +1998,7 @@ async def test_a_judgement_that_cannot_be_recorded_is_incomplete_not_a_crash(
         report_reviewer_module, "_merge_review", refuse_to_record_a_judgement
     )
 
-    review = await review_report(completer, packet)
+    review = await review_report(completer, built)
 
     assert review.status == "incomplete"
     assert review.dimensions == {}
@@ -1764,279 +2007,15 @@ async def test_a_judgement_that_cannot_be_recorded_is_incomplete_not_a_crash(
     assert not semantic_review_passes(review)
 
 
-@pytest.mark.asyncio
-async def test_a_returned_to_fact_checker_disposition_blocks() -> None:
-    """Item 5: prose that introduces an unattested mechanism goes back."""
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    completer = ScriptedCompleter(
-        outputs=[_draft_payload(dispositions={"S001": "returned_to_fact_checker"})]
-    )
-
-    review = await review_report(completer, _packet(state))
-
-    assert review.per_statement_dispositions["S001"] == "returned_to_fact_checker"
-    assert review.unsettled_statement_ids == ["S001"]
-    assert review.material_defects
-    assert not semantic_review_passes(review)
-
-
-def test_an_unsettled_statement_without_a_material_defect_is_refused() -> None:
-    """The type boundary: "unsupported" cannot be recorded as a clean score."""
-    with pytest.raises(ValueError):
-        _scored_review(
-            per_statement_dispositions={
-                "S001": UNREVIEWED_STATEMENT_DISPOSITION
-            },
-            reviewed_statement_ids=[],
-        )
-
-
-def test_a_scored_review_cannot_declare_an_unreviewed_statement() -> None:
-    with pytest.raises(ValueError):
-        _scored_review(
-            unreviewed_statement_ids=["S002"],
-            defects=[_unsupported_defect("S002")],
-            per_statement_dispositions={"S002": "unsupported"},
-        )
-
-
-def test_a_scored_review_must_disposition_every_statement_it_reviewed() -> None:
-    """The other half of the coverage rule, at the type boundary.
-
-    ``reviewed_statement_ids`` says what the review read; a disposition says
-    what it concluded about it. The contract already refuses a scored review
-    that declares an unread statement, and it must equally refuse one that read
-    a statement and recorded no judgement of it — otherwise the per-statement
-    review can be omitted while the record still reads ``scored``.
-    """
-    with pytest.raises(ValueError):
-        _scored_review(
-            reviewed_statement_ids=["S001", "S002"],
-            per_statement_dispositions={"S001": "supported"},
-        )
-
-
-def test_a_scored_review_needs_the_seven_dimensions_and_a_fingerprint() -> None:
-    with pytest.raises(ValueError):
-        _scored_review(dimensions={"completeness": 1.0})
-    with pytest.raises(ValueError):
-        _scored_review(input_fingerprint="")
-
-
-def test_a_review_that_is_not_scored_carries_no_scores() -> None:
-    with pytest.raises(ValueError):
-        _scored_review(status="incomplete")
-    assert _scored_review().model_copy(update={"status": "incomplete"}).dimensions
-
-
-@pytest.mark.asyncio
-async def test_oversized_evidence_is_reviewed_batch_by_batch() -> None:
-    from deep_research.agents.report_reviewer import ReviewBatchDraft
-
-    units = {
-        f"e{index}": _unit(f"e{index}", excerpt="X" * 400)
-        for index in range(1, 12)
-    }
-    statements = tuple(
-        _statement(f"S{index:03d}", f"Fact {index}.", evidence=(f"e{index}",))
-        for index in range(1, 12)
-    )
-    composition = _composition(statements=statements, units=units)
-    state = _state(composition=composition, report="A long report.")
-    packet = _packet(state)
-    assert len(packet.evidence_batches) > 1
-
-    outputs: list[object] = [
-        _draft_payload(
-            reviewed_statements=[
-                statement.statement_id for statement in statements
-            ],
-            # The cross-section reply reads every statement and only the first
-            # batch's evidence, so the remaining batches have to be asked for by
-            # their own requests — which is the behaviour this test is named
-            # for. A reply that claimed every evidence id up front would satisfy
-            # the coverage assertion below without one batch request ever being
-            # made, and deleting the follow-up loop entirely would leave it
-            # passing.
-            reviewed_evidence=packet.evidence_batches[0].evidence_ids,
-            dispositions={
-                statement.statement_id: "supported" for statement in statements
-            },
-        )
-    ]
-    for batch in packet.evidence_batches[1:]:
-        outputs.append(
-            ReviewBatchDraft(
-                batch_id=batch.batch_id,
-                statement_dispositions=[],
-                defects=[],
-                reviewed_statement_ids=[],
-                reviewed_evidence_ids=[item.evidence_id for item in batch.items],
-                problem="",
-            )
-        )
-    completer = ScriptedCompleter(outputs=outputs)
-
-    review = await review_report(completer, packet)
-
-    assert review.status == "scored"
-    assert review.reviewed_batch_ids == packet.expected_batch_ids
-    assert len(completer.calls) == len(packet.evidence_batches)
-
-
-@pytest.mark.asyncio
-async def test_a_later_supported_cannot_overwrite_an_earlier_unsupported() -> None:
-    """The disagreement rule: an unsettled reading is not voted away.
-
-    A cross-section reply and a follow-up batch reply judge the same statements
-    from different material, and they can disagree. The merge keeps the *less*
-    settled reading, because "this sentence is not carried by its evidence" may
-    not be overwritten by a second reply's "supported" — recording two readings
-    of one sentence as agreement is the one outcome that turns a finding into
-    an acceptance. The rule only ever runs on a batched review, which is
-    exactly where nothing pinned it: replacing its condition with an
-    unconditional overwrite left the whole suite green.
-    """
-    from deep_research.agents.report_reviewer import ReviewBatchDraft
-
-    units = {
-        f"e{index}": _unit(f"e{index}", excerpt="Y" * 3000)
-        for index in range(1, 4)
-    }
-    statements = tuple(
-        _statement(f"S{index:03d}", f"Fact {index}.", evidence=(f"e{index}",))
-        for index in range(1, 4)
-    )
-    composition = _composition(statements=statements, units=units)
-    state = _state(composition=composition, report="A long report.")
-    packet = _packet(state)
-    assert len(packet.evidence_batches) > 1
-
-    outputs: list[object] = [
-        _draft_payload(
-            defects=[
-                CritiqueGapDraft(
-                    target_ids=["t1"],
-                    statement_ids=["S001"],
-                    kind="missing_support",
-                    severity="major",
-                    repair_action="adjudicate",
-                    problem="S001 is not carried by its passage.",
-                )
-            ],
-            dispositions={
-                "S001": "unsupported",
-                "S002": "supported",
-                "S003": "supported",
-            },
-            reviewed_statements=["S001", "S002", "S003"],
-            reviewed_evidence=packet.evidence_batches[0].evidence_ids,
-        )
-    ]
-    for index, batch in enumerate(packet.evidence_batches[1:]):
-        outputs.append(
-            ReviewBatchDraft(
-                batch_id=batch.batch_id,
-                # The first follow-up contradicts the cross-section reply about
-                # S001; the rest judge nothing new.
-                statement_dispositions=(
-                    [{"statement_id": "S001", "disposition": "supported"}]
-                    if index == 0
-                    else []
-                ),
-                defects=[],
-                reviewed_statement_ids=[],
-                reviewed_evidence_ids=[item.evidence_id for item in batch.items],
-                problem="",
-            )
-        )
-    completer = ScriptedCompleter(outputs=outputs)
-
-    review = await review_report(completer, packet)
-
-    assert review.status == "scored"
-    assert review.per_statement_dispositions["S001"] == "unsupported"
-    assert not semantic_review_passes(review)
-    assert review.unsettled_statement_ids == ["S001"]
-
-
-@pytest.mark.asyncio
-async def test_a_later_unsupported_reading_displaces_an_earlier_supported() -> None:
-    """The other direction, which is the one that loses a finding.
-
-    The rule is order-independent on purpose: the *less* settled reading wins
-    wherever it arrives. The test above covers a later "supported" arriving
-    after an "unsupported"; this one covers a later "unsupported" arriving
-    after a "supported", which is the direction where a regression is
-    dangerous — a follow-up reply saying "this sentence is not in the source"
-    would be discarded in favour of the earlier "supported", and the review
-    would pass with the suite green. Pinning only the first direction was the
-    re-review's N-1 finding: replacing the condition with a first-write-wins
-    test left every other test passing.
-    """
-    from deep_research.agents.report_reviewer import ReviewBatchDraft
-
-    units = {
-        f"e{index}": _unit(f"e{index}", excerpt="Z" * 3000)
-        for index in range(1, 4)
-    }
-    statements = tuple(
-        _statement(f"S{index:03d}", f"Fact {index}.", evidence=(f"e{index}",))
-        for index in range(1, 4)
-    )
-    composition = _composition(statements=statements, units=units)
-    state = _state(composition=composition, report="A long report.")
-    packet = _packet(state)
-    assert len(packet.evidence_batches) > 1
-
-    outputs: list[object] = [
-        _draft_payload(
-            dispositions={
-                "S001": "supported",
-                "S002": "supported",
-                "S003": "supported",
-            },
-            reviewed_statements=["S001", "S002", "S003"],
-            reviewed_evidence=packet.evidence_batches[0].evidence_ids,
-        )
-    ]
-    for index, batch in enumerate(packet.evidence_batches[1:]):
-        outputs.append(
-            ReviewBatchDraft(
-                batch_id=batch.batch_id,
-                # The first follow-up withdraws the cross-section reply's
-                # reading of S001, and returns no defect of its own — so the
-                # material defect that blocks acceptance has to be derived from
-                # the disposition itself.
-                statement_dispositions=(
-                    [{"statement_id": "S001", "disposition": "unsupported"}]
-                    if index == 0
-                    else []
-                ),
-                defects=[],
-                reviewed_statement_ids=[],
-                reviewed_evidence_ids=[item.evidence_id for item in batch.items],
-                problem="",
-            )
-        )
-    completer = ScriptedCompleter(outputs=outputs)
-
-    review = await review_report(completer, packet)
-
-    assert review.status == "scored"
-    assert review.per_statement_dispositions["S001"] == "unsupported"
-    assert review.derived_defect_statement_ids == ["S001"]
-    assert not semantic_review_passes(review)
-    assert review.unsettled_statement_ids == ["S001"]
+# --- the reviewer itself: fingerprints, reuse, records ----------------------
 
 
 @pytest.mark.asyncio
 async def test_a_reviewer_records_its_own_call_fingerprint() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    completer = ScriptedCompleter(outputs=[_draft_payload()])
-    reviewer = _reviewer(completer)
+    completer = ScriptedCompleter(outputs=[_draft()])
+    reviewer = ReportReviewer(provider=completer)
 
-    review = await reviewer.review(_packet(state))
+    review = await reviewer.review(packet())
 
     assert reviewer.name == REPORT_REVIEWER_ROLE
     assert reviewer.allowed_tools == ()
@@ -2048,14 +2027,10 @@ async def test_a_reviewer_records_its_own_call_fingerprint() -> None:
 
 @pytest.mark.asyncio
 async def test_a_reused_review_costs_no_provider_call() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    packet = _packet(state)
-    stored = await review_report(
-        ScriptedCompleter(outputs=[_draft_payload()]),
-        packet,
-    )
+    built = packet()
+    stored = await review_report(ScriptedCompleter(outputs=[_draft()]), built)
     completer = ScriptedCompleter(outputs=[])
-    reused = await _reviewer(completer).review(packet, previous=stored)
+    reused = await ReportReviewer(provider=completer).review(built, previous=stored)
 
     assert reused is stored
     assert completer.calls == []
@@ -2063,721 +2038,43 @@ async def test_a_reused_review_costs_no_provider_call() -> None:
 
 @pytest.mark.asyncio
 async def test_a_stored_review_of_other_content_is_not_reused() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    packet = _packet(state)
+    built = packet()
     stored = _scored_review(input_fingerprint="a-different-packet")
-    completer = ScriptedCompleter(outputs=[_draft_payload()])
+    completer = ScriptedCompleter(outputs=[_draft()])
 
-    review = await _reviewer(completer).review(packet, previous=stored)
+    review = await ReportReviewer(provider=completer).review(built, previous=stored)
 
     assert review is not stored
     assert review.status == "scored"
-    assert review.input_fingerprint == packet.fingerprint
+    assert review.input_fingerprint == built.fingerprint
     assert len(completer.calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_an_incomplete_stored_review_is_never_reused() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    packet = _packet(state)
+    built = packet()
     stored = _scored_review().model_copy(update={"status": "incomplete"})
-    completer = ScriptedCompleter(outputs=[_draft_payload()])
+    completer = ScriptedCompleter(outputs=[_draft()])
 
-    review = await _reviewer(completer).review(packet, previous=stored)
+    review = await ReportReviewer(provider=completer).review(built, previous=stored)
 
     assert review is not stored
     assert review.status == "scored"
 
 
-# --- the semantic dimensions the brief names --------------------------------
-
-
 @pytest.mark.asyncio
-async def test_a_fabricated_citation_is_a_material_defect() -> None:
-    state = _state(composition=_composition(), report="Break-even was reached.")
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                defects=[
-                    CritiqueGapDraft(
-                        target_ids=["t1"],
-                        statement_ids=["S001"],
-                        kind="missing_support",
-                        severity="critical",
-                        repair_action="adjudicate",
-                        problem="The cited passage does not contain this number.",
-                    )
-                ],
-                dispositions={"S001": "unsupported"},
-            )
-        ]
-    )
-    review = await review_report(completer, _packet(state))
-
-    assert review.status == "scored"
-    assert not semantic_review_passes(review)
-    assert [gap.kind for gap in review.material_defects] == ["missing_support"]
-
-
-@pytest.mark.asyncio
-async def test_an_unqualified_single_source_conclusion_is_a_defect() -> None:
-    state = _state(composition=_composition(), report="Every vendor has solved this.")
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                dimensions={**_scores(), "attribution": 0.5},
-                defects=[
-                    CritiqueGapDraft(
-                        target_ids=["t1"],
-                        statement_ids=["S001"],
-                        kind="source_quality",
-                        severity="major",
-                        repair_action="assess_source",
-                        problem=(
-                            "A single vendor's own statement is presented as a "
-                            "universal conclusion."
-                        ),
-                    )
-                ],
-                dispositions={"S001": "attributed"},
-            )
-        ]
-    )
-    review = await review_report(completer, _packet(state))
-
-    assert not semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_supported_attribution_passes_without_a_second_work() -> None:
-    """Section 2.1: an attributed primary fact is not failed for a lone work."""
-    attributed = (
-        _claim(
-            "The agency measured 3.2%.",
-            verdict="insufficient_evidence",
-            evidence_status="source_supported",
-        ),
-    )
-    strict = _composition(
-        claims=attributed,
-        statements=(
-            _statement("S001", "The agency measured 3.2%.", dimensions=("finding",)),
-        ),
-    )
-    strict_state = _state(composition=strict, report="The agency measured 3.2%.")
-    # The target declared ``independent_pair``, and attribution is not a pair.
-    assert compute_report_quality(strict_state, strict).answered_targets == 0
-
-    attributed_composition = _composition(
-        claims=attributed,
-        statements=(
-            _statement("S001", "The agency measured 3.2%.", dimensions=("finding",)),
-        ),
-        sub_topics=(_topic(support_policy="primary_attribution"),),
-    )
-    state = _state(
-        composition=attributed_composition, report="The agency measured 3.2%."
-    )
-    assert compute_report_quality(state, attributed_composition).answered_targets == 1
-
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                dimensions={**_scores(), "attribution": 1.0},
-                dispositions={"S001": "attributed"},
-            )
-        ]
-    )
-    review = await review_report(completer, _packet(state))
-    assert semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_an_incorrect_comparison_denominator_is_a_defect() -> None:
-    composition = _composition(answer_kind="comparison")
-    state = _state(composition=composition, report="A is twice B.")
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                dimensions={**_scores(), "evidence_quality": 0.6},
-                defects=[
-                    CritiqueGapDraft(
-                        target_ids=["t1"],
-                        statement_ids=["S001"],
-                        kind="missing_support",
-                        severity="major",
-                        repair_action="adjudicate",
-                        problem=(
-                            "The comparison divides a per-capita figure by a "
-                            "national total, so the ratio is meaningless."
-                        ),
-                    )
-                ],
-            )
-        ]
-    )
-    review = await review_report(completer, _packet(state))
-    assert not semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_an_invented_limitation_is_a_defect() -> None:
-    state = _state(
-        composition=_composition(),
-        report="No data was available for any region.",
-    )
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                dimensions={**_scores(), "uncertainty": 0.4},
-                defects=[
-                    CritiqueGapDraft(
-                        target_ids=["t1"],
-                        statement_ids=["S001"],
-                        kind="coverage",
-                        severity="major",
-                        repair_action="synthesize",
-                        problem=(
-                            "The report invents a data gap the evidence does "
-                            "not record."
-                        ),
-                    )
-                ],
-            )
-        ]
-    )
-    review = await review_report(completer, _packet(state))
-    assert not semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_a_late_contradiction_is_still_reviewed_and_refused() -> None:
-    late = "Break-even was later disputed."
-    report = f"{'Filler sentence. ' * 1_200}\n{late}"
-    state = _state(composition=_composition(), report=report)
-    packet = _packet(state)
-    assert late in _render(packet)
-
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                dimensions={**_scores(), "uncertainty": 0.3},
-                defects=[
-                    CritiqueGapDraft(
-                        target_ids=["t1"],
-                        statement_ids=["S001"],
-                        kind="contradiction",
-                        severity="major",
-                        repair_action="adjudicate",
-                        problem=(
-                            "The closing statement contradicts the opening "
-                            "claim and both are presented as settled."
-                        ),
-                    )
-                ],
-            )
-        ]
-    )
-    review = await review_report(completer, packet)
-    assert not semantic_review_passes(review)
-
-
-@pytest.mark.asyncio
-async def test_a_sentence_initial_unattested_place_name_is_reportable() -> None:
-    """Ruling 5's accepted residual: no offline rule can catch this one.
-
-    The review is the only mechanism that can, so the request must tell the
-    reviewer to check every name and place in a statement against the evidence
-    behind it with *no* sentence-position exemption, and the defect it reports
-    must block acceptance.
-
-    The rule is asserted as a rule, not as two words: the task review deleted
-    this whole sentence-position paragraph from the prompt and every test still
-    passed, because "sentence" and "place" also occur in the unrelated
-    ``returned_to_fact_checker`` guidance. The assertions below fail when the
-    capability is removed, which is what makes the residual above verifiable
-    rather than merely stated.
-    """
-    composition = _composition(
-        statements=(
-            _statement("S001", "California added capacity.", dimensions=("finding",)),
-        ),
-    )
-    state = _state(composition=composition, report="California added capacity.")
-    packet = _packet(state)
-    request = _render(packet)
-    assert "California added capacity." in request
-    lowered = request.casefold()
-    assert "sentence" in lowered
-    assert "place" in lowered
-    assert "including a name or place that opens a sentence" in request
-    assert "sentence position is not evidence" in request
-
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                dimensions={**_scores(), "attribution": 0.4},
-                defects=[
-                    CritiqueGapDraft(
-                        target_ids=["t1"],
-                        statement_ids=["S001"],
-                        kind="missing_support",
-                        severity="major",
-                        repair_action="adjudicate",
-                        problem=(
-                            "The place name in this statement appears in no "
-                            "cited passage."
-                        ),
-                    )
-                ],
-                dispositions={"S001": "returned_to_fact_checker"},
-            )
-        ]
-    )
-    review = await review_report(completer, packet)
-
-    assert not semantic_review_passes(review)
-    assert review.defects[0].statement_ids == ["S001"]
-
-
-def test_the_request_asks_for_an_evidenced_comparison_basis() -> None:
-    """Ruling 6: a ranking needs a real basis, not abundance or confidence.
-
-    Asserted over the ranking section — the part of the request that governs
-    the rows — rather than over the whole request. The review gutted this
-    section's rule paragraph and the test still passed, because the same three
-    words also occur in the system prompt's own wording; a check that a
-    sentence is present somewhere is not a check that the section carries it.
-    """
-    composition = _composition(answer_kind="constraints")
-    state = _state(composition=composition, report="A ranked list.")
-    request = _render(_packet(state))
-    ranking = request.split("# Ranking and comparison basis")[1].split("# Evidence")[0]
-    lowered = ranking.casefold()
-
-    assert "comparison basis" in lowered
-    assert "importance" in lowered
-    assert "abundance" in lowered
-    assert "no defensible universal order" in lowered
-
-
-@pytest.mark.asyncio
-async def test_a_ranking_without_a_comparison_basis_defects_prioritization() -> None:
-    composition = _composition(answer_kind="constraints")
-    state = _state(composition=composition, report="A ranked list.")
-    completer = ScriptedCompleter(
-        outputs=[
-            _draft_payload(
-                dimensions={**_scores(), "prioritization": 0.3},
-                defects=[
-                    CritiqueGapDraft(
-                        coverage_id="topic-01",
-                        target_ids=["t1"],
-                        kind="missing_support",
-                        severity="major",
-                        repair_action="acquire",
-                        problem=(
-                            "The ranking order is asserted without any "
-                            "evidenced comparison between the options."
-                        ),
-                        recommended_queries=["qec constraint comparison 2025"],
-                    )
-                ],
-            )
-        ]
-    )
-    review = await review_report(completer, _packet(state))
-
-    assert review.status == "scored"
-    assert not semantic_review_passes(review)
-    (defect,) = review.material_defects
-    assert defect.repair_action == "acquire"
-    assert defect.target_ids == ["t1"]
-
-
-def test_a_ranked_report_shows_the_reviewer_its_rows_and_their_evidence() -> None:
-    """Ruling 6's gate is only a gate if the ranked rows reach the reviewer.
-
-    A constraint row's statement records the dimensions the *recorded atom*
-    carries, and the words a constraints plan uses — "constraint", "ranking",
-    "priority" — match no atom signal, so a legitimately attested row carries no
-    answered dimension at all. A ranking section that selects rows by that field
-    therefore selects nothing on a real constraints report: it prints the basis
-    rule, then says no ranked row was recorded, and the prioritization judgement
-    has no order and no comparison to be made from. The rows come from the
-    composition's own ranked order, which is what the reader table prints.
-    """
-    from deep_research.agents.report import ReportComposition
-    from deep_research.utils.types import ReportConstraint
-
-    # Keyed by evidence id, valued with the stance it was selected under: the
-    # reverse orientation names no id in the registry and reads as no evidence.
-    claim = _claim("Interconnection queues dominate.", target_ids=("t1",)).model_copy(
-        update={"evidence_selection": {"e1": "supports"}}
-    )
-    composition = ReportComposition(
-        question=QUESTION,
-        session_id=SESSION_ID,
-        iteration=0,
-        max_iterations=3,
-        as_of="2026-08-01",
-        scope="Global",
-        sub_topics=[_topic(required_dimensions=("constraint", "comparison"))],
-        claims=[claim],
-        evidence_units={
-            "e1": _unit(
-                "e1", excerpt="Queue delays dominate interconnection in Britain."
-            )
-        },
-        answer_kind="constraints",
-        constraints=[
-            ReportConstraint(
-                text="Interconnection queues dominate.",
-                claim_ids=[claim.claim_id],
-                source_urls=[_URL],
-                deployment_mechanism="Capacity markets pay for availability.",
-                geography="Great Britain.",
-            )
-        ],
-    )
-    row_statement = composition.constraints[0].statement
-    assert row_statement is not None
-    # The derivation's own record, not one this test wrote: the recorded atom
-    # carries none of the dimensions the plan asked for.
-    assert row_statement.answered_dimensions == []
-    assert row_statement.evidence_ids == ["e1"]
-
-    state = _state(composition=composition, report="A ranked table.")
-    request = _render(_packet(state))
-    ranking = request.split("# Ranking and comparison basis")[1].split("# Evidence")[0]
-
-    assert "Interconnection queues dominate." in ranking
-    assert "Capacity markets pay for availability." in ranking
-    assert "Queue delays dominate interconnection in Britain." in ranking
-
-
-def test_the_composition_fingerprint_ignores_the_presentation_badge() -> None:
-    """A stamp the finalizer writes is not a content change."""
-    from deep_research.agents.report_reviewer import (
-        composition_semantic_fingerprint,
+async def test_a_reused_review_records_no_retry() -> None:
+    """Records describe the review just made, never the one it reused."""
+    built = packet()
+    completer = ScriptedCompleter(outputs=[_output_limit_error(), _draft()])
+    reviewer = ReportReviewer(
+        provider=completer,
+        config=AgentRuntimeConfig(report_review_max_tokens=4096),
     )
 
-    composition = _composition()
-    before = composition_semantic_fingerprint(composition)
+    first = await reviewer.review(built)
+    second = await reviewer.review(built, previous=first)
 
-    assert before
-    assert (
-        composition_semantic_fingerprint(
-            composition.model_copy(update={"quality_status": "accepted"})
-        )
-        == before
-    )
-
-
-def test_the_composition_fingerprint_moves_with_content_and_references() -> None:
-    from deep_research.agents.report_reviewer import (
-        composition_semantic_fingerprint,
-    )
-
-    composition = _composition()
-    before = composition_semantic_fingerprint(composition)
-
-    reworded = composition.model_copy(
-        update={
-            "summary": [
-                ReportPoint(
-                    text="Break-even was never reached.",
-                    claim_ids=list(composition.summary[0].claim_ids),
-                    source_urls=[_URL],
-                    statement=composition.summary[0].statement,
-                )
-            ]
-        }
-    )
-    assert composition_semantic_fingerprint(reworded) != before
-
-    re_excerpted = composition.model_copy(
-        update={"evidence_units": {"e1": _unit("e1", excerpt="Other text.")}}
-    )
-    assert composition_semantic_fingerprint(re_excerpted) != before
-
-    re_targeted = composition.model_copy(update={"sub_topics": []})
-    assert composition_semantic_fingerprint(re_targeted) != before
-
-
-def test_replacing_the_composition_invalidates_a_mismatched_review() -> None:
-    """The state rule: a judgement belongs to the report it judged."""
-    from deep_research.agents.report_reviewer import (
-        composition_semantic_fingerprint,
-    )
-    from deep_research.utils.types import merge_research_state
-
-    composition = _composition()
-    stored = _scored_review(
-        composition_fingerprint=composition_semantic_fingerprint(composition)
-    )
-    state = _state(
-        composition=composition,
-        report="Break-even was reached.",
-        report_review=stored,
-    )
-
-    # The same content, re-stamped: the review survives.
-    restamped = composition.model_copy(update={"quality_status": "accepted"})
-    kept = merge_research_state(state, {"composition": restamped})
-    assert kept.report_review is not None
-    assert kept.report_review.input_fingerprint == "packet-1"
-
-    # Different content: the review is gone, and gone is never "passed".
-    changed = composition.model_copy(update={"sub_topics": []})
-    dropped = merge_research_state(state, {"composition": changed})
-    assert dropped.report_review is None
-
-
-def test_the_composition_fingerprint_covers_cells_as_statements() -> None:
-    """Table cells are reader-visible content and part of the identity.
-
-    A constraint row renders a deployment-mechanism cell and a geography cell,
-    and an answer row renders its own cells. They are ``ReportStatement``
-    records rather than points, so a projection that treated them as points
-    raised ``AttributeError: 'ReportStatement' object has no attribute
-    'claim_ids'`` — which is what the CLI acceptance tests hit before this test
-    existed, on a composition that had constraints and answer rows.
-    """
-    from deep_research.agents.report_reviewer import (
-        composition_semantic_fingerprint,
-    )
-    from deep_research.utils.types import ReportAnswerRow, ReportConstraint
-
-    composition = _composition(answer_kind="constraints")
-    mechanism = _statement("C001", "A capacity market pays for availability.")
-    geography = _statement("C002", "The scheme covers Great Britain.")
-    row = ReportConstraint(
-        text="Interconnection queue delays dominate.",
-        claim_ids=list(composition.summary[0].claim_ids),
-        source_urls=[_URL],
-        statement=composition.summary[0].statement,
-        deployment_mechanism=mechanism.text,
-        geography=geography.text,
-        mechanism_statement=mechanism,
-        geography_statement=geography,
-    )
-    with_rows = composition.model_copy(
-        update={
-            "constraints": [row],
-            "answer_rows": [ReportAnswerRow(cells=[geography, mechanism])],
-        }
-    )
-
-    before = composition_semantic_fingerprint(with_rows)
-    assert before
-
-    # A cell's text is content: changing it changes the identity.
-    reworded_cell = with_rows.model_copy(
-        update={
-            "constraints": [
-                row.model_copy(
-                    update={
-                        "geography_statement": geography.model_copy(
-                            update={"text": "The scheme covers Ireland."}
-                        )
-                    }
-                )
-            ]
-        }
-    )
-    assert composition_semantic_fingerprint(reworded_cell) != before
-
-    # ...and so is the row's own point content.
-    reworded_row = with_rows.model_copy(
-        update={
-            "constraints": [
-                row.model_copy(update={"text": "Something else dominates."})
-            ]
-        }
-    )
-    assert composition_semantic_fingerprint(reworded_row) != before
-
-
-def test_the_composition_fingerprint_covers_section_points() -> None:
-    """A themed findings bullet is reader-visible content, like the summary.
-
-    ``composition.sections`` renders as the report's themed bullet groups, so
-    its points are content a reader receives. The projection that added table
-    cells as statements dropped these points on the way past: a section bullet
-    is a ``ReportPoint``, not a cell statement, so it must stay in the points
-    projection rather than disappearing from the identity altogether.
-    """
-    from deep_research.agents.report_reviewer import (
-        composition_semantic_fingerprint,
-    )
-    from deep_research.utils.types import ReportSection
-
-    composition = _composition()
-    section = ReportSection(
-        title="Error correction",
-        points=[
-            ReportPoint(
-                text=composition.summary[0].text,
-                claim_ids=list(composition.summary[0].claim_ids),
-                source_urls=[_URL],
-                statement=composition.summary[0].statement,
-            )
-        ],
-    )
-    with_sections = composition.model_copy(update={"sections": [section]})
-    before = composition_semantic_fingerprint(with_sections)
-    assert before
-
-    reworded = with_sections.model_copy(
-        update={
-            "sections": [
-                ReportSection(
-                    title="Error correction",
-                    points=[
-                        ReportPoint(
-                            text="Break-even was never reached.",
-                            claim_ids=list(composition.summary[0].claim_ids),
-                            source_urls=[_URL],
-                            statement=composition.summary[0].statement,
-                        )
-                    ],
-                )
-            ]
-        }
-    )
-    assert composition_semantic_fingerprint(reworded) != before
-
-
-def _assessed_source(**overrides: object) -> ScoredSource:
-    fields: dict[str, object] = {
-        "url": _URL,
-        "title": "QEC 2025",
-        "authority_score": 0.9,
-        "recency_score": 0.8,
-        "relevance_score": 0.9,
-        "overall_score": 0.88,
-        "rationale": "The laboratory's own dated report.",
-        "serving_host": "example.test",
-        "publisher_id": "example lab",
-        "work_id": "doi:10.1234/qec",
-        "transport_relation": "original",
-        "source_role": "original_report",
-        "self_interest": "none",
-        "temporal": SourceTemporal(publication_date="2025-06-01", status="current"),
-        "assessment_revision": "assess-one",
-    }
-    fields.update(overrides)
-    return ScoredSource(**fields)  # type: ignore[arg-type]
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("source_role", "derivative"),
-        ("self_interest", "evidenced"),
-        ("transport_relation", "mirror"),
-        (
-            "temporal",
-            SourceTemporal(publication_date="2025-06-01", status="superseded"),
-        ),
-        ("assessment_revision", "assess-two"),
-    ],
-)
-def test_a_source_fitness_change_invalidates_both_review_fingerprints(
-    field: str, value: object
-) -> None:
-    """What a reviewer judges independence by must key the stored judgement.
-
-    A source re-labelled from an original report to a derivative one changes
-    what the report's citations are worth, so neither the composition's
-    semantic fingerprint nor the review packet's may survive it — or
-    ``_review_report`` would reuse a judgement of evidence that no longer
-    exists. The presentation badge is the control: it still moves neither.
-    """
-    from deep_research.agents.report_reviewer import (
-        composition_semantic_fingerprint,
-    )
-
-    source = _assessed_source()
-    changed = _assessed_source(**{field: value})
-    composition = _composition().model_copy(update={"sources": [source]})
-    recomposed = composition.model_copy(update={"sources": [changed]})
-    restamped = composition.model_copy(update={"quality_status": "accepted"})
-
-    assert composition_semantic_fingerprint(recomposed) != (
-        composition_semantic_fingerprint(composition)
-    ), field
-    assert composition_semantic_fingerprint(restamped) == (
-        composition_semantic_fingerprint(composition)
-    )
-
-    # The packet reads the state's canonical snapshot. The composition is held
-    # fixed here, so only the packet's own view of the source can move it.
-    def fingerprint(snapshot: ScoredSource, shown: ReportComposition) -> str:
-        return _packet(
-            _state(
-                composition=shown,
-                report="Break-even was reached.",
-                evaluated_sources=[snapshot],
-            )
-        ).fingerprint
-
-    assert fingerprint(changed, composition) != fingerprint(source, composition), (
-        field
-    )
-    assert fingerprint(source, restamped) == fingerprint(source, composition)
-
-
-def test_a_contradicted_claim_reads_as_contested_in_the_review_packet() -> None:
-    """The reviewer sees the label the reader sees, not the raw badge.
-
-    The badge is stamped before adjudication finishes, so a contradicted claim
-    can still carry ``verified_pair``. The packet labelled both the claim row
-    and the evidence batch from that raw badge, showing the reviewer
-    "independently corroborated" for a claim the reader report — and the
-    quality counts — call contested.
-    """
-    from deep_research.utils.types import EVIDENCE_BADGE_LABELS
-
-    contradicted = _claim(
-        "Break-even was reached.",
-        verdict="contradicted",
-        evidence_status="verified_pair",
-    )
-    composition = _composition(claims=(contradicted,))
-    packet = _packet(
-        _state(composition=composition, report="Break-even was reached.")
-    )
-    labels = {
-        item.badge_label
-        for batch in packet.evidence_batches
-        for item in batch.items
-    }
-
-    assert packet.claims[0].badge_label == EVIDENCE_BADGE_LABELS["contested"]
-    assert labels == {EVIDENCE_BADGE_LABELS["contested"]}
-
-
-def test_a_quality_snapshot_keeps_the_review_apart_from_its_diagnostics() -> None:
-    snapshot = ReportQualitySnapshot(
-        coverage_ratio=1.0,
-        planned_topics=1,
-        covered_topics=1,
-        unique_findings=1,
-        unique_sources=1,
-        cited_sources=1,
-        scored_cited_source_ratio=1.0,
-        verified_claims=1,
-        contradicted_claims=0,
-        duplicate_claims=0,
-        duplicate_source_rows=0,
-        uncited_settled_points=0,
-        hard_failures=[],
-        semantic_review_status="incomplete",
-        semantic_review_score=None,
-    )
-    assert snapshot.hard_failures == []
-    assert snapshot.semantic_review_status == "incomplete"
-    assert snapshot.semantic_review_score is None
-    assert _URL_B  # a second address, so no fixture accidentally reuses one
+    assert second is first
+    assert len(completer.calls) == 2
+    assert reviewer.review_records == ()
