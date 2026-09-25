@@ -55,6 +55,22 @@ STRUCTURED_EXAMPLE_NOTICE = (
     "facts, URLs, or wording into the real answer."
 )
 
+# D10 (PD-29): the last line of every tool-free pipeline request. The static
+# sections (the contract and the reply format) lead, so every call of one
+# operation shares them as a prefix DeepSeek's context cache can reuse; the
+# per-call material follows. The line avoids "JSON object", which
+# STRUCTURED_REPLY_FORMAT alone carries.
+STRUCTURED_REQUEST_END = "Return the reply for the material above."
+
+
+def render_structured_request(
+    static_sections: Sequence[str], material_sections: Sequence[str]
+) -> str:
+    """One request body: the static sections, the material, the closing line."""
+    if not static_sections or not material_sections:
+        raise ValueError("a structured request needs static sections and material")
+    return "\n\n".join([*static_sections, *material_sections, STRUCTURED_REQUEST_END])
+
 
 def render_structured_reply_format(
     examples: Sequence[tuple[str, str]],

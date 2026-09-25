@@ -817,16 +817,14 @@ class EvidenceTarget(ContractModel):
     Carries no support policy (PD-16): step 4 removes the pair and
     support-policy fields along with the Fact Checker, so an obligation is
     answered on the answer-side facts alone — the statement names the target,
-    asserts something, and fills every dimension the target declared.
+    asserts something, and fills the fields the target declares.
     """
 
     target_id: str = Field(min_length=1)
     coverage_id: str = Field(min_length=1)
     question: str = Field(min_length=1)
-    required_dimensions: list[str] = Field(min_length=1)
     required: bool
-    critical: bool
-    measure: str | None = None
+    measure: str = Field(min_length=1)
     """The obligation's measured quantity, as the plan states it ("battery storage power capacity added")."""
     unit_dimension: UnitDimension | None = None
     """The figure's physical dimension, or ``None`` for a qualitative target."""

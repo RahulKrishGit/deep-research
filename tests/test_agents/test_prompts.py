@@ -10,11 +10,13 @@ from deep_research.agents.prompts import (
     SOURCE_SCORING_INSTRUCTION,
     STRUCTURED_EXAMPLE_NOTICE,
     STRUCTURED_REPLY_FORMAT,
+    STRUCTURED_REQUEST_END,
     AgentTask,
     render_react_messages,
     render_scratchpad,
     render_source_dossier,
     render_structured_reply_format,
+    render_structured_request,
 )
 from deep_research.agents.sources import SourceGroup
 from deep_research.memory.entries import ScratchpadEntry
@@ -436,3 +438,22 @@ def test_render_structured_reply_format_accepts_two_examples() -> None:
 def test_render_structured_reply_format_fails_closed(examples) -> None:
     with pytest.raises(ValueError):
         render_structured_reply_format(examples)
+
+
+def test_a_structured_request_puts_its_static_sections_first() -> None:
+    body = render_structured_request(
+        ["# Rules\nOne rule.", "# Reply format\nThe format."],
+        ["# Material\nThe material."],
+    )
+
+    assert body == (
+        "# Rules\nOne rule.\n\n# Reply format\nThe format.\n\n"
+        "# Material\nThe material.\n\n" + STRUCTURED_REQUEST_END
+    )
+
+
+def test_a_structured_request_needs_static_sections_and_material() -> None:
+    with pytest.raises(ValueError):
+        render_structured_request([], ["# Material\nThe material."])
+    with pytest.raises(ValueError):
+        render_structured_request(["# Rules\nOne rule."], [])
