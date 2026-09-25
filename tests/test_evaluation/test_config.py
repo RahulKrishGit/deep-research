@@ -739,13 +739,16 @@ from deep_research.utils.config import (
 # ``report.py`` beside ``figure_label``, so the Report Writer's module source
 # moved ``5ed194fd4a41`` -> ``6dbc0f346565``. No prompt string in the writer was
 # edited (the reviewer's own prompt, which is not a pinned target, was), and the
-# other four pins are unchanged.
+# other four pins are unchanged. The controller's final follow-up then reworded
+# that module's ``_WRITER_ATTEMPT_EFFORTS`` comment (the last "synthesizer"
+# mention in it), a comment-only edit that moves the same value again,
+# ``6dbc0f346565`` -> ``69b86b8b87a2``; the four other pins stay put.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "46a9cddd0896",
     "researcher": "f9ad12ff184b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "21c413e91f94",
-    "report_writer": "6dbc0f346565",
+    "report_writer": "69b86b8b87a2",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and
