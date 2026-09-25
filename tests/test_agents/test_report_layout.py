@@ -167,6 +167,22 @@ def test_the_header_never_claims_more_than_the_not_found_list_proves() -> None:
     assert "every question is answered." not in header
 
 
+def test_the_header_counts_quoted_findings_apart_from_checked() -> None:
+    """D21: a quoted finding's context was never checked (it has no figure
+    for the Context Check to judge), so the header must not fold it into
+    "findings checked against their pages"."""
+    quoted = make_finding(
+        make_read(), "Generators added 10.4 gigawatts", target_ids=[]
+    ).model_copy(update={"verification": FindingVerification(status="quoted")})
+    composition = _plain_composition(findings=[*_composition().findings, quoted])
+
+    header = render_written_report(composition).splitlines()[2]
+
+    assert "2 findings checked against their pages" in header
+    assert "1 quoted (snippet found on the page; context not checked)" in header
+
+
+
 def test_a_not_found_entry_states_the_search_without_dumping_it() -> None:
     """Each entry is the planned question and how the search went, not its log (ev-1 audit A6).
 

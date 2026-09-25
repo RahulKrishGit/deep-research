@@ -314,6 +314,7 @@ class EvidenceCounts:
     cited_assessed_sources: int = 0
     verified_findings: int = 0
     corrected_findings: int = 0
+    quoted_findings: int = 0
     dropped_findings: int = 0
     context_unchecked_findings: int = 0
     cited_findings: int = 0
@@ -540,6 +541,7 @@ class ResearchOutcome:
             cited_assessed_sources=retention["cited_assessed_sources"],
             verified_findings=quality.verified_findings,
             corrected_findings=quality.corrected_findings,
+            quoted_findings=quality.quoted_findings,
             dropped_findings=quality.dropped_findings,
             context_unchecked_findings=quality.context_unchecked_findings,
             cited_findings=quality.cited_findings,

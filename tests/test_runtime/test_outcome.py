@@ -261,6 +261,7 @@ def counted_state(**overrides: object) -> ResearchState:
     snapshot = quality_snapshot(
         verified_findings=3,
         corrected_findings=1,
+        quoted_findings=5,
         dropped_findings=2,
         context_unchecked_findings=4,
         cited_findings=2,
@@ -1119,10 +1120,11 @@ def test_the_evidence_counts_carry_the_verified_finding_readings() -> None:
     assert (
         counts.verified_findings,
         counts.corrected_findings,
+        counts.quoted_findings,
         counts.dropped_findings,
         counts.context_unchecked_findings,
         counts.cited_findings,
-    ) == (3, 1, 2, 4, 2)
+    ) == (3, 1, 5, 2, 4, 2)
 
 
 def test_the_evidence_counts_carry_the_reads_and_the_citations() -> None:

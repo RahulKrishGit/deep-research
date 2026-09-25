@@ -862,6 +862,7 @@ def _evidence_lines(outcome: ResearchOutcome) -> list[str]:
         f"Findings: {kept} checked "
         f"({counts.corrected_findings} with corrected context, "
         f"{counts.context_unchecked_findings} unchecked context), "
+        f"{counts.quoted_findings} quoted (snippet on the page only), "
         f"{counts.dropped_findings} dropped; {counts.cited_findings} cited",
         f"Integrity: {quality.duplicate_fact_rows} duplicate fact rows; "
         f"{quality.uncited_settled_points} uncited statements; "

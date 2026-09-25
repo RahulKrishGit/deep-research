@@ -105,6 +105,7 @@ class EvidenceCountsResponse(ApiModel):
     cited_assessed_sources: int = Field(ge=0)
     verified_findings: int = Field(ge=0)
     corrected_findings: int = Field(ge=0)
+    quoted_findings: int = Field(ge=0)
     dropped_findings: int = Field(ge=0)
     context_unchecked_findings: int = Field(ge=0)
     cited_findings: int = Field(ge=0)
