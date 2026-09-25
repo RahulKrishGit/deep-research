@@ -60,10 +60,12 @@ def _composition():
     rows = [
         FactRow(row_id="K001", organisation="U.S. Energy Information Administration", attribution="own",
                 measure="battery storage power capacity added", period="2024", value="10.4 GW", kind="actual",
-                release="released 2025-03-12", finding_id=eia_id),
+                release="released 2025-03-12", finding_id=eia_id,
+                target_ids=["topic-01-target-01"]),
         FactRow(row_id="K002", organisation="U.S. Energy Information Administration", attribution="relayed",
                 relay_host="ent.news", measure="battery storage power capacity added", period="2025",
-                value="14 GW", kind="forecast", release="January 2025 STEO", finding_id=steo_id),
+                value="14 GW", kind="forecast", release="January 2025 STEO", finding_id=steo_id,
+                target_ids=["topic-02-target-01"]),
     ]
     def point(n, text, finding):
         return ReportPoint(text=text, source_urls=[finding.source_url],
@@ -102,8 +104,110 @@ def test_the_report_has_the_spec_shape_in_order() -> None:
     assert "U.S. Energy Information Administration (relayed by ent.news)" in report
     assert "U.S. Energy Information Administration's own figure; actual; released 2025-03-12" in report
     assert "relayed by ent.news from U.S. Energy Information Administration; forecast (January 2025 STEO)" in report
-    assert '"BloombergNEF 2025 US storage forecast"' in report and "Pages read: 1" in report
+    assert "No checked finding answers it: 1 search made, 1 page read." in report
     assert not VERDICT_WORDS.search(report)
+
+
+def _plain_composition(**overrides: object) -> ReportComposition:
+    """The fixture without its plan vocabulary or its Not found trail."""
+    return _composition().model_copy(update=overrides)
+
+
+def test_the_header_names_the_plan_without_its_identifiers() -> None:
+    """The scope lists the planned questions' titles, not the plan's own ids (ev-1 audit A6).
+
+    The reader met "3 planned sub-topic(s), in priority order: topic-01 …", which
+    is the plan's bookkeeping rather than the scope the report assumes.
+    """
+    topics = [SubTopic(coverage_id="topic-01", title="Measured sound-quality scores",
+                       rationale="r", search_queries=["q"], success_criteria=["c"],
+                       priority=1, evidence_targets=[make_target()]),
+              SubTopic(coverage_id="topic-02", title="Microphone recording quality",
+                       rationale="r", search_queries=["q"], success_criteria=["c"],
+                       priority=2, evidence_targets=[make_target("topic-02-target-01")])]
+    report = render_written_report(_plain_composition(scope=report_scope(topics)))
+
+    header = report.splitlines()[2]
+    assert "Measured sound-quality scores" in header and "Microphone recording quality" in header
+    assert "topic-01" not in header and "topic-02" not in header
+    assert "planned sub-topic" not in header and "required target" not in header
+
+
+def test_the_header_counts_unanswered_planned_questions_and_points_to_not_found() -> None:
+    """A reader is told how many planned questions are open and where they are listed."""
+    unanswered = _plain_composition(
+        not_found=[NotFoundTarget(target_id="topic-01-target-01", question="Which one ranks first?"),
+                   NotFoundTarget(target_id="topic-02-target-01", question="What does the lab measure?")],
+    )
+    assert ("2 planned questions unanswered, listed under Not found."
+            in render_written_report(unanswered).splitlines()[2])
+
+    one = _plain_composition(
+        not_found=[NotFoundTarget(target_id="topic-01-target-01", question="Which one ranks first?")],
+    )
+    assert ("1 planned question unanswered, listed under Not found."
+            in render_written_report(one).splitlines()[2])
+
+    answered = _plain_composition(not_found=[])
+    assert "every planned question is answered." in render_written_report(answered).splitlines()[2]
+
+
+def test_a_not_found_entry_states_the_search_without_dumping_it() -> None:
+    """Each entry is the planned question and how the search went, not its log (ev-1 audit A6).
+
+    The ev-1 report's entries were 730-803-character lines inlining every query
+    string and every page URL, off-topic hosts included.
+    """
+    searched = render_written_report(_plain_composition())
+    assert "No checked finding answers it: 1 search made, 1 page read." in searched
+    assert "BloombergNEF 2025 US storage forecast" not in searched
+    assert "about.bnef.com" not in searched
+    assert "recorded in full in the evidence log" in searched
+
+    unsearched = _plain_composition(
+        not_found=[NotFoundTarget(target_id="topic-03-target-01", question="What does the lab project?")],
+    )
+    assert "No checked finding answers it: not searched in this run." in render_written_report(unsearched)
+
+
+def test_the_evidence_log_keeps_the_search_trail_the_reader_no_longer_carries() -> None:
+    """What the reader report drops, the ledger keeps: every query and every page read."""
+    log = render_finding_log(_composition())
+
+    assert "BloombergNEF 2025 US storage forecast" in log
+    assert "https://about.bnef.com/x" in log
+    assert "What does BloombergNEF project for 2025?" in log
+
+
+def test_a_key_facts_row_that_answers_no_planned_target_is_not_printed() -> None:
+    """The table carries the question's facts, not every figure the run verified (ev-1 audit A6).
+
+    The ev-1 table's five rows were four copies of a site-wide page counter that
+    answers no planned question. A figure that answers nothing stays citable in
+    prose and stays in the evidence log.
+    """
+    base = _composition()
+    answering, unplanned = base.fact_rows
+    assert answering.target_ids  # the fixture's rows answer their planned targets
+
+    only_unplanned = _plain_composition(
+        fact_rows=[unplanned.model_copy(update={"target_ids": []})],
+    )
+    report = render_written_report(only_unplanned)
+    assert "## Key facts" not in report
+    assert f"| {unplanned.value} |" not in report  # a cell, so never the summary's prose
+
+    both = render_written_report(base.model_copy(update={
+        "fact_rows": [answering, unplanned.model_copy(update={"target_ids": []})]}))
+    assert f"| {answering.value} |" in both and f"| {unplanned.value} |" not in both
+
+
+def test_a_pass_with_no_verified_figure_still_says_so() -> None:
+    """Nothing verified is a fact about the pass, not a row that answers nothing."""
+    report = render_written_report(_plain_composition(fact_rows=[]))
+
+    assert "## Key facts" in report
+    assert "No figure passed the Evidence Verifier." in report
 
 
 def test_sources_are_only_the_cited_ones_in_first_use_order() -> None:
@@ -454,6 +558,7 @@ def test_an_earlier_editions_value_cites_its_own_page() -> None:
         fact_rows=[FactRow(row_id="K001", organisation="Example Agency", attribution="own",
                            measure="capacity", period="2026", value="19.6 GW", kind="forecast",
                            release="released 2025-06-14", finding_id=finding_fingerprint(latest),
+                           target_ids=["topic-01-target-01"],
                            earlier=[EarlierEdition(value="18.2 GW", release="released 2025-01-14",
                                                    finding_id=finding_fingerprint(earlier))])],
     )
