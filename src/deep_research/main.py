@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import Any, TypeAlias
 from uuid import uuid4
 
@@ -26,7 +27,11 @@ from deep_research.graph.orchestrator import (
     resume_research_graph,
     run_research_graph,
 )
-from deep_research.request_budget import RequestBudgetObserver
+from deep_research.observability import RunTelemetryCollector
+from deep_research.request_budget import (
+    RequestBudgetObserver,
+    RequestBudgetUpdate,
+)
 from deep_research.runtime.assembly import ResearchRuntime, build_runtime
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome, build_outcome
@@ -118,6 +123,37 @@ def prepare_research_settings(
     return settings
 
 
+def _budget_observer(
+    collector: RunTelemetryCollector | None,
+    handler: RequestBudgetObserver | None,
+) -> RequestBudgetObserver | None:
+    """The one callable the run's budget notifies, out of up to two parties.
+
+    ``RequestBudget.set_observer`` holds a single callable, and two want it:
+    the run's §7.3 collector, which the assembly built and handed to the
+    providers, and the caller's own observer — the CLI's stream, the API's
+    recorder. Giving the slot to either alone would silence the other, and
+    the collector's figures describe the run rather than the observer, so
+    both are notified for every update: the collector first, because its
+    reading is the run's own record, and then the caller's handler.
+
+    Neither present is ``None``, and no observer is installed: the budget
+    then behaves exactly as it did before either existed. A run whose
+    collector is ``None`` (an injected stand-in, a harness) is not a
+    different case — the handler alone is installed, as it always was.
+    """
+    if collector is None:
+        return handler
+    if handler is None:
+        return collector.observe_budget
+
+    def observe(update: RequestBudgetUpdate) -> None:
+        collector.observe_budget(update)
+        handler(update)
+
+    return observe
+
+
 async def run_research(
     question: str | None = None,
     *,
@@ -154,6 +190,10 @@ async def run_research(
     outlive one run (a resume reuses the runtime that made the checkpoint),
     and a stale observer would attribute a later run's attempts to this
     caller. The terminal snapshots reach the outcome either way.
+    The slot is shared with the run's §7.3 collector, which the assembly
+    built: the collector is notified first and this handler after it for
+    every update, so neither the caller's stream nor the run's telemetry
+    goes blind (see ``_budget_observer``).
     That guarantee holds today only because ``build_checkpointer`` returns an
     in-memory saver; a rebuilt agent's own audit-sequence counters are now
     seeded from the restored state's manifests too, so a durable checkpointer
@@ -220,10 +260,14 @@ async def run_research(
     # ceilings enforced while the summary reported no budget section at all,
     # which is exactly the "the summary matches the run" property this
     # reporting exists to guarantee. Failing loudly is the honest failure.
+    # ``run_telemetry`` is read the same way for the same reason: it is
+    # optional by *value* — a stand-in runtime that carries ``None`` gets no
+    # collector installed — but not by *name*, so a runtime that dropped it
+    # would fail here rather than run unmeasured.
     budget = runtime.request_budget
-    observing = request_budget_handler is not None
-    if observing:
-        budget.set_observer(request_budget_handler)
+    observer = _budget_observer(runtime.run_telemetry, request_budget_handler)
+    if observer is not None:
+        budget.set_observer(observer)
     try:
         if resume_session_id is not None:
             try:
@@ -272,8 +316,24 @@ async def run_research(
             )
         snapshots = budget.snapshots()
     finally:
-        if observing:
+        if observer is not None:
             budget.set_observer(None)
+
+    # The terminal finalizer takes the collector's reading for a run that
+    # reaches publication, and stamps it into the state it publishes from. A
+    # halted run reaches none of that -- the finalizer is skipped, and a halted
+    # run publishes nothing -- so without this the run that hit repeated 429s
+    # or spent its attempt budget, which is precisely the run the rate-limit
+    # advice is about, would report no telemetry at all. The same snapshot is
+    # therefore taken here for the outcome, and taken only when the finalizer
+    # did not already take it: one reading per run, never two.
+    if run.state.run_telemetry is None and runtime.run_telemetry is not None:
+        run = replace(
+            run,
+            state=run.state.model_copy(
+                update={"run_telemetry": runtime.run_telemetry.snapshot()}
+            ),
+        )
 
     return build_outcome(
         run,

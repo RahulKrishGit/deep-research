@@ -36,7 +36,11 @@ from deep_research.graph.state import (
     load_state,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import LangSmithRuntimeConfig, Tracker
+from deep_research.observability import (
+    LangSmithRuntimeConfig,
+    RunTelemetryCollector,
+    Tracker,
+)
 from deep_research.providers import ProviderConfigurationError
 from deep_research.request_budget import (
     ProviderCategory,
@@ -899,6 +903,53 @@ async def test_the_finalizer_stamps_the_verdict_into_the_published_composition(
     record = json.loads(publisher.document_named("-quality.json")[1])
     assert record["quality_status"] == QUALITY_STATUS_ACCEPTED
     assert final.report == publisher.document_named("report-session-1-0.md")[1]
+
+
+@pytest.mark.asyncio
+async def test_the_finalizer_stamps_the_run_telemetry_the_record_renders(
+) -> None:
+    """The run's collector is read at publication and stamped into state first.
+
+    The quality record describes a run, and the collector is that run's: the
+    node that renders the record is the one place the reading is taken, so the
+    published JSON and the state cannot disagree about it. A stamp taken after
+    the render would publish one reading and store another.
+    """
+    collector = RunTelemetryCollector()
+    collector.record_call(
+        agent="report_writer",
+        operation="structured_output",
+        seconds=3.0,
+        output_tokens=900,
+        configured_cap=1_000,
+        truncated=True,
+    )
+    publisher = FakePublisher()
+
+    final = load_state(
+        await finalize_report_node(publisher, run_telemetry=collector)(
+            dump_state(_finalized_state())
+        )
+    )
+
+    assert final.run_telemetry == collector.snapshot()
+    record = json.loads(publisher.document_named("-quality.json")[1])
+    assert record["telemetry"] == collector.snapshot().model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_a_finalizer_without_a_collector_stamps_no_telemetry() -> None:
+    """No collector is no measurement: the state and the record both carry
+    ``None`` rather than an empty snapshot, which would read as a run whose
+    providers never called anything."""
+    publisher = FakePublisher()
+
+    final = load_state(
+        await finalize_report_node(publisher)(dump_state(_finalized_state()))
+    )
+
+    assert final.run_telemetry is None
+    assert json.loads(publisher.document_named("-quality.json")[1])["telemetry"] is None
 
 
 @pytest.mark.asyncio

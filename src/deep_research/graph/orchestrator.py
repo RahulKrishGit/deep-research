@@ -72,7 +72,7 @@ from deep_research.graph.state import (
     initial_graph_state,
     load_state,
 )
-from deep_research.observability import Tracker
+from deep_research.observability import RunTelemetryCollector, Tracker
 from deep_research.utils.types import (
     MemorySnapshot,
     ResearchEvent,
@@ -136,8 +136,18 @@ def terminal_publisher(agents: ResearchAgents) -> ReportPublisher | None:
     return None
 
 
-def build_research_graph(agents: ResearchAgents) -> StateGraph:
-    """Assemble the uncompiled research graph."""
+def build_research_graph(
+    agents: ResearchAgents,
+    *,
+    run_telemetry: RunTelemetryCollector | None = None,
+) -> StateGraph:
+    """Assemble the uncompiled research graph.
+
+    ``run_telemetry`` is the run's §7.3 collector, handed to the terminal
+    finalizer — the one node that renders the quality record — so the figures
+    published beside the report are the whole run's rather than one pass's.
+    ``None`` builds the graph exactly as it was built before there was one.
+    """
     builder = StateGraph(ResearchGraphState)
     builder.add_node(PLANNER_NODE, agent_node(agents.planner, node_name=PLANNER_NODE))
     builder.add_node(
@@ -161,7 +171,10 @@ def build_research_graph(agents: ResearchAgents) -> StateGraph:
     )
     builder.add_node(EXTRA_PASS_NODE, extra_pass_node)
     builder.add_node(
-        FINALIZE_NODE, finalize_report_node(terminal_publisher(agents))
+        FINALIZE_NODE,
+        finalize_report_node(
+            terminal_publisher(agents), run_telemetry=run_telemetry
+        ),
     )
 
     builder.add_edge(START, PLANNER_NODE)
@@ -194,13 +207,19 @@ def compile_research_graph(
     agents: ResearchAgents,
     *,
     checkpointer: Any | None = None,
+    run_telemetry: RunTelemetryCollector | None = None,
 ) -> Any:
     """Compile the research graph, optionally with a checkpointer.
 
     The checkpointer is injected rather than chosen here so a durable saver
-    can replace the in-memory one without touching a node.
+    can replace the in-memory one without touching a node. ``run_telemetry``
+    is threaded to the terminal finalizer for the same reason the budget is
+    threaded to the providers: one collector per run, and the run's figures
+    are reported by the node that publishes what they describe.
     """
-    return build_research_graph(agents).compile(checkpointer=checkpointer)
+    return build_research_graph(agents, run_telemetry=run_telemetry).compile(
+        checkpointer=checkpointer
+    )
 
 
 def build_checkpointer(*, enabled: bool) -> Any | None:

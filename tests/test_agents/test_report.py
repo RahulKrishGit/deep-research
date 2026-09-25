@@ -57,7 +57,12 @@ from deep_research.agents.report_writer import (
     compose_written_report,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import LangSmithRuntimeConfig, Tracker
+from deep_research.observability import (
+    LangSmithRuntimeConfig,
+    RunTelemetryCollector,
+    Tracker,
+)
+from deep_research.request_budget import RequestBudget
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     LEGACY_QUALITY_CONTRACT_VERSION,
@@ -74,6 +79,7 @@ from deep_research.utils.types import (
     ReportStatement,
     ResearchError,
     ResearchState,
+    RunTelemetry,
     ReviewDefect,
     ScoredSource,
     SubTopic,
@@ -1060,3 +1066,59 @@ def test_the_quality_record_publishes_the_review_the_reviewer_recorded() -> None
         "dispositions": {"S001": "supported"},
         "missing_required_target_ids": ["topic-09-target-01"],
     }
+
+
+# --- the run's telemetry block (§7.3; Task 4.14b) -----------------------------
+
+
+def run_telemetry_snapshot() -> RunTelemetry:
+    """One run's telemetry, built by the collector from a real budget and a real call.
+
+    Driven through the same two seams the providers use -- the budget's
+    observer and ``record_call`` -- so a fixture cannot describe a shape the
+    collector never emits.
+    """
+    collector = RunTelemetryCollector()
+    budget = RequestBudget()
+    budget.set_observer(collector.observe_budget)
+    collector.note_call_starting("report_writer")
+    budget.reserve("deepseek")
+    collector.record_call(
+        agent="report_writer",
+        operation="structured_output",
+        seconds=2.0,
+        output_tokens=10,
+        configured_cap=100,
+        truncated=False,
+    )
+    return collector.snapshot()
+
+
+def test_the_quality_record_carries_the_telemetry_block() -> None:
+    """The run's §7.3 figures are published beside the pass's own judgements.
+
+    The record is the replay surface for the whole run, so a reader with only
+    this file can say what the peak was, how many calls the run had in flight,
+    and which config key bounded the fullest reply — read from the state the
+    terminal finalizer stamped, never re-derived here.
+    """
+    telemetry = run_telemetry_snapshot()
+    state = written_state().model_copy(update={"run_telemetry": telemetry})
+
+    record = render_quality_record(state, state.composition, None)
+
+    assert record["telemetry"] == telemetry.model_dump(mode="json")
+
+
+def test_a_run_without_a_collector_publishes_no_telemetry_figures() -> None:
+    """``None``, never a row of zeroes.
+
+    A harness that builds its providers directly records into a private
+    collector nobody reads, so it took no measurement: zeros would publish a
+    measured idle run in its place, and an absent figure must stay absent.
+    """
+    state = written_state()
+
+    record = render_quality_record(state, state.composition, None)
+
+    assert record["telemetry"] is None

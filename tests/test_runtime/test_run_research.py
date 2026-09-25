@@ -15,6 +15,7 @@ from deep_research.main import (
     run_research,
     run_research_sync,
 )
+from deep_research.observability import RunTelemetryCollector
 from deep_research.request_budget import RequestBudget, RequestBudgetUpdate
 from deep_research.runtime.assembly import ResearchRuntime
 from deep_research.runtime.errors import ResearchConfigurationError
@@ -488,13 +489,19 @@ async def test_resume_forwards_the_event_handler_and_streams_the_terminal_sessio
     assert received[-1].event_type == "graph.session.completed"
 
 
-def budget_runtime(settings, *, session_id, tracker, budget, agents=None):
-    """A runtime stand-in exposing the shared run budget.
+def budget_runtime(
+    settings, *, session_id, tracker, budget, agents=None, telemetry=None
+):
+    """A runtime stand-in exposing the shared run budget and its collector.
 
     ``ResearchRuntime`` gains ``request_budget`` in the task that owns
     ``assembly.py``; the budget surface ``run_research`` touches is only
     ``request_budget``, so a stand-in keeps this task's tests independent of
-    that one.
+    that one. ``telemetry`` is the other surface ``run_research`` reads — the
+    run's §7.3 collector, which it installs on the budget's single observer
+    slot — and it defaults to ``None`` for the same reason the budget is
+    explicit here: a run with no collector must behave exactly as it did
+    before there was one.
     """
     return SimpleNamespace(
         session_id=session_id,
@@ -506,6 +513,7 @@ def budget_runtime(settings, *, session_id, tracker, budget, agents=None):
         long_term=None,
         procedural=None,
         request_budget=budget,
+        run_telemetry=telemetry,
     )
 
 
@@ -520,6 +528,141 @@ def reserving_builder(tracker, budget, *, on_start=None):
         )
 
     return build
+
+
+@pytest.mark.asyncio
+async def test_run_research_notifies_the_collector_and_the_handler_of_every_update(
+    config_file, tracker
+) -> None:
+    """``RequestBudget`` holds one observer, and two parties need it.
+
+    The CLI installs its stream here while the assembly installed the run's
+    collector there, so ``run_research`` has to fan out: both see every update.
+    A collector that was replaced would report a peak of zero for a run that
+    had a call in flight, which is the figure §7.3 exists to report.
+    """
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    peaks: list[int] = []
+    handler_kinds: list[str] = []
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=budget,
+            telemetry=collector,
+        )
+
+    def event_handler(event: ResearchEvent) -> None:
+        if event.event_type == "graph.session.started":
+            collector.note_call_starting("researcher")
+            budget.reserve("deepseek")
+            peaks.append(collector.snapshot().peak_calls_in_flight)
+
+    def record(update: RequestBudgetUpdate) -> None:
+        handler_kinds.append(update.kind)
+
+    await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        event_handler=event_handler,
+        request_budget_handler=record,
+    )
+
+    assert peaks == [1]
+    assert handler_kinds == ["attempt_reserved"]
+
+
+@pytest.mark.asyncio
+async def test_run_research_installs_the_collector_alone_and_detaches_it(
+    config_file, tracker
+) -> None:
+    """With no handler the collector is the observer; when the call returns it is
+    gone, exactly as the handler was.
+
+    A runtime outlives one run — a resume reuses it — so an observer left
+    installed would attribute a later run's attempts to this one's collector.
+    """
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    peaks: list[int] = []
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=budget,
+            telemetry=collector,
+        )
+
+    def event_handler(event: ResearchEvent) -> None:
+        if event.event_type == "graph.session.started":
+            collector.note_call_starting("researcher")
+            budget.reserve("deepseek")
+            peaks.append(collector.snapshot().peak_calls_in_flight)
+
+    await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        event_handler=event_handler,
+    )
+
+    budget.reserve("deepseek")
+
+    assert peaks == [1]
+    assert collector.snapshot().peak_calls_in_flight == 1
+
+
+@pytest.mark.asyncio
+async def test_a_halted_run_still_carries_the_run_telemetry(
+    config_file, tracker
+) -> None:
+    """A halted run is still a run that was measured.
+
+    The terminal finalizer stamps the collector for a run that reaches
+    publication, and a halted run reaches none — the node is skipped and
+    publishes nothing. That is exactly the run whose telemetry matters most:
+    one killed by repeated 429s or a spent attempt budget is the run the
+    "rate limits hit N times" advice is for. So the entry point takes the same
+    reading for the pass that had no publication step, and takes it only when
+    the finalizer did not.
+    """
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    planner = FakeAgent("planner", [{"iteration": 2}])
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=budget,
+            agents=fake_research_agents(planner=planner),
+            telemetry=collector,
+        )
+
+    def event_handler(event: ResearchEvent) -> None:
+        if event.event_type == "graph.session.started":
+            collector.note_call_starting("researcher")
+            budget.reserve("deepseek")
+
+    outcome = await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        event_handler=event_handler,
+    )
+
+    assert outcome.failed is True
+    assert outcome.state.run_telemetry is not None
+    assert outcome.state.run_telemetry.peak_calls_in_flight == 1
+    assert outcome.state.run_telemetry.peak_agent == "researcher"
+    assert outcome.quality_path is None
 
 
 @pytest.mark.asyncio
