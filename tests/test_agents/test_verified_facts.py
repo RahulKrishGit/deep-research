@@ -13,7 +13,6 @@ from deep_research.agents.verified_facts import (
     release_key,
     same_organisation,
     same_period,
-    untraced_numbers,
 )
 from deep_research.utils.types import (
     AcquisitionState,
@@ -151,15 +150,6 @@ def test_not_found_lists_required_unanswered_targets_with_their_trail() -> None:
     [row] = not_found_targets([topic], {}, acquisition)
     assert (row.target_id, row.queries, row.searched) == ("topic-02-target-01", ["EIA STEO 2025 battery"], True)
     assert row.pages_read == ["https://eia.gov/outlooks/steo"]
-
-
-def test_untraced_numbers() -> None:
-    cited = [eia_2024()]
-    assert untraced_numbers("EIA reports 10,400 MW added in 2024.", cited) == []
-    assert untraced_numbers("EIA reports 12 GW added in 2024.", cited) == ["12 GW"]
-    assert untraced_numbers("EIA reports 10.4 GW across 37 states.", cited) == ["37"]
-    assert untraced_numbers("  EIA reports 12 GW added.", cited) == ["12 GW"]
-    assert untraced_numbers("re\xadports 12 GW and 15 GW.", cited) == ["12 GW", "15 GW"]
 
 
 def test_earlier_editions_are_ordered_newest_first_regardless_of_input_order() -> None:

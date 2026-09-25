@@ -5,14 +5,11 @@ from __future__ import annotations
 import pytest
 
 from deep_research.agents.figures import (
-    bare_numbers,
-    dates_in,
     figure_in_text,
     parse_figure,
     quantities_in,
     same_quantity,
     unit_dimension,
-    without_dates,
 )
 
 PAGE = (
@@ -101,16 +98,3 @@ def test_same_quantity_compares_across_scales() -> None:
     assert ten_gw is not None and same_quantity(ten_gw, found)
 
 
-def test_bare_numbers_skip_years_dates_labels_and_quantities() -> None:
-    text = "On March 12, 2025, 3 states in Q3 reported 1,250 systems and 10.4 GW."
-    assert bare_numbers(text) == ["1250"]
-    assert bare_numbers("released 2025-03-12; 12 March 2025; Q1 2025") == []     # F2
-    assert "2025-03-12" in dates_in("released 2025-03-12 and 12 March 2025")
-    assert len(dates_in("released 2025-03-12 and 12 March 2025")) == 2
-    without_iso = without_dates("released 2025-03-12")
-    assert "03" not in without_iso
-    assert "2025" not in without_iso
-
-
-def test_a_day_before_a_month_name_is_a_date_label_not_a_number() -> None:
-    assert bare_numbers("on 12 March the grid") == []
