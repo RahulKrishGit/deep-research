@@ -58,7 +58,7 @@ from deep_research.agents.evidence import (
     own_organisation_on_page,
     relay_attribution_on_page,
 )
-from deep_research.agents.figures import figure_in_text
+from deep_research.agents.figures import figure_in_text, is_a_date
 from deep_research.agents.identity import deduplicate_findings, finding_fingerprint
 from deep_research.agents.prompts import (
     render_structured_reply_format,
@@ -73,7 +73,7 @@ from deep_research.agents.verified_facts import (
     same_period,
     same_subject,
 )
-from deep_research.agents.wording import stated_role
+from deep_research.agents.wording import stated_role, title_segments
 from deep_research.providers import (
     ChatMessage,
     ProviderConfigurationError,
@@ -244,10 +244,6 @@ class VerifiedFindings(ContractModel):
     findings: list[Finding] = Field(default_factory=list)
 
 
-# Separators a page's own title uses between its headline and its site or
-# publisher name ("Article Title | Site Name", "Article Title - Publisher").
-_TITLE_CREDIT_SEPARATOR = re.compile(r"\s*[|\u2013\u2014]\s*|\s+-\s+")
-
 # One word of a cued run: a capitalised word carrying no full stop at all
 # ("Utility Dive" -- the stop after "Dive" ends the sentence, it does not
 # continue the name), or an initialism such as "U.S.", whose own dots sit
@@ -284,7 +280,7 @@ def _title_credit_candidates(title: str) -> list[str]:
     anything the title does not itself spell; every segment is offered as a
     candidate because a title can name its publisher either first or last.
     """
-    return [part.strip() for part in _TITLE_CREDIT_SEPARATOR.split(title) if part.strip()]
+    return title_segments(title)
 
 
 def _cued_name_candidates(text: str, cues: Sequence[str]) -> list[str]:
@@ -665,9 +661,15 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     period, scope, subject = figure.period or finding.data_period, finding.measure_scope, figure.subject
     corrected = False
     resolved_from: str | None = None   # the page date a relative period came from (D11)
-    if reply.period and _differs(reply.period, period):
-        page_date, _ = _page_date_basis(item)
+    # A date is not a measure (improvement 9): the date the page states *is* the
+    # figure, so a reply that proposes it as the "period" corrects nothing, and
+    # the ISO spelling of a date the words spell out is that same date, never a
+    # correction that is not on the page. The recorded fields stand unchanged and
+    # nothing is dropped for it.
+    dated = is_a_date(figure.value, figure.unit)
+    if not dated and reply.period and _differs(reply.period, period):
         if not _period_stated(words, reply.period):
+            page_date, _ = _page_date_basis(item)
             # An explicit period the words themselves state beats a relative
             # reading (fix round 1): only a page that dates the figure
             # relatively lets code resolve one. Fix round 1 guarded the
@@ -677,9 +679,18 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
             resolved = None if dated_explicitly else resolve_relative_period(words, page_date)
             if (resolved is None or not same_period(resolved, reply.period)
                     or not _agrees_with_the_years_the_words_state(words, resolved)):
+                # A period the page never states is not published, whatever the
+                # reply's verdict: the figure's own period would then be one no
+                # page states (D11; the relative-period scenario's second page).
                 return drop("correction_not_on_page")
             resolved_from = page_date
-        period, corrected = reply.period, True
+            period, corrected = reply.period, period is not None
+        else:
+            # The words state the proposal, so adopting it is a correction only
+            # where the figure had recorded a period at all (improvement 9): a
+            # figure the extraction left undated, dated by the words the reply
+            # quotes, is a fill, not a correction.
+            period, corrected = reply.period, period is not None
     elif reply.verdict == "correct" and period and not _period_stated(words, period):
         # The Context Check answers null as its prompt instructs ("null when
         # the page states none"), so a recorded period its own words do not
@@ -688,9 +699,15 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
         # stands -- the quote backs it.
         period, corrected = None, True
     if reply.scope and _differs(reply.scope, scope):
-        if not excerpt_matches(words, reply.scope):
+        if excerpt_matches(words, reply.scope):
+            scope, corrected = reply.scope, True
+        elif reply.verdict == "correct":
+            # Only the verdict that asserts a correction may cost a figure its
+            # place (improvement 9). A reply confirming the figure that also
+            # volunteers a scope its own words do not carry leaves the recorded
+            # scope standing -- which is what the run's fourth date figure lost
+            # its place to.
             return drop("correction_not_on_page")
-        scope, corrected = reply.scope, True
     proposed = (reply.subject or "").strip()
     if proposed and _differs(proposed, subject):
         if excerpt_matches(words, proposed) or excerpt_matches(item.passage, proposed):
@@ -995,7 +1012,7 @@ def evidence_verified_event(findings: Sequence[Finding]) -> ResearchEvent:
 STATEMENT_CHECK_SYSTEM_PROMPT = (
     "You check whether a drafted sentence states only what the findings it "
     "cites actually verified. You have no tools and no web access: judge "
-    "only from the figures, evidence words and verified snippets shown for "
+    "only from the figures, evidence words, snippets and passages shown for "
     "each sentence."
 )
 
@@ -1003,20 +1020,25 @@ STATEMENT_CHECK_INSTRUCTION = (
     "Return one entry in statements for every sentence listed, naming it by "
     "its label. For each sentence give:\n"
     "- verdict: consistent when the sentence states only the numbers, "
-    "dates, subject, scope, organisation and forecast-vs-actual distinction "
-    "its cited findings' figures actually state and — for a finding with no "
-    "figure — the statement its verified snippet makes; corrected when a "
-    "minimal rewording would make it so; inconsistent when it states a "
-    "number, date, subject, scope, organisation, forecast/actual distinction "
-    "or statement those figures and snippets do not support, or invents "
-    "anything. A judgement, ranking or recommendation stated as fact rather "
-    "than as the judgement of the source that made it is not supported as "
-    "written: correct it by attributing it to that source.\n"
+    "dates, subject, scope, organisation, forecast-vs-actual distinction, "
+    "and the conditions, exceptions and object a rule it reports attaches "
+    "to, that its cited findings' figures, snippets and passages actually "
+    "state and — for a finding with no figure — the statement its verified "
+    "snippet makes; corrected when a minimal rewording would make it so; "
+    "inconsistent when it states a number, date, subject, scope, "
+    "organisation, forecast/actual distinction, condition, exception or "
+    "object those figures and words do not support, states a conditional "
+    "rule as unconditional, drops a condition or exception the cited words "
+    "carry, or invents anything. A judgement, ranking or recommendation "
+    "stated as fact rather than as the judgement of the source that made it "
+    "is not supported as written: correct it by attributing it to that "
+    "source.\n"
     "- corrected_text: for corrected, the minimally reworded sentence; "
     "otherwise empty.\n"
     "- reason: one short sentence.\n"
-    "Never invent a number, date, subject, scope, or organisation the cited "
-    "findings do not state."
+    "Never invent a number, date, subject, scope, organisation, condition, "
+    "exception or object the cited findings do not state, and never drop one "
+    "their words carry."
 )
 
 _STATEMENT_CHECK_REPLY_EXAMPLES = (
@@ -1031,6 +1053,17 @@ _STATEMENT_CHECK_REPLY_EXAMPLES = (
         'million households had rooftop solar.","reason":"The finding states an '
         'actual for 2025, not a forecast."}]}',
     ),
+    (
+        "Example input: S02: \"The grant covers travel.\" | F02: (no kept "
+        "figures) | snippet: \"The grant covers travel when the visit is "
+        "approved in advance\" | passage: \"The grant covers travel when the "
+        "visit is approved in advance. It does not cover stays longer than "
+        "five days.\"",
+        '{"statements":[{"label":"S02","verdict":"corrected","corrected_text":'
+        '"The grant covers travel when the visit is approved in advance, and not '
+        'for stays longer than five days.","reason":"The cited words carry a '
+        'condition and an exception the sentence omits."}]}',
+    ),
 )
 
 
@@ -1041,6 +1074,17 @@ class StatementCheckItem(ContractModel):
     text: str
     findings: list[Finding]
     labels: list[str]
+    passages: dict[str, str] = Field(default_factory=dict)
+    """Finding id (``finding_fingerprint``) -> the bounded passage of its page.
+
+    Improvement 8: a snippet is cut at the passage boundary, so the condition,
+    exception or object a reported rule attaches to is often just outside it --
+    "released under an open licence that allows for" ends where the exception
+    to that rule begins. The caller that holds the run's reads supplies
+    ``context_passage`` for each cited finding, and the block shows it beside
+    the snippet; a caller with no reads in hand leaves this empty and the block
+    is exactly what it was.
+    """
 
 
 class StatementVerdictDraft(ContractModel):
@@ -1087,6 +1131,11 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
         body = "; ".join(figures) if figures else "(no kept figures)"
         lines.append(f"  {label}: {body}")
         lines.append(f'    snippet: "{finding.snippet or finding.content}"')
+        passage = item.passages.get(finding_fingerprint(finding))
+        if passage:
+            # The wider words the snippet was cut out of (improvement 8), so a
+            # condition or exception just past the cut is judged, not guessed.
+            lines.append(f'    passage: "{passage}"')
         if figures:
             continue
         name = finding.attributed_issuer or publisher_identity(finding.source_url)

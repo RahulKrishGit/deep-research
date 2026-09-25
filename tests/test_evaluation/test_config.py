@@ -859,11 +859,20 @@ from deep_research.utils.config import (
 # keeps the own-page reading while a body the page is not stays unattributed. No
 # prompt string was edited, and ``agents.prompts`` was untouched, so the other
 # four target pins and the Judge pin are unchanged.
+# FF1 run-2 improvement 8: the Statement Check's response contract now names the
+# conditions, exceptions and object a reported rule attaches to, and shows the
+# bounded passage beside the snippet, so the verifier's prompt moved
+# `e8d10a516459` -> `fbad809c4414`. No other agent's prompt text changed, and
+# the Judge pin is unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
     "researcher": "3853aff7e02c",
     "source_evaluator": "58c4e7d909ef",
-    "evidence_verifier": "e8d10a516459",
+    # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
+    # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
+    # the figure's own unit shape and, for the scope they propose, the reply's
+    # verdict. No other agent's text changed, and the Judge pin is unchanged.
+    "evidence_verifier": "9f5515f04833",
     "report_writer": "a3a73e32c3c0",
 }
 

@@ -1338,3 +1338,170 @@ def test_a_name_without_a_legal_form_still_matches_its_formed_spelling() -> None
     assert same_organisation("Siemens", "Siemens AG")
     assert same_organisation("Siemens AG", "Siemens AG")
     assert same_organisation("Novo Nordisk", "Novo Nordisk A/S")
+
+
+# ---------------------------------------------------------------------------
+# Improvement 1A: the sub-topic fallback types.Finding.target_ids promises
+# ---------------------------------------------------------------------------
+#
+# The live run this wave answers extracted every finding with no binding at all
+# -- its fifteen figures, all of them dates, carried an empty ``target_ids`` --
+# so the coverage gate declared two obligations the report's own pages answer
+# "Not found". The contract on ``Finding.target_ids`` already promises the way
+# out: a finding "with no planned target left is kept but can then be
+# attributed only through the sub-topic that fetched its read".
+
+WHEN_TITLE = "The dates the obligations start applying and the transition for items already placed"
+
+
+def when_targets() -> list[EvidenceTarget]:
+    """The run's two 'when' obligations: qualitative, required, one sub-topic."""
+    return [
+        make_target("topic-03-target-01", question="From what date do the obligations apply?",
+                    measure="application date", unit_dimension=None, period=None, kind=None,
+                    geography=None),
+        make_target("topic-03-target-02",
+                    question="By what date must an item already placed comply?",
+                    measure="compliance date", unit_dimension=None, period=None, kind=None,
+                    geography=None),
+    ]
+
+
+def when_sub_topics() -> list[SubTopic]:
+    return [SubTopic(coverage_id="topic-03", title=WHEN_TITLE, rationale="the run's third",
+                     search_queries=["q"], success_criteria=["c"], priority=1,
+                     evidence_targets=when_targets())]
+
+
+def dated_finding(*, sub_topic: str = WHEN_TITLE, target_ids: Sequence[str] = (),
+                  value: str = "2 August 2025", **fields):
+    """One unbound finding of the third sub-topic, on the shape the run produced."""
+    text = f"The obligations apply from {value}."
+    read = make_read(text, url="https://example-relay.example/law/12",
+                     title="Article 12: Registration | Example Act | Example Relay")
+    finding = make_finding(read, text, figures=[figure(value, "date", None, "actual")],
+                           target_ids=target_ids, **fields)
+    finding = finding.model_copy(update={"related_sub_topic": sub_topic})
+    return verified(finding, ctx(organisation="Example Relay", attribution="unattributed",
+                                 period=None))
+
+
+def test_an_unbound_finding_answers_its_own_sub_topics_targets() -> None:
+    """1A, on the run's shape: unbound findings of the third sub-topic answer both
+    of its required targets, so the report stops declaring them Not found."""
+    topics, targets = when_sub_topics(), when_targets()
+    findings = [dated_finding(), dated_finding(value="2 August 2027")]
+
+    # Before the fallback is handed the plan, every target stays unanswered --
+    # which is exactly what the run's own gate reported.
+    assert answered_target_ids(findings, targets) == {}
+    assert [row.target_id for row in not_found_targets(topics, {}, {})] == [
+        "topic-03-target-01", "topic-03-target-02"]
+
+    answered = answered_target_ids(findings, targets, sub_topics=topics)
+    assert set(answered) == {"topic-03-target-01", "topic-03-target-02"}
+    assert sorted(answered["topic-03-target-01"]) == sorted(
+        finding_fingerprint(f) for f in findings)
+    assert not_found_targets(topics, answered, {}) == []
+
+
+def test_the_fallback_answers_only_the_findings_own_sub_topic() -> None:
+    topics = when_sub_topics()
+    other = dated_finding(sub_topic="Battery storage")
+    assert not any(finding_answers(other, target, sub_topics=topics)
+                   for target in when_targets())
+    # A finding whose sub-topic matches by title only differs in the coverage id
+    # it resolves to, so it too answers nothing.
+    renamed = SubTopic(coverage_id="topic-01", title=WHEN_TITLE, rationale="r",
+                       search_queries=["q"], success_criteria=["c"], priority=1)
+    assert not any(finding_answers(dated_finding(), target, sub_topics=[renamed])
+                   for target in when_targets())
+
+
+def test_a_finding_bound_to_another_target_never_answers_by_fallback() -> None:
+    """The bound on 1A: an extraction that named a target answers only what it named."""
+    topics = when_sub_topics()
+    elsewhere = make_target("topic-01-target-01", unit_dimension=None, period=None,
+                            kind=None, geography=None)
+    finding = dated_finding(target_ids=["topic-01-target-01"])
+
+    assert finding_answers(finding, elsewhere, sub_topics=topics)
+    assert not any(finding_answers(finding, target, sub_topics=topics)
+                   for target in when_targets())
+    assert answered_target_ids([finding], [*when_targets(), elsewhere],
+                               sub_topics=topics) == {
+        "topic-01-target-01": [finding_fingerprint(finding)]}
+
+
+def test_a_figure_target_is_answered_by_its_fields_not_by_the_sub_topic() -> None:
+    """For a figure target the existing figure rules still decide (1A)."""
+    topics = when_sub_topics()
+    target = make_target("topic-03-target-01", measure="capacity added",
+                         unit_dimension="power", period="2024", kind="actual", geography=None)
+    text = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024."
+    read = make_read(text)
+    unbound = make_finding(read, text, figures=[figure("10.4", "GW", "2024", "actual")],
+                           target_ids=()).model_copy(update={"related_sub_topic": WHEN_TITLE})
+    fitting = verified(unbound, ctx(organisation="Example Lab", attribution="own", period="2024"))
+    wrong_period = verified(
+        unbound.model_copy(update={"figures": [figure("10.4", "GW", "2025", "actual")]}),
+        ctx(organisation="Example Lab", attribution="own", period="2025"))
+
+    assert finding_answers(fitting, target, sub_topics=topics)
+    assert not finding_answers(wrong_period, target, sub_topics=topics)
+
+
+def test_a_fallback_answer_reaches_the_row_it_builds() -> None:
+    """The row a writer cites carries the obligation the fallback answered."""
+    topics, targets = when_sub_topics(), when_targets()
+    rows = fact_rows([dated_finding()], targets, sub_topics=topics)
+    assert [row.target_ids for row in rows] == [
+        ["topic-03-target-01", "topic-03-target-02"]]
+    assert fact_rows([dated_finding()], targets)[0].target_ids == []
+
+
+# ---------------------------------------------------------------------------
+# Improvement 7: a relay-shaped page's unattributed row claims no organisation
+# ---------------------------------------------------------------------------
+#
+# The live run published an unattributed figure of a page that reproduces
+# another body's document as "the site states…", because the row's organisation
+# column was the page's owner. The page's own title carries the work it serves
+# beside its own site label, and that is what the row must respect.
+
+def relay_shaped_finding(*, title: str, url: str = "https://example-relay.example/law/12"):
+    """One unattributed figure whose page's own title is ``title``."""
+    text = "The obligations apply from 2 August 2025."
+    read = make_read(text, url=url, title=title)
+    finding = make_finding(read, text,
+                           figures=[figure("2 August 2025", "date", None, "actual")],
+                           target_ids=[])
+    return verified(finding, ctx(organisation="Example Relay", attribution="unattributed",
+                                 period=None))
+
+
+def test_an_unattributed_row_of_a_relay_shaped_page_claims_no_organisation() -> None:
+    """Improvement 7, on the run's shape: the serving site is not the issuer."""
+    pages = {
+        # the run's shape: headline | the work it serves | its own site label
+        "relayed": "Article 12: Registration | Example Act | Example Relay",
+        # a title naming only its headline and its own site: unchanged
+        "first_party": "Article 12: Registration | Example Relay",
+        # the middle segment is the page's own name: unchanged
+        "own_middle": "Article 12: Registration | Example Relay | example-relay.example",
+    }
+    rows = {name: fact_rows([relay_shaped_finding(title=title)], [make_target()])[0]
+            for name, title in pages.items()}
+
+    assert rows["relayed"].organisation == ""
+    assert rows["relayed"].attribution == "unattributed"
+    assert rows["first_party"].organisation == "Example Relay"
+    assert rows["own_middle"].organisation == "Example Relay"
+
+
+def test_a_relay_shaped_page_keeps_the_context_the_verifier_resolved() -> None:
+    """The row claims nothing; the figure's own resolved context is untouched."""
+    finding = relay_shaped_finding(title="Article 12: Registration | Example Act | Example Relay")
+    context = finding.verification.figure_results[0].context
+    assert context is not None and context.organisation == "Example Relay"
+    assert fact_rows([finding], [make_target()])[0].organisation == ""

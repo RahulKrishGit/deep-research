@@ -8,6 +8,7 @@ import re
 
 import pytest
 
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.evidence_verifier import (
     _CONTEXT_CHECK_REPLY_EXAMPLES,
     _checked,
@@ -1854,3 +1855,90 @@ def test_an_own_verdict_naming_the_first_party_owner_stands() -> None:
 
     assert resolve_attribution(proposed="own", organisation="Some Other Body", finding=finding,
                                read=read, issuer=None) == ("unattributed", "apple.com")
+
+
+def test_the_statement_check_shows_the_passage_a_rules_conditions_live_in() -> None:
+    """Improvement 8: a snippet cut at the passage boundary is judged against the
+    bounded passage, so a condition or an exception past the cut is seen."""
+    snippet = "The grant covers travel when the visit is approved"
+    page = (snippet + " in advance. It does not cover stays longer than five days.")
+    finding = make_finding(make_read(page), snippet).model_copy(
+        update={"verification": FindingVerification(status="verified")})
+    item = StatementCheckItem(
+        label="S001", text="The grant covers travel.", findings=[finding], labels=["F01"],
+        passages={finding_fingerprint(finding): page},
+    )
+
+    body = statement_check_messages([item], question="What does the grant cover?")[1].content
+    assert f'    snippet: "{snippet}"' in body
+    assert '    passage: "The grant covers travel when the visit is approved in advance.' in body
+    assert "It does not cover stays longer than five days." in body
+
+    # Without the passage the block is exactly what it was before the caller
+    # had one to give: the snippet alone, with no passage line for the item.
+    without = statement_check_messages(
+        [StatementCheckItem(label="S001", text="The grant covers travel.",
+                            findings=[finding], labels=["F01"])],
+        question="What does the grant cover?",
+    )[1].content
+    assert '    passage: "' not in without
+
+
+def test_a_date_figure_carries_no_period_correction_and_is_never_dropped() -> None:
+    """Improvement 9, on the run's shape: the date a page states *is* the figure,
+    so the reply proposing it as the period corrects nothing, and a date the
+    reply writes in another spelling is not a correction off the page."""
+    text = ("Article 12 : Registration Comes into force 2 August 2025, "
+            "according to Article 113(b)")
+    recorded = figure("2 August 2025", "date", None, "actual")
+    kept = _check(_figure_item(text, recorded), period="2025-08-02", verdict="confirm",
+                  evidence_words=text)
+    assert kept.kept and not kept.corrected and kept.context.period is None
+
+    # The run's own dropped figure: the reply wrote the ISO spelling of a date
+    # the words spell out, and the ISO spelling is not "on the page" as text.
+    words = ("(c) Article 6(1) and the corresponding obligations in this Regulation "
+             "shall apply from 2 August 2027.")
+    kept = _check(_figure_item(words, figure("2 August 2027", "date", None, "actual")),
+                  period="2027-08-02", verdict="confirm", evidence_words=words)
+    assert kept.kept and not kept.corrected and kept.dropped_reason is None
+
+
+def test_filling_a_period_the_words_state_is_not_a_correction() -> None:
+    """Improvement 9: a figure recorded with no period, whose words state one the
+    reply also states, was published as "corrected context"."""
+    text = "Capacity reached 12 GW in 2025."
+    kept = _check(_figure_item(text, figure("12", "GW", None, "actual")),
+                  period="2025", verdict="correct", evidence_words=text)
+
+    assert kept.kept and kept.context.period == "2025" and not kept.corrected
+
+
+def test_a_period_the_words_contradict_is_still_a_correction() -> None:
+    """The bound on improvement 9: a recorded period the words do not state is
+    corrected exactly as before."""
+    text = "Capacity reached 12 GW in 2025."
+    kept = _check(_figure_item(text, figure("12", "GW", "2024", "actual")),
+                  period="2025", verdict="correct", evidence_words=text)
+
+    assert kept.kept and kept.context.period == "2025" and kept.corrected
+
+
+def test_a_confirm_verdict_carries_no_scope_correction() -> None:
+    """Improvement 9: corrections are gated on the verdict that asserts one, so a
+    confirm reply cannot drop a figure for a proposal of its own."""
+    text = "Capacity reached 12 GW in 2025."
+    kept = _check(_figure_item(text, figure("12", "GW", "2025", "actual")),
+                  scope="utility-scale", verdict="confirm", evidence_words=text)
+
+    assert kept.kept and kept.dropped_reason is None and not kept.corrected
+
+
+def test_a_correct_verdict_still_drops_an_unbacked_scope() -> None:
+    """The bound on the rule above: a reply that asserts a correction still has
+    to back it with the page's words."""
+    text = "Capacity reached 12 GW in 2025."
+    dropped = _check(_figure_item(text, figure("12", "GW", "2025", "actual")),
+                     scope="utility-scale", verdict="correct", evidence_words=text)
+
+    assert dropped.dropped_reason == "correction_not_on_page"

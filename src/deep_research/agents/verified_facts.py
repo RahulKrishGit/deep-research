@@ -21,7 +21,7 @@ from deep_research.agents.figures import (
 )
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.sources import publisher_identity
-from deep_research.agents.wording import SCOPE_TERMS, stated_scopes
+from deep_research.agents.wording import SCOPE_TERMS, stated_scopes, title_segments
 from deep_research.utils.types import (
     AcquisitionState,
     EarlierEdition,
@@ -909,6 +909,44 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
     )
 
 
+def _names_the_targets_sub_topic(finding: Finding, target: EvidenceTarget,
+                                 sub_topics: Sequence[SubTopic]) -> bool:
+    """Whether the finding names the sub-topic this target belongs to.
+
+    ``types.Finding.target_ids`` documents the fallback an unbound extraction
+    is answered through: "a finding with no planned target left is kept but can
+    then be attributed only through the sub-topic that fetched its read". The
+    extraction stamps that sub-topic's own title on the finding
+    (``related_sub_topic``), so the plan's sub-topics resolve it back to the
+    coverage id a target carries.
+    """
+    if not sub_topics or not target.coverage_id:
+        return False
+    name = cosmetic_text(finding.related_sub_topic)
+    return any(
+        sub_topic.coverage_id == target.coverage_id
+        and cosmetic_text(sub_topic.title) == name
+        for sub_topic in sub_topics
+    )
+
+
+def _binds_target(finding: Finding, target: EvidenceTarget,
+                  sub_topics: Sequence[SubTopic]) -> bool:
+    """Whether this target is the finding's to answer: its own binding, or the fallback.
+
+    The extraction's binding is the authority: a finding that names *any*
+    target answers only the ones it names, and one that names none is answered
+    through its own sub-topic alone (improvement 1A). Never "answers
+    everything": a finding with no target id of a different sub-topic, or with
+    a target id that does not include this one, is refused exactly as before.
+    """
+    if target.target_id in finding.target_ids:
+        return True
+    return not finding.target_ids and _names_the_targets_sub_topic(
+        finding, target, sub_topics
+    )
+
+
 def _finding_organisations(finding: Finding) -> list[str]:
     names = [figure.context.organisation for figure in verified_figures([finding])]
     if finding.attributed_issuer:
@@ -918,11 +956,12 @@ def _finding_organisations(finding: Finding) -> list[str]:
 
 
 def finding_answers(finding: Finding, target: EvidenceTarget, *,
-                    plan_targets: Sequence[EvidenceTarget] = ()) -> bool:
+                    plan_targets: Sequence[EvidenceTarget] = (),
+                    sub_topics: Sequence[SubTopic] = ()) -> bool:
     """§6.6, plus PD-7 for a target with no unit dimension, and D11's sibling rule."""
     if finding.verification is None or finding.verification.status == "dropped":
         return False
-    if target.target_id not in finding.target_ids:
+    if not _binds_target(finding, target, sub_topics):
         return False
     if target.unit_dimension is None:
         # A qualitative target's organisation is the plan's preference, not a
@@ -951,13 +990,20 @@ def finding_answers(finding: Finding, target: EvidenceTarget, *,
 
 
 def answered_target_ids(
-    findings: Sequence[Finding], targets: Sequence[EvidenceTarget]
+    findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
+    sub_topics: Sequence[SubTopic] = (),
 ) -> dict[str, list[str]]:
-    """Target id -> the ids of the findings that answer it (answered targets only)."""
+    """Target id -> the ids of the findings that answer it (answered targets only).
+
+    ``sub_topics`` is the plan the findings were extracted under: it is what
+    resolves an unbound finding's own ``related_sub_topic`` to the coverage id
+    its targets carry (improvement 1A). A caller that omits it keeps the
+    extraction-binding-only behaviour every caller had before.
+    """
     answered: dict[str, list[str]] = {}
     for target in targets:
         ids = [finding_fingerprint(f) for f in findings
-               if finding_answers(f, target, plan_targets=targets)]
+               if finding_answers(f, target, plan_targets=targets, sub_topics=sub_topics)]
         if ids:
             answered[target.target_id] = ids
     return answered
@@ -1101,16 +1147,19 @@ def _figures_share_a_subject(left: VerifiedFigure, right: VerifiedFigure,
                         target_fields=_target_fields(shared, by_id.values()))
 
 
-def _answered_targets(figure: VerifiedFigure,
-                      targets: Sequence[EvidenceTarget]) -> frozenset[str]:
+def _answered_targets(figure: VerifiedFigure, targets: Sequence[EvidenceTarget],
+                      sub_topics: Sequence[SubTopic] = ()) -> frozenset[str]:
     """The targets this figure answers: the ids its finding binds and the fields fit.
 
-    The same rule ``fact_rows`` builds a row's own ``target_ids`` with, so what
-    two figures share here is exactly the obligation their row would answer.
+    "Binds" is ``_binds_target``: the extraction's own target ids, or -- for a
+    finding extracted with none -- the targets of the sub-topic the finding
+    names (improvement 1A). The same rule ``fact_rows`` builds a row's own
+    ``target_ids`` with, so what two figures share here is exactly the
+    obligation their row would answer.
     """
     return frozenset(
         target.target_id for target in targets
-        if target.target_id in figure.finding.target_ids
+        if _binds_target(figure.finding, target, sub_topics)
         and _figure_answers(figure, target, targets)
     )
 
@@ -1148,10 +1197,11 @@ def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
 
 
 def _figure_answer_ids(figure: VerifiedFigure, targets: Sequence[EvidenceTarget],
-                       answered: Mapping[tuple[str, int], frozenset[str]] | None) -> frozenset[str]:
+                       answered: Mapping[tuple[str, int], frozenset[str]] | None,
+                       sub_topics: Sequence[SubTopic] = ()) -> frozenset[str]:
     """``_answered_targets`` for one figure, reusing ``fact_rows``' own computation."""
     if answered is None:
-        return _answered_targets(figure, targets)
+        return _answered_targets(figure, targets, sub_topics)
     return answered.get((figure.finding_id, figure.index), frozenset())
 
 
@@ -1171,13 +1221,20 @@ def _primary(group: Sequence[VerifiedFigure]) -> VerifiedFigure:
     return min(group, key=rank)
 
 
-def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) -> list[FactRow]:
-    """§5.3 and PD-9: one row per fact; revisions folded; row ids K001, K002, ..."""
+def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
+              sub_topics: Sequence[SubTopic] = ()) -> list[FactRow]:
+    """§5.3 and PD-9: one row per fact; revisions folded; row ids K001, K002, ...
+
+    ``sub_topics`` is the plan the findings were extracted under; a row's
+    ``target_ids`` then include the targets an unbound finding answers through
+    its own sub-topic (improvement 1A), which is what lets the writer cite that
+    obligation from this row.
+    """
     by_id = {target.target_id: target for target in targets}
     figures = verified_figures(findings)
     # What each figure answers, computed once: the group test and the row's own
     # target ids ask the same question of the same figures (I6).
-    answered = {(figure.finding_id, figure.index): _answered_targets(figure, list(targets))
+    answered = {(figure.finding_id, figure.index): _answered_targets(figure, list(targets), sub_topics)
                 for figure in figures}
     groups: list[list[VerifiedFigure]] = []
     for figure in figures:
@@ -1215,7 +1272,7 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
         rows.append(
             FactRow(
                 row_id="pending",
-                organisation=primary.context.organisation,
+                organisation=_row_organisation(primary),
                 attribution=primary.context.attribution,
                 relay_host=publisher_identity(primary.finding.source_url)
                 if primary.context.attribution == "relayed" else None,
@@ -1236,6 +1293,65 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
         row_findings.append(primary.finding)
     folded = _fold_revisions(list(zip(rows, row_findings)), by_id)
     return [row.model_copy(update={"row_id": f"K{n:03d}"}) for n, row in enumerate(folded, start=1)]
+
+
+_NAME_WORD = re.compile(r"[A-Z][\w'\u2019&.-]*")
+
+
+def _body_shaped(segment: str) -> bool:
+    """Whether a title segment reads as a body or a work's name, not a nav label.
+
+    Two words or more, each opening with a capital: "EU AI Act" and "Example
+    Widgets Council" name bodies, while "Products", "News" and "2026 Edition"
+    do not.
+    """
+    words = segment.split()
+    return len(words) > 1 and all(_NAME_WORD.fullmatch(word) for word in words)
+
+
+def _serves_another_body(finding: Finding, owner: str) -> str | None:
+    """The body or work a page's own title serves, when it serves another one.
+
+    A title names its own site first or last ("Battery report | EIA"), so a
+    three-segment title carries a *middle* segment matching neither the page's
+    own organisation nor its host: that segment is the work the page presents.
+    The live run's page wrote its own site label beside the act it reproduces,
+    and the figure it served was then published as the serving site's own
+    statement (improvement 7). ``None`` for every title that names nothing but
+    its headline and its site.
+    """
+    segments = title_segments(finding.source_title)
+    if len(segments) < 3:
+        return None
+    host = publisher_identity(finding.source_url)
+    for segment in segments[1:-1]:
+        if not _body_shaped(segment):
+            continue
+        if same_organisation(segment, owner) or same_organisation(segment, host):
+            continue
+        return segment
+    return None
+
+
+def _row_organisation(figure: VerifiedFigure) -> str:
+    """The organisation a row claims, or "" when it claims none (improvement 7).
+
+    An ``unattributed`` row's organisation is the page's owner, and a page
+    serving another body's work is not the figure's organisation however the
+    page's name reads: the row would name the relaying site beside the reader's
+    "source does not attribute it" label, which is the run's
+    "<the site> states…" sentence. Such a row claims no organisation. Every
+    other attribution keeps the context's own organisation, which the verifier
+    resolved and the reader's label prints.
+    """
+    context = figure.context
+    if context is None:
+        return ""
+    if context.attribution == "unattributed" and _serves_another_body(
+        figure.finding, context.organisation
+    ):
+        return ""
+    return context.organisation
 
 
 def _same_period_and_subject(left: FactRow, right: FactRow,
