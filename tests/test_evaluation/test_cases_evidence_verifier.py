@@ -309,6 +309,28 @@ def test_evidence_words_the_page_does_not_carry_drop_the_figure(
     assert _scores(output, case)["expected_outcome"] == 1.0
 
 
+def test_the_live_case_is_judged_in_one_batch_covering_every_finding(
+    evidence_verifier_live_case, evidence_verifier_live_output
+) -> None:
+    """One Context Check batch, labelled F01..F0n, judges every finding.
+
+    ``context_unchecked`` is the fixture's own witness: it is set only when a
+    figure had no reply and code had to fall back, so a run whose reply
+    covered every finding leaves it False everywhere. A reply that answered
+    one label would light it up on the rest.
+    """
+    findings = evidence_verifier_live_output.result["findings"]
+
+    assert len(findings) == len(evidence_verifier_live_case.state.raw_findings)
+    for finding in findings:
+        verification = finding["verification"]
+        assert verification is not None
+        assert verification["context_unchecked"] is False
+        for result in verification["figure_results"]:
+            assert result["dropped_reason"] is None
+            assert result["context"] is not None
+
+
 def test_a_repetition_without_a_result_is_judged_from_its_state_update(
     evidence_verifier_output_for,
 ) -> None:
