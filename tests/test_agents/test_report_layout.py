@@ -260,3 +260,25 @@ def test_an_article_in_the_targets_question_keeps_a_sentence_to_its_subject() ->
     composition = base.model_copy(update={"fact_rows": rows, "sub_topics": [topic]})
     point = base.summary[0].model_copy(update={"text": f"Model B had {row.value}."})
     assert _point_labels(point, composition) == [_row_label(rows[1])]
+
+
+def test_a_comparison_target_keeps_each_label_with_its_own_product() -> None:
+    """Task 5.6c: a sentence naming K1 never carries K2's label, and the reverse."""
+    base = _composition()
+    target = make_target(question=("How do the Kettle K1 and the Kettle K2 compare on the "
+                                   "Example Tester noise rating for 2026?"),
+                         measure="noise rating", unit_dimension="rating", period=None,
+                         organisation="Example Test Lab")
+    topic = SubTopic(coverage_id="topic-01", title="Kettle ratings", rationale="r",
+                     search_queries=["kettle noise rating"], success_criteria=["c"], priority=1,
+                     evidence_targets=[target])
+    row = base.fact_rows[0].model_copy(update={"target_ids": [target.target_id],
+                                               "organisation": "Example Test Lab"})
+    rows = [row.model_copy(update={"row_id": "K001", "subject": "Kettle K1"}),
+            row.model_copy(update={"row_id": "K002", "subject": "Kettle K2",
+                                   "organisation": "Example Second Lab"})]
+    composition = base.model_copy(update={"fact_rows": rows, "sub_topics": [topic]})
+    first = base.summary[0].model_copy(update={"text": f"Kettle K1 scored {row.value}."})
+    second = base.summary[0].model_copy(update={"text": f"Kettle K2 scored {row.value}."})
+    assert _point_labels(first, composition) == [_row_label(rows[0])]
+    assert _point_labels(second, composition) == [_row_label(rows[1])]

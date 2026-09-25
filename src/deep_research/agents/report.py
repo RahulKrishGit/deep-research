@@ -38,6 +38,8 @@ from deep_research.agents.identity import (
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import summarize_text
 from deep_research.agents.verified_facts import (
+    _own_fields,
+    _subject_distinguishes,
     release_text,
     subject_context,
     subject_named_in,
@@ -775,21 +777,36 @@ def written_citations(composition: ReportComposition) -> list[Citation]:
 
 
 def _point_labels(point: ReportPoint, composition: ReportComposition) -> list[str]:
-    """The rows a sentence carries: its cited row's quantity, about the subject it names (D11)."""
+    """The rows a sentence carries: its cited row's quantity, about the subject it names (D11).
+
+    Only the row whose own subject the sentence names carries its label, and
+    where the candidates' subjects are different things -- a target that names
+    both options, say -- the sentence must also name what distinguishes that
+    row from each rival, so "Kettle K1 scored 4.5" never takes Kettle K2's
+    label (Task 5.6c).
+    """
     cited = set(point.statement.finding_ids) if point.statement is not None else set()
     stated = quantities_in(point.text)
     targets = [t for topic in composition.sub_topics for t in topic.evidence_targets]
+    candidates = [
+        row for row in composition.fact_rows
+        if (row.finding_id in cited or cited & set(row.duplicate_finding_ids))
+        and any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated)
+    ]
     labels: list[str] = []
-    for row in composition.fact_rows:
-        if row.finding_id not in cited and not cited & set(row.duplicate_finding_ids):
-            continue
+    for row in candidates:
         if not subject_named_in(point.text, row.subject,
                                context_words=subject_context(row.target_ids, targets)):
             continue
-        if any(same_quantity(r, s) for r in quantities_in(row.value) for s in stated):
-            label = _row_label(row)
-            if label not in labels:
-                labels.append(label)
+        if not all(_subject_distinguishes(
+            point.text, row.subject, other.subject,
+            context_words=subject_context(set(row.target_ids) & set(other.target_ids), targets),
+            own_fields=_own_fields(set(row.target_ids) & set(other.target_ids), targets),
+        ) for other in candidates if other is not row):
+            continue
+        label = _row_label(row)
+        if label not in labels:
+            labels.append(label)
     return labels
 
 
