@@ -558,7 +558,13 @@ PLANNED_OPERATION_INVENTORY = {
     # rule stated without its condition or exception, judged against the
     # passage beside the snippet. Two failure classes, one example each.
     "statement check": ("evidence_verifier", 2),
-    "report drafting": ("report_writer", 1),
+    # The prompt-fix wave (Fable's WRI-3) gave the writer its second example:
+    # the first is a figure line and its snippet, the second a statement-only
+    # finding whose line names only the host it was read on -- the two shapes
+    # whose crediting the audits found wrong (run 2 S005/S009, smoke 1). Two
+    # shapes, one example each, and neither output invents a word its input
+    # does not carry.
+    "report drafting": ("report_writer", 2),
     "report review": ("report_reviewer", 1),
 }
 
