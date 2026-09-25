@@ -725,12 +725,15 @@ from deep_research.utils.config import (
 # table. The values are computed on this branch with the Task 1.5 command;
 # Task 4.10 re-pins them once every parallel task has landed.
 # Evidence Verifier plan, Task 4.10: agent set and shared prompts changed.
+# Evidence Verifier plan, Task 5.4 (D10, D11): planner, researcher, source
+# evaluator, evidence verifier and report writer prompts and the shared prompts
+# module changed; one re-pin for the phase.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "927ebbbdb99d",
-    "researcher": "4ce1067d61dc",
-    "source_evaluator": "f601e676f95f",
-    "evidence_verifier": "ec188e91a1fb",
-    "report_writer": "1c40be45868f",
+    "planner": "46a9cddd0896",
+    "researcher": "f9ad12ff184b",
+    "source_evaluator": "58c4e7d909ef",
+    "evidence_verifier": "21c413e91f94",
+    "report_writer": "c58bc58d74fe",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

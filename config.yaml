@@ -8,7 +8,7 @@ llm:
   embedding_provider: local
   embedding_model: text-embedding-3-small
   thinking_mode: enabled
-  # Finalized at `high` for every agent. DeepSeek V4 Flash supports only `high`
+  # Finalized at `high` for every agent. DeepSeek Flash supports only `high`
   # and `max`, and `high` is the cheaper of the two enabled levels while still
   # being a genuine reasoning setting; the live canary re-runs at this value.
   # This global value is the default for any agent ``model_overrides`` does not
@@ -125,12 +125,11 @@ agents:
     evidence_verifier: 0
     report_writer: 0
   # How many planned sub-topics one Researcher pass attempts
-  # (AGENTS_MAX_SUB_TOPICS overrides this). Spec §7.2 caps the production
-  # default at 5, below the Planner's own seven-topic ceiling. A smaller cap
-  # silently drops the least important planned sub-topics; each dropped one
-  # is recorded as researcher_sub_topic_skipped with its coverage id, but the
-  # report is short for it regardless.
-  max_sub_topics: 5
+  # (AGENTS_MAX_SUB_TOPICS overrides this). Seven is the Planner's own
+  # ceiling: a lower cap dropped the last parts of a six- or seven-part
+  # question under Not found. How many run at once is
+  # agents.sub_topic_concurrency.
+  max_sub_topics: 7
   # Exact target-bearing passages retained from each successful read.
   selected_passages_per_read: 4
   # Maximum serialized acquisition/evidence context sent in one packet.

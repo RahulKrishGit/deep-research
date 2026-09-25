@@ -135,9 +135,9 @@ def utc_now() -> datetime:
 
 # --- answer-form vocabulary -------------------------------------------------
 
-# What a satisfactory answer to each form looks like. The planner writes the
-# matching requirement into every target's dimensions, so the obligation a
-# researcher is handed already says what shape of answer closes it.
+# What a satisfactory answer to each form looks like. The form is printed in
+# the answer contract (``render_answer_contract``) that the planning and later
+# requests carry, never written into every target's dimensions.
 _ANSWER_FORM_REQUIREMENTS: dict[AnswerKind, str] = {
     "constraints": (
         "answer form: a list of the binding constraints, each with the "
@@ -1297,7 +1297,12 @@ def answer_kind_for(question: str, *, clock_year: int | None = None) -> AnswerKi
 
 
 def answer_form_requirement(kind: AnswerKind) -> str:
-    """The dimension text that says what shape of answer closes a target."""
+    """The form's line in the answer contract.
+
+    It is printed into the contract (``render_answer_contract``), which the
+    planning and later requests carry, never written into a target's
+    dimensions.
+    """
     return _ANSWER_FORM_REQUIREMENTS[kind]
 
 

@@ -775,19 +775,19 @@ def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
 
 
 def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:
-    """Spec §7.2 caps one production pass below the Planner's own ceiling.
+    """One production pass attempts the whole plan the Planner may produce.
 
     ``agents.max_sub_topics`` bounds how many of a plan's sub-topics one
-    Researcher pass attempts; it no longer equals the Planner's own
-    ``MAX_SUB_TOPICS`` ceiling on how many a plan may contain, so a run may
-    now plan more sub-topics than one pass researches.
+    Researcher pass attempts. It equals the Planner's own ``MAX_SUB_TOPICS``
+    ceiling, so a six- or seven-part question is researched whole: a lower cap
+    dropped the plan's last sub-topics, and the parts they covered reached the
+    reader as Not found.
     """
     from deep_research.agents.planner import MAX_SUB_TOPICS
 
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["agents"]["max_sub_topics"] == 5
-    assert raw["agents"]["max_sub_topics"] < MAX_SUB_TOPICS
+    assert raw["agents"]["max_sub_topics"] == MAX_SUB_TOPICS
 
 
 def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
@@ -932,12 +932,12 @@ def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
 
 def test_the_shipped_config_sets_the_researcher_budget_and_turn_caps() -> None:
     """Spec §7.2: the researcher's tool budget is 20 over seven model turns,
-    and one pass attempts at most five sub-topics."""
+    and one pass attempts every sub-topic a plan may carry (seven)."""
     settings = load_config("config.yaml")
 
     assert (
         settings.agents.max_iterations == 7
-        and settings.agents.max_sub_topics == 5
+        and settings.agents.max_sub_topics == 7
         and settings.agents.tool_budget_overrides["researcher"] == 20
     )
 
