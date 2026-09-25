@@ -7,10 +7,12 @@ one ``react_iteration_span`` per turn.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import nullcontext
 from typing import TypeAlias
 
 from pydantic import JsonValue
@@ -312,6 +314,7 @@ async def run_react_loop(
     is_sufficient: SufficiencyCallback | None = None,
     tool_policy: ToolPolicyCallback | None = None,
     job_id: str | None = None,
+    tool_lock: asyncio.Lock | None = None,
     summary_limit: int = DEFAULT_SUMMARY_LIMIT,
     propagate_provider_errors: bool = True,
 ) -> ReActRun:
@@ -330,6 +333,12 @@ async def run_react_loop(
     A turn that spends the last of the budget records the calls it never
     reached in one extra step, so a budget stop never hides work the provider
     asked for and did not get.
+
+    ``tool_lock`` is the caller's run-wide lock (D9). A ``use_tool``
+    decision's whole tool section — the policy's admission decision, the
+    execution, and ``after_action``'s reduction of the result into the run's
+    cache and ledger — runs under it, so two loops sharing one run can never
+    both admit the same page. The model turn is never inside it.
     """
     if not agent_name.strip():
         raise ValueError("agent_name must not be blank")
@@ -367,295 +376,309 @@ async def run_react_loop(
                         await value
                 decisions = await decide(iteration, steps)
                 for position, decision in enumerate(decisions):
-                    proposal_id = build_proposal_id(
-                        local_job_id, iteration, position
-                    )
-                    observation: ReActObservation | None = None
-                    tool_result: ToolResult | None = None
-                    tool_input: dict[str, JsonValue] = {}
-                    budget_spent = False
-
-                    if decision.action == "finish":
-                        stop_reason = "finished"
-                    else:
-                        tool_name = decision.tool_name or ""
-                        # Unreachable-by-construction: ReActDecision requires a
-                        # non-blank tool_name when action == "use_tool".
-                        tool = tools.get(tool_name)
-                        available = ", ".join(tools.names) or "none"
-                        safe_tool_name = summarize_text(
-                            tool_name, limit=summary_limit
+                    # D9: one turn's tool section runs under the caller's
+                    # run-wide lock: the policy's admission decision, the
+                    # execution it allows, and the reducer that commits the
+                    # outcome to the run's cache and ledger. A sibling
+                    # loop's own decision therefore cannot slip between this
+                    # loop's download and the admission that makes it a
+                    # cache hit. The model turn above is deliberately
+                    # outside it, so loops still overlap where it matters.
+                    async with (
+                        tool_lock
+                        if tool_lock is not None
+                        and decision.action == "use_tool"
+                        else nullcontext()
+                    ):
+                        proposal_id = build_proposal_id(
+                            local_job_id, iteration, position
                         )
-                        if tool is None:
-                            observation = ReActObservation(
-                                tool_name=tool_name,
-                                success=False,
-                                summary=summarize_text(
-                                    f"{tool_name} is not available to this "
-                                    f"agent. Available tools: {available}.",
-                                    limit=summary_limit,
-                                ),
-                                error_type="agent_unknown_tool",
-                            )
-                            errors.append(
-                                agent_error(
-                                    agent_name=agent_name,
-                                    error_type="agent_unknown_tool",
-                                    message=(
-                                        f"{safe_tool_name} is not available to "
-                                        "this agent."
-                                    ),
-                                    details={
-                                        "tool": safe_tool_name,
-                                        "iteration": iteration,
-                                    },
-                                )
-                            )
+                        observation: ReActObservation | None = None
+                        tool_result: ToolResult | None = None
+                        tool_input: dict[str, JsonValue] = {}
+                        budget_spent = False
+
+                        if decision.action == "finish":
+                            stop_reason = "finished"
                         else:
-                            try:
-                                tool_input = parse_tool_input(
-                                    decision.tool_input_json
-                                )
-                            except ValueError as error:
+                            tool_name = decision.tool_name or ""
+                            # Unreachable-by-construction: ReActDecision requires a
+                            # non-blank tool_name when action == "use_tool".
+                            tool = tools.get(tool_name)
+                            available = ", ".join(tools.names) or "none"
+                            safe_tool_name = summarize_text(
+                                tool_name, limit=summary_limit
+                            )
+                            if tool is None:
                                 observation = ReActObservation(
                                     tool_name=tool_name,
                                     success=False,
                                     summary=summarize_text(
-                                        f"{tool_name} arguments were rejected: "
-                                        f"{error}",
+                                        f"{tool_name} is not available to this "
+                                        f"agent. Available tools: {available}.",
                                         limit=summary_limit,
                                     ),
-                                    error_type="agent_invalid_tool_input",
+                                    error_type="agent_unknown_tool",
                                 )
                                 errors.append(
                                     agent_error(
                                         agent_name=agent_name,
-                                        error_type="agent_invalid_tool_input",
+                                        error_type="agent_unknown_tool",
                                         message=(
-                                            f"{tool_name} arguments could not "
-                                            "be decoded."
+                                            f"{safe_tool_name} is not available to "
+                                            "this agent."
                                         ),
                                         details={
-                                            "tool": tool_name,
+                                            "tool": safe_tool_name,
                                             "iteration": iteration,
                                         },
                                     )
                                 )
                             else:
-                                allowed = True
-                                policy_reason = ""
-                                policy_result: ToolResult | None = None
-                                charge_budget = True
-                                if tool_policy is not None:
-                                    policy_value = await _policy_result(
-                                        tool_policy, decision, tool_input
+                                try:
+                                    tool_input = parse_tool_input(
+                                        decision.tool_input_json
                                     )
-                                    (
-                                        allowed,
-                                        policy_reason,
-                                        policy_result,
-                                        charge_budget,
-                                    ) = _policy_fields(policy_value)
-                                if not allowed:
-                                    observation = _policy_rejection_observation(
-                                        tool_name,
-                                        policy_reason,
-                                        limit=summary_limit,
-                                    )
-                                    errors.append(
-                                        agent_error(
-                                            agent_name=agent_name,
-                                            error_type="agent_tool_policy_rejected",
-                                            message=(
-                                                "The acquisition policy rejected "
-                                                "a requested tool action."
-                                            ),
-                                            details={
-                                                "tool": tool_name,
-                                                "iteration": iteration,
-                                            },
-                                        )
-                                    )
-                                elif (
-                                    policy_result is not None
-                                    and not charge_budget
-                                ):
-                                    # A local/cache result is an observation,
-                                    # not an external tool call. It is recorded
-                                    # as its own count: reporting it as a tool
-                                    # call inflated every acquired-work report.
-                                    tool_result = policy_result
-                                    observation = _tool_observation(
-                                        tool_result, limit=summary_limit
-                                    )
-                                    cache_hits += 1
-                                    if not tool_result.success:
-                                        errors.append(
-                                            agent_error(
-                                                agent_name=agent_name,
-                                                error_type="agent_tool_failed",
-                                                message=(
-                                                    f"{tool_name} failed; the agent "
-                                                    "continued with an observation."
-                                                ),
-                                                details=_tool_failure_details(
-                                                    tool_result,
-                                                    tool_name=tool_name,
-                                                    iteration=iteration,
-                                                    tool_error_type=(
-                                                        observation.error_type
-                                                        or "unknown"
-                                                    ),
-                                                ),
-                                            )
-                                        )
-                                elif charged_tool_calls >= tool_budget:
-                                    # Arguments for a call the budget refused
-                                    # are provider text and must not enter the
-                                    # persisted step or its public repr.
-                                    tool_input = {}
+                                except ValueError as error:
                                     observation = ReActObservation(
                                         tool_name=tool_name,
                                         success=False,
                                         summary=summarize_text(
-                                            f"The tool budget of {tool_budget} calls "
-                                            "is exhausted; no further tool calls "
-                                            "are possible.",
+                                            f"{tool_name} arguments were rejected: "
+                                            f"{error}",
                                             limit=summary_limit,
                                         ),
-                                        error_type="agent_tool_budget_exhausted",
+                                        error_type="agent_invalid_tool_input",
                                     )
                                     errors.append(
                                         agent_error(
                                             agent_name=agent_name,
-                                            error_type=(
-                                                "agent_tool_budget_exhausted"
-                                            ),
+                                            error_type="agent_invalid_tool_input",
                                             message=(
-                                                "The agent stopped after exhausting "
-                                                "its tool budget."
+                                                f"{tool_name} arguments could not "
+                                                "be decoded."
                                             ),
                                             details={
                                                 "tool": tool_name,
                                                 "iteration": iteration,
-                                                "tool_budget": tool_budget,
                                             },
                                         )
                                     )
-                                    stop_reason = "tool_budget_exhausted"
-                                    budget_spent = True
                                 else:
-                                    tool_result = (
-                                        policy_result
-                                        if policy_result is not None
-                                        else await tool.execute(**tool_input)
-                                    )
-                                    tool_calls += 1
-                                    charged_tool_calls += 1
-                                    observation = _tool_observation(
-                                        tool_result, limit=summary_limit
-                                    )
-                                    if not tool_result.success:
+                                    allowed = True
+                                    policy_reason = ""
+                                    policy_result: ToolResult | None = None
+                                    charge_budget = True
+                                    if tool_policy is not None:
+                                        policy_value = await _policy_result(
+                                            tool_policy, decision, tool_input
+                                        )
+                                        (
+                                            allowed,
+                                            policy_reason,
+                                            policy_result,
+                                            charge_budget,
+                                        ) = _policy_fields(policy_value)
+                                    if not allowed:
+                                        observation = _policy_rejection_observation(
+                                            tool_name,
+                                            policy_reason,
+                                            limit=summary_limit,
+                                        )
                                         errors.append(
                                             agent_error(
                                                 agent_name=agent_name,
-                                                error_type="agent_tool_failed",
+                                                error_type="agent_tool_policy_rejected",
                                                 message=(
-                                                    f"{tool_name} failed; the agent "
-                                                    "continued with an observation."
+                                                    "The acquisition policy rejected "
+                                                    "a requested tool action."
                                                 ),
-                                                details=_tool_failure_details(
-                                                    tool_result,
-                                                    tool_name=tool_name,
-                                                    iteration=iteration,
-                                                    tool_error_type=(
-                                                        observation.error_type
-                                                        or "unknown"
-                                                    ),
-                                                ),
+                                                details={
+                                                    "tool": tool_name,
+                                                    "iteration": iteration,
+                                                },
                                             )
                                         )
+                                    elif (
+                                        policy_result is not None
+                                        and not charge_budget
+                                    ):
+                                        # A local/cache result is an observation,
+                                        # not an external tool call. It is recorded
+                                        # as its own count: reporting it as a tool
+                                        # call inflated every acquired-work report.
+                                        tool_result = policy_result
+                                        observation = _tool_observation(
+                                            tool_result, limit=summary_limit
+                                        )
+                                        cache_hits += 1
+                                        if not tool_result.success:
+                                            errors.append(
+                                                agent_error(
+                                                    agent_name=agent_name,
+                                                    error_type="agent_tool_failed",
+                                                    message=(
+                                                        f"{tool_name} failed; the agent "
+                                                        "continued with an observation."
+                                                    ),
+                                                    details=_tool_failure_details(
+                                                        tool_result,
+                                                        tool_name=tool_name,
+                                                        iteration=iteration,
+                                                        tool_error_type=(
+                                                            observation.error_type
+                                                            or "unknown"
+                                                        ),
+                                                    ),
+                                                )
+                                            )
+                                    elif charged_tool_calls >= tool_budget:
+                                        # Arguments for a call the budget refused
+                                        # are provider text and must not enter the
+                                        # persisted step or its public repr.
+                                        tool_input = {}
+                                        observation = ReActObservation(
+                                            tool_name=tool_name,
+                                            success=False,
+                                            summary=summarize_text(
+                                                f"The tool budget of {tool_budget} calls "
+                                                "is exhausted; no further tool calls "
+                                                "are possible.",
+                                                limit=summary_limit,
+                                            ),
+                                            error_type="agent_tool_budget_exhausted",
+                                        )
+                                        errors.append(
+                                            agent_error(
+                                                agent_name=agent_name,
+                                                error_type=(
+                                                    "agent_tool_budget_exhausted"
+                                                ),
+                                                message=(
+                                                    "The agent stopped after exhausting "
+                                                    "its tool budget."
+                                                ),
+                                                details={
+                                                    "tool": tool_name,
+                                                    "iteration": iteration,
+                                                    "tool_budget": tool_budget,
+                                                },
+                                            )
+                                        )
+                                        stop_reason = "tool_budget_exhausted"
+                                        budget_spent = True
+                                    else:
+                                        tool_result = (
+                                            policy_result
+                                            if policy_result is not None
+                                            else await tool.execute(**tool_input)
+                                        )
+                                        tool_calls += 1
+                                        charged_tool_calls += 1
+                                        observation = _tool_observation(
+                                            tool_result, limit=summary_limit
+                                        )
+                                        if not tool_result.success:
+                                            errors.append(
+                                                agent_error(
+                                                    agent_name=agent_name,
+                                                    error_type="agent_tool_failed",
+                                                    message=(
+                                                        f"{tool_name} failed; the agent "
+                                                        "continued with an observation."
+                                                    ),
+                                                    details=_tool_failure_details(
+                                                        tool_result,
+                                                        tool_name=tool_name,
+                                                        iteration=iteration,
+                                                        tool_error_type=(
+                                                            observation.error_type
+                                                            or "unknown"
+                                                        ),
+                                                    ),
+                                                )
+                                            )
 
-                    turn_steps.append(
-                        ReActStep(
-                            proposal_id=proposal_id,
-                            iteration=iteration,
-                            thought=decision.thought,
-                            action=decision.action,
-                            tool_name=decision.tool_name or None,
-                            tool_input=tool_input,
-                            observation=observation,
-                            tool_result=tool_result,
-                            final_answer=decision.final_answer or None,
-                        )
-                    )
-                    if tool_policy is not None:
-                        after_action = getattr(tool_policy, "after_action", None)
-                        if callable(after_action):
-                            value = after_action(turn_steps[-1], tool_input)
-                            if inspect.isawaitable(value):
-                                await value
-                    span.set_outputs(
-                        {
-                            "agent_name": agent_name,
-                            "iteration": iteration,
-                            "action": decision.action,
-                            "tool": (
-                                None
-                                if decision.tool_name not in tools.names
-                                else decision.tool_name
-                            ),
-                            "success": (
-                                True if observation is None else observation.success
-                            ),
-                            "error_type": (
-                                None
-                                if observation is None or observation.success
-                                else summarize_text(
-                                    observation.error_type or "unknown",
-                                    limit=64,
-                                )
-                            ),
-                            "error_count": len(errors),
-                        }
-                    )
-                    if budget_spent:
-                        # Every call of this turn the provider asked for and did
-                        # not get is counted here, including the one the budget
-                        # refused a moment ago, so a budget stop can never
-                        # silently drop work that was requested. The invariant
-                        # the record supports is: executed + counted == requested.
-                        unexecuted = len(decisions) - position
                         turn_steps.append(
-                            _unexecuted_remainder_step(
+                            ReActStep(
+                                proposal_id=proposal_id,
                                 iteration=iteration,
-                                unexecuted=unexecuted,
-                                tool_budget=tool_budget,
-                                summary_limit=summary_limit,
-                                proposal_id=build_proposal_id(
-                                    local_job_id, iteration, position + 1
-                                ),
+                                thought=decision.thought,
+                                action=decision.action,
+                                tool_name=decision.tool_name or None,
+                                tool_input=tool_input,
+                                observation=observation,
+                                tool_result=tool_result,
+                                final_answer=decision.final_answer or None,
                             )
                         )
-                        errors.append(
-                            agent_error(
-                                agent_name=agent_name,
-                                error_type="agent_tool_budget_exhausted",
-                                message=(
-                                    f"{unexecuted} further tool call(s) "
-                                    "requested by the provider were not "
-                                    "executed."
+                        if tool_policy is not None:
+                            after_action = getattr(tool_policy, "after_action", None)
+                            if callable(after_action):
+                                value = after_action(turn_steps[-1], tool_input)
+                                if inspect.isawaitable(value):
+                                    await value
+                        span.set_outputs(
+                            {
+                                "agent_name": agent_name,
+                                "iteration": iteration,
+                                "action": decision.action,
+                                "tool": (
+                                    None
+                                    if decision.tool_name not in tools.names
+                                    else decision.tool_name
                                 ),
-                                details={
-                                    "iteration": iteration,
-                                    "tool_budget": tool_budget,
-                                    "unexecuted_calls": unexecuted,
-                                },
-                            )
+                                "success": (
+                                    True if observation is None else observation.success
+                                ),
+                                "error_type": (
+                                    None
+                                    if observation is None or observation.success
+                                    else summarize_text(
+                                        observation.error_type or "unknown",
+                                        limit=64,
+                                    )
+                                ),
+                                "error_count": len(errors),
+                            }
                         )
-                        break
-                    if decision.action == "finish":
-                        break
+                        if budget_spent:
+                            # Every call of this turn the provider asked for and did
+                            # not get is counted here, including the one the budget
+                            # refused a moment ago, so a budget stop can never
+                            # silently drop work that was requested. The invariant
+                            # the record supports is: executed + counted == requested.
+                            unexecuted = len(decisions) - position
+                            turn_steps.append(
+                                _unexecuted_remainder_step(
+                                    iteration=iteration,
+                                    unexecuted=unexecuted,
+                                    tool_budget=tool_budget,
+                                    summary_limit=summary_limit,
+                                    proposal_id=build_proposal_id(
+                                        local_job_id, iteration, position + 1
+                                    ),
+                                )
+                            )
+                            errors.append(
+                                agent_error(
+                                    agent_name=agent_name,
+                                    error_type="agent_tool_budget_exhausted",
+                                    message=(
+                                        f"{unexecuted} further tool call(s) "
+                                        "requested by the provider were not "
+                                        "executed."
+                                    ),
+                                    details={
+                                        "iteration": iteration,
+                                        "tool_budget": tool_budget,
+                                        "unexecuted_calls": unexecuted,
+                                    },
+                                )
+                            )
+                            break
+                        if decision.action == "finish":
+                            break
         except ProviderError as error:
             tracker.record_event(
                 agent_event(

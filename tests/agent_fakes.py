@@ -5,7 +5,9 @@ Not collected by pytest: the filename does not match ``test_*.py``.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+import asyncio
+import re
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -191,6 +193,200 @@ class ScriptedCompleter:
             # those ids before the request is built.
             return response(list(messages), schema)
         return response
+
+
+_TARGET_ID_LINE = re.compile(r"^- target_id=(\S+)$", re.MULTILINE)
+_SUB_TOPIC_LINE = re.compile(r"^# Sub-topic\n(.+)$", re.MULTILINE)
+
+
+def _request_text(messages: Sequence[ChatMessage]) -> str:
+    return "\n".join(message.content for message in messages)
+
+
+def request_target_id(messages: Sequence[ChatMessage]) -> str | None:
+    """The target a ReAct packet is for, read out of its own ``target_id=`` line.
+
+    The same field ``e2e_evaluation/replay.py``'s ``_researcher_turn`` reads to
+    pick a topic's next action, so a double and the replay harness answer the
+    same packet the same way.
+    """
+    match = _TARGET_ID_LINE.search(_request_text(messages))
+    if match is None or match.group(1) == "-":
+        return None
+    return match.group(1)
+
+
+def request_sub_topic(messages: Sequence[ChatMessage]) -> str | None:
+    """The sub-topic an extraction request is about, from its title line."""
+    match = _SUB_TOPIC_LINE.search(_request_text(messages))
+    return None if match is None else match.group(1).strip()
+
+
+@dataclass(slots=True)
+class KeyedCall:
+    """One request this double answered, with the key it was dispatched under."""
+
+    key: str
+    schema: str
+    agent_name: str | None
+    messages: list[ChatMessage]
+
+
+class TargetKeyedCompleter:
+    """Serve each scripted reply to the loop that asked for it, not in call order.
+
+    ``ScriptedCompleter`` serves one queue in the order requests arrive, which
+    is only right while exactly one loop runs: as soon as a loop's tool
+    suspends, the next request comes from a different loop and the queued
+    decision lands in the wrong one. This double keys every script by the
+    sub-topic the request is about — the ``target_id=`` line of a ReAct
+    packet, and the ``# Sub-topic`` title line of an extraction request. A
+    request for a key nothing was scripted for fails the test outright,
+    because silently handing it the next queued reply is the bug this double
+    exists to catch.
+
+    ``decisions`` maps a target id (``topic-01``) to the ReAct decisions that
+    loop receives, in order; ``outputs`` maps a sub-topic title to the
+    structured replies its extraction receives, in order. An entry may be a
+    ``BaseException`` to raise it, or a callable called with the request's
+    messages and schema — the same three forms ``ScriptedCompleter`` serves.
+    ``delays`` maps a key to seconds this double sleeps before answering, so a
+    test can decide which loop finishes last without touching the event loop's
+    own scheduling.
+    """
+
+    def __init__(
+        self,
+        *,
+        decisions: Mapping[str, Sequence[Any]] | None = None,
+        outputs: Mapping[str, Sequence[Any]] | None = None,
+        delays: Mapping[str, float] | None = None,
+    ) -> None:
+        self._decisions = {
+            key: list(script) for key, script in (decisions or {}).items()
+        }
+        self._outputs = {
+            key: list(script) for key, script in (outputs or {}).items()
+        }
+        self._delays = dict(delays or {})
+        self.calls: list[KeyedCall] = []
+        self.react_calls: list[KeyedCall] = []
+        # The order each key's ReAct script ran out, which is the loop's own
+        # completion order: a loop with no decision left asks for none.
+        self.exhausted: list[str] = []
+        self._in_flight = 0
+        self.max_in_flight = 0
+
+    def packets(self, key: str) -> list[str]:
+        """Every ReAct request body ``key`` received, in order."""
+        return [
+            _request_text(call.messages)
+            for call in self.react_calls
+            if call.key == key
+        ]
+
+    def structured_requests(self, key: str) -> list[str]:
+        """Every structured request body ``key`` received, in order."""
+        return [
+            _request_text(call.messages)
+            for call in self.calls
+            if call.key == key
+        ]
+
+    def remaining(self, key: str) -> int:
+        """How many scripted ReAct decisions ``key`` never received."""
+        return len(self._decisions.get(key, ()))
+
+    async def _delay_for(self, key: str) -> None:
+        delay = self._delays.get(key)
+        if delay:
+            await asyncio.sleep(delay)
+
+    def _next(self, scripts: dict[str, list[Any]], key: str | None, *, kind: str) -> Any:
+        if key is None:
+            raise AssertionError(
+                f"a {kind} request named no sub-topic this double could key on"
+            )
+        script = scripts.get(key)
+        if script is None:
+            raise AssertionError(
+                f"no loop asked for {key!r} in a {kind} request"
+            )
+        if not script:
+            raise AssertionError(
+                f"{key!r} has no scripted {kind} reply left"
+            )
+        value = script.pop(0)
+        if kind == "ReAct" and not script and key not in self.exhausted:
+            self.exhausted.append(key)
+        return value
+
+    async def complete_react(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+    ) -> NativeToolTurn:
+        key = request_target_id(messages)
+        self.react_calls.append(
+            KeyedCall(
+                key=key or "",
+                schema="ReactDecision",
+                agent_name=agent_name,
+                messages=list(messages),
+            )
+        )
+        self._in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        try:
+            # A real model call suspends; a double that never yields would make
+            # concurrent loops look serial whatever the loop does, so the
+            # in-flight peak here could not observe a cap at all.
+            await asyncio.sleep(0)
+            if key is not None:
+                await self._delay_for(key)
+            decision = self._next(self._decisions, key, kind="ReAct")
+            if isinstance(decision, BaseException):
+                raise decision
+            if isinstance(decision, NativeToolTurn):
+                return decision
+            return native_turn_from_decision(decision)
+        finally:
+            self._in_flight -= 1
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[Any],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+    ) -> Any:
+        del max_tokens, reasoning_effort
+        key = request_sub_topic(messages)
+        self.calls.append(
+            KeyedCall(
+                key=key or "",
+                schema=schema.__name__,
+                agent_name=agent_name,
+                messages=list(messages),
+            )
+        )
+        if schema is ReActDecision:
+            raise AssertionError(
+                "ReAct decisions must be requested through complete_react"
+            )
+        if key is not None:
+            await self._delay_for(key)
+        reply = self._next(self._outputs, key, kind="structured")
+        if isinstance(reply, BaseException):
+            raise reply
+        if callable(reply):
+            return reply(list(messages), schema)
+        return reply
 
 
 def use_tool(

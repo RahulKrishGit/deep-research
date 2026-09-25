@@ -12,10 +12,13 @@ still considered high priority.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Callable, Collection, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import NamedTuple
 
 from pydantic import Field, JsonValue, ValidationError
@@ -60,6 +63,7 @@ from deep_research.agents.validation import _invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError
+from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
@@ -1285,6 +1289,7 @@ def sub_topic_completed_event(
     useful_evidence_yield: int = 0,
     acquired_work_count: int = 0,
     target_obligation_completed: bool = False,
+    elapsed_s: float = 0.0,
 ) -> ResearchEvent:
     """Report one sub-topic's stop reason, counts, and finding total.
 
@@ -1298,6 +1303,11 @@ def sub_topic_completed_event(
     the unique network bodies this run actually downloaded — ``cache_hits``
     (from ``run``) is reported beside it so a reused body is never read as new
     acquisition.
+
+    ``elapsed_s`` is this loop's own wall seconds, rounded to a tenth. With
+    several loops in flight the CLI prints every sub-topic event at node
+    completion, where the log's own timestamps can no longer separate them;
+    this is the number that survives.
 
     ``target_obligation_completed`` is the Task 3 signal that the active
     target's obligation advanced: at least one registry-admitted finding was
@@ -1327,6 +1337,7 @@ def sub_topic_completed_event(
             "useful_evidence_yield": useful_evidence_yield,
             "acquired_work_count": acquired_work_count,
             "target_obligation_completed": target_obligation_completed,
+            "elapsed_s": elapsed_s,
         },
     )
 
@@ -1487,6 +1498,25 @@ def owed_extraction_provider_error(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _SubTopicOutcome:
+    """One sub-topic loop's own results, folded in plan order by ``run``.
+
+    Everything here belongs to exactly one loop. With several loops in flight
+    (D9) there is no run-level "active" acquisition, target or counter to keep
+    on the agent — a field would be a race waiting to be written — so the
+    loop's own stop reason, findings, errors, events, counters and acquisition
+    snapshot travel back with the loop that produced them.
+    """
+
+    react: ReActRun
+    findings: list[Finding]
+    errors: list[ResearchError]
+    events: list[ResearchEvent]
+    target_id: str | None
+    target_state: AcquisitionState | None
+
+
 class ResearcherAgent(BaseAgent[ResearchFindings]):
     """Run one bounded ReAct loop per selected sub-topic and extract findings.
 
@@ -1523,6 +1553,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         evidence_chars: int = DEFAULT_EVIDENCE_CHARS,
         selected_passages_per_read: int | None = None,
         evidence_packet_chars: int | None = None,
+        sub_topic_concurrency: int | None = None,
         cache: MutableMapping[str, ReadRecord] | None = None,
         network_read_ids: set[str] | None = None,
         clock: Clock = _utc_now,
@@ -1555,6 +1586,13 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             raise ValueError("selected_passages_per_read must be at least 1")
         if packet_limit < 1:
             raise ValueError("evidence_packet_chars must be at least 1")
+        resolved_concurrency = (
+            self.config.sub_topic_concurrency
+            if sub_topic_concurrency is None
+            else sub_topic_concurrency
+        )
+        if resolved_concurrency < 1:
+            raise ValueError("sub_topic_concurrency must be at least 1")
         probe = clock()
         if probe.tzinfo is None or probe.utcoffset() is None:
             raise AgentConfigurationError(
@@ -1589,13 +1627,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._shared_network_read_ids = (
             network_read_ids if network_read_ids is not None else set()
         )
-        self._active_acquisition: AcquisitionPolicy | None = None
-        self._active_target_id: str | None = None
+        # How many sub-topic loops may run at once (PD-27). Every other loop
+        # value is a local of the loop that owns it: with several loops in
+        # flight there is no single "active" acquisition, target or counter to
+        # keep here, and a field would only be a race waiting to be written.
+        self._sub_topic_concurrency = resolved_concurrency
         self._run_source_state: ResearchState | None = None
-        self._last_successful_reads = 0
-        self._last_useful_evidence_yield = 0
-        self._last_acquired_work_count = 0
-        self._last_target_obligation_completed = False
 
     @property
     def output_schema(self) -> type[ResearchFindings]:
@@ -1618,20 +1655,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             instruction=state.original_question,
             guidance=render_session_guidance(state),
         )
-
-    def build_decision_context(
-        self,
-        task: AgentTask,
-        *,
-        iteration: int,
-        steps: Sequence[ReActStep],
-    ) -> str:
-        """Refresh and render the active target's complete acquisition state."""
-        del task, iteration, steps
-        policy = self._active_acquisition
-        if policy is None:
-            return ""
-        return policy.context(limit=self._evidence_packet_chars)
 
     def _planned_targets(self) -> list[EvidenceTarget]:
         """Every target this pass's extraction may bind a finding to.
@@ -1738,7 +1761,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self,
         task: SubTopicTask,
         run: ReActRun,
-    ) -> tuple[list[Finding], list[ResearchError], bool]:
+        policy: AcquisitionPolicy | None = None,
+    ) -> tuple[list[Finding], list[ResearchError], bool, bool]:
         """Turn one finished sub-topic loop into validated findings.
 
         Returns nothing — and makes no provider call — when the loop stopped
@@ -1746,17 +1770,22 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         never invent one. "Read" is the shared read-bearing rule: a loop that
         only searched, or only wrote to memory, has nothing to extract from.
 
+        ``policy`` is this loop's own acquisition policy, passed in rather than
+        read from an "active" field: several sub-topic loops share the agent
+        (D9), so the policy a call acts on has to be the caller's own.
+
         The third element, ``provider_failed``, is ``True`` only when the
         extraction call itself could not reach the model provider. The
         caller must treat that the same way it treats a ReAct-loop-level
         ``provider_error``: stop researching further sub-topics, but keep
-        every finding already collected.
+        every finding already collected. The fourth is the target-obligation
+        flag this extraction completed, which the caller reports in the
+        sub-topic's own completed event.
         """
         # One call, two consumers: the same tuple gates the provider call and
         # becomes the provenance allow-list, so "did this loop read anything"
         # and "which URLs may a finding cite" cannot disagree.
-        self._last_target_obligation_completed = False
-        policy = self._active_acquisition
+        target_obligation_completed = False
         retrieved = (
             tuple(
                 dict.fromkeys(
@@ -1769,7 +1798,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             else retrieved_finding_urls(run)
         )
         if not run.succeeded or not retrieved:
-            return [], [], False
+            return [], [], False, False
 
         if policy is not None:
             # The local extract step, taken before the provider call so the
@@ -1797,7 +1826,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 agent_name=self.name,
             )
         except ProviderError as error:
-            return [], [extraction_provider_error(run, error)], True
+            return [], [extraction_provider_error(run, error)], True, False
 
         admitted_keys: list[tuple[str, str]] = []
         unplanned_target_ids: list[str] = []
@@ -1915,7 +1944,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     own_target_ids.intersection(finding.target_ids)
                     for finding in bound
                 )
-            self._last_target_obligation_completed = completed
+            target_obligation_completed = completed
         if unplanned_target_ids:
             # Recorded even though the finding was kept: an id the plan never
             # issued is invisible in state otherwise, and every later stage
@@ -1956,7 +1985,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         if policy is not None:
             policy.complete_extraction()
         if not rejected:
-            return findings, errors, False
+            return findings, errors, False, target_obligation_completed
         errors.append(
             agent_error(
                 agent_name=self.name,
@@ -1970,7 +1999,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 },
             )
         )
-        return findings, errors, False
+        return findings, errors, False, target_obligation_completed
 
     async def finalize(
         self,
@@ -1980,13 +2009,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """Adapt ``extract_findings`` to the ``BaseAgent`` hook.
 
         ``run`` calls ``extract_findings`` directly so it can keep the
-        recoverable errors this hook signature has nowhere to return.
+        recoverable errors this hook signature has nowhere to return, and so
+        it can hand the call its own loop's policy.
         """
         if not isinstance(task, SubTopicTask):
             raise AgentConfigurationError(
                 "ResearcherAgent.finalize requires a SubTopicTask"
             )
-        findings, _, _ = await self.extract_findings(task, run)
+        findings, _, _, _ = await self.extract_findings(task, run)
         return ResearchFindings(findings=findings)
 
     def state_update(
@@ -2018,18 +2048,22 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             )
         return update
 
-    async def _research_sub_topic(self, task: SubTopicTask) -> ReActRun:
-        """Run one bounded ReAct loop inside the caller's agent span.
+    async def _research_sub_topic(
+        self,
+        task: SubTopicTask,
+        policy: AcquisitionPolicy,
+        scratchpad: ScratchpadMemory,
+        tool_lock: asyncio.Lock,
+    ) -> ReActRun:
+        """Run one bounded ReAct loop for one sub-topic.
 
-        The scratchpad is cleared first: notes about the previous sub-topic
-        are noise in this one's prompt. Context that genuinely carries over
-        travels in ``task.guidance`` instead.
+        The loop gets its own scratchpad, its own policy and the run's tool
+        lock, so its prompt renders its own observations and its own
+        acquisition state however many sibling loops are running (D9).
+        Context that genuinely carries over between sub-topics travels in
+        ``task.guidance`` instead of through shared notes.
         """
-        self.scratchpad.clear()
         toolset = self.toolset
-        policy = self._policy_for_task(task)
-        self._active_acquisition = policy
-        self._active_target_id = task.sub_topic.coverage_id
 
         async def decide(
             iteration: int,
@@ -2039,7 +2073,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 task,
                 iteration=iteration,
                 steps=steps,
+                decision_context=policy.context(
+                    limit=self._evidence_packet_chars
+                ),
+                scratchpad=scratchpad,
             )
+
+        async def record(step: ReActStep) -> None:
+            await self._record_step(step, scratchpad=scratchpad)
 
         react = await run_react_loop(
             agent_name=self.name,
@@ -2048,21 +2089,143 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             decide=decide,
             max_iterations=self.config.max_iterations,
             tool_budget=self.config.tool_budget_for(self.name),
-            on_step=self._record_step,
+            on_step=record,
             is_sufficient=self.is_sufficient,
             summary_limit=self.config.observation_summary_chars,
             tool_policy=policy,
             job_id=f"{self.name}/{policy.session_id}/{policy.target_id}",
+            tool_lock=tool_lock,
             propagate_provider_errors=False,
         )
         return react.model_copy(
-            update={
-                "errors": [*react.errors, *self.scratchpad.drain_errors()]
-            }
+            update={"errors": [*react.errors, *scratchpad.drain_errors()]}
+        )
+
+    async def _research_one(
+        self,
+        index: int,
+        task: SubTopicTask,
+        tool_lock: asyncio.Lock,
+    ) -> _SubTopicOutcome:
+        """Run one sub-topic's loop and extraction inside its own agent span.
+
+        Nothing here writes to the agent: the loop's findings, errors, events
+        and counters are returned for ``run`` to fold in plan order.
+        """
+        sub_topic = task.sub_topic
+        events = [
+            sub_topic_started_event(
+                sub_topic,
+                index=index,
+                existing_sources=len(task.existing_sources),
+            )
+        ]
+        scratchpad = ScratchpadMemory(
+            session_id=self._scratchpad.session_id,
+            agent_name=self._scratchpad.agent_name,
+            max_entries=self._scratchpad.max_entries,
+        )
+        policy = self._policy_for_task(task)
+        started_at = perf_counter()
+        async with self.tracker.agent_span(self.name) as span:
+            react = await self._research_sub_topic(
+                task, policy, scratchpad, tool_lock
+            )
+            elapsed_s = round(perf_counter() - started_at, 1)
+            (
+                sub_findings,
+                extraction_errors,
+                extraction_failed,
+                target_obligation_completed,
+            ) = await self.extract_findings(task, react, policy)
+            successful_reads = sum(
+                read.resolved_url in policy.state.read_urls
+                for read in policy.reads.values()
+            )
+            useful_evidence_yield = sum(
+                policy.target_id in unit.target_ids
+                for unit in policy.evidence.values()
+            )
+            acquired_work_count = policy.acquired_work_count
+            if extraction_failed:
+                # A retryable extraction failure consumed nothing: the batch
+                # stays owed, visible in the persisted
+                # ``pending_extraction_ids``, so the next pass knows exactly
+                # which reads still need extracting.
+                policy.defer_extraction()
+                # Mirror the loop-level provider_error path so the merged run
+                # (and this sub-topic's own completed event) never claims
+                # "finished" over an abort that actually happened during
+                # extraction.
+                react = react.model_copy(
+                    update={"stop_reason": "provider_error"}
+                )
+            else:
+                policy.complete_extraction()
+            bounded = bound_sub_topic_findings(
+                sub_findings, reads=list(self._run_reads.values())
+            )
+            span.set_outputs(
+                {
+                    "agent_name": self.name,
+                    "sub_topic": sub_topic.title,
+                    "stop_reason": react.stop_reason,
+                    "iterations": react.iterations,
+                    "tool_calls": react.tool_calls,
+                    "findings": len(bounded.retained),
+                }
+            )
+        errors = [*react.errors, *extraction_errors]
+        if react.succeeded and not bounded.retained and is_high_priority(
+            sub_topic, threshold=self._high_priority_threshold
+        ):
+            # Reported after the loop's own errors and before the completed
+            # event, exactly where the sequential fold reported it.
+            errors.append(no_findings_error(sub_topic, react))
+        events.extend(tool_call_events(sub_topic, react))
+        events.append(
+            sub_topic_completed_event(
+                sub_topic,
+                react,
+                index=index,
+                findings=len(bounded.retained),
+                dropped_duplicate=bounded.dropped_duplicate,
+                dropped_cap=bounded.dropped_cap,
+                sources_retained=bounded.sources_retained,
+                publishers_retained=bounded.publishers_retained,
+                source_urls_retained=bounded.source_urls_retained,
+                findings_retained=bounded.findings_retained,
+                works_retained=bounded.works_retained,
+                successful_reads=successful_reads,
+                useful_evidence_yield=useful_evidence_yield,
+                acquired_work_count=acquired_work_count,
+                target_obligation_completed=target_obligation_completed,
+                elapsed_s=elapsed_s,
+            )
+        )
+        return _SubTopicOutcome(
+            react=react,
+            findings=bounded.retained,
+            errors=errors,
+            events=events,
+            target_id=policy.target_id,
+            target_state=policy.state,
         )
 
     async def run(self, state: ResearchState) -> AgentRun[ResearchFindings]:
-        """Research each selected sub-topic in its own bounded loop."""
+        """Research every selected sub-topic, at most ``sub_topic_concurrency``
+        loops at once, and fold their results in plan order.
+
+        Each loop is independent — its own scratchpad, policy and bounded
+        ReAct run — and they share exactly two things: the run-wide tool lock
+        (D9), so a page two loops want is downloaded once, and the run's own
+        read/evidence registry, so a body one loop read can serve another
+        without a second acquisition. A provider failure in one loop stops
+        the topics that have not started yet (they record
+        ``provider_failure_stopped_processing``) and lets the running ones
+        finish; a run-wide attempt ceiling is re-raised after every loop has
+        settled, so the node still halts the run.
+        """
         self._run_source_state = state
         self._run_reads = dict(state.read_records)
         self._run_evidence = dict(state.evidence_units)
@@ -2102,8 +2265,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 if read.acquisition_kind == "network"
             }
         )
-        self._active_acquisition = None
-        self._active_target_id = None
         base_task = self.build_task(state)
         eligible = _eligible_sub_topics(state)
         selected = eligible[: self._max_sub_topics]
@@ -2113,115 +2274,84 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         findings: list[Finding] = []
         runs: list[ReActRun] = []
 
-        stopped_at: int | None = None
-        for index, sub_topic in enumerate(selected, start=1):
-            existing = existing_sources_for(state, sub_topic)
-            task = self.sub_topic_task(base_task, sub_topic, existing)
-            events.append(
-                sub_topic_started_event(
-                    sub_topic, index=index, existing_sources=len(existing)
-                )
-            )
-            async with self.tracker.agent_span(self.name) as span:
-                react = await self._research_sub_topic(task)
-                (
-                    sub_findings,
-                    extraction_errors,
-                    extraction_failed,
-                ) = await self.extract_findings(task, react)
-                if self._active_acquisition is not None:
-                    policy = self._active_acquisition
-                    self._last_successful_reads = sum(
-                        read.resolved_url in policy.state.read_urls
-                        for read in policy.reads.values()
-                    )
-                    self._last_useful_evidence_yield = sum(
-                        policy.target_id in unit.target_ids
-                        for unit in policy.evidence.values()
-                    )
-                    self._last_acquired_work_count = policy.acquired_work_count
-                    if extraction_failed:
-                        # A retryable extraction failure consumed nothing: the
-                        # batch stays owed, visible in the persisted
-                        # ``pending_extraction_ids``, so the next pass knows
-                        # exactly which reads still need extracting.
-                        policy.defer_extraction()
-                    else:
-                        policy.complete_extraction()
-                    target_id = policy.target_id
-                    if target_id is not None:
-                        self._run_acquisition_states[target_id] = (
-                            self._active_acquisition.state
-                        )
-                        self._run_seen_target_ids.add(target_id)
-                self._active_acquisition = None
-                self._active_target_id = None
-                if extraction_failed:
-                    # Mirror the loop-level provider_error path so the
-                    # merged run (and this sub-topic's own completed event)
-                    # never claims "finished" over an abort that actually
-                    # happened during extraction.
-                    react = react.model_copy(
-                        update={"stop_reason": "provider_error"}
-                    )
-                bounded = bound_sub_topic_findings(
-                    sub_findings, reads=list(self._run_reads.values())
-                )
-                span.set_outputs(
-                    {
-                        "agent_name": self.name,
-                        "sub_topic": sub_topic.title,
-                        "stop_reason": react.stop_reason,
-                        "iterations": react.iterations,
-                        "tool_calls": react.tool_calls,
-                        "findings": len(bounded.retained),
-                    }
-                )
+        # One tool lock for the whole run, never a module global (D9): every
+        # sub-topic loop of this run shares it, so two loops can never be
+        # inside a research tool's section -- and its admission to the run's
+        # cache and ledger -- at the same time. It is made per run and dies
+        # with it.
+        tool_lock = asyncio.Lock()
+        gate = asyncio.Semaphore(self._sub_topic_concurrency)
+        # Set by the first loop whose work ends in a non-recoverable provider
+        # failure. A loop that has not started yet checks it as it acquires
+        # the gate and stops there, which is what keeps
+        # ``provider_failure_stopped_processing`` for the topics that never
+        # got a turn, while the loops already running finish. It is set before
+        # the gate is released, so a waiter cannot slip past it.
+        stop = asyncio.Event()
 
-            runs.append(react)
-            findings.extend(bounded.retained)
-            errors.extend(react.errors)
-            errors.extend(extraction_errors)
-            events.extend(tool_call_events(sub_topic, react))
-            events.append(
-                sub_topic_completed_event(
+        async def research(
+            index: int, sub_topic: SubTopic
+        ) -> _SubTopicOutcome | None:
+            """Run one sub-topic, or skip it when the pass has stopped."""
+            async with gate:
+                if stop.is_set():
+                    return None
+                task = self.sub_topic_task(
+                    base_task,
                     sub_topic,
-                    react,
-                    index=index,
-                    findings=len(bounded.retained),
-                    dropped_duplicate=bounded.dropped_duplicate,
-                    dropped_cap=bounded.dropped_cap,
-                    sources_retained=bounded.sources_retained,
-                    publishers_retained=bounded.publishers_retained,
-                    source_urls_retained=bounded.source_urls_retained,
-                    findings_retained=bounded.findings_retained,
-                    works_retained=bounded.works_retained,
-                    successful_reads=self._last_successful_reads,
-                    useful_evidence_yield=self._last_useful_evidence_yield,
-                    acquired_work_count=self._last_acquired_work_count,
-                    target_obligation_completed=(
-                        self._last_target_obligation_completed
-                    ),
+                    existing_sources_for(state, sub_topic),
                 )
-            )
-            if not react.succeeded:
-                # A provider failure — whether from the ReAct loop or from
-                # extraction — is non-recoverable; the next sub-topic would
-                # almost certainly repeat it at cost. Findings already
-                # collected from this and prior sub-topics are kept. This
-                # check must run before the "no findings" check below: a
-                # sub-topic that died to a provider error is an outage, not
-                # a coverage gap, and must never be reported as one.
-                stopped_at = index
-                break
-            if not bounded.retained and is_high_priority(
-                sub_topic, threshold=self._high_priority_threshold
-            ):
-                errors.append(no_findings_error(sub_topic, react))
+                outcome = await self._research_one(index, task, tool_lock)
+                if not outcome.react.succeeded:
+                    stop.set()
+            return outcome
 
-        # Every sub-topic that was never attempted — either truncated by the
+        settled_results = await asyncio.gather(
+            *(
+                research(index, sub_topic)
+                for index, sub_topic in enumerate(selected, start=1)
+            ),
+            return_exceptions=True,
+        )
+        # Every sibling has settled by now, so a halt cancels no work: a
+        # run-wide attempt ceiling is re-raised and still stops the run
+        # (``graph/nodes.py`` halts on it), and any other unexpected failure is
+        # re-raised rather than swallowed by the gather.
+        refusals = [
+            item
+            for item in settled_results
+            if isinstance(item, RequestAttemptLimitError)
+        ]
+        if refusals:
+            raise refusals[0]
+        settled: list[_SubTopicOutcome | None] = []
+        for item in settled_results:
+            if isinstance(item, BaseException):
+                raise item
+            settled.append(item)
+
+        # The folds below iterate the plan-ordered task list, never the order
+        # the loops finished in: findings, runs and events are the plan's, so a
+        # report cannot depend on which loop happened to be scheduled first.
+        unstarted: list[SubTopic] = []
+        for sub_topic, outcome in zip(selected, settled, strict=True):
+            if outcome is None:
+                unstarted.append(sub_topic)
+                continue
+            if outcome.target_id is not None:
+                if outcome.target_state is not None:
+                    self._run_acquisition_states[outcome.target_id] = (
+                        outcome.target_state
+                    )
+                self._run_seen_target_ids.add(outcome.target_id)
+            runs.append(outcome.react)
+            findings.extend(outcome.findings)
+            errors.extend(outcome.errors)
+            events.extend(outcome.events)
+
+        # Every sub-topic that was never attempted -- either truncated by the
         # max_sub_topics cap, or left unstarted when a provider failure
-        # stopped the pass early — gets a structured, recoverable record
+        # stopped the pass early -- gets a structured, recoverable record
         # carrying its coverage id, whatever its priority. Without this,
         # state.errors and the event stream cannot be trusted as "every
         # sub-topic this pass set out to run was attempted or explicitly
@@ -2231,12 +2361,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # noise. A topic the pass was never sent for is not in this list at
         # all: an extra pass is confined to its own job list, and a topic
         # outside it is no gap in the pass's coverage.
-        skipped_by_break = selected[stopped_at:] if stopped_at is not None else []
         unattempted: list[tuple[SubTopic, str]] = [
             *[(sub_topic, "cap") for sub_topic in capped],
             *[
                 (sub_topic, "provider_failure_stopped_processing")
-                for sub_topic in skipped_by_break
+                for sub_topic in unstarted
             ],
         ]
         for sub_topic, reason in unattempted:

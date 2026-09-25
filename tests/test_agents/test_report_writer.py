@@ -644,9 +644,18 @@ class _FakeChecker:
         self.verdicts: dict[str, _FakeVerdict] = {}
         self.errors: list = []
         self.calls: list[list[_FakeStatementCheckItem]] = []
+        self.bounds: list[tuple[int | None, int | None]] = []
 
-    async def __call__(self, provider, items, *, question, fingerprint=None):
+    async def __call__(
+        self, provider, items, *, question, fingerprint=None,
+        batch_size=None, concurrency=None,
+    ):
+        # The two bounds are part of the call the real checker accepts (PD-12):
+        # a stand-in that refused them would fail on a signature the call site
+        # is required to use. This fake scripts one verdict per label and does
+        # not batch, so it records them and answers from ``verdicts``.
         del provider, question, fingerprint
+        self.bounds.append((batch_size, concurrency))
         batch = list(items)
         self.calls.append(batch)
         result = {}

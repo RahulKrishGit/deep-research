@@ -17,6 +17,7 @@ instead of a fabricated floor.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable, Mapping, Sequence
 from typing import NamedTuple, Protocol
 
@@ -1151,10 +1152,14 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         Previously scored sources are reused, so refinement only spends
         provider calls on new or unscored URLs — or on a source whose
         read-backed assessment revision changed, which is what keeps a
-        revised document from being credited with its earlier score. A
-        provider failure stops the current batch and marks that batch plus
-        later unscored URLs with an explicit status; successful earlier
-        batches remain intact.
+        revised document from being credited with its earlier score.
+
+        The batches run concurrently, at most
+        ``agents.source_scoring_concurrency`` in flight (D9), and each one
+        stands alone: a batch that cannot reach the provider marks its own
+        sources ``unscored_provider``, and no other batch is marked on the
+        strength of its failure. The returned snapshot is assembled in
+        ``task.groups`` order whatever order the batches finished in.
         """
         if not task.groups:
             return [], [], False
@@ -1177,29 +1182,41 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             group.url
             for group in eligible_groups[self._max_total_sources :]
         }
+        batches = [
+            groups_to_score[start : start + self._batch_size]
+            for start in range(0, len(groups_to_score), self._batch_size)
+        ]
 
         errors: list[ResearchError] = []
         provider_failed = False
         assessed: dict[str, ScoredSource] = {}
-        for start in range(0, len(groups_to_score), self._batch_size):
-            batch = groups_to_score[start : start + self._batch_size]
+        gate = asyncio.Semaphore(self._config.source_scoring_concurrency)
+
+        async def score_one(batch: list[SourceGroup]) -> None:
+            """Score one batch, marking its own sources when it fails."""
+            nonlocal provider_failed
             request = task.model_copy(update={"groups": batch})
             try:
-                response = await self.provider.complete_structured(
-                    scoring_messages(request, excerpt_chars=self._excerpt_chars),
-                    SourceScoresDraft,
-                    agent_name=self.name,
-                )
+                async with gate:
+                    response = await self.provider.complete_structured(
+                        scoring_messages(
+                            request, excerpt_chars=self._excerpt_chars
+                        ),
+                        SourceScoresDraft,
+                        agent_name=self.name,
+                    )
             except ProviderError as error:
                 provider_failed = True
-                errors.append(scoring_provider_error(error, sources=len(batch)))
-                for remaining in groups_to_score[start:]:
-                    assessed[remaining.url] = fallback_scored_source(
-                        remaining,
+                errors.append(
+                    scoring_provider_error(error, sources=len(batch))
+                )
+                for group in batch:
+                    assessed[group.url] = fallback_scored_source(
+                        group,
                         reason="unscored_provider",
-                        dossier=task.dossiers.get(remaining.url),
+                        dossier=task.dossiers.get(group.url),
                     )
-                break
+                return
 
             drafts: dict[str, SourceScoreDraft] = {}
             allowed_urls = {group.url for group in batch}
@@ -1224,6 +1241,8 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                         reputation=task.reputations.get(group.url),
                         dossier=task.dossiers.get(group.url),
                     )
+
+        await asyncio.gather(*(score_one(batch) for batch in batches))
 
         sources: list[ScoredSource] = []
         for group in task.groups:

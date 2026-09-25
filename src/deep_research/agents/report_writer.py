@@ -332,6 +332,8 @@ async def compose_written_report(
     *,
     provider: AgentCompleter,
     fingerprint: Callable[[str], object] | None = None,
+    batch_size: int | None = None,
+    concurrency: int | None = None,
 ) -> ReportComposition:
     """Build every candidate point, judge its wording with one Statement
     Check call, and compose (spec §6.1-6.2, §5.4, decision D8).
@@ -344,7 +346,12 @@ async def compose_written_report(
     limit. Everything else about a sentence's wording -- its numbers,
     dates, scope, organisation, forecast or actual -- is judged once for
     every candidate sentence together by the Statement Check (§5.4), never
-    by a code pattern.
+    by code pattern.
+
+    ``batch_size`` and ``concurrency`` are the bounds the Statement Check
+    runs under; ``None`` means the check's own module defaults. The writer
+    passes its configured ``agents.verifier_batch_size`` and
+    ``agents.verifier_concurrency`` (PD-12).
     """
     by_label = dict(task.registry)
     ids = {label: finding_fingerprint(f) for label, f in task.registry}
@@ -394,7 +401,12 @@ async def compose_written_report(
         # would bind the real function before that assignment could be seen.
         # There is no import cycle either way -- ``evidence_verifier`` imports
         # this module's siblings, never this module.
-        from deep_research.agents.evidence_verifier import StatementCheckItem, check_statements
+        from deep_research.agents.evidence_verifier import (
+            CONTEXT_CHECK_BATCH_SIZE,
+            CONTEXT_CHECK_CONCURRENCY,
+            StatementCheckItem,
+            check_statements,
+        )
         items = [
             StatementCheckItem(label=c.key, text=c.text, findings=c.findings,
                                labels=[_finding_label(f) for f in c.findings])
@@ -403,6 +415,18 @@ async def compose_written_report(
         try:
             verdicts, check_errors = await check_statements(
                 provider, items, question=task.question, fingerprint=fingerprint,
+                # PD-12: the Statement Check runs under the writer's own
+                # configured bounds, the same two values the Evidence Verifier
+                # bounds its Context Check with. The module constants are only
+                # the fallback for a caller that has no config to offer.
+                batch_size=(
+                    CONTEXT_CHECK_BATCH_SIZE if batch_size is None else batch_size
+                ),
+                concurrency=(
+                    CONTEXT_CHECK_CONCURRENCY
+                    if concurrency is None
+                    else concurrency
+                ),
             )
         except (ProviderError, StructuredOutputError, ValidationError) as error:
             # §5.4: a failed batch keeps its sentences; the Statement Check
@@ -665,6 +689,8 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
     async def _compose_result(self, task: ReportWriterTask, draft: ReportWriterDraft | None) -> WrittenReport:
         composition = await compose_written_report(
             task, draft, provider=self.provider, fingerprint=self.fingerprint_call,
+            batch_size=self.config.verifier_batch_size,
+            concurrency=self.config.verifier_concurrency,
         )
         return WrittenReport(
             markdown=render_written_report(composition),

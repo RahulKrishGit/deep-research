@@ -11,8 +11,10 @@ supported by ``evidence_words`` alone, and every attribution rule (PD-8,
 PD-18, PD-25).
 
 The Context Check is one batched, tool-free provider call per
-``CONTEXT_CHECK_BATCH_SIZE`` findings, at most ``CONTEXT_CHECK_CONCURRENCY``
-batches in flight (shared with ``check_statements`` below). A finding whose
+``agents.verifier_batch_size`` findings, at most
+``agents.verifier_concurrency`` batches in flight (shared with
+``check_statements`` below; the module constants of the same shapes are only
+the defaults, PD-12). A finding whose
 batch fails, or whose figure the reply never names, keeps a figure only when
 deterministic code can confirm the snippet itself states it
 (``figures.figure_in_text``); that kept figure carries its recorded fields
@@ -114,6 +116,11 @@ def figure_match(finding: Finding, reads: Mapping[str, ReadRecord]) -> FigureMat
     return FigureMatch(read_found=True, snippet_on_page=True)
 
 
+# The two Context Check bounds are the *defaults* for
+# ``agents.verifier_batch_size`` and ``agents.verifier_concurrency``, which the
+# Evidence Verifier reads from its own config (PD-12, PD-27); the Statement
+# Check takes the same two values from its caller. They stay module constants
+# only so a direct caller and the module's own tests have a defined default.
 CONTEXT_CHECK_BATCH_SIZE = 5
 CONTEXT_CHECK_CONCURRENCY = 8
 CONTEXT_PASSAGE_CHARS = 3000
@@ -626,9 +633,9 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
                 items.append(ContextItem(label="", finding=finding, read=read,
                                          passage=context_passage(read, finding.locator, finding.snippet),
                                          match=match, issuer=evaluated_issuer(sources, read)))
-        batches = [items[i : i + CONTEXT_CHECK_BATCH_SIZE]
-                   for i in range(0, len(items), CONTEXT_CHECK_BATCH_SIZE)]
-        gate = asyncio.Semaphore(CONTEXT_CHECK_CONCURRENCY)
+        batches = [items[i : i + self.config.verifier_batch_size]
+                   for i in range(0, len(items), self.config.verifier_batch_size)]
+        gate = asyncio.Semaphore(self.config.verifier_concurrency)
 
         async def one(batch: list[ContextItem]) -> dict[str, dict[int, FigureCheckDraft] | None]:
             async with gate:
@@ -906,25 +913,34 @@ async def check_statements(
     *,
     question: str,
     fingerprint: Callable[[str], None] | None = None,
+    batch_size: int = CONTEXT_CHECK_BATCH_SIZE,
+    concurrency: int = CONTEXT_CHECK_CONCURRENCY,
 ) -> tuple[dict[str, StatementVerdictDraft | None], list[ResearchError]]:
     """Spec §6.2's Statement Check (D8): does a drafted sentence state only
     what the verified findings it cites actually carry?
 
-    Parallel batches of ``CONTEXT_CHECK_BATCH_SIZE`` items, at most
-    ``CONTEXT_CHECK_CONCURRENCY`` in flight -- the same bounds the Context
-    Check runs under. ``None`` means the item was not judged: its own batch
+    Parallel batches of ``batch_size`` items, at most ``concurrency`` in
+    flight — the same two bounds the Context Check runs under, and by default
+    the module constants that stand in for them. The Report Writer passes its
+    own configured ``agents.verifier_batch_size`` and
+    ``agents.verifier_concurrency`` (PD-12), so one config value bounds both
+    checks. ``None`` means the item was not judged: its own batch
     failed outright, or the reply did not name its label. Either way the
     caller keeps the sentence as drafted and one
     ``evidence_verifier_statement_check_failed`` error is recorded for the
     batch. A reply's ``corrected`` verdict with a blank ``corrected_text``
     is treated as ``inconsistent``; nothing else is applied to the reply.
     """
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    if concurrency < 1:
+        raise ValueError("concurrency must be at least 1")
     errors: list[ResearchError] = []
     batches = [
-        items[i : i + CONTEXT_CHECK_BATCH_SIZE]
-        for i in range(0, len(items), CONTEXT_CHECK_BATCH_SIZE)
+        items[i : i + batch_size]
+        for i in range(0, len(items), batch_size)
     ]
-    gate = asyncio.Semaphore(CONTEXT_CHECK_CONCURRENCY)
+    gate = asyncio.Semaphore(concurrency)
 
     async def one(batch: Sequence[StatementCheckItem]) -> dict[str, StatementVerdictDraft | None]:
         async with gate:

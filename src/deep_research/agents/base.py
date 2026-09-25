@@ -429,6 +429,7 @@ class BaseAgent(ABC, Generic[ResultT]):
         iteration: int,
         steps: Sequence[ReActStep] = (),
         decision_context: str | None = None,
+        scratchpad: ScratchpadMemory | None = None,
     ) -> tuple[ReActDecision, ...]:
         """Ask the provider for one native ReAct turn, adapted to loop state.
 
@@ -442,7 +443,14 @@ class BaseAgent(ABC, Generic[ResultT]):
         attribute, so an agent that narrows its own toolset for one run — the
         planner withholding ``query_memory`` once startup recall has supplied
         the guidance — offers the provider exactly the tools it will execute.
+
+        ``scratchpad`` is the caller's own notes for this loop (D9): an agent
+        that runs several loops at once hands each one its own pad, so a
+        prompt renders this loop's observations and no sibling's. ``None``
+        keeps the agent's single shared pad, which is what every
+        single-loop caller wants.
         """
+        pad = self._scratchpad if scratchpad is None else scratchpad
         self.fingerprint_call(
             "ReactDecision",
             output_limit=self._config.react_decision_max_tokens,
@@ -460,7 +468,7 @@ class BaseAgent(ABC, Generic[ResultT]):
             render_react_messages(
                 system_prompt=self.system_prompt(task),
                 task=task,
-                scratchpad=self._scratchpad.recent(
+                scratchpad=pad.recent(
                     self._config.prompt_context_entries
                 ),
                 iteration=iteration,
@@ -526,15 +534,25 @@ class BaseAgent(ABC, Generic[ResultT]):
             call_fingerprints=dict(self._call_fingerprints),
         )
 
-    async def _record_step(self, step: ReActStep) -> None:
-        """Write one iteration into the scratchpad the next prompt renders."""
-        self._scratchpad.add(
+    async def _record_step(
+        self,
+        step: ReActStep,
+        *,
+        scratchpad: ScratchpadMemory | None = None,
+    ) -> None:
+        """Write one iteration into the scratchpad the next prompt renders.
+
+        ``scratchpad`` is the loop's own pad when a caller runs several loops
+        at once (D9); ``None`` writes to the agent's single shared pad.
+        """
+        pad = self._scratchpad if scratchpad is None else scratchpad
+        pad.add(
             step.thought,
             kind="thought",
             metadata={"iteration": step.iteration},
         )
         if step.observation is not None:
-            self._scratchpad.add(
+            pad.add(
                 step.observation.summary,
                 kind="observation",
                 metadata={
@@ -544,7 +562,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                 },
             )
         elif step.final_answer is not None:
-            self._scratchpad.add(
+            pad.add(
                 step.final_answer,
                 kind="decision",
                 metadata={"iteration": step.iteration},

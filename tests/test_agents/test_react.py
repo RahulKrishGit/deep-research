@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
 
 from deep_research.agents import react as react_module
+from deep_research.agents.acquisition import ToolPolicyDecision
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.steps import ReActDecision, ReActRun, ReActStep
 from deep_research.agents.toolset import AgentToolset
@@ -1528,3 +1530,129 @@ async def test_the_request_attempt_limit_escape_leaves_ordinary_failures_recorde
     assert step.tool_result is not None
     assert step.tool_result.success is False
     assert [error.error_type for error in run.errors] == ["agent_tool_failed"]
+
+
+# ---------------------------------------------------------------------------
+# The run-wide tool lock (D9, §7.2)
+# ---------------------------------------------------------------------------
+
+
+class _SectionTrace:
+    """Peak concurrent entries per section, across every loop."""
+
+    def __init__(self, sections: Sequence[str]) -> None:
+        self._depth = {section: 0 for section in sections}
+        self.peak = {section: 0 for section in sections}
+
+    def enter(self, section: str) -> None:
+        self._depth[section] += 1
+        self.peak[section] = max(self.peak[section], self._depth[section])
+
+    def exit(self, section: str) -> None:
+        self._depth[section] -= 1
+
+
+class _ProbeTool(BaseTool):
+    """Record how many tool executions are inside ``_execute`` at once."""
+
+    name = "probe"
+    description = "Record one tool section."
+    input_schema: dict[str, Any] = {}
+    output_schema: dict[str, Any] = {}
+
+    def __init__(self, tracker: Tracker, trace: _SectionTrace) -> None:
+        super().__init__(tracker)
+        self._trace = trace
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: Any
+    ) -> ToolExecution:
+        del context, kwargs
+        self._trace.enter("tool")
+        try:
+            await asyncio.sleep(0)
+            return ToolExecution(data={"ok": True}, output_summary={"ok": True})
+        finally:
+            self._trace.exit("tool")
+
+
+class _ProbePolicy:
+    """The loop's policy hooks, traced the way the tool is."""
+
+    def __init__(self, trace: _SectionTrace) -> None:
+        self._trace = trace
+
+    async def __call__(
+        self,
+        decision: ReActDecision,
+        tool_input: Mapping[str, object] | None = None,
+        *_args: object,
+    ) -> ToolPolicyDecision:
+        del decision, tool_input
+        self._trace.enter("policy")
+        try:
+            await asyncio.sleep(0)
+            return ToolPolicyDecision()
+        finally:
+            self._trace.exit("policy")
+
+    async def after_action(
+        self, step: ReActStep, tool_input: Mapping[str, object]
+    ) -> None:
+        del step, tool_input
+        self._trace.enter("after")
+        await asyncio.sleep(0)
+        self._trace.exit("after")
+
+
+@pytest.mark.asyncio
+async def test_the_tool_lock_serialises_only_the_tool_section(
+    tracker: Tracker,
+) -> None:
+    """Two interleaved loops never enter `tool.execute` at once, while their model
+    turns overlap: the lock wraps decision → execute → after_action only."""
+    trace = _SectionTrace(("decide", "policy", "tool", "after"))
+    tool_lock = asyncio.Lock()
+
+    async def loop(label: str) -> ReActRun:
+        queue = [
+            use_tool(f"Probe for {label}.", "probe"),
+            finish(f"{label} is done.", f"{label} answer."),
+        ]
+
+        async def decide(
+            iteration: int, steps: Sequence[ReActStep]
+        ) -> tuple[ReActDecision, ...]:
+            del iteration, steps
+            trace.enter("decide")
+            try:
+                # A real model turn suspends; without the yield the two loops
+                # could not overlap here even if the loop allowed it.
+                await asyncio.sleep(0)
+                return (queue.pop(0),)
+            finally:
+                trace.exit("decide")
+
+        async with agent_scope(tracker):
+            return await run_react_loop(
+                agent_name="researcher",
+                tracker=tracker,
+                tools=AgentToolset([_ProbeTool(tracker, trace)], allowed=["probe"]),
+                decide=decide,
+                max_iterations=4,
+                tool_budget=4,
+                tool_policy=_ProbePolicy(trace),
+                tool_lock=tool_lock,
+            )
+
+    first, second = await asyncio.gather(loop("A"), loop("B"))
+
+    # The model turns really did overlap: the lock is not a run-wide mutex.
+    assert trace.peak["decide"] == 2
+    # ...and the whole tool section — the policy's admission decision, the
+    # execution, and the reducer that records the result — never did.
+    assert trace.peak["policy"] == 1
+    assert trace.peak["tool"] == 1
+    assert trace.peak["after"] == 1
+    assert [run.tool_calls for run in (first, second)] == [1, 1]
+    assert [run.stop_reason for run in (first, second)] == ["finished", "finished"]

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import httpx
@@ -55,8 +57,9 @@ from deep_research.providers import (
     ProviderTimeoutError,
     StructuredOutputError,
 )
-from deep_research.tools.base import ToolResult
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.request_budget import RequestAttemptLimitError, RequestBudget
+from deep_research.tools.base import BaseTool, ToolResult
+from deep_research.utils.config import AgentRuntimeConfig, RequestBudgetConfig
 from deep_research.utils.types import (
     MAX_SNIPPET_CHARS,
     EvidenceTarget,
@@ -70,10 +73,16 @@ from deep_research.utils.types import (
     SubTopic,
     merge_research_state,
 )
-from tests.agent_fakes import ScriptedCompleter, finish, use_tool
+from tests.agent_fakes import (
+    ScriptedCompleter,
+    TargetKeyedCompleter,
+    finish,
+    use_tool,
+)
 from tests.evidence_fakes import make_read, make_target
 from tests.research_fakes import (
     QEC_PASSAGE,
+    QEC_SOURCE_URL,
     FakeMemory,
     FakeSearchClient,
     page_client,
@@ -1587,6 +1596,7 @@ async def test_an_unplanned_target_id_is_recorded_on_the_run(
             [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
         ),
         http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+        sub_topic_concurrency=1,
     )
 
     async with tracker.session_span("session-1", "q"):
@@ -1628,6 +1638,7 @@ async def test_a_figure_with_no_value_or_unit_is_dropped_not_the_finding(
             [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
         ),
         http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+        sub_topic_concurrency=1,
     )
 
     async with tracker.session_span("session-1", "q"):
@@ -1675,6 +1686,7 @@ async def test_a_reads_own_target_line_never_costs_the_run_its_evidence(
             [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
         ),
         http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+        sub_topic_concurrency=1,
     )
 
     async with tracker.session_span("session-1", "q"):
@@ -1711,6 +1723,7 @@ async def test_a_read_fetched_for_one_topic_yields_another_topics_finding(
         decisions=_forecast_reading_decisions(),
         outputs=[_forecast_reply],
     )
+    # Order-pinned: the order-based ScriptedCompleter needs one loop at a time (D9).
     agent = _researcher(
         tracker,
         completer,
@@ -1718,6 +1731,7 @@ async def test_a_read_fetched_for_one_topic_yields_another_topics_finding(
             [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
         ),
         http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+        sub_topic_concurrency=1,
     )
 
     async with tracker.session_span("session-1", "q"):
@@ -1991,13 +2005,15 @@ def _clock() -> datetime:
 
 def _researcher(
     tracker: Tracker,
-    completer: ScriptedCompleter,
+    completer: ScriptedCompleter | TargetKeyedCompleter,
     *,
     search: FakeSearchClient | None = None,
     memory: FakeMemory | None = None,
     http: httpx.AsyncClient | None = None,
     max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
     config: AgentRuntimeConfig | None = None,
+    tools: Sequence[BaseTool] | None = None,
+    sub_topic_concurrency: int | None = None,
 ) -> ResearcherAgent:
     return ResearcherAgent(
         provider=completer,
@@ -2005,9 +2021,14 @@ def _researcher(
         scratchpad=ScratchpadMemory(
             session_id="session-1", agent_name="researcher", max_entries=20
         ),
-        tools=research_tools(tracker, search=search, memory=memory, http=http),
+        tools=(
+            tools
+            if tools is not None
+            else research_tools(tracker, search=search, memory=memory, http=http)
+        ),
         config=config or AgentRuntimeConfig(max_iterations=4, tool_budget=4),
         max_sub_topics=max_sub_topics,
+        sub_topic_concurrency=sub_topic_concurrency,
         clock=_clock,
     )
 
@@ -2138,7 +2159,7 @@ async def test_extraction_stamps_findings_from_retrieved_evidence(
         tool_calls=1,
     )
 
-    findings, errors, provider_failed = await agent.extract_findings(task, run)
+    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
 
     assert errors == []
     assert provider_failed is False
@@ -2157,7 +2178,7 @@ async def test_extraction_makes_no_provider_call_without_evidence(
     )
     run = ReActRun(agent_name="researcher", stop_reason="max_iterations")
 
-    findings, errors, provider_failed = await agent.extract_findings(task, run)
+    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors == []
@@ -2192,7 +2213,7 @@ async def test_extraction_makes_no_provider_call_when_the_only_hit_is_empty(
         tool_calls=2,
     )
 
-    findings, errors, provider_failed = await agent.extract_findings(task, run)
+    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors == []
@@ -2253,7 +2274,7 @@ async def test_extraction_makes_no_provider_call_for_a_recalled_fact(
         instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
     )
 
-    findings, errors, provider_failed = await agent.extract_findings(
+    findings, errors, provider_failed, obligation = await agent.extract_findings(
         task, _recalled_fact_run(nested=nested)
     )
 
@@ -2279,7 +2300,7 @@ async def test_extraction_makes_no_provider_call_when_search_was_the_only_tool(
         instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
     )
 
-    findings, errors, provider_failed = await agent.extract_findings(
+    findings, errors, provider_failed, obligation = await agent.extract_findings(
         task, _search_only_run()
     )
 
@@ -2309,7 +2330,7 @@ async def test_extraction_makes_no_provider_call_when_every_tool_call_failed(
         tool_calls=2,
     )
 
-    findings, errors, provider_failed = await agent.extract_findings(task, run)
+    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors == []
@@ -2334,7 +2355,7 @@ async def test_extraction_makes_no_provider_call_after_a_provider_failure(
         tool_calls=1,
     )
 
-    findings, errors, provider_failed = await agent.extract_findings(task, run)
+    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert provider_failed is False
@@ -2371,7 +2392,7 @@ async def test_malformed_extracted_findings_become_a_recoverable_error(
         tool_calls=1,
     )
 
-    findings, errors, provider_failed = await agent.extract_findings(task, run)
+    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors[0].error_type == "researcher_invalid_finding"
@@ -2416,7 +2437,7 @@ async def test_extraction_reports_a_provider_failure_without_raising(
         tool_calls=1,
     )
 
-    findings, errors, provider_failed = await agent.extract_findings(task, run)
+    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert provider_failed is True
@@ -3002,11 +3023,13 @@ async def test_two_sub_topics_each_produce_findings_with_a_fresh_tool_budget(
             _findings_draft("Beta finding."),
         ],
     )
+    # Order-pinned: the order-based ScriptedCompleter needs one loop at a time (D9).
     agent = _researcher(
         tracker,
         completer,
         search=FakeSearchClient([search_response(), search_response()]),
         config=AgentRuntimeConfig(max_iterations=4, tool_budget=2),
+        sub_topic_concurrency=1,
     )
     state = _state(
         sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 2)]
@@ -3206,7 +3229,8 @@ async def test_a_provider_failure_stops_the_remaining_sub_topics(
     completer = ScriptedCompleter(
         decisions=[ProviderTimeoutError("timed out")],
     )
-    agent = _researcher(tracker, completer)
+    # Order-pinned: the order-based ScriptedCompleter needs one loop at a time (D9).
+    agent = _researcher(tracker, completer, sub_topic_concurrency=1)
     state = _state(
         sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 2)]
     )
@@ -3248,10 +3272,12 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
         ],
         outputs=[_findings_draft(), _output_limit_error()],
     )
+    # Order-pinned: the order-based ScriptedCompleter needs one loop at a time (D9).
     agent = _researcher(
         tracker,
         completer,
         search=FakeSearchClient([search_response(), search_response()]),
+        sub_topic_concurrency=1,
     )
     state = _state(
         sub_topics=[
@@ -3324,7 +3350,8 @@ async def test_a_provider_failure_mid_loop_skips_the_remaining_high_priority_sub
             ProviderTimeoutError("timed out"),
         ],
     )
-    agent = _researcher(tracker, completer)
+    # Order-pinned: the order-based ScriptedCompleter needs one loop at a time (D9).
+    agent = _researcher(tracker, completer, sub_topic_concurrency=1)
     state = _state(
         sub_topics=[
             _sub_topic("Alpha", 1, coverage_id="topic-01"),
@@ -3403,7 +3430,8 @@ async def test_a_provider_failure_records_every_unattempted_topic(
             ProviderTimeoutError("timed out"),
         ],
     )
-    agent = _researcher(tracker, completer)
+    # Order-pinned: the order-based ScriptedCompleter needs one loop at a time (D9).
+    agent = _researcher(tracker, completer, sub_topic_concurrency=1)
     state = _state(
         sub_topics=[
             _sub_topic("Alpha", 1, coverage_id="topic-01"),
@@ -3502,7 +3530,8 @@ async def test_the_scratchpad_does_not_leak_between_sub_topics(
             finish("Nothing for Beta.", "Beta has no sources."),
         ],
     )
-    agent = _researcher(tracker, completer)
+    # Order-pinned: the order-based ScriptedCompleter needs one loop at a time (D9).
+    agent = _researcher(tracker, completer, sub_topic_concurrency=1)
     state = _state(
         sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 2)]
     )
@@ -4062,3 +4091,468 @@ async def test_an_extra_pass_researches_only_the_missing_targets_owner(
         for error in outcome.errors
         if error.error_type == "researcher_sub_topic_skipped"
     ] == []
+# ---------------------------------------------------------------------------
+# Concurrent sub-topics under one run-wide tool lock (D9, §7.2, PD-27)
+# ---------------------------------------------------------------------------
+#
+# ``agents.sub_topic_concurrency`` runs several sub-topic loops at once. What
+# their concurrency must not change: each loop's prompt renders its own
+# observations and its own acquisition context, the folds come out in plan
+# order whatever order the loops finish in, the sub-topic.completed event says
+# how long its own loop took, and the run-wide tool lock makes two loops that
+# want the same page download it once. The order-pinned tests above construct
+# their researcher with ``sub_topic_concurrency=1`` for the same reason: with
+# one loop in flight the order-based ``ScriptedCompleter`` is unambiguous.
+
+_ALPHA_URL = "https://example.test/alpha"
+_BETA_URL = "https://example.test/beta"
+
+
+class _QuerySearchClient(FakeSearchClient):
+    """Serve each loop the page its own query asks for.
+
+    A queue would hand the first loop the second loop's page whenever the two
+    interleaved differently than the fixture assumed; keying on the query makes
+    the fixture's answer independent of the order the loops run in.
+    """
+
+    def __init__(self, by_query: dict[str, dict[str, object]]) -> None:
+        super().__init__()
+        self._by_query = by_query
+
+    def search(
+        self,
+        *,
+        query: str,
+        search_depth: str,
+        max_results: int,
+    ) -> dict[str, object]:
+        self.calls.append(
+            {
+                "query": query,
+                "search_depth": search_depth,
+                "max_results": max_results,
+            }
+        )
+        return self._by_query[query]
+
+
+def _loop_decisions(
+    target_id: str, label: str, url: str = QEC_SOURCE_URL
+) -> list[object]:
+    """One loop's short script: find its own page, read it, finish."""
+    return [
+        use_tool(
+            f"Search for {label}.",
+            "web_search",
+            json.dumps({"query": f"{label} 2025"}),
+        ),
+        use_tool(
+            f"Read the {label} page.",
+            "web_scraper",
+            json.dumps({"url": url}),
+        ),
+        finish(f"{label} is covered.", f"{label} answer."),
+    ]
+
+
+def _notes(packet: str) -> str:
+    """The ``## Notes so far`` section of one rendered ReAct packet."""
+    return packet.split("## Notes so far", 1)[1].split("\n## ", 1)[0]
+
+
+@dataclass(frozen=True)
+class _WebTools:
+    """The researcher's tools, plus the page bodies their fetches served."""
+
+    tools: list[BaseTool]
+    downloads: list[str]
+
+
+@pytest.fixture
+def web_tools(tracker: Tracker) -> _WebTools:
+    """The researcher's tools over a page whose fetch really suspends.
+
+    ``httpx.MockTransport`` awaits an async handler, which is what creates the
+    interleaving the tool lock exists for: without the lock both loops pass
+    their cache check before either fetch has been admitted to the cache.
+    """
+    downloads: list[str] = []
+    body = (
+        f"<html><head><title>{QEC_READ.title}</title></head>"
+        f"<body><p>{QEC_PASSAGE}</p></body></html>"
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200, text="User-agent: *\nAllow: /", request=request
+            )
+        downloads.append(str(request.url))
+        await asyncio.sleep(0.02)
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            text=body,
+            request=request,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return _WebTools(
+        tools=research_tools(
+            tracker,
+            search=FakeSearchClient([search_response(), search_response()]),
+            http=client,
+        ),
+        downloads=downloads,
+    )
+
+
+def _two_topic_state() -> ResearchState:
+    return _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 2, coverage_id="topic-02"),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_loops_never_see_each_others_observations_or_acquisition_context(
+    tracker: Tracker,
+) -> None:
+    """Loop A's second turn carries A's own observation and A's own acquisition
+    context, never B's, whatever order the turns complete in: each loop gets
+    its own ScratchpadMemory and its own policy (D9, §7.2)."""
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha", _ALPHA_URL),
+            "topic-02": _loop_decisions("topic-02", "Beta", _BETA_URL),
+        },
+        outputs={
+            "Alpha": [SubTopicFindingsDraft(findings=[])],
+            "Beta": [SubTopicFindingsDraft(findings=[])],
+        },
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=_QuerySearchClient(
+            {
+                "Alpha 2025": search_response(title="Alpha report", url=_ALPHA_URL),
+                "Beta 2025": search_response(title="Beta report", url=_BETA_URL),
+            }
+        ),
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_two_topic_state())
+
+    alpha = completer.packets("topic-01")
+    beta = completer.packets("topic-02")
+    assert len(alpha) == len(beta) == 3
+
+    # Each packet names its own target and no other loop's.
+    assert "- target_id=topic-01" in alpha[0]
+    assert "- target_id=topic-02" not in alpha[1]
+    assert "- target_id=topic-02" in beta[0]
+    assert "- target_id=topic-01" not in beta[1]
+
+    # The notes of the second turn are that loop's own observation, rendered
+    # from its own scratchpad, and no sibling's.
+    assert "Alpha report" in _notes(alpha[1])
+    assert "Beta report" not in _notes(alpha[1])
+    assert "Beta report" in _notes(beta[1])
+    assert "Alpha report" not in _notes(beta[1])
+
+    # ...and so is the acquisition context it renders: A sees A's candidate.
+    assert f"- candidate_urls={_ALPHA_URL}" in alpha[1]
+    assert _BETA_URL not in alpha[1]
+    assert f"- candidate_urls={_BETA_URL}" in beta[1]
+    assert _ALPHA_URL not in beta[1]
+
+    # After the read, each loop's own page is the one it read.
+    assert f"- read_urls={_ALPHA_URL}" in alpha[2]
+    assert _BETA_URL not in alpha[2]
+    assert f"- read_urls={_BETA_URL}" in beta[2]
+    assert _ALPHA_URL not in beta[2]
+
+
+@pytest.mark.asyncio
+async def test_findings_and_events_fold_in_plan_order_not_completion_order(
+    tracker: Tracker,
+) -> None:
+    """`runs`, `findings` and the sub-topic events come out in plan order even when
+    the last plan topic finishes first."""
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha"),
+            "topic-02": _loop_decisions("topic-02", "Beta"),
+        },
+        outputs={
+            "Alpha": [_findings_draft("Alpha finding.")],
+            "Beta": [_findings_draft("Beta finding.")],
+        },
+        # Alpha is the first plan topic and finishes last.
+        delays={"topic-01": 0.1},
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([search_response(), search_response()]),
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_two_topic_state())
+
+    # The premise, or the plan-order assertions below would hold vacuously.
+    assert completer.exhausted == ["topic-02", "topic-01"]
+
+    assert [
+        finding.content for finding in outcome.result.findings
+    ] == ["Alpha finding.", "Beta finding."]
+    assert outcome.react.final_answer == "Alpha answer.\n\nBeta answer."
+    completed = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+    ]
+    assert completed == ["Alpha", "Beta"]
+    tool_calls = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.tool_call"
+    ]
+    assert tool_calls == ["Alpha", "Alpha", "Beta", "Beta"]
+
+
+@pytest.mark.asyncio
+async def test_a_page_two_loops_request_at_once_is_downloaded_once_and_admitted_from_cache(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """The tool lock makes the second loop's fetch of the same URL a cache hit from
+    the first loop's admission, so the run downloads the page once
+    (`_invariant_read_downloaded_once`)."""
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha"),
+            "topic-02": _loop_decisions("topic-02", "Beta"),
+        },
+        outputs={
+            "Alpha": [SubTopicFindingsDraft(findings=[])],
+            "Beta": [SubTopicFindingsDraft(findings=[])],
+        },
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        tools=web_tools.tools,
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_two_topic_state())
+
+    assert web_tools.downloads == [QEC_SOURCE_URL]
+    assert outcome.react.cache_hits == 1
+    # Two searches and the one download reached a tool; the second loop's
+    # read was served from the run's cache instead of the network.
+    assert outcome.react.tool_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_a_provider_failure_lets_running_loops_finish_and_skips_unstarted_ones(
+    tracker: Tracker,
+) -> None:
+    """One loop dies on ProviderError; the loops already running finish, and every
+    loop that never started records `provider_failure_stopped_processing`."""
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha"),
+            "topic-02": [ProviderTimeoutError("timed out")],
+            "topic-03": _loop_decisions("topic-03", "Gamma"),
+        },
+        outputs={"Alpha": [_findings_draft("Alpha finding.")]},
+        # Beta must fail while Alpha is still running.
+        delays={"topic-01": 0.05},
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([search_response(), search_response()]),
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 2, coverage_id="topic-02"),
+            _sub_topic("Gamma", 3, coverage_id="topic-03"),
+        ]
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == ["Alpha", "Beta"]
+    # The loop already running when the failure landed still produced its
+    # finding; the one that never acquired the gate never ran.
+    assert [
+        finding.content for finding in outcome.result.findings
+    ] == ["Alpha finding."]
+    assert completer.remaining("topic-03") == 3
+    skipped = {
+        error.details["sub_topic"]: error.details
+        for error in outcome.errors
+        if error.error_type == "researcher_sub_topic_skipped"
+    }
+    assert set(skipped) == {"Gamma"}
+    assert skipped["Gamma"]["coverage_id"] == "topic-03"
+    assert skipped["Gamma"]["reason"] == "provider_failure_stopped_processing"
+    assert any(error.recoverable is False for error in outcome.errors)
+
+
+def _refused_tavily_budget() -> RequestAttemptLimitError:
+    """A real budget that spent its one unit and now refuses the next."""
+    budget = RequestBudget(
+        RequestBudgetConfig(
+            deepseek_attempt_ceiling=None,
+            openai_attempt_ceiling=None,
+            tavily_attempt_ceiling=1,
+            stop_fraction=1.0,
+        )
+    )
+    budget.reserve("tavily")
+    with pytest.raises(RequestAttemptLimitError) as refusal:
+        budget.reserve("tavily")
+    return refusal.value
+
+
+@pytest.mark.asyncio
+async def test_an_attempt_limit_in_one_loop_still_halts_the_run(
+    tracker: Tracker,
+) -> None:
+    """RequestAttemptLimitError in one loop is re-raised after every sibling settles,
+    so the node still halts the run."""
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": [_refused_tavily_budget()],
+            "topic-02": [finish("Beta is done.", "Beta answer.")],
+        },
+        # Beta settles while Alpha is still inside its first turn.
+        delays={"topic-01": 0.05},
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+
+    with pytest.raises(RequestAttemptLimitError):
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_two_topic_state())
+
+    # Every sibling settled before the refusal was re-raised: Beta's whole
+    # script was served, not cancelled by Alpha's halt.
+    assert completer.remaining("topic-02") == 0
+    # Beta's whole script was served, and Alpha's single decision was the
+    # refusal itself: both loops settled before it was re-raised.
+    assert completer.exhausted == ["topic-02", "topic-01"]
+
+
+@pytest.mark.parametrize(
+    ("configured", "constructor", "expected_peak"),
+    [(2, None, 2), (5, 1, 1)],
+)
+@pytest.mark.asyncio
+async def test_the_sub_topic_cap_is_the_configured_one_and_the_constructor_wins(
+    tracker: Tracker,
+    configured: int,
+    constructor: int | None,
+    expected_peak: int,
+) -> None:
+    """`agents.sub_topic_concurrency` bounds the loops in flight, and the
+    constructor's own value overrides it — the seam an order-pinned test uses
+    to pin one loop at a time."""
+    completer = TargetKeyedCompleter(
+        decisions={
+            f"topic-0{index}": [finish(f"T{index} is done.", f"T{index} answer.")]
+            for index in (1, 2, 3)
+        },
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=4,
+            tool_budget=4,
+            sub_topic_concurrency=configured,
+        ),
+        sub_topic_concurrency=constructor,
+    )
+    state = _state(
+        sub_topics=[
+            _sub_topic(f"T{index}", index, coverage_id=f"topic-0{index}")
+            for index in (1, 2, 3)
+        ]
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(state)
+
+    assert [call.key for call in completer.react_calls] == [
+        "topic-01",
+        "topic-02",
+        "topic-03",
+    ]
+    assert completer.max_in_flight == expected_peak
+
+
+@pytest.mark.asyncio
+async def test_the_completed_event_carries_the_loops_own_wall_seconds(
+    tracker: Tracker,
+) -> None:
+    """`sub_topic.completed` carries `elapsed_s`, so per-sub-topic time survives
+    concurrency: the CLI prints every sub-topic event at node completion,
+    where log timestamps no longer separate them."""
+    completer = TargetKeyedCompleter(
+        decisions={"topic-01": _loop_decisions("topic-01", "Alpha")},
+        outputs={"Alpha": [SubTopicFindingsDraft(findings=[])]},
+        delays={"topic-01": 0.2},
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([search_response()]),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    completed = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+    )
+    elapsed = completed.metadata["elapsed_s"]
+    assert isinstance(elapsed, float)
+    # The scripted delay is inside the loop, and the number is the loop's own
+    # wall time, rounded to a tenth.
+    assert elapsed >= 0.2
+    assert elapsed == round(elapsed, 1)

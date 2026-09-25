@@ -35,6 +35,7 @@ from deep_research.providers import (
     ProviderResponseTelemetry,
     ProviderTimeoutError,
 )
+from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     FigureContext,
     FigureResult,
@@ -273,13 +274,19 @@ def _state(**overrides: object) -> ResearchState:
     return ResearchState.model_validate(payload)
 
 
-def _evidence_verifier(tracker: Tracker, completer: ScriptedCompleter) -> EvidenceVerifierAgent:
+def _evidence_verifier(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    config: AgentRuntimeConfig | None = None,
+) -> EvidenceVerifierAgent:
     return EvidenceVerifierAgent(
         provider=completer,
         tracker=tracker,
         scratchpad=ScratchpadMemory(
             session_id="session-1", agent_name=EVIDENCE_VERIFIER_NAME, max_entries=20,
         ),
+        config=config,
     )
 
 
@@ -959,3 +966,89 @@ async def test_a_missing_label_in_the_reply_gives_none_and_records_an_error() ->
     assert len(errors) == 1
     assert errors[0].error_type == "evidence_verifier_statement_check_failed"
     assert errors[0].details["reason"] == "label omitted from the reply"
+
+
+# ---------------------------------------------------------------------------
+# The two bounds are config, not module constants (PD-12, PD-27, D9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_configured_batch_size_splits_five_statements_into_three_calls() -> None:
+    """`check_statements` takes the batch size from its caller, so the Report
+    Writer's own `agents.verifier_batch_size` bounds the Statement Check the
+    same way it bounds the Context Check (§5.4)."""
+    finding = _statement_finding("18.9", "GW")
+    items = [
+        _statement_item(f"S{i:02d}", f"Wood Mackenzie states {i} GW.", finding)
+        for i in range(5)
+    ]
+    completer = ScriptedCompleter(outputs=[_confirm_statement_reply] * 3)
+
+    results, errors = await check_statements(
+        completer, items, question="How much storage?", batch_size=2
+    )
+
+    assert [call[0] for call in completer.calls] == ["StatementCheckDraft"] * 3
+    assert errors == []
+    assert len(results) == 5
+    assert all(
+        verdict is not None and verdict.verdict == "consistent"
+        for verdict in results.values()
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_configured_concurrency_bounds_the_statement_check() -> None:
+    """`check_statements` takes the concurrency from its caller: at most two of
+    its batches are ever in flight when it is configured with two."""
+    finding = _statement_finding("18.9", "GW")
+    batch_count = 6
+    total = batch_count * CONTEXT_CHECK_BATCH_SIZE
+    items = [
+        _statement_item(f"S{i:03d}", f"Wood Mackenzie states {i} GW.", finding)
+        for i in range(total)
+    ]
+    probe = _StatementConcurrencyProbe()
+
+    results, errors = await check_statements(
+        probe, items, question="How much storage?", concurrency=2
+    )
+
+    assert len(probe.calls) == batch_count
+    assert probe.max_in_flight == 2
+    assert len(results) == total
+    assert errors == []
+
+
+@pytest.mark.asyncio
+async def test_the_context_check_bounds_come_from_the_agent_config(
+    tracker: Tracker,
+) -> None:
+    """PD-12: the batch size and the concurrency the Context Check runs under are
+    `agents.verifier_batch_size` and `agents.verifier_concurrency`, read from
+    the verifier's own `AgentRuntimeConfig` — the module constants stay only
+    as the defaults."""
+    batch_size = 2
+    concurrency = 3
+    total = 12
+    read = make_read(
+        _metrics_page(total), url="https://example.test/config", title="Config test"
+    )
+    findings = [_metric_finding(read, i) for i in range(total)]
+    probe = _ConcurrencyProbe()
+    agent = _evidence_verifier(
+        tracker,
+        probe,  # type: ignore[arg-type]
+        config=AgentRuntimeConfig(
+            verifier_batch_size=batch_size, verifier_concurrency=concurrency
+        ),
+    )
+    state = _state(raw_findings=findings, read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert len(probe.calls) == total // batch_size
+    assert probe.max_in_flight == concurrency
+    assert len(outcome.state_update["verified_findings"]) == total
