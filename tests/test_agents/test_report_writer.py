@@ -287,6 +287,52 @@ async def test_a_failed_batch_keeps_the_sentence_and_records_the_error(writer, c
 
 
 @pytest.mark.asyncio
+async def test_every_kept_sentence_records_its_statement_check_verdict(writer, checker) -> None:
+    """Spec §6.4 (Task 4.3): ``statement_verdicts`` carries the check's own
+    outcome for every sentence this pass kept -- "consistent", or "corrected"
+    when the correction is the wording the reader gets. A refused sentence is
+    not kept and has no entry, which is what keeps the map a record of the
+    report rather than of the draft."""
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    consistent = "Generators added 10.4 GW of battery storage in 2024."
+    corrected = "Generators added 10 GW of battery storage in 2024."
+    refused = "Generators added 12 GW of battery storage in 2024."
+    draft = ReportWriterDraft(
+        executive_summary=[WriterPointDraft(text=consistent, finding_labels=[label])],
+        sections=[WriterSectionDraft(title="Detail", points=[
+            WriterPointDraft(text=corrected, finding_labels=[label]),
+            WriterPointDraft(text=refused, finding_labels=[label]),
+        ])],
+    )
+    checker.verdicts = {
+        "S001": _verdict("consistent"),
+        "S002": _verdict("corrected", corrected_text=consistent,
+                         reason="the finding states 10.4 GW, not 10"),
+        "S003": _verdict("inconsistent", reason="the finding states 10.4 GW, not 12 GW"),
+    }
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.statement_verdicts == {"S001": "consistent", "S002": "corrected"}
+    assert [p.statement.statement_id for p in composition.sections[0].points] == ["S002"]
+    assert [r.where for r in composition.rejected_points] == ["sections[0].points[1]"]
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_kept_after_a_failed_batch_records_an_unchecked_verdict(writer, checker) -> None:
+    """Task 4.3, §6.4: a sentence whose batch failed is kept and its
+    "unchecked" outcome is recorded, which is what tells the quality gate its
+    missing verdict is accounted for rather than unjudged."""
+    task = writer.build_task(_task_state())
+    label = _labels(task.registry)["eia.gov"]
+    drafted = "Generators added 10.4 GW of battery storage in 2024."
+    draft = ReportWriterDraft(executive_summary=[WriterPointDraft(text=drafted, finding_labels=[label])], sections=[])
+    checker.verdicts = {}
+    checker.errors = [_error("evidence_verifier_statement_check_failed", "batch 1 failed")]
+    composition = await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+    assert composition.statement_verdicts == {"S001": "unchecked"}
+
+
+@pytest.mark.asyncio
 async def test_a_summary_restatement_is_refused(writer, checker) -> None:
     task = writer.build_task(_task_state())
     label = _labels(task.registry)["eia.gov"]
