@@ -147,6 +147,11 @@ def _initials_variants(tokens: Sequence[str]) -> set[str]:
     return variants
 
 
+# A leading article is the page's grammar, not part of the name: "the IPCC" is
+# "IPCC", and the article must not stop it being read as the acronym it is.
+_LEADING_ARTICLES = frozenset({"the", "a", "an"})
+
+
 def _single_token(value: str) -> str | None:
     """The one token a host label or an all-capitals acronym stands for, else
     ``None``.
@@ -161,7 +166,7 @@ def _single_token(value: str) -> str | None:
     if _HOST.fullmatch(text):
         label, _, suffix = publisher_identity(f"https://{text}").partition(".")
         return label if suffix.rsplit(".", 1)[-1] in _NAMEABLE_SUFFIXES else None
-    tokens = _tokens(value)
+    tokens = [t for t in _tokens(value) if t.casefold() not in _LEADING_ARTICLES]
     if len(tokens) == 1 and tokens[0].isupper() and len(tokens[0]) > 1:
         return tokens[0].casefold()
     return None
@@ -203,6 +208,20 @@ def same_organisation(left: str, right: str) -> bool:
         joined = "".join(core_words)
         if token in _initials_variants(tokens) | {joined}:
             return True
+        # An all-capitals first word the other name writes in capitals too stands
+        # for that name ("TIOBE" for "TIOBE Software", "IEEE" for "IEEE
+        # Spectrum"): an organisation's acronym leads its own name. A Title Case
+        # first word never does -- "Energy" is not "Energy Information
+        # Administration", and energy.gov is still not the EIA -- and neither is
+        # a country word.
+        if (
+            len(tokens) > 1
+            and tokens[0].isupper()
+            and len(tokens[0]) > 1
+            and token == tokens[0].casefold()
+            and token not in _COUNTRY_WORDS
+        ):
+            return True
         # The four-letters-or-more prefix reading is for a host label that
         # blends several of the name's words ("woodmac" for Wood Mackenzie):
         # restricted to host labels, and refused when the token merely
@@ -233,25 +252,84 @@ def _period_key(value: str | None) -> str | None:
 # "fiscal" but never onto a bare calendar year: only the spellings of *one*
 # fiscal period are made to agree.
 _PERIOD_ABBREVIATION = re.compile(r"\b(fy|q|h)(?=\d)")
+_PERIOD_FOLDS = {"fy": "fiscal", "q": "quarter", "h": "half"}
 _ORDINAL_NUMBER = {"first": "1", "second": "2", "third": "3", "fourth": "4"}
 _SPELLED_ORDINAL_PERIOD = re.compile(r"\b(first|second|third|fourth)[\s-]+(quarter|half)\b")
+# A two-digit year reads as its four-digit one only where the page writes it as
+# a year: after an apostrophe ("Q1'25", "H1'25", "FY'25") or directly after
+# "FY" ("FY25"). Nothing else attaches one -- a part number that happens to look
+# like a period ("H20 chips", "H100", a bare "Q25") is not a year -- and a
+# four-digit year is never touched.
+_TWO_DIGIT_YEAR = re.compile(r"(?P<lead>['\u2019]|\bfy)(?P<year>\d{2})(?!\d)")
+
+
+def _full_year(year: str) -> str:
+    """The four-digit year a two-digit one stands for, by the usual pivot."""
+    return ("20" if int(year) <= 49 else "19") + year
 
 
 def _folded_period(value: str) -> str:
     text = _SPELLED_ORDINAL_PERIOD.sub(
         lambda match: f"{match.group(2)} {_ORDINAL_NUMBER[match.group(1)]}", cosmetic_text(value)
     )
-    text = _PERIOD_ABBREVIATION.sub(lambda match: f"{match.group(1)} ", text)
-    return " ".join(
-        {"fy": "fiscal", "q": "quarter", "h": "half"}.get(word, word)
-        for word in text.split()
+    text = _TWO_DIGIT_YEAR.sub(
+        lambda match: f"{match.group('lead')} {_full_year(match.group('year'))}", text
     )
+    return " ".join(_PERIOD_FOLDS.get(word, word) for word in _split_period_words(text))
+
+
+def _split_period_words(text: str) -> list[str]:
+    """``text``'s words, with the abbreviation folded and no apostrophe left in a word.
+
+    An apostrophe between an abbreviation and its year ("fy' 2025", "q1' 2025")
+    is the page's own spelling of the gap the fold inserts, so it is dropped
+    before the abbreviation is split: without this, the bare token "fy'" never
+    reaches the fold table and "FY'25" would keep a key of its own.
+    """
+    words: list[str] = []
+    for word in text.split():
+        cleaned = re.sub(r"['\u2019]+", "", word)
+        words.extend(_PERIOD_ABBREVIATION.sub(lambda m: f"{m.group(1)} ", cleaned).split())
+    return words
 
 
 def same_period(left: str | None, right: str | None) -> bool:
     """Equal after cosmetic normalisation, or both the same bare year."""
     key = _period_key(left)
     return key is not None and key == _period_key(right)
+
+
+# A period the text continues as a range: "FY2024-25", "FY24-25", "FY25/26",
+# "2024–25". The year a range starts in is not the period the range states.
+_RANGE_CONTINUATION = re.compile(r"^\s*[-/\u2013]\s*\d")
+
+
+def _period_stated_in(text: str, period: str | None) -> bool:
+    """Whether ``text`` states ``period``, however either one spells it.
+
+    The period and the text fold to one key ("Q4 2025" is "fourth quarter of
+    2025"), and the key counts as stated when the text's own folded tokens carry
+    it as a contiguous run: a sentence that dates a figure "at the end of Q1'25"
+    states the period a page or a reply writes "Q1 2025".
+
+    A run the text continues as a range does not count: "FY2024-25" states the
+    fiscal year the range ends in, not "fiscal 2024" (RevFF1r3's Important 2).
+    """
+    key = _period_key(period)
+    if key is None:
+        return False
+    wanted = key.split()
+    folded = _folded_period(text)
+    tokens = [match for match in re.finditer(r"[a-z0-9]+", folded)
+              if match.group() not in _PERIOD_FILLER]
+    for start in range(len(tokens) - len(wanted) + 1):
+        run = tokens[start : start + len(wanted)]
+        if [match.group() for match in run] != wanted:
+            continue
+        if _RANGE_CONTINUATION.match(folded[run[-1].end() : run[-1].end() + 5]):
+            continue
+        return True
+    return False
 
 
 # Fable §8.6 step 2's filler words, less "a" and "an": a single letter can be a
@@ -700,6 +778,20 @@ def finding_answers(finding: Finding, target: EvidenceTarget, *,
     if target.target_id not in finding.target_ids:
         return False
     if target.unit_dimension is None:
+        # A qualitative target's organisation is the plan's preference, not a
+        # gate on the page's own statements (Defect C): a host name is not
+        # evidence of who a page speaks for (playvalorant.com is Riot Games's,
+        # github.blog is GitHub's, every EU body is europa.eu), so requiring the
+        # finding's own names to spell it refused the organisation's own pages
+        # and reported the obligation "Not found" against its own evidence.
+        #
+        # The one thing the page's own credit decides is a relay: a finding the
+        # page states as another body's answers that body's obligations. A
+        # qualitative finding carries no Context Check organisation, so there is
+        # nothing else to weigh -- and the report labels every row with its own
+        # source, so no statement is credited to the target's body by this.
+        if not finding.attributed_issuer:
+            return True
         return target.organisation is None or any(
             same_organisation(target.organisation, name) for name in _finding_organisations(finding)
         )

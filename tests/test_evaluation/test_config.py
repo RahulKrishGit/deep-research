@@ -820,11 +820,17 @@ from deep_research.utils.config import (
 # ("reporting from the U.S. Energy Information Administration"). No prompt
 # string was edited, and ``agents.prompts`` was untouched, so the other four
 # target pins and the Judge pin are unchanged.
+# FF1 round 3 (the pre-flight dry-run audit's two general defects): the Evidence
+# Verifier's own module source moved `7889ed57c042` -> `2a68e627d577` — every
+# period test the enforcement makes now asks ``_period_stated``, which reads the
+# words literally or in the spelling their own fold agrees on ("Q1'25" is
+# "Q1 2025"). No prompt string was edited, and ``agents.prompts`` was untouched,
+# so the other four target pins and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "3e987c934fae",
     "researcher": "c490b869021b",
     "source_evaluator": "58c4e7d909ef",
-    "evidence_verifier": "7889ed57c042",
+    "evidence_verifier": "2a68e627d577",
     "report_writer": "69b86b8b87a2",
 }
 

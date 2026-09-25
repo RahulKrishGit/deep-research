@@ -12,6 +12,7 @@ from deep_research.agents.evidence_verifier import (
 )
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.verified_facts import (
+    _period_stated_in,
     _rows_share_a_subject,
     _target_fields,
     answered_target_ids,
@@ -838,3 +839,202 @@ def test_the_row_label_agrees_with_the_pages_own_attribution() -> None:
 
     assert (row.attribution, row.organisation, row.relay_host) == (
         "relayed", "U.S. Energy Information Administration", "power-eng.com")
+
+
+# ---------------------------------------------------------------------------
+# Round 3, Defect A: a period the words state in another spelling.
+# ---------------------------------------------------------------------------
+
+
+def test_a_two_digit_year_reads_as_its_four_digit_year() -> None:
+    """Round 3 (pre-flight run 3): the page dates its figure "at the end of
+    Q1'25", and "Q1 2025" has to read as the same period — an apostrophe or a
+    period abbreviation attaches a two-digit year, which folds by the usual
+    pivot (00-49 is 20xx, 50-99 is 19xx). A bare two-digit number is not a year.
+    """
+    assert same_period("Q1 2025", "Q1\u201925")
+    assert same_period("Q1 2025", "Q1'25")
+    assert same_period("fiscal 2025", "FY25")
+    assert same_period("fiscal 2025", "FY\u201925")
+    assert same_period("H1 2025", "H1\u201925")
+    assert same_period("Q4 1998", "Q4'98")
+
+    assert not same_period("Q1 2025", "Q2\u201925")
+    assert not same_period("fiscal 2025", "2025")
+    assert not same_period("Q1 2025", "Q1 25")
+
+
+def test_the_words_state_a_period_however_they_spell_it() -> None:
+    """The words state a period when their folded tokens carry its key as one run."""
+    words = ("The report says domestic storage capacity will rise from about 28 GW at the end "
+             "of Q1\u201925 to 64.9 GW at the end of 2026.")
+
+    assert _period_stated_in(words, "Q1 2025")
+    assert _period_stated_in(words, "quarter 1 2025")
+    assert _period_stated_in(words, "2026")
+
+    assert not _period_stated_in(words, "Q2 2025")
+    assert not _period_stated_in(words, "fiscal 2025")
+    assert not _period_stated_in(words, None)
+
+
+def test_a_bracketed_unit_answers_the_target_it_belongs_to() -> None:
+    """Round 3 (pre-flight run 3): the Key facts row read `26 gigawatts (GW)`
+    under the measure "stated figure", because the bracketed unit had no
+    dimension for the target's own dimension to match."""
+    text = ("Cumulative utility-scale battery storage capacity exceeded 26 gigawatts (GW) "
+            "in 2024.")
+    read = make_read(text, url="https://eia.gov/todayinenergy/detail.php?id=64705")
+    finding = make_finding(read, text,
+                           figures=[figure("26", "gigawatts (GW)", "2024", "actual")],
+                           target_ids=["topic-01-target-01"])
+    target = make_target("topic-01-target-01", question=(
+        "How much utility-scale battery storage capacity was there in 2024?"),
+        measure="utility-scale battery storage capacity", unit_dimension="power", period="2024",
+        kind="actual", geography=None, organisation=None)
+
+    [row] = fact_rows([verified(finding, ctx(organisation="eia.gov", period="2024"))], [target])
+
+    assert row.measure == "utility-scale battery storage capacity"
+    assert row.target_ids == ["topic-01-target-01"]
+
+
+# ---------------------------------------------------------------------------
+# Round 4, part 1: the review's findings on the two-digit-year fold, the range
+# continuation, and the bracketed unit's qualifier.
+# ---------------------------------------------------------------------------
+
+
+def test_a_two_digit_year_needs_an_apostrophe_or_fy() -> None:
+    """RevFF1r3's Important 1: only "'" and "FY" attach a two-digit year. A
+    part number that happens to look like one ("H20 chips", "H100") is not a
+    year, and neither is a bare "Q25"."""
+    assert not same_period("half 2020", "H20")
+    assert not same_period("half 1 2000", "H100")
+    assert not same_period("half 2012", "H12")
+    assert not same_period("2025", "Q25")
+
+    # The spellings the rule does read keep working.
+    assert same_period("Q1 2025", "Q1\u201925")
+    assert same_period("H1 2025", "H1'25")
+    assert same_period("fiscal 2025", "FY25")
+
+
+def test_a_period_the_words_state_as_a_range_is_not_stated() -> None:
+    """RevFF1r3's Important 2: "FY2024-25" and "FY25/26" are ranges, and the
+    year a range *starts* in is not the period it states."""
+    assert not _period_stated_in("India added 18 GW in FY2024-25, the ministry said.",
+                                 "fiscal 2024")
+    assert not _period_stated_in("India added 18 GW in FY24-25, the ministry said.",
+                                 "fiscal 2024")
+    assert not _period_stated_in("India added 18 GW in FY25/26, the ministry said.",
+                                 "fiscal 2025")
+    # The range itself, and a year that stands alone, are still stated.
+    assert _period_stated_in("India added 18 GW in FY2024-25, the ministry said.",
+                             "fiscal 2024 25")
+    assert _period_stated_in("India added 18 GW in FY2024, the ministry said.", "fiscal 2024")
+    assert _period_stated_in("India added 18 GW in 2024, the ministry said.", "2024")
+
+
+# ---------------------------------------------------------------------------
+# Round 4, part 2: Defect C (a qualitative target's organisation) and Defect D
+# (a leading article, and an all-capitals first word).
+# ---------------------------------------------------------------------------
+
+TEXT_TARGET = dict(question="When does the new title enter closed beta?",
+                   measure="beta date", unit_dimension=None, period=None, kind=None,
+                   geography=None)
+
+
+def _text_finding(url: str = "https://games-studio.test/news/beta",
+                  target_id: str = "topic-01-target-01", **fields):
+    text = "The new title enters closed beta next month, the studio said."
+    read = make_read(text, url=url, title="Beta news")
+    return verified(make_finding(read, text, target_ids=[target_id], **fields))
+
+
+def test_an_own_site_text_finding_answers_a_qualitative_target() -> None:
+    """Defect C (the controller's probe): a target with no unit dimension takes
+    its organisation from the plan, and a host name is not evidence of who a page
+    speaks for -- playvalorant.com is Riot Games's, github.blog is GitHub's --
+    so an organisation its host does not spell must not refuse the page's own
+    bound, citable finding. The figure test below is the bound: a *figure*
+    target keeps the organisation gate."""
+    target = make_target("topic-01-target-01", organisation="Example Games", **TEXT_TARGET)
+
+    assert finding_answers(_text_finding(), target)
+    assert set(answered_target_ids([_text_finding()], [target])) == {target.target_id}
+
+    competitor = make_target("topic-01-target-02", organisation="Example Games",
+                             measure="storage additions", unit_dimension="power", period="2024",
+                             kind="actual", geography=None)
+    facility = verified(
+        make_finding(make_read(), "Generators added 10.4 gigawatts (GW) of new battery storage "
+                                  "capacity in 2024,",
+                     figures=[figure("10.4", "GW", "2024", "actual")],
+                     target_ids=[competitor.target_id]),
+        ctx(organisation="Some Other Body", period="2024"))
+
+    assert not finding_answers(facility, competitor)
+
+
+def test_a_text_finding_that_relays_another_body_answers_only_that_bodys_targets() -> None:
+    """The rule's one gate: a page that states the finding as another body's
+    answers that body's obligations, not the plan's other organisations."""
+    relayed = _text_finding(attributed_issuer="Example Research")
+    other_body = _text_finding(attributed_issuer="Example Games")
+
+    assert not finding_answers(relayed, make_target("topic-01-target-01",
+                                                    organisation="Example Games", **TEXT_TARGET))
+    assert finding_answers(other_body, make_target("topic-01-target-01",
+                                                   organisation="Example Games", **TEXT_TARGET))
+    assert not finding_answers(relayed, make_target("topic-01-target-01",
+                                                    organisation="Example Games Ltd",
+                                                    **{**TEXT_TARGET, "measure": "beta date"}))
+    # The body the page credits is the only one its obligation answers.
+    assert finding_answers(relayed, make_target("topic-01-target-01",
+                                                organisation="Example Research", **TEXT_TARGET))
+
+
+def test_not_found_does_not_list_a_qualitative_target_its_bound_finding_answers() -> None:
+    """The defect's visible effect: a required text target whose finding is bound
+    and verified was reported "Not found" against its own evidence."""
+    target = make_target("topic-02-target-01", organisation="Example Games", **TEXT_TARGET)
+    topic = SubTopic(coverage_id="topic-02", title="Beta date", rationale="r",
+                     search_queries=["closed beta date"], success_criteria=["c"], priority=1,
+                     evidence_targets=[target])
+    acquisition = {"topic-02": AcquisitionState(read_urls=["https://games-studio.test/news/beta"])}
+    answered = answered_target_ids([_text_finding(target_id=target.target_id)], [target])
+
+    assert not_found_targets([topic], answered, acquisition) == []
+    # The same target without a bound finding is still listed.
+    assert [row.target_id for row in not_found_targets([topic], {}, acquisition)] == [
+        "topic-02-target-01"]
+
+
+@pytest.mark.parametrize(("left", "right"), [
+    ("the IPCC", "IPCC"),
+    ("the IPCC", "Intergovernmental Panel on Climate Change"),
+    ("IPCC", "the Intergovernmental Panel on Climate Change"),
+    ("TIOBE", "TIOBE Software"),
+    ("IEEE", "IEEE Spectrum"),
+    ("the EIA", "U.S. Energy Information Administration"),
+])
+def test_a_leading_article_or_an_all_capitals_first_word_still_matches(left, right) -> None:
+    """Defect D: a leading article never blocks a match, and an all-capitals first
+    word the other name also writes in capitals stands for that name."""
+    assert same_organisation(left, right)
+    assert same_organisation(right, left)
+
+
+@pytest.mark.parametrize(("left", "right"), [
+    ("Energy", "Energy Information Administration"),
+    ("Wood", "Wood Mackenzie"),
+    ("Tiobe", "TIOBE Software"),
+    ("EIA", "eia.news"),
+    ("energy.gov", "U.S. Energy Information Administration"),
+])
+def test_a_title_case_first_word_never_stands_for_the_rest(left, right) -> None:
+    """The bound on the rule above: only an all-capitals word does."""
+    assert not same_organisation(left, right)
+    assert not same_organisation(right, left)

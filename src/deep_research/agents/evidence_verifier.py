@@ -67,6 +67,7 @@ from deep_research.agents.prompts import (
 from deep_research.agents.sources import publisher_identity
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.verified_facts import (
+    _period_stated_in,
     resolve_relative_period,
     same_organisation,
     same_period,
@@ -575,6 +576,19 @@ def _differs(proposed: str | None, recorded: str | None) -> bool:
     )
 
 
+def _period_stated(words: str, period: str | None) -> bool:
+    """Whether the words state this period: literally, or in another spelling.
+
+    One rule for every period test the enforcement makes: a page that dates its
+    figure "at the end of Q1'25" states the period a reply writes "Q1 2025"
+    (round 3's pre-flight evidence), and a period neither spelling states is
+    still unstated.
+    """
+    return bool(period) and (
+        excerpt_matches(words, period) or _period_stated_in(words, period)
+    )
+
+
 def _agrees_with_the_years_the_words_state(words: str, resolved: str) -> bool:
     """Whether a relative period the code read agrees with the words' own years.
 
@@ -628,20 +642,20 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     resolved_from: str | None = None   # the page date a relative period came from (D11)
     if reply.period and _differs(reply.period, period):
         page_date, _ = _page_date_basis(item)
-        if not excerpt_matches(words, reply.period):
+        if not _period_stated(words, reply.period):
             # An explicit period the words themselves state beats a relative
             # reading (fix round 1): only a page that dates the figure
             # relatively lets code resolve one. Fix round 1 guarded the
             # *recorded* period; the words' own year is what has to agree, or a
             # figure the words date 2024 is kept under a relative 2026 (P2-2).
-            dated_explicitly = bool(period) and excerpt_matches(words, period)
+            dated_explicitly = _period_stated(words, period)
             resolved = None if dated_explicitly else resolve_relative_period(words, page_date)
             if (resolved is None or not same_period(resolved, reply.period)
                     or not _agrees_with_the_years_the_words_state(words, resolved)):
                 return drop("correction_not_on_page")
             resolved_from = page_date
         period, corrected = reply.period, True
-    elif reply.verdict == "correct" and period and not excerpt_matches(words, period):
+    elif reply.verdict == "correct" and period and not _period_stated(words, period):
         # The Context Check answers null as its prompt instructs ("null when
         # the page states none"), so a recorded period its own words do not
         # state is not verified by them: the figure keeps its value and its

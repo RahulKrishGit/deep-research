@@ -1627,3 +1627,100 @@ def test_a_body_merely_mentioned_leaves_the_figure_unattributed() -> None:
     assert resolve_attribution(proposed="unattributed", organisation=None, finding=finding,
                                read=read, issuer=None, words=words) == (
         "unattributed", "power-eng.com")
+
+
+# ---------------------------------------------------------------------------
+# Round 3, Defect A: the period the words state in another spelling.
+# ---------------------------------------------------------------------------
+
+PREFLIGHT3_WORDS = (
+    "The report says domestic storage capacity will rise from about 28 GW at the end of "
+    "Q1\u201925 to 64.9 GW at the end of 2026."
+)
+
+
+def test_a_period_the_words_spell_another_way_is_stated() -> None:
+    """Round 3 (pre-flight run 3, the A2 traceability defect): the page dates its
+    figure "at the end of Q1'25" while the figure records "Q1 2025", so the
+    literal containment test read the period as not stated and the label said
+    "period not stated" for a page that states it."""
+    recorded = _figure_item(PREFLIGHT3_WORDS, figure("28", "GW", "Q1 2025", "actual"))
+
+    unchanged = _check(recorded, verdict="correct")
+
+    assert unchanged.kept and unchanged.context.period == "Q1 2025"
+
+    proposed = _check(_figure_item(PREFLIGHT3_WORDS, figure("28", "GW", None, "actual")),
+                      period="Q1 2025", kind="actual", verdict="correct")
+
+    assert proposed.kept and proposed.context.period == "Q1 2025"
+
+
+def test_a_period_the_words_do_not_state_is_still_refused() -> None:
+    """The bound on the rule above: another quarter, and a fiscal year where the
+    words write a calendar one, are still not the period the words state."""
+    other_quarter = _check(
+        _figure_item(PREFLIGHT3_WORDS, figure("28", "GW", None, "actual")),
+        period="Q2 2025", kind="actual", verdict="correct")
+
+    assert other_quarter.dropped_reason == "correction_not_on_page"
+
+    fiscal = "Additions reached 4.5 GW in 2025, the agency said."
+    calendar_only = _check(
+        _figure_item(fiscal, figure("4.5", "GW", "fiscal 2025", "actual")), verdict="correct")
+
+    assert calendar_only.kept and calendar_only.context.period is None
+
+
+def test_a_period_the_words_abbreviate_states_the_fiscal_year() -> None:
+    """The same rule the other way: the words write "FY25", the figure records
+    "fiscal 2025" — one fiscal year, so the recorded period stands."""
+    text = "Additions reached 4.5 GW in FY25, the agency said."
+    kept = _check(_figure_item(text, figure("4.5", "GW", "fiscal 2025", "actual")),
+                  verdict="correct")
+
+    assert kept.kept and kept.context.period == "fiscal 2025"
+
+
+# ---------------------------------------------------------------------------
+# Round 4, part 1: the review's findings, through the enforcement.
+# ---------------------------------------------------------------------------
+
+
+def test_a_part_number_that_looks_like_a_period_is_not_one() -> None:
+    """RevFF1r3's Important 1 through ``_checked``: "H20" is a chip, not the
+    year 2020, so the recorded period is not stated and a proposal of it is
+    refused."""
+    text = "Nvidia sold 1.2 million H20 chips, the filing said."
+
+    cleared = _check(_figure_item(text, figure("1.2", "million", "2020", "actual")),
+                     verdict="correct")
+    refused = _check(_figure_item(text, figure("1.2", "million", None, "actual")),
+                     period="2020", kind="actual", verdict="correct")
+
+    assert cleared.kept and cleared.context.period is None
+    assert refused.dropped_reason == "correction_not_on_page"
+
+
+def test_a_fiscal_range_does_not_state_the_year_it_starts_in() -> None:
+    """RevFF1r3's Important 2 through ``_checked``."""
+    text = "India added 18 GW in FY2024-25, the ministry said."
+
+    cleared = _check(_figure_item(text, figure("18", "GW", "fiscal 2024", "actual")),
+                     verdict="correct")
+    refused = _check(_figure_item(text, figure("18", "GW", None, "actual")),
+                     period="fiscal 2024", kind="actual", verdict="correct")
+
+    assert cleared.kept and cleared.context.period is None
+    assert refused.dropped_reason == "correction_not_on_page"
+
+
+def test_a_period_the_words_abbreviate_beats_a_relative_reading() -> None:
+    """RevFF1r3's Minor 4: the two-digit period the words state is what
+    ``dated_explicitly`` reads, so a relative "this year" cannot replace it."""
+    text = "Firms added 4 GW in Q1\u201925; this year they plan more."
+    item = _figure_item(text, figure("4", "GW", "Q1 2025", "actual"), page_date="2026-02-20")
+
+    dropped = _check(item, period="2026", kind="actual", verdict="correct")
+
+    assert dropped.dropped_reason == "correction_not_on_page"
