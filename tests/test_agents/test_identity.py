@@ -281,25 +281,33 @@ def test_one_passage_restated_twice_is_one_finding() -> None:
 
     Two passes re-read one page and mine one passage: the first pass restated
     it one way, the later pass another. The URL, the sub-topic, the read, the
-    locator and the verbatim snippet are identical, so this is one piece of
-    evidence — but the prose differs, and a content-keyed identity published it
-    twice. The recorded run's own log shows exactly that shape: two labels, one
-    read, one locator, one snippet, two restatements.
+    locator, the verbatim snippet and the figure the sentence carries are
+    identical, so this is one piece of evidence — but the prose differs, and a
+    content-keyed identity published it twice. The recorded run's own log shows
+    exactly that shape: two labels, one read, one locator, one snippet, two
+    restatements.
 
-    Identity is what the evidence *is*. The passage and the sentence mined from
-    it are the record's identity; the restatement is the model's prose about it.
+    Identity is what the evidence *is*, and the fold is gated on what the
+    record asserts (``_assertion_key``): the passage and the facts mined from
+    it are the record's identity, and the restatement is the model's prose
+    about them. Two records of one passage that state *different* facts stay
+    two findings, which is what keeps a dropped figure from erasing the
+    obligation it answered.
     """
     read = make_read("Reported capacity rose to 12,314 MW in 2024.")
     snippet = "Reported capacity rose to 12,314 MW in 2024."
+    figure_ = figure("12,314", "MW", "2024", "actual")
     first = make_finding(
         read,
         snippet,
+        figures=[figure_],
         content="Capacity rose to 12,314 MW in 2024.",
         target_ids=["topic-01-target-01"],
     )
     second = make_finding(
         read,
         snippet,
+        figures=[figure_],
         content="In 2024 the reported capacity was 12,314 MW.",
         target_ids=["topic-02-target-01"],
     )
@@ -340,6 +348,50 @@ def test_two_statements_of_one_passage_stay_two_findings() -> None:
     assert figure_statement.locator == date_statement.locator
 
     assert len(deduplicate_findings([figure_statement, date_statement])) == 2
+
+
+def test_two_facts_of_one_sentence_stay_two_findings() -> None:
+    """A sentence can carry two facts, and a re-read must not cost one of them.
+
+    One passage of one page states an actual and a forecast in the same
+    sentence. Two extractions restate the sentence differently — that is the
+    shape a later pass produces — and each record carries its own figure. The
+    records are the same *evidence* but not the same *fact*: folding them keeps
+    the winner's figures and drops the loser's, and the dropped figure is never
+    verified, so the obligation it answered reads Not found although the run
+    extracted and verified it.
+
+    The fold is therefore gated on what the records assert, not on where they
+    were mined.
+    """
+    sentence = (
+        "Reported capacity rose to 12,314 MW in 2024, and the agency "
+        "forecasts 19,600 MW of additions in 2025."
+    )
+    read = make_read(sentence, url="https://example.test/monitor/report")
+    actual = make_finding(
+        read,
+        sentence,
+        figures=[figure("12,314", "MW", "2024", "actual")],
+        content="Capacity rose to 12,314 MW in 2024.",
+    )
+    forecast = make_finding(
+        read,
+        sentence,
+        figures=[figure("19,600", "MW", "2025", "forecast")],
+        content="The agency forecasts 19,600 MW in 2025.",
+    )
+    assert actual.locator == forecast.locator
+    assert actual.snippet == forecast.snippet
+
+    folded = deduplicate_findings([actual, forecast])
+
+    assert len(folded) == 2
+    assert {
+        (figure_.value, figure_.unit, figure_.period, figure_.kind)
+        for finding in folded
+        for figure_ in finding.figures
+    } == {("12,314", "MW", "2024", "actual"), ("19,600", "MW", "2025", "forecast")}
 
 
 def test_deduplicate_findings_keeps_the_higher_confidence_record() -> None:
