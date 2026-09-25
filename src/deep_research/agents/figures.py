@@ -1,8 +1,6 @@
 """Figure normalisation for the Evidence Verifier (spec §5.1 step 2).
 
-One fixed, question-independent rule set decides whether a figure is in a
-snippet, whether the Context Check's evidence words carry it, and whether a
-report sentence states it:
+One fixed, question-independent rule set reads a figure out of text:
 
 - digit grouping and spacing: ``10,400`` equals ``10400``;
 - unit spelling: ``GW`` equals ``gigawatt(s)``, ``MWh`` equals
@@ -12,8 +10,11 @@ report sentence states it:
   parenthetical; an ``ac``/``dc`` suffix on the abbreviated unit is ignored;
 - a single number word before a unit ("ten gigawatts") is its number.
 
-Callers pass a snippet, evidence words, or a report sentence. Nothing here
-ever reads a finding's ``content``.
+Two live uses: :func:`figure_in_text` and :func:`quantities_in` decide whether
+a snippet states the figure when the Context Check could not judge it (PD-26),
+and :func:`parse_figure` with :func:`same_quantity` compares two figures'
+values -- the row grouping (PD-9) and a report sentence's restatement of a
+figure. Nothing here ever reads a finding's ``content``.
 """
 
 from __future__ import annotations

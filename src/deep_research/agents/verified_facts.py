@@ -17,6 +17,7 @@ from deep_research.agents.figures import (
     Quantity,
     parse_figure,
     same_quantity,
+    unit_dimension,
 )
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.sources import publisher_identity
@@ -221,8 +222,30 @@ def same_organisation(left: str, right: str) -> bool:
 def _period_key(value: str | None) -> str | None:
     if not value or not value.strip():
         return None
-    words = [w for w in re.findall(r"[a-z0-9]+", cosmetic_text(value)) if w not in _PERIOD_FILLER]
+    words = [w for w in re.findall(r"[a-z0-9]+", _folded_period(value)) if w not in _PERIOD_FILLER]
     return " ".join(words) or None
+
+
+# One period, spelled as the planner asked and as the page writes it (I4):
+# "FY2025" is "fiscal 2025", "Q4 2025" is "fourth quarter of 2025", "H1 2025"
+# is "first half of 2025". The abbreviation is split from its number first, so
+# "FY2025" and "FY 2025" are one spelling, and a fiscal year is folded onto
+# "fiscal" but never onto a bare calendar year: only the spellings of *one*
+# fiscal period are made to agree.
+_PERIOD_ABBREVIATION = re.compile(r"\b(fy|q|h)(?=\d)")
+_ORDINAL_NUMBER = {"first": "1", "second": "2", "third": "3", "fourth": "4"}
+_SPELLED_ORDINAL_PERIOD = re.compile(r"\b(first|second|third|fourth)[\s-]+(quarter|half)\b")
+
+
+def _folded_period(value: str) -> str:
+    text = _SPELLED_ORDINAL_PERIOD.sub(
+        lambda match: f"{match.group(2)} {_ORDINAL_NUMBER[match.group(1)]}", cosmetic_text(value)
+    )
+    text = _PERIOD_ABBREVIATION.sub(lambda match: f"{match.group(1)} ", text)
+    return " ".join(
+        {"fy": "fiscal", "q": "quarter", "h": "half"}.get(word, word)
+        for word in text.split()
+    )
 
 
 def same_period(left: str | None, right: str | None) -> bool:
@@ -526,12 +549,17 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
         # refused by a figure stating a *different* one ("all segments");
         # a figure with no stated scope is never refused on this ground.
         return False
-    if figure.quantity is None:
-        return False
+    # A value the number parser cannot read -- a currency symbol, a sign, an
+    # approximation, a range -- is still a figure in a unit the page wrote, so
+    # the unit's own dimension says what the figure is about (I3). An unknown
+    # unit names no dimension, which is what a target asking for a currency or
+    # a count asks for.
+    dimension = (figure.quantity.dimension if figure.quantity is not None
+                 else unit_dimension(figure.figure.unit))
     if target.unit_dimension in _SCALED_DIMENSIONS:
-        fits = figure.quantity.dimension == target.unit_dimension
+        fits = dimension == target.unit_dimension
     else:
-        fits = figure.quantity.dimension is None
+        fits = dimension is None
     return (
         fits
         and (target.period is None or same_period(figure.context.period, target.period))
@@ -624,6 +652,18 @@ _PERIOD_MONTHS = {"quarter": 3, "half": 6, "month": 1}
 # a calendar period, the way "the last year" is the trailing twelve months, so
 # neither is resolved; "in the last quarter" keeps its calendar-quarter reading.
 _DURATION_PREFIXES = frozenset({"over the", "during the"})
+# A comparison marker before the phrase means it names the base the figure is
+# *compared with*, not the period it applies to: "output rose 12 percent over
+# last year" measures this year, so resolving it to last year would file the
+# figure under a period the page never gave it (P2-1).
+_COMPARISON_MARKERS = frozenset({"over", "than", "from", "vs", "versus", "compared", "since"})
+_COMPARISON_LOOKBACK = 3
+
+
+def _names_a_comparison_base(evidence_words: str, match: re.Match[str]) -> bool:
+    """True when the phrase ``match`` found is a comparison base, not a period."""
+    before = evidence_words[: match.start()].split()[-_COMPARISON_LOOKBACK:]
+    return any(word.casefold() in _COMPARISON_MARKERS for word in before)
 
 
 def resolve_relative_period(evidence_words: str, page_date: str | None) -> str | None:
@@ -637,7 +677,8 @@ def resolve_relative_period(evidence_words: str, page_date: str | None) -> str |
     quarter" — is the months before the page rather than a calendar period, and
     a phrase the words themselves date ("the last quarter of 2024") states its
     period, so neither is resolved: an invented period would put a figure the
-    page never stated into the report.
+    page never stated into the report. A phrase used as a *comparison base* is
+    not a period either (P2-1).
     """
     key = _date_key(page_date)
     match = _RELATIVE_PERIOD.search(evidence_words or "")
@@ -650,6 +691,8 @@ def resolve_relative_period(evidence_words: str, page_date: str | None) -> str |
     unit = match.group("period").casefold()
     prefix = (match.group("window") or "").casefold()
     if direction == "last" and (prefix in _DURATION_PREFIXES or (unit == "year" and prefix)):
+        return None
+    if direction == "last" and _names_a_comparison_base(evidence_words, match):
         return None
     step = _RELATIVE_STEP[direction]
     if unit == "year":
@@ -699,9 +742,34 @@ def _figures_share_a_subject(left: VerifiedFigure, right: VerifiedFigure,
                         target_fields=_target_fields(shared, by_id.values()))
 
 
+def _answered_targets(figure: VerifiedFigure,
+                      targets: Sequence[EvidenceTarget]) -> frozenset[str]:
+    """The targets this figure answers: the ids its finding binds and the fields fit.
+
+    The same rule ``fact_rows`` builds a row's own ``target_ids`` with, so what
+    two figures share here is exactly the obligation their row would answer.
+    """
+    return frozenset(
+        target.target_id for target in targets
+        if target.target_id in figure.finding.target_ids
+        and _figure_answers(figure, target, targets)
+    )
+
+
 def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
-               by_id: Mapping[str, EvidenceTarget]) -> bool:
+               by_id: Mapping[str, EvidenceTarget],
+               answered: Mapping[tuple[str, int], frozenset[str]] | None = None) -> bool:
     if left.context.kind != right.context.kind:
+        return False
+    # PD-9's measure family is "the unit dimension plus the target the finding
+    # answers" (§5.3), so two figures that each answer a *different* obligation
+    # are two facts however equal their values (I6). A figure that answers no
+    # target at all -- an unbound extraction, a unit no target asks for --
+    # carries no measure to compare and groups as it did.
+    targets = list(by_id.values())
+    left_ids = _figure_answer_ids(left, targets, answered)
+    right_ids = _figure_answer_ids(right, targets, answered)
+    if left_ids and right_ids and not left_ids & right_ids:
         return False
     shared = set(left.finding.target_ids) & set(right.finding.target_ids)
     words = _shared_target_words(left.finding.target_ids, right.finding.target_ids, by_id)
@@ -720,26 +788,47 @@ def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
     return cosmetic_text(_value_text(left.figure)) == cosmetic_text(_value_text(right.figure))
 
 
+def _figure_answer_ids(figure: VerifiedFigure, targets: Sequence[EvidenceTarget],
+                       answered: Mapping[tuple[str, int], frozenset[str]] | None) -> frozenset[str]:
+    """``_answered_targets`` for one figure, reusing ``fact_rows``' own computation."""
+    if answered is None:
+        return _answered_targets(figure, targets)
+    return answered.get((figure.finding_id, figure.index), frozenset())
+
+
 def _primary(group: Sequence[VerifiedFigure]) -> VerifiedFigure:
-    """§5.3: the organisation's own page ahead of a relay; then the latest release."""
-    def rank(figure: VerifiedFigure) -> tuple[int, tuple[int, int, int]]:
+    """§5.3: the organisation's own page ahead of a relay; then the latest release.
+
+    A member that names a subject comes before one that does not (I2): the
+    group is one fact, so the row's own member is the one that can say what
+    the fact is about, and a row built from a subject-less member would print
+    no subject beside a named sibling's row.
+    """
+    def rank(figure: VerifiedFigure) -> tuple[int, int, tuple[int, int, int]]:
         key = release_key(figure.finding) or (0, 0, 0)
-        return (_ATTRIBUTION_RANK[figure.context.attribution], tuple(-part for part in key))  # type: ignore[return-value]
+        return (_ATTRIBUTION_RANK[figure.context.attribution],
+                0 if figure.context.subject else 1,
+                tuple(-part for part in key))  # type: ignore[return-value]
     return min(group, key=rank)
 
 
 def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) -> list[FactRow]:
     """§5.3 and PD-9: one row per fact; revisions folded; row ids K001, K002, ..."""
     by_id = {target.target_id: target for target in targets}
+    figures = verified_figures(findings)
+    # What each figure answers, computed once: the group test and the row's own
+    # target ids ask the same question of the same figures (I6).
+    answered = {(figure.finding_id, figure.index): _answered_targets(figure, list(targets))
+                for figure in figures}
     groups: list[list[VerifiedFigure]] = []
-    for figure in verified_figures(findings):
+    for figure in figures:
         for group in groups:
             # The first member's test is the BASE rule, so a run with no subjects
             # groups exactly as before; the subject is then checked against every
             # *member*, not only the first, so a subject-less figure cannot act as
             # a wildcard that admits a second subject to one row (fix round 1,
             # IMPORTANT 3).
-            if _same_fact(group[0], figure, by_id) and all(
+            if _same_fact(group[0], figure, by_id, answered) and all(
                 _figures_share_a_subject(member, figure, by_id) for member in group
             ):
                 group.append(figure)
@@ -750,12 +839,20 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
     row_findings: list[Finding] = []
     for group in groups:
         primary = _primary(group)
-        target_ids = sorted(
-            {t for figure in group for t in figure.finding.target_ids
-             if t in by_id and _figure_answers(figure, by_id[t], targets)}
-        )
+        # The row prints one subject, so its obligations are the ones its own
+        # subject-bearing members answer (I2). A member with no subject answers
+        # every sibling target it fits, because nothing can refuse it -- it
+        # cannot say which of two subjects it belongs to -- and letting that
+        # ride into a named row answers the other subject's obligation with a
+        # row about this one.
+        answering = [figure for figure in group if figure.context.subject] or group
+        target_ids = sorted({t for figure in answering
+                             for t in _figure_answer_ids(figure, list(targets), answered)})
         dimension = primary.quantity.dimension if primary.quantity is not None else None
         measure = next((by_id[t].measure for t in target_ids if by_id[t].measure), None)
+        subject = primary.context.subject or next(
+            (member.context.subject for member in group if member.context.subject), None
+        )
         rows.append(
             FactRow(
                 row_id="pending",
@@ -763,7 +860,7 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
                 attribution=primary.context.attribution,
                 relay_host=publisher_identity(primary.finding.source_url)
                 if primary.context.attribution == "relayed" else None,
-                subject=primary.context.subject,
+                subject=subject,
                 measure=measure or _MEASURE_BY_DIMENSION.get(dimension or "", "stated figure"),
                 period=primary.context.period,
                 value=_value_text(primary.figure),

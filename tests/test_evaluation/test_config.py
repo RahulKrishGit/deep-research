@@ -733,11 +733,22 @@ from deep_research.utils.config import (
 # ``subject_named_in``/``subject_context`` directly, so its module source moved
 # ``c58bc58d74fe`` -> ``5ed194fd4a41``; no prompt string was edited and the other
 # four pins are unchanged.
+# Task FF1 ("the review's evidence-core findings", final review slice 1): the
+# Evidence Verifier's own module source moved
+# ``21c413e91f94`` -> ``25e9124b78a1`` — the Context Check now clears a recorded
+# period or subject the reply answers null on, corroborates a relative period
+# against the years the words state, checks the finding's statement date against
+# the read before using it as the page-date basis, halts on a provider
+# configuration error, and judges a re-extraction whose target binding grew; its
+# relay rule no longer falls back to the finding's admitted issuer for a
+# different proposed body.
+# No prompt string was edited, and ``agents.prompts`` was untouched, so the
+# other four target pins and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "46a9cddd0896",
     "researcher": "f9ad12ff184b",
     "source_evaluator": "58c4e7d909ef",
-    "evidence_verifier": "21c413e91f94",
+    "evidence_verifier": "25e9124b78a1",
     "report_writer": "5ed194fd4a41",
 }
 

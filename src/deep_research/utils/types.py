@@ -373,7 +373,12 @@ class FigureResult(ContractModel):
 
     figure: FindingFigure
     matched: bool
-    """Figure Match's verdict (spec §5.1 step 2)."""
+    """Whether the finding's snippet was found on its page, not a per-figure verdict.
+
+    D8 deleted the per-figure Figure Match, so every figure of a
+    snippet-matched finding carries ``True``; a figure the Context Check
+    refuses is reported through ``dropped_reason``, never through this field.
+    """
     context: FigureContext | None = None
     """Set on every kept figure."""
     evidence_words: str | None = None
@@ -902,7 +907,6 @@ class BoundaryAudit(ContractModel):
     agent_name: str = Field(min_length=1)
     operation: str = Field(min_length=1)
     target_ids: list[str] = Field(default_factory=list)
-    claim_cluster_ids: list[str] = Field(default_factory=list)
     input_ids: list[str] = Field(default_factory=list)
     selected_ids: list[str] = Field(default_factory=list)
     returned_ids: list[str] = Field(default_factory=list)
@@ -1530,9 +1534,9 @@ class ReportComposition(ContractModel):
     terminal: ReportTerminalState = Field(default_factory=ReportTerminalState)
     """What the run's terminal checks decided, stamped at publication.
 
-    Empty for a composition nobody finalized — a fixture, or a pass the
-    Synthesizer composed but no finalizer published — and a renderer states
-    nothing about checks it was not told about.
+    Empty for a composition nobody finalized — a fixture, or a draft no
+    finalizer published — and a renderer states nothing about checks it was
+    not told about.
     """
 
     @model_validator(mode="after")
