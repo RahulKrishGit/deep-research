@@ -12,6 +12,7 @@ from deep_research.agents.evidence_verifier import (
 )
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.verified_facts import (
+    _answers_organisation,
     _period_stated_in,
     _rows_share_a_subject,
     _target_fields,
@@ -1040,9 +1041,19 @@ def test_a_leading_article_never_blocks_a_match(left, right) -> None:
     ("energy.gov", "U.S. Energy Information Administration"),
 ])
 def test_a_title_case_first_word_never_stands_for_the_rest(left, right) -> None:
-    """The bound on the rule above: only an all-capitals word does."""
+    """The bound both matchers keep: only an all-capitals token may stand for the
+    rest of a name.
+
+    ``same_organisation`` never reads a first word as the whole name at all, and
+    ``_answers_organisation`` -- the one predicate that reads an all-capitals
+    token that way (RevFF1p2's D-1) -- refuses a Title Case spelling just the
+    same, so a plan's "Energy Information Administration" is never answered by a
+    page whose own name is "Energy" or "Tiobe".
+    """
     assert not same_organisation(left, right)
     assert not same_organisation(right, left)
+    assert not _answers_organisation(left, right)
+    assert not _answers_organisation(right, left)
 
 
 # ---------------------------------------------------------------------------
@@ -1133,3 +1144,23 @@ def test_a_date_that_is_an_iso_date_states_its_year() -> None:
                              "calendar 2024")
     assert _period_stated_in("Additions reached 18 GW in 2024-25.", "2024") is False
     assert _period_stated_in("Additions reached 18 GW in 2024\u201325.", "2024") is False
+
+
+# ---------------------------------------------------------------------------
+# Round 6: ReRevFF1r5's finding 1 -- a multi-year span's start year.
+# ---------------------------------------------------------------------------
+
+
+def test_a_multi_year_span_does_not_state_its_start_year() -> None:
+    """ReRevFF1r5's finding 1: the span and the date readings are separate, so a
+    three-year span states no year while a date's own year is stated."""
+    for text in ("Additions reached 18 GW in 2024-25/26.",
+                 "Additions reached 18 GW in 2024-25-26.",
+                 "Additions reached 18 GW in 2024\u201325/26.",
+                 "Additions reached 18 GW in 2024-25."):
+        assert not _period_stated_in(text, "2024"), text
+
+    for text in ("Solar capacity was 18 GW, per the report published 2024-01-05.",
+                 "Solar capacity was 18 GW, per the report published 2024-1-5.",
+                 "Solar capacity was 18 GW, per the report published 2024/01/15."):
+        assert _period_stated_in(text, "calendar 2024"), text

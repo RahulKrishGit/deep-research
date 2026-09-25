@@ -335,12 +335,21 @@ def same_period(left: str | None, right: str | None) -> bool:
     return key is not None and key == _period_key(right)
 
 
-# A period the text continues as a *year span*: "FY2024-25", "FY24-25",
-# "FY25/26", "2024–25". The year a range starts in is not the period the range
-# states -- while the year part of a date ("2024-01-15") is a year the text
-# states, so the continuation has to be the whole span, not any dash and digit
-# (ReRevFF1p1's N1).
-_RANGE_CONTINUATION = re.compile(r"^\s*[-/\u2013]\s*(?:\d{2}|\d{4})(?!\d)(?!\s*[-/\u2013]\s*\d)")
+# A period the text continues as a *year span* ("FY2024-25", "FY24-25",
+# "FY25/26", "2024–25", "2024-25/26") states the years it spans, not the one it
+# starts in. A *date* continues the same way and does state its year
+# ("2024-01-15", "2024-1-5", "2024/01/15"), so the two readings are separate
+# patterns: a run is skipped only when the continuation is a span and not a date
+# (ReRevFF1r5's finding 1 -- stacking the date reading into the span pattern
+# suppressed the guard entirely, and a three-year span stated its start year
+# again).
+_RANGE_CONTINUATION = re.compile(r"^\s*[-/\u2013]\s*(?:\d{2}|\d{4})(?!\d)")
+_DATE_CONTINUATION = re.compile(
+    r"^\s*[-/\u2013]\s*(?:0?[1-9]|1[0-2])\s*[-/\u2013]\s*(?:0?[1-9]|[12]\d|3[01])(?!\d)"
+)
+# Enough of the tail to see a date's own separator and a two-digit day, spaces
+# and all (" - 01 - 05").
+_CONTINUATION_CHARS = 12
 
 
 def _period_stated_in(text: str, period: str | None) -> bool:
@@ -365,7 +374,8 @@ def _period_stated_in(text: str, period: str | None) -> bool:
         run = tokens[start : start + len(wanted)]
         if [match.group() for match in run] != wanted:
             continue
-        if _RANGE_CONTINUATION.match(folded[run[-1].end() : run[-1].end() + 5]):
+        tail = folded[run[-1].end() : run[-1].end() + _CONTINUATION_CHARS]
+        if _RANGE_CONTINUATION.match(tail) and not _DATE_CONTINUATION.match(tail):
             continue
         return True
     return False

@@ -1757,3 +1757,25 @@ def test_page_owner_keeps_the_body_not_its_programme_or_form() -> None:
 
     assert page_owner(eia) == "EIA"
     assert page_owner(united_nations) == "United Nations"
+
+
+
+# ---------------------------------------------------------------------------
+# Round 6: ReRevFF1r5's finding 1, through the enforcement.
+# ---------------------------------------------------------------------------
+
+
+def test_a_multi_year_span_clears_a_recorded_start_year() -> None:
+    """ReRevFF1r5's finding 1 in the unsafe direction: a page writing a three-year
+    span let a figure whose recorded period is the span's start year be kept, so
+    the span clears it -- while a date's own year is stated and stands."""
+    span = "India added 18 GW in 2024-25/26, the ministry said."
+    date = "Solar capacity was 18 GW, per the report published 2024-01-05."
+
+    cleared = _check(_figure_item(span, figure("18", "GW", "calendar 2024", "actual")),
+                     verdict="correct")
+    kept = _check(_figure_item(date, figure("18", "GW", "calendar 2024", "actual")),
+                  verdict="correct")
+
+    assert cleared.kept and cleared.context.period is None
+    assert kept.kept and kept.context.period == "calendar 2024"
