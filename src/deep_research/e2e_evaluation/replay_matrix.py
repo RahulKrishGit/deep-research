@@ -1,11 +1,11 @@
-"""The versioned offline matrix: eighteen real-agent scenarios.
+"""The versioned offline matrix: twenty-one real-agent scenarios.
 
 The manifest below is the *declared inventory* the release proof is measured
 against. Each row names a case id, the version of its semantics, the product
 result the plan expects, the decisive assertion that makes it that result, and
 the scenario builder that drives the real stack.
 
-Every case runs the six production agents through the real graph. The
+Every case runs the production agents through the real graph. The
 ``ScriptedGraphAgent`` cases in :mod:`deep_research.e2e_evaluation.cases`
 remain as graph-only historical regression tests; nothing here instantiates
 that double.
@@ -61,6 +61,10 @@ def _page(
     text: str | None = None,
     cache_artifact: Literal["", "valid", "stale", "forged"] = "",
     cached_text: str = "",
+    context: dict[str, str] | None = None,
+    statement: dict[str, str] | None = None,
+    vintage: str = "",
+    recorded_scope: str = "",
 ) -> ReplaySource:
     """One authored page, with the run's read of it scripted around it.
 
@@ -93,6 +97,10 @@ def _page(
         content_type=content_type,
         cache_artifact=cache_artifact,
         cached_text=cached_text,
+        context=context or {},
+        statement=statement or {},
+        vintage=vintage,
+        recorded_scope=recorded_scope,
     )
 
 
@@ -263,7 +271,7 @@ def _broad_constraints() -> ReplayScenario:
             required_target_ids=tuple(
                 f"topic-{index:02d}-target-01" for index in range(1, 7)
             ),
-            minimum_answerable_claims=6,
+            minimum_answered_findings=6,
             # Each entry is the number-and-unit reading its page states, in the
             # order its own claim writes it. The third is worth spelling out:
             # its page says "the number of supplier records ... was 1.2
@@ -375,14 +383,14 @@ def _comparative_conflict() -> ReplayScenario:
                 "definitive national rate",
                 "nationally representative",
             ),
-            minimum_answerable_claims=3,
+            minimum_answered_findings=3,
             required_report_phrases=("urban households", "rural households"),
             required_invariants=("both_accounts_cited",),
         ),
     )
 
 
-def _refinement_evidence_recovery() -> ReplayScenario:
+def _extra_pass_recovers_missing_target() -> ReplayScenario:
     """The missing account is published later, and the repair round finds it.
 
     The opening round can read one publisher: the claim is competent but
@@ -393,7 +401,7 @@ def _refinement_evidence_recovery() -> ReplayScenario:
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
     return ReplayScenario(
-        case_id="refinement-evidence-recovery",
+        case_id="extra-pass-recovers-missing-target",
         version=REPLAY_CASE_VERSION,
         question="What is the corroborated Acme widget adoption rate for 2024?",
         topics=(
@@ -426,8 +434,8 @@ def _refinement_evidence_recovery() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answerable_claims=3,
-            required_invariants=("refinement_recovered_evidence",),
+            minimum_answered_findings=3,
+            required_invariants=("extra_pass_recovers_missing_target",),
         ),
     )
 
@@ -518,7 +526,7 @@ def _blocked_html_pdf_fallback() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answerable_claims=3,
+            minimum_answered_findings=3,
             # The refusal is what this case is about: the landing page answers
             # 403, and the run records the denial before reading the document
             # behind it. A refusal that left no record would be
@@ -536,10 +544,12 @@ def _blocked_html_pdf_fallback() -> ReplayScenario:
 def _same_work_mirror() -> ReplayScenario:
     """One work on two hosts is one work, however many publishers print it.
 
-    The same document text is served by two different publishers. Both reads
-    are real and both are admitted, and the pair is still refused: the
-    publisher differs, the work does not. The obligation stays unanswered, and
-    the run must say so rather than promote a reprint to corroboration.
+    The same document text is served by two hosts. Both reads are real and both
+    are admitted, and the fact is still one fact: PD-9 merges figures by value,
+    organisation, period and kind, so the reprint neither doubles the key facts
+    row nor mints a second account of the figure the original states. The row's
+    assertion is the count and the label: one row, credited to the organisation
+    both hosts print.
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
     same_text = (
@@ -588,154 +598,25 @@ def _same_work_mirror() -> ReplayScenario:
         ),
         max_iterations=3,
         expectation=CaseExpectation(
-            terminal_quality="partial",
-            exit_code=4,
-            required_target_ids=("topic-02-target-01", "topic-03-target-01"),
-            minimum_answerable_claims=2,
-            required_gap_kinds=("hard:unanswered_critical_targets",),
-            allowed_failure_classes=(
-                "hard:unaccounted_required_targets",
-                "unanswered_critical_target",
-                "unaccounted_target",
-                "semantic_review_missing",
-                # The topic whose one work cannot corroborate itself is done as
-                # far as the Researcher can take it, so the pass that owes it
-                # nothing records the skip instead of buying the same page.
-                "error:researcher_sub_topic_skipped",
-                "error:researcher_sub_topic_without_findings",
-            ),
-            required_invariants=("no_false_verification", "mirror_not_double_counted"),
-        ),
-    )
-
-
-def _semantic_duplicate_claims() -> ReplayScenario:
-    """Paraphrases of one fact collapse; a different year does not.
-
-    One 2024 fact is published by two bodies in the same words, and by a third
-    in different words; the run's equivalence pass is scripted to propose the
-    paraphrase pair, and all three must end as one row. A fourth page states
-    the same measure for 2023, and nothing proposes it - a different period is
-    a different claim, and merging it would put a stale figure behind a
-    current answer.
-
-    The corroborated wording carries the pair, on purpose. ``verified_pair``
-    has exactly one writer, the Fact Checker at adjudication time
-    (``agents/fact_checker.py``), and it is granted from the sources one claim
-    row carries; a merge unions what its members recorded
-    (``claim_clusters._union_verdict_status``) and never re-derives it. So a
-    fixture whose only two pages state one fact in two *different* wordings
-    gives the merged row two single-source members and no pair, and the
-    paraphrase row then publishes as ``unverified`` however well corroborated
-    it is. The wording that is corroborated is therefore the wording two
-    bodies publish.
-
-    The two wordings also state the same *relation* as well as the same
-    figure. A paraphrase reading "reached 40 percent" against the long form's
-    "was 40 percent" is not one fact under this contract's own comparator: the
-    extractor records a ``reaches_level`` relation for the first and none for
-    the second, and ``atomic_compatible`` refuses a pair whose stated
-    qualifiers differ, which is the product working and not a fixture to talk
-    around.
-
-    The 2023 archive is a read of the first topic rather than a planned
-    sub-topic of its own. ``planner.apply_answer_contract`` stamps the frozen
-    contract's evidence period onto *every* target the plan carries, and the
-    contract's period is the question's 2024, so a planned 2023 sub-topic
-    carries an obligation that its own 2023 page can never discharge and the
-    run can never reach ``accepted``. What the case needs is not a 2023
-    obligation but a 2023 *read*: a stale figure the run saw and must not
-    merge, nor publish behind the current one.
-    """
-    long_form = (
-        "the Acme widget adoption rate in urban households in the United States was "
-        "40 percent in 2024"
-    )
-    short_form = (
-        "urban household Acme widget adoption in the United States was "
-        "40 percent in 2024"
-    )
-    stale = (
-        "the Acme widget adoption rate in urban households in the United States was "
-        "32 percent in 2023"
-    )
-    return ReplayScenario(
-        case_id="semantic-duplicate-claims",
-        version=REPLAY_CASE_VERSION,
-        question="What was urban Acme widget adoption in the United States in 2024?",
-        topics=(
-            _topic(
-                1,
-                "Urban adoption",
-                "What was the urban household Acme widget adoption rate in the United "
-                "States in 2024?",
-                "rate",
-                "urban Acme widget adoption United States 2024",
-                (
-                    _page(
-                        "agency6.example.test",
-                        "urban-2024",
-                        "Urban adoption survey",
-                        long_form,
-                        issuer="Acme Institute 6",
-                    ),
-                    _page(
-                        "bureau6.example.test",
-                        "urban-2024",
-                        "Urban adoption panel",
-                        short_form,
-                        issuer="Independent Bureau 6",
-                    ),
-                    _page(
-                        "panel6.example.test",
-                        "urban-2024-second",
-                        "Urban adoption second panel",
-                        long_form,
-                        issuer="Urban Research Panel 6",
-                    ),
-                    _page(
-                        "archives6.example.test",
-                        "urban-2023",
-                        "Urban adoption archive",
-                        stale,
-                        issuer="Acme Archives 6",
-                    ),
-                ),
-                critical=True,
-                labels=("Acme widget", "urban households"),
-            ),
-            _filler(
-                2, "Widget exports", "Acme widget export volume", "3.4 million units"
-            ),
-            _filler(
-                3, "Widget funding", "Acme widget funding round", "12 million dollars"
-            ),
-        ),
-        # The positions the equivalence packet actually shows, read off the
-        # packet rather than assumed from the topic order: the archive's 2023
-        # claim is extracted second, so the two 2024 wordings are 1 and 4.
-        # Proposing (1, 2) would be proposing to merge a current figure with a
-        # stale one - the merge `different_periods_stay_distinct` exists to
-        # prevent, and which the product refuses.
-        equivalence_pairs=((1, 4),),
-        expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
+            # PD-9: the same value for the same organisation, period and kind is
+            # one fact with or without a target. The reprint neither adds a row
+            # nor blocks the obligation: the topic is answered by the row the
+            # original page produced, and the case's whole assertion is that one
+            # body served twice is one fact.
             required_target_ids=(
                 "topic-01-target-01",
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answerable_claims=3,
-            required_invariants=(
-                "paraphrases_merged",
-                "different_periods_stay_distinct",
-            ),
+            minimum_answered_findings=3,
+            required_invariants=("no_false_verification", "mirror_not_double_counted"),
         ),
     )
 
 
-def _stalled_refinement() -> ReplayScenario:
+def _extra_pass_finds_nothing() -> ReplayScenario:
     """A repair round that buys nothing must stop, and say what stopped it.
 
     One uncorroborated claim owes an obligation, the repair acquires, and the
@@ -746,7 +627,7 @@ def _stalled_refinement() -> ReplayScenario:
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
     return ReplayScenario(
-        case_id="stalled-refinement",
+        case_id="extra-pass-finds-nothing",
         version=REPLAY_CASE_VERSION,
         question="What is the corroborated Acme widget adoption rate for 2024?",
         topics=(
@@ -781,41 +662,42 @@ def _stalled_refinement() -> ReplayScenario:
             terminal_quality="partial",
             exit_code=4,
             required_target_ids=("topic-02-target-01", "topic-03-target-01"),
-            minimum_answerable_claims=2,
-            required_gap_kinds=("hard:unanswered_critical_targets",),
+            minimum_answered_findings=2,
+            required_gap_kinds=("hard:unaccounted_required_targets",),
             allowed_failure_classes=(
                 "hard:unaccounted_required_targets",
-                "unanswered_critical_target",
-                "unaccounted_target",
                 "semantic_review_missing",
                 "error:researcher_sub_topic_skipped",
                 "error:researcher_sub_topic_without_findings",
             ),
-            required_invariants=("stalled_refinement_stopped",),
+            required_invariants=("extra_pass_finds_nothing",),
         ),
     )
 
 
-def _primary_attribution() -> ReplayScenario:
-    """An official measurement answered by primary attribution, never a pair.
+def _relay_labelled_as_relay() -> ReplayScenario:
+    """A relayed measurement is labelled as relayed, never as the relay's own.
 
-    The row's decisive assertion is the *badge*: the report may state the
-    figure the issuing body published, and must not dress it up as an
-    independently corroborated pair, because nothing in the run read a second
-    measurement of it.
+    Review focus, honesty rule 1: a relay is never presented as the organisation
+    it relays. The four pages here are a wire service's articles, each naming
+    Acme Institute as the body that measured the figure. The Context Check
+    proposes the relay and code confirms it against the page's own cue, so the
+    reader's label has to name both: the site that relays, and the organisation
+    the words credit. A run that resolved the figure to the site that published
+    the article would print "Wire Service's own figure", which is the exact
+    phrase this row forbids.
 
     Two shapes have to be right for the target to be answered at all, and both
     are properties of the prose rather than of the harness: the clause must
-    name its issuing body the way the attribution contract reads one, and it
+    name the organisation the way the attribution contract reads a name, and it
     must state the value, the year and the geography the frozen contract
     requires. A page whose sentence omits any of them leaves the target
-    unanswered no matter how authoritative it is.
+    unanswered however plainly it relays.
 
     The four pages state the same figure in four different sentences on
-    purpose. One official body publishing one number is exactly the shape that
-    must never earn the independent-pair badge, and four pages carrying one
-    identical sentence would be one claim recorded four times rather than four
-    accounts of it.
+    purpose. One relay of one figure is exactly the shape that must keep its
+    attribution, and four pages carrying one identical sentence would be one
+    claim recorded four times rather than four relays of it.
     """
     authored = (
         (
@@ -875,12 +757,21 @@ def _primary_attribution() -> ReplayScenario:
     )
     sources = {
         label: _page(
-            "official.example.test",
+            # The relaying site: PD-8 reads the page's own words for the
+            # figure, and the publication belongs to the relay. Every claim
+            # names Acme Institute with an attribution cue, so the relay
+            # resolves -- and the label the reader sees has to say so.
+            "wire.example.test",
             url_slug,
             title,
             claim,
-            issuer="Acme Institute",
+            issuer="Wire Service",
             source_role="company_statement",
+            context={
+                "attribution": "relayed",
+                "organisation": "Acme Institute",
+                "verdict": "confirm",
+            },
         )
         for (
             label,
@@ -919,7 +810,7 @@ def _primary_attribution() -> ReplayScenario:
         ) in enumerate(authored, start=1)
     )
     return ReplayScenario(
-        case_id="primary-attribution",
+        case_id="relay-labelled-as-relay",
         version=REPLAY_CASE_VERSION,
         question=(
             "What measured efficiency does the official Acme Institute "
@@ -933,24 +824,23 @@ def _primary_attribution() -> ReplayScenario:
                 f"topic-{index:02d}-target-01" for index in range(1, 5)
             ),
             forbidden_assertions=(
-                "verified pair",
+                "Wire Service's own figure",
                 "independently corroborated",
             ),
-            minimum_answerable_claims=4,
-            # Both directions of the same claim: the four obligations are
-            # answered from one publisher each, so the run must answer them
-            # *without* recording an independent pair (the first checker) and
-            # the pair badge, if it ever appeared, must rest on two publishers
-            # and two complete reads (the second).
+            minimum_answered_findings=4,
+            # The two halves of the honesty rule: the label names the relaying
+            # site and the organisation the page credits, and the figure the
+            # report rests on carries a resolved context rather than a
+            # verification nobody made.
             required_invariants=(
-                "primary_attribution_not_verified",
+                "relay_labelled_as_relay",
                 "no_false_verification",
             ),
         ),
     )
 
 
-def _current_versus_forecast() -> ReplayScenario:
+def _forecast_versus_actual_kept_apart() -> ReplayScenario:
     """A projection cannot stand in for the current figure the question asks for.
 
     The question is about 2024 and the only page about it states what 2030 is
@@ -967,7 +857,7 @@ def _current_versus_forecast() -> ReplayScenario:
         "the Acme widget adoption rate in the United States was 40 percent in 2024"
     )
     return ReplayScenario(
-        case_id="current-versus-forecast",
+        case_id="forecast-versus-actual-kept-apart",
         version=REPLAY_CASE_VERSION,
         question="What is the Acme widget adoption rate in the United States today?",
         topics=(
@@ -1014,12 +904,10 @@ def _current_versus_forecast() -> ReplayScenario:
             # "today": the question names the present, so its own echo in the
             # title is the question being asked rather than an answer to it.
             forbidden_assertions=("currently 55",),
-            minimum_answerable_claims=2,
-            required_gap_kinds=("hard:unanswered_critical_targets",),
+            minimum_answered_findings=2,
+            required_gap_kinds=("hard:unaccounted_required_targets",),
             allowed_failure_classes=(
                 "hard:unaccounted_required_targets",
-                "unanswered_critical_target",
-                "unaccounted_target",
                 "semantic_review_missing",
                 "error:researcher_sub_topic_skipped",
                 "error:researcher_sub_topic_without_findings",
@@ -1092,34 +980,25 @@ def _unsupported_mechanism() -> ReplayScenario:
             # so every obligation stands unanswered and the gap is the result.
             required_target_ids=(),
             forbidden_assertions=("should subsidise",),
-            minimum_answerable_claims=2,
-            required_gap_kinds=("hard:unanswered_critical_targets",),
+            minimum_answered_findings=2,
+            required_gap_kinds=("hard:unaccounted_required_targets",),
             allowed_failure_classes=(
                 "hard:unaccounted_required_targets",
-                "unanswered_critical_target",
-                "unaccounted_target",
                 "semantic_review_missing",
                 "error:researcher_sub_topic_skipped",
                 "error:researcher_sub_topic_without_findings",
-                # Both of these are the product recording a refusal this case
-                # is about, not a fault of its own. The drafted recommendation
-                # is refused by the composer, which is the refusal the case
-                # names as the reason the phrase cannot reach the reader: the
-                # forbidden assertion is what proves it, and a refusal that
-                # left no record would be indistinguishable from a writer that
-                # never made the claim. The repeated claims are the second
-                # pass re-offering what the first pass already adjudicated,
-                # which is this run recording that a repair round opened to
-                # meet an outstanding obligation found nothing new to check.
-                "error:fact_checker_invalid_claim",
-                "error:synthesizer_invalid_draft",
+                # The drafted recommendation is refused by the Statement
+                # Check, and the refusal reaches the reader only as the
+                # forbidden phrase's absence: a refused point is published in
+                # the composition's own refusals rather than as an error,
+                # because "no judgement" is not this case's subject.
             ),
             required_invariants=("mechanism_obligation_stays_unanswered",),
         ),
     )
 
 
-def _judge_failure() -> ReplayScenario:
+def _review_unavailable() -> ReplayScenario:
     """Complete reader artifacts, and no semantic judgement to accept them.
 
     The report is composed and published and every obligation is answered, and
@@ -1128,7 +1007,7 @@ def _judge_failure() -> ReplayScenario:
     strict mode, and the artifacts it did produce stay readable.
     """
     return ReplayScenario(
-        case_id="judge-failure",
+        case_id="review-unavailable",
         version=REPLAY_CASE_VERSION,
         question="What do the published measures say about the Acme widget in 2024?",
         topics=(
@@ -1150,7 +1029,7 @@ def _judge_failure() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answerable_claims=3,
+            minimum_answered_findings=3,
             required_gap_kinds=("semantic_review_missing",),
             allowed_failure_classes=(
                 # The provider failure has a name of its own, and the case
@@ -1197,78 +1076,8 @@ def _non_constraint_answer() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answerable_claims=3,
+            minimum_answered_findings=3,
             required_invariants=("no_ranked_constraints_for_a_factual_answer",),
-        ),
-    )
-
-
-def _late_contradiction() -> ReplayScenario:
-    """A contradicting account stays visible and blocks a false settlement.
-
-    Two publishers agree on the figure and a third states a different one, and
-    the disagreement is recorded rather than averaged away. The run may not
-    publish the contested number as settled while an account it read says
-    otherwise: an obligation that looks answered is not answered if the
-    evidence behind it disagrees.
-    """
-    agreed = "the Acme widget adoption rate in the United States was 40 percent in 2024"
-    contested = (
-        "the Acme widget adoption rate in the United States was 30 percent in 2024"
-    )
-    return ReplayScenario(
-        case_id="late-contradiction",
-        version=REPLAY_CASE_VERSION,
-        question="What was the Acme widget adoption rate in the United States in 2024?",
-        topics=(
-            _topic(
-                1,
-                "Adoption rate",
-                "What was the Acme widget adoption rate in the United States in 2024?",
-                "rate",
-                "Acme widget adoption rate United States 2024",
-                (
-                    *_pair(1, "adoption-2024", "Adoption survey", agreed),
-                    _page(
-                        "contested1.example.test",
-                        "adoption-rival",
-                        "Rival adoption estimate",
-                        contested,
-                        issuer="Rival Statistics Office",
-                        verdict="contradicts",
-                    ),
-                ),
-                critical=True,
-                labels=("Acme widget", "adoption rate"),
-            ),
-            _filler(
-                2, "Widget funding", "Acme widget funding round", "12 million dollars"
-            ),
-            _filler(
-                3, "Widget exports", "Acme widget export volume", "3.4 million units"
-            ),
-        ),
-        max_iterations=3,
-        expectation=CaseExpectation(
-            terminal_quality="partial",
-            exit_code=4,
-            required_target_ids=("topic-02-target-01", "topic-03-target-01"),
-            forbidden_assertions=("independent estimates agree",),
-            minimum_answerable_claims=2,
-            required_gap_kinds=("hard:unanswered_critical_targets",),
-            allowed_failure_classes=(
-                "hard:unaccounted_required_targets",
-                "unanswered_critical_target",
-                "unaccounted_target",
-                "semantic_review_missing",
-                # The two topics whose obligations the first pass met owe the
-                # refinement pass nothing, and the Researcher records that as
-                # a skip rather than buying the same pages twice. The topic
-                # left owing an answer is the one the contradiction is about,
-                # so the run is partial for exactly the reason the case names.
-                "error:researcher_sub_topic_skipped",
-            ),
-            required_invariants=("contradiction_recorded",),
         ),
     )
 
@@ -1345,11 +1154,9 @@ def _empty_but_clean() -> ReplayScenario:
         expectation=CaseExpectation(
             terminal_quality="partial",
             exit_code=4,
-            required_gap_kinds=("hard:unanswered_critical_targets",),
+            required_gap_kinds=("hard:unaccounted_required_targets",),
             allowed_failure_classes=(
                 "hard:unaccounted_required_targets",
-                "unanswered_critical_target",
-                "unaccounted_target",
                 "semantic_review_missing",
                 "no_quality_snapshot",
             ),
@@ -1419,12 +1226,10 @@ def _memory_is_not_read() -> ReplayScenario:
             exit_code=4,
             required_target_ids=("topic-02-target-01", "topic-03-target-01"),
             forbidden_assertions=(memory_claim,),
-            minimum_answerable_claims=2,
-            required_gap_kinds=("hard:unanswered_critical_targets",),
+            minimum_answered_findings=2,
+            required_gap_kinds=("hard:unaccounted_required_targets",),
             allowed_failure_classes=(
                 "hard:unaccounted_required_targets",
-                "unanswered_critical_target",
-                "unaccounted_target",
                 "semantic_review_missing",
                 # The critical topic declares no page of its own, and memory
                 # holds the other session's claims rather than this run's
@@ -1538,7 +1343,7 @@ def _validated_cache_reuse() -> ReplayScenario:
             terminal_quality="accepted",
             exit_code=0,
             required_target_ids=("topic-01-target-01", "topic-03-target-01"),
-            minimum_answerable_claims=2,
+            minimum_answered_findings=2,
             required_invariants=(
                 "read_downloaded_once",
                 "cache_provenance_is_validated",
@@ -1547,12 +1352,10 @@ def _validated_cache_reuse() -> ReplayScenario:
                 "error:researcher_sub_topic_skipped",
                 # The first read discharges topic-01's obligation and the
                 # filler topic owes nothing, so both are skipped rather than
-                # re-researched: the same record the other cases declare.
-                "error:fact_checker_invalid_claim",
-                # The case's premise is that the second topic reuses the body
-                # the first already read, and the extraction that follows it
-                # drafts the claim the first pass adjudicated. The duplicate
-                # refusal is the run recording the fact was checked once.
+                # re-researched: the same record the other cases declare. The
+                # second topic reusing the body the first already read is the
+                # case's premise, and the verifier deduplicates the finding
+                # that comes out of it rather than the run failing on it.
             ),
         ),
     )
@@ -1638,7 +1441,7 @@ def _decision_context_late_candidate() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answerable_claims=3,
+            minimum_answered_findings=3,
             required_report_phrases=("40 percent",),
             required_invariants=(
                 "late_candidate_reached_decision",
@@ -1648,18 +1451,19 @@ def _decision_context_late_candidate() -> ReplayScenario:
     )
 
 
-def _reopen_unanswered_target() -> ReplayScenario:
-    """An obligation reopens on its own evidence, with no Critic gap to prompt it.
+def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
+    """A missing required target, and nothing else, buys the one extra pass.
 
-    The Critic is scripted to report no gaps, so nothing but the unanswered
-    required target can send the run back to work - and the page that answers
-    it is only published in the second round. The obligation resumes, the
-    second round reads it, and the answer comes from a statement the evidence
-    supports rather than from the metadata the first round found.
+    PD-5: the missing targets are computed by code and the Report Reviewer
+    node stamps them on the record, so the run goes back for exactly the
+    obligation that is missing — never for a judgement. The page that answers
+    it is only published in the second round, so the extra pass is what turns
+    the obligation into an answer, and the answer comes from a statement the
+    evidence supports rather than from metadata the first round found.
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
     return ReplayScenario(
-        case_id="reopen-unanswered-target",
+        case_id="missing-target-triggers-one-extra-pass",
         version=REPLAY_CASE_VERSION,
         question="What was the Acme widget adoption rate in the United States in 2024?",
         topics=(
@@ -1723,13 +1527,342 @@ def _reopen_unanswered_target() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answerable_claims=3,
-            required_invariants=("required_target_reopened",),
+            minimum_answered_findings=3,
+            required_invariants=("missing_target_triggers_one_extra_pass",),
         ),
     )
 
 
 # --- the manifest ------------------------------------------------------------
+
+
+def _figure_not_on_page_dropped() -> ReplayScenario:
+    """A figure the passage does not state is refused, and never published.
+
+    The extractor here records 88 percent for a page that states 40. D8 puts
+    that judgement in the Context Check -- the prompt tells it to reject a
+    figure its snippet or passage does not actually state -- and code records
+    the refusal with the checker's own reason. The obligation is still answered
+    by the account that does state its figure, and the refused number reaches
+    the reader nowhere.
+    """
+    claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    honest = _page(
+        "agency12.example.test",
+        "adoption-2024",
+        "Adoption survey",
+        claim,
+        issuer="Acme Institute 12",
+    )
+    inflated = _page(
+        "panel12.example.test",
+        "adoption-2024-panel",
+        "Adoption panel",
+        claim,
+        issuer="Independent Bureau 12",
+        context={"verdict": "reject"},
+    )
+    # The figure the scripted extraction records is not the one the page
+    # states: that is the fault Figure Match no longer judges and the Context
+    # Check now does.
+    inflated = replace(
+        inflated, figures=(("88", "percent", "2024", "actual"),)
+    )
+    return ReplayScenario(
+        case_id="figure-not-on-page-dropped",
+        version=REPLAY_CASE_VERSION,
+        question="What was the Acme widget adoption rate in the United States in 2024?",
+        topics=(
+            _topic(
+                1,
+                "Adoption rate",
+                "What was the Acme widget adoption rate in the United States in 2024?",
+                "rate",
+                "Acme widget adoption rate United States 2024",
+                (honest, inflated),
+                critical=True,
+                labels=("Acme widget", "adoption rate"),
+            ),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
+        ),
+        max_iterations=3,
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=(
+                "topic-01-target-01",
+                "topic-02-target-01",
+                "topic-03-target-01",
+            ),
+            forbidden_assertions=("88 percent",),
+            minimum_answered_findings=3,
+            required_invariants=("figure_not_on_page_dropped",),
+        ),
+    )
+
+
+def _evidence_words_not_on_page_rejected() -> ReplayScenario:
+    """A figure whose quoted words are not on its page is dropped, not published.
+
+    D8 keeps exactly one code check on the Context Check's evidence: the words
+    it quotes have to be the page's own. A reply that quotes prose the page
+    does not carry is the one shape a confident model can still get wrong, and
+    the finding is dropped with that reason rather than published on the
+    model's word.
+    """
+    claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    honest = _page(
+        "agency13.example.test",
+        "adoption-2024",
+        "Adoption survey",
+        claim,
+        issuer="Acme Institute 13",
+    )
+    quoted = _page(
+        "panel13.example.test",
+        "adoption-2024-panel",
+        "Adoption panel",
+        claim,
+        issuer="Independent Bureau 13",
+        context={
+            "evidence_words": (
+                "the panel measured 91 percent of every household in the country"
+            ),
+            "verdict": "confirm",
+        },
+    )
+    return ReplayScenario(
+        case_id="evidence-words-not-on-page-rejected",
+        version=REPLAY_CASE_VERSION,
+        question="What was the Acme widget adoption rate in the United States in 2024?",
+        topics=(
+            _topic(
+                1,
+                "Adoption rate",
+                "What was the Acme widget adoption rate in the United States in 2024?",
+                "rate",
+                "Acme widget adoption rate United States 2024",
+                (honest, quoted),
+                critical=True,
+                labels=("Acme widget", "adoption rate"),
+            ),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
+        ),
+        max_iterations=3,
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=(
+                "topic-01-target-01",
+                "topic-02-target-01",
+                "topic-03-target-01",
+            ),
+            forbidden_assertions=("91 percent",),
+            minimum_answered_findings=3,
+            required_invariants=("evidence_words_not_on_page_rejected",),
+        ),
+    )
+
+
+def _scope_corrected_to_all_segments() -> ReplayScenario:
+    """An all-segment figure written as grid-scale is corrected, and never printed.
+
+    Review focus 4, the 18.9 GW audit finding: the page states
+    "utility, C&I, and residential" and the extractor wrote "grid-scale". The
+    Context Check corrects the scope, code keeps the correction because the
+    words are the page's own, the finding is marked corrected, and the drafted
+    sentence that kept the narrow wording is refused by the Statement Check
+    with the scope named in its reason.
+    """
+    claim = (
+        "The report states the U.S. energy storage market hit a record 18.9 "
+        "gigawatts of battery energy storage system installations in 2025 "
+        "across all segments"
+    )
+    return ReplayScenario(
+        case_id="scope-corrected-to-all-segments",
+        version=REPLAY_CASE_VERSION,
+        question=(
+            "How much battery energy storage did the United States install in 2025?"
+        ),
+        topics=(
+            _topic(
+                1,
+                "Storage installations",
+                "How much battery energy storage did the United States install in 2025?",
+                "capacity",
+                "United States battery energy storage installations 2025",
+                (
+                    _page(
+                        "woodmac15.example.test",
+                        "storage-2025",
+                        "Storage market press release",
+                        claim,
+                        issuer="Wood Mackenzie",
+                        recorded_scope="grid-scale",
+                        context={
+                            "scope": "all segments",
+                            "evidence_words": (
+                                "18.9 gigawatts of battery energy storage system "
+                                "installations in 2025 across all segments"
+                            ),
+                            "verdict": "confirm",
+                        },
+                        statement={
+                            "verdict": "inconsistent",
+                            "reason": (
+                                "the page states the figure across all segments, "
+                                "not grid-scale"
+                            ),
+                        },
+                    ),
+                ),
+                critical=True,
+                labels=("energy storage market", "18.9 gigawatts"),
+            ),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
+        ),
+        max_iterations=3,
+        expectation=CaseExpectation(
+            # The refusal is the case: the sentence that overstated the scope
+            # never reaches the reader, so the obligation it carried publishes
+            # under Not found rather than as an answer.
+            terminal_quality="partial",
+            exit_code=4,
+            required_target_ids=("topic-02-target-01", "topic-03-target-01"),
+            forbidden_assertions=("grid-scale",),
+            minimum_answered_findings=2,
+            required_gap_kinds=("hard:unaccounted_required_targets",),
+            allowed_failure_classes=(
+                "missing_required_target",
+                "semantic_review_missing",
+                "error:researcher_sub_topic_skipped",
+                "error:researcher_sub_topic_without_findings",
+            ),
+            required_invariants=("scope_corrected_to_all_segments",),
+        ),
+    )
+
+
+def _revision_noted() -> ReplayScenario:
+    """Two editions of one fact are one row, and the reader is told.
+
+    PD-9: the same value for the same organisation, period and kind is one
+    fact, and two findings that answer one obligation while carrying different
+    release keys are one fact *revised* rather than two readings. The earlier
+    edition rides on the row the second one produced.
+    """
+    claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    return ReplayScenario(
+        case_id="revision-noted",
+        version=REPLAY_CASE_VERSION,
+        question="What was the Acme widget adoption rate in the United States in 2024?",
+        topics=(
+            _topic(
+                1,
+                "Adoption rate",
+                "What was the Acme widget adoption rate in the United States in 2024?",
+                "rate",
+                "Acme widget adoption rate United States 2024",
+                (
+                    _page(
+                        "agency16.example.test",
+                        "adoption-2024",
+                        "Adoption survey",
+                        claim,
+                        issuer="Acme Institute 16",
+                        vintage="January 2025 edition",
+                    ),
+                    _page(
+                        "agency16.example.test",
+                        "adoption-2024-revised",
+                        "Adoption survey (revised)",
+                        claim,
+                        issuer="Acme Institute 16",
+                        vintage="February 2025 edition",
+                    ),
+                ),
+                critical=True,
+                labels=("Acme widget", "adoption rate"),
+            ),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
+        ),
+        max_iterations=3,
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=(
+                "topic-01-target-01",
+                "topic-02-target-01",
+                "topic-03-target-01",
+            ),
+            minimum_answered_findings=3,
+            required_invariants=("revision_noted", "no_false_verification"),
+        ),
+    )
+
+
+def _statement_check_failure_keeps_sentences() -> ReplayScenario:
+    """A Statement Check that could not be made keeps every sentence.
+
+    §5.4: the checker never stops the run. Every batch's call fails here, so
+    every drafted sentence publishes as drafted, the failure is recorded, and
+    the unjudged sentences are the reason the run does not pass strict mode --
+    the report is published and the gap is named rather than the wording being
+    waved through as judged.
+    """
+    return ReplayScenario(
+        case_id="statement-check-failure-keeps-sentences",
+        version=REPLAY_CASE_VERSION,
+        question="What do the published measures say about the Acme widget in 2024?",
+        topics=(
+            _filler(1, "Widget adoption", "Acme widget adoption rate", "40 percent"),
+            _filler(
+                2, "Widget funding", "Acme widget funding round", "12 million dollars"
+            ),
+            _filler(
+                3, "Widget exports", "Acme widget export volume", "3.4 million units"
+            ),
+        ),
+        statement_failure=True,
+        max_iterations=3,
+        expectation=CaseExpectation(
+            terminal_quality="partial",
+            exit_code=4,
+            required_target_ids=(
+                "topic-01-target-01",
+                "topic-02-target-01",
+                "topic-03-target-01",
+            ),
+            minimum_answered_findings=3,
+            required_gap_kinds=("hard:unjudged_sentences",),
+            allowed_failure_classes=(
+                "error:evidence_verifier_statement_check_failed",
+            ),
+            required_report_phrases=("40 percent", "12 million dollars"),
+            required_invariants=("statement_failure_keeps_sentences",),
+        ),
+    )
 
 
 class ReplayCaseEntry:
@@ -1791,7 +1924,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         build=_comparative_conflict,
     ),
     ReplayCaseEntry(
-        case_id="refinement-evidence-recovery",
+        case_id="extra-pass-recovers-missing-target",
         version=REPLAY_CASE_VERSION,
         title="The missing account is acquired in the repair round",
         expected_product_result="accepted / 0",
@@ -1799,7 +1932,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "Only missing target is acquired/rechecked; new support changes "
             "fingerprint; no repeated stable checks"
         ),
-        build=_refinement_evidence_recovery,
+        build=_extra_pass_recovers_missing_target,
     ),
     ReplayCaseEntry(
         case_id="blocked-html-pdf-fallback",
@@ -1815,27 +1948,16 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
     ReplayCaseEntry(
         case_id="same-work-mirror",
         version=REPLAY_CASE_VERSION,
-        title="One work reprinted on two hosts is not a pair",
-        expected_product_result="partial / 4",
+        title="One work reprinted on two hosts is one fact row",
+        expected_product_result="accepted / 0",
         decisive_assertion=(
-            "Critical independent-pair target has one underlying work; zero "
-            "false verification"
+            "One body served twice produces one fact row, credited to the "
+            "organisation both hosts print"
         ),
         build=_same_work_mirror,
     ),
     ReplayCaseEntry(
-        case_id="semantic-duplicate-claims",
-        version=REPLAY_CASE_VERSION,
-        title="Paraphrases collapse, different periods stay apart",
-        expected_product_result="accepted / 0",
-        decisive_assertion=(
-            "Queue/cutoff/PJM paraphrases collapse; conflicting units/years "
-            "remain distinct"
-        ),
-        build=_semantic_duplicate_claims,
-    ),
-    ReplayCaseEntry(
-        case_id="stalled-refinement",
+        case_id="extra-pass-finds-nothing",
         version=REPLAY_CASE_VERSION,
         title="A repair round that buys nothing stops",
         expected_product_result="partial / 4",
@@ -1843,10 +1965,10 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "Fully processed unchanged repair stops; correct unresolved "
             "target/cause"
         ),
-        build=_stalled_refinement,
+        build=_extra_pass_finds_nothing,
     ),
     ReplayCaseEntry(
-        case_id="primary-attribution",
+        case_id="relay-labelled-as-relay",
         version=REPLAY_CASE_VERSION,
         title="Official measurement answered as primary attribution",
         expected_product_result="accepted / 0",
@@ -1854,10 +1976,10 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "The exact official measurement question is answered as "
             "primary-attributed, and not falsely verified."
         ),
-        build=_primary_attribution,
+        build=_relay_labelled_as_relay,
     ),
     ReplayCaseEntry(
-        case_id="current-versus-forecast",
+        case_id="forecast-versus-actual-kept-apart",
         version=REPLAY_CASE_VERSION,
         title="A projection is not the current figure",
         expected_product_result="partial / 4",
@@ -1865,7 +1987,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "Historical observation/future forecast cannot satisfy a required "
             "current estimate"
         ),
-        build=_current_versus_forecast,
+        build=_forecast_versus_actual_kept_apart,
     ),
     ReplayCaseEntry(
         case_id="unsupported-mechanism",
@@ -1879,7 +2001,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         build=_unsupported_mechanism,
     ),
     ReplayCaseEntry(
-        case_id="judge-failure",
+        case_id="review-unavailable",
         version=REPLAY_CASE_VERSION,
         title="Complete artifacts, absent semantic assessment",
         expected_product_result="partial / 4",
@@ -1887,7 +2009,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "Complete reader artifacts may exist, but absent semantic "
             "assessment cannot pass strict mode"
         ),
-        build=_judge_failure,
+        build=_review_unavailable,
     ),
     ReplayCaseEntry(
         case_id="non-constraint-answer",
@@ -1899,17 +2021,6 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "meaningless rankings"
         ),
         build=_non_constraint_answer,
-    ),
-    ReplayCaseEntry(
-        case_id="late-contradiction",
-        version=REPLAY_CASE_VERSION,
-        title="A contradicting account blocks a false settlement",
-        expected_product_result="partial / 4",
-        decisive_assertion=(
-            "Material conflicting passage/statement past prefix limits remains "
-            "visible and blocks false settlement"
-        ),
-        build=_late_contradiction,
     ),
     ReplayCaseEntry(
         case_id="empty-but-clean",
@@ -1959,16 +2070,71 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         build=_decision_context_late_candidate,
     ),
     ReplayCaseEntry(
-        case_id="reopen-unanswered-target",
+        case_id="missing-target-triggers-one-extra-pass",
         version=REPLAY_CASE_VERSION,
-        title="A required obligation reopens without a Critic gap",
+        title="A missing required target reopens the plan once",
         expected_product_result="accepted / 0",
         decisive_assertion=(
-            "Required topic work resumes despite one prior metadata finding "
-            "and no matching Critic gap; completion comes from a substantive "
-            "supported reader answer"
+            "The obligation code computed as missing is what buys the extra "
+            "pass, and the second discovery round is what answers it"
         ),
-        build=_reopen_unanswered_target,
+        build=_missing_target_triggers_one_extra_pass,
+    ),
+    ReplayCaseEntry(
+        case_id="figure-not-on-page-dropped",
+        version=REPLAY_CASE_VERSION,
+        title="A figure the page does not state is refused",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "The Context Check's rejection drops the figure with its reason, "
+            "and the number never reaches the reader"
+        ),
+        build=_figure_not_on_page_dropped,
+    ),
+    ReplayCaseEntry(
+        case_id="evidence-words-not-on-page-rejected",
+        version=REPLAY_CASE_VERSION,
+        title="Evidence words the page does not carry are refused",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "A reply quoting prose the page does not carry drops its figure "
+            "with the recorded reason"
+        ),
+        build=_evidence_words_not_on_page_rejected,
+    ),
+    ReplayCaseEntry(
+        case_id="scope-corrected-to-all-segments",
+        version=REPLAY_CASE_VERSION,
+        title="An all-segment figure written as grid-scale is corrected",
+        expected_product_result="partial / 4",
+        decisive_assertion=(
+            "The kept figure's scope is all segments, the finding is marked "
+            "corrected, the overstated sentence is refused, and no reader "
+            "sentence says grid-scale"
+        ),
+        build=_scope_corrected_to_all_segments,
+    ),
+    ReplayCaseEntry(
+        case_id="revision-noted",
+        version=REPLAY_CASE_VERSION,
+        title="A revised edition is one fact row with an earlier edition",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "Two editions of one figure answering one obligation are one row "
+            "carrying the earlier edition"
+        ),
+        build=_revision_noted,
+    ),
+    ReplayCaseEntry(
+        case_id="statement-check-failure-keeps-sentences",
+        version=REPLAY_CASE_VERSION,
+        title="A failed Statement Check keeps every sentence as drafted",
+        expected_product_result="partial / 4",
+        decisive_assertion=(
+            "The failure is recorded, the sentences publish as drafted, and "
+            "the unjudged sentences keep the run from passing strict mode"
+        ),
+        build=_statement_check_failure_keeps_sentences,
     ),
 )
 
@@ -2005,7 +2171,7 @@ def scenario_by_id(case_id: str) -> ReplayScenario:
 # have no scenario to replay, and because the first three cases' ids are the
 # same strings as the first three matrix rows — inside ``REPLAY_CASE_MANIFEST``
 # they would collide with real-agent rows, and the manifest's own contract is
-# that it is exactly the plan's eighteen. The ``-graph`` suffix names the
+# that it is exactly the plan's twenty-one. The ``-graph`` suffix names the
 # harness that produced the result, so one inventory's evidence can never be
 # read as the other's.
 GRAPH_ONLY_HISTORICAL_MANIFEST: tuple[ReplayCaseEntry, ...] = (
@@ -2032,7 +2198,7 @@ GRAPH_ONLY_HISTORICAL_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         graph_only_historical=True,
     ),
     ReplayCaseEntry(
-        case_id="refinement-evidence-recovery-graph",
+        case_id="extra-pass-recovers-missing-target-graph",
         version=REPLAY_CASE_VERSION,
         title="The missing account is acquired in the repair round",
         expected_product_result="accepted / 0",
@@ -2073,7 +2239,7 @@ GRAPH_ONLY_HISTORICAL_MANIFEST: tuple[ReplayCaseEntry, ...] = (
 
 
 def controlled_suite_inventory() -> tuple[ReplayCaseEntry, ...]:
-    """The declared controlled inventory: the eighteen rows, then the five."""
+    """The declared controlled inventory: the twenty-one rows, then the five."""
     return (*REPLAY_CASE_MANIFEST, *GRAPH_ONLY_HISTORICAL_MANIFEST)
 
 
