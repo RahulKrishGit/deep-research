@@ -122,16 +122,14 @@ def fake_target(
     coverage_id: str = "topic-01",
     question: str = "What did battery storage additions reach?",
     required: bool = True,
-    critical: bool = False,
 ) -> EvidenceTarget:
     """A qualitative required obligation; a verified finding naming it answers it."""
     return EvidenceTarget(
         target_id=target_id,
         coverage_id=coverage_id,
         question=question,
-        required_dimensions=["stated in the recorded finding"],
+        measure="stated in the recorded finding",
         required=required,
-        critical=critical,
     )
 
 
