@@ -1759,7 +1759,6 @@ def test_page_owner_keeps_the_body_not_its_programme_or_form() -> None:
     assert page_owner(united_nations) == "United Nations"
 
 
-
 # ---------------------------------------------------------------------------
 # Round 6: ReRevFF1r5's finding 1, through the enforcement.
 # ---------------------------------------------------------------------------
