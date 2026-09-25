@@ -14,17 +14,34 @@ _STOP_WORDS = frozenset(
         "are",
         "as",
         "at",
+        "be",
         "by",
+        "can",
+        "each",
         "for",
         "from",
+        "has",
+        "have",
         "how",
         "in",
         "is",
+        "it",
+        "its",
+        "no",
         "of",
         "on",
         "or",
+        "own",
+        "so",
+        "that",
         "the",
+        "their",
+        "these",
+        "this",
+        "those",
         "to",
+        "was",
+        "were",
         "what",
         "when",
         "where",
@@ -52,12 +69,28 @@ _VARIANTS: dict[str, frozenset[str]] = {
 }
 
 
+_APOSTROPHE_TABLE = str.maketrans(
+    {"\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'"}
+)
+
+
 def _tokens(text: str) -> list[str]:
-    return [
-        token.casefold()
-        for token in _WORD.findall(text)
-        if token.casefold() not in _STOP_WORDS
-    ]
+    """Reduce text to the comparable words a locator is scored on.
+
+    A hyphen, a possessive, and the typographic apostrophe a page prints
+    instead of "'" mark the same words a page may space out or name bare
+    ("sound-quality" against "sound quality", "Orion’s" against "Orion"), so
+    both sides of a comparison are reduced the same way. Function words are
+    dropped: they appear in any broad-vocabulary chunk and would let page
+    chrome outrank a verdict.
+    """
+    tokens: list[str] = []
+    for match in _WORD.findall(text.translate(_APOSTROPHE_TABLE)):
+        token = match.casefold().removesuffix("'s").removesuffix("'")
+        tokens.extend(
+            part for part in token.split("-") if part and part not in _STOP_WORDS
+        )
+    return tokens
 
 
 def _stem(token: str) -> str:
