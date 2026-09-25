@@ -107,29 +107,13 @@ def publication_event(
 def quality_snapshot(**overrides: object) -> ReportQualitySnapshot:
     """The step-4 reading of one judged pass: ids and verified-finding counts.
 
-    The retired counts are deliberately absent: the gates of this pipeline
-    judge the required targets' ids and the Evidence Verifier's own findings,
-    and the target *scalars* stay at their defaults so a fixture cannot agree
-    with itself by accident — the readings below come from the id lists.
-
-    ``ReportQualitySnapshot`` still requires the readings of the retired
-    registry, which Task 4.10 removes. Every required field this fixture does
-    not name is therefore filled with a zero, so the file names exactly the
-    readings this pipeline computes and keeps working when the rest go.
+    Only the readings this pipeline computes are named: the required targets'
+    ids, the Evidence Verifier's own finding counts, and the two integrity
+    invariants the summary prints. The retired readings the type still carries
+    are left at their defaults, so a fixture cannot agree with itself by
+    accident.
     """
     payload: dict[str, object] = {
-        name: 0
-        for name, field in ReportQualitySnapshot.model_fields.items()
-        if field.is_required()
-    }
-    payload.update({
-        "coverage_ratio": 1.0,
-        "planned_topics": 2,
-        "covered_topics": 2,
-        "unique_findings": 2,
-        "unique_sources": 1,
-        "cited_sources": 2,
-        "scored_cited_source_ratio": 1.0,
         "required_target_ids": list(REQUIRED_TARGET_IDS),
         "answered_target_ids": list(ANSWERED_TARGET_IDS),
         "missing_required_target_ids": [MISSING_TARGET_ID],
@@ -139,7 +123,7 @@ def quality_snapshot(**overrides: object) -> ReportQualitySnapshot:
         "duplicate_fact_rows": 0,
         "uncited_settled_points": 0,
         "forecasts_without_release": 0,
-    })
+    }
     payload.update(overrides)
     return ReportQualitySnapshot.model_validate(payload)
 
@@ -994,21 +978,21 @@ def test_coverage_and_evidence_counts_come_from_verified_findings() -> None:
 
 
 def test_the_target_counts_are_the_ids_the_gates_judged() -> None:
-    """The snapshot's scalars are not the reading the outcome publishes.
+    """The counts are the length of the id lists, not the retired scalars.
 
-    The quality pass of this pipeline records the required and answered
-    target *ids*; the two scalars beside them default to zero and a record
-    inside the new contract leaves them there. Reading the scalars would
-    publish "0/0 required targets answered" above a missing-target list with
-    one entry in it, so the counts are taken from the id lists — the same
-    lists the gates and the extra-pass router read.
+    The quality pass of this pipeline records the required and answered target
+    *ids*; the scalars beside them belong to the retired reading and stay at
+    their defaults. Reading the scalars would publish "0/0 required targets
+    answered" above a Not found list with an entry in it, so the counts are
+    taken from the id lists — the same lists the gates and the extra-pass
+    router read.
     """
-    snapshot = quality_snapshot(required_targets=9, answered_targets=6)
-    coverage = outcome_of(verified_state(quality=snapshot)).coverage
+    coverage = outcome_of(verified_state()).coverage
 
     assert coverage is not None
-    assert coverage.required_targets == 3
-    assert coverage.answered_targets == 2
+    assert (coverage.required_targets, coverage.answered_targets) == (3, 2)
+    assert coverage.required_targets != 0
+    assert coverage.answered_targets != 0
 
 
 def test_the_not_found_target_ids_come_from_the_composition() -> None:

@@ -3467,51 +3467,39 @@ def _coverage_target_id_lists(
     }
 
 
-def _review_record(review: ReportReview | None) -> dict[str, JsonValue]:
-    """The semantic judgement, or the honest record that none was made."""
+def _review_record(review: ReportReview | None) -> dict[str, JsonValue] | None:
+    """The semantic judgement, or ``None`` when this pass made none.
+
+    ``mean_score`` is the review's own property — the mean over the seven
+    dimensions, and ``None`` without a full set — so the record cannot
+    disagree with the acceptance helper that judged the same review. A defect
+    keeps its recorded id, kind, severity and materiality: the gate reads
+    materiality, not severity, and the record is the surface a replay checks
+    it on. A review nobody made is ``None`` rather than an empty object that
+    reads as a judgement with nothing to report.
+    """
     if review is None:
-        return {
-            "status": "",
-            "mean_score": None,
-            "rubric_version": None,
-            "input_fingerprint": "",
-            "composition_fingerprint": "",
-            "coverage_complete": False,
-            "unreviewed_statement_ids": [],
-            "omitted_evidence_ids": [],
-            "unsettled_statement_ids": [],
-            "dimensions": {},
-            "per_statement_dispositions": {},
-            "defects": [],
-            "rationale": "",
-        }
+        return None
     return {
         "status": review.status,
         "mean_score": review.mean_score,
-        "rubric_version": review.rubric_version,
-        "input_fingerprint": review.input_fingerprint,
-        "composition_fingerprint": review.composition_fingerprint,
-        "coverage_complete": review.coverage_complete,
-        "unreviewed_statement_ids": list(review.unreviewed_statement_ids),
-        "omitted_evidence_ids": list(review.omitted_evidence_ids),
-        "unsettled_statement_ids": review.unsettled_statement_ids,
         "dimensions": dict(review.dimensions),
-        "per_statement_dispositions": dict(review.per_statement_dispositions),
         "defects": [
             {
-                "gap_id": gap.gap_id,
-                "kind": gap.kind,
-                "severity": gap.severity,
-                "repair_action": gap.repair_action,
-                "coverage_id": gap.coverage_id or "",
-                "target_ids": list(gap.target_ids),
-                "statement_ids": list(gap.statement_ids),
-                "claim_cluster_ids": list(gap.claim_cluster_ids),
-                "problem": _clamped(gap.problem, limit=QUALITY_RECORD_TEXT_CHARS),
+                "defect_id": defect.defect_id,
+                "kind": defect.kind,
+                "severity": defect.severity,
+                "material": defect.material,
+                "target_ids": list(defect.target_ids),
+                "statement_ids": list(defect.statement_ids),
+                "problem": _clamped(
+                    defect.problem, limit=QUALITY_RECORD_TEXT_CHARS
+                ),
             }
-            for gap in review.defects
+            for defect in review.defects
         ],
-        "rationale": _clamped(review.rationale, limit=_RATIONALE_CHARS),
+        "dispositions": dict(review.per_statement_dispositions),
+        "missing_required_target_ids": list(review.missing_required_target_ids),
     }
 
 
@@ -3624,29 +3612,37 @@ def render_quality_record(
     quality_status: str | None = None,
     session_status: str = "",
 ) -> dict[str, JsonValue]:
-    """The quality JSON: one pass's evidence, decisions and hashes, by ID.
+    """The quality JSON: one pass's verified findings, judgements and hashes.
 
-    The record is the replay surface for the other two artifacts. Every reader
-    statement is serialized with the claim clusters and evidence units it
-    rests on, each of those names the read it came from, and each read names
-    its content digest and how it was acquired — so "which source supports
-    this sentence, and was it read or remembered" is answerable from the
-    record alone, with no prose parsed anywhere.
+    The record is the replay surface for the other two artifacts. Every kept
+    statement is serialized with the findings it cites, every finding carries
+    the verification the Evidence Verifier recorded for it — its status, its
+    figure results with the evidence words and drop reasons, whether its
+    context was unchecked — every fact row and every target under Not found is
+    published as the writer composed it, and every refused sentence is
+    published with the labels it cited and the reason it was refused. So
+    "which source supports this sentence, and what did the verifier say about
+    it" is answerable from the record alone, with no prose parsed anywhere.
 
-    Four rules shape what is here, and each is a defect this artifact exists to
-    prevent:
+    Three rules shape what is here, and each is a defect this artifact exists
+    to prevent:
 
-    * **distinct quantities stay distinct** (Section 2.5). Read calls, network
-      reads, cache reuses, unique works, publishers, source URLs, findings,
-      assessed sources, cited assessed sources and checked claims are ten
-      different numbers, not one.
-    * **counted is not corroborated.** ``evidence_status`` counts the four
-      badges a claim actually recorded; a claim nobody classified is counted as
-      not established.
     * **no self-reference.** ``artifacts`` hashes the two published Markdown
       documents and never this JSON, and no field here hashes itself.
-    * **bounded content.** Excerpts and text are clipped to the ledger's own
-      bounds; page bodies, prompts and provider payloads never enter.
+    * **the judgement is the one recorded.** ``review`` publishes the
+      reviewer's own status, dimension scores, per-statement dispositions and
+      defects; ``mean_score`` is the review's own property, so two artifacts
+      cannot disagree about it, and a review nobody made is ``None`` rather
+      than a clean bill of health.
+    * **a refusal is published, not summarised.** A refused sentence carries
+      the drafted text whole: a replay has to be able to tell which drafted
+      sentence tripped which reason, and a cut text names a sentence nobody
+      wrote.
+
+    Nothing here is clipped a second time: every text is the one the pass
+    recorded, and each is already bounded where it was produced — the snippet
+    at ``MAX_SNIPPET_CHARS`` and a drafted sentence at the writer's own point
+    limit. Page bodies, prompts and provider payloads never enter.
 
     ``artifacts`` maps an artifact name to the exact final text published under
     it. A caller that supplies none gets no hashes rather than invented ones:
@@ -3659,38 +3655,16 @@ def render_quality_record(
     ``quality_status`` states the terminal verdict for such a session; without
     it, the record carries the composition's own badge or nothing at all.
     """
-    sources = (
-        canonical_sources(composition.sources) if composition is not None else []
-    )
-    claims = (
-        canonical_claims(composition.claims) if composition is not None else []
-    )
-    cited = (
-        {citation.url for citation in reader_citations(composition)}
-        if composition is not None
-        else set()
-    )
-    reads = sorted(state.read_records.values(), key=lambda read: read.read_id)
-    units = (
-        sorted(
-            composition.evidence_units.values(),
-            key=lambda unit: unit.evidence_id,
-        )
-        if composition is not None
-        else []
-    )
-    clusters = (
-        sorted(
-            composition.claim_clusters.values(),
-            key=lambda cluster: cluster.cluster_id,
-        )
+    findings = (
+        _finding_registry_pairs(composition)
         if composition is not None
         else []
     )
     statements = composition.statements if composition is not None else []
-    spans = _supporting_spans(claims)
-    from deep_research.agents.evidence import (  # noqa: PLC0415
-        resolve_retained_work_keys,
+    fact_rows = composition.fact_rows if composition is not None else []
+    not_found = composition.not_found if composition is not None else []
+    refused = (
+        composition.rejected_points if composition is not None else []
     )
     from deep_research.agents.report_reviewer import (  # noqa: PLC0415
         composition_semantic_fingerprint,
@@ -3703,7 +3677,10 @@ def render_quality_record(
     else:
         status = ""
 
-    record: dict[str, JsonValue] = {
+    return {
+        # The contract the state carries: new runs stamp
+        # ``utils.types.QUALITY_CONTRACT_VERSION``, and a legacy snapshot keeps
+        # the version it was written under rather than being re-labelled here.
         "quality_contract_version": state.quality_contract_version,
         "composition_present": composition is not None,
         "session_id": state.session_id,
@@ -3720,21 +3697,40 @@ def render_quality_record(
         "generated_on": (
             composition.generated_on if composition is not None else ""
         ),
-        "date_basis": composition.date_basis if composition is not None else "",
-        "answer_kind": (
-            (composition.answer_kind or "") if composition is not None else ""
-        ),
         "quality_status": status,
-        "statuses": _status_record(state, review, session_status=session_status),
+        "session_status": session_status,
         "artifacts": artifact_content_hashes(artifacts or {}),
-        "rejected_points": (
-            [
-                _quality_rejected_point_row(point)
-                for point in composition.rejected_points
-            ]
-            if composition is not None
-            else []
+        # The snapshot the gates judged, as the type records it: a session
+        # that took none publishes an empty object rather than zeros, which
+        # would read as a measurement nobody made.
+        "quality": (
+            state.quality.model_dump(mode="json")
+            if state.quality is not None
+            else {}
         ),
+        "review": _review_record(review),
+        "findings": [
+            _quality_finding_row(label, finding)
+            for label, finding in findings
+        ],
+        "fact_rows": [row.model_dump(mode="json") for row in fact_rows],
+        "not_found": [target.model_dump(mode="json") for target in not_found],
+        "statements": [
+            {
+                "statement_id": statement.statement_id,
+                "text": statement.text,
+                "finding_ids": list(statement.finding_ids),
+                "target_ids": list(statement.target_ids),
+            }
+            for statement in statements
+        ],
+        "refused_sentences": [
+            _quality_rejected_point_row(point) for point in refused
+        ],
+        # The pass's own recorded errors, published as the ledger publishes
+        # them: a replay reads them from here, and the planner's own tests pin
+        # the row's shape on this surface.
+        "errors": [_quality_error_row(error) for error in state.errors],
         "configuration": {
             "quality_contract_version": state.quality_contract_version,
             "composition_fingerprint": (
@@ -3752,197 +3748,50 @@ def render_quality_record(
                 review.rubric_version if review is not None else None
             ),
         },
-        "counts": {
-            **_coverage_counts(state, composition),
-            **distinct_retention_counts(state, composition),
-            "verified_claims": sum(
-                claim.verdict == "verified" for claim in claims
-            ),
-            "contradicted_claims": sum(
-                claim.verdict == "contradicted" for claim in claims
-            ),
-            "reader_statements": len(statements),
-        },
-        "evidence_status": evidence_status_counts(claims),
-        "sources": [_quality_source_row(source, cited) for source in sources],
-        "reads": [
-            {
-                "read_id": read.read_id,
-                "requested_url": read.requested_url,
-                "resolved_url": read.resolved_url,
-                "content_sha256": read.content_sha256,
-                "extraction_complete": read.extraction_complete,
-                "acquisition_kind": read.acquisition_kind,
-                "origin_session_id": read.origin_session_id,
-                "retrieved_at": read.retrieved_at,
-                "locator_count": len(read.passages),
-                "target_ids": list(read.target_ids),
-            }
-            for read in reads
-        ],
-        # Every retained source URL's work key, from the function the works
-        # count counts over — so ``unique_works`` is exactly this map's
-        # distinct values, and a source whose identity was never established
-        # keeps the key its own read supports instead of vanishing from the
-        # account while the count still holds it. Where identity *was*
-        # established the key is the persisted one: a re-resolution of the
-        # reads without the anchors the Source Evaluator validated would split
-        # an original from its mirror.
-        "work_keys": dict(
-            sorted(
-                resolve_retained_work_keys(
-                    [source.url for source in sources],
-                    reads,
-                    sources=sources,
-                ).items()
-            )
-        ),
-        "evidence": [
-            {
-                "evidence_id": unit.evidence_id,
-                "read_id": unit.read_id,
-                "source_url": unit.source_url,
-                "locator": unit.locator,
-                "target_ids": list(unit.target_ids),
-                "origin": unit.origin,
-                # The span a claim rests on, when one was recorded: the page
-                # head this used to publish was site navigation, so the row
-                # could not be used to check the claim it describes. A unit no
-                # claim selected has no supporting span, and publishes its own
-                # excerpt under the ledger's bound.
-                "excerpt": spans.get(
-                    (normalize_source_url(unit.source_url), unit.locator),
-                    _clamped(unit.excerpt, limit=QUALITY_RECORD_EXCERPT_CHARS),
-                ),
-            }
-            for unit in units
-        ],
-        "dispositions": [
-            {
-                "item_id": disposition.item_id,
-                "stage": disposition.stage,
-                "reason": _clamped(
-                    disposition.reason, limit=QUALITY_RECORD_TEXT_CHARS
-                ),
-                "target_ids": list(disposition.target_ids),
-                "retained_equivalent_id": (
-                    disposition.retained_equivalent_id or ""
-                ),
-            }
-            for disposition in state.evidence_dispositions
-        ],
-        "boundary_audits": [
-            {
-                "audit_id": audit.audit_id,
-                "job_id": audit.job_id,
-                "agent_name": audit.agent_name,
-                "operation": audit.operation,
-                "status": audit.status,
-                "target_ids": list(audit.target_ids),
-                "claim_cluster_ids": list(audit.claim_cluster_ids),
-                "input_ids": list(audit.input_ids),
-                "selected_ids": list(audit.selected_ids),
-                "returned_ids": list(audit.returned_ids),
-                "accepted_ids": list(audit.accepted_ids),
-                "deferred_ids": list(audit.deferred_ids),
-                "disposition_ids": list(audit.disposition_ids),
-                "packet_fingerprint": audit.packet_fingerprint,
-                "schema_version": audit.schema_version,
-                "configuration_fingerprint": audit.configuration_fingerprint,
-            }
-            for audit in sorted(
-                state.boundary_audits.values(),
-                key=lambda audit: audit.audit_id,
-            )
-        ],
-        "claim_clusters": [
-            {
-                "cluster_id": cluster.cluster_id,
-                "status": cluster.status,
-                "member_claim_ids": list(cluster.member_claim_ids),
-                "evidence_ids": list(cluster.evidence_ids),
-                "target_ids": list(cluster.target_ids),
-                "source_urls": list(cluster.source_urls),
-                "verdicts": list(cluster.verdicts),
-                "verdict_evidence_status": dict(
-                    cluster.verdict_evidence_status
-                ),
-                "cluster_aliases": list(cluster.cluster_aliases),
-                "consumed_coverage_ids": list(
-                    cluster.consumed_coverage_ids
-                ),
-            }
-            for cluster in clusters
-        ],
-        "claims": [
-            {
-                "claim_id": claim.claim_id,
-                "cluster_id": claim.cluster_id or "",
-                "cluster_aliases": list(claim.cluster_aliases),
-                # The claim's own text, whole: a display bound is not a
-                # publication bound, and publishing a cut claim made the
-                # record describe a claim the run never checked — the audit's
-                # "recorded only in part" uncertainty is one reader of that
-                # cut text.
-                "text": claim.text,
-                "verdict": claim.verdict,
-                "evidence_status": claim.evidence_status or "",
-                "confidence": claim.confidence,
-                "source_urls": sorted(claim.source_urls),
-                "consumed_coverage_ids": list(claim.consumed_coverage_ids),
-                "target_ids": list(claim.target_ids),
-                "insufficient_reason": claim.insufficient_reason or "",
-            }
-            for claim in claims
-        ],
-        "statements": [
-            {
-                "statement_id": statement.statement_id,
-                "mode": statement.mode,
-                "text": _clamped(
-                    statement.text, limit=QUALITY_RECORD_TEXT_CHARS
-                ),
-                "claim_cluster_ids": list(statement.claim_cluster_ids),
-                "evidence_ids": list(statement.evidence_ids),
-                "target_ids": list(statement.target_ids),
-                "answered_dimensions": list(statement.answered_dimensions),
-                "basis": (
-                    _clamped(statement.basis, limit=_RATIONALE_CHARS)
-                    if statement.basis
-                    else ""
-                ),
-            }
-            for statement in statements
-        ],
-        "statement_dispositions": (
-            list(composition.statement_dispositions)
-            if composition is not None
-            else []
-        ),
-        "returned_to_fact_checker": (
-            list(composition.returned_to_fact_checker)
-            if composition is not None
-            else []
-        ),
-        "errors": [_quality_error_row(error) for error in state.errors],
-        "review": _review_record(review),
     }
-    return record
+
+
+def _quality_finding_row(
+    label: str | None, finding: Finding
+) -> dict[str, JsonValue]:
+    """One finding the pass checked, with its verification exactly as recorded.
+
+    The verification is published as the Evidence Verifier recorded it, never
+    reshaped: its status decides whether the finding is citable, its figure
+    results carry the evidence words, the corrections and the drop reasons a
+    replay checks the reader's labels against, and a finding recorded under
+    two revision editions shares this fingerprint with its twin — which is why
+    the *label* is passed in beside it rather than re-derived from
+    ``finding_labels``. A finding the registry did not label (a dropped one,
+    or a duplicate) publishes no label rather than an invented one.
+    """
+    verification = finding.verification
+    return {
+        "id": finding_fingerprint(finding),
+        "label": label or "",
+        "source_url": finding.source_url,
+        "snippet": finding.snippet or "",
+        "verification": (
+            verification.model_dump(mode="json")
+            if verification is not None
+            else None
+        ),
+    }
 
 
 def _quality_rejected_point_row(
     point: RejectedDraftPoint,
 ) -> dict[str, JsonValue]:
-    """One refused drafted point, in full: the quality record's companion
-    to the evidence ledger's 'Rejected draft content' section — the exact
-    drafted text, claim ids and urls, never truncated, so a replay can tell
-    which drafted point tripped which reason.
+    """One refused drafted sentence, in full: the quality record's companion
+    to the evidence ledger's 'Refused sentences' section — where the sentence
+    was drafted, its whole text, the labels it cited and the reason the
+    Statement Check or a mechanical rule refused it, so a replay can tell
+    which drafted sentence tripped which reason.
     """
     return {
         "where": point.where,
         "text": point.text,
-        "claim_ids": list(point.claim_ids),
-        "source_urls": list(point.source_urls),
+        "finding_labels": list(point.finding_labels),
         "reason": point.reason,
     }
 
@@ -3952,7 +3801,7 @@ def _quality_error_row(error: ResearchError) -> dict[str, JsonValue]:
 
     A record the run continued past — a planning defect, a degraded phase, a
     tool failure — is part of what a replay has to be able to verify, so it
-    belongs in this artifact beside the claims the gates judged. What is
+    belongs in this artifact beside the findings the gates judged. What is
     published is exactly what the evidence ledger publishes for the same
     record: the type, the source, the severity, and the producer's own reading.
     ``details`` go through ``_published_details``, so the two artifacts cannot

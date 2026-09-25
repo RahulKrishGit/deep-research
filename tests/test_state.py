@@ -722,6 +722,35 @@ def test_primary_attribution_answers_a_target_that_asks_for_it() -> None:
     assert target_is_answered(state, target)
 
 
+def test_an_unbadged_unverified_claim_does_not_answer_the_target() -> None:
+    """The floor every policy shared, after the policy field itself left.
+
+    PD-16 removed ``EvidenceTarget.support_policy``; it did not remove the
+    requirement that a target's answer rest on adjudicated evidence. A claim
+    the pass never judged, or judged without a badge, satisfies no reading of
+    an obligation — the base code refused it under all three policies.
+    """
+    target = evidence_target()
+    unbadged = claim("It costs 40 EUR per tonne.").model_copy(
+        update={
+            "verdict": "unverified",
+            "evidence_status": None,
+            "target_ids": ["target-01"],
+            "cluster_id": "cluster-01",
+        }
+    )
+    row = statement().model_copy(
+        update={"claim_cluster_ids": ["cluster-01"]}
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        composition=composition(statements=[row], claims=[unbadged]),
+    )
+
+    assert not target_is_answered(state, target)
+
+
 def test_a_raw_metadata_finding_completes_no_required_target() -> None:
     """A finding is not a reader statement: the target is still unanswered."""
     target = evidence_target()

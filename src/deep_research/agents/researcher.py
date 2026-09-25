@@ -69,7 +69,6 @@ from deep_research.utils.types import (
     QUALITY_CONTRACT_VERSION,
     AcquisitionState,
     ContractModel,
-    CritiqueGap,
     EvidenceTarget,
     EvidenceUnit,
     FigureKind,
@@ -81,9 +80,7 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     SubTopic,
-    _canonical_acquisition_url,
     counted_evidence_targets,
-    sub_topic_owes_evidence,
 )
 
 RESEARCHER_NAME = "researcher"
@@ -232,132 +229,42 @@ class SubTopicTask(AgentTask):
     existing_sources: list[str] = Field(default_factory=list)
 
 
-def _critic_gaps_by_target(
-    state: ResearchState,
-) -> dict[str, list[CritiqueGap]]:
-    """Group the Critic's gaps by the plan ID each one was routed to.
+def _eligible_sub_topics(state: ResearchState) -> list[SubTopic]:
+    """The sub-topics this pass may run, in priority order (spec §6.5, §7.2).
 
-    Only ``CritiqueGap.coverage_id`` decides the target. Titles and problem
-    text are never parsed: a sub-topic whose title happens to appear inside
-    another topic's prose must not receive that topic's gap, and a gap the
-    Critic could not tie to the plan is global by construction.
+    The first pass runs every planned sub-topic: a topic is planned because
+    the question needs it, so its priority orders the pass rather than
+    excluding anything from it. An extra pass runs only the topics that own a
+    required target still missing a verified finding — ``state.
+    extra_pass_target_ids`` is that pass's whole job list, replaced at every
+    write — and every other topic is simply not part of the pass, which is not
+    a coverage gap and is never recorded as one.
+
+    Ties resolve by ``priority`` ascending (1 is most important), then by the
+    order the planner produced, so the same plan always yields the same pass.
+    Pure: it reads ``state`` and nothing else, so the pass that selects a
+    topic and the pass that folds its results agree without shared state.
     """
-    critique = state.critique
-    if critique is None:
-        return {}
-    grouped: dict[str, list[CritiqueGap]] = {}
-    for gap in critique.gaps:
-        if gap.coverage_id is None:
-            continue
-        grouped.setdefault(gap.coverage_id, []).append(gap)
-    return grouped
-
-
-def _is_critic_gap_target(
-    sub_topic: SubTopic,
-    gaps_by_target: Mapping[str, list[CritiqueGap]],
-) -> bool:
-    """True when the Critic routed at least one gap to this exact plan ID."""
-    return sub_topic.coverage_id in gaps_by_target
-
-
-def _cited_read_incidence(state: ResearchState) -> dict[str, tuple[str, str]]:
-    """``{canonical URL: (read_id, content_sha256)}`` this run has already cited.
-
-    Resolved from the run's own claim record — the evidence each checked claim
-    selected, through the evidence registry to the read behind it — and never
-    from the cache entry being validated, which would make the fingerprint
-    check vacuous. A URL no claim cites contributes nothing, so an ordinary
-    re-read stays free.
-    """
-    cited: dict[str, tuple[str, str]] = {}
-    for claim in state.verified_claims:
-        for evidence_id in claim.evidence_selection:
-            unit = state.evidence_units.get(evidence_id)
-            if unit is None:
-                continue
-            read = state.read_records.get(unit.read_id)
-            if read is None:
-                continue
-            identity = (read.read_id, read.content_sha256)
-            for url in (read.resolved_url, read.requested_url):
-                candidate = _canonical_acquisition_url(url)
-                if candidate:
-                    cited.setdefault(candidate, identity)
-    return cited
-
-
-def _refinement_satisfied_sub_topics(
-    state: ResearchState,
-) -> list[tuple[SubTopic, str]]:
-    """Topics a refinement pass may skip, each with the reason it is skipped.
-
-    A topic is skipped only when it owes nothing: every required target it
-    carries is answered, and the Critic asked for no new searches for it. The
-    reason is reported per topic, so "we skipped it because its obligations
-    are met" is distinguishable in the record from "we skipped it because a
-    finding existed" (the legacy target-less case).
-    """
-    if state.critique is None:
-        return []
-    satisfied: list[tuple[SubTopic, str]] = []
-    for sub_topic in state.sub_topics:
-        if sub_topic_owes_evidence(state, sub_topic):
-            continue
-        reason = (
-            "required_targets_completed"
-            if counted_evidence_targets(sub_topic.evidence_targets)
-            else "interim_satisfaction"
-        )
-        satisfied.append((sub_topic, reason))
-    return satisfied
-
-
-def _ordered_sub_topics(state: ResearchState) -> list[SubTopic]:
-    """Order eligible sub-topics by Critic-targeted gaps, then priority.
-
-    A sub-topic counts as gap-targeted when the Critic returned a gap whose
-    ``coverage_id`` equals it exactly. Ties resolve by ``priority`` ascending
-    (1 is most important), then by the order the planner produced. On a
-    refinement pass, a topic that owes no evidence is omitted — which means
-    its required targets are all answered and the Critic asked for no new
-    searches, never merely that some finding mentions it. Initial passes keep
-    every planned topic. Callers that need to know which sub-topics a
-    ``max_sub_topics`` cap left out (``ResearcherAgent.run``) use this directly
-    instead of ``select_sub_topics``, which only returns the truncated head.
-    """
-    gaps_by_target = _critic_gaps_by_target(state)
-
-    def sort_key(item: tuple[int, SubTopic]) -> tuple[int, int, int]:
-        index, sub_topic = item
-        flagged = 0 if _is_critic_gap_target(sub_topic, gaps_by_target) else 1
-        return (flagged, sub_topic.priority, index)
-
-    ordered = sorted(enumerate(state.sub_topics), key=sort_key)
-    if state.critique is None:
-        return [sub_topic for _, sub_topic in ordered]
+    ordered = sorted(state.sub_topics, key=lambda topic: topic.priority)
+    wanted = set(state.extra_pass_target_ids)
+    if not wanted:
+        return ordered
     return [
-        sub_topic
-        for _, sub_topic in ordered
-        if sub_topic_owes_evidence(state, sub_topic)
+        topic
+        for topic in ordered
+        if any(target.target_id in wanted for target in topic.evidence_targets)
     ]
 
 
 def select_sub_topics(
     state: ResearchState,
-    *,
     max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
 ) -> list[SubTopic]:
-    """Return the top eligible sub-topics, ordered by ``_ordered_sub_topics``.
-
-    Initial passes include every planned sub-topic. Refinement passes omit the
-    topics that owe no evidence. Sub-topics past the cap are truncated here
-    with no record of their own — ``ResearcherAgent.run`` is responsible for
-    recording what this cap drops and which satisfied topics it omitted.
-    """
+    """The first pass researches every planned sub-topic; an extra pass only the
+    sub-topics that own a missing required target (spec §6.5, §7.2)."""
     if max_sub_topics < 1:
         raise ValueError("max_sub_topics must be at least 1")
-    return _ordered_sub_topics(state)[:max_sub_topics]
+    return _eligible_sub_topics(state)[:max_sub_topics]
 
 
 def is_high_priority(
@@ -451,93 +358,31 @@ def merge_react_runs(
 
 
 def render_session_guidance(state: ResearchState) -> str:
-    """Render Critic feedback and recalled memory as shared run context."""
+    """Render the run's shared context: the guidance its recall produced."""
     sections: list[str] = []
-    critique = state.critique
-    if critique is not None:
-        lines = ["The critic asked for another research pass."]
-        if critique.gaps:
-            lines.append("Gaps to close:")
-            lines.extend(
-                f"- {summarize_text(gap.problem)}" for gap in critique.gaps
-            )
-        if critique.recommended_queries:
-            lines.append("Run these recommended queries first:")
-            lines.extend(
-                f"- {summarize_text(query)}"
-                for query in critique.recommended_queries
-            )
-        if critique.unsupported_claims:
-            lines.append("Find sources for these unsupported claims:")
-            lines.extend(
-                f"- {summarize_text(claim)}"
-                for claim in critique.unsupported_claims
-            )
-        sections.append("\n".join(lines))
-
     memory_section = render_memory_guidance(state.memory_context)
     if memory_section:
         sections.append(memory_section)
     return "\n\n".join(sections)
 
 
-def _critic_queries_for(state: ResearchState, sub_topic: SubTopic) -> list[str]:
-    """The queries routed to this exact plan ID, in order.
-
-    Read from the typed ``acquire`` jobs first — the refinement hop's own
-    union of the Critic's gaps and the terminal review's defects, so a defect
-    the review named reaches the loop the same way a gap does — and then from
-    the Critic's gaps, which is the durable record of its half of that union.
-    Only jobs whose ``coverage_id`` equals the sub-topic's own are read, so a
-    refinement pass never spends another topic's queries on this one.
-    """
-    queries: list[str] = []
-    for job in state.refinement_targets:
-        if job.action != "acquire" or job.coverage_id != sub_topic.coverage_id:
-            continue
-        for query in job.queries:
-            if query not in queries:
-                queries.append(query)
-    for gap in _critic_gaps_by_target(state).get(sub_topic.coverage_id, []):
-        for query in gap.recommended_queries:
-            if query not in queries:
-                queries.append(query)
-    return queries
-
-
 def render_sub_topic_guidance(
     sub_topic: SubTopic,
     existing_sources: Sequence[str],
-    *,
-    prioritized_queries: Sequence[str] = (),
 ) -> str:
     """Render one sub-topic's brief, including sources already collected.
 
-    ``prioritized_queries`` are the ones the Critic routed to this exact plan
-    ID. They are printed ahead of the planner's own suggestions, because
-    closing a named gap is what this pass exists to do; the success criteria
-    below still state when the sub-topic is done, and a query that appears in
-    both lists is printed once.
+    The queries are the plan's own; a sub-topic's searches are what its
+    ``search_queries`` say, and the success criteria below state when it is
+    done.
     """
-    first: list[str] = []
-    for query in prioritized_queries:
-        normalized = " ".join(query.split())
-        if normalized and normalized not in first:
-            first.append(normalized)
-    planned = [query for query in sub_topic.search_queries if query not in first]
     lines = [
         f"Sub-topic: {sub_topic.title}",
         f"Why it matters: {sub_topic.rationale}",
         f"Priority: {sub_topic.priority} (1 is most important)",
+        "Suggested search queries:",
     ]
-    if first:
-        lines.append("The critic routed a gap to this sub-topic.")
-        lines.append("Run these queries first:")
-        lines.extend(f"- {query}" for query in first)
-        lines.append("Then run the planned queries for the success criteria:")
-    else:
-        lines.append("Suggested search queries:")
-    lines.extend(f"- {query}" for query in planned)
+    lines.extend(f"- {query}" for query in sub_topic.search_queries)
     lines.append("This sub-topic is done when:")
     lines.extend(f"- {criterion}" for criterion in sub_topic.success_criteria)
     if existing_sources:
@@ -734,9 +579,9 @@ def render_planned_targets(targets: Sequence[EvidenceTarget]) -> str:
     is what decides the binding, so it follows in full, and any structured
     fields the plan set (measure, unit, period, kind, organisation) follow it
     so the model can bind a figure to the target it actually describes.
-    Support policy and criticality stay off the line: they are the Fact
-    Checker's business, and an extractor that tried to satisfy them would be
-    guessing at a verdict it does not own.
+    Criticality stays off the line: an extractor binds content to a question,
+    and whether an obligation is critical decides how coverage is judged, not
+    what a passage states.
     """
     lines: list[str] = []
     for target in targets:
@@ -1456,9 +1301,8 @@ def sub_topic_completed_event(
 
     ``target_obligation_completed`` is the Task 3 signal that the active
     target's obligation advanced: at least one registry-admitted finding was
-    extracted for it. The reader-level completion verdict (required
-    dimensions, support policy) belongs to Task 5's claim machinery and is not
-    claimed here.
+    extracted for it. Whether the reader's report answers the target is judged
+    later, on the report's own statements, and is not claimed here.
     """
     return agent_event(
         agent_name=RESEARCHER_NAME,
@@ -1497,13 +1341,14 @@ def research_completed_event(
     """Report the whole research pass.
 
     ``sub_topics_planned`` is every sub-topic the Planner produced;
-    ``sub_topics_skipped`` is however many of those were never attempted —
-    dropped by the ``max_sub_topics`` cap, omitted because an interim
-    refinement-satisfaction rule passed, or left unstarted when a
-    non-recoverable provider failure stopped the pass early. Together with
-    ``sub_topics_researched`` this makes "was every planned sub-topic
-    accounted for" answerable from the event stream alone, without cross-
-    referencing ``state.errors``.
+    ``sub_topics_skipped`` is how many of the pass's own selection were never
+    attempted — dropped by the ``max_sub_topics`` cap, or left unstarted when
+    a non-recoverable provider failure stopped the pass early. Together with
+    ``sub_topics_researched`` this makes "was every sub-topic this pass set
+    out to run accounted for" answerable from the event stream alone, without
+    cross-referencing ``state.errors``. On an extra pass the selection is
+    ``state.extra_pass_target_ids``' own topics, so ``planned`` counts the
+    whole plan while ``researched`` counts the pass.
     """
     return agent_event(
         agent_name=RESEARCHER_NAME,
@@ -1548,23 +1393,21 @@ def sub_topic_skipped_error(
     *,
     reason: str,
 ) -> ResearchError:
-    """Warn that a planned sub-topic was never attempted at all.
+    """Warn that a selected sub-topic was never attempted at all.
 
-    ``reason`` is one of four enumerated strings, never raw exception text:
-    ``"cap"`` when ``max_sub_topics`` truncated the planned list before this
-    sub-topic's turn came up, ``"provider_failure_stopped_processing"`` when an
-    earlier sub-topic's non-recoverable provider failure stopped the pass
-    before this sub-topic could run, ``"required_targets_completed"`` when
-    every required target the topic carries is already answered by a reader
-    statement and the Critic asked for no new searches, or
-    ``"interim_satisfaction"`` for the legacy case of a topic whose plan
-    carries no evidence target at all and which already has a finding.
-    Recoverable: the rest of the report can still stand, just incomplete for
-    this sub-topic.
+    ``reason`` is one of two enumerated strings, never raw exception text:
+    ``"cap"`` when ``max_sub_topics`` truncated the pass's selection before
+    this sub-topic's turn came up, or ``"provider_failure_stopped_processing"``
+    when an earlier sub-topic's non-recoverable provider failure stopped the
+    pass before this sub-topic could run. Recoverable: the rest of the report
+    can still stand, just incomplete for this sub-topic.
 
     Every unattempted sub-topic gets one of these, whatever its priority:
-    the record carries the sub-topic's ``coverage_id`` so the plans a pass
-    did not reach are named rather than inferred from a count.
+    the record carries the sub-topic's ``coverage_id`` so the sub-topics a
+    pass did not reach are named rather than inferred from a count. A
+    sub-topic the pass was never sent for gets no record: an extra pass is
+    confined to the targets still missing an answer, and leaving a topic out
+    of that job list is not a coverage gap.
     """
     return agent_error(
         agent_name=RESEARCHER_NAME,
@@ -1742,7 +1585,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._run_seen_target_ids: set[str] = set()
         self._run_cache: dict[str, ReadRecord] = {}
         self._run_network_read_ids: set[str] = set()
-        self._run_cited_reads: dict[str, tuple[str, str]] = {}
         self._shared_cache = cache if cache is not None else {}
         self._shared_network_read_ids = (
             network_read_ids if network_read_ids is not None else set()
@@ -1792,7 +1634,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         return policy.context(limit=self._evidence_packet_chars)
 
     def _planned_targets(self) -> list[EvidenceTarget]:
-        """Every counted target of the run's plan, in plan order.
+        """Every target this pass's extraction may bind a finding to.
 
         Read from the run's own state rather than from the active
         ``AcquisitionPolicy``: a policy knows the one coverage id it was built
@@ -1801,6 +1643,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         the plan's, so the list is stable across a run's sub-topics and a
         replayed request differs only where its evidence does.
 
+        On an extra pass the list is confined to ``state.
+        extra_pass_target_ids``: that pass exists to acquire the required
+        targets still missing a verified finding, so its contract offers the
+        model those targets and no others — a finding bound to a target the
+        pass was not sent for would be dropped as unplanned anyway.
+
         A run with no plan in hand — a direct ``extract_findings`` call, or a
         snapshot predating the target inventory — yields none, and extraction
         then binds nothing, because there is no inventory to bind against.
@@ -1808,11 +1656,15 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         state = self._run_source_state
         if state is None:
             return []
-        return [
+        planned = [
             target
             for sub_topic in state.sub_topics
             for target in counted_evidence_targets(sub_topic.evidence_targets)
         ]
+        wanted = set(state.extra_pass_target_ids)
+        if not wanted:
+            return planned
+        return [target for target in planned if target.target_id in wanted]
 
     def _policy_for_task(self, task: SubTopicTask) -> AcquisitionPolicy:
         target_id = task.sub_topic.coverage_id
@@ -1855,7 +1707,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             ),
             cache=self._run_cache,
             network_read_ids=self._run_network_read_ids,
-            cited_reads=self._run_cited_reads,
         )
 
     def sub_topic_task(
@@ -1863,19 +1714,13 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         base: AgentTask,
         sub_topic: SubTopic,
         existing_sources: Sequence[str],
-        *,
-        prioritized_queries: Sequence[str] = (),
     ) -> SubTopicTask:
         """Narrow the run-level task down to one sub-topic's loop."""
         sections = [
             section
             for section in (
                 base.guidance.strip(),
-                render_sub_topic_guidance(
-                    sub_topic,
-                    existing_sources,
-                    prioritized_queries=prioritized_queries,
-                ),
+                render_sub_topic_guidance(sub_topic, existing_sources),
             )
             if section
         ]
@@ -2242,8 +2087,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # The cache is keyed by URL, never by read id: a lookup happens before
         # any body download and only knows the URL it is about to request.
         # Seeding it with read ids worked by accident (nothing looks a read id
-        # up here) and would have silently polluted the shared cache Task 6
-        # wires for the Fact Checker.
+        # up here) and would have silently polluted the shared cache a later
+        # acquisition consumer is handed.
         for read in self._run_reads.values():
             if read.acquisition_kind != "network":
                 continue
@@ -2257,17 +2102,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 if read.acquisition_kind == "network"
             }
         )
-        # The read each citation was made against, keyed by canonical URL: a
-        # cache entry that is no longer that read is re-fetched rather than
-        # served under a citation to text nobody re-read.
-        self._run_cited_reads = _cited_read_incidence(state)
         self._active_acquisition = None
         self._active_target_id = None
         base_task = self.build_task(state)
-        ordered = _ordered_sub_topics(state)
-        satisfied = _refinement_satisfied_sub_topics(state)
-        selected = ordered[: self._max_sub_topics]
-        capped = ordered[self._max_sub_topics :]
+        eligible = _eligible_sub_topics(state)
+        selected = eligible[: self._max_sub_topics]
+        capped = eligible[self._max_sub_topics :]
         events: list[ResearchEvent] = []
         errors: list[ResearchError] = []
         findings: list[Finding] = []
@@ -2276,12 +2116,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         stopped_at: int | None = None
         for index, sub_topic in enumerate(selected, start=1):
             existing = existing_sources_for(state, sub_topic)
-            task = self.sub_topic_task(
-                base_task,
-                sub_topic,
-                existing,
-                prioritized_queries=_critic_queries_for(state, sub_topic),
-            )
+            task = self.sub_topic_task(base_task, sub_topic, existing)
             events.append(
                 sub_topic_started_event(
                     sub_topic, index=index, existing_sources=len(existing)
@@ -2389,13 +2224,15 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # stopped the pass early — gets a structured, recoverable record
         # carrying its coverage id, whatever its priority. Without this,
         # state.errors and the event stream cannot be trusted as "every
-        # planned sub-topic was attempted or explicitly skipped": sub-topics
-        # could vanish with no trace. Only the warning for an *attempted*
-        # sub-topic that produced nothing stays restricted to the
-        # high-priority ones, so a thin low-priority topic is not noise.
+        # sub-topic this pass set out to run was attempted or explicitly
+        # skipped": sub-topics could vanish with no trace. Only the warning
+        # for an *attempted* sub-topic that produced nothing stays restricted
+        # to the high-priority ones, so a thin low-priority topic is not
+        # noise. A topic the pass was never sent for is not in this list at
+        # all: an extra pass is confined to its own job list, and a topic
+        # outside it is no gap in the pass's coverage.
         skipped_by_break = selected[stopped_at:] if stopped_at is not None else []
         unattempted: list[tuple[SubTopic, str]] = [
-            *satisfied,
             *[(sub_topic, "cap") for sub_topic in capped],
             *[
                 (sub_topic, "provider_failure_stopped_processing")

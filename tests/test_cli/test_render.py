@@ -118,34 +118,19 @@ def quality_state(
 def quality_snapshot(**overrides: object) -> ReportQualitySnapshot:
     """The pass's snapshot: the readings the summary prints, and their ids.
 
-    ``ReportQualitySnapshot`` still requires the readings of the retired
-    registry, which Task 4.10 removes. Every required field this fixture does
-    not name is filled with a zero, so this file names exactly the readings
-    this pipeline computes and keeps working when the rest go.
+    Only the readings this pipeline computes are named. The retired readings
+    the type still carries are left at their defaults, so this fixture never
+    depends on one.
     """
     payload: dict[str, object] = {
-        name: 0
-        for name, field in ReportQualitySnapshot.model_fields.items()
-        if field.is_required()
+        "required_target_ids": [*ANSWERED_TARGET_IDS, MISSING_TARGET_ID],
+        "answered_target_ids": list(ANSWERED_TARGET_IDS),
+        "missing_required_target_ids": [MISSING_TARGET_ID],
+        "verified_findings": 2,
+        "dropped_findings": 1,
+        "cited_findings": 2,
+        "unjudged_sentences": [],
     }
-    payload.update(
-        {
-            "coverage_ratio": 1.0,
-            "planned_topics": 3,
-            "covered_topics": 2,
-            "unique_findings": 2,
-            "unique_sources": 3,
-            "cited_sources": 3,
-            "scored_cited_source_ratio": 1.0,
-            "required_target_ids": [*ANSWERED_TARGET_IDS, MISSING_TARGET_ID],
-            "answered_target_ids": list(ANSWERED_TARGET_IDS),
-            "missing_required_target_ids": [MISSING_TARGET_ID],
-            "verified_findings": 2,
-            "dropped_findings": 1,
-            "cited_findings": 2,
-            "unjudged_sentences": [],
-        }
-    )
     payload.update(overrides)
     return ReportQualitySnapshot.model_validate(payload)
 

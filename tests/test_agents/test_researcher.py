@@ -13,7 +13,6 @@ import pytest
 from deep_research.agents.acquisition import UNMINED_QUANTITY_REASON
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.evidence import build_read_record
-from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import AgentTask, render_finding_digest
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
@@ -26,8 +25,6 @@ from deep_research.agents.researcher import (
     ResearchFindings,
     SubTopicFindingsDraft,
     SubTopicTask,
-    _cited_read_incidence,
-    _critic_queries_for,
     bound_sub_topic_findings,
     build_findings,
     existing_sources_for,
@@ -62,19 +59,12 @@ from deep_research.tools.base import ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     MAX_SNIPPET_CHARS,
-    Claim,
-    Critique,
-    CritiqueGap,
     EvidenceTarget,
     EvidenceUnit,
     Finding,
     FindingFigure,
     MemorySnapshot,
     ReadRecord,
-    RefinementTarget,
-    ReportComposition,
-    ReportPoint,
-    ReportStatement,
     ResearchError,
     ResearchState,
     SubTopic,
@@ -143,10 +133,7 @@ def _state(
     *,
     sub_topics: list[SubTopic] | None = None,
     raw_findings: list[Finding] | None = None,
-    critique: Critique | None = None,
     memory_context: MemorySnapshot | None = None,
-    composition: ReportComposition | None = None,
-    verified_claims: list[Claim] | None = None,
     evidence_units: dict[str, EvidenceUnit] | None = None,
     read_records: dict[str, ReadRecord] | None = None,
 ) -> ResearchState:
@@ -155,98 +142,10 @@ def _state(
         original_question="How mature is quantum error correction?",
         sub_topics=sub_topics or [],
         raw_findings=raw_findings or [],
-        critique=critique,
         memory_context=memory_context or MemorySnapshot(),
-        composition=composition,
-        verified_claims=verified_claims or [],
         evidence_units=evidence_units or {},
         read_records=read_records or {},
     )
-
-
-def _gap(
-    problem: str,
-    *,
-    coverage_id: str | None = None,
-    recommended_queries: list[str] | None = None,
-) -> CritiqueGap:
-    """One targetable Critic gap. The plan ID is the only routing signal."""
-    return CritiqueGap(
-        coverage_id=coverage_id,
-        problem=problem,
-        recommended_queries=recommended_queries or [],
-    )
-
-
-def _required_target(
-    target_id: str = "target-01",
-    *,
-    coverage_id: str = "topic-01",
-    required_dimensions: list[str] | None = None,
-) -> EvidenceTarget:
-    return EvidenceTarget(
-        target_id=target_id,
-        coverage_id=coverage_id,
-        question="What does it cost?",
-        required_dimensions=list(required_dimensions or ["cost"]),
-        required=True,
-        critical=True,
-        support_policy="independent_pair",
-    )
-
-
-def _answering_composition(*target_ids: str) -> ReportComposition:
-    """A report that answers exactly the named targets, and nothing else."""
-    statements: list[ReportStatement] = []
-    claims: list[Claim] = []
-    for index, target_id in enumerate(target_ids, start=1):
-        text = f"The obligation {target_id} is settled."
-        claim_id = claim_fingerprint(text)
-        claims.append(
-            Claim(
-                claim_id=claim_id,
-                text=text,
-                source_urls=["https://example.test/qec"],
-                verdict="verified",
-                evidence_status="verified_pair",
-                confidence=0.9,
-                evidence=["Two independent reads state it."],
-                contradictions=[],
-                verification_evidence=[],
-                target_ids=[target_id],
-            )
-        )
-        statements.append(
-            ReportStatement(
-                statement_id=f"S{index:03d}",
-                text=text,
-                mode="settled",
-                claim_cluster_ids=[claim_id],
-                target_ids=[target_id],
-                answered_dimensions=["cost"],
-            )
-        )
-    return ReportComposition(
-        question="How mature is quantum error correction?",
-        session_id="session-1",
-        claims=claims,
-        summary=[
-            ReportPoint(text=row.text, statement=row) for row in statements
-        ],
-    )
-
-
-def _critique(**overrides: object) -> Critique:
-    payload: dict[str, object] = {
-        "score": 4,
-        "gaps": [],
-        "unsupported_claims": [],
-        "recommended_queries": [],
-        "should_continue": True,
-        "rationale": "Coverage is thin.",
-    }
-    payload.update(overrides)
-    return Critique.model_validate(payload)
 
 
 # A search payload is discovery only: it names candidates this loop has not
@@ -348,239 +247,6 @@ def test_selection_orders_by_priority_and_caps_the_count() -> None:
     selected = select_sub_topics(state, max_sub_topics=2)
 
     assert [sub_topic.title for sub_topic in selected] == ["Alpha", "Beta"]
-
-
-def test_selection_puts_critic_flagged_gaps_first(
-) -> None:
-    state = _state(
-        sub_topics=[
-            _sub_topic("Alpha", 1, coverage_id="topic-01"),
-            _sub_topic("Beta", 5, coverage_id="topic-02"),
-        ],
-        critique=_critique(
-            gaps=[
-                _gap(
-                    "No evidence at all on Beta yet.",
-                    coverage_id="topic-02",
-                )
-            ]
-        ),
-    )
-
-    selected = select_sub_topics(state, max_sub_topics=2)
-
-    assert [sub_topic.title for sub_topic in selected] == ["Beta", "Alpha"]
-
-
-def test_selection_falls_back_to_priority_when_no_gap_matches() -> None:
-    state = _state(
-        sub_topics=[
-            _sub_topic("Alpha", 2, coverage_id="topic-01"),
-            _sub_topic("Beta", 1, coverage_id="topic-02"),
-        ],
-        critique=_critique(gaps=[_gap("Something unrelated.")]),
-    )
-
-    selected = select_sub_topics(state)
-
-    assert [sub_topic.title for sub_topic in selected] == ["Beta", "Alpha"]
-
-
-def test_a_gap_problem_naming_a_title_never_targets_that_topic() -> None:
-    """Routing is by plan ID only; a title inside the prose decides nothing."""
-    state = _state(
-        sub_topics=[
-            _sub_topic("Alpha", 1, coverage_id="topic-01"),
-            _sub_topic("Beta", 5, coverage_id="topic-02"),
-        ],
-        critique=_critique(
-            gaps=[_gap("Beta is completely uncovered.", coverage_id=None)]
-        ),
-    )
-
-    selected = select_sub_topics(state, max_sub_topics=2)
-
-    assert [sub_topic.title for sub_topic in selected] == ["Alpha", "Beta"]
-
-
-def test_a_gap_with_an_unknown_plan_id_targets_no_topic() -> None:
-    state = _state(
-        sub_topics=[
-            _sub_topic("Alpha", 1, coverage_id="topic-01"),
-            _sub_topic("Beta", 5, coverage_id="topic-02"),
-        ],
-        critique=_critique(
-            gaps=[_gap("Beta is uncovered.", coverage_id="topic-999")]
-        ),
-    )
-
-    selected = select_sub_topics(state, max_sub_topics=2)
-
-    assert [sub_topic.title for sub_topic in selected] == ["Alpha", "Beta"]
-
-
-def test_refinement_selection_uses_one_slot_for_unsatisfied_topic() -> None:
-    state = _state(
-        sub_topics=[_sub_topic("Alpha", 1), _sub_topic("Beta", 3)],
-        raw_findings=[_finding(" alpha ", "https://example.test/alpha")],
-        critique=_critique(),
-    )
-
-    selected = select_sub_topics(state, max_sub_topics=1)
-
-    assert [sub_topic.title for sub_topic in selected] == ["Beta"]
-
-
-def test_one_raw_finding_does_not_complete_a_required_target() -> None:
-    """The reviewed baseline's TR-07: a finding is not an answered target.
-
-    The topic has one raw metadata finding and the Critic named no gap for it.
-    Its required target is still unanswered, so the topic owes research and
-    must be eligible — the old rule skipped exactly this topic.
-    """
-    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
-        update={"evidence_targets": [_required_target()]}
-    )
-    state = _state(
-        sub_topics=[topic],
-        raw_findings=[
-            _finding(
-                "Economics",
-                "https://example.test/metadata",
-                content="The page was published in 2024.",
-            )
-        ],
-        critique=_critique(),
-    )
-
-    assert [row.title for row in select_sub_topics(state)] == ["Economics"]
-
-
-def test_a_topic_whose_required_target_is_answered_is_skipped() -> None:
-    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
-        update={"evidence_targets": [_required_target()]}
-    )
-    state = _state(
-        sub_topics=[topic],
-        critique=_critique(),
-        composition=_answering_composition("target-01"),
-    )
-
-    assert select_sub_topics(state) == []
-
-
-def test_a_presentation_gap_does_not_send_an_answered_topic_to_acquisition() -> None:
-    """``synthesize`` is a rewrite: it reuses the evidence already held."""
-    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
-        update={"evidence_targets": [_required_target()]}
-    )
-    state = _state(
-        sub_topics=[topic],
-        critique=_critique(
-            gaps=[
-                CritiqueGap(
-                    coverage_id="topic-01",
-                    kind="presentation",
-                    severity="major",
-                    repair_action="synthesize",
-                    problem="The mechanism is stated twice.",
-                )
-            ]
-        ),
-        composition=_answering_composition("target-01"),
-    )
-
-    assert select_sub_topics(state) == []
-
-
-def test_an_acquisition_gap_sends_an_answered_topic_back_to_research() -> None:
-    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
-        update={"evidence_targets": [_required_target()]}
-    )
-    state = _state(
-        sub_topics=[topic],
-        critique=_critique(
-            gaps=[
-                CritiqueGap(
-                    coverage_id="topic-01",
-                    kind="missing_support",
-                    severity="major",
-                    repair_action="acquire",
-                    problem="The cost figure has no independent pair.",
-                )
-            ]
-        ),
-        composition=_answering_composition("target-01"),
-    )
-
-    assert [row.title for row in select_sub_topics(state)] == ["Economics"]
-
-
-def test_a_review_defects_acquire_job_sends_an_answered_topic_back_to_research() -> (
-    None
-):
-    """The terminal review's repair jobs are work, not just routing.
-
-    ``refinement_targets_for`` turns a scored review's material defects into
-    typed jobs, and the refinement hop spends a pass on them — but the
-    Researcher decided what to research from ``state.critique.gaps`` alone. A
-    review that names an *answered* topic with ``repair_action="acquire"``
-    (stale data, a missing independent source) while the Critic raised no gap
-    at all was therefore dropped as satisfied: the pass ran, acquired nothing
-    for the defect, and the next review raised the same defect again.
-    """
-    topic = _sub_topic("Economics", 1, coverage_id="topic-01").model_copy(
-        update={"evidence_targets": [_required_target()]}
-    )
-    state = _state(
-        sub_topics=[topic],
-        critique=_critique(),
-        composition=_answering_composition("target-01"),
-    ).model_copy(
-        update={
-            "refinement_targets": [
-                RefinementTarget(
-                    coverage_id="topic-01",
-                    action="acquire",
-                    origin="review_defect",
-                    severity="major",
-                    queries=["2025 cost per tonne"],
-                    problem="The cost figure rests on a single publisher.",
-                )
-            ]
-        }
-    )
-
-    assert [row.title for row in select_sub_topics(state)] == ["Economics"]
-
-    queries = _critic_queries_for(state, topic)
-    assert queries == ["2025 cost per tonne"]
-    # And they reach the loop that does the acquiring: the sub-topic brief
-    # runs them before the planner's own.
-    guidance = render_sub_topic_guidance(
-        topic, [], prioritized_queries=queries
-    )
-    assert "Run these queries first:" in guidance
-    assert guidance.index("- 2025 cost per tonne") < guidance.index(
-        "- Economics 2025"
-    )
-
-
-def test_refinement_gap_target_is_selected_even_when_prior_findings_exist() -> None:
-    state = _state(
-        sub_topics=[
-            _sub_topic("Alpha", 1, coverage_id="topic-01"),
-            _sub_topic("Beta", 3, coverage_id="topic-02"),
-        ],
-        raw_findings=[_finding("Alpha", "https://example.test/alpha")],
-        critique=_critique(
-            gaps=[_gap("Alpha still has a critic gap.", coverage_id="topic-01")]
-        ),
-    )
-
-    selected = select_sub_topics(state, max_sub_topics=1)
-
-    assert [sub_topic.title for sub_topic in selected] == ["Alpha"]
 
 
 def test_initial_selection_keeps_topics_with_prior_findings() -> None:
@@ -691,49 +357,22 @@ def test_merging_no_runs_yields_an_empty_finished_run() -> None:
     assert merged.steps == []
 
 
-def test_session_guidance_leads_with_the_critic_request() -> None:
+def test_session_guidance_is_empty_without_recalled_memory() -> None:
+    assert render_session_guidance(_state()) == ""
+
+
+def test_session_guidance_carries_the_recalled_strategies() -> None:
     guidance = render_session_guidance(
         _state(
-            critique=_critique(
-                gaps=["No post-2024 hardware data."],
-                recommended_queries=["surface code threshold 2025"],
-                unsupported_claims=["Error rates halved."],
-            ),
             memory_context=MemorySnapshot(
                 suggested_strategies=["Prefer peer-reviewed sources."]
-            ),
-        )
-    )
-
-    assert guidance.startswith("The critic asked for another research pass.")
-    assert "- No post-2024 hardware data." in guidance
-    assert "Run these recommended queries first:" in guidance
-    assert "- surface code threshold 2025" in guidance
-    assert "- Error rates halved." in guidance
-    assert "- Prefer peer-reviewed sources." in guidance
-
-
-def test_session_guidance_reports_every_gap_problem() -> None:
-    guidance = render_session_guidance(
-        _state(
-            critique=_critique(
-                gaps=[
-                    _gap("Alpha lacks cost evidence.", coverage_id="topic-01"),
-                    _gap(
-                        "Beta lacks durability evidence.",
-                        coverage_id="topic-02",
-                    ),
-                ]
             )
         )
     )
 
-    assert "- Alpha lacks cost evidence." in guidance
-    assert "- Beta lacks durability evidence." in guidance
-
-
-def test_session_guidance_is_empty_without_a_critique_or_memory() -> None:
-    assert render_session_guidance(_state()) == ""
+    assert guidance == (
+        "Strategies that worked before:\n- Prefer peer-reviewed sources."
+    )
 
 
 def test_sub_topic_guidance_lists_queries_criteria_and_known_sources() -> None:
@@ -752,34 +391,6 @@ def test_sub_topic_guidance_lists_queries_criteria_and_known_sources() -> None:
 def test_sub_topic_guidance_omits_known_sources_when_there_are_none() -> None:
     guidance = render_sub_topic_guidance(_sub_topic("Alpha"), [])
     assert "do not repeat them:" not in guidance
-
-
-def test_sub_topic_guidance_runs_the_critic_queries_before_the_planned_ones() -> None:
-    guidance = render_sub_topic_guidance(
-        _sub_topic("Alpha"),
-        [],
-        prioritized_queries=["alpha cost 2025", "  alpha cost 2026  "],
-    )
-
-    assert "Run these queries first:" in guidance
-    # The Critic's own queries come before the planner's, and a duplicate of
-    # one of them is not repeated below it.
-    assert guidance.index("- alpha cost 2025") < guidance.index("- Alpha 2025")
-    assert guidance.count("- alpha cost 2025") == 1
-    assert "- alpha cost 2026" in guidance
-    # The success criteria still say when the sub-topic is done.
-    assert "This sub-topic is done when:" in guidance
-    assert "- A named source about Alpha." in guidance
-
-
-def test_sub_topic_guidance_drops_a_critic_query_the_planner_already_lists() -> None:
-    guidance = render_sub_topic_guidance(
-        _sub_topic("Alpha"),
-        [],
-        prioritized_queries=["Alpha 2025"],
-    )
-
-    assert guidance.count("- Alpha 2025") == 1
 
 
 def test_evidence_renders_only_successful_tool_payloads() -> None:
@@ -1058,7 +669,7 @@ def test_the_cap_keeps_the_six_most_confident_findings() -> None:
         _finding(
             "Alpha",
             "https://a.test/one",
-            content=f"Claim {index}.",
+            content=f"Finding {index}.",
             confidence=confidence,
         )
         for index, confidence in enumerate(
@@ -1086,7 +697,7 @@ def test_the_cap_keeps_at_most_four_distinct_sources() -> None:
         _finding(
             "Alpha",
             f"https://s{index}.test/one",
-            content=f"Claim {index}.",
+            content=f"Finding {index}.",
             confidence=confidence,
         )
         for index, confidence in enumerate(
@@ -1117,7 +728,7 @@ def test_a_second_source_keeps_a_slot_confidence_alone_would_fill() -> None:
         _finding(
             "Alpha",
             "https://a.test/one",
-            content=f"Claim {index}.",
+            content=f"Finding {index}.",
             confidence=confidence,
         )
         for index, confidence in enumerate(
@@ -2197,7 +1808,6 @@ def _plan_target(target_id: str, question: str) -> EvidenceTarget:
         required_dimensions=["measure: battery storage capacity additions"],
         required=True,
         critical=True,
-        support_policy="independent_pair",
     )
 
 
@@ -2479,7 +2089,11 @@ def test_the_sub_topic_task_merges_session_and_sub_topic_guidance(
 ) -> None:
     agent = _researcher(tracker, ScriptedCompleter())
     base = agent.build_task(
-        _state(critique=_critique(recommended_queries=["surface code 2025"]))
+        _state(
+            memory_context=MemorySnapshot(
+                suggested_strategies=["Prefer peer-reviewed sources."]
+            )
+        )
     )
 
     task = agent.sub_topic_task(
@@ -2490,7 +2104,7 @@ def test_the_sub_topic_task_merges_session_and_sub_topic_guidance(
     assert task.sub_topic.title == "Alpha"
     assert task.existing_sources == ["https://example.test/one"]
     assert 'Gather evidence for the sub-topic "Alpha"' in task.instruction
-    assert "- surface code 2025" in task.guidance
+    assert "- Prefer peer-reviewed sources." in task.guidance
     assert "Sub-topic: Alpha" in task.guidance
 
 
@@ -3339,51 +2953,6 @@ def test_a_retained_finding_with_no_read_is_not_merged_with_another() -> None:
     assert bounded.works_retained == 2
 
 
-def test_the_runs_cited_reads_resolve_through_the_selected_evidence_id() -> None:
-    """``{canonical URL: (read_id, content_sha256)}``, read from the claim.
-
-    ``evidence_selection`` is keyed by evidence id and valued with the stance
-    it was selected under. Read the wrong way round, the run asks the registry
-    for an evidence unit called "supports", finds none, and reports that it
-    has cited nothing at all — so a cache entry under a citation to text
-    nobody re-read is served as a fresh read.
-    """
-    text = "Logical error rates fell below break-even in 2025."
-    read = _retained_read("https://example.test/qec", text)
-    unit = EvidenceUnit(
-        evidence_id="e1",
-        read_id=read.read_id,
-        source_url=read.resolved_url,
-        source_title=read.title,
-        locator="chunk-0",
-        excerpt=text,
-        target_ids=["target-01"],
-        origin="fact_checker",
-    )
-    claim = Claim(
-        claim_id=claim_fingerprint(text),
-        text=text,
-        source_urls=[read.resolved_url],
-        verdict="verified",
-        evidence_status="verified_pair",
-        confidence=0.9,
-        evidence=["Two independent reads state it."],
-        contradictions=[],
-        verification_evidence=[],
-        target_ids=["target-01"],
-        evidence_selection={"e1": "supports"},
-    )
-    state = _state(
-        verified_claims=[claim],
-        evidence_units={"e1": unit},
-        read_records={read.read_id: read},
-    )
-
-    assert _cited_read_incidence(state) == {
-        "https://example.test/qec": (read.read_id, read.content_sha256)
-    }
-
-
 @pytest.mark.asyncio
 async def test_an_empty_extraction_reports_no_completed_obligation(
     tracker: Tracker,
@@ -3553,126 +3122,6 @@ async def test_the_researcher_respects_its_iteration_bound(
 
     assert outcome.react.stop_reason == "max_iterations"
     assert outcome.react.iterations == 2
-
-
-@pytest.mark.asyncio
-async def test_the_researcher_prioritizes_the_gap_the_critic_named(
-    tracker: Tracker,
-) -> None:
-    completer = ScriptedCompleter(
-        decisions=[finish("Nothing to retrieve.", "No new sources.")],
-        outputs=[],
-    )
-    agent = _researcher(tracker, completer, max_sub_topics=1)
-    state = _state(
-        sub_topics=[
-            _sub_topic("Alpha", 1, coverage_id="topic-01"),
-            _sub_topic("Beta", 5, coverage_id="topic-02"),
-        ],
-        critique=_critique(
-            gaps=[
-                _gap("Beta is completely uncovered.", coverage_id="topic-02")
-            ],
-            recommended_queries=["beta throughput 2025"],
-        ),
-    )
-
-    async with tracker.session_span("session-1", "q"):
-        outcome = await agent.run(state)
-
-    started = outcome.state_update["events"][0]
-    assert started.metadata["sub_topic"] == "Beta"
-    loop_body = completer.react_calls[0].messages[1].content
-    assert "- beta throughput 2025" in loop_body
-    assert "Sub-topic: Beta" in loop_body
-
-
-@pytest.mark.asyncio
-async def test_the_researcher_runs_a_gaps_own_queries_for_its_target(
-    tracker: Tracker,
-) -> None:
-    """A gap's queries reach the loop even when the Critic's list is empty."""
-    completer = ScriptedCompleter(
-        decisions=[finish("Nothing to retrieve.", "No new sources.")],
-        outputs=[],
-    )
-    agent = _researcher(tracker, completer, max_sub_topics=1)
-    state = _state(
-        sub_topics=[
-            _sub_topic("Alpha", 1, coverage_id="topic-01"),
-            _sub_topic("Beta", 5, coverage_id="topic-02"),
-        ],
-        critique=_critique(
-            gaps=[
-                _gap(
-                    "Beta is completely uncovered.",
-                    coverage_id="topic-02",
-                    recommended_queries=["beta durability trial 2026"],
-                )
-            ]
-        ),
-    )
-
-    async with tracker.session_span("session-1", "q"):
-        outcome = await agent.run(state)
-
-    started = outcome.state_update["events"][0]
-    assert started.metadata["sub_topic"] == "Beta"
-    loop_body = completer.react_calls[0].messages[1].content
-    assert "Run these queries first:" in loop_body
-    assert loop_body.index("- beta durability trial 2026") < loop_body.index(
-        "- Beta 2025"
-    )
-
-
-@pytest.mark.asyncio
-async def test_refinement_skips_a_satisfied_non_gap_topic_with_an_honest_reason(
-    tracker: Tracker,
-) -> None:
-    completer = ScriptedCompleter(
-        decisions=[finish("Research Beta.", "No new sources.")],
-        outputs=[],
-    )
-    agent = _researcher(tracker, completer, max_sub_topics=1)
-    state = _state(
-        sub_topics=[
-            _sub_topic("Alpha", 1, coverage_id="topic-01"),
-            _sub_topic("Beta", 3, coverage_id="topic-02"),
-        ],
-        raw_findings=[_finding("alpha", "https://example.test/alpha")],
-        critique=_critique(),
-    )
-
-    async with tracker.session_span("session-1", "q"):
-        outcome = await agent.run(state)
-
-    started = [
-        event.metadata["sub_topic"]
-        for event in outcome.state_update["events"]
-        if event.event_type == "researcher.sub_topic.started"
-    ]
-    assert started == ["Beta"]
-
-    skipped = [
-        error
-        for error in outcome.errors
-        if error.error_type == "researcher_sub_topic_skipped"
-    ]
-    assert len(skipped) == 1
-    assert skipped[0].details == {
-        "sub_topic": "Alpha",
-        "coverage_id": "topic-01",
-        "priority": 1,
-        "reason": "interim_satisfaction",
-    }
-    completed = next(
-        event
-        for event in outcome.state_update["events"]
-        if event.event_type == "researcher.research.completed"
-    )
-    assert completed.metadata["sub_topics_planned"] == 2
-    assert completed.metadata["sub_topics_researched"] == 1
-    assert completed.metadata["sub_topics_skipped"] == 1
 
 
 @pytest.mark.asyncio
@@ -4118,7 +3567,6 @@ def _quantity_topic() -> SubTopic:
                     ],
                     required=True,
                     critical=True,
-                    support_policy="primary_attribution",
                 )
             ]
         }
@@ -4409,7 +3857,6 @@ async def test_a_measure_unit_left_unmined_is_disposed_of_by_its_own_reason(
     assert reasons[lede.evidence_id] == "irrelevant"
 
 
-
 _SNIPPET = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"
 
 
@@ -4506,3 +3953,112 @@ def test_planned_targets_render_their_structured_fields() -> None:
     line = render_planned_targets([make_target(organisation="EIA")])
     assert line.startswith("- topic-01-target-01 [topic-01]: How much")
     assert "unit: power" in line and "period: 2024" in line and "organisation: EIA" in line
+
+
+# ---------------------------------------------------------------------------
+# The targeted extra pass (spec §6.5, §7.2)
+# ---------------------------------------------------------------------------
+#
+# The first pass researches the whole plan; an extra pass is confined to the
+# sub-topics that own a target still missing a verified finding, and the
+# extraction contract of that pass lists those targets alone. Nothing here
+# reads a review's findings or a checked claim: the pass's own job list
+# is ``state.extra_pass_target_ids``, replaced by the graph at every write.
+
+
+def _planned_state(**updates: object) -> ResearchState:
+    topics = [
+        SubTopic(
+            coverage_id=f"topic-0{n}",
+            title=f"T{n}",
+            rationale="r",
+            search_queries=[f"q{n}"],
+            success_criteria=["c"],
+            priority=n,
+            evidence_targets=[make_target(f"topic-0{n}-target-01")],
+        )
+        for n in (1, 2, 3)
+    ]
+    return ResearchState(
+        session_id="s", original_question="q", sub_topics=topics
+    ).model_copy(update=updates)
+
+
+def test_the_first_pass_runs_every_planned_sub_topic_in_priority_order() -> None:
+    assert [t.coverage_id for t in select_sub_topics(_planned_state())] == [
+        "topic-01",
+        "topic-02",
+        "topic-03",
+    ]
+
+
+def test_an_extra_pass_runs_only_the_sub_topics_that_own_missing_targets() -> None:
+    state = _planned_state(extra_pass_target_ids=["topic-02-target-01"])
+
+    assert [t.coverage_id for t in select_sub_topics(state)] == ["topic-02"]
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_researches_only_the_missing_targets_owner(
+    tracker: Tracker,
+) -> None:
+    """One topic runs, and the extraction is shown one target.
+
+    The state carries the plan's two topics and names one missing target;
+    only the topic that owns it is researched, the request the extraction
+    answers lists that target alone, and a topic left out of the pass's own
+    job list is not recorded as a coverage gap.
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool(
+                "Find the forecast.",
+                "web_search",
+                '{"query": "eia battery storage forecast 2025"}',
+            ),
+            use_tool(
+                "Read the EIA page.",
+                "web_scraper",
+                f'{{"url": "{EIA_64705_URL}"}}',
+            ),
+            finish("The page carries the forecast.", "19.6 GW in 2025."),
+        ],
+        # The second reply answers the one bounded re-extraction of the
+        # passages a target in MW still owes a figure for: this model finds
+        # nothing more in them, which leaves the first reply's finding alone.
+        outputs=[_forecast_reply, SubTopicFindingsDraft(findings=[])],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
+        ),
+        http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+    )
+    state = _forecast_plan_state().model_copy(
+        update={"extra_pass_target_ids": [FORECAST_TARGET_ID]}
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == [TOPIC_02_TITLE]
+
+    request_body = completer.calls[0][2][1].content
+    assert f"- {FORECAST_TARGET_ID} [topic-02]" in request_body
+    assert f"- {PLANNED_TARGET_ID} [topic-01]" not in request_body
+
+    (finding,) = outcome.result.findings
+    assert finding.target_ids == [FORECAST_TARGET_ID]
+    # The topic outside the pass's job list is not a coverage gap.
+    assert [
+        error.error_type
+        for error in outcome.errors
+        if error.error_type == "researcher_sub_topic_skipped"
+    ] == []
