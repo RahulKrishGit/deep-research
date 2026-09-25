@@ -3082,6 +3082,67 @@ def evidence_verifier_output(evidence_verifier_case) -> "EvidenceVerifierOutput"
 
 
 @pytest.fixture
+def evidence_verifier_live_case(live_case_for):
+    """The Evidence Verifier's live benchmark case."""
+    return live_case_for("evidence_verifier")
+
+
+def _confirm_replies(case: EvaluationCase) -> list[ContextCheckDraft]:
+    """One confirming Context Check per finding, reading only the fixture.
+
+    Each reply repeats the figure's recorded period and kind and leaves the
+    organisation to code's own resolution (``page_owner``), so the run is a
+    real verification of the case's own pages without this helper asserting
+    any organisation the pages do not carry.
+    """
+    replies = []
+    for position, finding in enumerate(case.state.raw_findings, start=1):
+        [item] = finding.figures
+        replies.append(
+            ContextCheckDraft(
+                figures=[
+                    FigureCheckDraft(
+                        finding="F01",
+                        figure=1,
+                        period=item.period,
+                        scope=finding.measure_scope,
+                        attribution="own",
+                        organisation="",
+                        kind=item.kind,
+                        evidence_words=finding.snippet,
+                        verdict="confirm",
+                        reason="As stated on the page.",
+                    )
+                ]
+            )
+        )
+    return replies
+
+
+async def _run_live_evidence_verifier(case: EvaluationCase) -> "EvidenceVerifierOutput":
+    """One batch's worth of replies, one per finding of the case."""
+    replies = _confirm_replies(case)
+    completer = ScriptedCompleter(outputs=list(replies))
+    agent = EvidenceVerifierAgent(
+        provider=completer,
+        tracker=_case_tracker(),
+        scratchpad=_scripted_scratchpad(case, EVIDENCE_VERIFIER_NAME),
+    )
+    state = case.fresh_state()
+    async with agent.tracker.session_span(state.session_id, state.original_question):
+        run = await agent.run(state)
+    return EvidenceVerifierOutput.model_validate(
+        _wrap_output(case, run=run).model_dump(mode="json")
+    )
+
+
+@pytest.fixture
+def evidence_verifier_live_output(evidence_verifier_live_case) -> "EvidenceVerifierOutput":
+    """A completed evidence-verifier repetition of the live benchmark case."""
+    return asyncio.run(_run_live_evidence_verifier(evidence_verifier_live_case))
+
+
+@pytest.fixture
 def invented_evidence_case() -> EvaluationCase:
     """The case whose figure is dropped for words the page does not carry."""
     return case_by_id(
