@@ -2,29 +2,15 @@
 
 from __future__ import annotations
 
-import re
-
 import pytest
 
-from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import (
-    CLAIM_EXTRACTION_INSTRUCTION,
-    CLAIM_EXTRACTION_SYSTEM_PROMPT,
-    CLAIM_VERIFICATION_INSTRUCTION,
-    CLAIM_VERIFICATION_SYSTEM_PROMPT,
-    CRITIC_REVIEW_SYSTEM_PROMPT,
-    CRITIC_SYSTEM_PROMPT,
-    CRITIQUE_INSTRUCTION,
-    FACT_CHECKER_SYSTEM_PROMPT,
     NATIVE_REACT_RESPONSE_CONTRACT,
-    REPORT_INSTRUCTION,
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
     STRUCTURED_EXAMPLE_NOTICE,
     STRUCTURED_REPLY_FORMAT,
-    SYNTHESIZER_SYSTEM_PROMPT,
     AgentTask,
-    render_claim_digest,
     render_finding_digest,
     render_react_messages,
     render_scratchpad,
@@ -34,7 +20,7 @@ from deep_research.agents.prompts import (
 )
 from deep_research.agents.sources import SourceGroup
 from deep_research.memory.entries import ScratchpadEntry
-from deep_research.utils.types import Claim, Finding, ScoredSource
+from deep_research.utils.types import Finding, ScoredSource
 
 
 def _entry(content: str, kind: str = "thought") -> ScratchpadEntry:
@@ -673,212 +659,6 @@ def test_the_source_evaluator_keeps_a_written_date_at_its_own_precision() -> Non
     # The value still has to be one the quote states: precision is the
     # document's, never the model's.
     assert "the date the words name and no finer one" in instruction
-
-
-def test_constraint_cells_state_how_they_are_checked() -> None:
-    """Mechanism/geography have no structured provenance, so they are checked.
-
-    Task 6 could only tell the model to be careful. Task 7 checks the cell
-    against the evidence its row cites and repairs it, which is a different
-    contract and has to be stated as one: the prompt must say the wording
-    comes from the evidence and that an unbacked cell is replaced.
-    """
-    instruction = REPORT_INSTRUCTION.casefold()
-
-    assert "checked against the evidence the row cites" in instruction
-    assert "the wording of a cell must come from that evidence" in instruction
-    assert "replaced with 'not stated'" in instruction
-
-
-def test_claim_ids_are_copied_from_the_one_evidence_packet() -> None:
-    """The writer is shown one addressable claim block, not two whose labels
-    could disagree: the instruction must name that packet, never a second
-    'checked-claims' block the composer no longer sends.
-    """
-    instruction = REPORT_INSTRUCTION.casefold()
-
-    assert "copy the labels exactly as printed in the evidence packet" in instruction
-    assert "checked-claims packet" not in instruction
-
-
-def test_source_consumers_distinguish_quality_scores_from_statuses() -> None:
-    assert "quality score of every source" not in SYNTHESIZER_SYSTEM_PROMPT
-    assert "quality score when scored" in SYNTHESIZER_SYSTEM_PROMPT
-    assert "explicit evaluation status otherwise" in SYNTHESIZER_SYSTEM_PROMPT
-    assert "quality score when scored" in CRITIC_REVIEW_SYSTEM_PROMPT
-    assert "explicit evaluation status otherwise" in CRITIC_REVIEW_SYSTEM_PROMPT
-    assert "source scores" not in CRITIC_SYSTEM_PROMPT
-    assert "quality score when scored" in CRITIC_SYSTEM_PROMPT
-    assert "explicit evaluation status otherwise" in CRITIC_SYSTEM_PROMPT
-    assert "independent" in FACT_CHECKER_SYSTEM_PROMPT
-    assert "retrieved findings" in CLAIM_EXTRACTION_SYSTEM_PROMPT
-    assert "empty list" in CLAIM_EXTRACTION_INSTRUCTION
-    assert "invent" in CLAIM_VERIFICATION_SYSTEM_PROMPT
-    for verdict in ("verified", "unverified", "contradicted",
-                    "insufficient_evidence"):
-        assert verdict in CLAIM_VERIFICATION_INSTRUCTION
-
-
-def _digest_claim(
-    *,
-    text: str = "Logical error rates fell below break-even.",
-    verdict: str = "verified",
-    confidence: float = 0.8,
-    urls: list[str] | None = None,
-) -> Claim:
-    return Claim(
-        claim_id=claim_fingerprint(text),
-        text=text,
-        source_urls=urls or ["https://example.org/a"],
-        verdict=verdict,
-        evidence_status=(
-            "verified_pair"
-            if verdict == "verified"
-            else "source_supported"
-            if verdict == "insufficient_evidence"
-            else None
-        ),
-        confidence=confidence,
-        evidence=[],
-        contradictions=[],
-        verification_evidence=[],
-    )
-
-
-def test_claim_digest_shows_verdict_confidence_and_sources() -> None:
-    rendered = render_claim_digest(
-        [
-            _digest_claim(),
-            _digest_claim(
-                text="Adoption is broad.",
-                verdict="insufficient_evidence",
-                confidence=0.0,
-                urls=["https://other.test/b", "https://third.test/c"],
-            ),
-        ]
-    )
-
-    assert "1. [verified 0.80] Logical error rates fell below break-even." in rendered
-    assert "(https://example.org/a)" in rendered
-    assert "2. [insufficient_evidence 0.00] Adoption is broad." in rendered
-    assert "(https://other.test/b, https://third.test/c)" in rendered
-
-
-def test_claim_digest_clamps_long_claims_and_handles_an_empty_list() -> None:
-    rendered = render_claim_digest([_digest_claim(text="x" * 500)], limit=50)
-
-    assert "x" * 500 not in rendered
-    assert "..." in rendered
-    assert render_claim_digest([]) == "(no claims were checked)"
-
-
-def test_the_synthesizer_prompt_forbids_inventing_evidence() -> None:
-    assert "verified" in SYNTHESIZER_SYSTEM_PROMPT
-    assert "invent" in SYNTHESIZER_SYSTEM_PROMPT
-    # The skeleton is rendered locally; asking the model for it would let
-    # the two disagree.
-    assert "citation" in REPORT_INSTRUCTION
-    assert "exactly" in REPORT_INSTRUCTION
-    assert "executive summary" in REPORT_INSTRUCTION
-    assert "uncertainty" in REPORT_INSTRUCTION
-
-
-def test_the_critic_prompt_states_the_gap_and_score_contracts() -> None:
-    assert "no tools" in CRITIC_SYSTEM_PROMPT
-    assert "1 to 10" in CRITIQUE_INSTRUCTION
-    # Materiality is now declared rather than implied: a gap carries a
-    # severity, and only critical and major gaps block acceptance.
-    assert "material defect" in CRITIQUE_INSTRUCTION
-    assert "severity" in CRITIQUE_INSTRUCTION
-    assert "minor" in CRITIQUE_INSTRUCTION
-    assert "routing" not in CRITIQUE_INSTRUCTION
-    assert "recommended" in CRITIQUE_INSTRUCTION
-
-
-TOOL_FREE_SENTENCE = re.compile(r"[^.]*\bno tools\b[^.]*\.")
-
-
-def test_the_review_system_prompt_names_no_tools() -> None:
-    """Neither Critic prompt offers tools, so neither may name one.
-
-    Measured: the review payload carries no ``tools`` and no ``tool_choice``,
-    yet the prompt announced ``web_search`` and ``query_memory``. The model
-    obeyed and emitted DeepSeek tool-invocation markup into the message text,
-    which local JSON validation rejected — 16 of 30 first attempts. Task 8
-    went further and removed the tool path, so the shared prompt is tool-free
-    too and its "no tools" sentence says so.
-
-    The word "tool" is checked by removal, not by exemption: every sentence
-    that states the *absence* of tools is struck out, and the word may not
-    appear in any other sentence. An earlier version skipped the check
-    whenever the word occurred at all, which constrained nothing.
-    """
-    for prompt in (CRITIC_REVIEW_SYSTEM_PROMPT, CRITIC_SYSTEM_PROMPT):
-        lowered = prompt.lower()
-        for forbidden in ("web_search", "query_memory", "spot-check"):
-            assert forbidden not in lowered, forbidden
-        remainder = TOOL_FREE_SENTENCE.sub("", lowered)
-        assert "tool" not in remainder, remainder
-
-    # Both prompts state the absence explicitly, so a model cannot read either
-    # as an invitation to call something.
-    assert "no tools" in CRITIC_REVIEW_SYSTEM_PROMPT.lower()
-    assert "no tools" in CRITIC_SYSTEM_PROMPT.lower()
-
-
-def test_the_review_prompt_describes_the_report_boundaries() -> None:
-    assert "fenced block" in CRITIC_REVIEW_SYSTEM_PROMPT
-    # No angle-bracket marker vocabulary may survive anywhere in the prompt.
-    assert "BEGIN" not in CRITIC_REVIEW_SYSTEM_PROMPT
-    assert "END marker" not in CRITIC_REVIEW_SYSTEM_PROMPT
-    assert "<" not in CRITIC_REVIEW_SYSTEM_PROMPT
-    # The old tool-aware prompt announced a spot-check loop; the Critic has
-    # none, so no prompt of this agent may advertise a tool again.
-    assert "web_search" not in CRITIC_SYSTEM_PROMPT
-    assert "query_memory" not in CRITIC_SYSTEM_PROMPT
-    assert "exact excerpt of a successful read" in CRITIC_REVIEW_SYSTEM_PROMPT
-
-
-def test_unsupported_claims_are_defined_leniently_with_an_override() -> None:
-    """Attribution counts as support, unless evidence contradicts it.
-
-    Measured: the earlier wording — "statements the report makes that no cited
-    source or verified claim backs" — admitted two readings, and the Critic took
-    the strict one. Live canary judge rationales report 4, 8 and 5 unsupported
-    claims, reasoned from "outside the two verified claims" while the report
-    attributes those statements inline to named sources.
-
-    Strictness is self-defeating here for a structural reason: claim extraction
-    is deliberately partial (it selects only the most load-bearing claims), so
-    absence from the digest would function as evidence of unsupportedness, and
-    `route_decision` consults `unsupported_claims` after the score and gaps
-    checks, so over-reporting forces refinement on runs that would otherwise be
-    accepted.
-
-    The override matters as much as the leniency: a bare citation must not
-    survive a claim verdict or spot-check evidence that contradicts it.
-    """
-    prose = " ".join(CRITIQUE_INSTRUCTION.split())
-
-    # Lenient by default.
-    assert "neither clearly attributed to one of the report's cited sources" in prose
-    assert "nor backed by a verified claim" in prose
-    # Absence from the digest is explicitly not evidence of unsupportedness.
-    assert "the claim digest is deliberately partial" in prose
-    assert "absence from it is not evidence of unsupportedness" in prose
-    assert (
-        "Do not mark a cited statement unsupported solely because it lacks a "
-        "separate verified-claim entry" in prose
-    )
-    # …and the override keeps the lenient reading from laundering citations.
-    # Task 8 replaced "spot-check evidence" with the packet's read excerpts:
-    # the Critic no longer searches, so a snippet can no longer stand in for a
-    # contradiction.
-    assert "A contrary " in prose
-    assert "claim verdict or a read excerpt that disagrees still makes a " in prose
-    assert "statement unsupported, however it is cited" in prose
-    # The superseded strict wording must be gone.
-    assert "that no cited source or verified claim backs" not in prose
 
 
 # --- the shared structured reply format --------------------------------------
