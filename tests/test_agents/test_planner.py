@@ -353,7 +353,8 @@ def test_a_repair_pass_produces_the_same_ids_for_the_same_ordered_titles() -> No
 def test_problems_render_as_one_corrective_instruction() -> None:
     rendered = format_plan_problems(["problem one", "problem two"])
 
-    assert rendered.startswith("The previous plan was rejected.")
+    assert rendered.startswith("The plan under repair is printed above.")
+    assert "each named by its target id" in rendered
     assert "- problem one" in rendered
     assert "- problem two" in rendered
 
@@ -1314,11 +1315,21 @@ async def test_the_lint_repair_request_carries_unlabelled_problems(
         await agent.run(_state("What are the current interconnection constraints?"))
 
     repair_request = completer.calls[1][2][1].content
+    # The plan the problems name is printed above the repair list, so an id in
+    # that list names something the model can see and correct: the defect Fable
+    # blocked on, pinned on the request the provider actually receives.
+    assert "# Plan under repair (correct this plan; do not restate it)" in (
+        repair_request
+    )
+    assert repair_request.index("# Plan under repair") < repair_request.index(
+        "# Repair\n"
+    )
+    assert "topic-01-target-01" in repair_request.split("# Repair\n", 1)[0]
     assert repair_request.split("# Repair\n", 1)[1].split(
         f"\n\n{STRUCTURED_REQUEST_END}", 1
     )[0] == (
-        "The previous plan was rejected. Fix every problem listed below and "
-        "return a corrected plan.\n"
+        "The plan under repair is printed above. Fix every problem listed "
+        "below, each named by its target id, and return that plan corrected.\n"
         "- topic-01-target-01 anchors currency to 2019 for a session as of "
         "2026-09-16; ask for the latest available evidence instead"
     )
@@ -4868,7 +4879,7 @@ def test_the_plan_instruction_states_the_floor() -> None:
                    "for that thing",
                    "optional", "behind a paywall",
                    "a target you add to make another target checkable",
-                   "a running total"):
+                   "a derived total"):
         assert phrase in PLAN_INSTRUCTION
 
 
