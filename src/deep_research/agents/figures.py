@@ -8,7 +8,12 @@ One fixed, question-independent rule set reads a figure out of text:
 - unit scale within one dimension: kW, MW, GW, TW; kWh, MWh, GWh, TWh;
 - value and unit are adjacent, joined by a hyphen, or separated only by one
   parenthetical; an ``ac``/``dc`` suffix on the abbreviated unit is ignored;
-- a single number word before a unit ("ten gigawatts") is its number.
+- a single number word before a unit ("ten gigawatts") is its number;
+- a currency spelling (``$``, ``US$``, ``USD``, ``dollar(s)``) is one unit,
+  and a score's ``/5`` is one unit with ``out of 5`` (D13): neither gets a
+  scale -- ``unit_dimension`` still reads ``None`` for both, and a figure's
+  own ``value``/``unit`` are never rewritten by this -- the two spellings
+  are read as one unit only when two figures are *compared*.
 
 Two live uses: :func:`figure_in_text` and :func:`quantities_in` decide whether
 a snippet states the figure when the Context Check could not judge it (PD-26),
@@ -100,12 +105,28 @@ def _known_unit(text: str) -> str | None:
 _BRACKETED_UNIT = re.compile(r"^(?P<outer>[^()]+?)\((?P<inner>[^()]+)\)$")
 _UNIT_QUALIFIERS = frozenset({"ac", "dc", "acdc"})
 
+# A currency spelling names one unit for comparison only (D13): the run's own
+# prices came back as "$390" one loop and "390 USD" the next, and the two
+# spellings never folded into one fact. Never added to ``_SCALES`` -- a
+# currency has no scale to convert, and a target asking for one is answered
+# through the unscaled path (``unit_dimension`` stays ``None``), same as
+# before.
+_CURRENCY_UNITS = frozenset({"$", "us$", "usd", "dollar", "dollars"})
+# A score's denominator is part of the unit, not the value: "4.8/5" and "4.8
+# out of 5" are one figure, but "4.8/5" and "4.8/10" are not the same scale.
+_SCORE_UNIT = re.compile(r"^(?:(?:out\s*of|of)\s+(\d+(?:\.\d+)?)|/\s*(\d+(?:\.\d+)?))$")
+
 
 def _canonical_unit(unit: str) -> str:
     text = " ".join(cosmetic_text(unit).replace("-", " ").split())
     known = _known_unit(text)
     if known is not None:
         return known
+    if text in _CURRENCY_UNITS:
+        return "usd"
+    score = _SCORE_UNIT.fullmatch(text)
+    if score:
+        return f"/{score.group(1) or score.group(2)}"
     bracketed = _BRACKETED_UNIT.fullmatch(text)
     if bracketed:
         halves = [bracketed.group(part).strip() for part in ("outer", "inner")]

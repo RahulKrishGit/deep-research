@@ -153,22 +153,24 @@ def _assertion_key(finding: Finding) -> tuple[object, ...]:
     return ("figures", figures, _verified_figure_keys(finding))
 
 
-def _passage_key(finding: Finding) -> tuple[str, str, str, str, str] | None:
+def _passage_key(finding: Finding) -> tuple[str, str, str, str] | None:
     """The identity of the evidence one finding carries, or ``None``.
 
     A finding the acquisition path produced names the read and locator it was
-    mined from and quotes the page verbatim, so ``(url, sub-topic, read,
-    locator, snippet)`` says exactly which sentence of which page this is. Two
-    records with that key are one piece of evidence however each restated it:
-    the restatement is the model's prose, and prose is not identity. A record
-    that names no passage (a legacy or raw caller) has no such key, and nothing
-    folds on it.
+    mined from and quotes the page verbatim, so ``(url, read, locator,
+    snippet)`` says exactly which sentence of which page this is. Two records
+    with that key are one piece of evidence however each restated it -- and
+    however each was mined: a passage a later loop re-reads for a *different*
+    sub-topic is still that passage (D13, the run's own F01/F19/F27 shape --
+    one page's chunk mined once per loop, published as one fact per loop). The
+    restatement is the model's prose, and neither the prose nor the sub-topic
+    that fetched the read is identity. A record that names no passage (a
+    legacy or raw caller) has no such key, and nothing folds on it.
     """
     if not finding.read_id or not finding.locator or not finding.snippet:
         return None
     return (
         normalize_source_url(finding.source_url),
-        _normalized_text(finding.related_sub_topic),
         finding.read_id,
         finding.locator,
         _normalized_text(finding.snippet),
@@ -224,7 +226,7 @@ def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
     # One passage may carry several asserted facts, so the fold holds one
     # survivor *per fact* rather than one per passage: a duplicate of any of
     # them still collapses, and no fact loses its record to a sibling's.
-    by_passage: dict[tuple[str, str, str, str, str], dict[tuple[object, ...], str]] = {}
+    by_passage: dict[tuple[str, str, str, str], dict[tuple[object, ...], str]] = {}
     for fingerprint, finding in list(kept.items()):
         key = _passage_key(finding)
         if key is None:

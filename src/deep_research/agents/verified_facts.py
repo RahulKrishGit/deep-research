@@ -2,7 +2,10 @@
 
 Deterministic and field-driven: target answering, duplicates and revisions,
 the Not found list and number tracing read verified fields and structured
-figures only. Nothing here parses a finding's ``content``.
+figures only, with one exception -- a fallback-bound finding's own
+``content`` is read for one thing alone: whether it states what the target
+it would answer through the sub-topic fallback actually asks (D9). An
+explicitly bound finding never reaches that check.
 """
 
 from __future__ import annotations
@@ -879,7 +882,8 @@ def _subject_names_the_measure(figure: VerifiedFigure, target: EvidenceTarget) -
 
 
 def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
-                    plan_targets: Sequence[EvidenceTarget] = ()) -> bool:
+                    plan_targets: Sequence[EvidenceTarget] = (),
+                    sub_topics: Sequence[SubTopic] = ()) -> bool:
     target_scopes = canonical_scopes(target.measure)
     figure_scopes = canonical_scopes(figure.context.scope)
     if target_scopes and figure_scopes and target_scopes.isdisjoint(figure_scopes):
@@ -898,6 +902,13 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
         fits = dimension == target.unit_dimension
     else:
         fits = dimension is None
+        # D9: an unscaled target has no structural dimension check to gate a
+        # fallback answer with, so a fallback-bound finding must also state
+        # what this target asks -- the run's date-figured, unbound findings
+        # named a "when" sub-topic and, with fits already true, answered both
+        # of its qualitative targets. An explicit binding skips this.
+        if fits and not figure.finding.target_ids:
+            fits = _content_states_target(figure.finding, target, sub_topics)
     return (
         fits
         and (target.period is None or same_period(figure.context.period, target.period))
@@ -928,6 +939,59 @@ def _names_the_targets_sub_topic(finding: Finding, target: EvidenceTarget,
         and cosmetic_text(sub_topic.title) == name
         for sub_topic in sub_topics
     )
+
+
+def _sub_topic_evidence_targets(target: EvidenceTarget,
+                                sub_topics: Sequence[SubTopic]) -> list[EvidenceTarget]:
+    """The full target list of the sub-topic ``target`` belongs to.
+
+    Falls back to ``[target]`` alone when the plan is not given or names no
+    such sub-topic, so a caller with no plan sees no sibling to be told apart
+    from -- the same "nothing to check" reading ``_fallback_content_words``
+    gives a target with no sibling at all.
+    """
+    for sub_topic in sub_topics:
+        if sub_topic.coverage_id == target.coverage_id:
+            return list(sub_topic.evidence_targets)
+    return [target]
+
+
+def _fallback_content_words(target: EvidenceTarget,
+                            sub_topics: Sequence[SubTopic]) -> frozenset[str]:
+    """The words a fallback answer to ``target`` must find in a finding's own
+    content (D9).
+
+    The words that single this target out among its own sub-topic's other
+    targets, not every one of the target's own distinctive words: two targets
+    of one sub-topic both asking "what date" are not told apart by the word
+    both ask with, so that word is dropped before the check is made. A target
+    with no sibling to be told apart from is checked on every one of its own
+    distinctive words instead.
+    """
+    siblings = _sub_topic_evidence_targets(target, sub_topics)
+    own = _distinctive_words(f"{target.measure} {target.question}")
+    shared: frozenset[str] = frozenset()
+    for sibling in siblings:
+        if sibling.target_id == target.target_id:
+            continue
+        shared |= _distinctive_words(f"{sibling.measure} {sibling.question}")
+    return (own - shared) or own
+
+
+def _content_states_target(finding: Finding, target: EvidenceTarget,
+                           sub_topics: Sequence[SubTopic]) -> bool:
+    """Whether ``finding.content`` actually states what ``target`` asks (D9).
+
+    Gates the sub-topic fallback alone (1A): naming the sub-topic is not
+    enough by itself -- the run's Shure findings named the mic-quality
+    sub-topic's coverage id and, with no check on what they actually said,
+    answered every required target that sub-topic owned. An explicit binding
+    is the extraction's own judgement of its own content and is never put
+    through this; ``statement target_ids come from explicit bindings`` (D9)
+    regardless of what this returns.
+    """
+    wanted = _fallback_content_words(target, sub_topics)
+    return bool(wanted & _distinctive_words(finding.content))
 
 
 def _binds_target(finding: Finding, target: EvidenceTarget,
@@ -975,7 +1039,7 @@ def _finding_organisations(finding: Finding) -> list[str]:
 def finding_answers(finding: Finding, target: EvidenceTarget, *,
                     plan_targets: Sequence[EvidenceTarget] = (),
                     sub_topics: Sequence[SubTopic] = ()) -> bool:
-    """§6.6, plus PD-7 for a target with no unit dimension, and D11's sibling rule."""
+    """§6.6, plus PD-7 for a target with no unit dimension, D9's fallback content check, and D11's sibling rule."""
     if finding.verification is None or finding.verification.status == "dropped":
         return False
     if not _binds_target(finding, target, sub_topics):
@@ -988,6 +1052,15 @@ def finding_answers(finding: Finding, target: EvidenceTarget, *,
         # finding's own names to spell it refused the organisation's own pages
         # and reported the obligation "Not found" against its own evidence.
         #
+        # A fallback-bound finding (no target ids of its own) must also state
+        # what this target asks (D9): naming the sub-topic is not enough by
+        # itself, or the run's Shure findings -- no target ids, mic-quality
+        # sub-topic named, no word of any of its targets' own questions --
+        # would answer every required target that sub-topic owned. An
+        # explicit binding is the extraction's own judgement and skips this.
+        if not finding.target_ids and not _content_states_target(finding, target, sub_topics):
+            return False
+
         # The one thing the page's own credit decides is a relay: a finding the
         # page states as another body's -- through the finding's admitted issuer
         # or through a figure the Context Check read as that body's -- answers
@@ -1003,7 +1076,8 @@ def finding_answers(finding: Finding, target: EvidenceTarget, *,
             _answers_organisation(target.organisation, name)
             for name in _finding_organisations(finding)
         )
-    return any(_figure_answers(figure, target, plan_targets) for figure in verified_figures([finding]))
+    return any(_figure_answers(figure, target, plan_targets, sub_topics)
+               for figure in verified_figures([finding]))
 
 
 def answered_target_ids(
@@ -1177,7 +1251,7 @@ def _answered_targets(figure: VerifiedFigure, targets: Sequence[EvidenceTarget],
     return frozenset(
         target.target_id for target in targets
         if _binds_target(figure.finding, target, sub_topics)
-        and _figure_answers(figure, target, targets)
+        and _figure_answers(figure, target, targets, sub_topics)
     )
 
 
