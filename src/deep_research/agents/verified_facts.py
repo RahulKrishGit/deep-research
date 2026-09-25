@@ -21,7 +21,7 @@ from deep_research.agents.figures import (
 )
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.sources import publisher_identity
-from deep_research.agents.wording import stated_scopes
+from deep_research.agents.wording import SCOPE_TERMS, stated_scopes
 from deep_research.utils.types import (
     AcquisitionState,
     EarlierEdition,
@@ -261,6 +261,35 @@ _SUBJECT_FILLER = frozenset({"the", "of", "for", "in", "on", "and", "or", "its",
 # and "Model B" differ by one letter, so a question's "a kettle" must not erase
 # it (fix round 1, CRITICAL 1).
 _ARTICLE = frozenset({"a", "an"})
+
+# The words that say *how much*, never *what about*: a subject and a target's
+# measure sharing only these are not about the same thing. The live pre-flight
+# printed the EIA's 2025 forecasts for utility-scale solar (32.5 GW), wind
+# (7.7 GW) and natural gas (4.4 GW) under the measure "projected grid-scale
+# battery storage capacity additions", because every field but the subject
+# matched (review-02).
+_MEASURE_FILLER = frozenset({
+    "capacity", "addition", "additions", "added", "projected", "projection",
+    "projected", "forecast", "forecasts", "value", "total", "number", "amount",
+    "change", "growth", "increase", "decrease", "level", "rate", "percent",
+    "percentage", "average", "mean", "share", "size", "figure", "data",
+})
+# Unit spellings, so a subject that only restates its own unit ("gigawatts of
+# storage") says nothing about what the figure is about.
+_UNIT_WORDS = frozenset({
+    "gw", "mw", "kw", "tw", "gwh", "mwh", "kwh", "twh", "watt", "watts",
+    "gigawatt", "gigawatts", "megawatt", "megawatts", "kilowatt", "kilowatts",
+    "terawatt", "terawatts", "percent", "percentage", "dollar", "dollars",
+})
+# Period spellings: a year or a quarter is when a figure is about, not what.
+_PERIOD_WORDS = frozenset({"quarter", "quarters", "half", "fiscal", "annual", "monthly",
+                           "yearly", "ytd"}) | frozenset(_MONTHS)
+# Every word of the scope vocabulary (``wording.SCOPE_TERMS``): "utility-scale"
+# and "grid-scale" are the same segment in a subject as in a measure, so they
+# tell two measures apart in neither direction.
+_SCOPE_WORDS = frozenset(
+    word for term in SCOPE_TERMS for word in re.split(r"[\W_]+", term) if word
+)
 
 
 def _subject_tokens(text: str | None) -> tuple[str, ...]:
@@ -540,6 +569,91 @@ def canonical_scopes(text: str | None) -> set[str]:
     return {_SCOPE_EQUIVALENTS.get(term, term) for term in stated_scopes(text)}
 
 
+# The words that make a subject a *measure* phrase rather than the name of a
+# variant: "utility-scale solar capacity" claims a quantity, "version 10.02"
+# says which edition of one. Only a measure-shaped subject can contradict a
+# target's measure, so only one is tested against it (``two-versions-one-target``
+# and the D11 sibling rows depend on the other kind answering).
+_MEASURE_WORDS = _MEASURE_FILLER | frozenset({
+    "power", "energy", "price", "prices", "cost", "costs", "output", "production",
+    "demand", "consumption", "emissions",
+})
+
+
+def _folded_words(words: frozenset[str]) -> frozenset[str]:
+    """``words`` with a simple plural folded away, so "kettles" is "kettle".
+
+    A target's question and a page's subject spell the same thing with
+    different number ("Which kettles ..." against the subject "Kettle K1"), and
+    only the stems have to agree. A three-letter word is never folded, so "gas"
+    stays "gas".
+    """
+    return frozenset(
+        word[:-1] if len(word) >= 5 and word.endswith("s") else word for word in words
+    )
+
+
+def _distinctive_words(text: str | None, unit: str | None = None) -> frozenset[str]:
+    """The words that say *what* ``text`` is about, less the boilerplate.
+
+    A word is distinctive when it is at least four letters and is not a unit
+    spelling (the figure's own unit included), a period word, a scope word or
+    one of the measure fillers: "utility-scale solar capacity" leaves "solar",
+    and "projected grid-scale battery storage capacity additions" leaves
+    "battery" and "storage".
+    """
+    unit_words = frozenset(re.findall(r"[a-z]+", (unit or "").casefold()))
+    return _folded_words(frozenset(
+        word for word in _subject_tokens(text)
+        if len(word) >= 4
+        and not _YEAR.fullmatch(word)
+        and word not in _UNIT_WORDS and word not in unit_words
+        and word not in _PERIOD_WORDS and word not in _SCOPE_WORDS
+        and word not in _MEASURE_FILLER
+    ))
+
+
+def _names_a_measure(text: str, unit: str | None) -> bool:
+    """Whether ``text`` is itself a measure phrase: it states a quantity word.
+
+    A figure's unit is part of that ("4.5 out of 5" makes "out of 5" a
+    quantity), so a subject is read with the unit its figure carries.
+    """
+    words = set(_subject_tokens(text)) | set(re.findall(r"[a-z]+", (unit or "").casefold()))
+    return bool(words & _MEASURE_WORDS)
+
+
+def _subject_names_the_measure(figure: VerifiedFigure, target: EvidenceTarget) -> bool:
+    """Whether a figure that names a subject is about this target's measure.
+
+    ``_subject_fits`` answers the sibling question (which of two targets asking
+    one thing this figure is about) and never refuses a subject-less figure.
+    This answers the other one (review-02): a figure whose subject states a
+    *different* measure does not answer the target, however well its unit,
+    period, kind and organisation fit. Two ways to fit are admitted — the
+    subject and the measure share a distinctive word, or the subject names
+    nothing the target does not already state itself (the restatement case:
+    "United States", "Kettle K1" for a target that names them).
+
+    A subject that is not a measure phrase at all is never tested: it says
+    which entity or variant the figure is about ("version 10.02", "Kettle K1",
+    "Spain"), which is what the sibling rule tells apart, and it cannot
+    contradict a measure it never claims. A figure with no subject answers
+    exactly as it did.
+    """
+    if not figure.context.subject:
+        return True
+    if not _names_a_measure(figure.context.subject, figure.figure.unit):
+        return True
+    distinctive = _distinctive_words(figure.context.subject, figure.figure.unit)
+    if not distinctive:
+        return True
+    if distinctive & _distinctive_words(target.measure):
+        return True
+    stated = _folded_words(_stated_words(target.measure, target.question, target.geography))
+    return distinctive <= stated
+
+
 def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
                     plan_targets: Sequence[EvidenceTarget] = ()) -> bool:
     target_scopes = canonical_scopes(target.measure)
@@ -565,6 +679,7 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
         and (target.period is None or same_period(figure.context.period, target.period))
         and (target.kind is None or figure.context.kind == target.kind)
         and (target.organisation is None or same_organisation(target.organisation, figure.context.organisation))
+        and _subject_names_the_measure(figure, target)
         and _subject_fits(figure, target, plan_targets)
     )
 

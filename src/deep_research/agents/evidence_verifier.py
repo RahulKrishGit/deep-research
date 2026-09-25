@@ -283,11 +283,16 @@ def _title_credit_candidates(title: str) -> list[str]:
 
 
 def _cued_name_candidates(text: str, cues: Sequence[str]) -> list[str]:
-    """A short run of capitalised words immediately after any of ``cues``."""
+    """A short run of capitalised words immediately after any of ``cues``.
+
+    A cue that reads "from the Example Lab" names the body, not its article, so
+    a leading article is skipped before the run is read.
+    """
     candidates: list[str] = []
     pattern = re.compile(rf"(?:{'|'.join(cues)})\s*", re.IGNORECASE)
     for cue in pattern.finditer(text):
         tail = _LEADING_YEAR.sub("", text[cue.end() : cue.end() + 100].lstrip())
+        tail = re.sub(r"^(?:the|a|an)\s+", "", tail, flags=re.IGNORECASE)
         match = _CAPITALIZED_RUN.match(tail)
         if match:
             candidates.append(match.group().strip())
@@ -443,6 +448,47 @@ def _owns_page(read: ReadRecord, organisation: str, issuer: str | None) -> bool:
     return _opening_credits_organisation(read, organisation)
 
 
+# The cues whose body *follows* them ("based on the latest reporting from X",
+# "data from X", "according to X"), read out of a figure's own evidence words.
+_NAME_AFTER_CUES = (
+    r"report(?:s|ed|ing)?\s+from", r"data\s+from", r"according\s+to", r"per",
+    r"sources?\s*:", r"released\s+by", r"reported\s+by", r"estimates?\s+from",
+    r"published\s+by", r"prepared\s+by",
+)
+# The bodies a page *names*: capitalised runs, which is what keeps a lowercase
+# "our survey" out of them.
+_SOURCE_NOUN = (
+    r"(?:survey|poll|study|research|reports?|analysis|data|figures?|numbers?|index|"
+    r"outlook|forecasts?|estimates?)"
+)
+_NAME_BEFORE_CUE_PATTERN = re.compile(
+    rf"(?P<name>{_RUN_WORD}(?:\s+{_RUN_WORD}){{0,5}})\s*(?:['\u2019]s\s+)?"
+    rf"(?:(?i:latest|own|new|full|annual|preliminary)\s+){{0,2}}(?i:{_SOURCE_NOUN})(?![A-Za-z0-9])"
+)
+
+
+def _body_credited_in_words(words: str | None) -> str | None:
+    """The body a finding's own evidence words credit, or ``None``.
+
+    The Context Check can leave a relay unresolved while the words it quoted
+    state the credit plainly ("based on the latest reporting from the U.S.
+    Energy Information Administration"), and the label then contradicts the
+    sentence the writer quotes from the page (the live pre-flight's
+    review-01). Code reads the same cues back out of those words, in both
+    directions, so the label agrees with the page's own sentence.
+    """
+    if not words:
+        return None
+    for candidate in _cued_name_candidates(words, _NAME_AFTER_CUES):
+        name = _stripped_name(candidate)
+        if name:
+            return name
+    match = _NAME_BEFORE_CUE_PATTERN.search(words)
+    if match is not None:
+        return _stripped_name(match.group("name")) or None
+    return None
+
+
 def resolve_attribution(
     *,
     proposed: FigureAttribution | None,
@@ -450,10 +496,14 @@ def resolve_attribution(
     finding: Finding,
     read: ReadRecord,
     issuer: str | None,
+    words: str | None = None,
 ) -> tuple[FigureAttribution, str]:
     """PD-8: the Context Check proposes, the page's own words decide.
 
     ``issuer`` is ``evaluated_issuer(...)`` for the read (PD-25), or ``None``.
+    ``words`` are the Context Check's own evidence words for this figure, when
+    there are any: a verdict that leaves the attribution unresolved is repaired
+    from them, so the label never contradicts the sentence the page states.
     """
     name = (organisation or "").strip()
     if proposed == "relayed" and name:
@@ -475,6 +525,19 @@ def resolve_attribution(
         return "relayed", admitted
     if proposed == "own" and name and _owns_page(read, name, issuer):
         return "own", name
+    # The verdict left the attribution unresolved (no proposal, "unattributed",
+    # a relay with no body, or an "own" its own name does not back): the page's
+    # own words decide, when they credit a body at all.
+    unresolved = (
+        proposed in (None, "unattributed")
+        or (proposed == "relayed" and not name)
+        or (proposed == "own" and not (name and _owns_page(read, name, issuer)))
+    )
+    credited = _body_credited_in_words(words) if unresolved else None
+    if credited:
+        if _owns_page(read, credited, issuer):
+            return "own", credited
+        return "relayed", credited
     owner = issuer or page_owner(read)
     if proposed in (None, "own"):
         return "own", owner
@@ -608,7 +671,7 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
         subject, corrected = None, True
     attribution, organisation = resolve_attribution(
         proposed=reply.attribution, organisation=reply.organisation,
-        finding=finding, read=item.read, issuer=item.issuer,
+        finding=finding, read=item.read, issuer=item.issuer, words=words,
     )
     corrected = corrected or (figure.kind is not None and figure.kind != reply.kind)
     return FigureResult(

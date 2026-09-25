@@ -1109,7 +1109,8 @@ def neighbouring_passage_text(read: ReadRecord, locator: str) -> str:
 # same way a sentence does.
 ATTRIBUTION_CUE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(?:according\s+to|reported\s+by|released\s+by|"
-    r"data\s+from|estimates?\s+from|sources?\s*:|per|said)(?![A-Za-z0-9])",
+    r"data\s+from|report(?:s|ed|ing)?\s+from|estimates?\s+from|sources?\s*:|per|said)"
+    r"(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 # The active form of the same claim: a reporting verb the page puts straight
@@ -1133,6 +1134,21 @@ _REPORTING_CUE_PATTERN = re.compile(
     rf"\s*(?:{_REPORTING_NOUN}\s+)?(?:{_REPORTING_VERB})(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+# A source noun straight after the name credits it as well ("EIA data", "the
+# EIA's latest report", "IDC figures show"), with at most two modifier words
+# between them. The named body's own material is what the figure came from —
+# but a modifier of the *carrier's* is not the body's, which is what keeps
+# "Unlike the EIA our survey found 12 GW" from crediting the EIA: "our" is the
+# carrier's word, and the name is not "the EIA's" anything.
+_CARRIER_MODIFIER = r"(?!our\b|their\b|its\b|my\b|his\b|her\b|your\b)"
+_SOURCE_NOUN_CUE_PATTERN = re.compile(
+    rf"\s+(?:['\u2019]s\s+)?{_CARRIER_MODIFIER}(?:\w+\s+){{0,2}}(?:{_REPORTING_NOUN})(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# A title that opens with the body's name and a colon ("EIA: utility-scale
+# battery storage capacity to reach 30 GW") credits that body for what the
+# title states, the same claim "according to EIA" makes about a sentence.
+_TITLE_CUE_MARK = re.compile(r"^\s*:\s")
 # A possessive immediately after the matched name: "Wood Mackenzie's" names
 # an owner of what follows exactly as "according to Wood Mackenzie" does.
 _POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
@@ -1148,10 +1164,18 @@ def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
     A body the page merely mentions is not an attribution — "Unlike the EIA,
     ... our survey found 12 GW" names the EIA without crediting it with
     anything — so admission requires one of the words this project reads as
-    handing a figure to somebody, immediately before or after the name.
+    handing a figure to somebody, immediately before or after the name, or one
+    of the shapes that state the same claim about it: the body's own source
+    noun ("EIA data", "the EIA's latest report"), a title opening on its name
+    ("EIA: capacity to reach 30 GW").
     """
     tail = phrase[name_match.end() :]
-    if _POSSESSIVE_MARK.match(tail) or _REPORTING_CUE_PATTERN.match(tail):
+    if (
+        _POSSESSIVE_MARK.match(tail)
+        or _REPORTING_CUE_PATTERN.match(tail)
+        or _SOURCE_NOUN_CUE_PATTERN.match(tail)
+        or (not phrase[: name_match.start()].strip() and _TITLE_CUE_MARK.match(tail))
+    ):
         return True
     for cue in ATTRIBUTION_CUE_PATTERN.finditer(phrase):
         if 0 <= name_match.start() - cue.end() <= _ATTRIBUTION_CUE_REACH:
