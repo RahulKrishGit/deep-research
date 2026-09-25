@@ -155,9 +155,8 @@ def test_the_listing_shows_every_agent_case_and_dataset(
         "planner",
         "researcher",
         "source-evaluator",
-        "fact-checker",
-        "synthesizer",
-        "critic",
+        "evidence-verifier",
+        "report-writer",
     ):
         assert name in body
         assert f"deep-research-{name}-controlled-v1" in body
@@ -165,8 +164,9 @@ def test_the_listing_shows_every_agent_case_and_dataset(
 
     assert "focused-decomposition" in body
     assert "planner-live-scope" in body
-    assert "missing-evidence-or-budget-exhausted" in body
-    assert body.count("controlled") >= 6
+    assert "relay-labelled-as-relay" in body
+    assert "canonical-evidence-report" in body
+    assert body.count("controlled") >= 5
     assert "3 repetitions" in body
     assert "1 repetition" in body
 
