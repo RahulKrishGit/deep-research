@@ -91,8 +91,9 @@ GRAPH_ROUTES = {
         "invalid reply); it is published as partial."
     ),
     "extra_pass_requested": (
-        "Required targets have no verified finding and an extra pass remains; "
-        "the researcher runs for those targets only."
+        "Required targets have no verified finding, or the terminal review's "
+        "own coverage defect names one as still missing, and an extra pass "
+        "remains; the researcher runs for those targets only."
     ),
     "extra_passes_exhausted": (
         "Required targets still have no verified finding, no extra pass "
@@ -237,23 +238,34 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     The order is the order of certainty. A halt outranks everything: the run
     could not finish, so no verdict about the report is owed. The extra pass
     is read next, because "these obligations have nowhere to come from" is a
-    defect with somewhere to go while the budget holds — and the redraft is
-    read after it, because a re-draft cannot answer a target no verified
-    finding answers. Then the review: a report no reviewer scored is published
-    as partial rather than judged; a scored report a reviewer explicitly
-    refused buys its one re-draft before the run gives up, since that is the
-    only lever left once research cannot help; and a scored report that cleared
-    the gates and the reviewer is accepted (PD-23) — even when the pass bought
-    for a missing target found nothing, since §6.4 accepts a report whose
-    remaining obligations are *listed* under Not found. Only a scored report
-    that was not accepted and still owes a target that the ceiling can no
-    longer buy for ends as ``extra_passes_exhausted`` (status
-    ``max_iterations``).
+    defect with somewhere to go while the budget holds — and a reviewer's own
+    ``coverage`` defect naming a required target is that same defect even when
+    the code-stamped gate already calls the target answered, so it buys the
+    pass too, before any redraft — and the redraft is read after both, because
+    a re-draft cannot answer a target no verified finding answers. Then the
+    review: a report no reviewer scored is published as partial rather than
+    judged; a scored report a reviewer explicitly refused buys its one
+    re-draft before the run gives up, since that is the only lever left once
+    research cannot help; and a scored report that cleared the gates and the
+    reviewer is accepted (PD-23) — even when the pass bought for a missing
+    target found nothing, since §6.4 accepts a report whose remaining
+    obligations are *listed* under Not found. Only a scored report that was
+    not accepted and still owes a target that the ceiling can no longer buy
+    for ends as ``extra_passes_exhausted`` (status ``max_iterations``).
     """
     if is_halted(state):
         return ROUTE_END, "halted"
     review = state.report_review
-    missing = review is not None and bool(review.missing_required_target_ids)
+    required_target_ids = (
+        set(state.quality.required_target_ids) if state.quality else set()
+    )
+    reviewer_named_missing_coverage = review is not None and any(
+        defect.kind == "coverage" and set(defect.target_ids) & required_target_ids
+        for defect in review.defects
+    )
+    missing = review is not None and (
+        bool(review.missing_required_target_ids) or reviewer_named_missing_coverage
+    )
     if missing and state.iteration < state.max_extra_passes:
         return ROUTE_EXTRA_PASS, "extra_pass_requested"
     if review is None or review.status != "scored":

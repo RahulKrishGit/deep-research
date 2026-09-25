@@ -89,6 +89,7 @@ from deep_research.providers.validation import validation_diagnostic
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     GAP_KINDS,
+    GAP_MATERIAL_SEVERITIES,
     GAP_SEVERITIES,
     QUESTION_TARGET_ID,
     REVIEW_DIMENSIONS,
@@ -331,6 +332,13 @@ REVIEW_DEFECT_RULES = (
     "kind or severity is none of these is dropped rather than recorded.\n"
     "- critical and major are the material defects: a report cannot be "
     "accepted while one is open. minor is a real but editorial observation.\n"
+    "- Severity follows the defect's consequence, not how it reads: a defect "
+    "that leaves one of the question's own parts with no named answer, or "
+    "names a sentence the cited findings do not carry, is major (critical if "
+    "it also states something the findings contradict); a defect about "
+    "phrasing, ordering, or a planned addition beyond the question's own "
+    "parts is minor. A coverage defect naming a required target is treated "
+    "as major or worse whatever severity you give it.\n"
     "- Report each distinct problem once. When one problem affects several "
     "statements, name them all in one defect rather than repeating it."
 )
@@ -510,6 +518,13 @@ class ReportReviewInput(ContractModel):
     fact_rows: list[str] = Field(default_factory=list)
     not_found: list[str] = Field(default_factory=list)
     deterministic: ReviewDeterministic = Field(default_factory=ReviewDeterministic)
+    required_target_ids: list[str] = Field(default_factory=list)
+    """The plan's own required targets, so a returned defect can be judged
+    against them (D11): a ``coverage`` defect naming one of these is always
+    material, whatever severity the reply gave it — the routing layer and
+    ``_defects`` both read this list rather than trusting the model's own
+    account of what the question required.
+    """
     rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
     composition_fingerprint: str = ""
     """The semantic fingerprint of the composition this packet was built from.
@@ -587,6 +602,7 @@ def build_report_review_input(
             unresolved_citations=quality.unresolved_citations if quality else 0,
             uncited_settled_points=quality.uncited_settled_points if quality else 0,
         ),
+        required_target_ids=list(quality.required_target_ids) if quality else [],
         composition_fingerprint=composition_semantic_fingerprint(composition),
     )
     return packet.model_copy(
@@ -1147,6 +1163,7 @@ def _defects(
     """
     known_statements = {statement.statement_id for statement in packet.statements}
     known_targets = set(packet.known_target_ids)
+    required_targets = set(packet.required_target_ids)
     defects: list[ReviewDefect] = []
     notes: list[str] = []
     for index, draft in enumerate(drafts, start=1):
@@ -1166,16 +1183,27 @@ def _defects(
         if not problem:
             notes.append(f"Defect {index} was dropped: it names no problem.")
             continue
+        target_ids = [
+            target_id
+            for target_id in dict.fromkeys(draft.target_ids)
+            if target_id in known_targets
+        ]
+        if (
+            kind == "coverage"
+            and severity not in GAP_MATERIAL_SEVERITIES
+            and set(target_ids) & required_targets
+        ):
+            # D11: a coverage defect naming a required target withholds
+            # acceptance whatever severity the reply gave it — the model
+            # called an identical missing-half-answer defect major in one
+            # review and minor in the next, so the floor is code, not asked.
+            severity = "major"
         defects.append(
             ReviewDefect(
                 defect_id=f"review-{len(defects) + 1:02d}",
                 kind=cast(GapKind, kind),
                 severity=cast(GapSeverity, severity),
-                target_ids=[
-                    target_id
-                    for target_id in dict.fromkeys(draft.target_ids)
-                    if target_id in known_targets
-                ],
+                target_ids=target_ids,
                 statement_ids=[
                     statement_id
                     for statement_id in dict.fromkeys(draft.statement_ids)
