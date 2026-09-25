@@ -900,7 +900,7 @@ class ManifestSequence:
     value: int = 0
 
     def take(self) -> int:
-        """Claim the next sequence, advancing the mapping's counter."""
+        """Take the next sequence, advancing the mapping's counter."""
         claimed = self.value
         self.value += 1
         return claimed
@@ -978,7 +978,7 @@ class AcquisitionPolicy:
         return len(self._network_read_ids)
 
     def _next_sequence(self) -> int:
-        """Claim the next manifest sequence for the mapping this policy writes.
+        """Take the next manifest sequence for the mapping this policy writes.
 
         The run's counter when one was supplied, this policy's own otherwise:
         the caller who shares a mapping is the caller who knows the counter

@@ -76,8 +76,7 @@ def realized_outcome(text: str) -> bool:
     infinitive complement ("expected to hit 15 GW", "expected to be added"):
     "hit" and "beat" spell their infinitive and past-tense forms identically,
     and a verb right after "to" (optionally "to be" or "to have been") is
-    what a forecast is expected *to do*, not a report that it did it. Mirrors
-    ``claim_clusters.py``'s own to-infinitive guard for the same ambiguity.
+    what a forecast is expected *to do*, not a report that it did it.
     """
     for match in _REALIZED_OUTCOME_PATTERN.finditer(text):
         if re.search(

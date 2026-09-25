@@ -607,9 +607,8 @@ def render_planned_targets(targets: Sequence[EvidenceTarget]) -> str:
 
 # A passage "states a figure in the target's own measure unit" when a numeral
 # stands beside a unit of the base that target names. The bases are power (W)
-# and energy (Wh); the unit vocabulary is ``utils.types``' own — the very
-# patterns ``qualifier_matches_requirement`` reads an atom's unit with — so
-# what a passage owes and what the gate accepts cannot drift apart.
+# and energy (Wh), and the unit vocabulary is ``utils.types``' own, so what a
+# passage owes and what a target declares cannot drift apart.
 _MEASURE_UNITS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("energy", _ENERGY_UNIT),
     ("power", _POWER_UNIT),

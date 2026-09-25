@@ -63,13 +63,8 @@ _QUANTITY = re.compile(
     rf"(?<![\w.,])(?P<value>{_NUMBER}|\b(?:{_WORD})\b){_GAP}"
     rf"\(?\s*(?P<unit>{_UNIT})\s*\)?"
 )
-_ANY_NUMBER = re.compile(rf"(?<![\w.,])(?:{_NUMBER})(?!\w)")
 _YEAR = re.compile(r"(?:19|20)\d{2}")
-_DATE_DAY = re.compile(rf"\b(?:{_MONTHS})\.?\s+$")
-_DATE_DAY_FOLLOWS = re.compile(rf"\s+(?:{_MONTHS})\b")
-_ORDINAL = re.compile(r"(?:st|nd|rd|th)\b")
 _ISO_DATE = re.compile(r"\b(?:19|20)\d{2}-\d{1,2}(?:-\d{1,2})?\b")
-_DAY_FIRST_DATE = re.compile(rf"\b\d{{1,2}}\s+(?:{_MONTHS})\.?\s+(?:19|20)\d{{2}}\b")
 
 
 @dataclass(frozen=True)

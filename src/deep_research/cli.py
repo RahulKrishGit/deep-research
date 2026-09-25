@@ -61,7 +61,6 @@ from deep_research.runtime.errors import (
 from deep_research.runtime.outcome import DroppedProposals, ResearchOutcome
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
-    ReportQualitySnapshot,
     ResearchError,
     ResearchEvent,
     ReviewDefect,

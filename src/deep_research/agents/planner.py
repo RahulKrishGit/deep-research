@@ -53,7 +53,6 @@ from deep_research.utils.types import (
     EvidenceTarget,
     FigureKind,
     MemorySnapshot,
-    ResearchError,
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
@@ -375,52 +374,6 @@ _YEAR_PATTERN = re.compile(r"\b(?:19|20)\d{2}\b")
 _ISO_DATE_PATTERN = re.compile(r"\b(?:19|20)\d{2}-\d{2}-\d{2}\b")
 _WORD_LIMIT_PATTERN = re.compile(r"\b(\d{2,7})[- ]words?\b", re.IGNORECASE)
 
-# Support-policy markers, in precedence order (see ``support_policy_for``).
-_DERIVATION_MARKERS = (
-    "calculate",
-    "calculated",
-    "compute",
-    "computed",
-    "derive",
-    "derived",
-    # "per" as a whole word, never " per ": a marker with its own surrounding
-    # spaces cannot satisfy a token-boundary lookaround, so "cost per megawatt"
-    # stopped matching at all.
-    "per",
-    "per capita",
-    "per year",
-    "per unit",
-    "ratio",
-    "rate of",
-    "rates of",
-    "convert",
-    "normalize",
-    "normalised",
-    "normalized",
-)
-_PRIMARY_ATTRIBUTION_MARKERS = (
-    # Phrases are listed in the forms questions use; a phrase never takes a
-    # derived suffix, because the suffix would attach to its last word.
-    "effective date",
-    "effective dates",
-    "in force",
-    "came into force",
-    "official",
-    "definition of",
-    "definitions of",
-    "defined as",
-    "regulator",
-    "regulatory",
-    "regulation",
-    "statute",
-    "standard specifies",
-    "tariff",
-    "fee schedule",
-    "fee schedules",
-    "permit",
-    "licence",
-    "license",
-)
 
 # What makes a stated tolerance legitimate: the criterion names the
 # measurement or the method that establishes it, rather than asserting that
@@ -899,11 +852,6 @@ def _marker_pattern(
 
 
 _ComparisonEvidence: TypeAlias = Literal["explicit", "ambiguous", "absent"]
-_SupportPolicy: TypeAlias = Literal[
-    "independent_pair",
-    "primary_attribution",
-    "derivation",
-]
 
 
 @dataclass(frozen=True)
@@ -912,13 +860,12 @@ class _QuestionClassification:
 
     ``ambiguous`` preserves uncertainty inside the local classifier without
     widening the persisted Task 2 contract. Only ``explicit`` earns the
-    comparison answer form and its independent-pair burden; ambiguous
-    inequality language follows the ordinary answer-form and policy rules.
+    comparison answer form; ambiguous inequality language follows the ordinary
+    answer-form rules.
     """
 
     comparison_evidence: _ComparisonEvidence
     answer_kind: AnswerKind
-    support_policy: _SupportPolicy
 
 
 def _is_direct_referent(token: str) -> bool:
@@ -1076,52 +1023,8 @@ def _mentions_ranking(normalized: str) -> bool:
 # operator" name a kind of body, not a request, so those two continuations
 # never count as the independence half of the demand.
 _INDEPENDENCE_MARKERS = ("independent", "independently")
-_INDEPENDENCE_MARKER_PATTERN = re.compile(
-    r"\bindependent(?:ly)?\b(?!\s+(?:power\s+producers?|system\s+operators?))"
-)
-_CONFIRMATION_MARKERS = (
-    "confirm",
-    "confirms",
-    "confirmed",
-    "confirming",
-    "confirmation",
-    "corroborate",
-    "corroborates",
-    "corroborated",
-    "corroborating",
-    "corroboration",
-    "cross-check",
-    "cross check",
-    "verify",
-    "verifies",
-    "verified",
-    "verifying",
-    "verification",
-    "check",
-    "validate",
-    "validated",
-)
-# A second body named without the word "independent" at all: "confirmed by a
-# second source" and "corroborated by another publisher" ask for the same
-# second measurement the adverb otherwise signals.
-_SECOND_SOURCE_PHRASES = (
-    "second source",
-    "another source",
-    "another publisher",
-    "other sources",
-)
 
 
-def _demands_independent_confirmation(normalized: str) -> bool:
-    """True when the question asks for a second, independent account."""
-    if not _mentions(normalized, _CONFIRMATION_MARKERS):
-        return False
-    if _INDEPENDENCE_MARKER_PATTERN.search(normalized) is not None:
-        return True
-    return _mentions(normalized, _SECOND_SOURCE_PHRASES)
-
-
-# How a target names the body whose series its figure is: the possessive the
 # plan itself writes for it, followed — within a few words — by one of the
 # publication nouns such a series is published as. "the agency's published
 # capacity data", "the market monitor's latest published outlook" and "the
@@ -1273,84 +1176,12 @@ def _named_title_series(raw_text: str) -> bool:
     return False
 
 
-def _earned_support_policy(
-    normalized: str,
-    *,
-    comparison_evidence: _ComparisonEvidence,
-    demands_independent_confirmation: bool = False,
-) -> _SupportPolicy | None:
-    """The policy a question's own form earns, or ``None`` when it earns none.
-
-    Every branch here is a *reason*: a comparison — explicit or only
-    ambiguous — needs two independent accounts by construction, a computed
-    quantity needs its premises supported, a causal question is answered by an
-    argument rather than by one issuer's figure, an explicit request for
-    independent confirmation is a demand the user made, and an official rule or
-    definition is settled by the body that issues it. ``None`` is not a reason:
-    it is where the local rule has nothing to say, and where a target whose
-    evidence has one issuer can be planned as ``primary_attribution`` instead of
-    demanding a pair that cannot exist (audit #3).
-
-    ``demands_independent_confirmation`` is computed by the caller rather than
-    read from ``normalized`` alone, because the request that matters can live
-    in the session's frozen *contract* question rather than the target's own
-    rewritten sentence — the planner always rewrites a target into an atomic
-    question, and "independently confirm X" never survives that rewrite
-    verbatim (review rank 1, user decision 1).
-
-    The ambiguous comparison and the causal branches keep the *floor* the
-    fallback used to provide. They change nothing about ``support_policy_for``
-    — which still answers ``independent_pair`` for both — but the plan's own
-    proposal is what decides now, so a question whose form earns a policy has
-    to earn it here or the model can lower it (review F5).
-    """
-    if comparison_evidence == "explicit":
-        return "independent_pair"
-    if demands_independent_confirmation:
-        return "independent_pair"
-    if _mentions(normalized, _DERIVATION_MARKERS):
-        return "derivation"
-    # A threshold question about a rule stays the issuing body's to answer: the
-    # inequality in "tariffs greater than ten percent" is a limit the rule
-    # states, not a comparison between two accounts, so this comes before the
-    # weaker comparison evidence below.
-    if _mentions(normalized, _CONSTRAINTS_MARKERS) or _mentions(
-        normalized, _PRIMARY_ATTRIBUTION_MARKERS
-    ):
-        return "primary_attribution"
-    if comparison_evidence == "ambiguous" or _mentions(
-        normalized, _COMPARATIVE_CUES
-    ) or _mentions_ranking(normalized):
-        return "independent_pair"
-    if _mentions(normalized, _CAUSAL_MARKERS):
-        return "independent_pair"
-    return None
-
-
-def _support_policy_from(
-    normalized: str,
-    *,
-    comparison_evidence: _ComparisonEvidence,
-) -> _SupportPolicy:
-    """Classify evidence policy without a clock-dependent answer kind."""
-    return (
-        _earned_support_policy(
-            normalized,
-            comparison_evidence=comparison_evidence,
-            demands_independent_confirmation=_demands_independent_confirmation(
-                normalized
-            ),
-        )
-        or "independent_pair"
-    )
-
-
 def _question_classification(
     question: str,
     *,
     clock_year: int | None,
 ) -> _QuestionClassification:
-    """Classify answer form and support policy from one semantic result."""
+    """Classify the answer form from one semantic result."""
     normalized = _normalized_question(question)
     comparison_evidence = _comparison_evidence_for(question)
     years = _past_years(question)
@@ -1375,15 +1206,9 @@ def _question_classification(
     else:
         answer_kind = "factual"
 
-    support_policy = _support_policy_from(
-        normalized,
-        comparison_evidence=comparison_evidence,
-    )
-
     return _QuestionClassification(
         comparison_evidence=comparison_evidence,
         answer_kind=answer_kind,
-        support_policy=support_policy,
     )
 
 
@@ -1810,69 +1635,6 @@ def _assign_coverage_ids(sub_topics: Sequence[SubTopic]) -> list[SubTopic]:
     return stamped
 
 
-def earned_support_policy(
-    question: str,
-    *,
-    contract_question: str = "",
-) -> str | None:
-    """The support policy this question's own form earns, or ``None``.
-
-    Uncalled since Task 4.4: the plan carries no support policy, so nothing
-    stamps, lowers or judges one. It stays importable until Task 4.10's
-    deletion sweep takes it with the rest of the policy machinery.
-
-    ``contract_question`` is the session's own frozen original question, read
-    only for an explicit independent-confirmation request. The planner always
-    rewrites a target into an atomic sentence, so "Independently confirm how
-    much battery storage the US added in 2024" survives only in the contract,
-    never in the rewritten target's own question — and a caller with no
-    contract to read (the legacy classifiers, and every call site before the
-    plan is stamped) keeps the reading it always had.
-    """
-    normalized = _normalized_question(question)
-    demands_confirmation = _demands_independent_confirmation(normalized) or (
-        bool(contract_question)
-        and _demands_independent_confirmation(
-            _normalized_question(contract_question)
-        )
-    )
-    return _earned_support_policy(
-        normalized,
-        comparison_evidence=_comparison_evidence_for(question),
-        demands_independent_confirmation=demands_confirmation,
-    )
-
-
-def support_policy_for_target(
-    *,
-    question: str,
-    proposed: str = "",
-    contract_question: str = "",
-) -> str:
-    """The binding support policy for one target: the proposal, under the floor.
-
-    Uncalled since Task 4.4: ``EvidenceTarget`` carries no support policy, so
-    no caller has a stamp to assign. It stays importable until Task 4.10's
-    deletion sweep.
-
-    Where the question's own form earns a policy, that policy is kept — a
-    comparison is never downgraded to citing one authority because a plan
-    proposed to, and an explicit request for independent confirmation stays a
-    pair however it is phrased or wherever in the contract it is written.
-    Where the local rule has no reason to give, the plan's own proposal
-    decides. An unusable proposal keeps the independent-pair default.
-    """
-    earned = earned_support_policy(
-        question,
-        contract_question=contract_question,
-    )
-    if earned is not None:
-        return earned
-    if proposed in get_args(_SupportPolicy):
-        return proposed
-    return "independent_pair"
-
-
 def _structured_fields(target: EvidenceTargetDraft) -> dict[str, object]:
     """The draft's checkable fields, blank ones and unknown values stamped empty."""
 
@@ -1925,35 +1687,6 @@ def target_id_for(coverage_id: str, position: int) -> str:
     same plan always produces the same ids. No provider ever proposes one.
     """
     return f"{coverage_id}-target-{position:0{_COVERAGE_ID_WIDTH}d}"
-
-
-def support_policy_for(*, question: str) -> str:
-    """The support policy this target is answered under, decided locally.
-
-    Section 2.1 requires the policy to be assigned before any verdict exists,
-    so the planner assigns it here and no later stage may downgrade it to
-    pass a coverage gate. The rules, in precedence order:
-
-    - a target that compares two things is ``independent_pair``: a comparative
-      conclusion is exactly what Section 2.1 says needs independent evidence,
-      and it must not be downgraded to citing one authority because the
-      comparison happens to be about permits or regulations. The comparison
-      test therefore comes *before* the attribution test — "is permitting
-      slower in California than in Texas?" is a comparison first.
-    - a target that asks for a computed quantity is ``derivation``: its
-      premises must be supported and its arithmetic reproducible;
-    - a constraints target, or a target about an official rule, definition,
-      or measurement, is ``primary_attribution``: the issuing body's own
-      instrument settles it, and requiring a second organization to
-      independently model the same official date would make an official date
-      unanswerable;
-    - everything else — causal and empirical conclusions — is
-      ``independent_pair``.
-    """
-    return _question_classification(
-        question,
-        clock_year=None,
-    ).support_policy
 
 
 def stale_year_anchors(
@@ -2175,8 +1908,7 @@ def _demanded_second_body(target: EvidenceTarget) -> str:
     The run's plan asked one target for "the federal energy statistical
     agency's published capacity data and, independently, an industry
     energy-storage market tracker": two bodies, two scopes, and a pair that
-    cannot be verified — but the target is stamped ``primary_attribution``
-    under the floor, so the two demands have to become two targets.
+    cannot be verified, so the two demands have to become two targets.
     """
     for requirement in _source_requirements(target):
         normalized = _normalized_question(requirement)
