@@ -12,7 +12,11 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from deep_research.agents.acquisition import UNMINED_QUANTITY_REASON
+from deep_research.agents.acquisition import (
+    UNMINED_QUANTITY_REASON,
+    UNMINED_TARGET_REASON,
+)
+from deep_research.agents.base import AgentRun
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.evidence import build_read_record
 from deep_research.agents.prompts import STRUCTURED_REQUEST_END, AgentTask
@@ -771,6 +775,110 @@ def test_a_second_source_keeps_a_slot_confidence_alone_would_fill() -> None:
     ]
     assert budget.dropped_cap == 1
     assert budget.sources_retained == 2
+
+
+def test_findings_bound_to_a_required_target_are_exempt_from_the_finding_cap() -> None:
+    """An answer the run was sent to get is not volume the cap may drop.
+
+    Eight findings from one page, and the only two bound to a required target
+    are the least confident of the eight: a confidence ranking drops them
+    exactly when the run needs them, which is what makes them answers rather
+    than more evidence.
+    """
+    findings = [
+        _finding(
+            "Alpha",
+            "https://a.test/one",
+            content=f"Finding {index}.",
+            confidence=confidence,
+        )
+        for index, confidence in enumerate(
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], start=1
+        )
+    ]
+    bound = [
+        finding.model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
+        for finding in findings[:2]
+    ]
+
+    budget = bound_sub_topic_findings(
+        [*bound, *findings[2:]], required_target_ids=[PLANNED_TARGET_ID]
+    )
+
+    assert len(budget.retained) == 8
+    assert budget.dropped_cap == 0
+    assert {
+        finding.content for finding in budget.retained if finding.target_ids
+    } == {"Finding 1.", "Finding 2."}
+
+
+def test_findings_bound_to_a_required_target_are_exempt_from_the_source_cap() -> None:
+    """The source cap bounds corroboration volume, not the answer's own pages.
+
+    Six findings from six publishers, and the least confident one — a
+    publisher the source cap would drop — is the only record of a required
+    target.
+    """
+    findings = [
+        _finding(
+            "Alpha",
+            f"https://s{index}.test/one",
+            content=f"Finding {index}.",
+            confidence=confidence,
+        )
+        for index, confidence in enumerate(
+            [0.9, 0.8, 0.7, 0.6, 0.5, 0.4], start=1
+        )
+    ]
+    required = findings[5].model_copy(
+        update={"target_ids": [PLANNED_TARGET_ID]}
+    )
+
+    budget = bound_sub_topic_findings(
+        [*findings[:5], required], required_target_ids=[PLANNED_TARGET_ID]
+    )
+
+    assert {finding.source_url for finding in budget.retained} == {
+        "https://s1.test/one",
+        "https://s2.test/one",
+        "https://s3.test/one",
+        "https://s4.test/one",
+        "https://s6.test/one",
+    }
+    assert budget.dropped_cap == 1
+    assert budget.sources_retained == 5
+
+
+def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
+    """Only the ids the caller marks required buy an exemption.
+
+    A binding is not the exemption: a finding bound to an obligation that was
+    not required, or to none at all, is evidence like any other and the cap
+    still ranks it by confidence.
+    """
+    findings = [
+        _finding(
+            "Alpha",
+            "https://a.test/one",
+            content=f"Finding {index}.",
+            confidence=confidence,
+        )
+        for index, confidence in enumerate(
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], start=1
+        )
+    ]
+    bound = [
+        finding.model_copy(update={"target_ids": ["topic-01-target-02"]})
+        for finding in findings[:2]
+    ]
+
+    budget = bound_sub_topic_findings(
+        [*bound, *findings[2:]], required_target_ids=[PLANNED_TARGET_ID]
+    )
+
+    assert len(budget.retained) == 6
+    assert budget.dropped_cap == 2
+    assert not any(finding.target_ids for finding in budget.retained)
 
 
 def test_extraction_messages_carry_the_sub_topic_criteria_and_evidence() -> None:
@@ -1736,7 +1844,14 @@ async def test_an_unplanned_target_id_is_recorded_on_the_run(
     state = _forecast_plan_state()
     completer = ScriptedCompleter(
         decisions=_forecast_reading_decisions(),
-        outputs=[_forecast_reply_with_an_invented_target_id],
+        # The bound finding answers topic-02's target, so topic-01's own
+        # required obligation is left unbound and the pass buys its one
+        # bounded re-ask; it finds nothing more and this fixture is about the
+        # drop.
+        outputs=[
+            _forecast_reply_with_an_invented_target_id,
+            SubTopicFindingsDraft(findings=[]),
+        ],
     )
     agent = _researcher(
         tracker,
@@ -1778,7 +1893,14 @@ async def test_a_figure_with_no_value_or_unit_is_dropped_not_the_finding(
     state = _forecast_plan_state()
     completer = ScriptedCompleter(
         decisions=_forecast_reading_decisions(),
-        outputs=[_forecast_reply_with_an_unusable_figure],
+        # The bound finding answers topic-02's target, so topic-01's own
+        # required obligation is left unbound and the pass buys its one
+        # bounded re-ask; it finds nothing more and this fixture is about the
+        # unusable figure.
+        outputs=[
+            _forecast_reply_with_an_unusable_figure,
+            SubTopicFindingsDraft(findings=[]),
+        ],
     )
     agent = _researcher(
         tracker,
@@ -1826,7 +1948,13 @@ async def test_a_reads_own_target_line_never_costs_the_run_its_evidence(
     state = _forecast_plan_state()
     completer = ScriptedCompleter(
         decisions=_forecast_reading_decisions(),
-        outputs=[_forecast_reply_naming_the_coverage_id],
+        # The finding is kept unbound, so topic-01's own required obligation
+        # is left unanswered and the pass buys its one bounded re-ask; it
+        # finds nothing more and this fixture is about the id that was kept.
+        outputs=[
+            _forecast_reply_naming_the_coverage_id,
+            SubTopicFindingsDraft(findings=[]),
+        ],
     )
     agent = _researcher(
         tracker,
@@ -2092,7 +2220,11 @@ async def test_a_read_fetched_for_one_topic_yields_another_topics_finding(
     state = _forecast_plan_state()
     completer = ScriptedCompleter(
         decisions=_forecast_reading_decisions(),
-        outputs=[_forecast_reply],
+        # The bound finding answers topic-02's target, so topic-01's own
+        # required obligation is left unbound and the pass buys its one
+        # bounded re-ask; it finds nothing more and this fixture is about the
+        # binding that crossed topics.
+        outputs=[_forecast_reply, SubTopicFindingsDraft(findings=[])],
     )
     # Order-pinned: the order-based ScriptedCompleter needs one loop at a time (D9).
     agent = _researcher(
@@ -4317,6 +4449,332 @@ async def test_a_measure_unit_left_unmined_is_disposed_of_by_its_own_reason(
     assert reasons[unmined.evidence_id] == UNMINED_QUANTITY_REASON
     assert reasons[unmined.evidence_id] != "irrelevant"
     assert reasons[lede.evidence_id] == "irrelevant"
+
+
+# ---------------------------------------------------------------------------
+# An unanswered required target, and the one bounded re-ask for its own words
+# ---------------------------------------------------------------------------
+#
+# The audited run answered half of its question and then reported "No checked
+# finding answers it" for exactly those answers: the passages stating the dates
+# were selected for the topic, the extraction bound them to nothing, and no
+# later stage can bind a finding that was never made. A required target with no
+# unit of measure has no figure to look for (PD-7), so what a selected passage
+# shows instead is the target's own words. The fixture is that shape: the
+# notice's own preamble, which states none of them, then the sentence that
+# states the deadline.
+
+_OWED_URL = "https://registry.test/notices/annual-returns-2026"
+_OWED_TITLE = "Annual returns: the 2026 cycle"
+_OWED_PREAMBLE = (
+    "The Registry's annual programme is the authority's accounting of every "
+    "operator it supervises, and this notice reports the schedule for the "
+    "current cycle across every category it covers. "
+) * 3
+_OWED_SENTENCE = (
+    "A registrant that registered before the rule took effect must first "
+    "file its renewal return by 30 June 2027, the notice states."
+)
+_OWED_BODY = f"{_OWED_PREAMBLE}\n\n{_OWED_SENTENCE}"
+_OWED_TARGET_QUESTION = (
+    "By what date must a registrant first file its renewal return?"
+)
+
+
+def _owed_topic(*, unit_dimension: str | None = None) -> SubTopic:
+    """One required obligation, qualitative unless a unit is given."""
+    return _sub_topic("Annual return filing deadlines", 1).model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id=PLANNED_TARGET_ID,
+                    coverage_id="topic-01",
+                    question=_OWED_TARGET_QUESTION,
+                    measure="the date a registrant's first renewal return is due",
+                    unit_dimension=unit_dimension,
+                    required=True,
+                )
+            ]
+        }
+    )
+
+
+def _owed_decisions() -> list[object]:
+    return [
+        use_tool(
+            "Find the notice.",
+            "web_search",
+            '{"query": "annual return filing schedule"}',
+        ),
+        use_tool("Read the notice.", "web_scraper", f'{{"url": "{_OWED_URL}"}}'),
+        finish("The notice states the deadline.", _OWED_SENTENCE),
+    ]
+
+
+def _owed_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The finding either extraction is asked to return from the packet it saw.
+
+    The ids come from the packet's own row, the way a model must read them;
+    the snippet is the sentence that row carries, copied character for
+    character, which is what the admission check requires of it.
+    """
+    del schema
+    assert _OWED_SENTENCE in messages[1].content
+    read_id, locator, _ = _packet_passage_for("30 June 2027", messages[1].content)
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "A registrant that registered before the rule took effect "
+                    "must first file its renewal return by 30 June 2027."
+                ),
+                source_url=_OWED_URL,
+                source_title=_OWED_TITLE,
+                confidence=0.9,
+                read_id=read_id,
+                locator=locator,
+                snippet=_OWED_SENTENCE,
+                target_ids=[PLANNED_TARGET_ID],
+            )
+        ]
+    )
+
+
+def _owed_agent(tracker: Tracker, completer: ScriptedCompleter) -> ResearcherAgent:
+    return _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=_OWED_TITLE, url=_OWED_URL)]
+        ),
+        http=page_client(title=_OWED_TITLE, body=_OWED_BODY),
+    )
+
+
+async def _run_owed_topic(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    unit_dimension: str | None = None,
+) -> AgentRun[ResearchFindings]:
+    """Run one required-target topic to its end and return the whole outcome."""
+    agent = _owed_agent(tracker, completer)
+    async with tracker.session_span("session-1", "q"):
+        return await agent.run(
+            _state(sub_topics=[_owed_topic(unit_dimension=unit_dimension)])
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_required_target_buys_one_re_ask_for_its_words(
+    tracker: Tracker,
+) -> None:
+    """A required target the extraction left unbound is asked for once more.
+
+    The first extraction returned no finding at all: the passage stating the
+    deadline was selected for the topic and bound to nothing, which is how a
+    run answers half a question and then reports the other half "Not found".
+    One bounded re-ask — over that passage alone, with the unanswered target's
+    own words — makes the binding, and its finding is the run's.
+    """
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(),
+        outputs=[SubTopicFindingsDraft(findings=[]), _owed_reply],
+    )
+    outcome = await _run_owed_topic(tracker, completer)
+    read = next(iter(outcome.state_update["read_records"].values()))
+    stating = [
+        locator
+        for locator, text in read.passages.items()
+        if "renewal return" in text
+    ]
+    # The premise of the fixture: the deadline is stated by a later passage,
+    # not by the notice's own preamble, so the re-ask is what reaches it.
+    assert len(stating) == 1 and stating[0] != "chunk-0"
+
+    requests = _extraction_requests(completer)
+    # One re-ask, never a loop.
+    assert len(requests) == 2
+    # The re-ask carries the passage that states the target's words alone, so
+    # the model is not asked to find it again in the packet it was lost in.
+    assert _packet_evidence_locators(requests[1]) == [stating[0]]
+    assert stating[0] in _packet_evidence_locators(requests[0])
+    # And the re-ask names the unanswered target by its own words, and says
+    # what its packet is for; the first request says neither.
+    assert _OWED_TARGET_QUESTION in requests[1]
+    assert "Passages owed a finding" not in requests[0]
+    assert "answered nowhere yet" in requests[1]
+    assert "answered nowhere yet" not in requests[0]
+
+    (finding,) = outcome.result.findings
+    assert finding.target_ids == [PLANNED_TARGET_ID]
+    assert finding.source_url == _OWED_URL
+
+
+@pytest.mark.asyncio
+async def test_a_required_target_an_admitted_finding_answers_buys_no_re_ask(
+    tracker: Tracker,
+) -> None:
+    """The one re-ask is for an obligation left unanswered, never a confirmation.
+
+    The first extraction bound the deadline to the target, so there is nothing
+    owed and no second request: a healthy run pays nothing for the bound.
+    """
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(), outputs=[_owed_reply]
+    )
+    outcome = await _run_owed_topic(tracker, completer)
+
+    assert len(_extraction_requests(completer)) == 1
+    (finding,) = outcome.result.findings
+    assert finding.target_ids == [PLANNED_TARGET_ID]
+
+
+@pytest.mark.asyncio
+async def test_the_re_ask_leads_with_the_passage_that_states_the_target_most(
+    tracker: Tracker,
+) -> None:
+    """The packet is character-bounded, so its order is its focus.
+
+    Two passages of one read state the target's words, one of them in full and
+    one in passing. A packet that led with the weaker passage is exactly the
+    packet that cuts the answer out when its budget runs out — so the one that
+    states more of the target's own words comes first, the way the figure
+    re-ask shows the passage it was narrowed to first.
+    """
+    weak = "The Registry publishes its annual return in the autumn. " * 8
+    strong = (
+        "A registrant that registered before the rule took effect must first "
+        "file its renewal return by 30 June 2027, the notice states."
+    )
+    body = f"{weak}\n\n{strong}"
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=_OWED_TITLE, url=_OWED_URL)]
+        ),
+        http=page_client(title=_OWED_TITLE, body=body),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_state(sub_topics=[_owed_topic()]))
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 2
+    packet = _packet_evidence_locators(requests[1])
+    # The premise: both selected passages state the target's words, and the
+    # stronger one is not the passage the read prints first.
+    assert sorted(packet) == ["chunk-0", "chunk-1"]
+    assert packet == ["chunk-1", "chunk-0"]
+    assert _OWED_SENTENCE in requests[1]
+
+
+@pytest.mark.asyncio
+async def test_a_passage_stating_an_unanswered_target_keeps_its_own_reason(
+    tracker: Tracker,
+) -> None:
+    """The ledger says the obligation's own words were held and unused.
+
+    The re-ask is one call, never a loop. When it too returns nothing, the
+    passage that states the unanswered required target's own words is
+    recorded with its own reason, and the notice's preamble — which states
+    none of them — keeps the plain one.
+    """
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    outcome = await _run_owed_topic(tracker, completer)
+
+    # Both passages of the notice were selected, and the re-ask ran once.
+    units = outcome.state_update["evidence_units"]
+    assert len(_extraction_requests(completer)) == 2
+    unmined = next(
+        unit for unit in units.values() if "renewal return" in unit.excerpt
+    )
+    preamble = next(
+        unit for unit in units.values() if unit.evidence_id != unmined.evidence_id
+    )
+    reasons = {
+        item.item_id: item.reason
+        for item in outcome.state_update["evidence_dispositions"]
+        if item.stage == "extraction"
+    }
+
+    assert reasons[unmined.evidence_id] == UNMINED_TARGET_REASON
+    assert reasons[unmined.evidence_id] != "irrelevant"
+    assert reasons[preamble.evidence_id] == "irrelevant"
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_target_its_read_never_states_buys_no_re_ask(
+    tracker: Tracker,
+) -> None:
+    """A required target is not re-asked over a read that never states it.
+
+    The passage states a logical error rate and none of the target's own
+    words, so the read owes that obligation no answer: the bounded re-ask is
+    spent only where the evidence already in hand would answer it.
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Search.", "web_search", '{"query": "qec"}'),
+            use_tool("Read.", "web_scraper", f'{{"url": "{QEC_SOURCE_URL}"}}'),
+            finish("Done.", QEC_PASSAGE),
+        ],
+        outputs=[SubTopicFindingsDraft(findings=[])],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title="QEC 2025", url=QEC_SOURCE_URL)]
+        ),
+        http=page_client(title="QEC 2025", body=QEC_PASSAGE),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(_state(sub_topics=[_owed_topic()]))
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 1
+    assert "Passages owed a finding" not in requests[0]
+
+
+@pytest.mark.asyncio
+async def test_a_required_figure_target_is_not_re_asked_for_its_words(
+    tracker: Tracker,
+) -> None:
+    """Own words are the test for an obligation with no unit of measure.
+
+    The notice states its deadline in words and carries no figure at all, and
+    the required target asks for a quantity: the word re-ask is not spent on
+    it, because a figure target's answer is a figure and the unit test owns
+    the decision whether a passage owes it one.
+    """
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(),
+        outputs=[SubTopicFindingsDraft(findings=[])],
+    )
+    outcome = await _run_owed_topic(tracker, completer, unit_dimension="power")
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 1
+    assert "Passages owed a finding" not in requests[0]
+    assert outcome.result.findings == []
 
 
 _SNIPPET = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"

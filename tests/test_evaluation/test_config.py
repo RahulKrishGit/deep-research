@@ -883,6 +883,16 @@ from deep_research.utils.config import (
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
     "researcher": "90f46cf12b62",
+# Run-2 improvement wave (FixSelection, improvements 1B and 4): the
+# Researcher's own module source moved `3853aff7e02c` -> `e5bbfe3ede99` — a
+# required target left unanswered after a read that states its own words now
+# buys one bounded re-ask, whose packet leads with the passages that state
+# that target most; findings bound to a required target are exempt from the
+# per-sub-topic caps, and a passage left unmined by that re-ask gets its own
+# `unmined_target` disposition. No prompt string was edited, and
+# ``agents.prompts`` was untouched, so the other four target pins and the
+# Judge pin are unchanged.
+    "researcher": "e5bbfe3ede99",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read

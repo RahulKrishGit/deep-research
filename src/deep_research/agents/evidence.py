@@ -82,6 +82,10 @@ DISPOSITION_REASONS = (
     # but yielded no finding even after one bounded re-extraction. Kept apart
     # from "irrelevant" so the run records evidence that was held and unused.
     "unmined_quantity",
+    # The same for a passage that states the words of a required target the
+    # pass answered nowhere yet: the run held the evidence for an obligation
+    # and still reported it unbound.
+    "unmined_target",
 )
 
 # How many aliases one identity may carry, so a malformed metadata row cannot

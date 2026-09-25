@@ -181,6 +181,14 @@ _DEFAULT_PASSAGE_BATCH_LIMIT = 2
 # and the ledger has to be able to say so.
 UNMINED_QUANTITY_REASON = "unmined_quantity"
 
+# The same disposition for a passage that states the words of a required
+# obligation the pass has answered nowhere yet and no finding was extracted
+# from it, the bounded re-extraction included. Also deliberately not
+# ``irrelevant``: the run held the passage that states the obligation's own
+# words and still reported the obligation unbound, which the ledger has to be
+# able to say.
+UNMINED_TARGET_REASON = "unmined_target"
+
 
 def next_acquisition_action(state: AcquisitionState) -> AcquisitionAction:
     """Return the next deterministic local acquisition action."""
@@ -1127,6 +1135,7 @@ class AcquisitionPolicy:
         admitted: Sequence[tuple[str, str]],
         *,
         unmined_quantity_ids: Sequence[str] = (),
+        unmined_target_ids: Sequence[str] = (),
     ) -> None:
         """Account for exactly the selected units no accepted finding used.
 
@@ -1145,9 +1154,17 @@ class AcquisitionPolicy:
         ``irrelevant``: the extraction walked past the figure the target asks
         for, which is a different fact from the passage being beside the
         point, and it is the fact the ledger and the Critic have to read.
+
+        ``unmined_target_ids`` is the same fact for the other bounded
+        re-extraction: the units that state the words of a required target the
+        pass answered nowhere yet and yielded no finding even when the
+        extraction was asked again over them alone. They keep their own reason
+        for the same purpose (a unit in both lists keeps the figure's: a unit
+        that carries the target's own unit carries the sharper fact).
         """
         used = {(read_id, locator) for read_id, locator in admitted}
-        unmined = set(unmined_quantity_ids)
+        unmined_quantities = set(unmined_quantity_ids)
+        unmined_targets = set(unmined_target_ids)
         target_id = self.target_id
         known = {(item.stage, item.item_id) for item in self.dispositions}
         for evidence_id, unit in self.evidence.items():
@@ -1157,15 +1174,17 @@ class AcquisitionPolicy:
                 continue
             if ("extraction", evidence_id) in known:
                 continue
+            if evidence_id in unmined_quantities:
+                reason = UNMINED_QUANTITY_REASON
+            elif evidence_id in unmined_targets:
+                reason = UNMINED_TARGET_REASON
+            else:
+                reason = "irrelevant"
             self.dispositions.append(
                 EvidenceDisposition(
                     item_id=evidence_id,
                     stage="extraction",
-                    reason=(
-                        UNMINED_QUANTITY_REASON
-                        if evidence_id in unmined
-                        else "irrelevant"
-                    ),
+                    reason=reason,
                     target_ids=list(() if target_id is None else (target_id,)),
                 )
             )
