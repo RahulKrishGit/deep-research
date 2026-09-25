@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import math
 import re
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -206,19 +205,21 @@ def _topic() -> SubTopic:
 
 
 def _quality(**overrides: object) -> ReportQualitySnapshot:
+    """The snapshot a writer node leaves behind for this report.
+
+    One verified finding from the one cited source answers the one required
+    target, nothing was left unjudged and no hard check failed. The counters
+    the reviewer's deterministic block reads are named explicitly; every other
+    field's zero is the model's own default.
+    """
     fields: dict[str, object] = {
-        "coverage_ratio": 1.0,
-        "planned_topics": 1,
-        "covered_topics": 1,
-        "unique_findings": 1,
-        "unique_sources": 1,
         "cited_sources": 1,
-        "scored_cited_source_ratio": 1.0,
-        "verified_claims": 0,
-        "contradicted_claims": 0,
-        "duplicate_claims": 0,
-        "duplicate_source_rows": 0,
+        "verified_findings": 1,
+        "cited_findings": 1,
+        "required_target_ids": [TARGET_ID],
+        "answered_target_ids": [TARGET_ID],
         "uncited_settled_points": 0,
+        "unjudged_sentences": [],
         "hard_failures": [],
     }
     fields.update(overrides)
@@ -313,6 +314,60 @@ def state_with_written_report(**overrides: object) -> ResearchState:
 def packet():
     """The packet one review of the written report judges."""
     return build_report_review_input(state_with_written_report())
+
+
+def context_statement_packet():
+    """``packet()``, plus one statement no review is asked to disposition.
+
+    A "not stated" cell is text the reader sees that asserts nothing about the
+    world, so a review that leaves it unjudged is still complete and a
+    disposition it records anyway derives no defect. The written pass no longer
+    prints one — the claim-era statement modes that let a non-asserting record
+    exist went with the claim machinery (step 4, D6), and
+    ``ReportStatement.substantive`` is now True for every statement a
+    composition renders — so the cell is added here and the packet *view* is
+    flagged, which is where the distinction lives now:
+    ``ReviewStatementView.substantive`` is the flag ``expected_statement_ids``
+    and the reviewer's own guards read.
+    """
+    sentinel = ReportStatement(statement_id="C001", text="not stated")
+    composition = _written_composition()
+    composition = composition.model_copy(
+        update={
+            "sections": [
+                *composition.sections,
+                ReportSection(
+                    title="Not stated",
+                    points=[
+                        ReportPoint(
+                            text=sentinel.text,
+                            source_urls=[EIA_URL],
+                            statement=sentinel,
+                        )
+                    ],
+                ),
+            ]
+        }
+    )
+    built = build_report_review_input(
+        state_with_written_report(composition=composition)
+    )
+    flagged = built.model_copy(
+        update={
+            "statements": [
+                statement.model_copy(update={"substantive": False})
+                if statement.statement_id == sentinel.statement_id
+                else statement
+                for statement in built.statements
+            ]
+        }
+    )
+    # The flag is part of what a review must cover, so it is part of the
+    # packet's own fingerprint: the digest is taken again rather than carried
+    # over from the packet the flag was set on.
+    return flagged.model_copy(
+        update={"fingerprint": report_review_input_fingerprint(flagged)}
+    )
 
 
 def _scores(value: float = 1.0) -> dict[str, float]:
@@ -803,7 +858,7 @@ def test_a_late_contradiction_beyond_16000_characters_is_reviewed() -> None:
 def test_a_sentinel_or_context_statement_is_never_offered_for_disposition() -> None:
     """A 'not stated' cell (or any context statement) asserts nothing.
 
-    ``ReportStatement.substantive`` is exactly this distinction already:
+    The packet's ``substantive`` flag is exactly this distinction:
     ``context`` is "framing this pass composed rather than a research finding",
     so a review that asked the model to judge one "supported" or "unsupported"
     would be asking a question the statement was never built to answer. It is
@@ -811,31 +866,7 @@ def test_a_sentinel_or_context_statement_is_never_offered_for_disposition() -> N
     context — but it is not in ``expected_statement_ids``, so the review is
     never marked incomplete for skipping it.
     """
-    sentinel = ReportStatement(
-        statement_id="C001",
-        text="not stated",
-        mode="context",
-        basis="the row's evidence does not state this cell",
-    )
-    composition = _written_composition()
-    composition = composition.model_copy(
-        update={
-            "sections": [
-                *composition.sections,
-                ReportSection(
-                    title="Not stated",
-                    points=[
-                        ReportPoint(
-                            text=sentinel.text,
-                            source_urls=[EIA_URL],
-                            statement=sentinel,
-                        )
-                    ],
-                ),
-            ]
-        }
-    )
-    built = build_report_review_input(state_with_written_report(composition=composition))
+    built = context_statement_packet()
 
     assert [statement.statement_id for statement in built.statements] == [
         "S001",
@@ -874,30 +905,6 @@ def test_the_review_packet_carries_no_score_field_at_all() -> None:
 def test_the_request_names_the_exact_fingerprint_it_reviews() -> None:
     built = packet()
     assert built.fingerprint in _render(built)
-
-
-def test_the_review_module_binds_no_critic_object() -> None:
-    """Acceptance: no critic dependency (brief, PD-21).
-
-    An import probe cannot state this yet: importing any submodule of this
-    package executes ``agents/__init__.py``, which imports the Critic until
-    Task 4.10 sweeps it, so "the reviewer imports without the Critic" is not
-    observable while the package still re-exports it. This is the next
-    strongest thing, and it fails on the exact regression — a re-added critic
-    import — by inspecting what the module actually *bound*: any object defined
-    by ``agents.critic`` that the review module holds, under any name.
-    """
-    import inspect
-    from deep_research.agents import report_reviewer as report_reviewer_module
-
-    critic = sys.modules["deep_research.agents.critic"]
-    bound = {
-        name
-        for name, value in vars(report_reviewer_module).items()
-        if inspect.getmodule(value) is critic
-    }
-
-    assert bound == set()
 
 
 @pytest.mark.asyncio
@@ -1182,82 +1189,6 @@ def test_replacing_the_composition_invalidates_a_mismatched_review() -> None:
     )
     dropped = merge_research_state(state, {"composition": changed})
     assert dropped.report_review is None
-
-
-def test_the_composition_fingerprint_covers_cells_as_statements() -> None:
-    """Table cells are reader-visible content and part of the identity."""
-    from deep_research.utils.types import ReportAnswerRow, ReportConstraint
-
-    composition = _written_composition()
-    mechanism = ReportStatement(
-        statement_id="C001",
-        text="A capacity market pays for availability.",
-        finding_ids=list(composition.summary[0].statement.finding_ids),
-        target_ids=[TARGET_ID],
-    )
-    geography = ReportStatement(
-        statement_id="C002",
-        text="The scheme covers Great Britain.",
-        finding_ids=list(composition.summary[0].statement.finding_ids),
-        target_ids=[TARGET_ID],
-    )
-    row_statement = ReportStatement(
-        statement_id="S004",
-        text="Interconnection queue delays dominate.",
-        finding_ids=list(composition.summary[0].statement.finding_ids),
-        target_ids=[TARGET_ID],
-    )
-    row = ReportConstraint(
-        text=row_statement.text,
-        source_urls=[EIA_URL],
-        statement=row_statement,
-        deployment_mechanism=mechanism.text,
-        geography=geography.text,
-        mechanism_statement=mechanism,
-        geography_statement=geography,
-    )
-    with_rows = composition.model_copy(
-        update={
-            "constraints": [row],
-            "answer_rows": [ReportAnswerRow(cells=[geography, mechanism])],
-        }
-    )
-
-    before = composition_semantic_fingerprint(with_rows)
-    assert before
-
-    reworded_cell = with_rows.model_copy(
-        update={
-            "constraints": [
-                row.model_copy(
-                    update={
-                        "geography_statement": geography.model_copy(
-                            update={"text": "The scheme covers Ireland."}
-                        )
-                    }
-                )
-            ]
-        }
-    )
-    assert composition_semantic_fingerprint(reworded_cell) != before
-
-    # ...and so is the row's own point content: the row's statement record
-    # carries the text the reader sees, so rewording it is a content change.
-    reworded_row = with_rows.model_copy(
-        update={
-            "constraints": [
-                row.model_copy(
-                    update={
-                        "text": "Something else dominates.",
-                        "statement": row_statement.model_copy(
-                            update={"text": "Something else dominates."}
-                        ),
-                    }
-                )
-            ]
-        }
-    )
-    assert composition_semantic_fingerprint(reworded_row) != before
 
 
 def test_the_composition_fingerprint_covers_section_points() -> None:
@@ -1900,31 +1831,7 @@ async def test_a_defect_naming_a_context_statement_is_accepted() -> None:
     question from whether a returned *defect* may reference it: a reviewer can
     still observe a real problem with a context statement's own wording.
     """
-    sentinel = ReportStatement(
-        statement_id="C001",
-        text="not stated",
-        mode="context",
-        basis="the row's evidence does not state this cell",
-    )
-    composition = _written_composition()
-    composition = composition.model_copy(
-        update={
-            "sections": [
-                *composition.sections,
-                ReportSection(
-                    title="Not stated",
-                    points=[
-                        ReportPoint(
-                            text=sentinel.text,
-                            source_urls=[EIA_URL],
-                            statement=sentinel,
-                        )
-                    ],
-                ),
-            ]
-        }
-    )
-    built = build_report_review_input(state_with_written_report(composition=composition))
+    built = context_statement_packet()
     completer = ScriptedCompleter(
         outputs=[
             _draft(
@@ -2046,31 +1953,7 @@ async def test_a_minor_defect_cannot_suppress_the_derived_material_defect() -> N
 @pytest.mark.asyncio
 async def test_a_disposition_on_a_sentinel_statement_derives_no_material_defect() -> None:
     """A 'not stated' cell derives no defect, however it is dispositioned."""
-    sentinel = ReportStatement(
-        statement_id="C001",
-        text="not stated",
-        mode="context",
-        basis="the row's evidence does not state this cell",
-    )
-    composition = _written_composition()
-    composition = composition.model_copy(
-        update={
-            "sections": [
-                *composition.sections,
-                ReportSection(
-                    title="Not stated",
-                    points=[
-                        ReportPoint(
-                            text=sentinel.text,
-                            source_urls=[EIA_URL],
-                            statement=sentinel,
-                        )
-                    ],
-                ),
-            ]
-        }
-    )
-    built = build_report_review_input(state_with_written_report(composition=composition))
+    built = context_statement_packet()
     completer = ScriptedCompleter(
         outputs=[
             _draft(
