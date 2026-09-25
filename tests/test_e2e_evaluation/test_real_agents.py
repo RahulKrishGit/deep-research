@@ -68,6 +68,7 @@ DECLARED_CASE_IDS: tuple[str, ...] = (
     "revision-noted",
     "statement-check-failure-keeps-sentences",
     "two-subjects-one-value",
+    "comparison-target-names-both-products",
     "two-versions-one-target",
     "single-subject-spellings",
     "prose-only-question",

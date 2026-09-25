@@ -1,4 +1,4 @@
-"""The versioned offline matrix: thirty-one real-agent scenarios.
+"""The versioned offline matrix: thirty-two real-agent scenarios.
 
 The manifest below is the *declared inventory* the release proof is measured
 against. Each row names a case id, the version of its semantics, the product
@@ -35,8 +35,12 @@ from deep_research.e2e_evaluation.replay import (
 )
 from deep_research.memory.entries import MemoryEntry
 
-REPLAY_CASE_MANIFEST_VERSION = 4
-# Bumped for Task 5.9's ten rows: the other question shapes of Fable §8.8 --
+REPLAY_CASE_MANIFEST_VERSION = 5
+# Bumped to 5 for Task 5.9 fix round 2's row,
+# ``comparison-target-names-both-products``: a 32-row inventory must not be
+# read as the 31-row one recorded under version 4.
+#
+# Was 4 for Task 5.9's ten rows: the other question shapes of Fable §8.8 --
 # subjects that keep equal values apart, versions, subject spellings, prose
 # with no figure, a count whose year decides it, a purchase year, a relative
 # period the page's date resolves, an unattributed figure, a one-part plan and
@@ -1968,6 +1972,11 @@ def _statement_check_failure_keeps_sentences() -> ReplayScenario:
 #
 # Every fixture here is hypothetical (*.example.test, "Example …", "Kettle
 # K1"): no row may be fitted to a question the live run might draw (D12).
+#
+# Task 5.9 fix round 2 (Review 5.9, Important 2) added
+# ``comparison-target-names-both-products`` beside the two-subjects row: the
+# same two products, asked about in the comparison wording that names both of
+# them, which is the shape the product could not tell apart before Task 5.6c.
 
 
 def _two_subjects_one_value() -> ReplayScenario:
@@ -2023,6 +2032,100 @@ def _two_subjects_one_value() -> ReplayScenario:
             # no other part of the report writes, so a row that lost one fails
             # here rather than passing on the summary sentence alone.
             required_report_phrases=("| Subject |", "| Kettle K1 |", "| Kettle K2 |"),
+            required_invariants=("subjects_stay_apart",),
+        ),
+    )
+
+
+def _comparison_target_names_both_products() -> ReplayScenario:
+    """A target that names both products keeps them two rows (Task 5.6c).
+
+    The same two products the ``two-subjects-one-value`` row rates, asked
+    about in the comparison wording a live question draws ("How do the Kettle
+    K1 and the Kettle K2 compare ..."). A target that states both subjects'
+    every word is what Fable §8.6 strips those words against, and before Task
+    5.6c that stripping erased the one thing telling the two figures apart: the
+    run folded K2's page into K1's row as corroboration, the table lost the K2
+    line, and the writer refused the K2 sentence as a restatement of K1's row
+    (``restates K001``). The two figures are equal in value, organisation,
+    period and kind, so their subjects are the whole of what tells them apart,
+    and this row asserts the reader's side of it: two Key facts rows with both
+    subjects, both summary sentences, and each sentence carrying its own row's
+    label.
+
+    The value is a percent rather than the neighbouring row's "4.5 out of 5"
+    because the labels and the restatement guard both reach only quantities the
+    parser scales: a rating prints no label at all, so a sentence's label could
+    not be asserted. The K2 rating reached the reader through a news relay of
+    the tester's page, which is what gives the second row a label of its own --
+    two own pages by one tester render one identical label for both rows, and a
+    sentence carrying "only its own row's label" would then be unreadable.
+    """
+
+    def rated(model: str) -> ReplaySource:
+        return _page(
+            "tester.example.test",
+            f"kettle-{model.lower()}",
+            f"Kettle {model} noise test",
+            f"the Example Tester rated the Kettle {model} noise at 40 percent "
+            "for 2026",
+            issuer="Example Tester",
+            figures=(("40", "percent", "2026", "actual"),),
+            figure_subjects=(f"Kettle {model}",),
+        )
+
+    def relayed(model: str) -> ReplaySource:
+        return _page(
+            "news.example.test",
+            f"kettle-{model.lower()}-relay",
+            f"Kettle {model} noise test (news relay)",
+            "According to the Example Tester the Kettle "
+            f"{model} noise rating is 40 percent for 2026",
+            issuer="Example News",
+            figures=(("40", "percent", "2026", "actual"),),
+            figure_subjects=(f"Kettle {model}",),
+            context={"attribution": "relayed", "organisation": "Example Tester"},
+        )
+
+    question = (
+        "How do the Kettle K1 and the Kettle K2 compare on the Example "
+        "Tester noise rating for 2026?"
+    )
+    return ReplayScenario(
+        case_id="comparison-target-names-both-products",
+        version=REPLAY_CASE_VERSION,
+        question=question,
+        topics=(
+            _topic(
+                1,
+                "Noise ratings",
+                question,
+                "noise rating",
+                "Example Tester Kettle noise rating 2026",
+                (rated("K1"), relayed("K2")),
+                unit_dimension="percent",
+                labels=("Example Tester", "noise"),
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01",),
+            # Both rows, and each row's own label on the sentence that names
+            # it: the sentences are written subject-first, so the K1 sentence
+            # carries K1's label and the K2 sentence K2's, and the two labels
+            # differ (the tester's own figure against the news relay of it), so
+            # a run that folded the two figures -- or that let a sentence carry
+            # the rival row's label -- cannot state both.
+            required_report_phrases=(
+                "| Subject |",
+                "| Kettle K1 |",
+                "| Kettle K2 |",
+                "Kettle K1: Example Tester reports 40 percent for 2026.",
+                "Kettle K2: Example Tester reports 40 percent for 2026.",
+                "Example Tester's own figure; actual",
+                "relayed by news.example.test from Example Tester; actual",
+            ),
             required_invariants=("subjects_stay_apart",),
         ),
     )
@@ -2920,6 +3023,18 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "refused as a restatement"
         ),
         build=_two_subjects_one_value,
+    ),
+    ReplayCaseEntry(
+        case_id="comparison-target-names-both-products",
+        version=REPLAY_CASE_VERSION,
+        title="A comparison target naming both products keeps two rows",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "Two figures equal in value, organisation, period and kind stay "
+            "two rows when the target's own question names both products, and "
+            "each published sentence carries its own row's label"
+        ),
+        build=_comparison_target_names_both_products,
     ),
     ReplayCaseEntry(
         case_id="two-versions-one-target",
