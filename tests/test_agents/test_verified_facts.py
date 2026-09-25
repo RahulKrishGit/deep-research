@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.evidence_verifier import (
+    ContextItem,
+    FigureCheckDraft,
+    figure_match,
+    verify_finding,
+)
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.verified_facts import (
     _rows_share_a_subject,
@@ -311,7 +317,17 @@ def test_two_releases_about_two_versions_are_not_one_revision() -> None:
 
 
 def test_a_figure_answers_only_its_own_subjects_sibling_target() -> None:
-    """D11 (Fable §8.5): two targets that ask one thing of two places."""
+    """D11 (Fable §8.5): two targets that ask one thing of two places.
+
+    The Italian figure binds both targets (the extraction could not tell them
+    apart), and the subject is the whole of what places it: it answers Italy's
+    and not Spain's. The last assertion used to read the other way — an Italian
+    figure counted as answering the Spanish target, because every field but the
+    subject matched. That is the same failure the live pre-flight's review-02
+    recorded (a figure about another subject answering the target), so Defect
+    B's subject rule is asserted here as well, and only the recorded answer is
+    ``answered_target_ids``.
+    """
     spain = make_target("topic-01-target-01", question="What was Spain's unemployment rate in 2024?",
                         measure="unemployment rate", unit_dimension="percent", geography="Spain",
                         organisation="Example Statistical Agency")
@@ -327,7 +343,7 @@ def test_a_figure_answers_only_its_own_subjects_sibling_target() -> None:
                                               organisation="Example Statistical Agency",
                                               kind="actual", subject="Italy"))
     assert set(answered_target_ids([italian], [spain, italy])) == {italy.target_id}
-    assert finding_answers(italian, spain)
+    assert not finding_answers(italian, spain)
 
 
 # Fix round 1 (CRITICAL 1): a target whose question carries an article.
@@ -722,3 +738,103 @@ def test_a_comparison_base_is_never_resolved_as_the_figures_period() -> None:
     assert resolve_relative_period("Revenue grew 12 percent compared with last year",
                                     "2026-02-20") is None
     assert resolve_relative_period("Sales rose 12 percent this year", "2026-02-20") == "2026"
+
+
+# ---------------------------------------------------------------------------
+# The live pre-flight's Defect B (review-02) and Defect A's label end to end.
+# ---------------------------------------------------------------------------
+
+PREFLIGHT_MEASURE = "projected grid-scale battery storage capacity additions"
+
+
+def _battery_forecast(subject: str | None, value: str, url: str):
+    text = f"Additions of {value} GW are projected for 2025."
+    read = make_read(text, url=url, title="Storage outlook")
+    return verified(
+        make_finding(read, text, figures=[figure(value, "GW", "2025", "forecast").model_copy(
+            update={"subject": subject})], target_ids=["topic-02-target-01"]),
+        ctx(organisation="EIA", period="2025", kind="forecast", subject=subject),
+    )
+
+
+def test_a_figure_whose_subject_is_another_technology_answers_no_battery_target() -> None:
+    """Defect B (review-02): the pre-flight printed the EIA's 2025 forecasts for
+    32.5 GW of utility-scale solar, 7.7 GW of wind and 4.4 GW of natural gas
+    under the measure "projected grid-scale battery storage capacity additions".
+
+    A figure that names its own subject answers a target only when that subject
+    shares something distinctive with the target's measure, or names nothing the
+    target does not already state itself -- while a battery-storage figure and a
+    subject-less one answer as before.
+    """
+    target = make_target("topic-02-target-01", question=(
+        "How much grid-scale battery storage capacity is projected to be added in 2025?"),
+        measure=PREFLIGHT_MEASURE, unit_dimension="power", period="2025", kind="forecast",
+        geography=None, organisation="EIA")
+
+    for subject in ("utility-scale solar capacity", "wind power",
+                    "fossil fuel natural gas capacity"):
+        assert not finding_answers(
+            _battery_forecast(subject, "32.5", f"https://www.eia.gov/{subject.split()[0]}"),
+            target), subject
+
+    assert finding_answers(
+        _battery_forecast("battery storage", "30.0", "https://www.eia.gov/battery"), target)
+    assert finding_answers(_battery_forecast(None, "18.2", "https://www.eia.gov/none"), target)
+    assert finding_answers(
+        _battery_forecast("grid-scale battery storage", "19.6", "https://www.eia.gov/same"),
+        target)
+
+    # A subject that only restates the target's own words is not a rival claim
+    # about something else: the D11 sibling row's "Spain" and the comparison
+    # row's "Kettle K1" keep answering, which is what ``single-subject-spellings``
+    # and ``two-subjects-one-value`` measure.
+    spanish = make_target("topic-03-target-01",
+                          question="How much battery storage capacity was added in Spain in 2025?",
+                          measure="battery storage capacity added", unit_dimension="power",
+                          period="2025", kind="forecast", geography="Spain", organisation=None)
+    assert finding_answers(
+        _battery_forecast("Spain", "2.1", "https://www.eia.gov/spain").model_copy(
+            update={"target_ids": ["topic-03-target-01"]}),
+        spanish)
+
+
+def test_the_row_label_agrees_with_the_pages_own_attribution() -> None:
+    """Defect A end to end (review-01): the Context Check answered that the
+    source does not attribute the figure, the writer then quoted the page's own
+    sentence, and the reviewer read the two as a contradiction.
+
+    With the credit read back out of the words the check itself quoted, the
+    row's label says exactly what the page says: relayed by the site that
+    carried it, from the U.S. Energy Information Administration.
+    """
+    words = (
+        "U.S. developers and power plant owners plan to significantly increase utility-scale "
+        "battery storage over the next three years, reaching 30 GW by the end of 2025, based on "
+        "the latest reporting from the U.S. Energy Information Administration (EIA)."
+    )
+    url = ("https://www.power-eng.com/energy-storage/batteries/"
+           "eia-utility-scale-battery-storage-capacity-to-reach-30-gw-by-2026")
+    read = make_read(words, url=url,
+                     title="EIA: utility-scale battery storage capacity to reach 30 GW by 2026")
+    finding = make_finding(read, words,
+                           figures=[figure("30", "GW", "2025", "forecast").model_copy(
+                               update={"subject": "utility-scale battery storage"})],
+                           target_ids=["topic-02-target-01"])
+    item = ContextItem(label="F12", finding=finding, read=read, passage=words,
+                       match=figure_match(finding, {read.read_id: read}))
+    judgement = verify_finding(item, {1: FigureCheckDraft(
+        finding="F12", figure=1, period="2025", scope=None, subject="utility-scale battery storage",
+        attribution="unattributed", organisation=None, kind="forecast",
+        evidence_words=words, verdict="confirm", reason="The source does not attribute it.",
+    )})
+    judged = finding.model_copy(update={"verification": judgement})
+    target = make_target("topic-02-target-01", question=(
+        "How much grid-scale battery storage capacity is projected to be added in 2025?"),
+        measure=PREFLIGHT_MEASURE, unit_dimension="power", period="2025", kind="forecast",
+        geography=None, organisation="EIA")
+
+    [row] = fact_rows([judged], [target])
+
+    assert (row.attribution, row.organisation, row.relay_host) == (
+        "relayed", "U.S. Energy Information Administration", "power-eng.com")

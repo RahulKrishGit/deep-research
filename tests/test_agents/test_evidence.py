@@ -3293,3 +3293,48 @@ def test_a_date_counts_as_the_publication_date_only_when_the_page_says_so() -> N
     assert validated_temporal(
         data_year, data_period=_claim("2025", "2025"), status="stale_data"
     ).data_period == "2025"
+
+
+# ---------------------------------------------------------------------------
+# The live pre-flight's Defect A (review-01): the page's own sentence credits a
+# body inside a reporting phrase, which the relay cue list did not read.
+# ---------------------------------------------------------------------------
+
+PREFLIGHT_WORDS = (
+    "U.S. developers and power plant owners plan to significantly increase utility-scale "
+    "battery storage over the next three years, reaching 30 GW by the end of 2025, based on "
+    "the latest reporting from the U.S. Energy Information Administration (EIA)."
+)
+
+
+def test_a_reporting_noun_phrase_credits_the_body_it_names() -> None:
+    """Defect A: "based on the latest reporting from X", "reporting from X",
+    "X data", "X's latest report" credit X the way "according to X" does, and a
+    title of the form "X: ..." credits X too — while a body the sentence only
+    mentions in passing still credits nobody."""
+    credited = {
+        PREFLIGHT_WORDS: "U.S. Energy Information Administration",
+        "Additions reached 30 GW, reporting from the Example Statistical Agency.":
+            "Example Statistical Agency",
+        "Additions reached 30 GW, according to the Example Statistical Agency.":
+            "Example Statistical Agency",
+        "Example Statistical Agency data put additions at 30 GW.": "Example Statistical Agency",
+        "The Example Statistical Agency's latest report puts additions at 30 GW.":
+            "Example Statistical Agency",
+        "Additions reached 30 GW, data from the Example Statistical Agency.":
+            "Example Statistical Agency",
+    }
+    for sentence, name in credited.items():
+        read = make_read(sentence, url="https://www.utilitydive.com/news/x", title="x")
+        assert relay_attribution_on_page(read, "page-1-chunk-0", sentence, name), sentence
+
+    title = "EIA: utility-scale battery storage capacity to reach 30 GW by 2026"
+    read = make_read(f"{title}. Additions reached 30 GW in 2025.", url="https://www.power-eng.com/x",
+                     title=title)
+    assert relay_attribution_on_page(read, "page-1-chunk-0", title, "EIA")
+
+    mention = ("Additions reached 30 GW in 2025. Analysts at the Example Statistical Agency "
+               "track the market, and this sentence credits nobody.")
+    read = make_read(mention, url="https://www.utilitydive.com/news/x", title="x")
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", mention,
+                                         "Example Statistical Agency")

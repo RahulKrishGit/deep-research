@@ -1583,3 +1583,47 @@ def test_the_pages_own_masthead_still_evidences_the_validated_issuer() -> None:
     read = make_read(text, url="https://www.examplelab.com/outlook", title="Grid Storage Outlook")
 
     assert _owns_page(read, "Example Lab", "Example Lab")
+
+
+# ---------------------------------------------------------------------------
+# The live pre-flight's Defect A (review-01) end to end: the Context Check left
+# the relay unresolved and the label contradicted the page's own sentence.
+# ---------------------------------------------------------------------------
+
+PREFLIGHT_WORDS = (
+    "U.S. developers and power plant owners plan to significantly increase utility-scale "
+    "battery storage over the next three years, reaching 30 GW by the end of 2025, based on "
+    "the latest reporting from the U.S. Energy Information Administration (EIA)."
+)
+PREFLIGHT_URL = ("https://www.power-eng.com/energy-storage/batteries/"
+                 "eia-utility-scale-battery-storage-capacity-to-reach-30-gw-by-2026")
+
+
+def test_a_relay_the_context_check_leaves_unresolved_is_read_from_its_own_words() -> None:
+    """Defect A: the Context Check answered that the source does not attribute
+    the figure, while the words it quoted credit the U.S. Energy Information
+    Administration. Code reads the credit back out of those words, so the label
+    agrees with the sentence the writer quotes from the page (review-01)."""
+    read = make_read(PREFLIGHT_WORDS, url=PREFLIGHT_URL,
+                     title="EIA: utility-scale battery storage capacity to reach 30 GW by 2026")
+    finding = make_finding(read, PREFLIGHT_WORDS,
+                           figures=[figure("30", "GW", "2025", "forecast")])
+
+    assert resolve_attribution(proposed="unattributed", organisation=None, finding=finding,
+                               read=read, issuer=None, words=PREFLIGHT_WORDS) == (
+        "relayed", "U.S. Energy Information Administration")
+
+
+def test_a_body_merely_mentioned_leaves_the_figure_unattributed() -> None:
+    """The bound: the fallback needs a cue beside the name, so a page that only
+    mentions a body elsewhere stays unattributed to the site that carried it."""
+    words = ("U.S. developers plan to add 30 GW of utility-scale battery storage by the end "
+             "of 2025.")
+    read = make_read(f"{words} Analysts at the U.S. Energy Information Administration track the "
+                      "market each quarter, and this sentence is about something else.",
+                     url=PREFLIGHT_URL, title="Storage to reach 30 GW")
+    finding = make_finding(read, words, figures=[figure("30", "GW", "2025", "forecast")])
+
+    assert resolve_attribution(proposed="unattributed", organisation=None, finding=finding,
+                               read=read, issuer=None, words=words) == (
+        "unattributed", "power-eng.com")

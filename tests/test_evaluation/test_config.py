@@ -812,11 +812,19 @@ from deep_research.utils.config import (
 # plan never owes nothing after either correction. The instruction strings and
 # the planner's own module moved; the researcher, the other three and the judge
 # are unchanged.
+# Task FF1, the capped live pre-flight's two defects (final review slice 1):
+# the Evidence Verifier's own module source moved
+# `c24bfe646317` -> `7889ed57c042` — `resolve_attribution` takes the figure's
+# own evidence words and repairs a verdict that left the attribution
+# unresolved from them, and `_cued_name_candidates` skips a cue's article
+# ("reporting from the U.S. Energy Information Administration"). No prompt
+# string was edited, and ``agents.prompts`` was untouched, so the other four
+# target pins and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "3e987c934fae",
     "researcher": "c490b869021b",
     "source_evaluator": "58c4e7d909ef",
-    "evidence_verifier": "c24bfe646317",
+    "evidence_verifier": "7889ed57c042",
     "report_writer": "69b86b8b87a2",
 }
 
