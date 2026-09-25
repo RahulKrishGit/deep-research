@@ -4556,3 +4556,48 @@ async def test_the_completed_event_carries_the_loops_own_wall_seconds(
     # wall time, rounded to a tenth.
     assert elapsed >= 0.2
     assert elapsed == round(elapsed, 1)
+
+
+@pytest.mark.asyncio
+async def test_an_exception_in_one_loop_stops_the_queued_sub_topics(
+    tracker: Tracker,
+) -> None:
+    """A loop that RAISES stops the queued topics, exactly as a returned
+    provider failure does.
+
+    ``agents.sub_topic_concurrency`` is 5 and the plan's ceiling is 7, so more
+    topics than slots is the ordinary case: after one loop hits the run-wide
+    attempt ceiling, every still-queued topic must not start and spend model
+    turns whose work the re-raised error throws away.
+    """
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": [_refused_tavily_budget()],
+            "topic-02": [finish("Beta is done.", "Beta answer.")],
+            "topic-03": [finish("Gamma is done.", "Gamma answer.")],
+        },
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=1
+        ),
+    )
+    state = _state(
+        sub_topics=[
+            _sub_topic("Alpha", 1, coverage_id="topic-01"),
+            _sub_topic("Beta", 2, coverage_id="topic-02"),
+            _sub_topic("Gamma", 3, coverage_id="topic-03"),
+        ]
+    )
+
+    with pytest.raises(RequestAttemptLimitError):
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(state)
+
+    # Only the loop that raised ever reached the provider; the two queued
+    # topics kept their whole scripts.
+    assert [call.key for call in completer.react_calls] == ["topic-01"]
+    assert completer.remaining("topic-02") == 1
+    assert completer.remaining("topic-03") == 1

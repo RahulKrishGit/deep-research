@@ -2301,7 +2301,20 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     sub_topic,
                     existing_sources_for(state, sub_topic),
                 )
-                outcome = await self._research_one(index, task, tool_lock)
+                try:
+                    outcome = await self._research_one(index, task, tool_lock)
+                except BaseException:
+                    # A loop that RAISES stops the pass exactly as one that
+                    # returns a provider failure does. The error is re-raised
+                    # to the gather below, so every topic still queued behind
+                    # this gate must not start: its model turns would be spent
+                    # on work the re-raise throws away. (The plan's ceiling is
+                    # seven sub-topics and the default cap is five, so queued
+                    # work is the ordinary case, not a corner.) The flag is set
+                    # before the gate is released, so a waiter cannot slip past
+                    # it.
+                    stop.set()
+                    raise
                 if not outcome.react.succeeded:
                     stop.set()
             return outcome
