@@ -25,7 +25,6 @@ from deep_research.graph.events import (
     node_completed_event,
     node_started_event,
     session_completed_event,
-    session_started_event,
 )
 from deep_research.main import run_research_sync
 from deep_research.observability import TokenUsage
@@ -63,6 +62,22 @@ def outcome(status: str = "completed", **overrides) -> ResearchOutcome:
     }
     defaults.update(overrides)
     return ResearchOutcome(**defaults)
+
+
+def session_started() -> ResearchEvent:
+    """One session-start record, built by its enumerated type.
+
+    The graph's own constructor carries the extra-pass ceiling now, and this
+    file is about the CLI's streaming surface — which is keyed on the event
+    type and the message — so the record is built here rather than through a
+    signature a sibling task is still moving.
+    """
+    return ResearchEvent(
+        event_type="graph.session.started",
+        source="graph",
+        message="Research session started.",
+        metadata={"session_id": "session-1", "checkpointing": False},
+    )
 
 
 class RecordingRunner:
@@ -155,9 +170,7 @@ def test_the_cli_passes_every_option_through_to_run_research() -> None:
 def test_progress_streams_while_the_run_happens_and_is_never_reprinted() -> None:
     """Step 6: the handler runs before the runner returns, and once only."""
     events = [
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
-        ),
+        session_started(),
         node_started_event("planner", iteration=0),
         session_completed_event(
             status="completed", iteration=0, error_count=0, has_report=True
@@ -196,9 +209,7 @@ def test_every_streamed_progress_line_is_flushed_immediately() -> None:
     they inject an unbuffered ``io.StringIO``.
     """
     events = [
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
-        ),
+        session_started(),
         node_started_event("planner", iteration=0),
         session_completed_event(
             status="completed", iteration=0, error_count=0, has_report=True
@@ -736,9 +747,7 @@ def test_debug_events_prints_the_complete_bounded_event_log_once() -> None:
     with its enumerated type and source beside it.
     """
     events = [
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
-        ),
+        session_started(),
         node_completed_event(
             "planner", iteration=0, event_count=2, error_count=0
         ),

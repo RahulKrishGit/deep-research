@@ -26,10 +26,7 @@ from deep_research.graph.errors import (
 from deep_research.graph.events import (
     node_completed_event,
     node_started_event,
-    refinement_started_event,
-    route_decided_event,
     session_completed_event,
-    session_started_event,
 )
 from deep_research.graph.orchestrator import GraphRun
 from deep_research.observability import TokenUsage
@@ -263,8 +260,12 @@ def progress_state() -> ResearchState:
         session_id="session-1",
         original_question=QUESTION,
         events=[
-            session_started_event(
-                session_id="session-1", max_iterations=2, checkpointing=False
+            graph_event(
+                "graph.session.started",
+                "Research session started.",
+                session_id="session-1",
+                max_extra_passes=2,
+                checkpointing=False,
             ),
             node_started_event("planner", iteration=0),
             ResearchEvent(
@@ -275,7 +276,13 @@ def progress_state() -> ResearchState:
             node_started_event("researcher", iteration=0),
             node_started_event("evidence_verifier", iteration=0),
             node_started_event("report_writer", iteration=0),
-            refinement_started_event(iteration=1, max_iterations=2),
+            graph_event(
+                "graph.extra_pass.started",
+                "Extra research pass 1 started.",
+                iteration=1,
+                max_extra_passes=2,
+                targets=["topic-02-target-01"],
+            ),
             session_completed_event(
                 status="completed", iteration=1, error_count=0, has_report=True
             ),
@@ -286,6 +293,26 @@ def progress_state() -> ResearchState:
 def index_of(lines: list[str], prefix: str) -> int:
     return next(
         index for index, line in enumerate(lines) if line.startswith(prefix)
+    )
+
+
+def graph_event(
+    event_type: str, message: str, *, iteration: int = 0, **metadata: object
+) -> ResearchEvent:
+    """One graph record, built by its enumerated type rather than by producer.
+
+    The graph's own constructors move with its nodes — the per-pass record is
+    ``graph.extra_pass.started`` now, and the session and route records carry
+    the extra-pass ceiling instead of the retired macro budget — while this
+    renderer's contract is the type string and the message. Building the record
+    here keeps the CLI's own surface tested without pinning a sibling module's
+    keyword list.
+    """
+    return ResearchEvent(
+        event_type=event_type,
+        source="graph",
+        message=message,
+        metadata={"iteration": iteration, **metadata},
     )
 
 
@@ -300,21 +327,34 @@ def test_progress_returns_the_line_for_one_plain_event() -> None:
 
 def test_plain_progress_streams_every_allowed_event_type() -> None:
     assert render_progress(
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
+        graph_event(
+            "graph.session.started",
+            "Research session started.",
+            session_id="session-1",
+            max_extra_passes=2,
+            checkpointing=False,
         ),
         verbose=False,
     )
     assert render_progress(
-        refinement_started_event(iteration=1, max_iterations=2), verbose=False
-    )
-    assert render_progress(
-        route_decided_event(
-            destination="refine",
-            reason="refinement_requested",
+        graph_event(
+            "graph.extra_pass.started",
+            "Extra research pass 1 started.",
             iteration=1,
-            max_iterations=2,
-            should_continue=True,
+            max_extra_passes=2,
+            targets=["topic-02-target-01"],
+        ),
+        verbose=False,
+    ) == "  [1] Extra research pass 1 started."
+    assert render_progress(
+        graph_event(
+            "graph.route.decided",
+            "Route decided: extra_pass_requested.",
+            iteration=1,
+            destination="extra_pass",
+            reason="extra_pass_requested",
+            max_extra_passes=2,
+            missing_required_target_ids=["topic-02-target-01"],
         ),
         verbose=False,
     )
