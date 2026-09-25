@@ -136,7 +136,8 @@ def test_default_state_construction_uses_independent_values() -> None:
     first.memory_context.suggested_strategies.append("Compare surveys.")
 
     assert first.iteration == 0
-    assert first.max_iterations == 3
+    assert first.max_extra_passes == 1
+    assert first.extra_pass_target_ids == []
     assert first.report is None
     assert first.critique is None
     assert second.sub_topics == []
@@ -156,7 +157,7 @@ def test_state_round_trips_through_json_compatible_dict() -> None:
         report="# Research report",
         critique=critique(),
         iteration=1,
-        max_iterations=3,
+        max_extra_passes=3,
         memory_context=MemorySnapshot(
             similar_findings=[finding("Prior adoption also increased.")],
             known_source_reputations={"example.com": 0.85},
@@ -202,12 +203,12 @@ def test_state_rejects_empty_identity_fields(
 
 
 def test_state_rejects_iteration_above_maximum() -> None:
-    with pytest.raises(ValidationError, match="iteration cannot exceed max_iterations"):
+    with pytest.raises(ValidationError, match="iteration cannot exceed max_extra_passes"):
         ResearchState(
             session_id="session-1",
             original_question="A question?",
             iteration=4,
-            max_iterations=3,
+            max_extra_passes=3,
         )
 
 
@@ -453,14 +454,14 @@ def test_merge_replaces_scalars_critique_report_and_memory() -> None:
         {
             "report": "New report",
             "critique": new_critique,
-            "max_iterations": 5,
+            "max_extra_passes": 5,
             "memory_context": new_memory,
         },
     )
 
     assert merged.report == "New report"
     assert merged.critique == new_critique
-    assert merged.max_iterations == 5
+    assert merged.max_extra_passes == 5
     assert merged.memory_context == new_memory
     assert state.report == "Old report"
     assert state.critique == old_critique
@@ -470,7 +471,7 @@ def test_merge_validates_invalid_scalar_replacement() -> None:
     state = ResearchState(session_id="session-1", original_question="A question?")
 
     with pytest.raises(ValidationError):
-        merge_research_state(state, {"max_iterations": 0})
+        merge_research_state(state, {"max_extra_passes": -1})
 
 
 def test_merge_deep_copies_unchanged_nested_values() -> None:
@@ -517,7 +518,7 @@ def test_graph_iteration_advance_returns_a_new_state() -> None:
         session_id="session-1",
         original_question="A question?",
         iteration=1,
-        max_iterations=3,
+        max_extra_passes=3,
     )
 
     advanced = advance_research_iteration(state)
@@ -531,7 +532,6 @@ def evidence_target(
     *,
     coverage_id: str = "topic-01",
     required_dimensions: list[str] | None = None,
-    support_policy: str = "independent_pair",
     required: bool = True,
 ) -> EvidenceTarget:
     return EvidenceTarget(
@@ -541,7 +541,6 @@ def evidence_target(
         required_dimensions=list(required_dimensions or ["cost"]),
         required=required,
         critical=True,
-        support_policy=support_policy,
     )
 
 
@@ -690,7 +689,7 @@ def test_a_statement_missing_a_required_dimension_does_not_answer() -> None:
 
 
 def test_an_uncorroborated_statement_does_not_answer_an_independent_target() -> None:
-    target = evidence_target(support_policy="independent_pair")
+    target = evidence_target()
     checked = attributed_claim().model_copy(
         update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
     )
@@ -707,7 +706,7 @@ def test_an_uncorroborated_statement_does_not_answer_an_independent_target() -> 
 
 
 def test_primary_attribution_answers_a_target_that_asks_for_it() -> None:
-    target = evidence_target(support_policy="primary_attribution")
+    target = evidence_target()
     checked = attributed_claim().model_copy(
         update={"target_ids": ["target-01"], "cluster_id": "cluster-01"}
     )
@@ -875,7 +874,7 @@ def test_a_model_written_basis_cannot_relabel_a_contested_statement() -> None:
         basis="compared with the cited study",
     )
     target = evidence_target(
-        required_dimensions=["geography"], support_policy="derivation"
+        required_dimensions=["geography"]
     )
     state = ResearchState(
         session_id="session-1",
@@ -911,7 +910,7 @@ def test_a_derived_inference_on_attributed_evidence_still_answers() -> None:
         basis="compared with the cited study",
     )
     target = evidence_target(
-        required_dimensions=["geography"], support_policy="derivation"
+        required_dimensions=["geography"]
     )
     state = ResearchState(
         session_id="session-1",
@@ -1051,7 +1050,7 @@ def test_a_claimless_inference_cannot_answer_a_derivation_target() -> None:
     ``inference`` plus a basis satisfied ``derivation`` with no claims — which
     is the escape the report-gates fix closes.
     """
-    target = evidence_target(support_policy="derivation")
+    target = evidence_target()
     row = ReportStatement(
         statement_id="S1",
         text="Combining the two prior figures gives the total.",
@@ -1139,7 +1138,7 @@ def test_progress_history_appends_and_is_bounded_by_the_iteration_ceiling() -> N
     state = ResearchState(
         session_id="session-1",
         original_question="A question?",
-        max_iterations=2,
+        max_extra_passes=2,
     )
 
     for index in range(5):
@@ -1175,10 +1174,10 @@ def test_graph_iteration_cannot_advance_past_maximum() -> None:
         session_id="session-1",
         original_question="A question?",
         iteration=3,
-        max_iterations=3,
+        max_extra_passes=3,
     )
 
-    with pytest.raises(ValueError, match="max_iterations"):
+    with pytest.raises(ValueError, match="max_extra_passes"):
         advance_research_iteration(state)
 
 
@@ -1246,7 +1245,6 @@ def test_an_attributed_qualitative_rule_answers_its_required_target(
         ],
         required=True,
         critical=True,
-        support_policy="primary_attribution",
     )
     checked = attributed_claim(text).model_copy(
         update={"cluster_id": "cluster-01", "target_ids": [target.target_id]}

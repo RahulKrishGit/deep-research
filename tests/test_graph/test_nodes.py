@@ -11,7 +11,7 @@ import pytest
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.report import ReportComposition, ReportPoint, render_reader_report
-from deep_research.agents.report_review import build_report_review_input
+from deep_research.agents.report_reviewer import build_report_review_input
 from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.graph.errors import GRAPH_ERROR_REASONS, GraphConfigurationError
 from deep_research.graph.nodes import (

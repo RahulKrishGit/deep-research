@@ -20,7 +20,10 @@ from deep_research.agents.report_writer import (
     WriterPointDraft,
     WriterSectionDraft,
     compose_written_report,
+    evidence_report_filename,
     finding_registry,
+    quality_report_filename,
+    report_filename,
     writer_messages,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -651,3 +654,41 @@ def writer_truncated_then_ok(tracker: Tracker, tmp_path: Path) -> tuple[ReportWr
             text="Generators added 10.4 GW of battery storage in 2024.", finding_labels=["F01"])], sections=[]),
     ])
     return _writer(tracker, completer, synthesizer_tools(tracker, output_root=tmp_path)), completer
+
+
+@pytest.mark.parametrize(
+    ("session_id", "iteration", "expected"),
+    [
+        ("session-1", 0, "report-session-1-0.md"),
+        ("Session_42", 2, "report-session-42-2.md"),
+        ("../../etc/passwd", 1, "report-etc-passwd-1.md"),
+        ("   ", 0, "report-session-0.md"),
+    ],
+)
+def test_report_filenames_are_slugged_and_traversal_free(
+    session_id: str, iteration: int, expected: str
+) -> None:
+    assert report_filename(session_id=session_id, iteration=iteration) == expected
+
+
+def test_report_filename_rejects_a_negative_iteration() -> None:
+    with pytest.raises(ValueError, match="iteration"):
+        report_filename(session_id="session-1", iteration=-1)
+
+
+def test_the_evidence_filename_derives_from_the_reader_report() -> None:
+    assert (
+        evidence_report_filename(session_id="Session_42", iteration=2)
+        == "report-session-42-2-evidence.md"
+    )
+    with pytest.raises(ValueError, match="iteration"):
+        evidence_report_filename(session_id="session-1", iteration=-1)
+
+
+def test_the_quality_filename_derives_from_the_reader_report() -> None:
+    assert (
+        quality_report_filename(session_id="Session_42", iteration=2)
+        == "report-session-42-2-quality.json"
+    )
+    with pytest.raises(ValueError, match="iteration"):
+        quality_report_filename(session_id="session-1", iteration=-1)

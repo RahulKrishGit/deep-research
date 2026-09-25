@@ -27,12 +27,13 @@ from deep_research.utils.types import (
     ScoredSource,
     SourceEvaluationStatus,
     SubTopic,
+    advance_research_iteration,
     counted_evidence_targets,
     merge_research_state,
 )
 
 
-def test_an_evidence_target_requires_its_obligation_and_support_policy() -> None:
+def test_an_evidence_target_requires_its_obligation() -> None:
     target = EvidenceTarget(
         target_id="target-1",
         coverage_id="topic-01",
@@ -40,11 +41,9 @@ def test_an_evidence_target_requires_its_obligation_and_support_policy() -> None
         required_dimensions=["fact", "time", "magnitude"],
         required=True,
         critical=True,
-        support_policy="primary_attribution",
     )
 
     assert target.critical is True
-    assert target.support_policy == "primary_attribution"
 
     with pytest.raises(ValidationError):
         EvidenceTarget(
@@ -52,7 +51,6 @@ def test_an_evidence_target_requires_its_obligation_and_support_policy() -> None
             coverage_id="topic-01",
             question="How much?",
             required_dimensions=["fact"],
-            support_policy="primary_attribution",
         )
     with pytest.raises(ValidationError):
         EvidenceTarget(
@@ -62,17 +60,6 @@ def test_an_evidence_target_requires_its_obligation_and_support_policy() -> None
             required_dimensions=[],
             required=True,
             critical=False,
-            support_policy="primary_attribution",
-        )
-    with pytest.raises(ValidationError):
-        EvidenceTarget(
-            target_id="target-1",
-            coverage_id="topic-01",
-            question="How much?",
-            required_dimensions=["fact"],
-            required=True,
-            critical=False,
-            support_policy="probably fine",
         )
 
 
@@ -138,7 +125,6 @@ def test_a_legacy_sub_topic_without_targets_still_loads() -> None:
         required_dimensions=["fact", "time"],
         required=True,
         critical=True,
-        support_policy="independent_pair",
     )
     stamped = SubTopic.model_validate(
         {**sub_topic.model_dump(), "evidence_targets": [target]}
@@ -156,7 +142,6 @@ def test_a_sub_topic_carries_at_most_four_targets() -> None:
             required_dimensions=["fact"],
             required=True,
             critical=False,
-            support_policy="independent_pair",
         )
 
     with pytest.raises(ValidationError):
@@ -186,7 +171,6 @@ def test_the_omission_reference_target_is_not_a_counted_target() -> None:
         required_dimensions=["original question coverage"],
         required=True,
         critical=True,
-        support_policy="independent_pair",
     )
     real = EvidenceTarget(
         target_id="target-01-02",
@@ -195,7 +179,6 @@ def test_the_omission_reference_target_is_not_a_counted_target() -> None:
         required_dimensions=["fact"],
         required=True,
         critical=False,
-        support_policy="independent_pair",
     )
 
     assert counted_evidence_targets([omission, real]) == [real]
@@ -897,3 +880,24 @@ def test_a_fact_row_and_a_not_found_target_validate() -> None:
 def test_a_composition_carries_fact_rows_not_found_and_labels() -> None:
     composition = ReportComposition(question="q", session_id="s")
     assert (composition.fact_rows, composition.not_found, composition.finding_labels) == ([], [], {})
+
+
+from deep_research.utils.types import REVIEW_RUBRIC_VERSION, ReportReview, ReviewDefect
+
+
+def test_a_review_carries_review_defects_and_missing_targets() -> None:
+    defect = ReviewDefect(defect_id="review-01", kind="coverage", severity="major",
+                          target_ids=["topic-02-target-01"], problem="The 2025 forecast is missing.")
+    review = ReportReview(status="incomplete", defects=[defect], missing_required_target_ids=["topic-02-target-01"])
+    assert review.defects[0].material and REVIEW_RUBRIC_VERSION == 3
+
+
+def test_extra_passes_default_to_one_and_their_targets_are_replaced() -> None:
+    state = ResearchState(session_id="s", original_question="q")
+    assert state.max_extra_passes == 1 and state.extra_pass_target_ids == []
+    state = merge_research_state(state, {"extra_pass_target_ids": ["a"]})
+    state = merge_research_state(state, {"extra_pass_target_ids": ["b"]})
+    assert state.extra_pass_target_ids == ["b"]
+    assert advance_research_iteration(state).iteration == 1
+    with pytest.raises(ValueError):
+        advance_research_iteration(advance_research_iteration(state))

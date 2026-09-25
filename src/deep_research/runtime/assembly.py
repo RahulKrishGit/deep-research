@@ -17,7 +17,7 @@ from deep_research.agents.critic import CriticAgent
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.fact_checker import FactCheckerAgent
 from deep_research.agents.planner import Clock, PlannerAgent
-from deep_research.agents.report_review import REPORT_JUDGE_ROLE, ReportReviewer
+from deep_research.agents.report_reviewer import REPORT_REVIEWER_ROLE, ReportReviewer
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.agents.source_evaluator import (
     ReputationSource,
@@ -286,9 +286,9 @@ def build_report_reviewer(
 ) -> ReportReviewer:
     """Construct the terminal semantic reviewer as its own service role.
 
-    Resolved through ``LLMConfig.resolve_for("report_judge")`` rather than
+    Resolved through ``LLMConfig.resolve_for("report_reviewer")`` rather than
     through an agent's profile: the reviewer is a separate call role with its
-    own model and effort, and giving it one of the six agents' configurations
+    own model and effort, and giving it one of the agents' configurations
     would silently tie a quality judgement to whichever agent happened to be
     configured that way. It is tool-free by construction — there is no toolset
     parameter to pass it.
@@ -297,7 +297,7 @@ def build_report_reviewer(
         provider=provider,
         tracker=tracker,
         config=settings.agents,
-        model_profile=settings.llm.resolve_for(REPORT_JUDGE_ROLE),
+        model_profile=settings.llm.resolve_for(REPORT_REVIEWER_ROLE),
     )
 
 

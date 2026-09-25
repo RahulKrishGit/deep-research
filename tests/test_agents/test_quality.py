@@ -678,7 +678,7 @@ def test_terminal_pursued_unmet_accounting_is_recorded_as_data() -> None:
         apply_terminal_pursued_unmet_accounting,
     )
     from deep_research.agents.report import render_reader_report
-    from deep_research.agents.report_review import build_report_review_input
+    from deep_research.agents.report_reviewer import build_report_review_input
     from deep_research.utils.types import merge_research_state
 
     state, composition = _deferred_state_and_composition()

@@ -95,13 +95,13 @@ from deep_research.utils.types import (
     target_is_answered,
 )
 
-REPORT_JUDGE_ROLE = "report_judge"
+REPORT_REVIEWER_ROLE = "report_reviewer"
 """The service role this review resolves its configuration under.
 
-An extra, independently configured call role rather than a seventh agent: it
-has no tool path, no ReAct loop, and no slot in ``ResearchAgents``' six agents.
-Preflight validates it exactly like an agent, so a misconfigured judge fails
-the run before any collaborator exists.
+An extra, independently configured call role rather than an agent: it has no
+tool path, no ReAct loop, and no slot in ``ResearchAgents``' agent list.
+Preflight validates it exactly like an agent, so a misconfigured reviewer
+fails the run before any collaborator exists.
 """
 
 REPORT_REVIEW_PROMPT_VERSION = "report-review-2"
@@ -150,7 +150,7 @@ def report_review_output_limit_retry(
     if outcome not in OUTPUT_LIMIT_RETRY_OUTCOMES:
         raise ValueError(f"unknown retry outcome: {outcome!r}")
     return agent_error(
-        agent_name=REPORT_JUDGE_ROLE,
+        agent_name=REPORT_REVIEWER_ROLE,
         error_type="report_review_output_limit_retry",
         message=(
             f"The {schema} review request was truncated by the output limit; "
@@ -1961,7 +1961,7 @@ class ReportReviewer:
     effort, prompt version, and output budget the judgement was made under.
     """
 
-    name: ClassVar[str] = REPORT_JUDGE_ROLE
+    name: ClassVar[str] = REPORT_REVIEWER_ROLE
     description: ClassVar[str] = (
         "Judge the finished report against the evidence it rests on."
     )
@@ -2447,7 +2447,7 @@ def review_defects_as_refinement_jobs(
 __all__ = [
     "DIMENSION_GUIDANCE",
     "MAX_REVIEW_DEFECTS",
-    "REPORT_JUDGE_ROLE",
+    "REPORT_REVIEWER_ROLE",
     "REPORT_REVIEW_EVIDENCE_BATCH_CHARS",
     "REPORT_REVIEW_INSTRUCTION",
     "REPORT_REVIEW_MAX_TOKENS",

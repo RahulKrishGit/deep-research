@@ -77,7 +77,7 @@ from deep_research.agents.report import (
     report_as_of,
     report_scope,
 )
-from deep_research.agents.report_review import (
+from deep_research.agents.report_reviewer import (
     build_report_review_input,
     composition_semantic_fingerprint,
     report_review_input_fingerprint,

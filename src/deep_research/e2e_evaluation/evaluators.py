@@ -18,7 +18,7 @@ from deep_research.agents.report import (
     render_evidence_ledger,
     render_reader_report,
 )
-from deep_research.agents.report_review import semantic_review_passes
+from deep_research.agents.report_reviewer import semantic_review_passes
 from deep_research.agents.sources import normalize_source_url
 from deep_research.e2e_evaluation.cases import ScriptedDependencies
 from deep_research.e2e_evaluation.models import (

@@ -92,7 +92,6 @@ def make_target(target_id: str = "topic-01-target-01", **fields: Any) -> Evidenc
         base.update(
             required_dimensions=["measure: battery storage power capacity added"],
             critical=False,
-            support_policy="primary_attribution",
         )
     base.update(fields)
     return EvidenceTarget(**base)

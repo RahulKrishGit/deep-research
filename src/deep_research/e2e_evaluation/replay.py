@@ -55,7 +55,7 @@ from deep_research.agents.planner import (
     ResearchPlanDraft,
     SubTopicDraft,
 )
-from deep_research.agents.report_review import (
+from deep_research.agents.report_reviewer import (
     ReportReviewDraft,
     ReviewBatchDraft,
     ReviewDimensionScores,
