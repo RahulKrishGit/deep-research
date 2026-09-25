@@ -23,7 +23,7 @@ Nothing here performs I/O, reads a clock, or calls a provider: every value is
 a deterministic function of its arguments, and every timestamp is supplied by
 the caller that owns the clock. Later tasks extend this module — Task 3 wires
 read admission into the acquisition loop, Task 4 adds transport/derivation
-evidence, Task 6 adds ``eligible_independent_pair``.
+evidence.
 """
 
 from __future__ import annotations
@@ -93,8 +93,7 @@ MAX_WORK_ALIASES = 64
 
 # The namespace a *citation* of a report number is recorded in. The number
 # itself belongs to the cited work's issuer, which a citing document does not
-# establish, so a lineage id names the number without claiming an issuer and
-# `shares_lineage` matches it against the issuer-namespaced keys it could name.
+# establish, so a lineage id names the number without claiming an issuer.
 REPORT_NUMBER_LINEAGE = "report-number:"
 
 _DIGEST_LENGTH = 24
@@ -1356,8 +1355,6 @@ def _evidenced_lineage(read: ReadRecord, proposed: Sequence[str]) -> list[str]:
     a DOI in its normalized form, and a report number as a bare citation —
     ``report-number:`` — because the issuer whose namespace the number belongs
     to is the cited document's, and a citing document does not establish it.
-    The issuer-namespaced key it names is matched at pair time, by
-    :func:`shares_lineage`.
     """
     kept: list[str] = []
     for entry in proposed:

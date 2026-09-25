@@ -45,10 +45,6 @@ _NUMBER_WORDS = {
     "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
     "seventy": 70, "eighty": 80, "ninety": 90,
 }
-_MONTHS = (
-    "january|february|march|april|may|june|july|august|september|october|"
-    "november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
-)
 
 # Longest spellings first, so "megawatt-hours" is never read as "megawatt".
 _UNIT = (
@@ -63,8 +59,6 @@ _QUANTITY = re.compile(
     rf"(?<![\w.,])(?P<value>{_NUMBER}|\b(?:{_WORD})\b){_GAP}"
     rf"\(?\s*(?P<unit>{_UNIT})\s*\)?"
 )
-_YEAR = re.compile(r"(?:19|20)\d{2}")
-_ISO_DATE = re.compile(r"\b(?:19|20)\d{2}-\d{1,2}(?:-\d{1,2})?\b")
 
 
 @dataclass(frozen=True)

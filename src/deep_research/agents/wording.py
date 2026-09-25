@@ -1,5 +1,6 @@
-"""The wording rules the Evidence Verifier and the Report Writer share: hedges,
-forecast versus outcome, attested names, years and scopes (PD-19).
+"""The wording rules the Evidence Verifier and the Report Writer share:
+forecast versus outcome, and the stated roles and scopes a page carries
+(PD-19).
 """
 
 from __future__ import annotations
@@ -44,19 +45,16 @@ _FORECAST_MARKER_PATTERN = re.compile(
 
 def _forecast_role(text: str) -> bool:
     """True when the text reads as a plan, projection, or forecast — not a
-    stated outcome. Broader than ``hedge_marker``'s own pattern on purpose:
-    "carried the projection ... plans to add" and "planned to add" are the
-    same forecast role in different words, and a text that reads either way
-    must never be matched against an outcome that merely shares its figure
-    and year — one issuer's own forecast is not its own later actual.
+    stated outcome. A text that reads either way must never be matched
+    against an outcome that merely shares its figure and year: one issuer's
+    own forecast is not its own later actual.
     """
     return bool(_FORECAST_MARKER_PATTERN.search(text))
 
 
 # A past-tense, realised-outcome verb. Matched only outside a future or
 # conditional modal's own clause ("would be installed" still names a plan,
-# not a report of what happened) via ``clause_around``, the same governing
-# scope ``hardened_modality`` reads a strong modal's exemption from.
+# not a report of what happened) via ``clause_around``.
 _REALIZED_OUTCOME_PATTERN = re.compile(
     r"\b(?:installed|added|deployed|commissioned|came\s+online|built|"
     r"reached|hit|beat|exceeded|surpassed)\b",

@@ -707,6 +707,29 @@ def test_a_vague_dimension_scores_checkability_and_vagueness_zero(
     )
 
 
+def test_a_measure_dimension_naming_a_metadata_date_is_uncheckable(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """The C10 defect: an obligation for a date *about* the evidence.
+
+    ``measure: publication date of the forecast document`` names a metadata
+    dimension, not a fact any page states about the world, so no evidence can
+    ever credit it — that is the live replay C10 shape, and the planner prompt
+    forbids it. The pre-sweep check refused these through the claim-cluster
+    metadata vocabulary; the lexical replacement lost that clause, so this
+    pins it: a ``measure:`` dimension carrying a metadata phrase is not
+    checkable.
+    """
+    output = scoped_target_output.with_target_dimensions(
+        ["measure: publication date of the forecast document"]
+    )
+
+    assert (
+        metric_score(output, scoped_targets_case, "dimensions_are_checkable")
+        == 0.0
+    )
+
+
 # --- Task 12: read-bearing acquisition --------------------------------------
 
 
