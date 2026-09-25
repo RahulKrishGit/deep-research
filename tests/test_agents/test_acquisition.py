@@ -78,6 +78,108 @@ def test_two_searches_require_read_but_failed_reads_do_not_deadlock() -> None:
     assert next_acquisition_action(state) == "search"
 
 
+def _search_decision(query: str) -> ReActDecision:
+    return ReActDecision(
+        thought="Search for another source.",
+        action="use_tool",
+        tool_name="web_search",
+        tool_input_json=json.dumps({"query": query}),
+    )
+
+
+def test_a_queued_candidate_does_not_block_a_search_while_the_guard_holds() -> None:
+    """The queue is a reading order, not a lock on the target's discovery.
+
+    One search queues several candidates, and until now the policy refused
+    *every* other kind of call — including another search — until each was read
+    or marked. A sub-topic that needs two named sources, or whose first search
+    returned poor candidates, therefore spent its turns on forced reads and
+    could never search again: the recorded run issued 4 searches in a whole
+    session and left two required targets with no search at all, while its
+    per-target call budget sat almost untouched.
+
+    A search is now admissible beside a queued read while fewer than two
+    searches have run in a row and more than one call remains. The queue's own
+    discipline is unchanged: the two-in-a-row bound still forces a read, and
+    the last call is still a read.
+    """
+    policy = _policy(
+        candidate_urls=["https://lab.example/queued"], remaining_calls=5
+    )
+    assert next_acquisition_action(policy.state) == "read"
+
+    searched = policy.before_action(
+        _search_decision("second publisher review"), {"query": "second publisher review"}
+    )
+
+    assert searched.allowed is True
+    # The admission does not consume anything by itself: the queue is intact
+    # and the read that the queue asked for is still there to take.
+    assert policy.state.candidate_urls == ["https://lab.example/queued"]
+    read = policy.before_action(
+        _read_decision("web_scraper", "https://lab.example/queued"),
+        {"url": "https://lab.example/queued"},
+    )
+    assert read.allowed is True
+
+
+def test_two_searches_in_a_row_and_the_last_call_still_force_a_read() -> None:
+    """The two bounds on the relaxation, one test each.
+
+    ``consecutive_searches`` is the anti-search-spam guard the policy already
+    carried: after two searches the queue must be read. ``remaining_calls == 1``
+    is the budget's last call, and it is a read — a search there could fill a
+    queue the run has no call left to drain, which is how a target ends with
+    candidates and no evidence.
+    """
+    spent = _policy(
+        candidate_urls=["https://lab.example/queued"],
+        remaining_calls=5,
+    )
+    spent.state = spent.state.model_copy(update={"consecutive_searches": 2})
+    refused_after_two = spent.before_action(
+        _search_decision("third search"), {"query": "third search"}
+    )
+
+    last = _policy(
+        candidate_urls=["https://lab.example/queued"], remaining_calls=1
+    )
+    refused_on_the_last_call = last.before_action(
+        _search_decision("search on the last call"), {"query": "search on the last call"}
+    )
+
+    assert refused_after_two.allowed is False
+    assert "requires read before search" in refused_after_two.reason
+    assert refused_on_the_last_call.allowed is False
+    assert "requires read before search" in refused_on_the_last_call.reason
+
+
+def test_the_decision_context_names_every_action_the_policy_accepts() -> None:
+    """The context the model reads says what the policy will do.
+
+    The packet's ``next_action=`` row is what the model steers by, so it may
+    not claim a read is the only option when a search is also admissible —
+    that is exactly the instruction that produced the recorded run's forced
+    read of a junk candidate while the search it wanted was refused. The row
+    carries the accepted set beside the preferred action, and the set narrows
+    to the single action when the queue discipline binds.
+    """
+    policy = _policy(
+        candidate_urls=["https://lab.example/queued"], remaining_calls=5
+    )
+
+    open_packet = policy.context(limit=24000)
+
+    assert "next_action=read" in open_packet
+    assert "allowed_actions=read,search" in open_packet
+
+    policy.state = policy.state.model_copy(update={"consecutive_searches": 2})
+    bound_packet = policy.context(limit=24000)
+
+    assert "allowed_actions=read" in bound_packet
+    assert "allowed_actions=read,search" not in bound_packet
+
+
 def test_acquisition_reducer_does_not_resurrect_consumed_candidates() -> None:
     url = "https://example.test/report.pdf"
     candidate = CandidateRecord(
