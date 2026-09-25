@@ -282,3 +282,30 @@ def test_a_comparison_target_keeps_each_label_with_its_own_product() -> None:
     second = base.summary[0].model_copy(update={"text": f"Kettle K2 scored {row.value}."})
     assert _point_labels(first, composition) == [_row_label(rows[0])]
     assert _point_labels(second, composition) == [_row_label(rows[1])]
+
+
+def test_an_article_in_the_sentence_never_hands_a_label_to_the_other_subject() -> None:
+    """Fix round 1 (Important 2): the give-away "a" is required as the whole name, not alone.
+
+    "Model A" against "Model B" leaves just the "a", which any sentence may
+    carry ("... scored a 4.5 out of 5"); matched alone it would hand Model B's
+    sentence Model A's label, so the subject's full run ("model a") is required.
+    """
+    base = _composition()
+    target = make_target(question=("How do the Model A and the Model B compare on the "
+                                   "Example Tester noise rating for 2026?"),
+                         measure="noise rating", unit_dimension="rating", period=None,
+                         geography=None, organisation="Example Test Lab")
+    topic = SubTopic(coverage_id="topic-01", title="Kettle ratings", rationale="r",
+                     search_queries=["kettle noise rating"], success_criteria=["c"], priority=1,
+                     evidence_targets=[target])
+    row = base.fact_rows[0].model_copy(update={"target_ids": [target.target_id],
+                                               "organisation": "Example Test Lab"})
+    rows = [row.model_copy(update={"row_id": "K001", "subject": "Model A"}),
+            row.model_copy(update={"row_id": "K002", "subject": "Model B",
+                                   "organisation": "Example Second Lab"})]
+    composition = base.model_copy(update={"fact_rows": rows, "sub_topics": [topic]})
+    about_b = base.summary[0].model_copy(update={"text": f"Model B scored a {row.value} noise rating."})
+    about_a = base.summary[0].model_copy(update={"text": f"Model A scored a {row.value} noise rating."})
+    assert _point_labels(about_b, composition) == [_row_label(rows[1])]
+    assert _point_labels(about_a, composition) == [_row_label(rows[0])]

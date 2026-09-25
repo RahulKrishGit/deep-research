@@ -281,26 +281,54 @@ def subject_context(target_ids: Iterable[str], targets: Iterable[EvidenceTarget]
     return shared or frozenset()
 
 
-def _own_fields(target_ids: Iterable[str],
-                targets: Iterable[EvidenceTarget]) -> tuple[frozenset[str], frozenset[str]]:
-    """The words these targets state as their own measure and as their geography.
+@dataclass(frozen=True)
+class _TargetFields:
+    """What the targets two sides share state as their own fields (Task 5.6c).
 
-    Task 5.6c's exemption reads them: a subject that is a target's measure and a
-    subject that is its geography are one topic the target describes, not two
-    options it names. Intersected across the targets given, like
-    ``subject_context``, and empty when there are none.
+    The distinguishing test maps each subject's give-away word to one field --
+    the geography if it states the word, else the measure, else the rest of the
+    target, its question, period and organisation -- and tells two subjects
+    apart only when their give-aways share a field. ``articles`` holds the
+    articles those targets write themselves: an article is a question word, and
+    a target that never writes one has named nothing by it.
+    """
+
+    measure: frozenset[str] = frozenset()
+    geography: frozenset[str] = frozenset()
+    articles: frozenset[str] = frozenset()
+
+
+def _target_fields(target_ids: Iterable[str],
+                   targets: Iterable[EvidenceTarget]) -> _TargetFields:
+    """The fields of the targets ``target_ids`` name, intersected across them.
+
+    Intersected like ``subject_context``: with one shared target (the
+    comparison case) this is that target's own fields.
     """
     wanted = set(target_ids)
     measure: frozenset[str] | None = None
     geography: frozenset[str] | None = None
+    articles: frozenset[str] | None = None
     for target in targets:
         if target.target_id not in wanted:
             continue
         stated_measure = _stated_words(target.measure)
         stated_geography = _stated_words(target.geography)
+        spelled = (_subject_words(target.measure) | _subject_words(target.question)
+                   | _subject_words(target.geography)) & _ARTICLE
         measure = stated_measure if measure is None else measure & stated_measure
         geography = stated_geography if geography is None else geography & stated_geography
-    return measure or frozenset(), geography or frozenset()
+        articles = spelled if articles is None else articles & spelled
+    return _TargetFields(measure or frozenset(), geography or frozenset(), articles or frozenset())
+
+
+def _give_away_field(word: str, fields: _TargetFields) -> str:
+    """The one field a give-away word belongs to: geography, then measure, then the question."""
+    if word in fields.geography:
+        return "geography"
+    if word in fields.measure:
+        return "measure"
+    return "question"
 
 
 def _names_one_thing(left: frozenset[str], right: frozenset[str], *,
@@ -321,45 +349,47 @@ def _names_one_thing(left: frozenset[str], right: frozenset[str], *,
 
 def _told_apart(left: frozenset[str], right: frozenset[str], *,
                 context_words: frozenset[str] = frozenset(),
-                own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
-    """Task 5.6c: whether the target states a give-away of each side that the other lacks.
+                target_fields: _TargetFields = _TargetFields()) -> bool:
+    """Task 5.6c: whether the target names a give-away of each side in the *same* field.
 
-    ``left`` and ``right`` are the raw subject token sets, ``context_words`` the
-    words of the targets the two share, and ``own_fields`` those targets' own
-    measure and geography words. A target that names both options ("the Kettle
-    K1 and the Kettle K2") states a word only the one side carries and a word
-    only the other does, so the two are different things however much of either
-    subject it also restates -- unless the two sides are that target's own
-    measure and its own geography, which are one topic the target describes, not
-    two options it names (the committed ``single-subject-spellings`` row).
-    An article never counts as evidence that the target named only *one* side:
-    articles are dropped from the target's own words, and counting them here is
-    what keeps "Model A" and "Model B" apart when the question names both.
+    A target that names both options states a word only the one side carries
+    and a word only the other does ("Kettle K1" and "Kettle K2"), and those
+    give-aways belong to the same field -- both are the target's own question
+    words -- so the two sides are different things however much of either
+    subject it also restates. A give-away the target states *elsewhere* tells
+    them nothing apart: a subject that is the target's measure and one that is
+    its geography ("widget adoption" and "United States") are one topic the
+    target describes, and either side may carry extra words of the other's
+    field ("battery storage capacity" against "United States"), so single-subject
+    runs keep the rows they had. Only an article a target actually writes counts
+    as a give-away (fix round 1, Minor 3), and an article the *subject* carries
+    is a question word like any other.
     """
-    measure, geography = own_fields
-    if ((left <= measure and right <= geography)
-            or (left <= geography and right <= measure)):
+    stated = context_words | target_fields.articles
+    left_give_aways = (left - right) & stated
+    right_give_aways = (right - left) & stated
+    if not left_give_aways or not right_give_aways:
         return False
-    stated = context_words | _ARTICLE
-    return bool((left - right) & stated and (right - left) & stated)
+    left_fields = {_give_away_field(word, target_fields) for word in left_give_aways}
+    right_fields = {_give_away_field(word, target_fields) for word in right_give_aways}
+    return bool(left_fields & right_fields)
 
 
 def same_subject(left: str | None, right: str | None, *,
                  context_words: frozenset[str] = frozenset(),
-                 own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
+                 target_fields: _TargetFields = _TargetFields()) -> bool:
     """Fable §8.6 steps 1-5: whether two subjects can name one thing.
 
     Compatible when either names nothing beyond the context, or when one set of
     words contains the other ("X200" and "Acme X200"). Overlap is not enough:
     "version 10.02" and "version 10.03" share "version" and stay apart. A
-    target that names both sides' distinguishing words tells the two subjects
-    apart even though it restates both of them (Task 5.6c), unless the two
-    sides are that target's own measure and geography, which are one topic
-    (``own_fields``).
+    target that names both sides' give-aways in one field tells the two
+    subjects apart even though it restates both of them (Task 5.6c).
     """
     left_words = _subject_words(left)
     right_words = _subject_words(right)
-    if _told_apart(left_words, right_words, context_words=context_words, own_fields=own_fields):
+    if _told_apart(left_words, right_words, context_words=context_words,
+                   target_fields=target_fields):
         return False
     return _names_one_thing(left_words, right_words, context_words=context_words)
 
@@ -367,7 +397,7 @@ def same_subject(left: str | None, right: str | None, *,
 def _periods_match(left_period: str | None, right_period: str | None,
                    left_subject: str | None, right_subject: str | None, *,
                    context_words: frozenset[str] = frozenset(),
-                   own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
+                   target_fields: _TargetFields = _TargetFields()) -> bool:
     """PD-9's period test, plus controller ruling N1.
 
     Two figures that both state no period (a current price, a product rating)
@@ -378,7 +408,7 @@ def _periods_match(left_period: str | None, right_period: str | None,
     """
     if _period_key(left_period) is None and _period_key(right_period) is None:
         return bool(left_subject and right_subject) and same_subject(
-            left_subject, right_subject, context_words=context_words, own_fields=own_fields)
+            left_subject, right_subject, context_words=context_words, target_fields=target_fields)
     return same_period(left_period, right_period)
 
 
@@ -398,7 +428,7 @@ def subject_named_in(text: str, subject: str | None, *,
 
 def subject_distinguishes(text: str, subject: str | None, rival: str | None, *,
                           context_words: frozenset[str] = frozenset(),
-                          own_fields: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())) -> bool:
+                          target_fields: _TargetFields = _TargetFields()) -> bool:
     """Whether ``text`` names what tells ``subject`` from ``rival`` (Task 5.6c).
 
     A target that names both options ("the Kettle K1 and the Kettle K2") strips
@@ -406,12 +436,17 @@ def subject_distinguishes(text: str, subject: str | None, rival: str | None, *,
     two apart. The words that distinguish one from the other are then the
     target's own give-away ("K1"), and a sentence about one of them states them.
     Two subjects that are the same thing have nothing to distinguish, so they
-    are never refused here.
+    are never refused here. A give-away that is nothing but an article
+    distinguishes nothing on its own -- "Model A" against "Model B" leaves just
+    the "a", which any sentence may carry -- so the whole name is required
+    instead ("model a"; fix round 1, Important 2).
     """
-    if same_subject(subject, rival, context_words=context_words, own_fields=own_fields):
+    if same_subject(subject, rival, context_words=context_words, target_fields=target_fields):
         return True
     distinctive = _subject_words(subject) - _subject_words(rival)
     wanted = tuple(word for word in _subject_tokens(subject) if word in distinctive)
+    if wanted and all(word in _ARTICLE for word in wanted):
+        wanted = _subject_tokens(subject)
     if not wanted:
         return True
     words = _subject_tokens(text)
@@ -438,7 +473,7 @@ def subject_names_row(text: str, row: FactRow, rows: Sequence[FactRow],
         shared = set(row.target_ids) & set(other.target_ids)
         if not subject_distinguishes(text, row.subject, other.subject,
                                      context_words=subject_context(shared, targets),
-                                     own_fields=_own_fields(shared, targets)):
+                                     target_fields=_target_fields(shared, targets)):
             return False
     return True
 
@@ -640,29 +675,43 @@ def _shared_target_words(left_ids: Iterable[str], right_ids: Iterable[str],
     return subject_context(set(left_ids) & set(right_ids), by_id.values())
 
 
+def _rows_share_a_subject(left: FactRow, right: FactRow,
+                          targets: Iterable[EvidenceTarget]) -> bool:
+    """Whether two rows are one subject: ``same_subject`` over their shared targets' context.
+
+    The duplicate gate and ``fact_rows`` ask the same question of a pair of rows,
+    so they build the context the same way -- words and fields alike (Task 5.6c
+    fix round 1).
+    """
+    shared = set(left.target_ids) & set(right.target_ids)
+    return same_subject(left.subject, right.subject,
+                        context_words=subject_context(shared, targets),
+                        target_fields=_target_fields(shared, targets))
+
+
 def _figures_share_a_subject(left: VerifiedFigure, right: VerifiedFigure,
                              by_id: Mapping[str, EvidenceTarget]) -> bool:
     """Whether two figures are about the same thing (their shared targets' words)."""
+    shared = set(left.finding.target_ids) & set(right.finding.target_ids)
     return same_subject(left.context.subject, right.context.subject,
                         context_words=_shared_target_words(left.finding.target_ids,
                                                           right.finding.target_ids, by_id),
-                        own_fields=_own_fields(set(left.finding.target_ids) & set(right.finding.target_ids),
-                                               by_id.values()))
+                        target_fields=_target_fields(shared, by_id.values()))
 
 
 def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
                by_id: Mapping[str, EvidenceTarget]) -> bool:
     if left.context.kind != right.context.kind:
         return False
+    shared = set(left.finding.target_ids) & set(right.finding.target_ids)
     words = _shared_target_words(left.finding.target_ids, right.finding.target_ids, by_id)
-    fields = _own_fields(set(left.finding.target_ids) & set(right.finding.target_ids),
-                         by_id.values())
+    fields = _target_fields(shared, by_id.values())
     if not same_subject(left.context.subject, right.context.subject,
-                        context_words=words, own_fields=fields):
+                        context_words=words, target_fields=fields):
         return False
     if not _periods_match(left.context.period, right.context.period,
                           left.context.subject, right.context.subject,
-                          context_words=words, own_fields=fields):
+                          context_words=words, target_fields=fields):
         return False
     if not same_organisation(left.context.organisation, right.context.organisation):
         return False
@@ -744,12 +793,13 @@ def _same_period_and_subject(left: FactRow, right: FactRow,
     at BASE, and merely nested spellings ("Acme X200" and "X200") still merge
     under ``_same_fact`` — they just do not earn a release history.
     """
+    shared = set(left.target_ids) & set(right.target_ids)
     words = _shared_target_words(left.target_ids, right.target_ids, by_id)
-    fields = _own_fields(set(left.target_ids) & set(right.target_ids), by_id.values())
+    fields = _target_fields(shared, by_id.values())
     if _subject_words(left.subject) - words != _subject_words(right.subject) - words:
         return False
     return _periods_match(left.period, right.period, left.subject, right.subject,
-                          context_words=words, own_fields=fields)
+                          context_words=words, target_fields=fields)
 
 
 def _fold_revisions(rows: Sequence[tuple[FactRow, Finding]],
