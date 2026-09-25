@@ -846,11 +846,18 @@ from deep_research.utils.config import (
 # has all of them; ``remaining_calls`` stays the run's. No prompt string was
 # edited, and ``agents.prompts`` was untouched, so the other four target pins
 # and the Judge pin are unchanged.
+# FF1 round 7 (the expert final review's F2): the Evidence Verifier's own module
+# source moved `2a68e627d577` -> `6145aac27573` — `resolve_attribution` no longer
+# returns the host as a named body's own organisation: an "own" verdict the page
+# does not evidence is that body's relay when the page cues it, and unattributed
+# otherwise (a verdict naming the page's own host still stands). No prompt string
+# was edited, and ``agents.prompts`` was untouched, so the other four target pins
+# and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
     "researcher": "3853aff7e02c",
     "source_evaluator": "58c4e7d909ef",
-    "evidence_verifier": "2a68e627d577",
+    "evidence_verifier": "6145aac27573",
     "report_writer": "a3a73e32c3c0",
 }
 

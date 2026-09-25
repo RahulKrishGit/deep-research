@@ -254,7 +254,11 @@ def test_an_admitted_attribution_makes_a_relay() -> None:
 
 def test_the_source_evaluators_issuer_names_the_pages_own_organisation() -> None:
     # PD-25: a .com page with no copyright line is Wood Mackenzie's own when the
-    # Source Evaluator validated that issuer for the read; without it, the host.
+    # Source Evaluator validated that issuer for the read. Without it the host
+    # stands in as the owner, but not as the figure's *own* organisation: the
+    # verdict named a body the page does not evidence, and nothing on the page
+    # cues it beside the figure, so the figure is unattributed (F2 -- before that
+    # fix this read "Wood Mackenzie" as woodmac.com's own figure).
     read = make_read("The U.S. storage market will install 15 GW in 2025, a record year.",
                      url="https://www.woodmac.com/press-releases/q1-2025", title="US storage outlook")
     finding = make_finding(read, "The U.S. storage market will install 15 GW in 2025, a record year.")
@@ -268,7 +272,8 @@ def test_the_source_evaluators_issuer_names_the_pages_own_organisation() -> None
     assert resolve_attribution(proposed=None, organisation=None,
                                finding=finding, read=read, issuer=issuer) == ("own", "Wood Mackenzie")
     assert resolve_attribution(proposed="own", organisation="Wood Mackenzie",
-                               finding=finding, read=read, issuer=None) == ("own", "woodmac.com")
+                               finding=finding, read=read, issuer=None) == (
+        "unattributed", "woodmac.com")
 
 
 # ---------------------------------------------------------------------------
@@ -1778,3 +1783,57 @@ def test_a_multi_year_span_clears_a_recorded_start_year() -> None:
 
     assert cleared.kept and cleared.context.period is None
     assert kept.kept and kept.context.period == "calendar 2024"
+
+
+# ---------------------------------------------------------------------------
+# Round 7: the expert final review's F2 -- an own verdict the page does not back.
+# ---------------------------------------------------------------------------
+
+
+def test_an_own_verdict_the_page_does_not_back_is_never_the_pages_own() -> None:
+    """F2 (final review): the Context Check proposed "own" and named a body the
+    host does not own. When the page itself cues that body beside the snippet the
+    figure is that body's relay; when nothing cues it the figure is attributed to
+    nobody -- never to the host as its own figure, which presented a relay as the
+    issuer."""
+    text = "Rainfall reached 15 mm in 2025, according to the National Weather Office."
+    read = make_read(text, url="https://www.senator.example.gov/press", title="Press")
+    finding = make_finding(read, text, figures=[figure("15", "mm", "2025", "actual")])
+
+    cued = resolve_attribution(proposed="own", organisation="National Weather Office",
+                               finding=finding, read=read, issuer=None)
+
+    quiet_text = "Rainfall reached 15 mm in 2025."
+    quiet = f"{quiet_text} The National Weather Office has moved to a new building."
+    quiet_read = make_read(quiet, url="https://www.senator.example.gov/press", title="Press")
+    quiet_finding = make_finding(quiet_read, quiet_text,
+                                 figures=[figure("15", "mm", "2025", "actual")])
+    uncued = resolve_attribution(proposed="own", organisation="National Weather Office",
+                                 finding=quiet_finding, read=quiet_read, issuer=None)
+
+    assert cued == ("relayed", "National Weather Office")
+    assert uncued == ("unattributed", "example.gov")
+    # The unchecked-context path keeps its own-page answer (PD-26).
+    assert resolve_attribution(proposed=None, organisation=None, finding=quiet_finding,
+                               read=quiet_read, issuer=None) == ("own", "example.gov")
+
+
+def test_an_own_verdict_naming_the_pages_own_host_stands() -> None:
+    """The bound on F2: a verdict whose "own" names the page's *own host* (the
+    Context Check's block prints the host as the page owner) is the own-page
+    reading, not a body the host does not own -- while another site named as the
+    owner is not this page."""
+    text = ("Kettle K1 noise test. Published by Example Tester. The report states the Example "
+            "Tester rated it 4.5 out of 5 for 2026.")
+    read = make_read(text, url="https://tester.example.test/kettle-k1",
+                     title="Kettle K1 noise test")
+    finding = make_finding(read, text,
+                           figures=[figure("4.5", "out of 5", "2026", "actual")])
+
+    same_host = resolve_attribution(proposed="own", organisation="tester.example.test",
+                                    finding=finding, read=read, issuer="Example Tester")
+    other_host = resolve_attribution(proposed="own", organisation="other.example.test",
+                                     finding=finding, read=read, issuer="Example Tester")
+
+    assert same_host == ("own", "Example Tester")
+    assert other_host == ("unattributed", "Example Tester")
