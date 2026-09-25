@@ -63,6 +63,7 @@ from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, RequestBudgetConfig
 from deep_research.utils.types import (
     MAX_SNIPPET_CHARS,
+    AcquisitionState,
     EvidenceTarget,
     EvidenceUnit,
     Finding,
@@ -1077,18 +1078,26 @@ def test_a_dated_figure_keeps_its_vintage_and_date() -> None:
     from an older one: the audited run published an 18.2 GW forecast from the
     December 2024 inventory as "the latest" while its own citations carried
     19.6 GW from the January 2025 one.
+
+    The statement date is the page's own year here, not the audited run's
+    2025-03-12: a statement date is admitted against the page that states it
+    now (``_admitted_stated_date``), and this read's text writes "in 2025". The
+    assertion that kept a full date no page carried was pinning exactly the
+    unchecked copy the fix removes; the full date's own case is
+    ``test_a_read_fetched_for_one_topic_yields_another_topics_finding``, whose
+    EIA page writes "March 12, 2025".
     """
     findings, rejected = _build_admitted(
         _registry_draft(
             data_period="2024",
-            statement_date="2025-03-12",
+            statement_date="2025",
             vintage="January 2025 Preliminary Monthly Electric Generator Inventory",
         )
     )
 
     assert rejected == []
     assert findings[0].data_period == "2024"
-    assert findings[0].statement_date == "2025-03-12"
+    assert findings[0].statement_date == "2025"
     assert findings[0].vintage == (
         "January 2025 Preliminary Monthly Electric Generator Inventory"
     )
@@ -1105,6 +1114,78 @@ def test_an_undated_figure_records_no_dates_at_all() -> None:
     assert findings[0].data_period is None
     assert findings[0].statement_date is None
     assert findings[0].vintage is None
+
+
+def test_a_statement_date_the_page_does_not_state_is_dropped() -> None:
+    """A date no page carries is not a page fact, and this one is printed as one.
+
+    ``statement_date`` is published as the finding's own statement date and is
+    the Evidence Verifier's last-resort basis for resolving a relative period —
+    a basis whose reader labels it a page date. The extraction copied it out of
+    the model with no check at all, while the release date beside it was already
+    admitted against the page's own text; a page that never wrote 2025-03-12 had
+    a model's guess published as when it said so (live probe ``_page_date_basis``:
+    resolved 2026 from a statement date no page carried).
+    """
+    findings, rejected = _build_admitted(
+        _registry_draft(statement_date="2025-03-12")
+    )
+
+    assert rejected == []
+    assert findings[0].statement_date is None
+
+
+def test_a_statement_date_the_page_states_is_kept() -> None:
+    """The counterpart: the page's own date at its own precision stays."""
+    findings, _ = _build_admitted(_registry_draft(statement_date="2025"))
+
+    assert findings[0].statement_date == "2025"
+
+
+def test_a_relative_phrase_is_recorded_for_resolution_not_as_a_period() -> None:
+    """A phrase that dates a figure against the page is not a period it states.
+
+    The dates contract asks for a period "as the source writes it", and a
+    news-like page writes "this year". Recorded as the period, the Evidence
+    Verifier reads it as a period *the words state themselves* and refuses the
+    Context Check's resolved year as ``correction_not_on_page``: the figure is
+    dropped on a page that dates it, and the date is known (live probe: "this
+    year" recorded, 2026 proposed, dropped). Code resolves a relative phrase
+    from the page's own date and records which date it came from (D11), so the
+    phrase is recorded through that path and never as an explicit period — the
+    page's own words stay in the excerpt the resolution reads.
+    """
+    findings, rejected = _build_admitted(
+        _registry_draft(
+            data_period="this year",
+            figures=[
+                FindingFigureDraft(
+                    value="12", unit="percent", period="this year", kind="actual"
+                )
+            ],
+        )
+    )
+
+    assert rejected == []
+    assert findings[0].data_period is None
+    assert findings[0].figures[0].period is None
+
+
+def test_a_period_the_page_states_is_kept_as_written() -> None:
+    """The counterpart: a period carrying its own time is recorded verbatim."""
+    findings, _ = _build_admitted(
+        _registry_draft(
+            data_period="2024",
+            figures=[
+                FindingFigureDraft(
+                    value="12", unit="percent", period="Q1 2024", kind="actual"
+                )
+            ],
+        )
+    )
+
+    assert findings[0].data_period == "2024"
+    assert findings[0].figures[0].period == "Q1 2024"
 
 
 # ---------------------------------------------------------------------------
@@ -1708,6 +1789,157 @@ async def test_a_reads_own_target_line_never_costs_the_run_its_evidence(
 
 
 @pytest.mark.asyncio
+async def test_an_extra_pass_whose_topics_have_spent_their_budget_opens_no_loop(
+    tracker: Tracker,
+) -> None:
+    """The pass bought for a missing target must not spend turns it cannot use.
+
+    A sub-topic's ``remaining_calls`` is the run's, not one pass's:
+    ``merge_acquisition_states`` keeps the minimum and the state carries it, so
+    a sub-topic whose first pass used its whole budget resumes at zero. The
+    policy then refuses every call ("the acquisition budget of 'X' is spent")
+    while the loop still spends its seven model turns — no call, no evidence,
+    and about two and a half minutes of a thirty-minute budget, for exactly the
+    sub-topics the pass was bought for. Nothing can be called and no read is
+    owed, so the pass is not opened at all and the refusal is recorded.
+    """
+    completer = ScriptedCompleter()
+    agent = _researcher(tracker, completer, sub_topic_concurrency=1)
+    state = _planned_state(
+        extra_pass_target_ids=["topic-02-target-01"],
+        acquisition_state_by_target={
+            "topic-02": AcquisitionState(target_id="topic-02", remaining_calls=0)
+        },
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    assert completer.calls == []
+    assert outcome.result.findings == []
+    assert (outcome.react.iterations, outcome.react.tool_calls) == (0, 0)
+    unfunded = [
+        error
+        for error in outcome.errors
+        if error.error_type == "researcher_extra_pass_unfunded"
+    ]
+    assert [error.recoverable for error in unfunded] == [True]
+    assert unfunded[0].details == {
+        "targets": ["topic-02-target-01"],
+        "sub_topics": ["topic-02"],
+        "reason": "acquisition_budget_spent",
+    }
+    completed = [
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.research.completed"
+    ]
+    assert [event.metadata["sub_topics_researched"] for event in completed] == [0]
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_whose_topic_still_has_calls_opens_its_loop(
+    tracker: Tracker,
+) -> None:
+    """The counterpart: a resumed budget with calls left is a pass worth buying."""
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing more is needed.", "Not established.")],
+    )
+    agent = _researcher(tracker, completer, sub_topic_concurrency=1)
+    state = _planned_state(
+        extra_pass_target_ids=["topic-02-target-01"],
+        acquisition_state_by_target={
+            "topic-02": AcquisitionState(target_id="topic-02", remaining_calls=3)
+        },
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == ["T2"]
+    assert [
+        error
+        for error in outcome.errors
+        if error.error_type == "researcher_extra_pass_unfunded"
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_with_owed_reads_opens_its_loop(
+    tracker: Tracker,
+) -> None:
+    """A spent budget is not the same as nothing to do: owed reads can be mined.
+
+    An extraction that was deferred (a truncated reply, or an outage) leaves its
+    reads in ``pending_extraction_ids``, and mining them needs no tool call, so
+    the pass is opened even though no call is possible.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing more is needed.", "Not established.")],
+    )
+    agent = _researcher(tracker, completer, sub_topic_concurrency=1)
+    state = _planned_state(
+        extra_pass_target_ids=["topic-02-target-01"],
+        acquisition_state_by_target={
+            "topic-02": AcquisitionState(
+                target_id="topic-02",
+                remaining_calls=0,
+                pending_extraction_ids=[QEC_READ.read_id],
+            )
+        },
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == ["T2"]
+
+
+@pytest.mark.asyncio
+async def test_a_first_pass_is_never_skipped_for_a_spent_budget(tracker: Tracker) -> None:
+    """The guard is an extra pass's alone: a first pass still gets its turn.
+
+    A resumed state with no calls left cannot arise before the run has spent
+    them, but the guard must not read any pass as the extra one: a first pass
+    whose state was restored with a spent budget still runs, so the refusal is
+    never a silent replacement for research the run has not attempted.
+    """
+    completer = ScriptedCompleter(
+        decisions=[
+            finish("Nothing more is needed.", "Not established."),
+            finish("Nothing more is needed.", "Not established."),
+            finish("Nothing more is needed.", "Not established."),
+        ],
+    )
+    agent = _researcher(tracker, completer, sub_topic_concurrency=1)
+    state = _planned_state(
+        acquisition_state_by_target={
+            "topic-02": AcquisitionState(target_id="topic-02", remaining_calls=0)
+        },
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == ["T1", "T2", "T3"]
+
+
+@pytest.mark.asyncio
 async def test_a_read_fetched_for_one_topic_yields_another_topics_finding(
     tracker: Tracker,
 ) -> None:
@@ -2171,10 +2403,10 @@ async def test_extraction_stamps_findings_from_retrieved_evidence(
         tool_calls=1,
     )
 
-    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
+    findings, errors, extraction_failure, obligation = await agent.extract_findings(task, run)
 
     assert errors == []
-    assert provider_failed is False
+    assert extraction_failure == ""
     assert findings[0].related_sub_topic == "Alpha"
     assert findings[0].extracted_at == "2026-08-01T12:00:00+00:00"
 
@@ -2190,11 +2422,11 @@ async def test_extraction_makes_no_provider_call_without_evidence(
     )
     run = ReActRun(agent_name="researcher", stop_reason="max_iterations")
 
-    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
+    findings, errors, extraction_failure, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors == []
-    assert provider_failed is False
+    assert extraction_failure == ""
     assert completer.calls == []
 
 
@@ -2225,11 +2457,11 @@ async def test_extraction_makes_no_provider_call_when_the_only_hit_is_empty(
         tool_calls=2,
     )
 
-    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
+    findings, errors, extraction_failure, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors == []
-    assert provider_failed is False
+    assert extraction_failure == ""
     assert completer.calls == []
 
 
@@ -2286,13 +2518,13 @@ async def test_extraction_makes_no_provider_call_for_a_recalled_fact(
         instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
     )
 
-    findings, errors, provider_failed, obligation = await agent.extract_findings(
+    findings, errors, extraction_failure, obligation = await agent.extract_findings(
         task, _recalled_fact_run(nested=nested)
     )
 
     assert findings == []
     assert errors == []
-    assert provider_failed is False
+    assert extraction_failure == ""
     assert completer.calls == []
 
 
@@ -2312,13 +2544,13 @@ async def test_extraction_makes_no_provider_call_when_search_was_the_only_tool(
         instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
     )
 
-    findings, errors, provider_failed, obligation = await agent.extract_findings(
+    findings, errors, extraction_failure, obligation = await agent.extract_findings(
         task, _search_only_run()
     )
 
     assert findings == []
     assert errors == []
-    assert provider_failed is False
+    assert extraction_failure == ""
     assert completer.calls == []
 
 
@@ -2342,11 +2574,11 @@ async def test_extraction_makes_no_provider_call_when_every_tool_call_failed(
         tool_calls=2,
     )
 
-    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
+    findings, errors, extraction_failure, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors == []
-    assert provider_failed is False
+    assert extraction_failure == ""
     assert completer.calls == []
 
 
@@ -2367,10 +2599,10 @@ async def test_extraction_makes_no_provider_call_after_a_provider_failure(
         tool_calls=1,
     )
 
-    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
+    findings, errors, extraction_failure, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
-    assert provider_failed is False
+    assert extraction_failure == ""
     assert completer.calls == []
 
 
@@ -2404,13 +2636,66 @@ async def test_malformed_extracted_findings_become_a_recoverable_error(
         tool_calls=1,
     )
 
-    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
+    findings, errors, extraction_failure, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
     assert errors[0].error_type == "researcher_invalid_finding"
     assert errors[0].recoverable is True
     assert errors[0].details["rejected"] == ["finding 1: invalid confidence"]
-    assert provider_failed is False
+    assert extraction_failure == ""
+
+
+@pytest.mark.asyncio
+async def test_one_truncated_extraction_does_not_end_the_pass(
+    tracker: Tracker,
+) -> None:
+    """A truncation is a fact about one extraction, not about the provider.
+
+    The extraction call's output-limit truncation went down the non-recoverable
+    provider path, and ``extraction_provider_error`` stops the pass by design —
+    so every sub-topic still queued behind the truncated one was never
+    attempted (``provider_failure_stopped_processing``) and a per-sub-topic
+    truncation cost the rest of the plan its evidence. The provider answered
+    here; the reply was too long, so the sub-topic's reads stay owed
+    (``pending_extraction_ids``) and the pass carries on to the next sub-topic.
+    """
+    state = _forecast_plan_state()
+    completer = ScriptedCompleter(
+        decisions=_forecast_reading_decisions(),
+        outputs=[_output_limit_error()],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=EIA_64705_TITLE, url=EIA_64705_URL)]
+        ),
+        http=page_client(title=EIA_64705_TITLE, body=EIA_64705_BODY),
+        sub_topic_concurrency=1,
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+
+    started = [
+        event.metadata["sub_topic"]
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.started"
+    ]
+    assert started == [TOPIC_01_TITLE, TOPIC_02_TITLE]
+    truncated = [
+        error
+        for error in outcome.errors
+        if error.error_type == "researcher_extraction_output_limit"
+    ]
+    assert [error.recoverable for error in truncated] == [True]
+    assert [
+        error for error in outcome.errors
+        if error.error_type == "researcher_sub_topic_skipped"
+    ] == []
+    assert "researcher_extraction_provider_error" not in {
+        error.error_type for error in outcome.errors
+    }
 
 
 @pytest.mark.asyncio
@@ -2425,7 +2710,7 @@ async def test_extraction_reports_a_provider_failure_without_raising(
     ``run`` uncaught, discarding every finding already collected from prior
     sub-topics. ``extract_findings`` must instead catch it, report it as a
     non-recoverable structured error, and signal the failure back to the
-    caller via ``provider_failed`` rather than letting the exception escape.
+    caller via the failure kind rather than letting the exception escape.
     """
     completer = ScriptedCompleter(
         outputs=[
@@ -2449,10 +2734,10 @@ async def test_extraction_reports_a_provider_failure_without_raising(
         tool_calls=1,
     )
 
-    findings, errors, provider_failed, obligation = await agent.extract_findings(task, run)
+    findings, errors, extraction_failure, obligation = await agent.extract_findings(task, run)
 
     assert findings == []
-    assert provider_failed is True
+    assert extraction_failure == "provider"
     assert len(errors) == 1
     assert errors[0].error_type == "researcher_extraction_provider_error"
     assert errors[0].recoverable is False
@@ -3268,10 +3553,17 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
 
     Regression guard for the Critical finding: sub-topic Alpha's loop and
     extraction both succeed and produce one finding. Sub-topic Beta's loop
-    *also* succeeds, but its extraction call reaches the provider output limit
-    — the failure specifically identified as escaping ``run`` uncaught and
+    *also* succeeds, but its extraction call cannot reach the provider — the
+    failure specifically identified as escaping ``run`` uncaught and
     destroying every finding collected so far. Sub-topic Gamma must never be
     started at all.
+
+    The outage is a transport failure, not an output limit: a truncated reply
+    is the provider answering, and it no longer stops the pass
+    (``test_one_truncated_extraction_does_not_end_the_pass`` covers that
+    shape). This test's guard is the unreachable provider, which must still
+    stop the queued sub-topics rather than spend their turns on a dead
+    transport.
     """
     completer = ScriptedCompleter(
         decisions=[
@@ -3282,7 +3574,7 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
             use_tool("Read Beta.", "web_scraper", '{"url": "https://example.test/qec"}'),
             finish("Done with Beta.", "Beta answer."),
         ],
-        outputs=[_findings_draft(), _output_limit_error()],
+        outputs=[_findings_draft(), ProviderTimeoutError("timed out")],
     )
     # Order-pinned: the order-based ScriptedCompleter needs one loop at a time (D9).
     agent = _researcher(
@@ -3324,9 +3616,7 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
         == "researcher_finding_extraction"
     )
     provider = extraction_errors[0].details["provider_failure"]
-    assert provider["kind"] == "output_limit"
-    assert provider["configured_max_tokens"] == 4096
-    assert provider["request_attempt"] == 1
+    assert provider["kind"] == "provider_timeout"
 
     # Finding 2 (stop_reason override): the merged run must report
     # "provider_error", not "finished" — Beta's extraction failure is what

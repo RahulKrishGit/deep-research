@@ -733,9 +733,28 @@ from deep_research.utils.config import (
 # ``subject_named_in``/``subject_context`` directly, so its module source moved
 # ``c58bc58d74fe`` -> ``5ed194fd4a41``; no prompt string was edited and the other
 # four pins are unchanged.
+# The final-review fix round for the planning and research slice moved two
+# pins, and only those two. planner ``46a9cddd0896`` -> ``89b638901396``: the
+# plan instruction now states that an organisation is a body's own name and
+# never a description of its role, ``apply_answer_contract`` empties a value
+# that only describes one (the live P3/P4 defect that pre-failed a target), the
+# first plan review is guarded like the confirming one, the widening lint needs
+# a pairing rather than one domain word, the word-limit pattern needs a length
+# frame, and the dead answer-form classifier block was deleted. researcher
+# ``f9ad12ff184b`` -> ``c490b869021b``: the dates contract routes a relative
+# phrase ("this year") through the page-date resolution path instead of
+# recording it as a period, ``statement_date`` is admitted against the page the
+# way ``release_date`` is, the provenance contract says where the attribution's
+# words may sit (the excerpt's own passage or its neighbour), an output-limit
+# truncation is a per-sub-topic failure rather than a provider outage, and an
+# extra pass whose sub-topics have spent their acquisition budget is not
+# opened. Both moves are module-source changes to the two agents' own modules;
+# the shared ``agents.prompts`` library was not edited, which the other three
+# pins prove (source evaluator, evidence verifier and report writer are
+# unchanged), and the judge pin did not move.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "46a9cddd0896",
-    "researcher": "f9ad12ff184b",
+    "planner": "89b638901396",
+    "researcher": "c490b869021b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "21c413e91f94",
     "report_writer": "5ed194fd4a41",

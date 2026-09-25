@@ -19,7 +19,7 @@ from collections.abc import Callable, Collection, Mapping, MutableMapping, Seque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import perf_counter
-from typing import NamedTuple
+from typing import Literal, NamedTuple, TypeAlias
 
 from pydantic import Field, JsonValue, ValidationError
 
@@ -63,7 +63,11 @@ from deep_research.agents.steps import (
 from deep_research.agents.validation import _invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
-from deep_research.providers import ChatMessage, ProviderError
+from deep_research.providers import (
+    ChatMessage,
+    ProviderError,
+    ProviderOutputLimitError,
+)
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
@@ -539,6 +543,13 @@ _FINDING_DATES_CONTRACT = (
     "carries for it, and vintage with the dated edition of the data it rests "
     "on — each written as the source writes it (dates as YYYY, YYYY-MM, or "
     "YYYY-MM-DD) and each null when the source does not state it.\n"
+    "- A period is what the source dates the figure *with*, never a phrase "
+    "that dates it against the page: record \"2024\", \"Q1 2024\" or "
+    "\"2024-03\", and leave it null when the source only says \"this year\", "
+    "\"the latest quarter\" or \"so far this year\". Those phrases are the "
+    "page's own relative wording, the excerpt carries them, and code resolves "
+    "the period they name from the page's own date and records which date it "
+    "came from.\n"
     "- The vintage is what tells the latest statement of a quantity from an "
     "older one."
 )
@@ -557,14 +568,16 @@ _FINDING_PROVENANCE_CONTRACT = (
     "attributed_issuer and the page's own words for the attribution in "
     "attribution_quote — \"according to the Example Statistical Agency "
     "(ESA)\" — and never credit the host that repeated it.\n"
-    "- The page's words for the attribution need not sit inside the excerpt "
-    "you copied: an excerpt is one passage of the page, the attribution is "
-    "another, and a sentence carrying on from an attributed one — \"the "
-    "Example Statistical Agency projects that road freight will grow by "
-    "another 3.2 percent in 2027. And ... a record 41,000 new registrations "
-    "... are projected this year\" — is still that body's figure. Quote the "
-    "page's own words for it, copied from the read rather than written in "
-    "your own.\n"
+    "- The page's words for the attribution may sit beside the excerpt "
+    "rather than inside it: copy them from the excerpt's own passage, or from "
+    "the passage immediately before or after it — never from further down the "
+    "page, which no check can read as attributing this excerpt and which "
+    "leaves the figure credited to nobody. A sentence carrying on from an "
+    "attributed one — \"the Example Statistical Agency projects that road "
+    "freight will grow by another 3.2 percent in 2027. And ... a record 41,000 "
+    "new registrations ... are projected this year\" — is still that body's "
+    "figure. Quote the page's own words for it, copied from the read rather "
+    "than written in your own.\n"
     "- Leave both null when the page states the figure as its own "
     "publisher's, and never state an attribution the passage does not carry, "
     "and keep the page's own words for what the figure measures: a broader "
@@ -892,14 +905,21 @@ def _admitted_measure_scope(read: ReadRecord | None, value: object) -> str | Non
     return scope if excerpt_matches(document, scope) else None
 
 
-def _admitted_release_date(read: ReadRecord | None, value: object) -> str | None:
-    """The release date the read states, or ``None``.
+def _admitted_stated_date(read: ReadRecord | None, value: object) -> str | None:
+    """A date the read states, or ``None``.
 
     Verified the way :mod:`evidence` verifies every other date this project
     records: the read's own text has to state this value, at this precision
     or a finer one, as a date rather than as a fragment of an identifier. A
-    value the page never wrote is dropped rather than printed as the
-    attributed body's own release day.
+    value the page never wrote is dropped rather than printed as a fact about
+    the page — as the attributed body's own release day, or as when the source
+    said so.
+
+    Both dates a finding carries are admitted here: ``release_date``, and
+    ``statement_date``, which is published as the finding's own statement date
+    and is the Evidence Verifier's last-resort basis for resolving a relative
+    period. That reader labels the basis a page date, so a model's guess
+    standing in for one was published as a page's own statement (live probe).
     """
     if read is None:
         return None
@@ -908,6 +928,31 @@ def _admitted_release_date(read: ReadRecord | None, value: object) -> str | None
         return None
     document = " ".join([read.title, *read.passages.values()])
     return date if _quote_states(document, (date,)) else None
+
+
+def _admitted_period(value: object) -> str | None:
+    """The period a finding may record, or ``None`` when it only dates it relatively.
+
+    A period is comparable only when it carries the time it covers — a year, a
+    quarter, a half, a month, a day, and every one of those is written with a
+    number. A phrase that carries none ("this year", "the most recent quarter")
+    states no period: it dates the figure *against the page*, and the page's
+    own date is what resolves it.
+
+    Recording such a phrase as the period is what made the Evidence Verifier
+    refuse the Context Check's resolved year as ``correction_not_on_page``:
+    code reads a recorded period as one the page's words state themselves, so
+    it never resolves it relatively, and the figure is dropped although the
+    page dates it and the date is known (live probe: "this year" recorded, 2026
+    proposed, dropped). The phrase itself is not lost — the excerpt is the
+    page's own words, and the verifier resolves a relative phrase from the
+    page's date and records which date it came from (D11) — so a relative
+    phrase is recorded through that path and never as an explicit period.
+    """
+    period = value.strip() if isinstance(value, str) else ""
+    if not period:
+        return None
+    return period if any(character.isdigit() for character in period) else None
 
 
 def build_findings(
@@ -1038,13 +1083,13 @@ def build_findings(
                     confidence=item.confidence,
                     related_sub_topic=sub_topic.title,
                     target_ids=kept,
-                    data_period=item.data_period,
-                    statement_date=item.statement_date,
+                    data_period=_admitted_period(item.data_period),
+                    statement_date=_admitted_stated_date(read, item.statement_date),
                     vintage=item.vintage,
                     attributed_issuer=attributed_issuer,
                     attribution_quote=attribution_quote,
                     measure_scope=_admitted_measure_scope(read, item.measure_scope),
-                    release_date=_admitted_release_date(read, item.release_date),
+                    release_date=_admitted_stated_date(read, item.release_date),
                     snippet=item.snippet if read is not None else None,
                     read_id=item.read_id if read is not None else None,
                     locator=item.locator if read is not None else None,
@@ -1139,12 +1184,72 @@ def _admitted_figures(
             FindingFigure(
                 value=value,
                 unit=unit,
-                period=(draft.period or "").strip() or None,
+                period=_admitted_period(draft.period),
                 kind=_normalized_figure_kind(kind),
                 subject=(draft.subject or "").strip() or None,
             )
         )
     return figures, dropped
+
+
+def extra_pass_unfunded_error(
+    targets: Sequence[str],
+    sub_topics: Sequence[SubTopic],
+) -> ResearchError:
+    """Record that an extra pass was not opened because it could call nothing.
+
+    ``details`` carries the pass's own job list and the sub-topics that own it,
+    so nothing the pass was bought for is hidden: a reader sees that the pass
+    was refused, which targets it existed for, and why.
+    """
+    return agent_error(
+        agent_name=RESEARCHER_NAME,
+        error_type="researcher_extra_pass_unfunded",
+        message=(
+            "The extra pass was not opened: every sub-topic that owns a "
+            "missing required target has spent its acquisition budget and owes "
+            "no extraction, so no tool call and no extraction was possible; "
+            "those targets stay unanswered."
+        ),
+        recoverable=True,
+        details={
+            "targets": list(targets),
+            "sub_topics": [sub_topic.coverage_id for sub_topic in sub_topics],
+            "reason": "acquisition_budget_spent",
+        },
+    )
+
+
+def _extra_pass_has_nothing_to_do(
+    state: ResearchState,
+    selected: Sequence[SubTopic],
+) -> bool:
+    """Whether an extra pass's whole job list has no call and no extraction left.
+
+    ``remaining_calls`` is the run's, not one pass's: ``merge_acquisition_states``
+    keeps the minimum and the state carries it, so a sub-topic whose earlier
+    pass used its whole budget resumes at zero and the policy refuses every call
+    ("the acquisition budget of 'X' is spent"). The loop would still spend its
+    model turns being refused, which is neither evidence nor a saving — so a
+    pass that can neither call nor extract is not opened.
+
+    Owed extraction is the exemption: reads a deferred pass left in
+    ``pending_extraction_ids`` can be mined with no tool call, so a spent budget
+    alone is not "nothing to do".
+
+    A pass that is not an extra pass is never skipped: the guard reads the
+    pass's own job list, and ``extra_pass_target_ids`` is empty on the first
+    pass and replaced by the graph at every extra one.
+    """
+    if not state.extra_pass_target_ids or not selected:
+        return False
+    recorded = state.acquisition_state_by_target
+    return all(
+        (item := recorded.get(sub_topic.coverage_id)) is not None
+        and item.remaining_calls <= 0
+        and not item.pending_extraction_ids
+        for sub_topic in selected
+    )
 
 
 class BoundedFindings(NamedTuple):
@@ -1452,6 +1557,51 @@ def sub_topic_skipped_error(
             "priority": sub_topic.priority,
             "reason": reason,
         },
+    )
+
+
+ExtractionFailure: TypeAlias = Literal["", "provider", "output_limit"]
+"""Why one sub-topic's extraction call produced no findings, or ``""`` for none.
+
+``"provider"`` is a call that could not reach the provider: the pass stops
+researching further sub-topics, the way a ReAct-loop-level ``provider_error``
+does, and every sub-topic still queued is recorded as skipped. ``"output_limit"``
+is a call that reached the provider and came back truncated by its output cap:
+that is a fact about one sub-topic's extraction, not about the provider, so the
+pass carries on and a truncation cannot cost the other sub-topics their
+research (the class of failure the planner's own review calls meet).
+"""
+
+
+def extraction_output_limit_error(
+    run: ReActRun,
+    error: Exception,
+) -> ResearchError:
+    """Record that a sub-topic's extraction reply was too long to complete.
+
+    Recoverable, unlike an extraction that could not reach the provider: the
+    provider answered, and an answer cut off at the output cap is a fact about
+    this one extraction rather than about the run's transport. The sub-topic's
+    reads stay owed — the caller defers the batch rather than consuming it — so
+    the passages are still visibly unmined and a later pass can extract them.
+    ``details`` carries the static operation, the safe provider snapshot and
+    counts, never ``str(error)`` — the same redaction discipline the rest of
+    this module follows.
+    """
+    return agent_error(
+        agent_name=RESEARCHER_NAME,
+        error_type="researcher_extraction_output_limit",
+        message=(
+            "The model's reply for a sub-topic's findings hit the output "
+            "limit; the reads stay owed and the research pass continued."
+        ),
+        recoverable=True,
+        details=agent_provider_failure_details(
+            "researcher_finding_extraction",
+            error,
+            iterations=run.iterations,
+            tool_calls=run.tool_calls,
+        ),
     )
 
 
@@ -1781,7 +1931,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         task: SubTopicTask,
         run: ReActRun,
         policy: AcquisitionPolicy | None = None,
-    ) -> tuple[list[Finding], list[ResearchError], bool, bool]:
+    ) -> tuple[list[Finding], list[ResearchError], ExtractionFailure, bool]:
         """Turn one finished sub-topic loop into validated findings.
 
         Returns nothing — and makes no provider call — when the loop stopped
@@ -1793,13 +1943,18 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         read from an "active" field: several sub-topic loops share the agent
         (D9), so the policy a call acts on has to be the caller's own.
 
-        The third element, ``provider_failed``, is ``True`` only when the
-        extraction call itself could not reach the model provider. The
-        caller must treat that the same way it treats a ReAct-loop-level
-        ``provider_error``: stop researching further sub-topics, but keep
-        every finding already collected. The fourth is the target-obligation
-        flag this extraction completed, which the caller reports in the
-        sub-topic's own completed event.
+        The third element, ``failure``, is why the extraction call produced
+        nothing, and there are three answers. ``""`` is no failure. ``"provider"``
+        is a call that could not reach the model provider: the caller must treat
+        that the same way it treats a ReAct-loop-level ``provider_error`` — stop
+        researching further sub-topics, but keep every finding already
+        collected. ``"output_limit"`` is a call that reached the provider and
+        came back truncated: that is a fact about one sub-topic's extraction
+        rather than about the provider, so the caller keeps the batch owed and
+        carries on, and one truncated extraction cannot cost the other
+        sub-topics their research. Both failures defer the batch. The fourth is
+        the target-obligation flag this extraction completed, which the caller
+        reports in the sub-topic's own completed event.
         """
         # One call, two consumers: the same tuple gates the provider call and
         # becomes the provenance allow-list, so "did this loop read anything"
@@ -1817,7 +1972,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             else retrieved_finding_urls(run)
         )
         if not run.succeeded or not retrieved:
-            return [], [], False, False
+            return [], [], "", False
 
         if policy is not None:
             # The local extract step, taken before the provider call so the
@@ -1844,8 +1999,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 SubTopicFindingsDraft,
                 agent_name=self.name,
             )
+        except ProviderOutputLimitError as error:
+            # The provider answered and the answer was cut off at the output
+            # cap. That is this sub-topic's extraction failing, not the run's
+            # transport, so the pass continues: the caller defers the batch, so
+            # the reads stay owed rather than consumed.
+            return [], [extraction_output_limit_error(run, error)], "output_limit", False
         except ProviderError as error:
-            return [], [extraction_provider_error(run, error)], True, False
+            return [], [extraction_provider_error(run, error)], "provider", False
 
         admitted_keys: list[tuple[str, str]] = []
         unplanned_target_ids: list[str] = []
@@ -2004,7 +2165,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         if policy is not None:
             policy.complete_extraction()
         if not rejected:
-            return findings, errors, False, target_obligation_completed
+            return findings, errors, "", target_obligation_completed
         errors.append(
             agent_error(
                 agent_name=self.name,
@@ -2018,7 +2179,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 },
             )
         )
-        return findings, errors, False, target_obligation_completed
+        return findings, errors, "", target_obligation_completed
 
     async def finalize(
         self,
@@ -2154,7 +2315,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             (
                 sub_findings,
                 extraction_errors,
-                extraction_failed,
+                extraction_failure,
                 target_obligation_completed,
             ) = await self.extract_findings(task, react, policy)
             successful_reads = sum(
@@ -2166,7 +2327,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 for unit in policy.evidence.values()
             )
             acquired_work_count = policy.acquired_work_count
-            if extraction_failed:
+            if extraction_failure == "provider":
                 # A retryable extraction failure consumed nothing: the batch
                 # stays owed, visible in the persisted
                 # ``pending_extraction_ids``, so the next pass knows exactly
@@ -2175,10 +2336,18 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # Mirror the loop-level provider_error path so the merged run
                 # (and this sub-topic's own completed event) never claims
                 # "finished" over an abort that actually happened during
-                # extraction.
+                # extraction. Only an unreachable provider does that: the pass
+                # stops, and the sub-topics still queued record
+                # ``provider_failure_stopped_processing``.
                 react = react.model_copy(
                     update={"stop_reason": "provider_error"}
                 )
+            elif extraction_failure == "output_limit":
+                # The provider answered and the answer was too long. This is
+                # one sub-topic's extraction failing, not the run's transport,
+                # so the pass continues to the next sub-topic; the batch stays
+                # owed here too, because nothing consumed it.
+                policy.defer_extraction()
             else:
                 policy.complete_extraction()
             bounded = bound_sub_topic_findings(
@@ -2292,6 +2461,46 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         errors: list[ResearchError] = []
         findings: list[Finding] = []
         runs: list[ReActRun] = []
+
+        if _extra_pass_has_nothing_to_do(state, selected):
+            # The pass was bought for targets this pass can no longer act on:
+            # every sub-topic owning one has spent its acquisition budget and
+            # owes no extraction. Opening the loops would spend seven model
+            # turns per sub-topic on calls the policy refuses, for no evidence
+            # and about two and a half minutes of a thirty-minute budget, so
+            # the refusal is recorded and no loop opens. The record names the
+            # pass's whole job list and the sub-topics behind it, and the
+            # pass-level completed event reports the topics it did not
+            # research, so nothing is silently dropped.
+            errors.append(
+                extra_pass_unfunded_error(
+                    targets=state.extra_pass_target_ids,
+                    sub_topics=selected,
+                )
+            )
+            events.append(
+                research_completed_event(
+                    sub_topics_planned=len(state.sub_topics),
+                    sub_topics_researched=0,
+                    sub_topics_skipped=len(capped) + len(selected),
+                    findings=0,
+                )
+            )
+            merged = merge_react_runs(self.name, []).model_copy(
+                update={"errors": errors}
+            )
+            result = ResearchFindings(findings=[])
+            return AgentRun(
+                agent_name=self.name,
+                result=result,
+                react=merged,
+                errors=errors,
+                state_update={
+                    **self.state_update(result, merged),
+                    "events": events,
+                },
+                call_fingerprints=dict(self._call_fingerprints),
+            )
 
         # One tool lock for the whole run, never a module global (D9): every
         # sub-topic loop of this run shares it, so two loops can never be

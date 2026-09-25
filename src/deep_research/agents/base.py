@@ -129,18 +129,6 @@ ways in two artifacts, and so a record whose outcome is not in
 ``OUTPUT_LIMIT_RETRY_OUTCOMES`` cannot be built at all.
 """
 
-OUTPUT_LIMIT_ATTEMPT_EFFORTS: tuple[str | None, ...] = (
-    None,
-    OUTPUT_LIMIT_RETRY_EFFORT,
-)
-"""The efforts one call is attempted at, in order, and there are never more.
-
-``None`` is the agent's own configured effort, which the first attempt always
-uses, so an ordinary call is one request whose shape is byte-identical to the
-one this project has always sent. The second entry is reached only by an
-output-limit truncation of the first.
-"""
-
 
 class StructuredCompleter(Protocol):
     """The structured-output capability the agent runtime needs.

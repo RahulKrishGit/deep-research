@@ -54,9 +54,10 @@ class DocumentReaderTool(BaseTool):
 
     name = "document_reader"
     description = (
-        "Extract the text of a PDF, spreadsheet or data file at a URL or local path, "
-        "in chunks. Prefer it for primary reports and datasets, which are usually "
-        "published as documents, and when a web page refused access."
+        "Extract the text of a PDF, spreadsheet or data file at a URL, in "
+        "chunks. Prefer it for primary reports and datasets, which are usually "
+        "published as documents, and when a web page refused access. The source "
+        "is a URL this run discovered: a local file is not research evidence."
     )
     input_schema = {"source": "string"}
     required_arguments = ("source",)

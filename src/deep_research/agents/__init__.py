@@ -18,7 +18,6 @@ from deep_research.agents.acquisition import (
     split_read_body,
 )
 from deep_research.agents.base import (
-    OUTPUT_LIMIT_ATTEMPT_EFFORTS,
     OUTPUT_LIMIT_RETRY_EFFORT,
     OUTPUT_LIMIT_RETRY_OUTCOMES,
     OUTPUT_LIMIT_RETRY_READINGS,
@@ -172,7 +171,6 @@ from deep_research.agents.planner import (
     coverage_id_for,
     derive_answer_contract,
     extend_plan,
-    extension_messages,
     format_plan_problems,
     format_review_problems,
     frozen_contract_for,
@@ -308,6 +306,9 @@ from deep_research.agents.report_writer import (
 )
 from deep_research.agents.researcher import (
     DEFAULT_EVIDENCE_CHARS,
+    ExtractionFailure,
+    extra_pass_unfunded_error,
+    extraction_output_limit_error,
     DEFAULT_MAX_SUB_TOPICS,
     EXTRACTION_SYSTEM_PROMPT,
     HIGH_PRIORITY_THRESHOLD,
@@ -457,7 +458,6 @@ __all__ = [
     "next_acquisition_action",
     "select_passages_with_lede",
     "split_read_body",
-    "OUTPUT_LIMIT_ATTEMPT_EFFORTS",
     "OUTPUT_LIMIT_RETRY_EFFORT",
     "OUTPUT_LIMIT_RETRY_OUTCOMES",
     "OUTPUT_LIMIT_RETRY_READINGS",
@@ -599,7 +599,6 @@ __all__ = [
     "coverage_id_for",
     "derive_answer_contract",
     "extend_plan",
-    "extension_messages",
     "format_plan_problems",
     "format_review_problems",
     "frozen_contract_for",
@@ -738,8 +737,11 @@ __all__ = [
     "SubTopicTask",
     "bound_sub_topic_findings",
     "build_findings",
+    "ExtractionFailure",
     "existing_sources_for",
     "extraction_messages",
+    "extra_pass_unfunded_error",
+    "extraction_output_limit_error",
     "extraction_provider_error",
     "is_high_priority",
     "merge_react_runs",
