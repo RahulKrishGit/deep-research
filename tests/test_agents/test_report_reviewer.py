@@ -22,8 +22,8 @@ import pytest
 from deep_research.agents.critic import CritiqueGapDraft
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import ReportComposition, ReportPoint
-from deep_research.agents.report_review import (
-    REPORT_JUDGE_ROLE,
+from deep_research.agents.report_reviewer import (
+    REPORT_REVIEWER_ROLE,
     REVIEW_DIMENSIONS,
     REVIEW_RUBRIC_VERSION,
     SEMANTIC_REVIEW_MEAN,
@@ -332,7 +332,7 @@ async def test_the_review_opens_an_agent_span_when_one_is_wired() -> None:
     tracker = _tracker()
     completer = ScriptedCompleter(outputs=[_draft_payload()])
 
-    async with agent_scope(tracker, agent_name=REPORT_JUDGE_ROLE):
+    async with agent_scope(tracker, agent_name=REPORT_REVIEWER_ROLE):
         review = await review_report(
             completer, _packet(state), tracker=tracker
         )
@@ -883,7 +883,7 @@ def _draft_payload(
     reviewed_evidence: list[str] | None = None,
     rationale: str = "Reviewed the report and its evidence.",
 ):
-    from deep_research.agents.report_review import (
+    from deep_research.agents.report_reviewer import (
         ReportReviewDraft,
         ReviewDimensionScores,
         StatementDispositionDraft,
@@ -1050,7 +1050,7 @@ async def test_a_missing_evidence_batch_is_incomplete_not_a_default_pass() -> No
     # The cross-section reply covers only ``e1``, so ``batch-01`` is re-asked —
     # and its own reply also leaves ``e2`` unreviewed. A batch that never came
     # back with its evidence is what "missing evidence batch" means.
-    from deep_research.agents.report_review import ReviewBatchDraft
+    from deep_research.agents.report_reviewer import ReviewBatchDraft
 
     completer = ScriptedCompleter(
         outputs=[
@@ -1106,7 +1106,7 @@ async def test_a_truncated_review_call_is_re_asked_once_at_a_high_effort() -> No
     ]
     retry = reviewer.review_records[0]
     assert retry.recoverable is True
-    assert retry.source == f"agent.{REPORT_JUDGE_ROLE}"
+    assert retry.source == f"agent.{REPORT_REVIEWER_ROLE}"
     assert retry.details["outcome"] == "answered"
     assert retry.details["max_tokens"] == 4096
 
@@ -1737,12 +1737,12 @@ async def test_a_judgement_that_cannot_be_recorded_is_incomplete_not_a_crash(
     rationale — rather than propagating to a caller that has no exit code for
     it. An unrecorded judgement is not an acceptance.
     """
-    from deep_research.agents import report_review as report_review_module
+    from deep_research.agents import report_reviewer as report_reviewer_module
 
     state = _state(composition=_composition(), report="Break-even was reached.")
     packet = _packet(state)
     completer = ScriptedCompleter(outputs=[_draft_payload()])
-    merge = report_review_module._merge_review  # noqa: SLF001
+    merge = report_reviewer_module._merge_review  # noqa: SLF001
 
     def refuse_to_record_a_judgement(*args: object, **kwargs: object) -> ReportReview:
         if kwargs.get("status") != "incomplete":
@@ -1752,7 +1752,7 @@ async def test_a_judgement_that_cannot_be_recorded_is_incomplete_not_a_crash(
         return merge(*args, **kwargs)
 
     monkeypatch.setattr(
-        report_review_module, "_merge_review", refuse_to_record_a_judgement
+        report_reviewer_module, "_merge_review", refuse_to_record_a_judgement
     )
 
     review = await review_report(completer, packet)
@@ -1831,7 +1831,7 @@ def test_a_review_that_is_not_scored_carries_no_scores() -> None:
 
 @pytest.mark.asyncio
 async def test_oversized_evidence_is_reviewed_batch_by_batch() -> None:
-    from deep_research.agents.report_review import ReviewBatchDraft
+    from deep_research.agents.report_reviewer import ReviewBatchDraft
 
     units = {
         f"e{index}": _unit(f"e{index}", excerpt="X" * 400)
@@ -1897,7 +1897,7 @@ async def test_a_later_supported_cannot_overwrite_an_earlier_unsupported() -> No
     exactly where nothing pinned it: replacing its condition with an
     unconditional overwrite left the whole suite green.
     """
-    from deep_research.agents.report_review import ReviewBatchDraft
+    from deep_research.agents.report_reviewer import ReviewBatchDraft
 
     units = {
         f"e{index}": _unit(f"e{index}", excerpt="Y" * 3000)
@@ -1974,7 +1974,7 @@ async def test_a_later_unsupported_reading_displaces_an_earlier_supported() -> N
     re-review's N-1 finding: replacing the condition with a first-write-wins
     test left every other test passing.
     """
-    from deep_research.agents.report_review import ReviewBatchDraft
+    from deep_research.agents.report_reviewer import ReviewBatchDraft
 
     units = {
         f"e{index}": _unit(f"e{index}", excerpt="Z" * 3000)
@@ -2038,11 +2038,11 @@ async def test_a_reviewer_records_its_own_call_fingerprint() -> None:
 
     review = await reviewer.review(_packet(state))
 
-    assert reviewer.name == REPORT_JUDGE_ROLE
+    assert reviewer.name == REPORT_REVIEWER_ROLE
     assert reviewer.allowed_tools == ()
     assert review.status == "scored"
     assert set(reviewer.call_fingerprints) == {"ReportReviewDraft"}
-    assert completer.calls[0][1] == REPORT_JUDGE_ROLE
+    assert completer.calls[0][1] == REPORT_REVIEWER_ROLE
     assert completer.calls[0][0] == "ReportReviewDraft"
 
 
@@ -2458,7 +2458,7 @@ def test_a_ranked_report_shows_the_reviewer_its_rows_and_their_evidence() -> Non
 
 def test_the_composition_fingerprint_ignores_the_presentation_badge() -> None:
     """A stamp the finalizer writes is not a content change."""
-    from deep_research.agents.report_review import (
+    from deep_research.agents.report_reviewer import (
         composition_semantic_fingerprint,
     )
 
@@ -2475,7 +2475,7 @@ def test_the_composition_fingerprint_ignores_the_presentation_badge() -> None:
 
 
 def test_the_composition_fingerprint_moves_with_content_and_references() -> None:
-    from deep_research.agents.report_review import (
+    from deep_research.agents.report_reviewer import (
         composition_semantic_fingerprint,
     )
 
@@ -2507,7 +2507,7 @@ def test_the_composition_fingerprint_moves_with_content_and_references() -> None
 
 def test_replacing_the_composition_invalidates_a_mismatched_review() -> None:
     """The state rule: a judgement belongs to the report it judged."""
-    from deep_research.agents.report_review import (
+    from deep_research.agents.report_reviewer import (
         composition_semantic_fingerprint,
     )
     from deep_research.utils.types import merge_research_state
@@ -2544,7 +2544,7 @@ def test_the_composition_fingerprint_covers_cells_as_statements() -> None:
     'claim_ids'`` — which is what the CLI acceptance tests hit before this test
     existed, on a composition that had constraints and answer rows.
     """
-    from deep_research.agents.report_review import (
+    from deep_research.agents.report_reviewer import (
         composition_semantic_fingerprint,
     )
     from deep_research.utils.types import ReportAnswerRow, ReportConstraint
@@ -2608,7 +2608,7 @@ def test_the_composition_fingerprint_covers_section_points() -> None:
     is a ``ReportPoint``, not a cell statement, so it must stay in the points
     projection rather than disappearing from the identity altogether.
     """
-    from deep_research.agents.report_review import (
+    from deep_research.agents.report_reviewer import (
         composition_semantic_fingerprint,
     )
     from deep_research.utils.types import ReportSection
@@ -2695,7 +2695,7 @@ def test_a_source_fitness_change_invalidates_both_review_fingerprints(
     ``_review_report`` would reuse a judgement of evidence that no longer
     exists. The presentation badge is the control: it still moves neither.
     """
-    from deep_research.agents.report_review import (
+    from deep_research.agents.report_reviewer import (
         composition_semantic_fingerprint,
     )
 

@@ -831,9 +831,10 @@ class EvidenceUnit(_VerbatimContractModel):
 class EvidenceTarget(ContractModel):
     """One answerable obligation a planned topic must satisfy.
 
-    Which support policy applies is decided before verdicts are assigned, and
-    the planner stamps it here so no later stage can downgrade an obligation
-    to pass a coverage gate.
+    Carries no support policy (PD-16): step 4 removes the pair and
+    support-policy fields along with the Fact Checker, so an obligation is
+    answered on the answer-side facts alone — the statement names the target,
+    asserts something, and fills every dimension the target declared.
     """
 
     target_id: str = Field(min_length=1)
@@ -842,11 +843,6 @@ class EvidenceTarget(ContractModel):
     required_dimensions: list[str] = Field(min_length=1)
     required: bool
     critical: bool
-    support_policy: Literal[
-        "independent_pair",
-        "primary_attribution",
-        "derivation",
-    ]
     measure: str | None = None
     """The obligation's measured quantity, as the plan states it ("battery storage power capacity added")."""
     unit_dimension: UnitDimension | None = None
@@ -1442,6 +1438,30 @@ class ReportQualitySnapshot(ContractModel):
     """The review's mean over the seven dimensions, or ``None`` for no score."""
     semantic_review_fingerprint: str = ""
     """The exact packet fingerprint the stored judgement was made over."""
+    # --- Step 4 (Task 4.1): what the Evidence Verifier pipeline reads -------
+    # One reading per reader-visible property of a finished pass, filled by
+    # the quality pass from the verified findings and the composition, and
+    # gated by Task 4.3. The claim-era fields above stay until Task 4.10
+    # removes them; ``unaccounted_target_ids``, ``cited_sources``,
+    # ``uncited_settled_points`` and ``hard_failures`` already exist above and
+    # are only added to by this step.
+    required_target_ids: list[str] = Field(default_factory=list)
+    answered_target_ids: list[str] = Field(default_factory=list)
+    missing_required_target_ids: list[str] = Field(default_factory=list)
+    verified_findings: int = Field(default=0, ge=0)
+    corrected_findings: int = Field(default=0, ge=0)
+    dropped_findings: int = Field(default=0, ge=0)
+    context_unchecked_findings: int = Field(default=0, ge=0)
+    dropped_figures: int = Field(default=0, ge=0)
+    cited_findings: int = Field(default=0, ge=0)
+    duplicate_fact_rows: int = Field(default=0, ge=0)
+    """An invariant, not a warning: ``fact_rows()`` already merges (PD-10)."""
+    unresolved_citations: int = Field(default=0, ge=0)
+    unjudged_sentences: list[str] = Field(default_factory=list)
+    """``"S003"``: kept with no verdict and no batch failure to blame."""
+    refused_sentences: int = Field(default=0, ge=0)
+    forecasts_without_release: int = Field(default=0, ge=0)
+    """PD-24: counted and printed, never a gate."""
 
 
 # --- Task 8: the Critic's typed defect vocabulary ---------------------------
@@ -1676,6 +1696,32 @@ class CritiqueGap(ContractModel):
         return self
 
 
+# --- Step 4 (Task 4.1): the Report Reviewer's typed defects -----------------
+#
+# The Critic's ``CritiqueGap`` with the claim-era fields gone, and the shape
+# the terminal review returns from step 4 on. It keeps the gap vocabulary
+# (``GapKind``, ``GapSeverity``, ``GAP_MATERIAL_SEVERITIES``) because the
+# kinds name what is wrong; what it drops is the Critic's repair routing and
+# its claim-cluster scope. ``target_ids`` is what makes a defect routable
+# (Task 4.4's targeted extra pass); ``statement_ids`` is what ties it to the
+# sentence it judges, so an unsettled statement can be named by a defect.
+# ``CritiqueGap`` stays until Task 4.10 removes the Critic with it.
+class ReviewDefect(ContractModel):
+    """One report problem the terminal review returns, with its scope."""
+
+    defect_id: str = Field(min_length=1)    # "review-01"
+    kind: GapKind
+    severity: GapSeverity
+    target_ids: list[str] = Field(default_factory=list)
+    statement_ids: list[str] = Field(default_factory=list)
+    problem: str = Field(min_length=1)
+
+    @property
+    def material(self) -> bool:
+        """True when this defect must be closed before the report is accepted."""
+        return self.severity in GAP_MATERIAL_SEVERITIES
+
+
 # What a critique is worth when nothing could be judged at all. ``reviewed`` is
 # every critique a model produced; ``failed`` records that the reply never
 # validated, so the score beside it is the floor rather than a judgement. The
@@ -1753,11 +1799,13 @@ REVIEW_DIMENSIONS: frozenset[str] = frozenset(
 SEMANTIC_REVIEW_MEAN: float = 0.80
 """The mean over ``REVIEW_DIMENSIONS`` a review must reach to pass."""
 
-REVIEW_RUBRIC_VERSION = 2
+REVIEW_RUBRIC_VERSION = 3
 """Which semantic rubric a review was made under.
 
 Version 1 is the structural formula (``judge_whole_report``); version 2 is the
-seven semantic definitions. The version travels on the record so a historical
+seven semantic definitions; version 3 is the step-4 review, which judges every
+statement it was given against the verified findings behind it and returns
+typed defects (spec §6.2). The version travels on the record so a historical
 diagnostic and a semantic judgement can never be compared as if they were the
 same measurement.
 """
@@ -1775,27 +1823,21 @@ REPORT_REVIEW_STATUSES: tuple[ReportReviewStatus, ...] = (
     "provider_failed",
 )
 
-# What one review concluded about one reader statement. ``supported`` and
-# ``attributed`` are the two ways a statement may stand on its evidence
-# (independently corroborated, or primary-source attribution); ``inference`` is
-# a recorded derivation; ``unsupported`` is a statement the evidence does not
-# carry; and ``returned_to_fact_checker`` is the disposition for prose the
-# reviewer cannot settle from the evidence it was shown — the vocabulary Task
-# 7's cell attestation needed and could not reach offline.
+# What one review concluded about one reader statement, in the step-4
+# vocabulary: ``supported`` is a statement the verified findings carry as
+# written, ``unsupported`` is one they do not, and ``not_reviewed`` is the
+# honest default for a statement the review never reached. The claim-era
+# ``attributed``/``inference``/``returned_to_fact_checker`` dispositions left
+# with the Fact Checker (PD-16, D2): nothing asks a statement for a pair, an
+# attribution badge, or a return trip any more.
 StatementReviewDisposition: TypeAlias = Literal[
     "supported",
-    "attributed",
-    "inference",
     "unsupported",
-    "returned_to_fact_checker",
     "not_reviewed",
 ]
 STATEMENT_REVIEW_DISPOSITIONS: tuple[StatementReviewDisposition, ...] = (
     "supported",
-    "attributed",
-    "inference",
     "unsupported",
-    "returned_to_fact_checker",
     "not_reviewed",
 )
 
@@ -1807,7 +1849,7 @@ missing coverage cannot be recorded as a clean result.
 """
 
 UNSETTLED_STATEMENT_DISPOSITIONS: frozenset[str] = frozenset(
-    {"unsupported", "returned_to_fact_checker", UNREVIEWED_STATEMENT_DISPOSITION}
+    {"unsupported", UNREVIEWED_STATEMENT_DISPOSITION}
 )
 """Dispositions that mean "this statement is not established as written".
 
@@ -1827,11 +1869,11 @@ class ReportReview(ContractModel):
     they disagree often enough that merging them would lose the disagreement.
 
     ``status`` is this review's own three-valued outcome. A ``scored`` review
-    is one that saw the whole report, covered every reader statement and every
-    piece of evidence it was given, and returned exactly the seven dimensions
-    over a fingerprint that still matches the packet: the model validators
-    below refuse the combination that would let a partial review claim a
-    score. ``incomplete`` and ``provider_failed`` carry no score at all —
+    is one that saw the whole report, covered every reader statement it was
+    given, and returned exactly the seven dimensions over a fingerprint that
+    still matches the packet: the model validators below refuse the
+    combination that would let a partial review claim a score. ``incomplete``
+    and ``provider_failed`` carry no score at all —
     ``dimensions`` stays empty — because a missing judgement must not be
     averageable into an acceptance.
 
@@ -1846,19 +1888,16 @@ class ReportReview(ContractModel):
 
     status: ReportReviewStatus = "incomplete"
     dimensions: dict[str, UnitScore] = Field(default_factory=dict)
-    defects: list[CritiqueGap] = Field(default_factory=list)
+    defects: list[ReviewDefect] = Field(default_factory=list)
     per_statement_dispositions: dict[str, StatementReviewDisposition] = Field(
         default_factory=dict
     )
     reviewed_statement_ids: list[str] = Field(default_factory=list)
     unreviewed_statement_ids: list[str] = Field(default_factory=list)
-    reviewed_evidence_ids: list[str] = Field(default_factory=list)
-    omitted_evidence_ids: list[str] = Field(default_factory=list)
-    reviewed_batch_ids: list[str] = Field(default_factory=list)
-    expected_batch_ids: list[str] = Field(default_factory=list)
-    reviewed_target_ids: list[str] = Field(default_factory=list)
     derived_defect_statement_ids: list[str] = Field(default_factory=list)
     """Statements whose material defect this project derived from a disposition."""
+    missing_required_target_ids: list[str] = Field(default_factory=list)
+    """Required targets with no answer, stamped by code rather than asked of the model (PD-5)."""
     input_fingerprint: str = ""
     composition_fingerprint: str = ""
     """The semantic fingerprint of the composition this judgement was made over.
@@ -1875,15 +1914,13 @@ class ReportReview(ContractModel):
 
     @property
     def coverage_complete(self) -> bool:
-        """True when every statement and every batch the packet carried was read."""
-        if self.unreviewed_statement_ids:
-            return False
-        return not set(self.expected_batch_ids).difference(self.reviewed_batch_ids)
+        """True when the reviewer read every reader statement it was given."""
+        return not self.unreviewed_statement_ids
 
     @property
-    def material_defects(self) -> list[CritiqueGap]:
+    def material_defects(self) -> list[ReviewDefect]:
         """The defects that must be closed before the report may be accepted."""
-        return [gap for gap in self.defects if gap.severity in GAP_MATERIAL_SEVERITIES]
+        return [defect for defect in self.defects if defect.material]
 
     @property
     def unsettled_statement_ids(self) -> list[str]:
@@ -3229,7 +3266,8 @@ class ReportComposition(ContractModel):
     question: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     iteration: int = Field(default=0, ge=0)
-    max_iterations: int = Field(default=0, ge=0)
+    max_extra_passes: int = Field(default=0, ge=0)
+    """The extra-pass ceiling this pass was composed under, not the pass count."""
     as_of: str = ""
     """The newest recorded evidence timestamp; see ``report_as_of``.
 
@@ -3250,6 +3288,14 @@ class ReportComposition(ContractModel):
     """Every required target no acquisition path answered."""
     finding_labels: dict[str, str] = Field(default_factory=dict)
     """Each printed finding label mapped to the finding id it cites."""
+    statement_verdicts: dict[str, str] = Field(default_factory=dict)
+    """Statement id to ``"consistent"`` / ``"corrected"`` / ``"unchecked"``.
+
+    The Statement Check's verdict on every sentence this pass drafted, with
+    ``"unchecked"`` for a sentence whose batch failed (spec §5.4). Filled by
+    the Report Writer as it keeps, corrects, or refuses each sentence, and
+    gated on by the quality pass (Task 4.3, PD-10).
+    """
     limitations: list[str] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
     summary: list[ReportPoint] = Field(default_factory=list)
@@ -3698,15 +3744,28 @@ class ResearchState(ContractModel):
     repair_stop_reason: RepairStopReason | None = None
     """Why the last repair loop stopped, or ``None`` while it has not."""
     iteration: int = Field(default=0, ge=0)
-    max_iterations: int = Field(default=3, ge=1)
+    max_extra_passes: int = Field(default=1, ge=0)
+    """How many extra research passes this run may still buy (D4, §6.5).
+
+    One by default: an extra pass runs only when required targets are still
+    missing, and only for those targets. ``graph.max_extra_passes`` supplies
+    the configured value.
+    """
+    extra_pass_target_ids: list[str] = Field(default_factory=list)
+    """The required targets the next extra pass is confined to, or ``[]``.
+
+    Replaced on every write, never appended: this is the current pass's job
+    list, so a target an earlier pass owed but the newest decision does not
+    name cannot keep the run alive.
+    """
     memory_context: MemorySnapshot = Field(default_factory=MemorySnapshot)
     events: list[ResearchEvent] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_iteration_bounds(self) -> ResearchState:
-        if self.iteration > self.max_iterations:
-            raise ValueError("iteration cannot exceed max_iterations")
+        if self.iteration > self.max_extra_passes:
+            raise ValueError("iteration cannot exceed max_extra_passes")
         return self
 
 
@@ -3741,7 +3800,8 @@ class ResearchStateUpdate(TypedDict, total=False):
     refinement_targets: list[RefinementTarget]
     progress_history: list[ResearchProgress]
     repair_stop_reason: RepairStopReason | None
-    max_iterations: int
+    max_extra_passes: int
+    extra_pass_target_ids: list[str]
     memory_context: MemorySnapshot
     events: list[ResearchEvent]
     errors: list[ResearchError]
@@ -3858,10 +3918,15 @@ def answering_statement_for(
 
     Deliberately strict, and deliberately not "some evidence exists": the
     statement has to name the target, assert something (``context`` and
-    ``contested`` are not answers), fill every required dimension the target
-    declared, and rest on evidence that carries the target's support policy.
-    A state with no composition answers nothing — a pass that composed no
-    report has shown no reader statement for any obligation.
+    ``contested`` are not answers), resolve at least one checked claim
+    cluster, and fill every required dimension the target declared. A state
+    with no composition answers nothing — a pass that composed no report has
+    shown no reader statement for any obligation.
+
+    No support-policy check remains (PD-16, D2): step 4 removes the pair and
+    support-policy fields with the Fact Checker, so nothing here asks for a
+    second source or for an attribution badge. What an obligation owes is the
+    dimensions the target declared, filled by a statement that cites it.
 
     This is the single definition of whether an obligation is answered; every
     reader names it, so the Critic's view of what is still open cannot drift
@@ -3888,29 +3953,16 @@ def answering_statement_for(
             continue
 
         by_cluster = statement_claims_by_cluster(composition, statement)
-        qualifying = {
-            cluster_id
-            for cluster_id, claims in by_cluster.items()
-            if statement_satisfies_support_policy(
-                statement, claims, support_policy=target.support_policy
-            )
-        }
-
         if not by_cluster:
-            # No cluster resolves at all: a genuinely claimless statement.
-            # It satisfies no support policy — the same direct check a single
-            # scoped cluster would get is run here, and it refuses a claimless
-            # statement for every policy, ``derivation`` included, so such a
-            # statement can never answer the target.
-            if not statement_satisfies_support_policy(
-                statement, [], support_policy=target.support_policy
-            ):
-                continue
-        elif statement.dimension_support:
+            # Not one checked claim resolves for this statement, so nothing
+            # behind it is evidence and it answers no obligation — the same
+            # refusal a claimless statement always got.
+            continue
+        if statement.dimension_support:
             # Attributed path: a statement derived with per-cluster dimension
             # tracking. Every required dimension must name at least one
-            # cluster that itself qualifies under the target's support
-            # policy — not any cluster the statement happens to resolve to.
+            # cluster the statement actually resolves to, not any cluster the
+            # statement happens to mention.
             support_by_dimension: dict[str, list[str]] = {}
             for dimension, cluster_ids in statement.dimension_support.items():
                 support_by_dimension.setdefault(
@@ -3919,35 +3971,11 @@ def answering_statement_for(
             if not all(
                 dimension in support_by_dimension
                 and any(
-                    cluster_id in qualifying
+                    cluster_id in by_cluster
                     for cluster_id in support_by_dimension[dimension]
                 )
                 for dimension in required
             ):
-                continue
-        else:
-            # Fallback path: a legacy statement (a snapshot, a fixture, or a
-            # hand-built record) with no recorded attribution. Scope to the
-            # clusters that actually name this target — by the resolved
-            # claim's own ``target_ids``, or by the cluster registry's
-            # ``target_ids`` when the composition carries one — and require
-            # every one of them to qualify, not just any. A fully legacy
-            # shape where nothing in scope names the target falls back to
-            # every resolved cluster, which is what today's pooled check
-            # already tested.
-            scoped = {
-                cluster_id
-                for cluster_id, claims in by_cluster.items()
-                if any(target.target_id in claim.target_ids for claim in claims)
-                or (
-                    (registered := composition.claim_clusters.get(cluster_id))
-                    is not None
-                    and target.target_id in registered.target_ids
-                )
-            }
-            if not scoped:
-                scoped = set(by_cluster.keys())
-            if not all(cluster_id in qualifying for cluster_id in scoped):
                 continue
         return statement
     return None
@@ -4314,7 +4342,7 @@ def merge_research_state(
             incoming = update["composition"]
             if isinstance(incoming, dict):
                 incoming = ReportComposition.model_validate(incoming)
-            from deep_research.agents.report_review import (  # noqa: PLC0415
+            from deep_research.agents.report_reviewer import (  # noqa: PLC0415
                 composition_semantic_fingerprint,
             )
 
@@ -4325,7 +4353,7 @@ def merge_research_state(
     # The macro-iteration ceiling plus the initial checkpoint: one snapshot per
     # pass, and the oldest are dropped so a long run's checkpoint stays bounded
     # by its own declared budget rather than by how long it ran.
-    history_bound = int(payload["max_iterations"]) + 1
+    history_bound = int(payload["max_extra_passes"]) + 1
     if len(payload["progress_history"]) > history_bound:
         payload["progress_history"] = payload["progress_history"][-history_bound:]
 
@@ -4333,8 +4361,8 @@ def merge_research_state(
 
 
 def advance_research_iteration(state: ResearchState) -> ResearchState:
-    if state.iteration >= state.max_iterations:
-        raise ValueError("cannot advance iteration beyond max_iterations")
+    if state.iteration >= state.max_extra_passes:
+        raise ValueError("cannot advance iteration beyond max_extra_passes")
 
     payload = state.model_dump(mode="python")
     payload["iteration"] = state.iteration + 1

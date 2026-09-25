@@ -73,6 +73,7 @@ from deep_research.agents.report import (
     report_scope,
     validate_report_statements,
 )
+from deep_research.agents.report_writer import evidence_report_filename
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.wording import (
@@ -383,11 +384,6 @@ _PACKET_OMISSION_UNSENTENCED = (
     " [… cut mid-sentence here; {count} further character(s) were not shown]"
 )
 
-# Characters kept verbatim in a report filename. Narrow on purpose:
-# WriteDocumentTool rejects absolute paths and traversal segments, and a
-# rejected write would lose the artifact.
-_FILENAME_SAFE = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
-
 # Most load-bearing first: settled evidence before disputed evidence, disputed
 # evidence before unanswered questions. Enumerated so the order can never come
 # from dict or set iteration.
@@ -518,7 +514,7 @@ class SynthesisTask(AgentTask):
 
     session_id: str = Field(min_length=1)
     iteration: int = Field(default=0, ge=0)
-    max_iterations: int = Field(default=0, ge=0)
+    max_extra_passes: int = Field(default=0, ge=0)
     as_of: str = ""
     generated_on: str = ""
     """The run clock's date as ISO ``YYYY-MM-DD`` — not the evidence's date.
@@ -599,7 +595,7 @@ def limitation_reasons(state: ResearchState) -> list[str]:
     reasons: list[str] = []
     if state.errors:
         reasons.append("errors_recorded")
-    if state.iteration >= state.max_iterations:
+    if state.iteration >= state.max_extra_passes:
         reasons.append("max_iterations_reached")
     if not state.evaluated_sources:
         reasons.append("no_sources_evaluated")
@@ -630,45 +626,6 @@ def compose_limitations(
     if provider_failed:
         limitations.append("report_generation_failed")
     return limitations
-
-
-def report_filename(*, session_id: str, iteration: int) -> str:
-    """Return a traversal-free ``.md`` filename for one reader report.
-
-    ``session_id`` reaches this from state and may hold anything, so it is
-    slugged rather than trusted.
-    """
-    if iteration < 0:
-        raise ValueError("iteration must not be negative")
-    slug = "".join(
-        character if character in _FILENAME_SAFE else "-"
-        for character in session_id.strip().casefold()
-    ).strip("-")
-    while "--" in slug:
-        slug = slug.replace("--", "-")
-    return f"report-{slug or 'session'}-{iteration}.md"
-
-
-def evidence_report_filename(*, session_id: str, iteration: int) -> str:
-    """Return the evidence ledger's filename for the same pass.
-
-    Deliberately derived from the reader report's name rather than slugged a
-    second time, so the two artifacts of one pass can never disagree about
-    which session and iteration they belong to.
-    """
-    stem = report_filename(session_id=session_id, iteration=iteration)
-    return f"{stem.removesuffix('.md')}-evidence.md"
-
-
-def quality_report_filename(*, session_id: str, iteration: int) -> str:
-    """Return the quality record's filename for the same pass.
-
-    Derived the same way the ledger's name is, so the three artifacts of one
-    publication are one name family: nothing about which set a file belongs to
-    depends on a caller remembering a second slug.
-    """
-    stem = report_filename(session_id=session_id, iteration=iteration)
-    return f"{stem.removesuffix('.md')}-quality.json"
 
 
 def claim_label(position: int) -> str:
@@ -2724,7 +2681,7 @@ def build_report_composition(
         question=task.instruction,
         session_id=task.session_id,
         iteration=task.iteration,
-        max_iterations=task.max_iterations,
+        max_extra_passes=task.max_extra_passes,
         as_of=task.as_of,
         scope=task.scope,
         quality_status=quality_status,
@@ -3913,7 +3870,7 @@ class SynthesizerAgent(BaseAgent[SynthesizedReport]):
             guidance=render_revision_guidance(state),
             session_id=state.session_id,
             iteration=state.iteration,
-            max_iterations=state.max_iterations,
+            max_extra_passes=state.max_extra_passes,
             as_of=report_as_of(
                 findings=state.raw_findings,
                 reads=list(state.read_records.values()),

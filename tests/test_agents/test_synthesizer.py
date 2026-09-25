@@ -71,7 +71,6 @@ from deep_research.agents.synthesizer import (
     claim_registry,
     compose_limitations,
     compose_report,
-    evidence_report_filename,
     high_confidence_claims,
     invalid_draft_error,
     limitation_reasons,
@@ -79,7 +78,6 @@ from deep_research.agents.synthesizer import (
     ordered_claims_for_report,
     render_canonical_packet,
     render_revision_guidance,
-    report_filename,
     report_messages,
     unattested_atoms,
     unattested_words,
@@ -244,7 +242,7 @@ def _task(**overrides: object) -> SynthesisTask:
         "instruction": "How mature is quantum error correction?",
         "session_id": "session-1",
         "iteration": 0,
-        "max_iterations": 3,
+        "max_extra_passes": 3,
         "as_of": SYNTH_EXTRACTED_AT,
         "scope": "1 planned sub-topic.",
         "claims": [_claim()],
@@ -348,7 +346,7 @@ def test_every_weak_signal_becomes_an_enumerated_limitation() -> None:
             )
         ],
         iteration=3,
-        max_iterations=3,
+        max_extra_passes=3,
         evaluated_sources=[_source(overall=0.1, low_confidence=True)],
         verified_claims=[_claim(verdict="contradicted", confidence=0.4)],
     )
@@ -367,35 +365,6 @@ def test_an_unscored_pass_reports_that_source_quality_is_unknown() -> None:
 
     assert "no_sources_evaluated" in reasons
     assert "low_confidence_sources" not in reasons
-
-
-@pytest.mark.parametrize(
-    ("session_id", "iteration", "expected"),
-    [
-        ("session-1", 0, "report-session-1-0.md"),
-        ("Session_42", 2, "report-session-42-2.md"),
-        ("../../etc/passwd", 1, "report-etc-passwd-1.md"),
-        ("   ", 0, "report-session-0.md"),
-    ],
-)
-def test_report_filenames_are_slugged_and_traversal_free(
-    session_id: str, iteration: int, expected: str
-) -> None:
-    assert report_filename(session_id=session_id, iteration=iteration) == expected
-
-
-def test_report_filename_rejects_a_negative_iteration() -> None:
-    with pytest.raises(ValueError, match="iteration"):
-        report_filename(session_id="session-1", iteration=-1)
-
-
-def test_the_evidence_filename_derives_from_the_reader_report() -> None:
-    assert (
-        evidence_report_filename(session_id="Session_42", iteration=2)
-        == "report-session-42-2-evidence.md"
-    )
-    with pytest.raises(ValueError, match="iteration"):
-        evidence_report_filename(session_id="session-1", iteration=-1)
 
 
 # --- the checked-claim packet -------------------------------------------------
@@ -1338,7 +1307,7 @@ def test_build_task_carries_the_evidence_limitations_and_revision_notes(
     assert task.instruction == state.original_question
     assert task.session_id == "session-1"
     assert task.iteration == 0
-    assert task.max_iterations == state.max_iterations
+    assert task.max_extra_passes == state.max_extra_passes
     assert task.as_of == SYNTH_EXTRACTED_AT
     assert "topic-01 Alpha" in task.scope
     assert [topic.coverage_id for topic in task.sub_topics] == ["topic-01"]
@@ -1570,7 +1539,6 @@ def _target(
         required_dimensions=dimensions or ["mechanism", "scale"],
         required=True,
         critical=critical,
-        support_policy="independent_pair",
     )
 
 
@@ -4069,7 +4037,6 @@ def _eia_actual_topic() -> SubTopic:
                     ],
                     required=True,
                     critical=True,
-                    support_policy="primary_attribution",
                 )
             ]
         }

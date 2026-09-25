@@ -14,39 +14,46 @@ llm:
   # This global value is the default for any agent ``model_overrides`` does not
   # name.
   reasoning_effort: high
-  # Per-agent reasoning profiles for the production CLI. The measured
-  # configuration ran the planner, fact checker, synthesizer and critic at
-  # `max` and the researcher and source evaluator at `high`; before this table
-  # existed production could express only one effort for all six agents, so an
-  # evaluation run resolved a per-agent profile the CLI could not reproduce
-  # (baseline §6.2, D-10). This is a testable candidate measured to be at least
-  # as good, not proof that `max` is always better for every question.
+  # Per-agent reasoning profiles for the production CLI: the planner, the
+  # researcher, the source evaluator, the evidence verifier and the report
+  # writer. Before this table existed production could express only one effort
+  # for all agents, so an evaluation run resolved a per-agent profile the CLI
+  # could not reproduce (baseline §6.2, D-10). This is a testable candidate
+  # measured to be at least as good, not proof that `max` is always better for
+  # every question.
   model_overrides:
     planner:
-      reasoning_effort: max
-    fact_checker:
-      reasoning_effort: max
-    synthesizer:
-      reasoning_effort: max
-    critic:
       reasoning_effort: max
     researcher:
       reasoning_effort: high
     source_evaluator:
       reasoning_effort: high
-    # The terminal semantic report judge is a *service role*, not a seventh
-    # agent: it holds no tool loop and no slot in the six-agent registry, but it
-    # resolves its model and effort here like one, so the review that decides
-    # whether a report is accepted is independently configured from every agent
-    # whose work it judges. `max` because a wrong acceptance is more expensive
-    # than a slower review. The 65,536-token output cap includes thinking
-    # (DeepSeek Responses API); audit-2 returned 44,319 tokens in 174 s, or
-    # ~255 tokens/s. A full-cap response at that observed rate takes ~257 s,
-    # so 360 s leaves room for slower generations and network overhead.
+    # The Context Check and Statement Check (spec 5.2, 5.4): batched, tool-free
+    # calls, `agents.verifier_batch_size` items per call (Task 4.1).
+    evidence_verifier:
+      reasoning_effort: high
+      # Review item 13 / F8: Gate G2's live run recorded a Context Check call
+      # of 75.9 s against the 60 s transport default below. A timed-out batch
+      # leaves every figure in it unchecked, so this role alone gets more
+      # room; other roles keep the transport default.
+      timeout: 240.0
+    # The writer's first attempt runs at this effort; a truncated draft is asked
+    # once more at high (Task 3.4). This entry is the only effort source (F10).
+    report_writer:
+      reasoning_effort: high
+    # The terminal semantic review is a *service role*, not an agent: it holds
+    # no tool loop and no slot in the agent registry, but it resolves its model
+    # and effort here like one, so the review that decides whether a report is
+    # accepted is independently configured from every agent whose work it
+    # judges (was report_judge). `max` because a wrong acceptance is more
+    # expensive than a slower review. The 65,536-token output cap includes
+    # thinking (DeepSeek Responses API); audit-2 returned 44,319 tokens in
+    # 174 s, or ~255 tokens/s. A full-cap response at that observed rate takes
+    # ~257 s, so 360 s leaves room for slower generations and network overhead.
     # The transport default remains 60 s for other roles. A timed-out review
     # gets one transport retry, not the global five full-size repeats; failed
     # attempts still leave the terminal review unscored.
-    report_judge:
+    report_reviewer:
       reasoning_effort: max
       timeout: 360.0
       retry_count: 1
@@ -59,9 +66,8 @@ llm:
   retry_max_delay: 16.0
   temperature: 0.7
   # Default output budget. Most operations use 32768; the planner's plan
-  # requests, the Fact Checker's claim verdicts, and terminal report review
-  # use 65536. All three reason at `max` effort, where thinking consumes
-  # completion tokens as well as the answer.
+  # requests and the terminal report review use 65536. Both reason at `max`
+  # effort, where thinking consumes completion tokens as well as the answer.
   # The operation-specific bounds below are provider-tested headroom, not
   # known provider maxima. A cap unused by the model costs no output tokens;
   # a cap reached before the JSON reply costs a whole request.
@@ -89,6 +95,12 @@ memory:
     strategies_path: memory/strategies.json
 
 agents:
+  # Spec 7.3 (D9/PD-27): the only concurrency bounds. Lower one from live
+  # results without a code change; Task 4.14's telemetry names the knob to turn.
+  sub_topic_concurrency: 5         # researcher sub-topics in flight
+  source_scoring_concurrency: 3    # source-evaluator scoring batches in flight
+  verifier_batch_size: 5           # Context and Statement Check items per call
+  verifier_concurrency: 8          # verification calls in flight
   source_evaluator:
     # Score new canonical URLs in bounded provider batches, while retaining a
     # complete explicit record for every source beyond the run cap.
@@ -103,19 +115,15 @@ agents:
   # planner's budget is 1 because the session's own startup memory recall IS
   # its procedural lookup: the planner runs no second hidden recall, and its
   # one permitted lookup happens only when startup recall returned no
-  # guidance. source_evaluator and synthesizer need no tools at all. Spec
-  # §7.2 sets the researcher's own per-sub-topic budget to 20; the fact
-  # checker keeps its own ten. The critic is 0 because Task 8 removed
-  # its tool path entirely: it reviews the exact candidate's packet, and its
-  # historical search/memory spot check could not open a page, so it could
-  # never establish missing support and its snippets were never evidence.
+  # guidance. Spec §7.2 sets the researcher's own per-sub-topic budget to 20,
+  # and it is the only agent that searches: the source evaluator, the evidence
+  # verifier and the report writer all run tool-free by contract (§5.2, §5.4).
   tool_budget_overrides:
     planner: 1
     researcher: 20
-    fact_checker: 10
     source_evaluator: 0
-    synthesizer: 0
-    critic: 0
+    evidence_verifier: 0
+    report_writer: 0
   # How many planned sub-topics one Researcher pass attempts
   # (AGENTS_MAX_SUB_TOPICS overrides this). Spec §7.2 caps the production
   # default at 5, below the Planner's own seven-topic ceiling. A smaller cap
@@ -129,15 +137,6 @@ agents:
   evidence_packet_chars: 24000
   prompt_context_entries: 8
   observation_summary_chars: 200
-  # How many claims one Fact Checker adjudication batch takes, and how many
-  # batches one pass runs. These replace the hidden five-claim prefix that used
-  # to be fact_checker.DEFAULT_MAX_CLAIMS: a measured run accepted exactly five
-  # claims in every extraction batch, so a sixth claim the model returned did
-  # not exist and the topics behind it were starved. Everything a pass does not
-  # adjudicate stays pending and is reported as pending, never dropped.
-  # (AGENTS_CLAIM_BATCH_SIZE / AGENTS_CLAIM_BATCHES_PER_PASS override these.)
-  claim_batch_size: 5
-  claim_batches_per_pass: 6
   # Operation-specific output budget for the planner's plan-side structured
   # requests: the plan draft and its repairs, the plan review, and plan
   # extensions. ReAct decisions and judge calls keep llm.max_tokens
@@ -156,13 +155,6 @@ agents:
   # request that reasons past this cap still stops the run, and the durable
   # fix is a bounded degraded retry, not a third larger number.
   planner_final_max_tokens: 65536
-  # Operation-specific output budget for the Critic's report-review request
-  # only (AGENTS_CRITIC_REVIEW_MAX_TOKENS overrides this). That call renders
-  # the report, the claims, the source scores, and the spot-check evidence,
-  # then asks for a score plus three lists plus a rationale in one object. At
-  # 4096 it returned non-JSON text on both the initial attempt and the single
-  # repair in three consecutive live canaries.
-  critic_review_max_tokens: 32768
   # Operation-specific cap for the terminal reviewer (whole-report and
   # evidence-batch requests; AGENTS_REPORT_REVIEW_MAX_TOKENS overrides it).
   # Pre-flight reported finish=length and exactly 32768 completion tokens on
@@ -183,18 +175,9 @@ agents:
   # spot-check phase silently rather than failing the run. A decision carries
   # the agent's reasoning, one tool call, and that call's arguments.
   react_decision_max_tokens: 32768
-  # Operation-specific cap for the Fact Checker's per-claim verdict requests
-  # (AGENTS_CLAIM_VERIFICATION_MAX_TOKENS overrides it). The adjudication
-  # reasons at `max` over a ~4k-token packet, so its completion tokens are
-  # almost all thinking. Audit-2 measured completed verdicts up to 29162
-  # tokens and two that stopped at exactly 32768 with finish=length; the
-  # second ended the pass with 13 of 15 claims unchecked. 65536 is headroom a
-  # thinking-enabled request has completed under, not a known provider
-  # maximum; a truncated verdict is still re-asked once at `high`.
-  claim_verification_max_tokens: 65536
 
 graph:
-  max_iterations: 3
+  max_extra_passes: 1
   checkpointing_enabled: false
 
 output:

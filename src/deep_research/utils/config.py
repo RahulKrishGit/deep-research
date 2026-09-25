@@ -176,7 +176,7 @@ class SourceEvaluatorConfig(BaseModel):
     max_total_sources: int = Field(default=36, ge=1)
 
 
-# The six agents one production run assembles, in graph order. Per-agent
+# The five agents one production run assembles, in graph order. Per-agent
 # override tables are keyed by these names, and a key outside this set is a
 # typo that would silently do nothing — so every such table rejects one:
 # ``evaluation.target_reasoning_effort_overrides`` (the evaluation target
@@ -185,21 +185,20 @@ PRODUCTION_AGENT_NAMES = (
     "planner",
     "researcher",
     "source_evaluator",
-    "fact_checker",
-    "synthesizer",
-    "critic",
+    "evidence_verifier",
+    "report_writer",
 )
 
-SERVICE_ROLE_NAMES = ("report_judge",)
+SERVICE_ROLE_NAMES = ("report_reviewer",)
 """The call roles production runs that are not agents.
 
 A service role makes one kind of request and holds no loop, no toolset, and no
-conversation: the report judge reads a finished report against its evidence.
-It resolves through the same ``llm.model_overrides`` table as the six agents,
-so it can be configured independently, and it is deliberately *not* added to
-``PRODUCTION_AGENT_NAMES`` — a role in that tuple would be offered a tool
-budget it cannot spend and counted by every consumer that means "the agents
-that research".
+conversation: the report reviewer reads a finished report against its
+evidence. It resolves through the same ``llm.model_overrides`` table as the
+agents, so it can be configured independently, and it is deliberately *not*
+added to ``PRODUCTION_AGENT_NAMES`` — a role in that tuple would be offered a
+tool budget it cannot spend and counted by every consumer that means "the
+agents that research".
 """
 
 
@@ -220,20 +219,6 @@ class AgentRuntimeConfig(BaseModel):
     headroom, not immunity; a request that reasons past it still stops the
     run.
 
-    ``critic_review_max_tokens`` is the same kind of budget for the Critic's
-    ``critique_report_review`` request. Since Task 8 that call renders the
-    candidate's whole packet — the frozen question and answer contract, every
-    reader section carried in full, every reader statement record, the target
-    inventory, the batched read excerpts, and the deterministic hard checks —
-    beside the claim digest and the source quality signals, then asks for a
-    score, three lists, and a rationale in one JSON object. Carrying the report
-    whole is why this budget stays generous: a per-section cap used to decide
-    what the model could see, and the reviewer measured a normal single-section
-    report losing its final contradiction to it. At the global cap the call
-    returned non-JSON text on both the initial attempt and the single repair in
-    three consecutive live canaries. ReAct decisions keep the global cap, and
-    the Critic no longer makes any.
-
     ``judge_max_tokens`` is the budget for the judge's ``JudgeVerdict``
     request. Once the Critic began producing a real critique, the judge hit
     the global cap scoring it and returned ``judge_output_limit`` with no
@@ -247,7 +232,7 @@ class AgentRuntimeConfig(BaseModel):
     failing the run. A decision is not a small reply either — it must carry the
     agent's reasoning, one tool call, and that call's arguments. The Critic
     itself no longer makes decision requests at all; the agents that do are the
-    planner, the researcher and the fact checker.
+    planner and the researcher.
 
     ``max_sub_topics`` is how many planned sub-topics one Researcher pass
     attempts. It defaults to the Planner's own ceiling of seven, so the
@@ -259,22 +244,22 @@ class AgentRuntimeConfig(BaseModel):
     bounded harder than ``tool_budget``. The planner spends at most one
     procedural lookup, because the session's own startup recall is that
     lookup; a planner on the global ten-call budget spent all ten before it
-    produced a plan and discovered no new public evidence doing it. The Critic
-    is ``0`` because it has no tool path at all: its requested budget and its
-    declared allowlist have to agree, and it reviews the candidate's packet
-    instead of searching. Keys are
-    the six production agent names — a misspelled key would leave the agent
+    produced a plan and discovered no new public evidence doing it. Every
+    other agent's entry here is ``0``: the researcher is the only agent that
+    searches, the source evaluator and the writer need no tools, and the
+    Evidence Verifier's calls are tool-free by contract (§5.2, §5.4). Keys are
+    the five production agent names — a misspelled key would leave the agent
     on the global budget while the configuration read as bound, so an
     unknown key is rejected rather than ignored.
 
-    ``claim_batch_size`` and ``claim_batches_per_pass`` bound the Fact
-    Checker's claim work. They replace the hidden five-claim prefix that used
-    to be ``fact_checker.DEFAULT_MAX_CLAIMS``: every extraction batch of one
-    measured run accepted exactly five claims, so a sixth claim the model
-    returned did not exist and the topics behind it were starved. The batch
-    size is now an explicit setting, a pass runs a bounded number of batches,
-    and every claim a pass does not adjudicate stays pending and reported
-    rather than silently dropped.
+    ``sub_topic_concurrency``, ``source_scoring_concurrency``,
+    ``verifier_batch_size`` and ``verifier_concurrency`` are spec §7.3's four
+    concurrency bounds (D9/PD-27) and the *only* ones: the researcher's
+    sub-topics and the source evaluator's scoring batches run under the first
+    two, and the Evidence Verifier's Context Check and Statement Check run
+    ``verifier_batch_size`` items per call with ``verifier_concurrency`` calls
+    in flight. Each has an ``AGENTS_*`` environment override, so a live result
+    can lower one without a code change.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -288,15 +273,16 @@ class AgentRuntimeConfig(BaseModel):
     evidence_packet_chars: int = Field(default=24000, ge=1)
     prompt_context_entries: int = Field(default=8, ge=0)
     observation_summary_chars: int = Field(default=200, ge=1)
-    # The legacy default for this bound is ``fact_checker.DEFAULT_MAX_CLAIMS``
-    # (5). The two modules must agree, and a test pins them together rather
-    # than one importing the agent layer from the contract layer.
-    claim_batch_size: int = Field(default=5, ge=1)
-    claim_batches_per_pass: int = Field(default=6, ge=1)
+    # Spec §7.3's four concurrency bounds (D9/PD-27). The mission defaults the
+    # module constants carry stay as the code-level defaults; these are what a
+    # production run reads.
+    sub_topic_concurrency: int = Field(default=5, ge=1)
+    source_scoring_concurrency: int = Field(default=3, ge=1)
+    verifier_batch_size: int = Field(default=5, ge=1)
+    verifier_concurrency: int = Field(default=8, ge=1)
     planner_final_max_tokens: int = Field(default=65536, ge=1)
-    critic_review_max_tokens: int = Field(default=32768, ge=1)
     report_review_max_tokens: int = Field(default=65536, ge=1)
-    """Output headroom for the report judge's whole-report and batch requests.
+    """Output headroom for the report reviewer's whole-report and batch requests.
 
     Completion tokens include reasoning: the 32768 cap truncated a live
     whole-report review despite its comparatively small structured reply.
@@ -304,17 +290,6 @@ class AgentRuntimeConfig(BaseModel):
     """
     judge_max_tokens: int = Field(default=32768, ge=1)
     react_decision_max_tokens: int = Field(default=32768, ge=1)
-    claim_verification_max_tokens: int = Field(default=65536, ge=1)
-    """Output headroom for the Fact Checker's per-claim verdict requests.
-
-    The adjudication reasons at ``max`` over a ~4k-token packet, so its
-    completion tokens are almost all reasoning. Audit-2 measured 17 completed
-    adjudications at up to 29162 tokens (four above 24000) and two more that
-    stopped at exactly the old 32768 cap, the second of which ended the pass.
-    65536 is the ceiling a thinking-enabled request has completed under with
-    this provider, not a known maximum; the one high-effort retry still bounds
-    a request that reasons past it.
-    """
 
     @model_validator(mode="after")
     def validate_tool_budget_overrides(self) -> "AgentRuntimeConfig":
@@ -353,18 +328,21 @@ class AgentRuntimeConfig(BaseModel):
 class GraphConfig(BaseModel):
     """Bounds and durability for the macro research loop.
 
-    ``max_iterations`` is the macro refinement budget the Critic spends;
-    ``AgentRuntimeConfig.max_iterations`` is the *micro* ReAct bound inside
-    one agent. They are deliberately separate numbers.
+    ``max_extra_passes`` is how many *extra* research passes the graph may buy
+    after the first one (D4, §6.5): the first pass always runs, and an extra
+    pass runs only when required targets are still missing and only for those
+    targets. Zero is a legitimate ceiling — a run that may buy no extra pass —
+    and ``AgentRuntimeConfig.max_iterations`` is the *micro* ReAct bound inside
+    one agent; the two are deliberately separate numbers.
 
     There is no ``recursion_limit`` setting: LangGraph's superstep bound is
-    derived from ``max_iterations`` and the graph's node count, and a second
-    knob that could contradict the first is a bug waiting to happen.
+    derived from this ceiling and the graph's node count, and a second knob
+    that could contradict the first is a bug waiting to happen.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    max_iterations: int = Field(default=3, ge=1)
+    max_extra_passes: int = Field(default=1, ge=0)
     checkpointing_enabled: bool = False
 
 
@@ -382,13 +360,14 @@ EVALUATION_AGENT_KEYS = PRODUCTION_AGENT_NAMES
 # DeepSeek V4 Flash supports exactly two enabled efforts: high and max. The
 # original OpenAI baseline's low/medium levels map onto them as approved in
 # the cutover spec: the two cheapest agents to high, everything else to max.
+# Production parity (on by default) resolves the target from
+# ``llm.model_overrides`` instead; this profile is what an experiment uses.
 _DEFAULT_TARGET_EFFORTS: dict[str, ReasoningEffort] = {
     "planner": "max",
     "researcher": "high",
     "source_evaluator": "high",
-    "fact_checker": "max",
-    "synthesizer": "max",
-    "critic": "max",
+    "evidence_verifier": "high",
+    "report_writer": "high",
 }
 
 
@@ -539,15 +518,17 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
-    "AGENTS_CLAIM_BATCH_SIZE": ("agents", "claim_batch_size"),
-    "AGENTS_CLAIM_BATCHES_PER_PASS": ("agents", "claim_batches_per_pass"),
+    # Spec §7.3's four concurrency bounds (D9/PD-27).
+    "AGENTS_SUB_TOPIC_CONCURRENCY": ("agents", "sub_topic_concurrency"),
+    "AGENTS_SOURCE_SCORING_CONCURRENCY": (
+        "agents",
+        "source_scoring_concurrency",
+    ),
+    "AGENTS_VERIFIER_BATCH_SIZE": ("agents", "verifier_batch_size"),
+    "AGENTS_VERIFIER_CONCURRENCY": ("agents", "verifier_concurrency"),
     "AGENTS_PLANNER_FINAL_MAX_TOKENS": (
         "agents",
         "planner_final_max_tokens",
-    ),
-    "AGENTS_CRITIC_REVIEW_MAX_TOKENS": (
-        "agents",
-        "critic_review_max_tokens",
     ),
     "AGENTS_REPORT_REVIEW_MAX_TOKENS": (
         "agents",
@@ -561,11 +542,7 @@ _ENVIRONMENT_OVERRIDES = {
         "agents",
         "react_decision_max_tokens",
     ),
-    "AGENTS_CLAIM_VERIFICATION_MAX_TOKENS": (
-        "agents",
-        "claim_verification_max_tokens",
-    ),
-    "GRAPH_MAX_ITERATIONS": ("graph", "max_iterations"),
+    "GRAPH_MAX_EXTRA_PASSES": ("graph", "max_extra_passes"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),
     "OUTPUT_DIRECTORY": ("output", "directory"),
     "OUTPUT_DEFAULT_FORMAT": ("output", "default_format"),

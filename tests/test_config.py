@@ -8,8 +8,11 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from deep_research.main import load_settings
 from deep_research.observability import Tracker
 from deep_research.utils.config import (
+    PRODUCTION_AGENT_NAMES,
+    SERVICE_ROLE_NAMES,
     AgentRuntimeConfig,
     ConfigSettings,
     EffectiveModelConfig,
@@ -486,28 +489,34 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             8192,
         ),
         (
-            "AGENTS_CRITIC_REVIEW_MAX_TOKENS",
-            ("agents", "critic_review_max_tokens"),
-            "16384",
-            16384,
+            "AGENTS_SUB_TOPIC_CONCURRENCY",
+            ("agents", "sub_topic_concurrency"),
+            "2",
+            2,
+        ),
+        (
+            "AGENTS_SOURCE_SCORING_CONCURRENCY",
+            ("agents", "source_scoring_concurrency"),
+            "1",
+            1,
+        ),
+        (
+            "AGENTS_VERIFIER_BATCH_SIZE",
+            ("agents", "verifier_batch_size"),
+            "10",
+            10,
+        ),
+        (
+            "AGENTS_VERIFIER_CONCURRENCY",
+            ("agents", "verifier_concurrency"),
+            "4",
+            4,
         ),
         (
             "AGENTS_JUDGE_MAX_TOKENS",
             ("agents", "judge_max_tokens"),
             "12288",
             12288,
-        ),
-        (
-            "AGENTS_CLAIM_BATCH_SIZE",
-            ("agents", "claim_batch_size"),
-            "3",
-            3,
-        ),
-        (
-            "AGENTS_CLAIM_BATCHES_PER_PASS",
-            ("agents", "claim_batches_per_pass"),
-            "2",
-            2,
         ),
         ("OUTPUT_DIRECTORY", ("output", "directory"), "env-output/", "env-output/"),
         ("OUTPUT_DEFAULT_FORMAT", ("output", "default_format"), "json", "json"),
@@ -754,7 +763,6 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.prompt_context_entries == 8
     assert settings.agents.observation_summary_chars == 200
     assert settings.agents.planner_final_max_tokens == 65536
-    assert settings.agents.critic_review_max_tokens == 32768
 
 
 def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
@@ -764,37 +772,6 @@ def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
 
     assert settings.agents.source_evaluator.batch_size == 12
     assert settings.agents.source_evaluator.max_total_sources == 36
-
-
-def test_the_claim_batch_bounds_default_to_the_ruled_values(
-    config_path: Path,
-) -> None:
-    """``DEFAULT_MAX_CLAIMS`` stops being a hidden prefix and becomes a setting."""
-    from deep_research.agents.fact_checker import DEFAULT_MAX_CLAIMS
-
-    settings = load_config(str(config_path))
-
-    assert settings.agents.claim_batch_size == 5
-    assert settings.agents.claim_batch_size == DEFAULT_MAX_CLAIMS
-    assert settings.agents.claim_batches_per_pass == 6
-
-
-def test_the_shipped_config_file_carries_the_claim_batch_bounds() -> None:
-    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
-
-    assert raw["agents"]["claim_batch_size"] == 5
-    assert raw["agents"]["claim_batches_per_pass"] == 6
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [{"claim_batch_size": 0}, {"claim_batches_per_pass": 0}],
-)
-def test_a_claim_batch_bound_below_one_is_rejected(
-    overrides: dict[str, int],
-) -> None:
-    with pytest.raises(ValidationError):
-        AgentRuntimeConfig(**overrides)
 
 
 def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:
@@ -830,22 +807,12 @@ def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
     budgets = {
         "llm.max_tokens": settings.llm.max_tokens,
         "planner_final_max_tokens": settings.agents.planner_final_max_tokens,
-        "critic_review_max_tokens": settings.agents.critic_review_max_tokens,
         "judge_max_tokens": settings.agents.judge_max_tokens,
         "react_decision_max_tokens": settings.agents.react_decision_max_tokens,
-        "claim_verification_max_tokens": (
-            settings.agents.claim_verification_max_tokens
-        ),
     }
 
     for name, value in budgets.items():
         assert value >= 32768, f"{name} is still pinned at {value}"
-
-
-def test_the_shipped_config_file_carries_the_critic_review_budget() -> None:
-    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
-
-    assert raw["agents"]["critic_review_max_tokens"] == 32768
 
 
 def test_the_shipped_config_file_carries_the_uniform_token_budget() -> None:
@@ -894,7 +861,6 @@ def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
         ("prompt_context_entries", -1),
         ("observation_summary_chars", 0),
         ("planner_final_max_tokens", 0),
-        ("critic_review_max_tokens", 0),
         ("judge_max_tokens", 0),
     ],
 )
@@ -913,11 +879,11 @@ def test_agent_runtime_config_rejects_unbounded_values(
 
 def test_agent_budgets_resolve_without_changing_global_default():
     config = AgentRuntimeConfig(
-        tool_budget=10, tool_budget_overrides={"planner": 1, "critic": 0}
+        tool_budget=10, tool_budget_overrides={"planner": 1, "report_writer": 0}
     )
     assert config.tool_budget_for("planner") == 1
     assert config.tool_budget_for("researcher") == 10
-    assert config.tool_budget_for("critic") == 0
+    assert config.tool_budget_for("report_writer") == 0
 
 
 def test_an_agent_budget_override_is_keyed_by_the_canonical_agent_name() -> None:
@@ -946,11 +912,11 @@ def test_an_agent_budget_override_rejects_a_negative_budget(budget: int) -> None
 
 
 def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
-    """The shipped overrides are the plan's exact values, and no seventh key.
+    """The shipped overrides are the plan's exact values, and no sixth key.
 
-    ``critic: 0`` is Task 8's value: the Critic reviews the candidate's packet
-    and runs no ReAct loop at all, so its budget is a declaration rather than
-    a bound it might spend.
+    Every entry but the researcher's is a declaration rather than a bound it
+    might spend: the researcher is the only agent that searches, and the
+    evidence verifier and the writer run tool-free calls by contract.
     """
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
@@ -958,10 +924,9 @@ def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
     assert raw["agents"]["tool_budget_overrides"] == {
         "planner": 1,
         "researcher": 20,
-        "fact_checker": 10,
         "source_evaluator": 0,
-        "synthesizer": 0,
-        "critic": 0,
+        "evidence_verifier": 0,
+        "report_writer": 0,
     }
 
 
@@ -985,14 +950,15 @@ def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
 
     assert raw["llm"]["model_overrides"] == {
         "planner": {"reasoning_effort": "max"},
-        "fact_checker": {"reasoning_effort": "max"},
-        "synthesizer": {"reasoning_effort": "max"},
-        "critic": {"reasoning_effort": "max"},
         "researcher": {"reasoning_effort": "high"},
         "source_evaluator": {"reasoning_effort": "high"},
+        # Review item 13 / F8: G2's live run measured a 75.9 s Context Check
+        # against the 60 s transport default.
+        "evidence_verifier": {"reasoning_effort": "high", "timeout": 240.0},
+        "report_writer": {"reasoning_effort": "high"},
         # Task 10's terminal semantic reviewer, resolved as its own service
-        # role: a separate call role with its own effort, not a seventh agent.
-        "report_judge": {
+        # role: a separate call role with its own effort, not an agent.
+        "report_reviewer": {
             "reasoning_effort": "max",
             "timeout": 360.0,
             "retry_count": 1,
@@ -1005,12 +971,12 @@ def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
 
 
 def test_the_shipped_service_role_is_configured_but_is_not_an_agent() -> None:
-    """The report judge resolves like an agent and is counted like none.
+    """The report reviewer resolves like an agent and is counted like none.
 
     Preflight has to validate the role, or a mistyped model fails a paid run at
-    its first review request; and the six-agent registry must not grow, or
-    every consumer that means "the agents that research" would pick up a
-    reviewer that never researches and has no tool budget to spend.
+    its first review request; and the agent registry must not grow, or every
+    consumer that means "the agents that research" would pick up a reviewer
+    that never researches and has no tool budget to spend.
     """
     from deep_research.providers import validate_agent_model_configs
     from deep_research.utils.config import (
@@ -1020,16 +986,16 @@ def test_the_shipped_service_role_is_configured_but_is_not_an_agent() -> None:
 
     settings = load_config("config.yaml")
 
-    assert SERVICE_ROLE_NAMES == ("report_judge",)
-    assert "report_judge" not in PRODUCTION_AGENT_NAMES
+    assert SERVICE_ROLE_NAMES == ("report_reviewer",)
+    assert "report_reviewer" not in PRODUCTION_AGENT_NAMES
     resolved = validate_agent_model_configs(
         settings.llm, (*PRODUCTION_AGENT_NAMES, *SERVICE_ROLE_NAMES)
     )
-    assert resolved["report_judge"].reasoning_effort == "max"
-    assert settings.llm.resolve_for("report_judge").reasoning_effort == "max"
+    assert resolved["report_reviewer"].reasoning_effort == "max"
+    assert settings.llm.resolve_for("report_reviewer").reasoning_effort == "max"
     # The role is not a place for a tool budget: the table still refuses it.
     with pytest.raises(ValidationError):
-        AgentRuntimeConfig(tool_budget_overrides={"report_judge": 3})
+        AgentRuntimeConfig(tool_budget_overrides={"report_reviewer": 3})
 
 
 def test_the_shipped_per_agent_efforts_are_supported_by_the_provider() -> None:
@@ -1053,9 +1019,8 @@ def test_the_shipped_per_agent_efforts_are_supported_by_the_provider() -> None:
         "planner": "max",
         "researcher": "high",
         "source_evaluator": "high",
-        "fact_checker": "max",
-        "synthesizer": "max",
-        "critic": "max",
+        "evidence_verifier": "high",
+        "report_writer": "high",
     }
 
 
@@ -1078,7 +1043,7 @@ def test_an_unsupported_agent_effort_fails_before_any_run() -> None:
 def test_graph_settings_default_to_a_bounded_uncheckpointed_run() -> None:
     settings = ConfigSettings()
 
-    assert settings.graph.max_iterations == 3
+    assert settings.graph.max_extra_passes == 1
     assert settings.graph.checkpointing_enabled is False
 
 
@@ -1086,33 +1051,34 @@ def test_graph_settings_load_from_yaml(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
         yaml.safe_dump(
-            {"graph": {"max_iterations": 5, "checkpointing_enabled": True}}
+            {"graph": {"max_extra_passes": 5, "checkpointing_enabled": True}}
         ),
         encoding="utf-8",
     )
 
     settings = load_config(str(path))
 
-    assert settings.graph.max_iterations == 5
+    assert settings.graph.max_extra_passes == 5
     assert settings.graph.checkpointing_enabled is True
 
 
 def test_graph_settings_take_environment_overrides(
     config_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("GRAPH_MAX_ITERATIONS", "7")
+    monkeypatch.setenv("GRAPH_MAX_EXTRA_PASSES", "7")
     monkeypatch.setenv("GRAPH_CHECKPOINTING_ENABLED", "true")
 
     settings = load_config(str(config_path))
 
-    assert settings.graph.max_iterations == 7
+    assert settings.graph.max_extra_passes == 7
     assert settings.graph.checkpointing_enabled is True
 
 
-def test_a_zero_iteration_budget_is_rejected(tmp_path: Path) -> None:
+def test_a_negative_extra_pass_budget_is_rejected(tmp_path: Path) -> None:
+    """Zero is a legal ceiling (buy no extra pass); a negative one is not."""
     path = tmp_path / "config.yaml"
     path.write_text(
-        yaml.safe_dump({"graph": {"max_iterations": 0}}), encoding="utf-8"
+        yaml.safe_dump({"graph": {"max_extra_passes": -1}}), encoding="utf-8"
     )
 
     with pytest.raises(ValueError):
@@ -1123,17 +1089,17 @@ def test_request_overrides_deep_merge_after_environment(
     config_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GRAPH_MAX_ITERATIONS", "4")
+    monkeypatch.setenv("GRAPH_MAX_EXTRA_PASSES", "4")
 
     settings = load_config(
         str(config_path),
         overrides={
-            "graph": {"max_iterations": 2},
+            "graph": {"max_extra_passes": 2},
             "llm": {"model_overrides": {"critic": "gpt-4.1-mini"}},
         },
     )
 
-    assert settings.graph.max_iterations == 2
+    assert settings.graph.max_extra_passes == 2
     assert settings.llm.model == "gpt-4o"
     assert settings.llm.model_overrides == {
         "planner": "gpt-4o-mini",
@@ -1174,9 +1140,8 @@ def test_evaluation_defaults_match_the_approved_baseline() -> None:
         "planner": "max",
         "researcher": "high",
         "source_evaluator": "high",
-        "fact_checker": "max",
-        "synthesizer": "max",
-        "critic": "max",
+        "evidence_verifier": "high",
+        "report_writer": "high",
     }
     assert evaluation.judge_model == "deepseek-v4-flash"
     assert evaluation.judge_reasoning_effort == "max"
@@ -1345,3 +1310,20 @@ def test_a_request_budget_ceiling_reaches_settings_only_through_an_override() ->
     assert canary.request_budget.stop_fraction == 0.9
     assert canary.request_budget.openai_attempt_ceiling is None
     assert settings.request_budget == RequestBudgetConfig()
+
+
+def test_the_evidence_verifier_pipeline_config() -> None:
+    settings = load_settings("config.yaml")
+    assert settings.graph.max_extra_passes == 1
+    assert settings.agents.tool_budget_overrides["researcher"] == 20
+    assert settings.llm.resolve_for("evidence_verifier").reasoning_effort == "high"
+    assert settings.llm.resolve_for("report_writer").reasoning_effort == "high"   # F10: the one effort source
+    assert settings.llm.resolve_for("report_reviewer").timeout == 360.0
+    assert set(settings.agents.tool_budget_overrides) <= set(PRODUCTION_AGENT_NAMES)
+    assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
+    assert SERVICE_ROLE_NAMES == ("report_reviewer",)
+    # Spec 7.3 (D9/PD-27): the four concurrency caps, one assertion each.
+    assert settings.agents.sub_topic_concurrency == 5
+    assert settings.agents.source_scoring_concurrency == 3
+    assert settings.agents.verifier_batch_size == 5
+    assert settings.agents.verifier_concurrency == 8

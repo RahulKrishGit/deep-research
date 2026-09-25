@@ -28,7 +28,7 @@ from typing import TypedDict
 from pydantic import JsonValue
 
 from deep_research.agents.critic import route_decision
-from deep_research.agents.report_review import semantic_review_passes
+from deep_research.agents.report_reviewer import semantic_review_passes
 from deep_research.utils.types import (
     GAP_MATERIAL_SEVERITIES,
     QUALITY_CONTRACT_VERSION,

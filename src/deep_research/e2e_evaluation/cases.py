@@ -36,7 +36,7 @@ from deep_research.agents.report import (
 )
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActRun, ReActStep
-from deep_research.agents.synthesizer import (
+from deep_research.agents.report_writer import (
     evidence_report_filename,
     quality_report_filename,
     report_filename,

@@ -1087,7 +1087,7 @@ async def test_an_accepted_run_publishes_both_artifacts_and_one_memory_entry(
     # beside a run whose own status computes `partial` — and nothing asserted
     # this, so a double that never carried the composition fingerprint could
     # silently discard every review the graph recorded.
-    from deep_research.agents.report_review import semantic_review_passes
+    from deep_research.agents.report_reviewer import semantic_review_passes
 
     assert state.report_review is not None
     assert state.report_review.status == "scored"

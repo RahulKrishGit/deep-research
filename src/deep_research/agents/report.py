@@ -3692,7 +3692,7 @@ def render_quality_record(
     from deep_research.agents.evidence import (  # noqa: PLC0415
         resolve_retained_work_keys,
     )
-    from deep_research.agents.report_review import (  # noqa: PLC0415
+    from deep_research.agents.report_reviewer import (  # noqa: PLC0415
         composition_semantic_fingerprint,
     )
 
