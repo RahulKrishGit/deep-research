@@ -2098,8 +2098,8 @@ def _invariant_empty_answer_answered_nothing(run: ReplayRun) -> str | None:
     if answered:
         return f"the run answered {sorted(answered)} without usable evidence"
     quality = run.state.quality
-    if quality is not None and quality.answered_targets:
-        return "the quality snapshot counted answered targets"
+    if quality is not None and quality.answered_target_ids:
+        return "the quality snapshot recorded answered target ids"
     composition = run.state.composition
     missing = set(quality.missing_required_target_ids) if quality else set()
     listed = (
@@ -2560,27 +2560,20 @@ def _invariant_no_ranked_constraints_for_a_factual_answer(
 ) -> str | None:
     """A measurement question is answered by its reading, not by a ranking.
 
-    The ranking is a structure the composer is able to fill for any question,
-    which is exactly why a case has to show it did not: an answer whose kind is
-    not ``constraints`` and whose rows present no option as the best one is the
-    answer the question asked for. The kind is read from the composition rather
-    than required to be one particular word, because "factual", "historical"
-    and "comparison" are three shapes of the same refusal to rank.
+    A ranking is a structure no pass of this pipeline fills, which is exactly
+    why a case has to show it did not: an answer whose kind is not
+    ``constraints`` is the answer the question asked for. The kind is read from
+    the composition rather than required to be one particular word, because
+    "factual", "historical" and "comparison" are three shapes of the same
+    refusal to rank.
     """
     composition = run.state.composition
     if composition is None:
         return "the run composed no report"
-    if composition.constraints:
-        return (
-            f"an answer that was not a constraint question carried "
-            f"{len(composition.constraints)} ranked constraint row(s)"
-        )
     if composition.answer_kind == "constraints":
         return "the run answered a measurement question as a constraint ranking"
     # No answer-row clause: the merged writer publishes no answer table, so
-    # "the answer has a row" is not a fact this run can carry. The structure
-    # the composer is able to fill for a constraints question -- the ranked
-    # rows -- is what the row is about.
+    # "the answer has a row" is not a fact this run can carry.
     return None
 
 

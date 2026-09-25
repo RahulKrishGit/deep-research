@@ -15,7 +15,7 @@ import pytest
 from deep_research.agents.acquisition import UNMINED_QUANTITY_REASON
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.evidence import build_read_record
-from deep_research.agents.prompts import AgentTask, render_finding_digest
+from deep_research.agents.prompts import AgentTask
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
     HIGH_PRIORITY_THRESHOLD,
@@ -3828,12 +3828,6 @@ async def test_a_mined_figure_keeps_the_scope_and_attribution_the_page_states(
     assert len(requests) == 2
     assert "measure_scope" in requests[0]
     assert "measure_scope" in requests[1]
-    # The digest the fact checker reads describes the figure rather than only
-    # the host it was found on.
-    digest = render_finding_digest(outcome.result.findings)
-    assert "attributed to Wood Mackenzie" in digest
-    assert "scope: all segments" in digest
-    assert "released: 2025-03-04" in digest
 
 
 @pytest.mark.asyncio

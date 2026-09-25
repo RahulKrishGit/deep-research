@@ -80,7 +80,7 @@ from deep_research.utils.types import (
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
-from tests.research_fakes import synthesizer_tools
+from tests.research_fakes import report_writer_tools
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 SOURCE_URL = "https://example.org/a"
@@ -932,7 +932,7 @@ def written_state() -> ResearchState:
         ),
         # The writer declares these two; composing a report never publishes
         # through them, so the root only has to exist for the tool to be built.
-        tools=synthesizer_tools(
+        tools=report_writer_tools(
             tracker, output_root=Path(tempfile.mkdtemp(prefix="ev-t4-5-"))
         ),
         config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),

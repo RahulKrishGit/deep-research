@@ -8,7 +8,6 @@ merge is asserted on ordinary domain records.
 from __future__ import annotations
 
 from deep_research.agents.identity import (
-    claim_fingerprint,
     deduplicate_findings,
     finding_fingerprint,
     merge_source_snapshot,
@@ -90,58 +89,6 @@ def finding(
         measure_scope=measure_scope,
         release_date=release_date,
     )
-
-
-# --- claim fingerprints ---------------------------------------------------
-
-
-def test_claim_fingerprint_collapses_formatting_but_preserves_facts() -> None:
-    assert claim_fingerprint("Queue capacity fell in 2024.") == claim_fingerprint(
-        "  queue capacity FELL in 2024  "
-    )
-    assert claim_fingerprint("Queue capacity fell in 2024.") != claim_fingerprint(
-        "Queue capacity fell in 2025."
-    )
-
-
-def test_claim_fingerprint_normalizes_unicode_and_punctuation() -> None:
-    assert claim_fingerprint("Rates fell 40% in 2024.") == claim_fingerprint(
-        "RATES fell 40% in 2024"
-    )
-    # NFKC: full-width digits and a non-breaking space are formatting only.
-    assert claim_fingerprint("Capacity fell in 2024.") == claim_fingerprint(
-        "Capacity fell in\u00a0\uff12\uff10\uff12\uff14."
-    )
-
-
-def test_claim_fingerprint_preserves_numbers_units_and_comparisons() -> None:
-    baseline = claim_fingerprint("The queue holds 400 ppm.")
-    for different in (
-        "The queue holds 401 ppm.",
-        "The queue holds 400 ppb.",
-        "The queue holds more than 400 ppm.",
-        "The queue holds less than 400 ppm.",
-        "The queue holds <400 ppm.",
-        "The queue holds >400 ppm.",
-    ):
-        assert claim_fingerprint(different) != baseline
-
-
-def test_claim_fingerprint_preserves_negation_and_geography() -> None:
-    assert claim_fingerprint("The queue did not grow.") != claim_fingerprint(
-        "The queue did grow."
-    )
-    assert claim_fingerprint("Adoption rose in India.") != claim_fingerprint(
-        "Adoption rose in China."
-    )
-
-
-def test_claim_fingerprint_is_a_deterministic_sha256_digest() -> None:
-    digest = claim_fingerprint("Queue capacity fell in 2024.")
-
-    assert digest == claim_fingerprint("Queue capacity fell in 2024.")
-    assert len(digest) == 64
-    assert set(digest) <= set("0123456789abcdef")
 
 
 # --- finding fingerprints -------------------------------------------------

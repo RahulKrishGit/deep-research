@@ -928,8 +928,6 @@ class ReportQualitySnapshot(ContractModel):
     # representable as incomplete rather than unconstructible. The bounds are
     # unchanged.
     cited_sources: int = Field(default=0, ge=0)
-    answered_targets: int = Field(default=0, ge=0)
-    """Read by the e2e invariant that an empty answer counted no obligation."""
     uncited_settled_points: int = Field(default=0, ge=0)
     hard_failures: list[str] = Field(default_factory=list)
     # --- Task 10: the semantic judgement, kept apart from the counts --------
@@ -1320,18 +1318,6 @@ class ReportStatement(ContractModel):
     target_ids: list[str] = Field(default_factory=list)
     finding_ids: list[str] = Field(default_factory=list)
 
-    @property
-    def substantive(self) -> bool:
-        """True when this statement asserts something about the world.
-
-        Every statement a written pass records does. The claim-era statement
-        modes that let a non-asserting record exist (the ``context`` sentences
-        a reader report used to print as framing) went with the claim
-        machinery, so the reader no longer offers one for judgement and the
-        reviewer's packet keeps the flag it reads as ``True``.
-        """
-        return True
-
 
 class ReportPoint(ContractModel):
     """One printed statement, with the sources it rests on.
@@ -1510,10 +1496,6 @@ class ReportComposition(ContractModel):
     limitations: list[str] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
     summary: list[ReportPoint] = Field(default_factory=list)
-    constraints: list[ReportPoint] = Field(default_factory=list)
-    """The ranked-constraint rows. Kept as a readable field, always empty: no
-    pass of this pipeline ranks, and the reviewer's label pass and the e2e
-    invariant that a non-constraint answer carries no ranked row both read it."""
     sections: list[ReportSection] = Field(default_factory=list)
     uncertainty_notes: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
@@ -1566,7 +1548,7 @@ class ReportComposition(ContractModel):
         stays the reader's.
         """
         rows: list[ReportStatement] = []
-        for point in [*self.summary, *self.constraints]:
+        for point in self.summary:
             if point.statement is not None:
                 rows.append(point.statement)
         for section in self.sections:
