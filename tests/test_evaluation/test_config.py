@@ -966,7 +966,20 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # No other agent's module changed and ``agents.prompts`` was untouched
     # (RES-2's fixes are stated by the agents that read the shared contract),
     # so the other four target pins and the Judge pin are unchanged.
-    "researcher": "bce3b184f341",
+    # Fable's re-review round 1 (agent://FablePromptReReview1) closed five
+    # items in this module: the relevance line now reads "bears on the
+    # research question or on any planned target" so a passage answering
+    # another sub-topic's target is still a finding (B1); the guidance's
+    # second header is "What the evidence has to establish:" so one request
+    # carries one stop rule (B2); the provenance block names the reporting-
+    # verb cue family and the heading of the excerpt's own passage rather
+    # than a page-wide "section heading" (B3); the figure example's vintage
+    # is the edition its passage names verbatim (B4); and the two examples
+    # that carried an energy unit are neutral (B5). The module source moved
+    # `bce3b184f341` -> `cb4dd2d828c8`.
+    # No other agent's module changed and ``agents.prompts`` was untouched,
+    # so the other four target pins and the Judge pin are unchanged.
+    "researcher": "cb4dd2d828c8",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
