@@ -2778,7 +2778,7 @@ def test_the_researcher_prompt_requires_reading_and_prefers_primary_sources(
     # allowed_actions line governs, two searches are followed by a read, and
     # only a discovered URL can be read (review RES-1 §1, RES-2 §1).
     assert "The acquisition state line in this request is binding" in prompt
-    assert "Two searches in a row are followed by a read" in prompt
+    assert "Two searches in a row, in one turn or across turns, are followed" in prompt
     # The loop reports no finding and records no date: an extraction step
     # reads the pages it read (review RES-1 §3).
     assert "a separate extraction step reads" in prompt

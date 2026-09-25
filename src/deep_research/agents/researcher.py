@@ -135,7 +135,8 @@ RESEARCHER_SYSTEM_PROMPT = (
     "did.\n"
     "The acquisition state line in this request is binding: only the actions "
     "it lists under allowed_actions can run, and anything else is refused "
-    "before it reaches a tool. Two searches in a row are followed by a read, "
+    "before it reaches a tool. Two searches in a row, in one turn or "
+    "across turns, are followed by a read, "
     "a search on the last turn or in the last call of the budget is refused, "
     "and only a URL a search result, a memory lead or a document link "
     "discovered can be read.\n"
@@ -429,7 +430,7 @@ def render_sub_topic_guidance(
             "ones decide coverage):"
         )
         lines.append(render_planned_targets(obligations, fields=False))
-    lines.append("This sub-topic is done when:")
+    lines.append("What the evidence has to establish:")
     lines.extend(f"- {criterion}" for criterion in sub_topic.success_criteria)
     if existing_sources:
         lines.append(
@@ -553,23 +554,23 @@ _FINDING_REPLY_EXAMPLES = (
         "Example input: passage read-111111111111111111111111 locator page-4-"
         "chunk-0 of the example report at "
         "https://evidence.example.test/report (fetched for topic-01); the "
-        "passage reads \"The latest edition of the survey puts the median "
+        "passage reads \"The 2025 edition of the survey puts the median "
         "annual premium at 480 euros in 2024, up from 455 euros in 2023.\"; "
         "the Planned targets list names topic-01-target-01 [required] (the "
         "median annual premium the survey reports for 2024).",
-        '{"findings":[{"content":"The survey\'s latest edition puts the median '
+        '{"findings":[{"content":"The 2025 edition of the survey puts the median '
         "annual premium at 480 euros in 2024, up from 455 euros in 2023.\","
         '"source_url":"https://evidence.example.test/report",'
         '"source_title":"Example report","confidence":0.9,'
         '"read_id":"read-111111111111111111111111","locator":"page-4-chunk-0",'
-        '"snippet":"The latest edition of the survey puts the median annual '
+        '"snippet":"The 2025 edition of the survey puts the median annual '
         'premium at 480 euros in 2024, up from 455 euros in 2023.",'
         '"figures":[{"value":"480","unit":"euros","period":"2024",'
         '"kind":"actual","subject":"median annual premium"},'
         '{"value":"455","unit":"euros","period":"2023","kind":"actual",'
         '"subject":"median annual premium"}],'
         '"target_ids":["topic-01-target-01"],"data_period":"2024",'
-        '"vintage":"the survey\'s latest edition"}]}',
+        '"vintage":"the 2025 edition of the survey"}]}',
     ),
     (
         "Example input: passage read-222222222222222222222222 locator page-2-"
@@ -614,8 +615,8 @@ _FINDING_DATES_CONTRACT = (
     "year\". Those phrases are the page's own relative wording, the excerpt "
     "carries them, and code resolves the period they name from the page's own "
     "date and records which date it came from. A level the page puts at a "
-    "point in time takes that reference as its period (\"28 GW at the end of "
-    "Q1'25\" is a Q1'25 figure).\n"
+    "point in time takes that reference as its period (a figure the page "
+    "places \"at the end of Q1'25\" is a Q1'25 figure).\n"
     "- The vintage is only what the page names as the edition, and it is what "
     "tells the latest statement of a quantity from an older one."
 )
@@ -640,13 +641,16 @@ _FINDING_PROVENANCE_CONTRACT = (
     "body's, and \"own\" never means the host that served a copy.\n"
     "- attribution_quote is copied character for character from the read: "
     "from the excerpt's own passage, from the passage immediately before or "
-    "after it, or from the page's own title or section heading where that "
+    "after it, or from the page's own title or the heading of the excerpt's "
+    "own passage where that "
     "names the body or the instrument. Words further down the page attribute "
     "nothing. A naming becomes an attribution through a cue beside the name: "
     "a preposition phrase (\"according to\", \"reported by\", \"reporting "
     "from\"), a possessive (\"the agency's figure\"), a body's own source "
-    "noun (\"agency data\", \"the institute's report\") or a title opening on "
-    "its name (\"ESA: capacity to reach 30 GW\"). A sentence carrying on from "
+    "noun (\"agency data\", \"the institute's report\"), a reporting verb "
+    "straight after the name (\"the agency reports\", \"the institute "
+    "found\") or a title opening on its name (\"ESA: output to reach 30 "
+    "thousand units\"). A sentence carrying on from "
     "an attributed one — \"the agency projects that the price will rise by "
     "another 3.2 percent next year, and a record 41,000 transactions are "
     "projected this year\" — is still that body's. Copy the page's words "
@@ -1010,7 +1014,7 @@ def extraction_messages(
     )
     registry_contract = (
         "Return one finding per distinct fact the passages state that bears on "
-        "the research question and on what this sub-topic asks for. "
+        "the research question or on any planned target. "
         "Navigation, site furniture, counters, carts, subscription prompts and "
         "legal boilerplate are never findings.\n"
         "- Every finding MUST copy read_id and locator exactly as the "
@@ -1106,10 +1110,11 @@ def extraction_messages(
                 )
             )
         owed_lines.append(
-            "Return an empty list when none of these passages states one of "
-            "them. Mine every passage that does for every planned target "
-            "whose question its content answers, in the same registry shape "
-            "and with the same target ids the contract above requires."
+            "Return an empty list when none of these passages states what a "
+            "planned target asks for. Mine every passage that does for every "
+            "planned target whose question its content answers, in the same "
+            "registry shape and with the same target ids the contract above "
+            "requires."
         )
         sections.append("\n".join(owed_lines))
     sections.append(
