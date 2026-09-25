@@ -1086,3 +1086,42 @@ def test_an_own_page_finding_is_attributed_to_its_publisher() -> None:
         question="Which kettle is the quietest?",
     )[1].content
     assert "    attributed to: lab.example.test" in body.splitlines()
+
+
+def test_a_kept_figure_states_its_attribution_on_its_own_line_only() -> None:
+    """Fix round 1: a figure line and a second line must not credit different bodies.
+
+    The figure line carries the Context Check's own verdict (``relayed
+    (Example Institute)``); a separate ``attributed to:`` line built from the
+    extraction-time issuer, which is empty here, would credit the relay site
+    instead and contradict it.
+    """
+    text = "Rents rose 7 percent in 2025, the Example Institute said."
+    wanted = figure("7", "percent", "2025", "actual")
+    finding = make_finding(
+        make_read(text, url="https://gazette.example.test/rents", title="Rents"), text,
+        figures=[wanted],
+    ).model_copy(update={"verification": FindingVerification(
+        status="verified",
+        figure_results=[FigureResult(
+            figure=wanted, matched=True, evidence_words=text,
+            context=FigureContext(period="2025", attribution="relayed",
+                                  organisation="Example Institute", kind="actual"),
+        )],
+    )})
+    body = statement_check_messages(
+        [StatementCheckItem(label="S001", text="Rents rose 7 percent in 2025.",
+                            findings=[finding], labels=["F01"])],
+        question="How much did rents rise?",
+    )[1].content
+    lines = body.splitlines()
+
+    assert f'    snippet: "{text}"' in lines
+    assert not [line for line in lines if line.startswith("    attributed to:")]
+    assert any(
+        line.startswith(
+            "  F01: 7 percent | period 2025 | scope none | kind actual | "
+            "relayed (Example Institute) | evidence: "
+        )
+        for line in lines
+    )
