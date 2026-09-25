@@ -144,6 +144,7 @@ from deep_research.agents.evidence_verifier import (
 from deep_research.agents.figures import (
     Quantity,
     figure_in_text,
+    is_a_date,
     parse_figure,
     quantities_in,
     same_quantity,
@@ -435,10 +436,12 @@ from deep_research.agents.verified_facts import (
 )
 from deep_research.agents.wording import (
     SCOPE_TERMS,
+    TITLE_SEPARATOR,
     clause_around,
     realized_outcome,
     stated_role,
     stated_scopes,
+    title_segments,
 )
 from deep_research.tools.passage_selection import (
     select_relevant_passages,
@@ -576,6 +579,7 @@ __all__ = [
     "check_statements",
     "Quantity",
     "figure_in_text",
+    "is_a_date",
     "parse_figure",
     "quantities_in",
     "same_quantity",
@@ -839,9 +843,11 @@ __all__ = [
     "subject_names_row",
     "verified_figures",
     "SCOPE_TERMS",
+    "TITLE_SEPARATOR",
     "clause_around",
     "realized_outcome",
     "stated_role",
     "stated_scopes",
+    "title_segments",
     "select_relevant_passages",
 ]

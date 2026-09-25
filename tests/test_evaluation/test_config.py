@@ -868,7 +868,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
     "researcher": "3853aff7e02c",
     "source_evaluator": "58c4e7d909ef",
-    "evidence_verifier": "fbad809c4414",
+    # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
+    # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
+    # the figure's own unit shape and, for the scope they propose, the reply's
+    # verdict. No other agent's text changed, and the Judge pin is unchanged.
+    "evidence_verifier": "9f5515f04833",
     "report_writer": "a3a73e32c3c0",
 }
 

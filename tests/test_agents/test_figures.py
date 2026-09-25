@@ -7,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from deep_research.agents.figures import (
+    is_a_date,
     figure_in_text,
     parse_figure,
     quantities_in,
@@ -162,3 +163,22 @@ def test_a_slash_joined_qualifier_still_reads_the_unit() -> None:
     for unit in ("MW (AC/DC)", "GW (ac/dc)", "GW (A.C.)", "MW (a/c)"):
         quantity = parse_figure("26", unit)
         assert quantity is not None and quantity.dimension == "power", unit
+
+
+@pytest.mark.parametrize(("value", "unit", "dated"), [
+    ("2 August 2025", "date", True),
+    ("August 2, 2025", "date", True),
+    ("2 Aug 2025", "date", True),
+    ("2027-08-02", "date", True),
+    ("2 August 2025", "day", True),
+    ("2", "day", False),
+    ("12", "GW", False),
+    ("45", "percent", False),
+    ("two", "weeks", False),
+    ("3", "days", False),
+    ("2025", "year", False),
+])
+def test_a_date_is_not_a_measure(value, unit, dated) -> None:
+    """Run-2 improvement 9: the run's five spurious corrections were all dates
+    read as measured figures, so a date figure is told apart by its own words."""
+    assert is_a_date(value, unit) is dated

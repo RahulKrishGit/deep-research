@@ -161,6 +161,41 @@ def unit_dimension(unit: str) -> UnitDimension | None:
     return scale[0] if scale else None
 
 
+_MONTH_WORDS = frozenset({
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct",
+    "nov", "dec",
+})
+_ISO_DATE = re.compile(r"(?<!\d)\d{4}-\d{2}(?:-\d{2})?(?!\d)")
+# The units that name a date outright, and only those: "days" and "years" name
+# durations, which the run's phrase "at the latest two weeks after" also does,
+# so a period correction on those is a correction like any other.
+_DATE_UNITS = frozenset({"date", "dates", "deadline", "deadlines"})
+
+
+def is_a_date(value: str, unit: str) -> bool:
+    """Whether a figure is a calendar date rather than a measured quantity (improvement 9).
+
+    A date is not a measure: it names no unit dimension of its own, and its
+    value reads as a calendar date ("2 August 2025", "August 2, 2025",
+    "2027-08-02") or its unit names one ("date", "deadline"). The live run
+    recorded five of them as stated figures, and the verifier then "corrected"
+    each figure's period to the date the figure *was*, publishing them as
+    corrected context and dropping one for the ISO spelling of the date its own
+    words spell out. Nothing about such a figure's period is a correction of
+    anything: the date is what the page states.
+    """
+    if unit_dimension(unit) is not None:
+        return False
+    text = cosmetic_text(f"{value} {unit}")
+    if _ISO_DATE.search(text):
+        return True
+    if set(text.split()) & _MONTH_WORDS:
+        return True
+    return cosmetic_text(unit) in _DATE_UNITS
+
+
 def parse_figure(value: str, unit: str) -> Quantity | None:
     """A structured figure as a quantity, or ``None`` when ``value`` is no number."""
     return _quantity(value.strip(), unit.strip())

@@ -58,7 +58,7 @@ from deep_research.agents.evidence import (
     own_organisation_on_page,
     relay_attribution_on_page,
 )
-from deep_research.agents.figures import figure_in_text
+from deep_research.agents.figures import figure_in_text, is_a_date
 from deep_research.agents.identity import deduplicate_findings, finding_fingerprint
 from deep_research.agents.prompts import (
     render_structured_reply_format,
@@ -661,9 +661,15 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     period, scope, subject = figure.period or finding.data_period, finding.measure_scope, figure.subject
     corrected = False
     resolved_from: str | None = None   # the page date a relative period came from (D11)
-    if reply.period and _differs(reply.period, period):
-        page_date, _ = _page_date_basis(item)
+    # A date is not a measure (improvement 9): the date the page states *is* the
+    # figure, so a reply that proposes it as the "period" corrects nothing, and
+    # the ISO spelling of a date the words spell out is that same date, never a
+    # correction that is not on the page. The recorded fields stand unchanged and
+    # nothing is dropped for it.
+    dated = is_a_date(figure.value, figure.unit)
+    if not dated and reply.period and _differs(reply.period, period):
         if not _period_stated(words, reply.period):
+            page_date, _ = _page_date_basis(item)
             # An explicit period the words themselves state beats a relative
             # reading (fix round 1): only a page that dates the figure
             # relatively lets code resolve one. Fix round 1 guarded the
@@ -673,9 +679,18 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
             resolved = None if dated_explicitly else resolve_relative_period(words, page_date)
             if (resolved is None or not same_period(resolved, reply.period)
                     or not _agrees_with_the_years_the_words_state(words, resolved)):
+                # A period the page never states is not published, whatever the
+                # reply's verdict: the figure's own period would then be one no
+                # page states (D11; the relative-period scenario's second page).
                 return drop("correction_not_on_page")
             resolved_from = page_date
-        period, corrected = reply.period, True
+            period, corrected = reply.period, period is not None
+        else:
+            # The words state the proposal, so adopting it is a correction only
+            # where the figure had recorded a period at all (improvement 9): a
+            # figure the extraction left undated, dated by the words the reply
+            # quotes, is a fill, not a correction.
+            period, corrected = reply.period, period is not None
     elif reply.verdict == "correct" and period and not _period_stated(words, period):
         # The Context Check answers null as its prompt instructs ("null when
         # the page states none"), so a recorded period its own words do not
@@ -684,9 +699,15 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
         # stands -- the quote backs it.
         period, corrected = None, True
     if reply.scope and _differs(reply.scope, scope):
-        if not excerpt_matches(words, reply.scope):
+        if excerpt_matches(words, reply.scope):
+            scope, corrected = reply.scope, True
+        elif reply.verdict == "correct":
+            # Only the verdict that asserts a correction may cost a figure its
+            # place (improvement 9). A reply confirming the figure that also
+            # volunteers a scope its own words do not carry leaves the recorded
+            # scope standing -- which is what the run's fourth date figure lost
+            # its place to.
             return drop("correction_not_on_page")
-        scope, corrected = reply.scope, True
     proposed = (reply.subject or "").strip()
     if proposed and _differs(proposed, subject):
         if excerpt_matches(words, proposed) or excerpt_matches(item.passage, proposed):
