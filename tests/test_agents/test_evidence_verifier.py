@@ -8,6 +8,7 @@ import re
 
 import pytest
 
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.evidence_verifier import (
     _CONTEXT_CHECK_REPLY_EXAMPLES,
     _checked,
@@ -1854,3 +1855,30 @@ def test_an_own_verdict_naming_the_first_party_owner_stands() -> None:
 
     assert resolve_attribution(proposed="own", organisation="Some Other Body", finding=finding,
                                read=read, issuer=None) == ("unattributed", "apple.com")
+
+
+def test_the_statement_check_shows_the_passage_a_rules_conditions_live_in() -> None:
+    """Improvement 8: a snippet cut at the passage boundary is judged against the
+    bounded passage, so a condition or an exception past the cut is seen."""
+    snippet = "The grant covers travel when the visit is approved"
+    page = (snippet + " in advance. It does not cover stays longer than five days.")
+    finding = make_finding(make_read(page), snippet).model_copy(
+        update={"verification": FindingVerification(status="verified")})
+    item = StatementCheckItem(
+        label="S001", text="The grant covers travel.", findings=[finding], labels=["F01"],
+        passages={finding_fingerprint(finding): page},
+    )
+
+    body = statement_check_messages([item], question="What does the grant cover?")[1].content
+    assert f'    snippet: "{snippet}"' in body
+    assert '    passage: "The grant covers travel when the visit is approved in advance.' in body
+    assert "It does not cover stays longer than five days." in body
+
+    # Without the passage the block is exactly what it was before the caller
+    # had one to give: the snippet alone, with no passage line for the item.
+    without = statement_check_messages(
+        [StatementCheckItem(label="S001", text="The grant covers travel.",
+                            findings=[finding], labels=["F01"])],
+        question="What does the grant cover?",
+    )[1].content
+    assert '    passage: "' not in without

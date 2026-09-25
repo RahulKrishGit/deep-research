@@ -995,7 +995,7 @@ def evidence_verified_event(findings: Sequence[Finding]) -> ResearchEvent:
 STATEMENT_CHECK_SYSTEM_PROMPT = (
     "You check whether a drafted sentence states only what the findings it "
     "cites actually verified. You have no tools and no web access: judge "
-    "only from the figures, evidence words and verified snippets shown for "
+    "only from the figures, evidence words, snippets and passages shown for "
     "each sentence."
 )
 
@@ -1003,20 +1003,25 @@ STATEMENT_CHECK_INSTRUCTION = (
     "Return one entry in statements for every sentence listed, naming it by "
     "its label. For each sentence give:\n"
     "- verdict: consistent when the sentence states only the numbers, "
-    "dates, subject, scope, organisation and forecast-vs-actual distinction "
-    "its cited findings' figures actually state and — for a finding with no "
-    "figure — the statement its verified snippet makes; corrected when a "
-    "minimal rewording would make it so; inconsistent when it states a "
-    "number, date, subject, scope, organisation, forecast/actual distinction "
-    "or statement those figures and snippets do not support, or invents "
-    "anything. A judgement, ranking or recommendation stated as fact rather "
-    "than as the judgement of the source that made it is not supported as "
-    "written: correct it by attributing it to that source.\n"
+    "dates, subject, scope, organisation, forecast-vs-actual distinction, "
+    "and the conditions, exceptions and object a rule it reports attaches "
+    "to, that its cited findings' figures, snippets and passages actually "
+    "state and — for a finding with no figure — the statement its verified "
+    "snippet makes; corrected when a minimal rewording would make it so; "
+    "inconsistent when it states a number, date, subject, scope, "
+    "organisation, forecast/actual distinction, condition, exception or "
+    "object those figures and words do not support, states a conditional "
+    "rule as unconditional, drops a condition or exception the cited words "
+    "carry, or invents anything. A judgement, ranking or recommendation "
+    "stated as fact rather than as the judgement of the source that made it "
+    "is not supported as written: correct it by attributing it to that "
+    "source.\n"
     "- corrected_text: for corrected, the minimally reworded sentence; "
     "otherwise empty.\n"
     "- reason: one short sentence.\n"
-    "Never invent a number, date, subject, scope, or organisation the cited "
-    "findings do not state."
+    "Never invent a number, date, subject, scope, organisation, condition, "
+    "exception or object the cited findings do not state, and never drop one "
+    "their words carry."
 )
 
 _STATEMENT_CHECK_REPLY_EXAMPLES = (
@@ -1031,6 +1036,17 @@ _STATEMENT_CHECK_REPLY_EXAMPLES = (
         'million households had rooftop solar.","reason":"The finding states an '
         'actual for 2025, not a forecast."}]}',
     ),
+    (
+        "Example input: S02: \"The grant covers travel.\" | F02: (no kept "
+        "figures) | snippet: \"The grant covers travel when the visit is "
+        "approved in advance\" | passage: \"The grant covers travel when the "
+        "visit is approved in advance. It does not cover stays longer than "
+        "five days.\"",
+        '{"statements":[{"label":"S02","verdict":"corrected","corrected_text":'
+        '"The grant covers travel when the visit is approved in advance, and not '
+        'for stays longer than five days.","reason":"The cited words carry a '
+        'condition and an exception the sentence omits."}]}',
+    ),
 )
 
 
@@ -1041,6 +1057,17 @@ class StatementCheckItem(ContractModel):
     text: str
     findings: list[Finding]
     labels: list[str]
+    passages: dict[str, str] = Field(default_factory=dict)
+    """Finding id (``finding_fingerprint``) -> the bounded passage of its page.
+
+    Improvement 8: a snippet is cut at the passage boundary, so the condition,
+    exception or object a reported rule attaches to is often just outside it --
+    "released under an open licence that allows for" ends where the exception
+    to that rule begins. The caller that holds the run's reads supplies
+    ``context_passage`` for each cited finding, and the block shows it beside
+    the snippet; a caller with no reads in hand leaves this empty and the block
+    is exactly what it was.
+    """
 
 
 class StatementVerdictDraft(ContractModel):
@@ -1087,6 +1114,11 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
         body = "; ".join(figures) if figures else "(no kept figures)"
         lines.append(f"  {label}: {body}")
         lines.append(f'    snippet: "{finding.snippet or finding.content}"')
+        passage = item.passages.get(finding_fingerprint(finding))
+        if passage:
+            # The wider words the snippet was cut out of (improvement 8), so a
+            # condition or exception just past the cut is judged, not guessed.
+            lines.append(f'    passage: "{passage}"')
         if figures:
             continue
         name = finding.attributed_issuer or publisher_identity(finding.source_url)
