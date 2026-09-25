@@ -936,8 +936,15 @@ from deep_research.utils.config import (
 # and a closed period's optional outcome target. Module source and prompt
 # strings of the planner's own; the researcher, the other three and the judge
 # are unchanged.
+# The planner's bounded degraded retry moved the planner, 7909a3fde554 ->
+# 646e8c2dbdf3: every plan-side structured request (the draft, its repairs, the
+# review and the confirming review) that the output limit truncates is re-asked
+# once with the same messages, schema and budget at OUTPUT_LIMIT_RETRY_EFFORT,
+# recorded as a planner_output_limit_retry, and a second truncation propagates
+# as before. Module source only: no prompt string moved, and the researcher,
+# the other three and the judge are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "7909a3fde554",
+    "planner": "646e8c2dbdf3",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required

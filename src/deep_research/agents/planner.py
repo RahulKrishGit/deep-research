@@ -15,15 +15,23 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from typing import Literal, TypeAlias, get_args
+from typing import Any, Literal, TypeAlias, get_args
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 
-from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.base import (
+    OUTPUT_LIMIT_RETRY_EFFORT,
+    OUTPUT_LIMIT_RETRY_OUTCOMES,
+    OUTPUT_LIMIT_RETRY_READINGS,
+    AgentCompleter,
+    AgentRun,
+    BaseAgent,
+)
 from deep_research.agents.errors import (
     AgentConfigurationError,
     PlanningError,
     agent_error,
+    agent_provider_failure_details,
     planning_provider_error,
 )
 from deep_research.agents.events import agent_event
@@ -41,6 +49,7 @@ from deep_research.observability import Tracker
 from deep_research.providers import (
     ChatMessage,
     ProviderError,
+    ProviderOutputLimitError,
     StructuredOutputError,
 )
 from deep_research.tools.base import BaseTool
@@ -54,6 +63,7 @@ from deep_research.utils.types import (
     EvidenceTarget,
     FigureKind,
     MemorySnapshot,
+    ResearchError,
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
@@ -2904,6 +2914,47 @@ def _raised_problems(
     ]
 
 
+def _planner_output_limit_retry(
+    error: Exception,
+    *,
+    operation: str,
+    schema: str,
+    max_tokens: int | None,
+    outcome: str,
+) -> ResearchError:
+    """Record that a truncated plan-side request was re-asked at another effort.
+
+    The reviewer's record, for the planner's own calls: one retry, the same
+    output budget, and the outcome of the retry call itself. It exists because
+    the retry is a second paid call — without it, a plan that took two
+    requests is indistinguishable in the artifacts from one that took one — and
+    the request, effort, budget and outcome are in the *message*, which is what
+    a reader sees for an error type whose details are not projected.
+    """
+    if outcome not in OUTPUT_LIMIT_RETRY_OUTCOMES:
+        raise ValueError(f"unknown retry outcome: {outcome!r}")
+    return agent_error(
+        agent_name=PLANNER_NAME,
+        error_type="planner_output_limit_retry",
+        message=(
+            f"The {schema} plan request was truncated by the output limit; it "
+            f"was re-asked once at reasoning_effort {OUTPUT_LIMIT_RETRY_EFFORT} "
+            f"with the same {max_tokens}-token output budget, and "
+            f"{OUTPUT_LIMIT_RETRY_READINGS[outcome]}"
+        ),
+        recoverable=True,
+        details=agent_provider_failure_details(
+            operation,
+            error,
+            attempt=2,
+            schema=schema,
+            reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
+            max_tokens=max_tokens,
+            outcome=outcome,
+        ),
+    )
+
+
 class PlannerAgent(BaseAgent[ResearchPlan]):
     """Convert ``original_question`` into 1-7 distinct, prioritized sub-topics.
 
@@ -3072,11 +3123,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         plan_under_repair: Sequence[SubTopic] = (),
     ) -> _PlanAttempt:
         try:
-            self.fingerprint_call(
-                ResearchPlanDraft.__name__,
-                output_limit=self.config.planner_final_max_tokens,
-            )
-            draft = await self.provider.complete_structured(
+            draft = await self._complete_plan_request(
                 plan_messages(
                     task,
                     run,
@@ -3085,8 +3132,8 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     plan_under_repair=plan_under_repair,
                 ),
                 ResearchPlanDraft,
-                agent_name=self.name,
-                max_tokens=self.config.planner_final_max_tokens,
+                operation="plan_draft",
+                run=run,
             )
         except StructuredOutputError as error:
             raise planning_provider_error(
@@ -3144,6 +3191,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         sub_topics: Sequence[SubTopic],
         *,
         already_requested: str | None = None,
+        run: ReActRun,
     ) -> PlanReviewDraft:
         """Ask the one tool-free semantic review call about this plan.
 
@@ -3162,17 +3210,13 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             )
         self._review_calls += 1
         try:
-            self.fingerprint_call(
-                PlanReviewDraft.__name__,
-                output_limit=self.config.planner_final_max_tokens,
-            )
-            return await self.provider.complete_structured(
+            return await self._complete_plan_request(
                 plan_review_messages(
                     contract, sub_topics, repair=already_requested
                 ),
                 PlanReviewDraft,
-                agent_name=self.name,
-                max_tokens=self.config.planner_final_max_tokens,
+                operation="plan_review",
+                run=run,
             )
         except StructuredOutputError as error:
             raise planning_provider_error(
@@ -3180,6 +3224,75 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             ) from error
         except ProviderError as error:
             raise planning_provider_error("plan_review") from error
+
+    async def _complete_plan_request(
+        self,
+        messages: list[ChatMessage],
+        schema: type[Any],
+        *,
+        operation: str,
+        run: ReActRun,
+    ) -> Any:
+        """One plan-side structured request, re-asked once if it is truncated.
+
+        Every plan-side call — the draft, its two repairs, the review and the
+        confirming review — runs under ``planner_final_max_tokens``, and run 2's
+        plan call ended at 90 % of it: a request that reasons past the cap raises
+        ``ProviderOutputLimitError``, which is not retryable, and a truncated
+        first draft ended the run before any research. A truncation is the one
+        failure a different request can fix, so it is re-asked once with the
+        same messages, schema and output budget at the shared retry effort,
+        which leaves more of that budget for the answer — the reviewer's and
+        the writer's rule (``OUTPUT_LIMIT_RETRY_EFFORT``), not a larger cap.
+
+        The retry is recorded on the run whatever it returns. A second
+        truncation propagates as a redacted copy through the caller's own
+        failure path, exactly as a first truncation did before; any other
+        failure of the retry propagates through that path too.
+        """
+        budget = self.config.planner_final_max_tokens
+        self.fingerprint_call(schema.__name__, output_limit=budget)
+        try:
+            return await self.provider.complete_structured(
+                messages, schema, agent_name=self.name, max_tokens=budget
+            )
+        except ProviderOutputLimitError as error:
+            truncation = error
+        self.fingerprint_call(
+            schema.__name__,
+            output_limit=budget,
+            reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
+        )
+
+        def record(outcome: str) -> None:
+            run.errors.append(
+                _planner_output_limit_retry(
+                    truncation,
+                    operation=operation,
+                    schema=schema.__name__,
+                    max_tokens=budget,
+                    outcome=outcome,
+                )
+            )
+
+        try:
+            reply = await self.provider.complete_structured(
+                messages,
+                schema,
+                agent_name=self.name,
+                max_tokens=budget,
+                reasoning_effort=OUTPUT_LIMIT_RETRY_EFFORT,
+            )
+        except ProviderOutputLimitError as retry_error:
+            record("truncated")
+            raise retry_error.redacted_copy(
+                ProviderOutputLimitError.SAFE_MESSAGE
+            ) from None
+        except ProviderError:
+            record("failed")
+            raise
+        record("answered")
+        return reply
 
     def _without_defective_targets(
         self,
@@ -3422,7 +3535,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         )
 
         try:
-            review = await self._review_plan(contract, attempt.sub_topics)
+            review = await self._review_plan(
+                contract, attempt.sub_topics, run=run
+            )
         except PlanningError as error:
             # The review that runs on every planning pass is a request like any
             # other, and this one was the last unguarded call in the cycle: a
@@ -3506,7 +3621,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         confirming: PlanReviewDraft | None = None
         try:
             confirming = await self._review_plan(
-                contract, attempt.sub_topics, already_requested=requested
+                contract, attempt.sub_topics, already_requested=requested, run=run
             )
         except PlanningError as error:
             self._record_defects(
