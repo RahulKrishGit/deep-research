@@ -38,7 +38,6 @@ from deep_research.evaluation.models import (
 )
 from deep_research.utils.types import (
     MAX_TARGETS_PER_TOPIC,
-    AtomicProposition,
     EvidenceTarget,
     Finding,
     FindingVerification,
@@ -46,7 +45,6 @@ from deep_research.utils.types import (
     ScoredSource,
     SubTopic,
     UnitScore,
-    answered_required_dimensions,
     counted_evidence_targets,
 )
 
@@ -1881,28 +1879,66 @@ def _plan_still_valid_passes(output: TargetOutput, case: EvaluationCase) -> bool
 # that declares no obligation at all — Section 2.1 requires that a run which
 # produces nothing scores nothing.
 
-# The proposition every "can this dimension ever be credited?" check probes
-# with: every atom field ``types._DIMENSION_SIGNALS`` can credit is filled, so
-# a dimension that matches a signal group is answered by it and one that
-# matches no group is not. A literal, deliberately, rather than a proposition
-# reflected out of the signal table — the table is what this probe exists to
-# be checked against, and a probe derived from it would follow a field rename
-# silently instead of failing
-# ``test_the_dimension_probe_fills_every_signal_field``.
-_TARGET_DIMENSION_PROBE = AtomicProposition(
-    text="A probe that fills every dimension this build can credit.",
-    subject="the probe",
-    predicate="states_value",
-    value="1",
-    unit="probe",
-    observation_period="2026",
-    forecast_status="observed",
-    geography="United States",
-    population="the probe population",
-    quantity_noun="probes",
-    denominator="all probes",
-    attribution="the probe issuer",
+# The vocabulary a planner-declared dimension is checked against. The
+# claim-era version of this check filled every field of a probe object
+# representing one checkable assertion and asked the deleted claim-cluster
+# credit machinery whether a dimension matched one of its fields (D6/D8
+# deleted that machinery with the Fact Checker and the claim clusters). What
+# that reduced to for this caller — which always passed
+# ``match_qualifiers=False`` — was lexical, with one vocabulary kept whole: a
+# dimension is checkable when it starts with one of the three contract-wide
+# prefixes and does not ask for a metadata date, or when its own words overlap
+# one of the signal groups below.
+_METADATA_DIMENSION_PHRASES: tuple[str, ...] = (
+    # The six metadata dimensions the deleted claim-cluster registry named
+    # (``METADATA_DIMENSIONS``, underscores spelled as spaces). A ``measure:``
+    # requirement containing one of them asks *about* the evidence — when the
+    # document was published, what period its data covers — rather than about
+    # the world, so no page can ever state it and the planner prompt forbids
+    # planning it. The pre-sweep check refused these through the registry;
+    # this keeps that refusal.
+    "publication date",
+    "data period",
+    "forecast horizon",
+    "effective date",
+    "retrieval date",
+    "generation date",
 )
+_DIMENSION_SIGNAL_WORDS: tuple[frozenset[str], ...] = (
+    frozenset({"period", "time", "date", "year", "when", "horizon", "recency"}),
+    frozenset(
+        {"geography", "region", "place", "location", "country", "jurisdiction"}
+    ),
+    frozenset(
+        {
+            "scale", "magnitude", "quantity", "size", "capacity", "amount",
+            "value", "rate", "level",
+        }
+    ),
+    frozenset({"unit"}),
+    frozenset({"population", "subject", "entity", "who"}),
+    frozenset(
+        {"mechanism", "how", "cause", "driver", "method", "instrument"}
+    ),
+    frozenset({"attribution", "source", "issuer", "publisher"}),
+    frozenset({"share", "proportion", "percent", "denominator", "comparison"}),
+)
+
+
+def _dimension_is_checkable(dimension: str) -> bool:
+    """Whether a planner-declared dimension names a concept evidence could fill."""
+    folded = " ".join(dimension.split()).casefold()
+    if folded.startswith(("answer form:", "evidence period:")):
+        return True
+    if folded.startswith("measure:"):
+        return not any(
+            phrase in folded for phrase in _METADATA_DIMENSION_PHRASES
+        )
+    tokens = {
+        token.strip(".,:;()")
+        for token in dimension.replace("-", " ").replace("_", " ").casefold().split()
+    }
+    return any(tokens & signals for signals in _DIMENSION_SIGNAL_WORDS)
 
 
 def _reference_strings(case: EvaluationCase, key: str) -> list[str]:
@@ -1999,28 +2035,19 @@ def _dimensions_are_checkable_passes(
     """Every obligation carries only dimensions the recorded evidence can credit.
 
     The question is not whether a dimension is phrased well but whether any
-    proposition could ever answer it, so the check is made against the
-    dimension probe rather than against a list of acceptable wordings.
+    evidence could ever answer it, so the check is made against the signal
+    vocabulary rather than against a list of acceptable wordings.
 
-    Every required dimension must be creditable, not merely one of them.
-    Production ``target_is_answered`` requires ``required.issubset(answered)``
-    and ``answered_dimensions`` can only hold dimensions this same helper
-    credits, so an obligation carrying one uncreditable dimension can never be
-    answered by any statement — reading the helper's list as a truthy/falsey
-    whole called exactly that plan checkable.
+    Every required dimension must be creditable, not merely one of them: an
+    obligation carrying one uncreditable dimension beside a creditable one can
+    never be answered by any statement, so reading the check as a truthy/falsey
+    whole would call that plan checkable and hand it the metric's weight.
     """
     targets = _counted_targets(output)
     if not targets:
         return False
     return all(
-        set(target.required_dimensions)
-        <= set(
-            answered_required_dimensions(
-                target.required_dimensions,
-                (_TARGET_DIMENSION_PROBE,),
-                match_qualifiers=False,
-            )
-        )
+        all(_dimension_is_checkable(dimension) for dimension in target.required_dimensions)
         for target in targets
     )
 
@@ -2469,15 +2496,13 @@ def _mirror_not_a_new_work_passes(
     original's, and a same-work row recorded under a recognized-work role.
 
     The relation is not a discriminator for either. No production consumer
-    gives a copy the original's publisher by relation alone —
-    ``source_origin_id`` ignores ``transport_relation`` for an ordinary
-    source, and the copied-transport rule that does read it refuses a
-    *fallback*, never an evidenced issuer — so a copy carrying a different
-    evidenced publisher keeps it on record, and skipping the rows the case
-    called derivative let exactly that row through. The role half is the
-    claim a publisher may not be the only way to make: a page labelled
-    ``original_report`` is presented as a work of its own whatever publisher
-    it carries.
+    gives a copy the original's publisher by relation alone — the
+    copied-transport rule refuses a *fallback*, never an evidenced issuer — so
+    a copy carrying a different evidenced publisher keeps it on record, and
+    skipping the rows the case called derivative let exactly that row through.
+    The role half is the claim a publisher may not be the only way to make: a
+    page labelled ``original_report`` is presented as a work of its own
+    whatever publisher it carries.
 
     A row that makes neither claim passes. It asserted no new identity —
     unknown identity can establish neither sameness nor independence, so it

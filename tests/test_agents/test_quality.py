@@ -54,7 +54,7 @@ from deep_research.utils.types import (
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
-from tests.research_fakes import synthesizer_tools
+from tests.research_fakes import report_writer_tools
 
 EIA = "U.S. Energy Information Administration"
 ACTUAL_TARGET = "topic-01-target-01"
@@ -216,7 +216,7 @@ def _writer(completer: ScriptedCompleter) -> ReportWriterAgent:
             agent_name=REPORT_WRITER_NAME,
             max_entries=5,
         ),
-        tools=synthesizer_tools(tracker, output_root=Path(_TOOLS_ROOT.name)),
+        tools=report_writer_tools(tracker, output_root=Path(_TOOLS_ROOT.name)),
         config=AgentRuntimeConfig(max_iterations=1, tool_budget=0),
     )
 

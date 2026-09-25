@@ -103,8 +103,6 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchState,
     ReviewDefect,
-    ScoredSource,
-    SourceTemporal,
     StatementReviewDisposition,
     UnitScore,
 )
@@ -129,22 +127,6 @@ The version is what keeps a stored judgement of the older packet from being
 read as a judgement of this one.
 """
 
-REPORT_REVIEW_MAX_TOKENS = 65536
-"""Output headroom for reasoning and the complete structured judgement.
-
-The 32768-token cap truncated the pre-flight's whole-report request with
-32768 completion tokens consumed. DeepSeek accepted 65536 for a planner
-request with thinking enabled; this is a verified setting, not a maximum.
-"""
-
-REPORT_REVIEW_EVIDENCE_BATCH_CHARS = 4000
-"""How much rendered evidence one batch carried while batches existed.
-
-Kept, with the batch shapes below, for the step-4 sweep (PD-21): the name is
-exported by ``agents/__init__.py``, so a parallel task must not delete it. The
-review no longer batches anything — the packet carries no evidence batch, and
-one request judges the whole report.
-"""
 
 REPORT_REVIEW_OPERATION = "report_review"
 """The operation label this reviewer's records carry.
@@ -419,9 +401,7 @@ class ReviewStatementView(ContractModel):
     the only thing that tells the reviewer which snippet a sentence rests on.
 
     ``target_ids`` is the address a defect against this statement routes by
-    (Task 4.4's extra pass), and ``substantive`` says whether the statement
-    asserts anything about the world at all — a sentinel "not stated" cell is
-    readable context and never a disposition to give.
+    (Task 4.4's extra pass).
     """
 
     statement_id: str = Field(min_length=1)
@@ -430,7 +410,6 @@ class ReviewStatementView(ContractModel):
     finding_refs: list[str] = Field(default_factory=list)
     finding_labels: list[str] = Field(default_factory=list)
     target_ids: list[str] = Field(default_factory=list)
-    substantive: bool = True
 
 
 class ReviewFindingView(ContractModel):
@@ -509,20 +488,11 @@ class ReportReviewInput(ContractModel):
     def expected_statement_ids(self) -> list[str]:
         """Statement ids a review must cover and disposition.
 
-        A ``context`` statement — a sentinel cell repaired to "not stated", or
-        an uncertainty note framing this pass — asserts nothing about the world
-        (``ReportStatement.substantive`` is ``False``), so it is never offered
-        for a per-statement disposition: there is nothing for a reviewer to
-        judge "supported" or "unsupported" against. It stays in
-        ``self.statements`` (and ``statement()`` still resolves it) so it is
-        still readable as context; it is only excluded from what the review
-        must cover to be scored.
+        Every statement the packet carries is one the review must judge:
+        ``_statement_views`` builds one view per statement the composition
+        renders, and each one is reader-visible content.
         """
-        return [
-            statement.statement_id
-            for statement in self.statements
-            if statement.substantive
-        ]
+        return [statement.statement_id for statement in self.statements]
 
     @property
     def known_target_ids(self) -> list[str]:
@@ -625,7 +595,6 @@ def _statement_views(
                 finding_refs=[label for label, _ in cited],
                 finding_labels=[_finding_label(finding) for _, finding in cited],
                 target_ids=list(statement.target_ids),
-                substantive=statement.substantive,
             )
         )
     return views
@@ -641,7 +610,7 @@ def _statement_labels(composition: ReportComposition) -> dict[str, str]:
     reader would see beside that text.
     """
     labels: dict[str, list[str]] = {}
-    for point in [*composition.summary, *composition.constraints]:
+    for point in composition.summary:
         if point.statement is not None:
             labels.setdefault(point.statement.statement_id, []).extend(
                 _point_labels(point, composition)
@@ -919,8 +888,6 @@ def _render_statements(packet: ReportReviewInput) -> str:
     lines: list[str] = []
     for statement in packet.statements:
         parts = [f"- {statement.statement_id}"]
-        if not statement.substantive:
-            parts.append("  (context: this statement asserts nothing about the world)")
         parts.append(f"  {statement.text}")
         if statement.label:
             parts.append(f"  reader label: {statement.label}")
@@ -1097,11 +1064,6 @@ def _dispositions(
     all. A defect is a *problem* whose ids are an address — losing the address
     keeps the finding — but a disposition has nothing left once it is detached
     from the statement it judges.
-
-    A statement the packet carries but that is not substantive — a sentinel or
-    context statement, never offered by ``expected_statement_ids`` — is a no-op
-    instead: it asserts nothing about the world, so a reply that names it
-    anyway is read as reading it, not as a judgement about it.
     """
     resolved: dict[str, StatementReviewDisposition] = {}
     for draft in drafts:
@@ -1114,8 +1076,6 @@ def _dispositions(
                 f"the reply judged statement {statement_id!r}, which this "
                 "packet does not carry"
             )
-        if not statement.substantive:
-            continue
         previous = resolved.get(statement_id)
         if previous is None or (
             draft.disposition in UNSETTLED_STATEMENT_DISPOSITIONS
@@ -1206,11 +1166,6 @@ def _derived_defects(
     record contract requires an unsettled statement to be named by: asking
     whether *any* defect named it let a ``minor`` observation about a sentence
     stand in for the finding that the sentence is not carried by its evidence.
-
-    A statement that is not substantive — a sentinel cell repaired to "not
-    stated", or any other context statement — is never given a defect here:
-    ``_dispositions`` already drops such an entry, and this is a second guard
-    for a caller that built ``dispositions`` some other way.
     """
     derived: list[ReviewDefect] = []
     derived_statements: list[str] = []
@@ -1225,7 +1180,7 @@ def _derived_defects(
         ):
             continue
         statement = packet.statement(statement_id)
-        if statement is None or not statement.substantive:
+        if statement is None:
             continue
         derived.append(
             ReviewDefect(
@@ -1780,262 +1735,11 @@ def review_defects_as_refinement_jobs(
     return iter(review.material_defects)
 
 
-# --- shapes kept for the step-4 sweep (PD-21) --------------------------------
-#
-# ``agents/__init__.py`` exports these names and ``e2e_evaluation/replay.py``
-# imports ``ReviewBatchDraft``, so a parallel step-4 task must not delete them:
-# PD-21 has Task 4.10 remove every name left without a caller, in one sweep,
-# together with the modules that import them. Nothing in the review flow above
-# calls any of it — the packet carries no evidence batch, no checked claim and
-# no ranked row, and one request judges the whole report — so this block is the
-# old packet vocabulary waiting for its sweep, not a second code path.
-
-
-class ReviewEvidenceItem(ContractModel):
-    """One exact read excerpt a review could treat as evidence.
-
-    Kept for the sweep (PD-21): only a registered ``EvidenceUnit`` ever became
-    one of these, and the step-4 packet cites findings and their labels instead
-    of raw excerpts.
-    """
-
-    evidence_id: str = Field(min_length=1)
-    read_id: str = Field(min_length=1)
-    source_url: str = Field(min_length=1)
-    source_title: str = Field(min_length=1)
-    locator: str = Field(min_length=1)
-    excerpt: str = Field(min_length=1)
-    target_ids: list[str] = Field(default_factory=list)
-    badge: str = ""
-    badge_label: str = Field(min_length=1)
-    cited_by_statement_ids: list[str] = Field(default_factory=list)
-
-
-class ReviewEvidenceBatch(ContractModel):
-    """A bounded group of evidence items, rendered under one heading."""
-
-    batch_id: str = Field(min_length=1)
-    items: list[ReviewEvidenceItem] = Field(min_length=1)
-    chars: int = Field(ge=1)
-
-    @property
-    def evidence_ids(self) -> list[str]:
-        return [item.evidence_id for item in self.items]
-
-
-class ReviewTargetView(ContractModel):
-    """One planned obligation, with what the report actually answered."""
-
-    target_id: str = Field(min_length=1)
-    coverage_id: str = Field(min_length=1)
-    coverage_title: str = ""
-    question: str = Field(min_length=1)
-    required: bool = True
-    critical: bool = False
-    required_dimensions: list[str] = Field(default_factory=list)
-    answered_dimension_ids: list[str] = Field(default_factory=list)
-    answered_by_statement_ids: list[str] = Field(default_factory=list)
-    answered: bool = False
-    accounted: bool = False
-    account_reason: str = ""
-
-
-class ReviewClaimView(ContractModel):
-    """One checked claim, as a Critic-era review could see it.
-
-    Deliberately without the recorded confidence: a number the adjudicator
-    produced is a model judgement about the claim, not evidence for it.
-    """
-
-    claim_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    verdict: str = Field(min_length=1)
-    evidence_status: str = ""
-    badge_label: str = Field(min_length=1)
-    source_urls: list[str] = Field(default_factory=list)
-    target_ids: list[str] = Field(default_factory=list)
-
-
-class ReviewSourceView(ContractModel):
-    """One assessed source, identified without its scores.
-
-    Publisher and work identity are what an independence judgement turns on,
-    so they travel — with the aliases, status, and evidenced lineage that
-    resolved them. The numeric scores do not: they are a model's rating of a
-    source. Retained for the sweep (PD-21); the step-4 review reads findings,
-    not the source registry.
-    """
-
-    url: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    publisher_id: str = ""
-    work_id: str = ""
-    evaluation_status: str = ""
-    source_role: str = ""
-    self_interest: str = ""
-    transport_relation: str = ""
-    temporal: SourceTemporal = Field(default_factory=SourceTemporal)
-    assessment_revision: str = ""
-    identity_status: str = ""
-    """``known``/``unknown``/``conflicting``; empty when none was resolved."""
-    work_aliases: list[str] = Field(default_factory=list)
-    derives_from_work_ids: list[str] = Field(default_factory=list)
-
-
-def review_source_view(source: ScoredSource) -> ReviewSourceView:
-    """The one view of an assessed source a Critic-era packet read and keyed by."""
-    identity = source.work_identity
-    return ReviewSourceView(
-        url=source.url,
-        title=source.title,
-        publisher_id=source.publisher_id or "",
-        work_id=source.work_id or "",
-        evaluation_status=source.evaluation_status,
-        source_role=source.source_role,
-        self_interest=source.self_interest,
-        transport_relation=source.transport_relation,
-        temporal=source.temporal,
-        assessment_revision=source.assessment_revision,
-        identity_status=identity.identity_status if identity is not None else "",
-        work_aliases=list(identity.aliases) if identity is not None else [],
-        derives_from_work_ids=(
-            list(identity.derives_from_work_ids) if identity is not None else []
-        ),
-    )
-
-
-class ReviewRankedRow(ContractModel):
-    """One row of a report's ranked or compared table, in the printed order."""
-
-    rank: int = Field(ge=1)
-    statement_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    cell_texts: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-
-
-class ReviewBatchDraft(ContractModel):
-    """One provider-reported batch review.
-
-    A batch reply carries no dimensions: the seven scores are a judgement of
-    the whole report, and a per-batch score would be an average over sections
-    pretending to be one. Kept for the sweep (PD-21); ``defects`` is typed with
-    this review's own draft, so nothing here imports the Critic.
-    """
-
-    batch_id: str = Field(min_length=1)
-    statement_dispositions: list[StatementDispositionDraft] = Field(
-        default_factory=list
-    )
-    defects: list[ReviewDefectDraft] = Field(default_factory=list)
-    reviewed_statement_ids: list[str] = Field(default_factory=list)
-    reviewed_evidence_ids: list[str] = Field(default_factory=list)
-    problem: str = ""
-
-
-def _batch_evidence(
-    items: Sequence[ReviewEvidenceItem],
-) -> list[ReviewEvidenceBatch]:
-    """Fill bounded batches in order, never dropping or re-cutting an item.
-
-    Kept with the batch shapes above (PD-21): it is what gives
-    ``REPORT_REVIEW_EVIDENCE_BATCH_CHARS`` its meaning, and Task 4.10 removes
-    the words and the shapes together.
-    """
-    batches: list[ReviewEvidenceBatch] = []
-    current: list[ReviewEvidenceItem] = []
-    current_chars = 0
-
-    def rendered_chars(item: ReviewEvidenceItem) -> int:
-        return len(item.excerpt) + len(item.source_title) + len(item.locator) + 64
-
-    def flush() -> None:
-        nonlocal current, current_chars
-        if not current:
-            return
-        batches.append(
-            ReviewEvidenceBatch(
-                batch_id=f"batch-{len(batches) + 1:02d}",
-                items=list(current),
-                chars=max(1, current_chars),
-            )
-        )
-        current = []
-        current_chars = 0
-
-    for item in items:
-        size = rendered_chars(item)
-        if current and current_chars + size > REPORT_REVIEW_EVIDENCE_BATCH_CHARS:
-            flush()
-        current.append(item)
-        current_chars += size
-    flush()
-    return batches
-
-
-def _render_evidence_item(item: ReviewEvidenceItem) -> str:
-    return (
-        f"### {item.evidence_id}\n"
-        f"source: {item.source_title} — {item.source_url}\n"
-        f"read: {item.read_id} locator: {item.locator}\n"
-        f"corroboration: {item.badge_label}\n"
-        f"cited by: {', '.join(item.cited_by_statement_ids) or '-'}\n"
-        f"excerpt:\n{item.excerpt}"
-    )
-
-
-def batch_review_messages(
-    packet: ReportReviewInput,
-    batch: ReviewEvidenceBatch,
-) -> list[ChatMessage]:
-    """The follow-up request for one evidence batch, from the batched era.
-
-    Kept for the sweep (PD-21): nothing in the step-4 flow calls it, because
-    there are no batches to follow up — the reply is one judgement over the
-    whole packet.
-    """
-    sections = [
-        f"# Research question\n{packet.question}",
-        (
-            "# Packet fingerprint\n"
-            f"Packet fingerprint: {packet.fingerprint}\n"
-            f"Evidence batch under review: {batch.batch_id}"
-        ),
-        (
-            "# Reader statements\n"
-            "The statements whose evidence this batch carries, with their "
-            "text.\n" + _render_statements(packet)
-        ),
-        (
-            f"# Evidence — {batch.batch_id}\n"
-            "Read every passage in this batch and record what it supports, "
-            "contradicts, or leaves unestablished.\n"
-            + "\n\n".join(_render_evidence_item(item) for item in batch.items)
-        ),
-        (
-            "# Response contract\n"
-            "Return one JSON object with these fields and no others: "
-            "batch_id (this batch's id), statement_dispositions (one entry per "
-            "statement you can now judge), defects (typed, naming the ids "
-            "above), reviewed_statement_ids, reviewed_evidence_ids (every "
-            "evidence id in this batch that you read), and problem (anything "
-            "that stopped you reading it, or an empty string).\n\n"
-            + _render_defect_contract(packet)
-        ),
-    ]
-    return [
-        ChatMessage(role="developer", content=REPORT_REVIEW_SYSTEM_PROMPT),
-        ChatMessage(role="user", content="\n\n".join(sections)),
-    ]
-
-
 __all__ = [
     "DIMENSION_GUIDANCE",
     "MAX_REVIEW_DEFECTS",
     "REPORT_REVIEWER_ROLE",
-    "REPORT_REVIEW_EVIDENCE_BATCH_CHARS",
     "REPORT_REVIEW_INSTRUCTION",
-    "REPORT_REVIEW_MAX_TOKENS",
     "REPORT_REVIEW_OPERATION",
     "REPORT_REVIEW_PROMPT_VERSION",
     "REPORT_REVIEW_SYSTEM_PROMPT",
@@ -2047,20 +1751,12 @@ __all__ = [
     "ReportReviewDraft",
     "ReportReviewInput",
     "ReportReviewer",
-    "ReviewBatchDraft",
-    "ReviewClaimView",
     "ReviewDefectDraft",
     "ReviewDeterministic",
     "ReviewDimensionScores",
-    "ReviewEvidenceBatch",
-    "ReviewEvidenceItem",
     "ReviewFindingView",
-    "ReviewRankedRow",
-    "ReviewSourceView",
     "ReviewStatementView",
-    "ReviewTargetView",
     "StatementDispositionDraft",
-    "batch_review_messages",
     "build_report_review_input",
     "composition_semantic_fingerprint",
     "report_review_input_fingerprint",
@@ -2068,6 +1764,5 @@ __all__ = [
     "review_defects_as_refinement_jobs",
     "review_messages",
     "review_report",
-    "review_source_view",
     "semantic_review_passes",
 ]

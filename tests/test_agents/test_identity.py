@@ -8,13 +8,12 @@ merge is asserted on ordinary domain records.
 from __future__ import annotations
 
 from deep_research.agents.identity import (
-    claim_fingerprint,
     deduplicate_findings,
     finding_fingerprint,
-    merge_claim_snapshot,
     merge_source_snapshot,
 )
-from deep_research.utils.types import Claim, Finding, ScoredSource
+from deep_research.utils.types import Finding, ScoredSource
+from tests.evidence_fakes import figure, make_finding, make_read
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
@@ -58,36 +57,6 @@ def unscored_source(
     )
 
 
-def claim(
-    text: str = "Queue capacity fell in 2024.",
-    *,
-    verdict: str = "verified",
-    confidence: float = 0.9,
-    contradictions: list[str] | None = None,
-) -> Claim:
-    return Claim.model_validate(
-        {
-            "claim_id": claim_fingerprint(text),
-            "text": text,
-            "source_urls": ["https://example.test/a"],
-            "verdict": verdict,
-            # The fixture's premise is a claim that carries the strict badge;
-            # ``Claim`` refuses a verified verdict without it.
-            "evidence_status": (
-                "verified_pair"
-                if verdict == "verified"
-                else "source_supported"
-                if verdict == "insufficient_evidence"
-                else None
-            ),
-            "confidence": confidence,
-            "evidence": ["The source quotes the annual figure."],
-            "contradictions": contradictions or [],
-            "verification_evidence": [],
-        }
-    )
-
-
 def finding(
     content: str = "Adoption rose.",
     *,
@@ -120,58 +89,6 @@ def finding(
         measure_scope=measure_scope,
         release_date=release_date,
     )
-
-
-# --- claim fingerprints ---------------------------------------------------
-
-
-def test_claim_fingerprint_collapses_formatting_but_preserves_facts() -> None:
-    assert claim_fingerprint("Queue capacity fell in 2024.") == claim_fingerprint(
-        "  queue capacity FELL in 2024  "
-    )
-    assert claim_fingerprint("Queue capacity fell in 2024.") != claim_fingerprint(
-        "Queue capacity fell in 2025."
-    )
-
-
-def test_claim_fingerprint_normalizes_unicode_and_punctuation() -> None:
-    assert claim_fingerprint("Rates fell 40% in 2024.") == claim_fingerprint(
-        "RATES fell 40% in 2024"
-    )
-    # NFKC: full-width digits and a non-breaking space are formatting only.
-    assert claim_fingerprint("Capacity fell in 2024.") == claim_fingerprint(
-        "Capacity fell in\u00a0\uff12\uff10\uff12\uff14."
-    )
-
-
-def test_claim_fingerprint_preserves_numbers_units_and_comparisons() -> None:
-    baseline = claim_fingerprint("The queue holds 400 ppm.")
-    for different in (
-        "The queue holds 401 ppm.",
-        "The queue holds 400 ppb.",
-        "The queue holds more than 400 ppm.",
-        "The queue holds less than 400 ppm.",
-        "The queue holds <400 ppm.",
-        "The queue holds >400 ppm.",
-    ):
-        assert claim_fingerprint(different) != baseline
-
-
-def test_claim_fingerprint_preserves_negation_and_geography() -> None:
-    assert claim_fingerprint("The queue did not grow.") != claim_fingerprint(
-        "The queue did grow."
-    )
-    assert claim_fingerprint("Adoption rose in India.") != claim_fingerprint(
-        "Adoption rose in China."
-    )
-
-
-def test_claim_fingerprint_is_a_deterministic_sha256_digest() -> None:
-    digest = claim_fingerprint("Queue capacity fell in 2024.")
-
-    assert digest == claim_fingerprint("Queue capacity fell in 2024.")
-    assert len(digest) == 64
-    assert set(digest) <= set("0123456789abcdef")
 
 
 # --- finding fingerprints -------------------------------------------------
@@ -314,70 +231,6 @@ def test_legacy_records_without_a_revision_keep_the_prior_behavior() -> None:
     ) == [source(overall_score=0.75, assessment_revision="assess-a")]
 
 
-# --- claim snapshots ------------------------------------------------------
-
-
-def test_the_latest_claim_for_one_fingerprint_wins() -> None:
-    stale = claim(
-        "Queue capacity fell in 2024.",
-        verdict="insufficient_evidence",
-        confidence=0.2,
-    )
-    fresh = claim(
-        "  queue capacity FELL in 2024  ",
-        verdict="verified",
-        confidence=0.9,
-    )
-
-    merged = merge_claim_snapshot([stale], [fresh])
-
-    assert len(merged) == 1
-    assert merged[0].verdict == "verified"
-    assert merged[0].confidence == 0.9
-
-
-def test_a_contradicted_verdict_replaces_a_stale_verified_one() -> None:
-    verified = claim("Break-even was reached in 2025.", confidence=0.95)
-    contradicted = claim(
-        "Break-even was reached in 2025.",
-        verdict="contradicted",
-        confidence=0.4,
-        contradictions=["Two later reviews report a missed target."],
-    )
-
-    merged = merge_claim_snapshot([verified], [contradicted])
-
-    assert [item.verdict for item in merged] == ["contradicted"]
-    assert merged[0].contradictions == [
-        "Two later reviews report a missed target."
-    ]
-
-
-def test_merge_claim_snapshot_keeps_first_seen_order_and_earlier_claims() -> None:
-    first = claim("Queue capacity fell in 2024.")
-    second = claim("Break-even was reached in 2025.")
-    revised = claim("Queue capacity fell in 2024.", confidence=0.5)
-
-    merged = merge_claim_snapshot([first, second], [revised])
-
-    assert [item.text for item in merged] == [
-        "Queue capacity fell in 2024.",
-        "Break-even was reached in 2025.",
-    ]
-    assert merged[0].confidence == 0.5
-    assert merge_claim_snapshot([], []) == []
-
-
-def test_merge_claim_snapshot_does_not_mutate_its_inputs() -> None:
-    previous = [claim("Queue capacity fell in 2024.", confidence=0.9)]
-    current = [claim("Queue capacity fell in 2024.", confidence=0.3)]
-
-    merge_claim_snapshot(previous, current)
-
-    assert [item.confidence for item in previous] == [0.9]
-    assert [item.confidence for item in current] == [0.3]
-
-
 # --- finding de-duplication ----------------------------------------------
 
 
@@ -502,10 +355,6 @@ def test_deduplicate_findings_preserves_first_seen_order_of_survivors() -> None:
 
     assert [item.content for item in kept] == ["Adoption rose.", "Costs fell."]
     assert deduplicate_findings([]) == []
-
-
-from deep_research.agents.identity import deduplicate_findings
-from tests.evidence_fakes import figure, make_finding, make_read
 
 
 def test_a_duplicate_keeps_the_winners_evidence_and_fills_a_missing_one() -> None:

@@ -14,9 +14,7 @@ from dataclasses import dataclass
 from deep_research.agents.evidence import cosmetic_text
 from deep_research.agents.figures import (
     Quantity,
-    bare_numbers,
     parse_figure,
-    quantities_in,
     same_quantity,
 )
 from deep_research.agents.identity import finding_fingerprint
@@ -444,33 +442,3 @@ def not_found_targets(
                                        searched=searched))
     return rows
 
-
-_DISPLAY_UNIT = {
-    "kw": "kW", "mw": "MW", "gw": "GW", "tw": "TW",
-    "kwh": "kWh", "mwh": "MWh", "gwh": "GWh", "twh": "TWh",
-    "%": "%",
-}
-
-
-def untraced_numbers(text: str, cited: Sequence[Finding]) -> list[str]:
-    """§6.4: the numbers ``text`` states that no kept figure of ``cited`` carries."""
-    figures = verified_figures(cited)
-    known = [f.quantity for f in figures if f.quantity is not None and f.quantity.base is not None]
-    literal = {
-        cosmetic_text(f.figure.value).replace(",", "").replace(" ", "")
-        for f in figures if f.quantity is None or f.quantity.base is None
-    }
-    # ``quantities_in`` matches against ``cosmetic_text(text)`` (casefolded),
-    # and its offsets index that normalised string, not ``text`` -- slicing
-    # the original at them drifts on anything cosmetic_text shortens (a
-    # leading/collapsed run of whitespace, a soft hyphen, an NFC fold), and
-    # once drifted the reported number is simply wrong. ``q.value_text`` and
-    # ``q.unit_text`` are the matched groups themselves, so they are always
-    # right; only the unit's *casing* is casefolded, restored here from its
-    # canonical spelling.
-    untraced = [
-        f"{q.value_text} {_DISPLAY_UNIT.get(q.unit, q.unit_text)}" for q in quantities_in(text)
-        if not any(same_quantity(q, k) for k in known)
-    ]
-    untraced.extend(number for number in bare_numbers(text) if number not in literal)
-    return untraced

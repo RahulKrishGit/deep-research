@@ -649,10 +649,11 @@ def test_one_uncreditable_dimension_makes_the_obligation_uncheckable(
 ) -> None:
     """Every required dimension must be creditable, not merely one of them.
 
-    Production ``target_is_answered`` requires ``required.issubset(answered)``
-    and ``answered_dimensions`` can only hold dimensions this same helper
-    credits, so an obligation carrying one uncreditable dimension beside a
-    creditable one can never be answered by any statement. Reading the
+    A required target counts as answered only when
+    ``verified_facts.finding_answers`` holds for a verified finding, and this
+    helper credits only the dimensions such an answer can be checked against,
+    so an obligation carrying one uncreditable dimension beside a creditable
+    one is not checkable as a whole. Reading the
     helper's list as a truthy/falsey whole called that plan checkable and
     handed it the metric's weight.
     """
@@ -707,24 +708,27 @@ def test_a_vague_dimension_scores_checkability_and_vagueness_zero(
     )
 
 
-def test_the_dimension_probe_fills_every_signal_field() -> None:
-    """``dimensions_are_checkable`` is only as good as the proposition it
-    probes with.
+def test_a_measure_dimension_naming_a_metadata_date_is_uncheckable(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """The C10 defect: an obligation for a date *about* the evidence.
 
-    A signal field the probe leaves empty would report every dimension
-    answerable only through that field as un-creditable, failing plans that
-    are fine. Reflected over the private signal table deliberately: that
-    table is the thing the probe must stay in step with.
+    ``measure: publication date of the forecast document`` names a metadata
+    dimension, not a fact any page states about the world, so no evidence can
+    ever credit it — that is the live replay C10 shape, and the planner prompt
+    forbids it. The pre-sweep check refused these through the claim-cluster
+    metadata vocabulary; the lexical replacement lost that clause, so this
+    pins it: a ``measure:`` dimension carrying a metadata phrase is not
+    checkable.
     """
-    from deep_research.evaluation.evaluators import _TARGET_DIMENSION_PROBE
-    from deep_research.utils.types import (
-        _DIMENSION_SIGNALS,
-        answered_atom_dimensions,
+    output = scoped_target_output.with_target_dimensions(
+        ["measure: publication date of the forecast document"]
     )
 
-    expected = {field for _, fields in _DIMENSION_SIGNALS for field in fields}
-
-    assert set(answered_atom_dimensions((_TARGET_DIMENSION_PROBE,))) == expected
+    assert (
+        metric_score(output, scoped_targets_case, "dimensions_are_checkable")
+        == 0.0
+    )
 
 
 # --- Task 12: read-bearing acquisition --------------------------------------

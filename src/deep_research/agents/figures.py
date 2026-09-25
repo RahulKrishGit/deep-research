@@ -45,10 +45,6 @@ _NUMBER_WORDS = {
     "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
     "seventy": 70, "eighty": 80, "ninety": 90,
 }
-_MONTHS = (
-    "january|february|march|april|may|june|july|august|september|october|"
-    "november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec"
-)
 
 # Longest spellings first, so "megawatt-hours" is never read as "megawatt".
 _UNIT = (
@@ -63,13 +59,6 @@ _QUANTITY = re.compile(
     rf"(?<![\w.,])(?P<value>{_NUMBER}|\b(?:{_WORD})\b){_GAP}"
     rf"\(?\s*(?P<unit>{_UNIT})\s*\)?"
 )
-_ANY_NUMBER = re.compile(rf"(?<![\w.,])(?:{_NUMBER})(?!\w)")
-_YEAR = re.compile(r"(?:19|20)\d{2}")
-_DATE_DAY = re.compile(rf"\b(?:{_MONTHS})\.?\s+$")
-_DATE_DAY_FOLLOWS = re.compile(rf"\s+(?:{_MONTHS})\b")
-_ORDINAL = re.compile(r"(?:st|nd|rd|th)\b")
-_ISO_DATE = re.compile(r"\b(?:19|20)\d{2}-\d{1,2}(?:-\d{1,2})?\b")
-_DAY_FIRST_DATE = re.compile(rf"\b\d{{1,2}}\s+(?:{_MONTHS})\.?\s+(?:19|20)\d{{2}}\b")
 
 
 @dataclass(frozen=True)
@@ -176,56 +165,3 @@ def figure_in_text(value: str, unit: str, text: str) -> bool:
         _number(match.group("value")) == target.number
         for match in literal.finditer(cosmetic_text(text))
     )
-
-
-def bare_numbers(text: str) -> list[str]:
-    """Numbers ``text`` states with no known unit, grouping removed.
-
-    Skipped: every known-unit quantity, four-digit years, ISO and day-first
-    dates, a day beside a month name, single-digit labels ("3 states", "Q3"),
-    and ordinals.
-    """
-    normalised = cosmetic_text(text)
-    # F2: a date's parts are not numbers ("released 2025-03-12" states no 03 or 12)
-    taken = [(found.start, found.end) for found in quantities_in(text)] + _date_spans(normalised)
-    numbers: list[str] = []
-    for match in _ANY_NUMBER.finditer(normalised):
-        if any(start <= match.start() < end for start, end in taken):
-            continue
-        raw = match.group(0)
-        digits = raw.replace(",", "").replace(" ", "")
-        if _YEAR.fullmatch(raw):
-            continue
-        if "." not in digits and len(digits) == 1:
-            continue
-        if _ORDINAL.match(normalised, match.end()):
-            continue
-        if int(float(digits)) <= 31 and (
-            _DATE_DAY.search(normalised[: match.start()])
-            or _DATE_DAY_FOLLOWS.match(normalised, match.end())
-        ):
-            continue
-        numbers.append(digits)
-    return numbers
-
-
-def _date_spans(normalised: str) -> list[tuple[int, int]]:
-    return [
-        found.span()
-        for pattern in (_ISO_DATE, _DAY_FIRST_DATE)
-        for found in pattern.finditer(normalised)
-    ]
-
-
-def dates_in(text: str) -> list[str]:
-    """The ISO ("2025-03-12") and day-first ("12 March 2025") dates ``text`` states (F2)."""
-    normalised = cosmetic_text(text)
-    return [normalised[start:end] for start, end in sorted(_date_spans(normalised))]
-
-
-def without_dates(text: str) -> str:
-    """``text`` in cosmetic form with its ISO and day-first dates blanked (same length)."""
-    normalised = cosmetic_text(text)
-    for start, end in _date_spans(normalised):
-        normalised = normalised[:start] + " " * (end - start) + normalised[end:]
-    return normalised

@@ -900,7 +900,7 @@ class ManifestSequence:
     value: int = 0
 
     def take(self) -> int:
-        """Claim the next sequence, advancing the mapping's counter."""
+        """Take the next sequence, advancing the mapping's counter."""
         claimed = self.value
         self.value += 1
         return claimed
@@ -929,13 +929,7 @@ class AcquisitionPolicy:
     configuration_fingerprint: str = "acquisition-v1"
     cache: MutableMapping[str, ReadRecord] | None = None
     network_read_ids: set[str] | None = None
-    cited_reads: Mapping[str, tuple[str, str]] | None = None
-    """``{canonical URL: (read_id, content_sha256)}`` this run already cited.
 
-    Supplied by the caller from the run's own claim record. A cache entry for
-    one of these URLs is reusable only while it is still the read the citation
-    was made against; everything else is fetched again.
-    """
     audit_sequence: ManifestSequence | None = None
     """The manifest counter of the mapping this policy writes into.
 
@@ -984,19 +978,13 @@ class AcquisitionPolicy:
         return len(self._network_read_ids)
 
     def _next_sequence(self) -> int:
-        """Claim the next manifest sequence for the mapping this policy writes.
+        """Take the next manifest sequence for the mapping this policy writes.
 
         The run's counter when one was supplied, this policy's own otherwise:
         the caller who shares a mapping is the caller who knows the counter
         has to be shared with it.
         """
         return (self.audit_sequence or self._own_sequence).take()
-
-    def _cited_identity(self, url: str) -> tuple[str, str] | None:
-        """The read a citation was made against for this URL, if this run cited it."""
-        if not self.cited_reads:
-            return None
-        return self.cited_reads.get(_canonical_acquisition_url(url))
 
     def start_turn(self) -> None:
         if self.state.remaining_model_turns > 0:
@@ -1366,7 +1354,7 @@ class AcquisitionPolicy:
         if cached is not None and cache_reuse_problem(
             cached,
             requested_url=url,
-            cited_identity=self._cited_identity(url),
+            cited_identity=None,
         ) is None:
             validated = validate_cached_read(
                 cached,

@@ -29,8 +29,6 @@ from collections.abc import Sequence
 
 from deep_research.agents.sources import normalize_source_url
 from deep_research.utils.types import (
-    AtomicProposition,
-    Claim,
     Finding,
     ScoredSource,
 )
@@ -76,16 +74,6 @@ def _normalized_text(text: str) -> str:
 
 def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def claim_fingerprint(text: str) -> str:
-    """Return the stable identity of one claim's text.
-
-    Two claims share a fingerprint exactly when they assert the same thing and
-    differ only in how it was written; materially different years, numbers,
-    units, comparisons, negation, or geography always differ.
-    """
-    return _digest(_normalized_text(text))
 
 
 def finding_fingerprint(finding: Finding) -> str:
@@ -237,67 +225,3 @@ def _revision_changed(existing: ScoredSource, incoming: ScoredSource) -> bool:
         and bool(incoming.assessment_revision)
         and existing.assessment_revision != incoming.assessment_revision
     )
-
-
-def merge_claim_snapshot(
-    previous: Sequence[Claim],
-    current: Sequence[Claim],
-) -> list[Claim]:
-    """Return the canonical claim snapshot after this pass re-verified.
-
-    Keyed by ``claim_fingerprint``, so the latest verdict for a claim wins: a
-    claim the latest pass contradicted no longer reads as verified, and a
-    stale positive judgement cannot outlive the evidence against it. Claims
-    this pass never revisited keep their first-seen position, and each
-    fingerprint appears at most once.
-    """
-    merged: dict[str, Claim] = {}
-    for claim in (*previous, *current):
-        merged[claim_fingerprint(claim.text)] = claim
-    return list(merged.values())
-
-
-# The fields of an :class:`AtomicProposition` that say WHAT it asserts. The
-# anchor identity is the digest of these and nothing else: ``evidence_ids``,
-# ``member_claim_ids``, and ``target_ids`` grow as a cluster is refined, and
-# rehashing them would mint a new identity on every pass — the defect this
-# identity exists to remove.
-_ASSERTION_FIELDS = (
-    "text",
-    "subject",
-    "predicate",
-    "value",
-    "unit",
-    "observation_period",
-    "geography",
-    "population",
-    "denominator",
-    "attribution",
-    "forecast_status",
-)
-
-
-def atomic_fingerprint(proposition: AtomicProposition) -> str:
-    """Return the stable identity of one atomic proposition's assertion.
-
-    Formatting only is folded — Unicode form, case, whitespace, and prose
-    punctuation — so two spellings of one assertion share a fingerprint while
-    two assertions that differ in a number, unit, period, qualifier, or
-    negation never do.
-    """
-    parts = [
-        _normalized_text(getattr(proposition, name))
-        for name in _ASSERTION_FIELDS
-    ]
-    parts.append("negated" if proposition.negated else "asserted")
-    return _digest(_FIELD_SEPARATOR.join(parts))
-
-
-def claim_cluster_id(proposition: AtomicProposition) -> str:
-    """Return the id a cluster anchored on ``proposition`` is minted with.
-
-    Derived from the anchor's assertion alone, so it is a deterministic
-    function of what the cluster says and never of how much evidence has
-    accumulated behind it.
-    """
-    return f"cluster-{atomic_fingerprint(proposition)[:32]}"
