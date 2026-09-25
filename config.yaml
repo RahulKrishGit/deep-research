@@ -97,7 +97,11 @@ memory:
 agents:
   # Spec 7.3 (D9/PD-27): the only concurrency bounds. Lower one from live
   # results without a code change; Task 4.14's telemetry names the knob to turn.
-  sub_topic_concurrency: 5         # researcher sub-topics in flight
+  # Raised from 5 to max_sub_topics (7) on 2026-09-25: five of the nine live
+  # probe plans had six or seven sub-topics, so at 5 a pass ran a second wave
+  # of research; the pre-flights peaked at 2-3 calls in flight with 0 rate
+  # limits. Lower it again if the run telemetry reports rate limits.
+  sub_topic_concurrency: 7         # researcher sub-topics in flight
   source_scoring_concurrency: 3    # source-evaluator scoring batches in flight
   verifier_batch_size: 5           # Context and Statement Check items per call
   verifier_concurrency: 8          # verification calls in flight

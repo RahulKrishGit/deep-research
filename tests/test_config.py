@@ -1323,7 +1323,7 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
     assert SERVICE_ROLE_NAMES == ("report_reviewer",)
     # Spec 7.3 (D9/PD-27): the four concurrency caps, one assertion each.
-    assert settings.agents.sub_topic_concurrency == 5
+    assert settings.agents.sub_topic_concurrency == 7
     assert settings.agents.source_scoring_concurrency == 3
     assert settings.agents.verifier_batch_size == 5
     assert settings.agents.verifier_concurrency == 8
