@@ -1885,9 +1885,25 @@ def _plan_still_valid_passes(output: TargetOutput, case: EvaluationCase) -> bool
 # credit machinery whether a dimension matched one of its fields (D6/D8
 # deleted that machinery with the Fact Checker and the claim clusters). What
 # that reduced to for this caller — which always passed
-# ``match_qualifiers=False`` — was lexical: a dimension is checkable when it
-# starts with one of the three contract-wide prefixes, or when its own words
-# overlap one of the signal groups below.
+# ``match_qualifiers=False`` — was lexical, with one vocabulary kept whole: a
+# dimension is checkable when it starts with one of the three contract-wide
+# prefixes and does not ask for a metadata date, or when its own words overlap
+# one of the signal groups below.
+_METADATA_DIMENSION_PHRASES: tuple[str, ...] = (
+    # The six metadata dimensions the deleted claim-cluster registry named
+    # (``METADATA_DIMENSIONS``, underscores spelled as spaces). A ``measure:``
+    # requirement containing one of them asks *about* the evidence — when the
+    # document was published, what period its data covers — rather than about
+    # the world, so no page can ever state it and the planner prompt forbids
+    # planning it. The pre-sweep check refused these through the registry;
+    # this keeps that refusal.
+    "publication date",
+    "data period",
+    "forecast horizon",
+    "effective date",
+    "retrieval date",
+    "generation date",
+)
 _DIMENSION_SIGNAL_WORDS: tuple[frozenset[str], ...] = (
     frozenset({"period", "time", "date", "year", "when", "horizon", "recency"}),
     frozenset(
@@ -1911,9 +1927,13 @@ _DIMENSION_SIGNAL_WORDS: tuple[frozenset[str], ...] = (
 
 def _dimension_is_checkable(dimension: str) -> bool:
     """Whether a planner-declared dimension names a concept evidence could fill."""
-    folded = dimension.casefold()
-    if folded.startswith(("answer form:", "evidence period:", "measure:")):
+    folded = " ".join(dimension.split()).casefold()
+    if folded.startswith(("answer form:", "evidence period:")):
         return True
+    if folded.startswith("measure:"):
+        return not any(
+            phrase in folded for phrase in _METADATA_DIMENSION_PHRASES
+        )
     tokens = {
         token.strip(".,:;()")
         for token in dimension.replace("-", " ").replace("_", " ").casefold().split()
@@ -2476,15 +2496,13 @@ def _mirror_not_a_new_work_passes(
     original's, and a same-work row recorded under a recognized-work role.
 
     The relation is not a discriminator for either. No production consumer
-    gives a copy the original's publisher by relation alone —
-    ``source_origin_id`` ignores ``transport_relation`` for an ordinary
-    source, and the copied-transport rule that does read it refuses a
-    *fallback*, never an evidenced issuer — so a copy carrying a different
-    evidenced publisher keeps it on record, and skipping the rows the case
-    called derivative let exactly that row through. The role half is the
-    claim a publisher may not be the only way to make: a page labelled
-    ``original_report`` is presented as a work of its own whatever publisher
-    it carries.
+    gives a copy the original's publisher by relation alone — the
+    copied-transport rule refuses a *fallback*, never an evidenced issuer — so
+    a copy carrying a different evidenced publisher keeps it on record, and
+    skipping the rows the case called derivative let exactly that row through.
+    The role half is the claim a publisher may not be the only way to make: a
+    page labelled ``original_report`` is presented as a work of its own
+    whatever publisher it carries.
 
     A row that makes neither claim passes. It asserted no new identity —
     unknown identity can establish neither sameness nor independence, so it
