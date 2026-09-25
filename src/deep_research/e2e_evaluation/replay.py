@@ -1220,16 +1220,26 @@ class ReplayCompleter(AgentCompleter):
                     f"the Statement Check block {label} cites a finding with no "
                     "snippet line under it"
                 )
-            attributed = bool(_cited_subline(sublines, "attributed to"))
-            if figureless and not attributed:
+            # A finding with no kept figure is shown with the body it is
+            # ``attributed to`` when the extraction admitted one, and otherwise
+            # with the site it was ``read at`` (the re-review's C1: a host is
+            # where a statement was read, never the body that made it). Either
+            # line satisfies the figureless case; a finding whose figure was
+            # kept shows neither, because its own figure line states its
+            # attribution.
+            shown = bool(_cited_subline(sublines, "attributed to")) or bool(
+                _cited_subline(sublines, "read at")
+            )
+            if figureless and not shown:
                 raise ReplayContractError(
                     f"the Statement Check block {label} cites a finding with no "
-                    "kept figure and prints no attributed to line for it"
+                    "kept figure and prints neither the body it is attributed to "
+                    "nor the site it was read at"
                 )
-            if attributed and not figureless:
+            if shown and not figureless:
                 raise ReplayContractError(
-                    f"the Statement Check block {label} prints an attributed to "
-                    "line for a finding whose figure was kept"
+                    f"the Statement Check block {label} prints an attribution or "
+                    "read-at line for a finding whose figure was kept"
                 )
 
     def _statement_override(self, sentence: str) -> dict[str, str]:

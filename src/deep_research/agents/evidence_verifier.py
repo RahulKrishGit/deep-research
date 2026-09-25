@@ -159,8 +159,8 @@ CONTEXT_CHECK_INSTRUCTION = (
     "- period: the period the page says the figure applies to, as the page "
     "writes it (\"2024\", \"Q3 2025\"); a level the page dates to a point in time "
     "keeps that date as its period (\"at the end of Q1'25\"); repeat the recorded "
-    "period when the page confirms it; null when the page states none (a level or "
-    "a rate usually has none — never invent one).\n"
+    "period when the page confirms it; null when the page states none (a current "
+    "price or a score usually has none — never invent one).\n"
     "When the page dates a figure only relatively (\"this year\", \"last quarter\"), "
     "give the period that the page's own stated date resolves it to and quote the "
     "relative words in evidence_words; never resolve against today's date.\n"
@@ -175,7 +175,7 @@ CONTEXT_CHECK_INSTRUCTION = (
     "- attribution: own when the page states the figure as its publisher's own; "
     "relayed when the page credits another organisation for it (\"according to\", "
     "\"reported by\", a possessive) or when the page reproduces another body's "
-    "document and its own title or label names that body; unattributed when the "
+    "document and its own title names that body; unattributed when the "
     "page states it without saying whose it is.\n"
     "- organisation: for own, the page's publisher as the page names itself; for "
     "relayed, the organisation the page credits, exactly as the page or its own "
@@ -185,10 +185,10 @@ CONTEXT_CHECK_INSTRUCTION = (
     "future change. A date is not a quantity: keep it in the period or in the words "
     "you quote.\n"
     "- evidence_words: the exact words of the page that state this figure with this "
-    "period and scope, copied character for character — the sentence that states "
-    "the figure and, when they appear nowhere else, the heading or preceding "
-    "sentence that carries the period or the scope. Words that are not on the page "
-    "make the figure unusable.\n"
+    "period and scope, copied character for character as one unbroken span of the "
+    "page: the sentence that states the figure and, only where the span stays "
+    "contiguous, the heading or preceding sentence that carries the period or the "
+    "scope. Words that are not on the page make the figure unusable.\n"
     "- verdict: confirm when the recorded period, scope, subject and kind are right "
     "and you changed nothing; correct when you changed any of them; reject when the "
     "snippet or passage does not actually state this figure, or states it for "
@@ -206,19 +206,21 @@ _CONTEXT_CHECK_REPLY_EXAMPLES = (
     (
         # The block's own field names (review VER-2 defect 8), so the recorded
         # scope is visible and a fill is not taught as a correction.
+        # The recorded-fields line omits empty fields, as the real block does, so
+        # the example shows the shape the model is shown and no more (re-round 1,
+        # EXTRA-3 note).
         "Example input: page: Example report (Example Institute) | page date: "
-        "2025-03-12 (the finding's release date) | recorded fields: period: "
-        "2024; scope: none; attributed to: none | figure 1: 12 percent | "
-        "recorded period 2024 | recorded kind actual | snippet: \"The measured "
-        "reduction was 12 percent\" | passage: \"The measured reduction was 12 "
-        "percent in 2024, according to the Example Statistical Agency, measured "
-        "across all sites.\"",
+        "2025-03-12 (the finding's release date) | recorded fields: period: 2024 "
+        "| figure 1: 12 percent | recorded period 2024 | recorded kind actual | "
+        "snippet: \"The measured reduction was 12 percent\" | passage: \"The "
+        "measured reduction was 12 percent in 2024, according to the Example "
+        "Statistical Agency, measured across all sites.\"",
         '{"figures":[{"finding":"F01","figure":1,"period":"2024","scope":"all '
         'sites","subject":null,"attribution":"relayed","organisation":"Example '
         'Statistical Agency","kind":"actual","evidence_words":"The measured '
         'reduction was 12 percent in 2024, according to the Example Statistical '
         'Agency, measured across all sites","verdict":"correct","reason":"The '
-        'recorded scope was none and the page states one, and it credits the '
+        'recorded fields state no scope, the page states one, and it credits the '
         'agency."}]}',
     ),
 )
@@ -1057,10 +1059,11 @@ STATEMENT_CHECK_SYSTEM_PROMPT = (
     "from what the block prints for each sentence. Its figures and its snippet "
     "are the cited finding's own verified words; its passage is the page around "
     "the snippet and may support a condition, an exception, a qualifier or the "
-    "object a reported rule attaches to, never a new fact; a line saying where a "
-    "statement was read names the site it was read on, not the body that made "
-    "it, so a sentence presenting that site as the author of a document is not "
-    "supported."
+    "object a reported rule attaches to, never a new fact; its page line is the "
+    "page's own title and the site it was read on, and a document that title "
+    "names may be named by the sentence; a line saying where a statement was "
+    "read names the site, not the body that made it, so a sentence presenting "
+    "that site as the author of a document is not supported."
 )
 
 STATEMENT_CHECK_INSTRUCTION = (
@@ -1075,17 +1078,19 @@ STATEMENT_CHECK_INSTRUCTION = (
     "state, and keeps every qualifier the words carry (\"about\", \"nearly\", "
     "\"more than\"), every criterion a judgement was measured by, and every "
     "body the words credit — never presenting the page it was read on as the "
-    "author of a document that page reproduces; corrected when a minimal "
+    "author of a document that page reproduces, while a document a cited page's "
+    "own title names may be named as that title names it; corrected when a minimal "
     "rewording from the cited words would make it so; inconsistent when it "
     "states a number, date, subject, scope, organisation, forecast/actual "
     "distinction, condition, exception or object those figures and words do "
     "not support, drops a qualifier or a criterion their words carry, presents "
     "the page it was read on as the author of a document that page reproduces, "
     "states a conditional rule as unconditional, or invents anything. One rule "
-    "decides between those two: what the cited words carry — a condition, an "
-    "exception, a qualifier, a criterion, an issuer — is restored by a "
-    "correction, and a fact they do not carry makes the sentence "
-    "inconsistent. A judgement, ranking or recommendation stated as fact "
+    "decides between those two: a sentence is corrected when the cited words "
+    "state what it should have said — a condition, an exception, a qualifier, a "
+    "criterion or an issuer it dropped, or the number, date, kind or body it "
+    "misstated — and inconsistent when it states a fact the cited words neither "
+    "state nor can replace. A judgement, ranking or recommendation stated as fact "
     "rather than as the judgement of the source that made it is not supported "
     "as written: correct it by attributing it to that source.\n"
     "- corrected_text: for corrected, the minimally reworded sentence, built "
@@ -1160,15 +1165,19 @@ class StatementCheckDraft(ContractModel):
 
 
 def _statement_cited_lines(item: StatementCheckItem) -> str:
-    """Every cited finding's kept figures, then its verified snippet.
+    """Every cited finding's own page, its kept figures, its verified snippet.
 
-    A finding that kept no figure also carries the body it is attributed to:
-    the admitted issuer, else the page's publisher. A finding whose figure the
-    Context Check kept does not: its figure line already carries that verdict
-    (``own``/``relayed``/``unattributed`` and the organisation named for it),
-    and a second line built from the extraction-time issuer could credit a
-    different body — the relay site beside a figure the page credits to its
-    originator — so one page states its attribution once.
+    The ``page`` line is the read's own title with its host — the same title
+    the writer's registry shows — so the checker can see the document a page
+    reproduces and let a sentence name it (review re-round 1, C1): without it the
+    writer names an instrument the checker cannot find and the point is refused
+    by construction. A finding that kept no figure also carries who it belongs
+    to: the admitted issuer (``attributed to``), or, when nothing was admitted,
+    the site the statement was read on (``read at``) — a host is never the body
+    that made a statement. A finding whose figure the Context Check kept does
+    not repeat the extraction-time issuer: its figure line already carries the
+    verdict (``own``/``relayed``/``unattributed`` and the organisation named for
+    it), so one page states its attribution once.
     """
     lines: list[str] = []
     for finding, label in zip(item.findings, item.labels):
@@ -1187,6 +1196,9 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
                     )
         body = "; ".join(figures) if figures else "(no kept figures)"
         lines.append(f"  {label}: {body}")
+        lines.append(
+            f"    page: {finding.source_title} ({publisher_identity(finding.source_url)})"
+        )
         lines.append(f'    snippet: "{finding.snippet or finding.content}"')
         passage = item.passages.get(finding_fingerprint(finding))
         if passage:
@@ -1195,12 +1207,14 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
             lines.append(f'    passage: "{passage}"')
         if figures:
             continue
-        name = finding.attributed_issuer or publisher_identity(finding.source_url)
-        quote = (
-            f' ("{finding.attribution_quote}")'
-            if finding.attributed_issuer and finding.attribution_quote else ""
-        )
-        lines.append(f"    attributed to: {name}{quote}")
+        if finding.attributed_issuer:
+            quote = (
+                f' ("{finding.attribution_quote}")'
+                if finding.attribution_quote else ""
+            )
+            lines.append(f"    attributed to: {finding.attributed_issuer}{quote}")
+        else:
+            lines.append(f"    read at: {publisher_identity(finding.source_url)}")
     return "\n".join(lines)
 
 
