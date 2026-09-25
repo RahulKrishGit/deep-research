@@ -219,6 +219,14 @@ def test_a_percent_figure_does_not_answer_a_currency_target() -> None:
     ("sales this quarter", "2026", None),
     ("installed 4 GW in 2024", "2026-02-20", None),
     ("installed 4 GW this year", None, None),
+    # Fix round 1: a period the words state themselves, a window of time, and a
+    # garbled page date are never resolved into a calendar period.
+    ("sales rose in the last quarter of 2024", "2026-02-20", None),
+    ("the last month of the year", "2026-02-20", None),
+    ("grew 5 percent over the last year", "2026-02-20", None),
+    ("sales rose in the last year", "2026-02-20", None),
+    ("over the last quarter", "2026-02-20", None),
+    ("this month", "2026-20-02", None),
 ])
 def test_a_relative_period_resolves_only_against_the_page_date(words, page_date, period) -> None:
     assert resolve_relative_period(words, page_date) == period

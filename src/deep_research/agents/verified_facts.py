@@ -328,14 +328,20 @@ def release_key(finding: Finding) -> tuple[int, int, int] | None:
 
 
 _RELATIVE_PERIOD = re.compile(
-    r"\b(?:(this|current|last|next|coming)\s+(year|quarter|half|month|season)"
-    r"|(year[- ]to[- ]date|so far this year))\b",
+    r"\b(?:(?P<window>the|over the|in the|during the)\s+)?"
+    r"(?:(?P<direction>this|current|last|next|coming)\s+"
+    r"(?P<period>year|quarter|half|month|season)(?!\s+of\b)"
+    r"|(?P<to_date>year[- ]to[- ]date|so far this year))\b",
     re.IGNORECASE,
 )
 _MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
                 "August", "September", "October", "November", "December")
 _RELATIVE_STEP = {"this": 0, "current": 0, "last": -1, "next": 1, "coming": 1}
 _PERIOD_MONTHS = {"quarter": 3, "half": 6, "month": 1}
+# "over the last quarter" and "during the last half" state a window of time, not
+# a calendar period, the way "the last year" is the trailing twelve months, so
+# neither is resolved; "in the last quarter" keeps its calendar-quarter reading.
+_DURATION_PREFIXES = frozenset({"over the", "during the"})
 
 
 def resolve_relative_period(evidence_words: str, page_date: str | None) -> str | None:
@@ -344,21 +350,29 @@ def resolve_relative_period(evidence_words: str, page_date: str | None) -> str |
     "this year" on a page dated 2026-02-20 is 2026 and "last quarter" is
     Q4 2025. ``None`` when the words carry no relative phrase, when there is no
     page date, for a season (its year is the page's to state), and for a
-    quarter, half or month against a date with no month. "The past year" is
-    the last twelve months, not a calendar year, so it is never resolved.
+    quarter, half or month against a date with no month or an impossible one.
+    A window of time — "the past year", "the last year", "over the last
+    quarter" — is the months before the page rather than a calendar period, and
+    a phrase the words themselves date ("the last quarter of 2024") states its
+    period, so neither is resolved: an invented period would put a figure the
+    page never stated into the report.
     """
     key = _date_key(page_date)
     match = _RELATIVE_PERIOD.search(evidence_words or "")
     if key is None or match is None:
         return None
     year, month, _ = key
-    if match.group(3):
+    if match.group("to_date"):
         return str(year)
-    step = _RELATIVE_STEP[match.group(1).casefold()]
-    unit = match.group(2).casefold()
+    direction = match.group("direction").casefold()
+    unit = match.group("period").casefold()
+    prefix = (match.group("window") or "").casefold()
+    if direction == "last" and (prefix in _DURATION_PREFIXES or (unit == "year" and prefix)):
+        return None
+    step = _RELATIVE_STEP[direction]
     if unit == "year":
         return str(year + step)
-    if unit == "season" or not month:
+    if unit == "season" or not 1 <= month <= 12:
         return None
     size = _PERIOD_MONTHS[unit]
     start_year, start_month = divmod(((year * 12 + month - 1) // size + step) * size, 12)
