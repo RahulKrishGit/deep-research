@@ -1,14 +1,17 @@
-"""Tests for the two pure Markdown artifacts: reader report and ledger.
+"""Tests for the three published artifacts: the written report, the finding log
+and the quality JSON.
 
-The reader report is what a decision-maker reads: a claim-linked summary, a
-constraint ranking, findings whose every bullet ends in its own citation
-markers, the uncertainty the pass recorded, a compact methodology note, and a
-reference list holding only the sources the points actually cite. Everything
-verbose — the checked-claim registry, the complete source assessment, the
-verification passages, the rejected draft content, and the run's errors —
-belongs to the evidence ledger instead.
+The written report is what a decision-maker reads: one cited summary, the Key
+facts table, the findings sections, and the required targets nothing answered.
+The finding log is the same pass read closely: every finding with its snippet
+and its verification, every dropped figure, and every refused sentence in full.
+The quality record is the replay surface over both: the verified findings, the
+gate snapshot as the type records it, the reviewer's own judgement, and the
+hashes of the two Markdown documents published beside it.
 
-Nothing here performs I/O, so both artifacts are asserted directly.
+Nothing here performs I/O -- the two Markdown artifacts and the record are pure
+functions of the composition handed to them (and, for the record, the state and
+the review) -- so all three are asserted directly.
 """
 
 from __future__ import annotations
@@ -18,66 +21,32 @@ import hashlib
 import json
 import re
 import tempfile
-from collections.abc import Callable
 from pathlib import Path
-from typing import get_args
 
 import pytest
 
-from deep_research.agents.evidence import build_read_record, resolve_read_works
 from deep_research.agents.evidence_verifier import (
     StatementCheckDraft,
     StatementVerdictDraft,
 )
-from deep_research.agents.identity import claim_fingerprint, finding_fingerprint
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
-    _vintage_key,
-    DEFAULT_ANSWER_HEADING,
-    DEFAULT_READER_WORD_LIMIT,
-    EVIDENCE_SECTIONS,
-    EVIDENCE_STATUS_LABELS,
-    EVIDENCE_TITLE_PREFIX,
-    LIMITATION_REASONS,
-    LIMITATION_TOPICS,
-    QUALITY_RECORD_EXCERPT_CHARS,
     QUALITY_RECORD_TEXT_CHARS,
-    QUALITY_STATUS_NOT_GATED,
-    REPORT_SECTIONS,
-    REPORT_SUMMARY_FALLBACK,
-    REPORT_TITLE_PREFIX,
     Citation,
     ReportComposition,
-    ReportConstraint,
     ReportPoint,
     ReportSection,
-    StatementMappingError,
-    UnknownEvidenceError,
-    backmatter_ratio,
-    canonical_claims,
     canonical_sources,
     citation_markers,
-    composition_statements,
-    evidence_status_bucket,
-    evidence_status_counts,
-    fit_report_composition,
-    reader_citations,
-    reader_sections,
-    reader_word_count,
-    reader_word_limit,
     render_citations,
-    render_evidence_ledger,
-    render_limitations,
+    render_finding_log,
     render_quality_json,
     render_quality_record,
-    render_reader_report,
-    render_statement_map,
+    render_written_report,
     report_as_of,
     report_scope,
-    statement_citation_urls,
-    statement_source_urls,
-    terminal_report_state,
-    validate_report_statements,
+    written_citations,
 )
 from deep_research.agents.report_writer import (
     REPORT_WRITER_NAME,
@@ -87,65 +56,43 @@ from deep_research.agents.report_writer import (
     WriterSectionDraft,
     compose_written_report,
 )
-from deep_research.agents.researcher import sub_topic_skipped_error
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
-    EVIDENCE_BADGE_LABELS,
-    ClaimProvenance,
     LEGACY_QUALITY_CONTRACT_VERSION,
     QUALITY_CONTRACT_VERSION,
     REVIEW_DIMENSIONS,
-    AtomicProposition,
-    Claim,
-    Critique,
-    ClaimCluster,
-    EvidenceDisposition,
-    EvidencePassage,
-    EvidenceTarget,
-    EvidenceUnit,
+    FactRow,
     FigureContext,
     FigureResult,
     Finding,
     FindingVerification,
-    ReadRecord,
+    NotFoundTarget,
     RejectedDraftPoint,
-    ReportAnswerRow,
-    ReportQualitySnapshot,
     ReportReview,
     ReportStatement,
-    ReportTerminalState,
     ResearchError,
     ResearchState,
     ReviewDefect,
     ScoredSource,
-    SourceTemporal,
-    StatementMode,
     SubTopic,
-    answered_atom_dimensions,
-    statement_mode_for_claims,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
-from tests.graph_fakes import fake_report_review
 from tests.research_fakes import synthesizer_tools
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 SOURCE_URL = "https://example.org/a"
 OTHER_URL = "https://other.test/b"
-THIRD_URL = "https://third.test/c"
 
-
-def render_reports(composition: ReportComposition) -> tuple[str, str]:
-    """Both artifacts, exactly as a caller sees them.
-
-    Test-local on purpose: the two renderers are the production interface.
-    """
-    return (
-        render_reader_report(composition),
-        render_evidence_ledger(composition),
-    )
+EIA = "U.S. Energy Information Administration"
+EIA_URL = "https://www.eia.gov/todayinenergy/detail.php?id=64705"
+STEO_URL = "https://ent.news/2025/1/940.pdf"
+BATTERY_QUESTION = (
+    "How much battery storage capacity was added in the United States in 2024, "
+    "and how much is expected in 2025?"
+)
 
 
 def _source(
@@ -153,157 +100,22 @@ def _source(
     url: str = SOURCE_URL,
     title: str = "QEC 2025",
     overall: float | None = 0.76,
-    status: str = "scored",
-    low_confidence: bool = False,
-    rationale: str = "Peer-reviewed and corroborated.",
-    work_id: str | None = None,
-    transport: str = "unknown",
-    temporal: SourceTemporal | None = None,
 ) -> ScoredSource:
-    extra: dict[str, object] = {
-        "work_id": work_id,
-        "transport_relation": transport,
-    }
-    if temporal is not None:
-        extra["temporal"] = temporal
-    if status == "scored":
-        return ScoredSource(
-            url=url,
-            title=title,
-            authority_score=0.8,
-            recency_score=0.7,
-            relevance_score=0.9,
-            overall_score=overall,
-            rationale=rationale,
-            low_confidence=low_confidence,
-            **extra,  # type: ignore[arg-type]
-        )
     return ScoredSource(
         url=url,
         title=title,
-        rationale=rationale,
-        evaluation_status=status,
-        **extra,  # type: ignore[arg-type]
+        authority_score=0.8,
+        recency_score=0.7,
+        relevance_score=0.9,
+        overall_score=overall,
+        rationale="Peer-reviewed and corroborated.",
     )
 
 
-def _claim(
-    *,
-    text: str = "Logical error rates fell below break-even in 2025.",
-    urls: list[str] | None = None,
-    verdict: str = "verified",
-    confidence: float = 0.8,
-    contradictions: list[str] | None = None,
-    passages: list[EvidencePassage] | None = None,
-    coverage_ids: list[str] | None = None,
-    finding_fingerprints: list[str] | None = None,
-    insufficient_reason: str | None = None,
-    badge: str | None = None,
-    target_ids: list[str] | None = None,
-    provenance: ClaimProvenance | None = None,
-    cluster_id: str | None = None,
-    cluster_aliases: list[str] | None = None,
-) -> Claim:
-    """One checked claim. ``badge`` overrides the verdict-derived badge."""
-    return Claim(
-        claim_id=claim_fingerprint(text),
-        text=text,
-        source_urls=urls or [SOURCE_URL],
-        verdict=verdict,
-        evidence_status=(
-            badge
-            if badge is not None
-            else (
-                "verified_pair"
-                if verdict == "verified"
-                else "source_supported"
-                if verdict == "insufficient_evidence"
-                else None
-            )
-        ),
-        confidence=confidence,
-        evidence=["An independent review states the same figure."],
-        contradictions=contradictions or [],
-        verification_evidence=passages or [],
-        # The reason is set on the insufficient path only, so a fixture that
-        # is not an insufficient claim does not carry the field at all —
-        # the same shape the fact checker emits.
-        **(
-            {"insufficient_reason": insufficient_reason}
-            if insufficient_reason is not None
-            else {}
-        ),
-        consumed_finding_fingerprints=finding_fingerprints or [],
-        consumed_coverage_ids=coverage_ids or [],
-        target_ids=target_ids or [],
-        provenance=provenance or ClaimProvenance(),
-        cluster_id=cluster_id,
-        cluster_aliases=cluster_aliases or [],
-    )
-
-
-def _passage(url: str = THIRD_URL) -> EvidencePassage:
-    return EvidencePassage(
-        source_url=url,
-        source_title="Independent review",
-        locator="p. 1",
-        excerpt="An independent review states the same figure.",
-        stance="supports",
-    )
-
-
-def _point(
-    text: str = "Break-even was reached.",
-    *,
-    claim_ids: list[str] | None = None,
-    source_urls: list[str] | None = None,
-) -> ReportPoint:
-    return ReportPoint(
-        text=text,
-        claim_ids=claim_ids if claim_ids is not None else [_claim().claim_id],
-        source_urls=source_urls if source_urls is not None else [SOURCE_URL],
-    )
-
-
-def _composition(**overrides: object) -> ReportComposition:
-    claim = _claim()
-    payload: dict[str, object] = {
-        "question": "How mature is quantum error correction?",
-        "session_id": "session-1",
-        "iteration": 0,
-        "as_of": EXTRACTED_AT,
-        "scope": "1 planned sub-topic, as recorded below.",
-        "claims": [claim],
-        "sources": [_source()],
-        "findings": [
-            Finding(
-                content="Logical error rates fell below break-even.",
-                source_url=SOURCE_URL,
-                source_title="QEC 2025",
-                extracted_at=EXTRACTED_AT,
-                confidence=0.8,
-                related_sub_topic="Alpha",
-            )
-        ],
-        "limitations": [],
-        "summary": [_point(claim_ids=[claim.claim_id])],
-        "sections": [
-            ReportSection(
-                title="Error correction",
-                points=[_point(claim_ids=[claim.claim_id])],
-            )
-        ],
-    }
-    payload.update(overrides)
-    return ReportComposition.model_validate(payload)
-
-
-# --- the pathological fixture -------------------------------------------------
+# --- the pathological record set ---------------------------------------------
 
 PATHOLOGICAL_CANONICAL_SOURCES = 101
 PATHOLOGICAL_SOURCE_RECORDS = 257
-PATHOLOGICAL_CANONICAL_CLAIMS = 40
-PATHOLOGICAL_CLAIM_RECORDS = 257
 
 
 def _pathological_sources() -> list[ScoredSource]:
@@ -318,1810 +130,252 @@ def _pathological_sources() -> list[ScoredSource]:
     ]
 
 
-def _pathological_claims() -> list[Claim]:
-    """40 canonical claims repeated across 257 records, at three verdicts."""
-    claims: list[Claim] = []
-    for record in range(PATHOLOGICAL_CLAIM_RECORDS):
-        index = record % 40 + 1
-        verdict = (
-            "contradicted"
-            if index % 5 == 0
-            else "unverified"
-            if index % 7 == 0
-            else "verified"
-        )
-        claims.append(
-            _claim(
-                text=f"Claim {index:03d} states a measured result.",
-                urls=[f"https://example.test/source-{index:03d}"],
-                verdict=verdict,
-                confidence=0.4 + (record % 6) / 10,
-                contradictions=(
-                    ["An independent source disagrees."]
-                    if verdict == "contradicted"
-                    else None
-                ),
+# --- fixtures ----------------------------------------------------------------
+
+
+def _verified_finding(
+    url: str,
+    snippet: str,
+    *,
+    value: str,
+    unit: str,
+    period: str,
+    kind: str,
+    organisation: str,
+    target: str,
+    attribution: str = "own",
+    release_date: str | None = None,
+) -> Finding:
+    """One finding the Evidence Verifier kept, with its verified figure."""
+    read = make_read(snippet, url=url, title=f"{organisation} page")
+    finding = make_finding(
+        read,
+        snippet,
+        figures=[figure(value, unit, period, kind)],
+        target_ids=[target],
+        release_date=release_date,
+    )
+    result = FigureResult(
+        figure=finding.figures[0],
+        matched=True,
+        evidence_words=snippet,
+        context=FigureContext(
+            period=period, attribution=attribution, organisation=organisation, kind=kind
+        ),
+    )
+    return finding.model_copy(
+        update={
+            "verification": FindingVerification(
+                status="verified", figure_results=[result]
             )
-        )
-    return claims
-
-
-def pathological_composition() -> ReportComposition:
-    """The pathological state's composition, with one cited settled point."""
-    claim_id = claim_fingerprint("Claim 001 states a measured result.")
-    source_url = "https://example.test/source-001"
-    return ReportComposition.model_validate(
-        {
-            "question": "How much of the evidence is load-bearing?",
-            "session_id": "pathological",
-            "iteration": 1,
-            "as_of": EXTRACTED_AT,
-            "scope": "3 planned sub-topics.",
-            "claims": _pathological_claims(),
-            "sources": _pathological_sources(),
-            "findings": [],
-            "limitations": ["no_verified_claims"],
-            "summary": [
-                _point(
-                    "One measured result is load-bearing.",
-                    claim_ids=[claim_id],
-                    source_urls=[source_url],
-                )
-            ],
-            "sections": [
-                ReportSection(
-                    title="Load-bearing evidence",
-                    points=[
-                        _point(
-                            "The first source carries the result.",
-                            claim_ids=[claim_id],
-                            source_urls=[source_url],
-                        )
-                    ],
-                )
-            ],
         }
     )
 
 
-def duplicate_claim_text(markdown: str) -> bool:
-    """True when any bullet of ``markdown`` repeats another one verbatim.
-
-    Repeated claims with different confidences are the observed pathology:
-    every settled statement, and every conflicting claim the report prints,
-    must appear exactly once.
-    """
-    bullets = [
-        " ".join(line.split())
-        for line in markdown.splitlines()
-        if line.strip().startswith(("- ", "* "))
-    ]
-    return len(bullets) != len(set(bullets))
-
-
-def test_the_pathological_state_renders_each_canonical_record_once() -> None:
-    reader, ledger = render_reports(pathological_composition())
-
-    assert reader.count("https://example.test/source-001") == 1
-    assert "Reviewed but not cited" not in reader
-    assert "Reviewed but not cited" in ledger
-    assert duplicate_claim_text(reader) is False
-
-
-def test_the_pathological_ledger_carries_one_row_per_canonical_source() -> None:
-    _, ledger = render_reports(pathological_composition())
-    rows = _table_rows(_section_body(ledger, "## Source assessment"))[2:]
-
-    urls = [
-        re.search(r"https://[^\s)]+", row).group(0)  # type: ignore[union-attr]
-        for row in rows
-    ]
-    assert len(rows) == PATHOLOGICAL_CANONICAL_SOURCES
-    assert len(set(urls)) == PATHOLOGICAL_CANONICAL_SOURCES
+EIA_ACTUAL_2024 = _verified_finding(
+    EIA_URL,
+    "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024.",
+    value="10.4",
+    unit="GW",
+    period="2024",
+    kind="actual",
+    organisation=EIA,
+    target="topic-01-target-01",
+    release_date="2025-03-12",
+)
+STEO_FORECAST_2025 = _verified_finding(
+    STEO_URL,
+    "Battery storage capacity grows by 14 GW in 2025.",
+    value="14",
+    unit="GW",
+    period="2025",
+    kind="forecast",
+    organisation=EIA,
+    target="topic-02-target-01",
+    attribution="relayed",
+    release_date="2025-01-15",
+)
 
 
-def test_the_pathological_ledger_registers_each_canonical_claim_once() -> None:
-    _, ledger = render_reports(pathological_composition())
-    registry = _section_body(ledger, "## Checked claim registry")
-
-    rows = _table_rows(registry)[2:]
-    assert len(rows) == PATHOLOGICAL_CANONICAL_CLAIMS
-    assert ledger.count("Claim 001 states a measured result.") == 1
-
-
-def test_the_claim_registry_keeps_its_columns_and_ends_with_reason() -> None:
-    """The audit column is additive: nothing the ledger already showed moves.
-
-    A reader who learned the registry's eight columns must find all eight in
-    the same order, with the new ``Reason`` column appended rather than
-    inserted, and every row — header, separator and data — as wide as the
-    header it belongs to.
-    """
-    _, ledger = render_reports(pathological_composition())
-    rows = _table_rows(_section_body(ledger, "## Checked claim registry"))
-
-    assert _cells(rows[0]) == [
-        "#",
-        "Claim ID",
-        "Verdict",
-        "Confidence",
-        "Claim",
-        "Sources",
-        "Coverage",
-        "Contradictions",
-        "Reason",
-    ]
-    assert {len(_cells(row)) for row in rows} == {9}
-
-
-def test_an_insufficient_claim_registers_its_reason_in_the_ledger() -> None:
-    """The classification a reviewer asked for, read off the artifact.
-
-    ``verdict`` alone cannot say whether a claim went unjudged because nothing
-    independent was ever read or because the verdict came back thin; the
-    enumerated reason is what separates them, and the ledger is where a
-    reviewer who never sees the event log reads it.
-    """
-    _, ledger = render_reports(
-        _composition(
-            claims=[
-                _claim(
-                    verdict="insufficient_evidence",
-                    confidence=0.0,
-                    insufficient_reason="no_independent_source",
-                )
-            ]
-        )
-    )
-    cells = _cells(
-        _table_rows(_section_body(ledger, "## Checked claim registry"))[2]
+def _topic(coverage_id: str, target_id: str, **fields: object) -> SubTopic:
+    """One planned sub-topic carrying its one evidence target."""
+    return SubTopic(
+        coverage_id=coverage_id,
+        title=target_id,
+        rationale="r",
+        search_queries=["q"],
+        success_criteria=["c"],
+        priority=1,
+        evidence_targets=[make_target(target_id, **fields)],
     )
 
-    assert len(cells) == 9
-    assert cells[-1] == "no_independent_source"
+
+def _point(
+    text: str,
+    *,
+    statement_id: str = "S001",
+    source_urls: list[str] | None = None,
+    finding_ids: list[str] | None = None,
+    target_ids: list[str] | None = None,
+) -> ReportPoint:
+    """One rendered point, with the statement the record replays it from."""
+    return ReportPoint(
+        text=text,
+        source_urls=source_urls if source_urls is not None else [SOURCE_URL],
+        statement=ReportStatement(
+            statement_id=statement_id,
+            text=text,
+            finding_ids=finding_ids if finding_ids is not None else [],
+            target_ids=target_ids if target_ids is not None else [],
+        ),
+    )
 
 
-def test_a_verified_claim_registers_no_reason() -> None:
-    """The reason is an admission, not a verdict.
+def _written_composition(**overrides: object) -> ReportComposition:
+    """The composition one written pass produces, as the record reads it.
 
-    A claim that was judged against independent evidence carries no reason —
-    on the record or in the ledger — so an empty ``Reason`` cell stays
-    distinguishable from a populated one.
+    Every statement cites a finding the composition carries, every fact row
+    names one of those findings, and the one required target no finding
+    answers is listed under Not found -- the shape the Report Writer publishes.
     """
-    claim = _claim()
-    _, ledger = render_reports(_composition(claims=[claim]))
-    cells = _cells(
-        _table_rows(_section_body(ledger, "## Checked claim registry"))[2]
-    )
-
-    # Nine cells: the eight the registry always had, plus Reason, which is
-    # empty for a claim nothing was wrong with.
-    assert len(cells) == 9
-    assert cells[-1] == "—"
-    assert claim.insufficient_reason is None
-
-
-def test_reviewed_but_unused_sources_reach_the_ledger_only() -> None:
-    composition = _composition(
-        sources=[_source(), _source(url=OTHER_URL, title="Other study")],
-    )
-    reader, ledger = render_reports(composition)
-
-    assert OTHER_URL not in reader
-    assert "Reviewed but not cited" in ledger
-    unused = _section_body(ledger, "## Reviewed but not cited")
-    assert OTHER_URL in unused
-    assert SOURCE_URL not in unused
-
-
-# --- the reader report's shape ------------------------------------------------
-
-
-def test_the_reader_report_carries_every_section_in_order() -> None:
-    reader = render_reader_report(_composition())
-
-    positions = [reader.index(heading) for heading in REPORT_SECTIONS]
-    assert positions == sorted(positions)
-    assert reader.startswith(
-        f"{REPORT_TITLE_PREFIX}How mature is quantum error correction?"
-    )
-    assert reader.endswith("\n")
-
-
-def test_the_reader_report_declares_as_of_scope_and_quality_status() -> None:
-    reader = render_reader_report(_composition())
-
-    assert f"**As of:** {EXTRACTED_AT}" in reader
-    assert "**Scope:** 1 planned sub-topic, as recorded below." in reader
-    assert f"**Quality status:** {QUALITY_STATUS_NOT_GATED}" in reader
-
-
-def test_an_undated_pass_says_so_instead_of_reading_a_clock() -> None:
-    reader = render_reader_report(_composition(as_of=""))
-
-    assert "**As of:** no dated evidence was recorded" in reader
-
-
-def _terminal(**overrides: object) -> ReportTerminalState:
-    """The terminal checks one live run recorded, as the finalizer stamps them.
-
-    The values are the audited run's own: a failed status, a critic whose
-    review never validated, a semantic review the provider failed, and no
-    required or critical target answered.
-    """
+    eia_id = finding_fingerprint(EIA_ACTUAL_2024)
+    steo_id = finding_fingerprint(STEO_FORECAST_2025)
     payload: dict[str, object] = {
-        "status": "failed",
-        "critic_status": "failed",
-        "critic_score": 1,
-        "review_status": "provider_failed",
-        "required_targets": 11,
-        "answered_targets": 0,
-        "critical_targets": 9,
-        "answered_critical_targets": 0,
-        "gate_failures": [
-            "unanswered_critical_targets",
-            "unaccounted_required_targets",
+        "question": BATTERY_QUESTION,
+        "session_id": "session-1",
+        "iteration": 0,
+        "as_of": EXTRACTED_AT,
+        "scope": "United States",
+        "sub_topics": [
+            _topic("topic-01", "topic-01-target-01"),
+            _topic("topic-02", "topic-02-target-01", kind="forecast", period="2025"),
+            _topic("topic-09", "topic-09-target-01", period="2026"),
+        ],
+        "sources": [
+            _source(url=EIA_URL, title="Today in Energy"),
+            _source(url=STEO_URL, title="Short-Term Energy Outlook"),
+        ],
+        "findings": [EIA_ACTUAL_2024, STEO_FORECAST_2025],
+        "fact_rows": [
+            FactRow(
+                row_id="K001",
+                organisation=EIA,
+                attribution="own",
+                measure="battery storage power capacity added",
+                period="2024",
+                value="10.4 GW",
+                kind="actual",
+                release="released 2025-03-12",
+                finding_id=eia_id,
+                target_ids=["topic-01-target-01"],
+            ),
+            FactRow(
+                row_id="K002",
+                organisation=EIA,
+                attribution="relayed",
+                relay_host="ent.news",
+                measure="battery storage power capacity added",
+                period="2025",
+                value="14 GW",
+                kind="forecast",
+                release="January 2025 STEO",
+                finding_id=steo_id,
+                target_ids=["topic-02-target-01"],
+            ),
+        ],
+        "not_found": [
+            NotFoundTarget(
+                target_id="topic-09-target-01",
+                question="What does Wood Mackenzie project for 2026?",
+                queries=["Wood Mackenzie 2026 storage forecast"],
+                pages_read=["https://www.woodmac.com/press-releases/2025-record"],
+                searched=True,
+            )
+        ],
+        "finding_labels": {"F01": eia_id, "F02": steo_id},
+        "statement_verdicts": {"S001": "consistent", "S002": "consistent"},
+        "summary": [
+            _point(
+                "Generators added 10.4 GW of battery storage capacity in 2024.",
+                statement_id="S001",
+                source_urls=[EIA_URL],
+                finding_ids=[eia_id],
+                target_ids=["topic-01-target-01"],
+            )
+        ],
+        "sections": [
+            ReportSection(
+                title="2025 outlook",
+                points=[
+                    _point(
+                        "Battery storage capacity grows by 14 GW in 2025.",
+                        statement_id="S002",
+                        source_urls=[STEO_URL],
+                        finding_ids=[steo_id],
+                        target_ids=["topic-02-target-01"],
+                    )
+                ],
+            )
         ],
     }
     payload.update(overrides)
-    return ReportTerminalState.model_validate(payload)
-
-
-def test_the_reader_report_states_the_run_and_every_terminal_check() -> None:
-    """A reader of a failed run must be able to see that it failed.
-
-    The published report said ``Quality status: partial`` and nothing else:
-    not that the run ended failed, not that the critic never judged it, not
-    that the semantic review was never scored, not that no target was
-    answered, and not which gates rejected it.
-    """
-    reader = render_reader_report(_composition(terminal=_terminal()))
-
-    assert "**Run status:** failed" in reader
-    assert "**Critic:** never judged" in reader
-    assert "**Report review:** unscored (provider_failed)" in reader
-    assert (
-        "**Coverage:** 0 of 11 required targets answered; "
-        "0 of 9 critical targets answered" in reader
-    )
-    assert (
-        "**Gate failures:** unanswered_critical_targets, "
-        "unaccounted_required_targets" in reader
-    )
-
-
-def test_an_accepted_run_states_the_checks_that_passed() -> None:
-    """The same block, read on a clean run: nothing is invented either way."""
-    reader = render_reader_report(
-        _composition(
-            terminal=_terminal(
-                status="completed",
-                critic_status="reviewed",
-                critic_score=8,
-                review_status="scored",
-                answered_targets=11,
-                answered_critical_targets=9,
-                gate_failures=[],
-            )
-        )
-    )
-
-    assert "**Run status:** completed" in reader
-    assert "**Critic:** scored 8/10" in reader
-    assert "**Report review:** scored" in reader
-    assert (
-        "**Coverage:** 11 of 11 required targets answered; "
-        "9 of 9 critical targets answered" in reader
-    )
-    assert "**Gate failures:**" not in reader
-
-
-def test_an_unstamped_pass_does_not_invent_a_terminal_status() -> None:
-    """No terminal record is not a clean bill of health, and not a failure."""
-    reader = render_reader_report(_composition())
-
-    assert "**Run status:**" not in reader
-    assert "**Critic:**" not in reader
-    assert "**Gate failures:**" not in reader
-
-
-def test_a_scored_review_states_the_score_it_recorded() -> None:
-    """The audited report printed ``scored`` and withheld the ``0.55``.
-
-    The number is the review's whole content: a reader who meets only the
-    status cannot tell a report the reviewer barely accepted from one it
-    nearly rejected, and the Critic's own score sits beside it in the same
-    block, so the omission reads as "this review has no score".
-    """
-    reader = render_reader_report(
-        _composition(
-            terminal=_terminal(
-                status="completed",
-                critic_status="reviewed",
-                critic_score=5,
-                review_status="scored",
-                review_score=0.55,
-                answered_targets=11,
-                answered_critical_targets=9,
-                gate_failures=[],
-            )
-        )
-    )
-
-    assert "**Report review:** scored 0.55" in reader
-
-
-def test_a_review_scored_without_a_number_says_so() -> None:
-    """A status with no number behind it must not read as a number."""
-    reader = render_reader_report(
-        _composition(terminal=_terminal(review_status="scored"))
-    )
-
-    assert "**Report review:** scored, with no score recorded" in reader
-
-
-def test_an_unscored_review_never_prints_a_score() -> None:
-    """Only a scored review has a mean, and only a recorded mean is printed.
-
-    The review contract refuses a score beside ``incomplete`` or
-    ``provider_failed`` — a missing judgement must not be averageable into an
-    acceptance — so a record carrying one anyway is printed as the status it
-    is, with no number for a reader to average.
-    """
-    reader = render_reader_report(
-        _composition(
-            terminal=_terminal(review_status="incomplete", review_score=0.55)
-        )
-    )
-
-    assert "**Report review:** unscored (incomplete)" in reader
-    assert "0.55" not in reader
-
-
-def test_the_terminal_record_carries_the_review_score_it_read() -> None:
-    """The score travels with the status; it is never re-derived at render time.
-
-    A terminal record that stamps ``scored`` and no number is exactly what made
-    the published status block print a bare status word, so the finalizer reads
-    the recorded review's own mean and stamps it.
-    """
-    composition = _evidence_composition()
-    review = fake_report_review(
-        dimensions={name: 0.55 for name in REVIEW_DIMENSIONS}
-    )
-    state = _record_state(composition).model_copy(
-        update={"report_review": review}
-    )
-
-    terminal = terminal_report_state(state, composition, run_status="completed")
-
-    assert terminal.review_status == "scored"
-    assert terminal.review_score == pytest.approx(0.55)
-
-
-def test_a_review_that_never_scored_stamps_no_score() -> None:
-    """An absent judgement stays absent in the record the report renders."""
-    composition = _evidence_composition()
-    state = _record_state(composition).model_copy(
-        update={"report_review": fake_report_review(status="incomplete")}
-    )
-
-    terminal = terminal_report_state(state, composition, run_status="completed")
-
-    assert terminal.review_status == "incomplete"
-    assert terminal.review_score is None
-
-
-def test_the_methodology_does_not_imply_the_terminal_gates_passed() -> None:
-    """The ledger's placement is a fact; the gates' verdict is the run's.
-
-    The published line read "published only after the terminal quality
-    gates", which a reader takes as "the gates ran and this passed them" —
-    while the run's own gates rejected it twice. The fixture is long enough to
-    render at the most informative backmatter level, because the line is
-    dropped at the compact ones and a vacuous assertion proves nothing.
-    """
-    composition = _composition(
-        terminal=_terminal(),
-        sections=[
-            ReportSection(
-                title=f"Theme {index}",
-                points=[
-                    _point(
-                        text=f"Measured result {index}.{row} was reported."
-                    )
-                    for row in range(4)
-                ],
-            )
-            for index in range(6)
-        ],
-    )
-    reader = render_reader_report(composition)
-
-    assert "**What the evidence establishes**" in reader
-    assert "only after the terminal quality gates" not in reader
-    assert "after the run's terminal checks had run" in reader
-
-
-def test_every_point_carries_its_own_inline_markers() -> None:
-    composition = _composition(
-        claims=[
-            _claim(),
-            _claim(
-                text="Cost fell tenfold.",
-                urls=[OTHER_URL],
-                verdict="unverified",
-            ),
-        ],
-        sources=[_source(), _source(url=OTHER_URL, title="Other study")],
-        summary=[],
-        sections=[
-            ReportSection(
-                title="Error correction",
-                points=[
-                    _point(
-                        "Break-even was reached.",
-                        claim_ids=[claim_fingerprint(
-                            "Logical error rates fell below break-even in 2025."
-                        )],
-                        source_urls=[SOURCE_URL],
-                    ),
-                    _point(
-                        "Costs fell.",
-                        claim_ids=[claim_fingerprint("Cost fell tenfold.")],
-                        source_urls=[OTHER_URL],
-                    ),
-                ],
-            )
-        ],
-    )
-    reader = render_reader_report(composition)
-    findings = _section_body(reader, "## Findings")
-
-    assert "- Break-even was reached. [1]" in findings
-    # The bullet's claim is unverified and is not reprinted below, so the
-    # bullet itself carries the verdict.
-    assert "- Costs fell. (Not addressed by independent sources) [2]" in findings
-    # The old renderer closed every section with one pile of markers.
-    assert "Sources: [" not in reader
-    assert "Sources: none cited" not in reader
-
-
-def test_an_empty_findings_section_renders_no_heading_at_all() -> None:
-    composition = _composition(
-        sections=[
-            ReportSection(title="Kept", points=[_point()]),
-            ReportSection(title="Dropped", points=[]),
-        ]
-    )
-    reader = render_reader_report(composition)
-
-    assert "### Kept" in reader
-    assert "### Dropped" not in reader
-
-
-def test_the_constraint_table_carries_the_four_decision_columns() -> None:
-    """Evidence strength is a label, not a two-decimal probability.
-
-    The confidence number is a model judgement; printing it invited a reader
-    to weigh "0.80" as a frequency it never was. It stays in the ledger's
-    claim registry, beside the caveat.
-    """
-    composition = _composition(
-        summary=[],
-        sections=[],
-        constraints=[
-            ReportConstraint(
-                text="Cordon tolling inside the central business district",
-                deployment_mechanism="area licence with camera enforcement",
-                geography="London",
-                claim_ids=[_claim().claim_id],
-                source_urls=[SOURCE_URL],
-            ),
-            ReportConstraint(
-                text="Distance-based charging",
-                deployment_mechanism="not stated",
-                geography="not stated",
-                claim_ids=[_claim().claim_id],
-                source_urls=[SOURCE_URL],
-            ),
-        ],
-    )
-    table = _section_body(render_reader_report(composition), "## Constraint ranking")
-
-    assert (
-        "| Constraint | Deployment mechanism | Geography | Evidence strength |"
-    ) in table
-    assert "Confidence" not in table
-    assert "0.80" not in table
-    assert "| Cordon tolling inside the central business district [1] " in table
-    assert "| area licence with camera enforcement | London |" in table
-    assert "| not stated | not stated |" in table
-    # The evidence strength is the qualitative reading of the badge behind the
-    # row, resolved locally from the claim the row cites.
-    assert "| independently corroborated |" in table
-
-
-def test_uncertainty_prints_gaps_conflicts_and_limitations_once_each() -> None:
-    contradicted = _claim(
-        text="Cost fell tenfold.",
-        verdict="contradicted",
-        confidence=0.4,
-        contradictions=["A vendor report disagrees."],
-    )
-    composition = _composition(
-        claims=[_claim(), contradicted],
-        uncertainty_notes=["Vendor numbers remain unaudited."],
-        limitations=["errors_recorded"],
-    )
-    section = _section_body(
-        render_reader_report(composition), "## Uncertainty and conflicting evidence"
-    )
-
-    assert "Vendor numbers remain unaudited." in section
-    assert "- Cost fell tenfold." in section
-    assert "1 contradicting passage(s)" in section
-    assert LIMITATION_REASONS["errors_recorded"] in section
-    # A verified claim is not uncertain; it stays out of this section.
-    assert "Logical error rates fell below break-even" not in section
-
-
-def test_a_claim_the_findings_already_state_is_not_printed_twice() -> None:
-    """A source_supported claim's own note carries the reading, once.
-
-    Fable change 2: ``_reader_uncertainty`` never lists a source_supported
-    claim, so a claim a finding already states is never a candidate for a
-    second listing there either — its status is read straight off the
-    bullet that states it, via ``_unestablished_notes``.
-    """
-    text = (
-        "Clean Edge reported that 10.3 GW of utility-scale battery storage "
-        "was installed in the United States in 2024."
-    )
-    claim = _claim(text=text, verdict="insufficient_evidence")
-    composition = _composition(
-        claims=[claim],
-        summary=[],
-        sections=[
-            ReportSection(
-                title="Reported additions",
-                points=[_point(text=text, claim_ids=[claim.claim_id])],
-            )
-        ],
-    )
-
-    reader = render_reader_report(composition)
-    findings = _section_body(reader, "## Findings")
-    section = _section_body(reader, "## Uncertainty and conflicting evidence")
-
-    assert reader.count(text) == 1
-    assert f"- {text} (Insufficient independent evidence) [1]" in findings
-    assert "Insufficient independent evidence" not in section
-
-
-def test_an_eligible_claim_the_findings_already_state_is_not_printed_twice() -> (
-    None
-):
-    """A claim the filter still admits is counted by claim id, not reprinted.
-
-    RevF2 P3: the source_supported rewrite above proves that badge is never a
-    second entry in the uncertainty section at all, which left no coverage
-    for the ``claim.claim_id in stated_claim_ids`` dedup ``_reader_uncertainty``
-    itself still performs on a claim the eligibility filter admits
-    (evidence_status None, touching a planned target). The point's own
-    wording is deliberately different from the claim's: an exact-text match
-    would instead be caught by the section's separate already-rendered-line
-    check and prove nothing about the claim-id path.
-    """
-    target = EvidenceTarget(
-        target_id="topic-03-target-01",
-        coverage_id="topic-03",
-        question="How much was installed, by relay account?",
-        required_dimensions=["measure: annual additions"],
-        required=True,
-        critical=False,
-        support_policy="independent_pair",
-    )
-    topic = SubTopic(
-        coverage_id="topic-03",
-        title="Relay account",
-        rationale="A relay's own account of the figure.",
-        search_queries=["battery additions relay"],
-        success_criteria=["A second independent count"],
-        priority=1,
-        evidence_targets=[target],
-    )
-    claim_text = (
-        "Clean Edge reported that 10.3 GW of utility-scale battery storage "
-        "was installed in the United States in 2024."
-    )
-    reader_text = (
-        "A relay states 10.3 GW of storage went in during 2024, per Clean "
-        "Edge."
-    )
-    claim = _claim(
-        text=claim_text, verdict="unverified", target_ids=[target.target_id]
-    )
-    composition = _composition(
-        claims=[claim],
-        sub_topics=[topic],
-        summary=[],
-        sections=[
-            ReportSection(
-                title="Reported additions",
-                points=[_point(text=reader_text, claim_ids=[claim.claim_id])],
-            )
-        ],
-    )
-
-    reader = render_reader_report(composition)
-    section = _section_body(reader, "## Uncertainty and conflicting evidence")
-
-    assert claim_text not in reader
-    assert reader.count(reader_text) == 1
-    assert (
-        "1 checked claim(s) for this heading are already stated above"
-        in section
-    )
-    assert "No statement above repeats another." in reader
-
-
-def test_a_summary_figure_matched_to_no_planned_question_says_so() -> None:
-    """audit2 had every claim unbound, so its summary answered with no binding.
-
-    The figure stays in the summary, where it is the evidenced answer, but the
-    bullet says it is not matched to a planned question. A bound figure
-    carries no such note.
-    """
-    target = EvidenceTarget(
-        target_id="topic-05-target-01",
-        coverage_id="topic-05",
-        question="How much utility-scale battery storage was added in 2025?",
-        required_dimensions=["measure: annual additions"],
-        required=True,
-        critical=True,
-        support_policy="primary_attribution",
-    )
-    topic = SubTopic(
-        coverage_id="topic-05",
-        title="2025 actual",
-        rationale="The 2025 outcome.",
-        search_queries=["2025 battery additions"],
-        success_criteria=["EIA's 2025 figure"],
-        priority=1,
-        evidence_targets=[target],
-    )
-    unbound = _claim(text="The Monitor reported 18.9 GW installed in 2025.")
-    bound = _claim(
-        text="EIA reported 15 GW added in 2025.", target_ids=[target.target_id]
-    )
-    composition = _composition(
-        claims=[unbound, bound],
-        sub_topics=[topic],
-        summary=[
-            _point(text=unbound.text, claim_ids=[unbound.claim_id]),
-            _point(text=bound.text, claim_ids=[bound.claim_id]),
-        ],
-        sections=[],
-    )
-
-    summary = _section_body(render_reader_report(composition), "## Executive summary")
-    lines = {line for line in summary.splitlines() if line.startswith("- ")}
-
-    assert any(
-        "18.9 GW" in line and "not matched to a planned question" in line
-        for line in lines
-    )
-    assert not any(
-        "15 GW" in line and "not matched to a planned question" in line
-        for line in lines
-    )
-
-
-def test_a_paraphrased_reader_claim_is_not_reprinted_as_uncertain() -> None:
-    """The audited 10.4 GW bullet was reworded; its own note carries the reading.
-
-    Fable change 2: the claim is source_supported, so it is never a second
-    entry in the uncertainty section either way — the note on the bullet
-    that already states it is the only place its status is read.
-    """
-    claim_text = (
-        "The U.S. Energy Information Administration's March 12, 2025 Today in "
-        "Energy analysis reported that generators added 10.4 GW of new battery "
-        "storage capacity in 2024."
-    )
-    reader_text = (
-        "EIA's March 12, 2025 analysis states that generators added 10.4 GW "
-        "of new battery storage capacity in 2024."
-    )
-    claim = _claim(text=claim_text, verdict="insufficient_evidence")
-    composition = _composition(
-        claims=[claim],
-        summary=[_point(text=reader_text, claim_ids=[claim.claim_id])],
-        sections=[],
-    )
-
-    reader = render_reader_report(composition)
-    uncertainty = _section_body(reader, "## Uncertainty and conflicting evidence")
-
-    assert claim_text not in uncertainty
-    assert "Insufficient independent evidence" not in uncertainty
-    assert f"{reader_text} (Insufficient independent evidence)" in reader
-
-
-def test_methodology_counts_a_reworded_restatement_of_one_claim() -> None:
-    """Different wording of one checked claim is still a repeated statement."""
-    claim = _claim(text="EIA reported 10.4 GW of battery storage added in 2024.")
-    composition = _composition(
-        claims=[claim],
-        summary=[_point(text="EIA says 10.4 GW was added in 2024.", claim_ids=[claim.claim_id])],
-        sections=[
-            ReportSection(
-                title="2024",
-                points=[
-                    _point(
-                        text="Generators added 10.4 GW of battery storage in 2024, per EIA.",
-                        claim_ids=[claim.claim_id],
-                    )
-                ],
-            )
-        ],
-    )
-
-    methodology = _section_body(render_reader_report(composition), "## Methodology")
-
-    assert "No statement above repeats another." not in methodology
-    assert "1 statement(s) above restate a checked claim already stated" in methodology
-
-def _unestablished_bullet_composition(
-    *, where: str, verdict: str = "insufficient_evidence"
-) -> tuple[ReportComposition, str]:
-    """One composition whose one claim appears only as a reader bullet.
-
-    ``where`` is the section that prints the bullet: the summary and the
-    findings are the two places whose lines the uncertainty section reads as
-    "already stated above".
-    """
-    text = (
-        "Clean Edge reported that 10.3 GW of utility-scale battery storage "
-        "was installed in the United States in 2024."
-    )
-    claim = _claim(text=text, verdict=verdict)
-    point = _point(text=text, claim_ids=[claim.claim_id])
-    composition = _composition(
-        claims=[claim],
-        summary=[point] if where == "summary" else [],
-        sections=(
-            []
-            if where == "summary"
-            else [ReportSection(title="Reported additions", points=[point])]
-        ),
-    )
-    return composition, text
-
-
-@pytest.mark.parametrize("where", ["summary", "findings"])
-def test_a_bullet_stating_an_unestablished_claim_says_so(where: str) -> None:
-    """A suppressed reprint must not be the only word on the claim's status.
-
-    The audited run's uncertainty section withheld four claims whose words the
-    findings already carried, and those findings carried no reading of their
-    own: a reader met "Clean Edge reported that 10.3 GW … in 2024" as an
-    ordinary bullet and could not tell the claim was never established. The
-    claim is still not reprinted — the bullet that states those words carries
-    the verdict instead. Fable change 2: a source_supported claim like this
-    one is never a second entry in the uncertainty section either.
-    """
-    composition, text = _unestablished_bullet_composition(where=where)
-
-    reader = render_reader_report(composition)
-    heading = "## Executive summary" if where == "summary" else "## Findings"
-    body = _section_body(reader, heading)
-    uncertainty = _section_body(
-        reader, "## Uncertainty and conflicting evidence"
-    )
-
-    assert f"- {text} (Insufficient independent evidence) [1]" in body
-    assert reader.count(text) == 1
-    assert "Insufficient independent evidence" not in uncertainty
-
-
-def test_a_bullet_stating_an_established_claim_carries_no_verdict_note() -> None:
-    """The note is the recorded verdict, not a marker every bullet acquires."""
-    composition, text = _unestablished_bullet_composition(
-        where="findings", verdict="verified"
-    )
-
-    body = _section_body(render_reader_report(composition), "## Findings")
-
-    assert f"- {text} [1]" in body
-    assert "Insufficient independent evidence" not in body
-
-
-def test_a_long_answer_bullet_is_cut_on_a_word_boundary_and_says_it_was_cut() -> None:
-    """An answer point bound to 600 characters still marks a word-safe cut.
-
-    Checked claims in the uncertainty list now print complete sentences;
-    answer bullets retain their separate publication bound.
-    """
-    text = " ".join(f"w{index}" * (index % 4 + 1) for index in range(120))
-    claim = _claim(text=text, verdict="insufficient_evidence")
-    composition = _composition(
-        claims=[claim],
-        summary=[_point(text=text, claim_ids=[claim.claim_id])],
-        sections=[],
-    )
-    reader = render_reader_report(composition)
-    bullet = next(
-        line
-        for line in reader.splitlines()
-        if line.startswith("- ") and line[2:].startswith(text[:24])
-    )
-    # The bullet carries its citation marker after the clamped text, so the
-    # cut marker is what the *text* ends with, not the whole line.
-    shown = bullet[len("- ") :]
-    cut_at = shown.index(" […] (cut)")
-    body = shown[:cut_at]
-
-    assert text.startswith(body)
-    assert text[len(body)] == " "
-    assert len(body) + len(" […] (cut)") <= 600
-
-
-def test_an_unused_source_supported_claim_is_absent_from_the_reader_report() -> (
-    None
-):
-    """A checked claim no point cites is not listed in the uncertainty section.
-
-    Fable change 2: ``_reader_uncertainty`` never lists a source_supported
-    claim, whether or not some point already states it — evidence is only
-    relocated, never hidden, so an unused claim like this one still shows up
-    whole in the evidence ledger's claim registry.
-    """
-    text = (
-        "The U.S. Energy Information Administration's March 12, 2025 Today in "
-        "Energy analysis reported that generators added 10.4 GW of new battery "
-        "storage capacity in 2024, the second-largest generating capacity "
-        "addition after solar, based on EIA's January 2025 Preliminary Monthly "
-        "Electric Generator Inventory."
-    )
-    claim = _claim(text=text, verdict="insufficient_evidence")
-    composition = _composition(claims=[claim], summary=[], sections=[])
-
-    reader = render_reader_report(composition)
-    ledger = render_evidence_ledger(composition)
-    methodology = _section_body(reader, "## Methodology")
-
-    assert text not in reader
-    assert claim.claim_id in ledger
-    assert (
-        "1 checked claim(s) not used by a statement are listed in the "
-        "evidence ledger."
-        in methodology
-    )
-
-
-def test_an_eligible_uncertain_claim_keeps_its_full_sentence_uncut() -> None:
-    """A checked claim's own qualifier must survive the reader's uncertainty list."""
-    target = EvidenceTarget(
-        target_id="topic-01-target-01",
-        coverage_id="topic-01",
-        question="How much battery storage was added in 2024?",
-        required_dimensions=["measure: annual additions"],
-        required=True,
-        critical=False,
-        support_policy="independent_pair",
-    )
-    topic = SubTopic(
-        coverage_id="topic-01",
-        title="2024 additions",
-        rationale="The 2024 baseline.",
-        search_queries=["2024 battery additions"],
-        success_criteria=["A second independent count"],
-        priority=1,
-        evidence_targets=[target],
-    )
-    text = (
-        "A trade-press relay reported that generators added 10.4 GW of new "
-        "battery storage capacity in 2024, the second-largest generating "
-        "capacity addition after solar, citing EIA's January 2025 Preliminary "
-        "Monthly Electric Generator Inventory."
-    )
-    claim = _claim(
-        text=text, verdict="unverified", target_ids=[target.target_id]
-    )
-    composition = _composition(
-        claims=[claim], sub_topics=[topic], summary=[], sections=[]
-    )
-
-    reader = render_reader_report(composition)
-    uncertainty = _section_body(
-        reader, "### Not addressed by independent sources"
-    )
-
-    assert f"- {text} [1]" in uncertainty
-    assert "(cut)" not in uncertainty
-
-
-def test_a_source_supported_claim_answering_primary_attribution_has_no_verdict_note() -> (
-    None
-):
-    """Fable change 2: primary attribution is the plan's own bar, already met.
-
-    A ``source_supported`` claim checked against a ``primary_attribution``
-    target has done what that target's own policy asks for; printing
-    "(Insufficient independent evidence)" beside it would contradict the very
-    heading it renders under.
-    """
-    target = EvidenceTarget(
-        target_id="topic-01-target-01",
-        coverage_id="topic-01",
-        question="How much battery storage was added in 2024?",
-        required_dimensions=["measure: annual additions"],
-        required=True,
-        critical=True,
-        support_policy="primary_attribution",
-    )
-    topic = SubTopic(
-        coverage_id="topic-01",
-        title="2024 additions",
-        rationale="The 2024 baseline.",
-        search_queries=["2024 battery additions"],
-        success_criteria=["EIA's 2024 figure"],
-        priority=1,
-        evidence_targets=[target],
-    )
-    text = "EIA reported 10.4 GW added in 2024."
-    claim = _claim(
-        text=text, verdict="insufficient_evidence", target_ids=[target.target_id]
-    )
-    composition = _evidence_composition(
-        claims=[claim],
-        sub_topics=[topic],
-        constraints=[],
-        summary=[
-            _stated(
-                text,
-                claim_ids=[claim.claim_id],
-                statement=_statement(
-                    text,
-                    statement_id="S1",
-                    mode="attributed",
-                    target_ids=[target.target_id],
-                ),
-            )
-        ],
-        sections=[],
-    )
-
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert "**The attributed answer**" in summary
-    assert text in summary
-    assert "Insufficient independent evidence" not in summary
-
-
-def test_a_source_supported_claim_answering_independent_pair_says_not_corroborated() -> (
-    None
-):
-    """A weaker badge than the plan's own bar still says so, in its own words.
-
-    Fable change 2: an ``independent_pair`` target is not met by a single
-    issuer's own account, and the bullet that states the claim says exactly
-    that — not the legacy verdict's generic "insufficient" reading.
-    """
-    target = EvidenceTarget(
-        target_id="topic-02-target-01",
-        coverage_id="topic-02",
-        question="How much was added in 2024, corroborated independently?",
-        required_dimensions=["measure: annual additions"],
-        required=True,
-        critical=False,
-        support_policy="independent_pair",
-    )
-    topic = SubTopic(
-        coverage_id="topic-02",
-        title="2024 additions, corroborated",
-        rationale="A second independent count.",
-        search_queries=["2024 battery additions second source"],
-        success_criteria=["Two independent counts"],
-        priority=1,
-        evidence_targets=[target],
-    )
-    text = "Wood Mackenzie reported 12.3 GW added in 2024."
-    claim = _claim(
-        text=text, verdict="insufficient_evidence", target_ids=[target.target_id]
-    )
-    composition = _composition(
-        claims=[claim],
-        sub_topics=[topic],
-        summary=[_point(text=text, claim_ids=[claim.claim_id])],
-        sections=[],
-    )
-
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert f"- {text} (not independently corroborated) [1]" in summary
-    assert "Insufficient independent evidence" not in summary
-
-
-def test_the_contradicted_heading_reads_as_revised_or_disputed() -> None:
-    """Fable change 3: a live disagreement is not always independent refutation."""
-    claim = _claim(
-        text="Cost fell tenfold.",
-        verdict="contradicted",
-        contradictions=["A later edition disagrees."],
-    )
-    composition = _composition(claims=[claim], summary=[], sections=[])
-
-    uncertainty = _section_body(
-        render_reader_report(composition), "### Contradicted or revised"
-    )
-
-    assert "- Cost fell tenfold." in uncertainty
-
-
-def test_two_unresolved_claims_of_one_cluster_give_one_uncertainty_bullet() -> (
-    None
-):
-    """Fable change 2: cluster identity, not exact wording, is the dedup key."""
-    target = EvidenceTarget(
-        target_id="topic-04-target-01",
-        coverage_id="topic-04",
-        question="How much was forecast for 2025?",
-        required_dimensions=["measure: annual additions"],
-        required=True,
-        critical=False,
-        support_policy="independent_pair",
-    )
-    topic = SubTopic(
-        coverage_id="topic-04",
-        title="2025 forecast",
-        rationale="The 2025 projection.",
-        search_queries=["2025 battery forecast"],
-        success_criteria=["A second independent forecast"],
-        priority=1,
-        evidence_targets=[target],
-    )
-    first = _claim(
-        text="A trade press relay carries the 2025 forecast, first telling.",
-        verdict="unverified",
-        target_ids=[target.target_id],
-        cluster_id="cluster-x",
-    )
-    second = _claim(
-        text="A different outlet's own words for the same 2025 forecast.",
-        verdict="unverified",
-        target_ids=[target.target_id],
-        cluster_id="cluster-y",
-        cluster_aliases=["cluster-x"],
-    )
-    composition = _composition(
-        claims=[first, second], sub_topics=[topic], summary=[], sections=[]
-    )
-
-    uncertainty = _section_body(
-        render_reader_report(composition),
-        "### Not addressed by independent sources",
-    )
-
-    assert first.text in uncertainty
-    assert second.text not in uncertainty
-    assert (
-        "1 checked claim(s) for this heading are already stated above"
-        in uncertainty
-    )
-
-
-def test_two_unresolved_claims_stating_one_figure_give_one_uncertainty_bullet() -> (
-    None
-):
-    """Fable change 2: a shared unit-bearing figure and period is a second identity."""
-    target = EvidenceTarget(
-        target_id="topic-04-target-01",
-        coverage_id="topic-04",
-        question="How much was installed in 2025?",
-        required_dimensions=["measure: annual additions"],
-        required=True,
-        critical=False,
-        support_policy="independent_pair",
-    )
-    topic = SubTopic(
-        coverage_id="topic-04",
-        title="2025 actual",
-        rationale="The 2025 outturn.",
-        search_queries=["2025 battery installed"],
-        success_criteria=["A second independent count"],
-        priority=1,
-        evidence_targets=[target],
-    )
-    first = _claim(
-        text="A relay reported that 16 GW was installed in 2025.",
-        verdict="unverified",
-        target_ids=[target.target_id],
-    )
-    second = _claim(
-        text=(
-            "A second relay states 16 GW was installed in 2025, citing the "
-            "monitor."
-        ),
-        verdict="unverified",
-        target_ids=[target.target_id],
-    )
-    composition = _composition(
-        claims=[first, second], sub_topics=[topic], summary=[], sections=[]
-    )
-
-    uncertainty = _section_body(
-        render_reader_report(composition),
-        "### Not addressed by independent sources",
-    )
-
-    assert first.text in uncertainty
-    assert second.text not in uncertainty
-    assert (
-        "1 checked claim(s) for this heading are already stated above"
-        in uncertainty
-    )
-
-
-def test_a_shared_release_vintage_does_not_suppress_a_distinct_figure() -> None:
-    """A release vintage named in the text must not merge distinct facts.
-
-    RevF2 P2: pairing every unit-bearing figure with every year the claim's
-    text mentions let a claim that names its own vintage ("10.4 GW ... in
-    2024, per EIA's January 2025 inventory") suppress an unrelated claim for
-    a different period ("10.4 GW planned for 2025") that happens to share
-    the figure and one of those years.
-    """
-    target = EvidenceTarget(
-        target_id="topic-01-target-01",
-        coverage_id="topic-01",
-        question="How much was added in 2024, and how much is planned for 2025?",
-        required_dimensions=["measure: annual additions"],
-        required=True,
-        critical=False,
-        support_policy="independent_pair",
-    )
-    topic = SubTopic(
-        coverage_id="topic-01",
-        title="Additions and plans",
-        rationale="Both periods matter.",
-        search_queries=["battery additions 2024 2025"],
-        success_criteria=["A second independent count"],
-        priority=1,
-        evidence_targets=[target],
-    )
-    dated = _claim(
-        text=(
-            "Developers added 10.4 GW in 2024, per EIA's January 2025 "
-            "inventory."
-        ),
-        verdict="unverified",
-        target_ids=[target.target_id],
-    )
-    planned = _claim(
-        text="Developers plan 10.4 GW of new storage for 2025.",
-        verdict="unverified",
-        target_ids=[target.target_id],
-    )
-    composition = _composition(
-        claims=[dated, planned], sub_topics=[topic], summary=[], sections=[]
-    )
-
-    uncertainty = _section_body(
-        render_reader_report(composition),
-        "### Not addressed by independent sources",
-    )
-
-    assert dated.text in uncertainty
-    assert planned.text in uncertainty
-
-
-def test_an_unresolved_claim_touching_no_planned_target_is_not_listed() -> None:
-    """Fable change 2: a relay unrelated to the plan is not printed as uncertain.
-
-    Its status still lives in the evidence ledger, and the methodology's own
-    count of unused claims names it.
-    """
-    claim = _claim(
-        text="An unrelated relay carries a figure this plan never asked for.",
-        verdict="unverified",
-    )
-    composition = _composition(claims=[claim], summary=[], sections=[])
-
-    reader = render_reader_report(composition)
-    methodology = _section_body(reader, "## Methodology")
-
-    assert claim.text not in reader
-    assert (
-        "1 checked claim(s) not used by a statement are listed in the "
-        "evidence ledger."
-        in methodology
-    )
-
-
-def test_methodology_is_a_compact_locally_generated_run_summary() -> None:
-    section = _section_body(
-        render_reader_report(
-            _composition(
-                sub_topics=[
-                    SubTopic(
-                        coverage_id="topic-01",
-                        title="Alpha",
-                        rationale="First.",
-                        search_queries=["alpha"],
-                        success_criteria=["alpha evidence"],
-                        priority=1,
-                    )
-                ],
-                sources=[
-                    _source(),
-                    _source(
-                        url=OTHER_URL,
-                        title="Unscored study",
-                        status="unscored_provider",
-                        rationale=(
-                            "The provider was unavailable, so this source "
-                            "carries no quality judgement."
-                        ),
-                    ),
-                ],
-                limitations=["low_confidence_sources"],
-            )
-        ),
-        "## Methodology",
-    )
-
-    assert "2 reviewed source(s)" in section
-    assert "1 scored" in section
-    assert "1 unscored" in section
-    assert "topic-01" in section
-    # No persistence claim: synthesis writes nothing.
-    for phrase in ("saved to", "written to", "stored at"):
-        assert phrase not in section
-    # Limitations are disclosed once, in the uncertainty section.
-    assert LIMITATION_REASONS["low_confidence_sources"] not in section
-
-
-def test_an_evidence_free_reader_report_still_carries_every_section() -> None:
-    reader = render_reader_report(
-        ReportComposition(question="What is known?", session_id="session-1")
-    )
-
-    for heading in REPORT_SECTIONS:
-        assert heading in reader
-    assert REPORT_SUMMARY_FALLBACK in reader
-    assert "(no sources were cited)" in reader
-    assert render_reader_report(
-        ReportComposition(question="What is known?", session_id="session-1")
-    ) == reader
-
-
-def test_limitations_render_enumerated_reasons_only() -> None:
-    rendered = render_limitations(["errors_recorded", "no_verified_claims"])
-
-    assert rendered.count("- ") == 2
-    assert LIMITATION_REASONS["errors_recorded"] in rendered
-    assert render_limitations([]) == "No limitations were recorded for this pass."
-    with pytest.raises(ValueError, match="limitation reason"):
-        render_limitations(["because"])
-
-
-# --- Step 7: the structural bounds -------------------------------------------
-
-
-def test_no_reader_section_repeats_a_canonical_url_row() -> None:
-    """Cited URLs exactly once in the reader; uncited ones not at all.
-
-    ``<= 1`` was unfalsifiable for the second URL: ``source-042`` is never
-    cited, so its count is 0 and the bound permitted 0 for ``source-001`` too.
-    The reader's cited set comes from the composition's own citation index, so
-    "exactly once" is asserted where a citation exists and "never" where none
-    does.
-    """
-    composition = pathological_composition()
-    reader, ledger = render_reports(composition)
-    cited = {citation.url for citation in reader_citations(composition)}
-    uncited = "https://example.test/source-042"
-    assessment = _section_body(ledger, "## Source assessment")
-
-    # Every source a printed bullet rests on is cited, including the checked
-    # claims the uncertainty list prints; the assessed-only source is not.
-    assert "https://example.test/source-001" in cited
-    assert uncited not in cited
-    for source_url in cited:
-        assert reader.count(source_url) == 1
-    assert reader.count(uncited) == 0
-    for source_url in (*sorted(cited), uncited):
-        assert assessment.count(source_url) == 1
-
-
-def test_no_claim_id_is_registered_twice() -> None:
-    _, ledger = render_reports(pathological_composition())
-    registry = _section_body(ledger, "## Checked claim registry")
-    ids = [
-        row.split("|")[2].strip()
-        for row in _table_rows(registry)[2:]
-    ]
-
-    assert len(ids) == len(set(ids))
-    assert all(re.fullmatch(r"[0-9a-f]{64}", claim_id) for claim_id in ids)
-
-
-def test_every_reader_citation_resolves_and_every_reference_is_used() -> None:
-    reader = render_reader_report(
-        _composition(
-            claims=[
-                _claim(),
-                _claim(
-                    text="Cost fell tenfold.",
-                    urls=[OTHER_URL],
-                    verdict="unverified",
-                ),
-            ],
-            sources=[_source(), _source(url=OTHER_URL, title="Other study")],
-            sections=[
-                ReportSection(
-                    title="Both",
-                    points=[
-                        _point(),
-                        _point(
-                            "Costs fell.",
-                            claim_ids=[claim_fingerprint("Cost fell tenfold.")],
-                            source_urls=[OTHER_URL],
-                        ),
-                    ],
-                )
-            ],
-        )
-    )
-
-    markers = {int(number) for number in re.findall(r"\[(\d+)\]", reader)}
-    references = {
-        int(match.group(1))
-        for match in re.finditer(r"(?m)^(\d+)\. ", reader)
+    return ReportComposition.model_validate(payload)
+
+
+def _section_body(markdown: str, heading: str) -> str:
+    """The text between ``heading`` and the next H2 heading (or the end)."""
+    start = markdown.index(heading)
+    tail = markdown[start + len(heading) :]
+    match = re.search(r"(?m)^## ", tail)
+    return tail[: match.start()] if match else tail
+
+
+# --- the quality record -------------------------------------------------------
+#
+# The third published artifact: one JSON document that makes the two Markdown
+# documents auditable. It carries IDs rather than prose, hashes the bytes it
+# describes without describing itself, and must serialize everything a replay
+# needs to resolve a cited statement back to the finding it rests on.
+
+
+def _record_state(composition: ReportComposition, **fields: object) -> ResearchState:
+    """The state the terminal finalizer holds when it publishes the set."""
+    state = ResearchState(
+        session_id=composition.session_id,
+        original_question=composition.question,
+        sub_topics=list(composition.sub_topics),
+        composition=composition,
+        report=render_written_report(composition),
+        report_evidence=render_finding_log(composition),
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+        **fields,  # type: ignore[arg-type]
+    )
+    return state.model_copy(
+        update={"quality": compute_report_quality(state, composition)}
+    )
+
+
+def _artifact_texts(composition: ReportComposition) -> dict[str, str]:
+    """The two Markdown artifacts, under the names publication writes them."""
+    return {
+        "reader_markdown": render_written_report(composition),
+        "evidence_markdown": render_finding_log(composition),
     }
-    assert markers
-    assert markers == references
 
 
-def test_every_settled_point_is_cited_and_carries_a_checked_claim() -> None:
-    composition = pathological_composition()
-    reader = render_reader_report(composition)
-    cited = {citation.url for citation in reader_citations(composition)}
-
-    for point in _reader_points(composition):
-        assert point.claim_ids
-        assert point.source_urls
-        assert cited.issuperset(point.source_urls)
-    # Every settled statement the reader prints ends in its own markers.
-    for heading in ("## Executive summary", "## Findings"):
-        bullets = [
-            line
-            for line in _section_body(reader, heading).splitlines()
-            if line.startswith("- ")
-        ]
-        assert bullets
-        assert all(re.search(r"\[\d+\]", line) for line in bullets)
-
-
-def test_references_equal_the_urls_the_reader_points_use() -> None:
-    composition = _composition(
-        claims=[
-            _claim(),
-            _claim(text="Cost fell tenfold.", urls=[OTHER_URL], verdict="unverified"),
-        ],
-        sources=[_source(), _source(url=OTHER_URL, title="Other study")],
-        sections=[
-            ReportSection(
-                title="Both",
-                points=[
-                    _point(),
-                    _point(
-                        "Costs fell.",
-                        claim_ids=[claim_fingerprint("Cost fell tenfold.")],
-                        source_urls=[OTHER_URL],
-                    ),
-                ],
-            )
-        ],
-    )
-    reader = render_reader_report(composition)
-    index = reader_citations(composition)
-    references = _section_body(reader, "## References")
-
-    assert [citation.url for citation in index] == [SOURCE_URL, OTHER_URL]
-    assert references.strip() == render_citations(index)
-
-
-def test_no_finding_section_says_sources_none_cited() -> None:
-    reader = render_reader_report(
-        _composition(
-            sections=[ReportSection(title="Uncited", points=[])],
-        )
-    )
-
-    assert "Sources: none cited" not in reader
-    assert "### Uncited" not in reader
-
-
-def test_the_reference_material_stays_below_a_third_of_the_reader_report() -> None:
-    claims = [
-        _claim(
-            text=f"Measured result {index} was reported.",
-            urls=[f"https://example.test/study-{index}"],
-        )
-        for index in range(6)
-    ]
-    sources = [
-        _source(
-            url=f"https://example.test/study-{index}",
-            title=f"Study {index}",
-        )
-        for index in range(6)
-    ]
-    composition = _composition(
-        claims=claims,
-        sources=sources,
-        summary=[
-            _point(
-                "Six measured results were reported.",
-                claim_ids=[claims[0].claim_id],
-                source_urls=[claims[0].source_urls[0]],
-            )
-        ],
-        constraints=[
-            ReportConstraint(
-                text=f"Constraint {index}",
-                deployment_mechanism="licence",
-                geography="a city",
-                claim_ids=[claim.claim_id],
-                source_urls=list(claim.source_urls),
-            )
-            for index, claim in enumerate(claims)
-        ],
-        sections=[
-            ReportSection(
-                title=f"Theme {index}",
-                points=[
-                    _point(
-                        f"Result {index} was measured.",
-                        claim_ids=[claim.claim_id],
-                        source_urls=list(claim.source_urls),
-                    )
-                ],
-            )
-            for index, claim in enumerate(claims)
-        ],
-    )
-    reader = render_reader_report(composition)
-    references = _section_body(reader, "## References")
-
-    assert len(references) / len(reader) < 0.35
-    assert reader.count(claims[0].source_urls[0]) == 1
-
-
-# --- Step 6: honest statuses --------------------------------------------------
-
-
-def test_scored_sources_print_numbers_and_unscored_ones_print_status() -> None:
-    _, ledger = render_reports(
-        _composition(
-            sources=[
-                _source(),
-                _source(
-                    url=OTHER_URL,
-                    title="Capped study",
-                    status="unscored_cap",
-                    rationale=(
-                        "The per-run source cap was reached before this "
-                        "source was scored."
-                    ),
-                ),
-            ]
-        )
-    )
-    assessment = _section_body(ledger, "## Source assessment")
-    scored_row, unscored_row = _table_rows(assessment)[2:]
-
-    assert "0.76" in scored_row
-    assert "scored" in scored_row
-    assert "unscored_cap" in unscored_row
-    assert "per-run source cap was reached" in unscored_row
-    # No numeric quality field is printed for a source nobody scored.
-    assert "0.76" not in unscored_row
-    assert "0.80" not in unscored_row
-
-
-def test_low_confidence_means_a_real_score_below_the_threshold() -> None:
-    _, ledger = render_reports(
-        _composition(
-            sources=[
-                _source(
-                    url=OTHER_URL,
-                    title="Anonymous blog",
-                    overall=0.08,
-                    low_confidence=True,
-                    rationale="Anonymous blog.",
-                )
-            ]
-        )
-    )
-    assessment = _section_body(ledger, "## Source assessment")
-    row = _table_rows(assessment)[2]
-
-    assert "0.08" in row
-    assert "low" in row
-
-
-def test_an_unscored_source_is_never_reported_as_low_confidence() -> None:
-    _, ledger = render_reports(
-        _composition(
-            sources=[
-                _source(
-                    url=OTHER_URL,
-                    title="Unscored study",
-                    status="unscored_missing",
-                    rationale="The model returned no row for this source.",
-                )
-            ]
-        )
-    )
-    row = _table_rows(_section_body(ledger, "## Source assessment"))[2]
-
-    assert "unscored_missing" in row
-    assert "low" not in row
-
-
-# --- the evidence ledger ------------------------------------------------------
-
-
-def test_the_ledger_carries_every_verbose_block() -> None:
-    _, ledger = render_reports(
-        _composition(
-            claims=[
-                _claim(passages=[_passage()], coverage_ids=["topic-01"]),
-                _claim(
-                    text="Cost fell tenfold.",
-                    urls=[OTHER_URL],
-                    verdict="contradicted",
-                    contradictions=["A vendor report disagrees."],
-                ),
-            ],
-            sources=[_source(), _source(url=OTHER_URL, title="Other study")],
-            errors=[
-                ResearchError(
-                    error_type="synthesizer_invalid_section",
-                    source="agent.synthesizer",
-                    message="Some drafted content was refused.",
-                    recoverable=True,
-                    details={"rejected": ["section 2: no known checked claim"]},
-                )
-            ],
-            rejected=["section 2: no known checked claim"],
-        )
-    )
-
-    assert ledger.startswith(
-        f"{EVIDENCE_TITLE_PREFIX}How mature is quantum error correction?"
-    )
-    for heading in EVIDENCE_SECTIONS:
-        assert heading in ledger
-    passages = _section_body(ledger, "## Verification passages")
-    assert THIRD_URL in passages
-    assert "An independent review states the same figure." in passages
-    assert "A vendor report disagrees." in _section_body(
-        ledger, "## Checked claim registry"
-    )
-    assert "section 2: no known checked claim" in _section_body(
-        ledger, "## Rejected draft content"
-    )
-    assert "synthesizer_invalid_section" in _section_body(ledger, "## Run errors")
-
-
-def test_the_ledger_records_the_coverage_a_claim_consumed() -> None:
-    _, ledger = render_reports(
-        _composition(claims=[_claim(coverage_ids=["topic-01", "topic-02"])])
-    )
-
-    assert "topic-01, topic-02" in ledger
-
-
-def test_same_url_findings_only_hide_the_consumed_finding() -> None:
-    consumed = Finding(
-        content="The consumed finding is checked.",
-        source_url=SOURCE_URL,
-        source_title="QEC 2025",
-        extracted_at=EXTRACTED_AT,
-        confidence=0.8,
-        related_sub_topic="Alpha",
-    )
-    untouched = Finding(
-        content="The untouched finding remains an open question.",
-        source_url=SOURCE_URL,
-        source_title="QEC 2025",
-        extracted_at=EXTRACTED_AT,
-        confidence=0.7,
-        related_sub_topic="Alpha",
-    )
-    ledger = render_evidence_ledger(
-        _composition(
-            claims=[
-                _claim(
-                    finding_fingerprints=[finding_fingerprint(consumed)]
-                )
-            ],
-            findings=[consumed, untouched],
-        )
-    )
-
-    open_questions = _section_body(
-        ledger, "## Unchecked findings and open questions"
-    )
-    assert "The consumed finding is checked." not in open_questions
-    assert "The untouched finding remains an open question." in open_questions
-
-
-def test_an_empty_ledger_still_carries_every_block() -> None:
-    ledger = render_evidence_ledger(
-        ReportComposition(question="What is known?", session_id="session-1")
-    )
-
-    for heading in EVIDENCE_SECTIONS:
-        assert heading in ledger
-    assert ledger.endswith("\n")
-
-
-def test_the_run_errors_block_publishes_bounded_tool_failure_details() -> None:
-    """A classified tool failure reaches the ledger; an unvetted one does not.
-
-    The bounded scraper diagnosis is the only reason a ``web_scraper`` failure
-    can be counted *by class* rather than merely counted, so the evidence
-    artifact has to carry it — otherwise classifying the failure buys nothing
-    for the reader of this artifact. Every other error type's details are
-    withheld: this ledger is public, and those values are not produced by a
-    projection that revalidates them.
-    """
-    ledger = render_evidence_ledger(
-        _composition(
-            errors=[
-                ResearchError(
-                    error_type="agent_tool_failed",
-                    source="agent.researcher",
-                    message="web_scraper failed; the agent continued.",
-                    recoverable=True,
-                    details={
-                        "tool": "web_scraper",
-                        "iteration": 3,
-                        "tool_error_type": "HTTPStatusError",
-                        "attempts": 2,
-                        "retries": 1,
-                        "status_code": 503,
-                        "content_type": "text/html",
-                    },
-                ),
-                ResearchError(
-                    error_type="synthesizer_invalid_section",
-                    source="agent.synthesizer",
-                    message="Some drafted content was refused.",
-                    recoverable=True,
-                    details={"unvetted": "https://internal.example/secret"},
-                ),
-            ]
-        )
-    )
-
-    errors = _section_body(ledger, "## Run errors")
-
-    assert "tool_error_type=HTTPStatusError" in errors
-    assert "status_code=503" in errors
-    assert "content_type=text/html" in errors
-    assert "unvetted" not in errors
-    assert "internal.example" not in errors
-
-
-def test_the_run_errors_block_names_why_a_sub_topic_was_skipped() -> None:
-    """A skipped sub-topic must publish *which* one and *why*.
-
-    It is the difference between a coverage gap and an acceptable skip: "cap"
-    and "provider_failure_stopped_processing" are losses, while
-    "interim_satisfaction" is a refinement pass correctly reusing a prior
-    finding. A run lost three planned sub-topics and the artifact could not say
-    which reason applied, so the reason is now published alongside the
-    locally-stamped coverage id.
-    """
-    ledger = render_evidence_ledger(
-        _composition(
-            errors=[
-                ResearchError(
-                    error_type="researcher_sub_topic_skipped",
-                    source="agent.researcher",
-                    message="A planned sub-topic was never researched.",
-                    recoverable=True,
-                    details={
-                        "sub_topic": "Interconnection queue reform",
-                        "coverage_id": "topic-04",
-                        "priority": 4,
-                        "reason": "provider_failure_stopped_processing",
-                    },
-                )
-            ]
-        )
-    )
-
-    errors = _section_body(ledger, "## Run errors")
-
-    assert "coverage_id=topic-04" in errors
-    assert "reason=provider_failure_stopped_processing" in errors
-
-
-def test_the_run_errors_block_reads_each_skip_reason_distinctly() -> None:
-    """Prior completion is not a stopped pass, and neither reads "never researched".
-
-    ``sub_topic_skipped_error`` writes one message for all four of its
-    reasons, and that message says the topic was never researched — which the
-    ledger printed for every reason, including a topic an earlier pass had
-    already answered. Ruling 5 keeps prior completion, deferred work and
-    never-attempted work distinct, so the reading follows the enumerated
-    reason and the never-researched sentence is printed only where it is true.
-    """
-    ledger = render_evidence_ledger(
-        _composition(
-            errors=[
-                sub_topic_skipped_error(
-                    _sub_topic("topic-01"), reason="required_targets_completed"
-                ),
-                sub_topic_skipped_error(_sub_topic("topic-04"), reason="cap"),
-                sub_topic_skipped_error(
-                    _sub_topic("topic-06"),
-                    reason="provider_failure_stopped_processing",
-                ),
-            ]
-        )
-    )
-
-    errors = _section_body(ledger, "## Run errors")
-
-    assert "already met its required targets" in errors
-    assert "was deferred" in errors
-    assert "a provider failure stopped the pass" in errors
-    assert errors.count("never researched") == 1
-
-
-def _sub_topic(coverage_id: str) -> SubTopic:
-    return SubTopic(
-        coverage_id=coverage_id,
-        title="Alpha",
-        rationale="First.",
-        search_queries=["alpha"],
-        success_criteria=["alpha evidence"],
-        priority=1,
-    )
-
-
-# --- identity and citation helpers -------------------------------------------
+# --- identity, citation and plan helpers -------------------------------------
 
 
 def test_canonicalization_collapses_repeated_records_in_first_seen_order() -> None:
-    sources = _pathological_sources()
-    claims = _pathological_claims()
-
-    canonical = canonical_sources(sources)
-    canonical_claim_list = canonical_claims(claims)
+    """257 source records are 101 canonical records, one row each."""
+    canonical = canonical_sources(_pathological_sources())
 
     assert len(canonical) == PATHOLOGICAL_CANONICAL_SOURCES
     assert len({source.url for source in canonical}) == len(canonical)
-    assert len(canonical_claim_list) == PATHOLOGICAL_CANONICAL_CLAIMS
-    assert len({claim.claim_id for claim in canonical_claim_list}) == len(
-        canonical_claim_list
-    )
-    # The latest record for a repeated claim wins, as the state contract says.
-    assert canonical_claims(claims)[0] == claims[240]
+    assert [source.url for source in canonical] == [
+        f"https://example.test/source-{index:03d}"
+        for index in range(1, PATHOLOGICAL_CANONICAL_SOURCES + 1)
+    ]
 
 
 def test_the_latest_recorded_timestamp_is_the_as_of_value() -> None:
@@ -2134,58 +388,37 @@ def test_the_latest_recorded_timestamp_is_the_as_of_value() -> None:
         related_sub_topic="Alpha",
     )
     later = earlier.model_copy(update={"extracted_at": EXTRACTED_AT})
-    read = ReadRecord(
-        read_id="read-1",
-        requested_url=SOURCE_URL,
-        resolved_url=SOURCE_URL,
-        title="QEC 2025",
-        reader="web_scraper",
-        retrieved_at="2026-09-01T00:00:00+00:00",
-        content_sha256="a" * 64,
-        extraction_complete=True,
-        passages={"p. 1": "Break-even was reached."},
-        origin_session_id="session-1",
-    )
+    read = make_read("Break-even was reached.", url=SOURCE_URL, title="QEC 2025")
 
     assert report_as_of(findings=[earlier, later], reads=[]) == EXTRACTED_AT
     # A read newer than every finding is the newest evidence and wins; the
     # value comes from a read's retrieval time, never from a graph event.
-    assert (
-        report_as_of(findings=[earlier], reads=[read])
-        == "2026-09-01T00:00:00+00:00"
-    )
+    assert report_as_of(findings=[earlier], reads=[read]) == read.retrieved_at
     assert report_as_of(findings=[], reads=[]) == ""
 
 
 def test_scope_is_stated_from_the_plan_alone() -> None:
-    topic = SubTopic(
-        coverage_id="topic-01",
-        title="Alpha",
-        rationale="First.",
-        search_queries=["alpha"],
-        success_criteria=["alpha evidence"],
-        priority=1,
-    )
+    topic = _topic("topic-01", "topic-01-target-01")
 
     rendered = report_scope([topic])
 
     assert "topic-01" in rendered
-    assert "Alpha" in rendered
+    assert "topic-01-target-01" in rendered
     assert "no geography" in rendered.lower()
     assert report_scope([]) != ""
 
 
-def test_citation_numbers_follow_first_use_in_the_reader_report() -> None:
-    composition = _composition(
-        claims=[
-            _claim(),
-            _claim(text="Cost fell tenfold.", urls=[OTHER_URL], verdict="unverified"),
-        ],
-        sources=[_source(), _source(url=OTHER_URL, title="Other study")],
+def test_citation_numbers_follow_first_use_in_the_written_report() -> None:
+    """The summary is met first, so its page takes reference 1.
+
+    The reader meets the summary, then the Key facts table, then the findings
+    sections; one reference per page, numbered in that order.
+    """
+    composition = _written_composition(
         summary=[
             _point(
                 "Costs fell.",
-                claim_ids=[claim_fingerprint("Cost fell tenfold.")],
+                statement_id="S001",
                 source_urls=[OTHER_URL],
             )
         ],
@@ -2195,11 +428,7 @@ def test_citation_numbers_follow_first_use_in_the_reader_report() -> None:
                 points=[
                     _point(
                         "Break-even was reached.",
-                        claim_ids=[
-                            claim_fingerprint(
-                                "Logical error rates fell below break-even in 2025."
-                            )
-                        ],
+                        statement_id="S002",
                         source_urls=[SOURCE_URL],
                     )
                 ],
@@ -2207,10 +436,17 @@ def test_citation_numbers_follow_first_use_in_the_reader_report() -> None:
         ],
     )
 
-    assert [citation.url for citation in reader_citations(composition)] == [
-        OTHER_URL,
-        SOURCE_URL,
+    index = written_citations(composition)
+
+    assert [citation.number for citation in index] == [1, 2, 3, 4]
+    assert [citation.url.split("/")[2] for citation in index] == [
+        "other.test",
+        "eia.gov",
+        "ent.news",
+        "example.org",
     ]
+    sources = _section_body(render_written_report(composition), "## Sources")
+    assert sources.index(OTHER_URL) < sources.index(SOURCE_URL)
 
 
 def test_markers_render_sorted_and_deduplicated() -> None:
@@ -2237,2203 +473,97 @@ def test_a_citation_object_rejects_a_zero_number() -> None:
         Citation(number=0, url=SOURCE_URL, title="A")
 
 
-# --- Task 7: the statement map ------------------------------------------------
+# --- the finding log ----------------------------------------------------------
 
 
-def _unit(
-    url: str = THIRD_URL,
-    *,
-    evidence_id: str = "e1",
-    excerpt: str = "An independent review states the same figure.",
-    target_ids: list[str] | None = None,
-    origin: str = "fact_checker",
-) -> EvidenceUnit:
-    return EvidenceUnit(
-        evidence_id=evidence_id,
-        read_id=f"read-{evidence_id}",
-        source_url=url,
-        source_title="Independent review",
-        locator="p. 1",
-        excerpt=excerpt,
-        target_ids=target_ids if target_ids is not None else ["t1"],
-        origin=origin,
-    )
-
-
-def _cluster(
-    *,
-    cluster_id: str = "cluster-1",
-    claim_ids: list[str] | None = None,
-    evidence_ids: list[str] | None = None,
-    source_urls: list[str] | None = None,
-    verdicts: list[str] | None = None,
-    target_ids: list[str] | None = None,
-    verdict_evidence: dict[str, list[str]] | None = None,
-    proposition: AtomicProposition | None = None,
-) -> ClaimCluster:
-    claim = _claim()
-    return ClaimCluster(
-        cluster_id=cluster_id,
-        proposition=proposition or AtomicProposition(text=claim.text),
-        evidence_ids=evidence_ids if evidence_ids is not None else ["e1"],
-        member_claim_ids=claim_ids if claim_ids is not None else [claim.claim_id],
-        target_ids=target_ids if target_ids is not None else ["t1"],
-        source_urls=source_urls if source_urls is not None else [THIRD_URL],
-        verdicts=verdicts if verdicts is not None else ["verified"],
-        verdict_evidence=(
-            verdict_evidence
-            if verdict_evidence is not None
-            else {"verified": [THIRD_URL]}
-        ),
-        verdict_evidence_status={"verified": "verified_pair"},
-    )
-
-
-def _statement(
-    text: str = "Break-even was reached.",
-    *,
-    statement_id: str = "S1",
-    mode: str = "attributed",
-    cluster_ids: list[str] | None = None,
-    evidence_ids: list[str] | None = None,
-    target_ids: list[str] | None = None,
-    dimensions: list[str] | None = None,
-    basis: str | None = None,
-) -> ReportStatement:
-    return ReportStatement(
-        statement_id=statement_id,
-        text=text,
-        mode=mode,
-        claim_cluster_ids=(
-            cluster_ids if cluster_ids is not None else ["cluster-1"]
-        ),
-        evidence_ids=evidence_ids if evidence_ids is not None else ["e1"],
-        target_ids=target_ids if target_ids is not None else ["t1"],
-        answered_dimensions=dimensions if dimensions is not None else [],
-        basis=basis,
-    )
-
-
-def _stated(
-    text: str = "Break-even was reached.",
-    *,
-    statement: ReportStatement | None = None,
-    claim_ids: list[str] | None = None,
-    source_urls: list[str] | None = None,
-) -> ReportPoint:
-    return ReportPoint(
-        text=text,
-        claim_ids=claim_ids if claim_ids is not None else [_claim().claim_id],
-        source_urls=source_urls if source_urls is not None else [SOURCE_URL],
-        statement=statement if statement is not None else _statement(text),
-    )
-
-
-def _answer_row(
-    subject: str = "Option A",
-    dimension: str = "cost",
-    finding: str = "Option A cost less.",
-) -> ReportAnswerRow:
-    return ReportAnswerRow(
-        cells=[
-            ReportStatement(
-                statement_id="row-label-1", text=subject, mode="context"
-            ),
-            ReportStatement(
-                statement_id="row-label-2", text=dimension, mode="context"
-            ),
-            _statement(
-                finding, statement_id="row-finding", mode="settled"
-            ),
-        ]
-    )
-
-
-def _evidence_composition(**overrides: object) -> ReportComposition:
-    """A composition whose statements cite the evidence it actually carries."""
-    payload: dict[str, object] = {
-        "evidence_units": {"e1": _unit()},
-        "claim_clusters": {"cluster-1": _cluster()},
-    }
-    payload.update(overrides)
-    return _composition(**payload)
-
-
-def test_citation_urls_come_from_selected_support() -> None:
-    evidence = {
-        "e1": EvidenceUnit(
-            evidence_id="e1",
-            read_id="r1",
-            source_url="https://independent.example/study",
-            source_title="Independent study",
-            locator="p3",
-            excerpt="Study finding.",
-            target_ids=["t1"],
-            origin="fact_checker",
-        )
-    }
-
-    assert statement_source_urls(["e1"], evidence) == [
-        "https://independent.example/study"
-    ]
-    assert statement_source_urls([], evidence) == []
-
-
-def test_statement_source_urls_rejects_an_unknown_id() -> None:
-    with pytest.raises(UnknownEvidenceError, match="missing"):
-        statement_source_urls(["missing"], {})
-
-
-def test_a_statement_mode_is_not_a_claim_evidence_status() -> None:
-    assert set(get_args(StatementMode)) == {
-        "settled",
-        "attributed",
-        "inference",
-        "contested",
-        "context",
-    }
-    assert "verified_pair" not in get_args(StatementMode)
-    assert "verified_pair" not in set(get_args(StatementMode))
-
-
-def test_an_inference_statement_records_the_derivation_it_rests_on() -> None:
-    statement = _statement(
-        "The converted value is 100 units.",
-        mode="inference",
-        basis="unit conversion: 1 GW = 1000 MW",
-    )
-
-    assert statement.mode == "inference"
-    assert statement.basis == "unit conversion: 1 GW = 1000 MW"
-    with pytest.raises(ValueError, match="basis"):
-        _statement("A derived figure.", mode="inference", basis=None)
-
-
-def test_reader_citations_carry_the_statements_selected_evidence() -> None:
-    """The verified cluster's own selected sources reach the references.
-
-    A statement that resolved its support to an independent verification
-    passage must cite that passage, not only the URL of the finding that first
-    raised the claim.
-    """
-    composition = _composition(
-        summary=[],
-        evidence_units={"e1": _unit()},
-        claim_clusters={"cluster-1": _cluster()},
-        constraints=[],
-        sections=[
-            ReportSection(
-                title="Error correction",
-                points=[_stated()],
-            )
-        ],
-    )
-    index = reader_citations(composition)
-
-    assert [citation.url for citation in index] == [SOURCE_URL, THIRD_URL]
-    body = _section_body(render_reader_report(composition), "## Findings")
-    assert "- Break-even was reached. [1][2]" in body
-
-
-def test_a_mirror_pair_collapses_to_one_reader_reference() -> None:
-    """One work served twice is one reference, and the copy is readable.
-
-    The mirror is cited first and the original second, so collapsing cannot be
-    an accident of the order the statement happened to select them in.
-    """
-    mirror = "https://mirror.test/qec"
-    composition = _composition(
-        summary=[],
-        constraints=[],
-        sources=[
-            _source(
-                url=mirror,
-                title="QEC 2025 (mirror)",
-                work_id="work-qec-2025",
-                transport="mirror",
-            ),
-            _source(
-                url=SOURCE_URL,
-                title="QEC 2025",
-                work_id="work-qec-2025",
-                transport="original",
-            ),
-        ],
-        evidence_units={
-            "e1": _unit(mirror, evidence_id="e1"),
-            "e2": _unit(SOURCE_URL, evidence_id="e2"),
-        },
-        claim_clusters={
-            "cluster-1": _cluster(
-                evidence_ids=["e1", "e2"],
-                source_urls=[],
-                verdict_evidence={},
-            )
-        },
-        sections=[
-            ReportSection(
-                title="Error correction",
-                points=[
-                    _stated(
-                        statement=_statement(evidence_ids=["e1", "e2"])
-                    )
-                ],
-            )
-        ],
-    )
-
-    index = reader_citations(composition)
-
-    assert [citation.url for citation in index] == [SOURCE_URL]
-    assert mirror not in render_reader_report(composition)
-
-
-def test_an_uncertain_claim_printed_from_a_mirror_pair_cites_one_reference() -> (
+def test_the_finding_log_shows_the_full_drafted_text_of_a_refused_sentence() -> (
     None
 ):
-    """The uncertainty list's own bullets collapse a mirror like any statement.
-
-    A checked claim no finding states is printed under its verdict heading
-    and cites what it rests on; one work served from two hosts is still one
-    reference there, and the bullet's marker resolves to it.
+    """A refusal is published whole: the drafted text, the labels it cited and
+    the reason, never truncated to the terse reason alone.
     """
-    target = EvidenceTarget(
-        target_id="topic-01-target-01",
-        coverage_id="topic-01",
-        question="How mature is quantum error correction?",
-        required_dimensions=["measure: logical error rate"],
-        required=True,
-        critical=False,
-        support_policy="independent_pair",
-    )
-    topic = SubTopic(
-        coverage_id="topic-01",
-        title="Error correction",
-        rationale="The claimed milestone.",
-        search_queries=["logical error rate 2025"],
-        success_criteria=["A second independent account"],
-        priority=1,
-        evidence_targets=[target],
-    )
-    mirror = "https://mirror.test/qec"
-    claim = _claim(
-        verdict="unverified",
-        urls=[mirror, SOURCE_URL],
-        target_ids=[target.target_id],
-    )
-    composition = _composition(
-        claims=[claim],
-        sub_topics=[topic],
-        summary=[],
-        sections=[],
-        sources=[
-            _source(url=mirror, work_id="work-qec-2025", transport="mirror"),
-            _source(url=SOURCE_URL, work_id="work-qec-2025", transport="original"),
-        ],
-    )
-
-    index = reader_citations(composition)
-    uncertainty = _section_body(
-        render_reader_report(composition),
-        "### Not addressed by independent sources",
-    )
-
-    assert [citation.url for citation in index] == [SOURCE_URL]
-    assert f"- {claim.text} [1]" in uncertainty
-
-
-def test_an_uncertain_claim_a_finding_states_adds_no_reference_of_its_own() -> None:
-    """A claim the list does not reprint puts no second copy of its work there.
-
-    Both copies are declared original, so the only thing keeping the mirror
-    out is that the reader never meets the claim a second time: the finding
-    that states it already cites the work, and the list counts the claim
-    rather than reprinting it.
-    """
-    mirror = "https://mirror.test/qec"
-    claim = _claim(verdict="insufficient_evidence", urls=[mirror, SOURCE_URL])
-    composition = _composition(
-        claims=[claim],
-        summary=[],
-        sources=[
-            _source(url=SOURCE_URL, work_id="work-qec-2025", transport="original"),
-            _source(url=mirror, work_id="work-qec-2025", transport="original"),
-        ],
-        sections=[
-            ReportSection(
-                title="Error correction",
-                points=[
-                    _point(
-                        "Break-even was reported.",
-                        claim_ids=[claim.claim_id],
-                        source_urls=[SOURCE_URL],
-                    )
-                ],
-            )
-        ],
-    )
-
-    index = reader_citations(composition)
-
-    assert [citation.url for citation in index] == [SOURCE_URL]
-    assert mirror not in render_reader_report(composition)
-
-
-def test_every_reader_statement_is_mapped_in_the_ledger() -> None:
-    composition = _evidence_composition(
-        evidence_units={"e1": _unit()},
-        claim_clusters={"cluster-1": _cluster()},
-        summary=[
-            _stated(
-                "Break-even was reached in 2025.",
-                statement=_statement(
-                    "Break-even was reached in 2025.", statement_id="S1"
-                ),
-            )
-        ],
-        sections=[
-            ReportSection(
-                title="Error correction",
-                points=[
-                    _stated(statement=_statement(statement_id="S2"))
-                ],
-            )
-        ],
-    )
-    statements = composition_statements(composition)
-    mapping = render_statement_map(composition)
-    ledger = render_evidence_ledger(composition)
-
-    assert [statement.statement_id for statement in statements] == ["S1", "S2"]
-    assert "| Statement | Mode |" in mapping
-    assert "cluster-1" in mapping
-    assert "e1" in mapping
-    assert mapping in ledger
-
-
-def test_an_unknown_evidence_id_fails_validation_before_rendering() -> None:
-    composition = _evidence_composition(
-        evidence_units={},
-        claim_clusters={},
-        summary=[],
-        sections=[
-            ReportSection(
-                title="Error correction",
-                points=[
-                    _stated(
-                        statement=_statement(evidence_ids=["missing"])
-                    )
-                ],
-            )
-        ],
-    )
-
-    with pytest.raises(UnknownEvidenceError, match="missing"):
-        validate_report_statements(composition)
-    with pytest.raises(UnknownEvidenceError, match="missing"):
-        render_reader_report(composition)
-
-
-def test_factual_prose_outside_the_statement_map_is_invalid() -> None:
-    composition = _evidence_composition(
-        evidence_units={},
-        claim_clusters={},
-        summary=[],
-        sections=[
-            ReportSection(
-                title="Error correction",
-                points=[
-                    ReportPoint(
-                        text="An unmapped factual sentence.",
-                        statement=ReportStatement(
-                            statement_id="S9",
-                            text="An unmapped factual sentence.",
-                            mode="settled",
-                        ),
-                    )
-                ],
-            )
-        ],
-    )
-
-    with pytest.raises(StatementMappingError, match="S9"):
-        validate_report_statements(composition)
-    # The renderer is the only guard a rehydrated composition meets, so it
-    # runs the same check before it prints anything.
-    with pytest.raises(StatementMappingError, match="S9"):
-        render_reader_report(composition)
-
-
-def test_a_context_statement_may_be_source_free_and_is_still_mapped() -> None:
-    composition = _evidence_composition(
-        evidence_units={},
-        claim_clusters={},
-        constraints=[],
-        summary=[],
-        sections=[
-            ReportSection(
-                title="Error correction",
-                points=[
-                    ReportPoint(
-                        text="No read was acquired for this topic.",
-                        statement=ReportStatement(
-                            statement_id="S9",
-                            text="No read was acquired for this topic.",
-                            mode="context",
-                            basis="not acquired: no read was retrieved",
-                        ),
-                    )
-                ],
-            )
-        ],
-    )
-
-    assert validate_report_statements(composition) == []
-    assert "No read was acquired" in render_reader_report(composition)
-
-
-def test_an_attributed_answer_is_headed_as_the_answer() -> None:
-    """Every point of the audited run was attributed, so nothing was an answer.
-
-    ``_reader_summary`` filed ``attributed`` under "What would change the
-    answer", and the audited report's whole answer — both figures and both
-    forecasts — was printed under that heading, with no answer block at all.
-    An attributed statement is an answer whose provenance is a named source;
-    only a contested one is something that would change it.
-    """
-    composition = _evidence_composition(
-        constraints=[],
-        summary=[
-            _stated(
-                "EIA reported 10.4 GW added in 2024.",
-                statement=_statement(
-                    "EIA reported 10.4 GW added in 2024.",
-                    statement_id="S1",
-                    mode="attributed",
-                ),
-            )
-        ],
-        sections=[ReportSection(title="Error correction", points=[_stated()])],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert "**The attributed answer**" in summary
-    assert "What would change the answer" not in summary
-    assert "EIA reported 10.4 GW added in 2024." in summary
-
-
-def test_a_contested_point_is_still_what_would_change_the_answer() -> None:
-    """The other half of the same rule: a disputed fact is not an answer."""
-    composition = _evidence_composition(
-        constraints=[],
-        summary=[
-            _stated(
-                "Cost fell tenfold.",
-                statement=_statement(
-                    "Cost fell tenfold.",
-                    statement_id="S1",
-                    mode="contested",
-                ),
-            )
-        ],
-        sections=[ReportSection(title="Error correction", points=[_stated()])],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert "**What would change the answer**" in summary
-    assert "**The attributed answer**" not in summary
-
-
-def test_the_most_important_limitation_is_ranked_by_consequence() -> None:
-    """``limitations[0]`` is list order, and list order is not consequence.
-
-    ``limitation_reasons`` records the reasons in producer order, so the
-    headline caveat was whichever reason happened to be written first — for
-    the audited run, a low-confidence source behind no finding at all.
-    """
-    composition = _composition(
-        limitations=["low_confidence_sources", "no_verified_claims"]
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert (
-        f"**The most important unresolved limitation** is "
-        f"{LIMITATION_TOPICS['no_verified_claims']}." in summary
-    )
-
-
-def test_a_failed_run_is_the_first_limitation_it_names() -> None:
-    """The run's own verdict outranks every other recorded limitation."""
-    composition = _composition(
-        terminal=_terminal(),
-        limitations=["low_confidence_sources"],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert (
-        f"**The most important unresolved limitation** is "
-        f"{LIMITATION_TOPICS['low_confidence_sources']}." not in summary
-    )
-    assert "the run's own checks failed it" in summary
-
-
-def test_unanswered_critical_targets_are_named_before_a_recorded_reason() -> None:
-    """A plan obligation nobody answered is a consequence, not a footnote."""
-    composition = _composition(
-        terminal=_terminal(status="max_iterations", gate_failures=[]),
-        limitations=["low_confidence_sources"],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert "9 of 9 critical targets have no answer" in summary
-
-
-def test_an_accepted_report_at_the_ceiling_never_says_the_budget_blocked_it() -> (
-    None
-):
-    """The budget ending is not a defect in a report both reviewers accepted.
-
-    A clean final allowed pass now finalizes as the acceptance it is, so
-    ``max_iterations_reached`` is no longer true of every ceiling run: the
-    disclosure is keyed on the route outcome — accepted at the ceiling is not
-    "exhausted" — and not on the iteration count.
-    """
-    composition = _composition(
-        iteration=1,
-        max_iterations=1,
-        quality_status="accepted",
-        terminal=_terminal(
-            status="completed",
-            critic_status="scored",
-            review_status="scored",
-            required_targets=9,
-            answered_targets=9,
-            critical_targets=9,
-            answered_critical_targets=9,
-            gate_failures=[],
-        ),
-        limitations=["max_iterations_reached"],
-    )
-    reader = render_reader_report(composition)
-
-    assert LIMITATION_REASONS["max_iterations_reached"] not in reader
-    assert "refinement budget was exhausted" not in reader
-
-
-def test_an_exhausted_report_at_the_ceiling_still_discloses_the_budget() -> None:
-    """The same ceiling without acceptance is still the exhaustion it is."""
-    composition = _composition(
-        iteration=1,
-        max_iterations=1,
-        quality_status="partial",
-        terminal=_terminal(status="max_iterations", gate_failures=[]),
-        limitations=["max_iterations_reached"],
-    )
-    reader = render_reader_report(composition)
-
-    assert LIMITATION_REASONS["max_iterations_reached"] in reader
-
-
-def test_low_confidence_is_scoped_to_the_sources_the_report_cites() -> None:
-    """A source behind no finding is not a limitation of *this* report.
-
-    ``limitation_reasons`` fires for any evaluated source below the
-    threshold, so the audited report told its reader that "some sources
-    behind these findings" were low confidence when the flagged source
-    supported no finding and no citation.
-    """
-    composition = _composition(
-        sources=[
-            _source(),
-            _source(url=OTHER_URL, title="Uncited relay", low_confidence=True),
-        ],
-        limitations=["low_confidence_sources"],
-    )
-    uncertainty = _section_body(
-        render_reader_report(composition),
-        "## Uncertainty and conflicting evidence",
-    )
-
-    assert LIMITATION_REASONS["low_confidence_sources"] not in uncertainty
-
-
-def test_a_cited_low_confidence_source_is_disclosed() -> None:
-    """The same reason is disclosed the moment a finding rests on it."""
-    composition = _composition(
-        sources=[_source(low_confidence=True)],
-        limitations=["low_confidence_sources"],
-    )
-    uncertainty = _section_body(
-        render_reader_report(composition),
-        "## Uncertainty and conflicting evidence",
-    )
-
-    assert LIMITATION_REASONS["low_confidence_sources"] in uncertainty
-
-
-def _vintage(
-    url: str,
-    *,
-    data_period: str | None = None,
-    published: str | None = None,
-) -> ScoredSource:
-    return _source(
-        url=url,
-        temporal=SourceTemporal(
-            publication_date=published,
-            data_period=data_period,
-            forecast_horizon=None,
-            effective_date=None,
-            status="current",
-        ),
-    )
-
-
-DECEMBER_VINTAGE = "December 2024 Preliminary Monthly Electric Generator Inventory"
-JANUARY_VINTAGE = "January 2025 Preliminary Monthly Electric Generator Inventory"
-
-
-def _eia_provenance(
-    *,
-    issuer: str = "EIA",
-    vintage: str = JANUARY_VINTAGE,
-    released: str = "2025-03-12",
-    period: str = "2024",
-    scope: str = "utility-scale, 1 MW and above",
-) -> ClaimProvenance:
-    return ClaimProvenance(
-        attributed_issuer=issuer,
-        measure_scope=scope,
-        vintage=vintage,
-        statement_date=released,
-        release_date=released,
-        data_period=period,
-    )
-
-
-def test_two_releases_of_one_series_are_shown_as_older_and_newer() -> None:
-    """The audited report led with an 18.2 GW forecast its own citations
-    already superseded, and named no release anywhere.
-
-    Two EIA inventory releases state the same two measurements — the 2024
-    additions and the 2025 projection — so each measurement has an older and a
-    newer release, the newest leads inside its own measurement, and every
-    figure is told which release it came from.
-    """
-    december = _eia_provenance(vintage=DECEMBER_VINTAGE, released="2025-02-24")
-    january = _eia_provenance()
-    counted_old = _claim(
-        text="EIA reported 10.3 GW of additions in 2024.",
-        provenance=december,
-        target_ids=["t1"],
-    )
-    counted_new = _claim(
-        text="EIA reported 10.4 GW of additions in 2024.",
-        provenance=january,
-        target_ids=["t1"],
-    )
-    forecast_old = _claim(
-        text="EIA projected 18.2 GW of additions in 2025.",
-        provenance=december,
-        target_ids=["t2"],
-    )
-    forecast_new = _claim(
-        text="EIA projected 19.6 GW of additions in 2025.",
-        provenance=january,
-        target_ids=["t2"],
-    )
-    composition = _evidence_composition(
-        question="What do the latest forecasts project for 2025?",
-        claims=[counted_old, counted_new, forecast_old, forecast_new],
-        summary=[
-            _stated(
-                claim.text,
-                claim_ids=[claim.claim_id],
-                statement=_statement(
-                    claim.text, target_ids=list(claim.target_ids)
-                ),
-            )
-            for claim in (counted_old, forecast_old, counted_new, forecast_new)
-        ],
-        sections=[],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert summary.index("10.4 GW") < summary.index("10.3 GW")
-    assert summary.index("19.6 GW") < summary.index("18.2 GW")
-    assert summary.count("older release") == 2
-    assert summary.count("newer release") == 2
-    assert f"(older release: EIA, {DECEMBER_VINTAGE}, released 2025-02-24)" in summary
-    assert f"(newer release: EIA, {JANUARY_VINTAGE}, released 2025-03-12)" in summary
-
-
-def test_primary_measurement_does_not_inherit_relay_publication_day() -> None:
-    """One 10.4 GW fact cites both EIA and a relay, but has one release date."""
-    primary = _claim(
-        text=(
-            "EIA reported generators added 10.4 GW of battery storage capacity "
-            "in 2024."
-        ),
-        urls=["https://eia.gov/todayinenergy/detail.php?id=64705", SOURCE_URL],
-        provenance=_eia_provenance(),
-    )
-    relay = _claim(
-        text=(
-            "EnerKnol reported that EIA's 10.4 GW of battery storage capacity "
-            "was added in 2024."
-        ),
-        urls=[SOURCE_URL],
-        provenance=ClaimProvenance(
-            statement_date="2025-03-13", data_period="2024"
-        ),
-    )
-    composition = _evidence_composition(
-        question="How much was added in 2024?",
-        claims=[primary, relay],
-        summary=[
-            _stated(
-                primary.text,
-                claim_ids=[primary.claim_id, relay.claim_id],
-                statement=_statement(primary.text),
-            )
-        ],
-        sections=[],
-    )
-
-    reader = render_reader_report(composition)
-    summary = _section_body(reader, "## Executive summary")
-
-    assert "January 2025 Preliminary Monthly Electric Generator Inventory" in summary
-    assert "released 2025-03-12" in summary
-    assert "stated 2025-03-13" not in summary
-
-
-def test_a_question_that_does_not_ask_for_the_latest_keeps_its_order() -> None:
-    """Nothing is re-ordered for a question that never asked for recency."""
-    older_url = "https://eia.gov/december-inventory"
-    newer_url = "https://eia.gov/january-inventory"
-    older_claim = _claim(text="EIA reported 10.3 GW.", urls=[older_url])
-    newer_claim = _claim(text="EIA reported 10.4 GW.", urls=[newer_url])
-    composition = _composition(
-        question="How mature is quantum error correction?",
-        claims=[older_claim, newer_claim],
-        sources=[_vintage(older_url, data_period="2024-12"),
-                 _vintage(newer_url, data_period="2025-01")],
-        summary=[
-            _point(
-                text="EIA reported 10.3 GW.",
-                claim_ids=[older_claim.claim_id],
-                source_urls=[older_url],
-            ),
-            _point(
-                text="EIA reported 10.4 GW.",
-                claim_ids=[newer_claim.claim_id],
-                source_urls=[newer_url],
-            ),
-        ],
-        sections=[],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert summary.index("10.3 GW") < summary.index("10.4 GW")
-    assert "(vintage" not in summary
-
-
-def test_a_2024_count_is_not_labelled_an_older_release_of_a_2025_forecast() -> (
-    None
-):
-    """Different quantities are not two releases of one measurement.
-
-    Any question containing "latest" compared every dated summary point with
-    the newest release in the whole summary, so a 2024 actual was moved below a
-    2025 forecast and told it was the older release of it. Both are the same
-    series here, and only the measurement they state keeps them apart.
-    """
-    actual = _claim(
-        text="EIA reported 10.4 GW added in 2024.",
-        provenance=_eia_provenance(period="2024"),
-    )
-    forecast = _claim(
-        text="EIA forecast 19.6 GW added in 2025.",
-        provenance=_eia_provenance(period="2025"),
-    )
-    composition = _evidence_composition(
-        question="What do the latest forecasts project for 2025?",
-        claims=[actual, forecast],
-        summary=[
-            _point(
-                text=actual.text,
-                claim_ids=[actual.claim_id],
-                source_urls=[SOURCE_URL],
-            ),
-            _point(
-                text=forecast.text,
-                claim_ids=[forecast.claim_id],
-                source_urls=[SOURCE_URL],
-            ),
-        ],
-        sections=[],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert summary.index("10.4 GW") < summary.index("19.6 GW")
-    assert "older release" not in summary
-    assert "newer release" not in summary
-    assert "(EIA, January 2025" in summary
-
-
-def test_two_restatements_of_one_measure_are_compared_by_their_releases() -> None:
-    """The same issuer, series, scope and measurand is one measurement, twice.
-
-    Read from the claims' own provenance rather than from the sources' dates:
-    a page's publication date is not the edition its data rest on, and this is
-    the one place the two are told apart.
-    """
-    newer = _claim(
-        text="EIA reported 10.4 GW added in 2024.", provenance=_eia_provenance()
-    )
-    older = _claim(
-        text="EIA reported 10.3 GW added in 2024.",
-        provenance=_eia_provenance(
-            vintage=DECEMBER_VINTAGE, released="2025-02-24"
-        ),
-    )
-    composition = _evidence_composition(
-        question="How much was added in 2024, and what is the latest?",
-        claims=[newer, older],
-        summary=[
-            _stated(
-                older.text,
-                claim_ids=[older.claim_id],
-                statement=_statement(older.text, target_ids=[]),
-            ),
-            _stated(
-                newer.text,
-                claim_ids=[newer.claim_id],
-                statement=_statement(newer.text, target_ids=[]),
-            ),
-        ],
-        sections=[],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert summary.index("10.4 GW") < summary.index("10.3 GW")
-    assert f"(newer release: EIA, {JANUARY_VINTAGE}, released 2025-03-12)" in summary
-    assert f"(older release: EIA, {DECEMBER_VINTAGE}, released 2025-02-24)" in summary
-
-
-def test_a_composition_states_each_figures_issuer_edition_and_release_date() -> (
-    None
-):
-    """A figure is not just a number: the reader is told whose it is.
-
-    The claim records the body the page attributed the figure to, the edition
-    the data rest on, and the date that body released it, and the reader meets
-    all three beside the figure.
-    """
-    claim = _claim(
-        text="EIA reported 10.4 GW of additions in 2024.",
-        provenance=_eia_provenance(),
-    )
-    composition = _composition(
-        claims=[claim],
-        summary=[
-            _point(
-                text=claim.text,
-                claim_ids=[claim.claim_id],
-                source_urls=[SOURCE_URL],
-            )
-        ],
-        sections=[],
-    )
-
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert (
-        f"({claim.provenance.attributed_issuer}, {JANUARY_VINTAGE}, "
-        f"released 2025-03-12)" in summary
-    )
-
-
-def test_a_solar_cumulative_or_all_segment_figure_is_never_an_older_version() -> (
-    None
-):
-    """Only comparable measurements are ordered against each other.
-
-    A solar total, a cumulative stock and an all-segment count are not
-    editions of one series however alike their units and years look: they are
-    another issuer, another series, another measurand, or another scope, and
-    none of them may be called an older version of the battery additions.
-    """
-    older = _claim(
-        text="EIA reported 10.3 GW of additions in 2024.",
-        provenance=_eia_provenance(
-            vintage=DECEMBER_VINTAGE, released="2025-02-24"
-        ),
-    )
-    newer = _claim(
-        text="EIA reported 10.4 GW of additions in 2024.",
-        provenance=_eia_provenance(),
-    )
-    solar = _claim(
-        text="EIA reported 32.5 GW of solar additions in 2024.",
-        provenance=_eia_provenance(
-            vintage="February 2025 Electric Power Monthly",
-            released="2025-04-25",
-            scope="utility-scale solar",
-        ),
-    )
-    cumulative = _claim(
-        text="The United States had 43.6 GW of capacity at the end of 2025.",
-        provenance=_eia_provenance(
-            vintage="February 2026 Electric Power Monthly",
-            released="2026-02-25",
-            period="2025",
-            scope="operating stock",
-        ),
-    )
-    all_segments = _claim(
-        text="Wood Mackenzie reported 12.3 GW installed in 2024.",
-        provenance=_eia_provenance(
-            issuer="Wood Mackenzie",
-            vintage="US Energy Storage Monitor Q4 2024",
-            released="2025-03-06",
-            scope="all segments",
-        ),
-    )
-    composition = _evidence_composition(
-        question="How much was added, and what is the latest?",
-        claims=[older, newer, solar, cumulative, all_segments],
-        summary=[
-            _stated(
-                text,
-                claim_ids=[claim.claim_id],
-                statement=_statement(text, target_ids=[]),
-            )
-            for text, claim in (
-                (older.text, older),
-                (newer.text, newer),
-                (solar.text, solar),
-                (cumulative.text, cumulative),
-                (all_segments.text, all_segments),
-            )
-        ],
-        sections=[],
-    )
-
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert summary.count("older release") == 1
-    assert summary.count("newer release") == 1
-    assert "older release: EIA, February 2025 Electric Power Monthly" not in summary
-    assert "older release: Wood Mackenzie" not in summary
-    # Each of them still states its own attribution.
-    assert "(EIA, February 2025 Electric Power Monthly, released 2025-04-25)" in (
-        summary
-    )
-    assert "(Wood Mackenzie, US Energy Storage Monitor Q4 2024, released 2025-03-06)" in (
-        summary
-    )
-
-
-def test_a_relays_own_article_date_never_prints_as_the_issuers_release() -> None:
-    """Replays the recorded run's APPA relay: an article date is not a release.
-
-    APPA's story about EIA's Preliminary Monthly Electric Generator
-    Inventory carries its own article date and states no release date for
-    the figure. Before the fix, ``ClaimProvenance.release`` fell back to
-    that article date and the reader was told the inventory itself was
-    "released 2024-02-20" — APPA's publication day, not EIA's.
-    """
-    relay_provenance = ClaimProvenance(
-        attributed_issuer="EIA",
-        vintage="Preliminary Monthly Electric Generator Inventory",
-        statement_date="2024-02-20",
-    )
-    claim = _claim(
-        text="Battery storage grew 70% in 2023, reaching 6.4 GW.",
-        provenance=relay_provenance,
-    )
-    composition = _evidence_composition(
-        claims=[claim],
-        summary=[
-            _point(
-                text=claim.text,
-                claim_ids=[claim.claim_id],
-                source_urls=[SOURCE_URL],
-            )
-        ],
-        sections=[],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert "released 2024-02-20" not in summary
-    assert "stated 2024-02-20" in summary
-
-
-def test_a_shared_target_never_merges_different_measurands_into_one_series() -> (
-    None
-):
-    """The target branch needs the same revision key too.
-
-    A cumulative stock, an all-segment total and an annual addition can share
-    one target obligation without being editions of one series. The review's
-    repro put a 10.4 GW addition, a 12.3 GW all-segment total and a 43.6 GW
-    stock under one target ("t1") and had the stock render as the addition's
-    "newer release" and the all-segment total as its "older release".
-    """
-    addition = _claim(
-        text="EIA reported 10.4 GW of additions in 2024.",
-        provenance=_eia_provenance(),
-    )
-    all_segments = _claim(
-        text="Wood Mackenzie reported 12.3 GW installed in 2024.",
-        provenance=_eia_provenance(
-            issuer="Wood Mackenzie",
-            vintage="US Energy Storage Monitor Q4 2024",
-            released="2025-03-06",
-            scope="all segments",
-        ),
-    )
-    stock = _claim(
-        text="The United States had 43.6 GW of capacity at the end of 2025.",
-        provenance=_eia_provenance(
-            vintage="February 2026 Electric Power Monthly",
-            released="2026-02-25",
-            period="2025",
-            scope="operating stock",
-        ),
-    )
-    composition = _evidence_composition(
-        question="How much was added, and what is the latest?",
-        claims=[addition, all_segments, stock],
-        summary=[
-            _stated(
-                claim.text,
-                claim_ids=[claim.claim_id],
-                statement=_statement(claim.text, target_ids=["t1"]),
-            )
-            for claim in (addition, all_segments, stock)
-        ],
-        sections=[],
-    )
-
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert "older release" not in summary
-    assert "newer release" not in summary
-    assert (
-        f"(EIA, {JANUARY_VINTAGE}, released 2025-03-12)" in summary
-    )
-    assert (
-        "(Wood Mackenzie, US Energy Storage Monitor Q4 2024, "
-        "released 2025-03-06)" in summary
-    )
-    assert (
-        "(EIA, February 2026 Electric Power Monthly, released 2026-02-25)"
-        in summary
-    )
-
-
-def test_a_forecast_is_labelled_a_forecast_and_an_actual_an_actual() -> None:
-    """Neither masquerades as the other, and each keeps its own edition.
-
-    The 2024 additions are an observation and the 2025 figure is a projection
-    from the same release; a reader has to be able to tell them apart, and a
-    retrieved-today report must not make either read as current.
-    """
-    actual = _claim(
-        text="EIA reported 10.4 GW of additions in 2024.",
-        provenance=_eia_provenance(),
-        cluster_id="cluster-actual",
-    )
-    forecast = _claim(
-        text="EIA forecasts 19.6 GW of additions in 2025.",
-        provenance=_eia_provenance(period="2025"),
-        cluster_id="cluster-forecast",
-    )
-    composition = _composition(
-        question="How much was added in 2024, and what is projected for 2025?",
-        claims=[actual, forecast],
-        claim_clusters={
-            "cluster-actual": _cluster(
-                claim_ids=[actual.claim_id],
-                proposition=AtomicProposition(
-                    text=actual.text,
-                    forecast_status="observed",
-                    observation_period="2024",
-                ),
-            ),
-            "cluster-forecast": _cluster(
-                claim_ids=[forecast.claim_id],
-                proposition=AtomicProposition(
-                    text=forecast.text,
-                    forecast_status="projected",
-                    observation_period="2025",
-                ),
-            ),
-        },
-        summary=[
-            _point(
-                text=actual.text,
-                claim_ids=[actual.claim_id],
-                source_urls=[SOURCE_URL],
-            ),
-            _point(
-                text=forecast.text,
-                claim_ids=[forecast.claim_id],
-                source_urls=[SOURCE_URL],
-            ),
-        ],
-        sections=[],
-    )
-
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert "(actual: EIA, January 2025" in summary
-    assert "(forecast: EIA, January 2025" in summary
-
-
-def test_the_as_of_line_says_which_date_it_states() -> None:
-    """A retrieval stamp must not read as a measurement vintage.
-
-    ``As of`` is the newest timestamp the recorded *evidence* carries, and
-    every figure states its own edition beside it. The line says which of the
-    two it is, so a reader cannot take a retrieval date for the data's date.
-    """
-    composition = _composition()
-    reader = render_reader_report(composition)
-    line = next(
-        line for line in reader.splitlines() if line.startswith("**As of:**")
-    )
-
-    assert EXTRACTED_AT in line
-    assert "retrieved" in line
-
-
-def test_a_date_range_is_keyed_by_the_year_it_ends_in() -> None:
-    """A cumulative figure through 2025 is not a 2011 vintage."""
-    assert _vintage_key("2011-2025") == (2025, 0, 0)
-    assert _vintage_key("2025") == (2025, 0, 0)
-    assert _vintage_key("no date recorded") is None
-
-
-def test_the_summary_leads_with_the_answer_before_the_details() -> None:
-    composition = _evidence_composition(
-        constraints=[],
-        summary=[
-            _stated(
-                "Break-even was reached in 2025.",
-                statement=_statement(
-                    "Break-even was reached in 2025.",
-                    statement_id="S1",
-                    mode="settled",
-                ),
-            )
-        ],
-        sections=[ReportSection(title="Error correction", points=[_stated()])],
-        limitations=["no_verified_claims"],
-    )
-    summary = _section_body(
-        render_reader_report(composition), "## Executive summary"
-    )
-
-    assert "**What the evidence establishes**" in summary
-    assert "**What would change the answer**" not in summary
-    assert "**The most important unresolved limitation**" in summary
-    assert LIMITATION_TOPICS["no_verified_claims"] in summary
-
-
-@pytest.mark.parametrize(
-    ("kind", "heading", "column"),
-    [
-        ("constraints", "## Constraint ranking", "| Constraint |"),
-        ("comparison", "## Comparison", "| Option |"),
-        ("factual", "## Key facts", "| Subject |"),
-        ("historical", "## Chronology", "| Period |"),
-        ("explanation", "## Explanation", None),
-    ],
-)
-def test_each_answer_kind_generates_its_own_second_section(
-    kind: str, heading: str, column: str | None
-) -> None:
-    composition = _evidence_composition(
-        answer_kind=kind,
-        constraints=(
-            [
-                ReportConstraint(
-                    text="Cordon tolling",
-                    deployment_mechanism="licence",
-                    geography="London",
-                    claim_ids=[_claim().claim_id],
-                    source_urls=[SOURCE_URL],
-                )
-            ]
-            if kind == "constraints"
-            else []
-        ),
-        answer_rows=[] if kind == "constraints" else [_answer_row()],
-    )
-    reader = render_reader_report(composition)
-    body = _section_body(reader, heading)
-
-    assert heading in reader
-    if column is None:
-        assert "| " not in body
-        assert "Option A cost less." in body
-    else:
-        assert column in body
-    if kind == "constraints":
-        assert "## Constraint ranking" in reader
-    else:
-        assert "## Constraint ranking" not in reader
-
-
-def test_a_question_that_is_not_about_constraints_gets_no_empty_table() -> None:
-    reader = render_reader_report(
-        _evidence_composition(
-            answer_kind="comparison", constraints=[], answer_rows=[]
-        )
-    )
-    body = _section_body(reader, "## Comparison")
-
-    assert "| " not in body
-    assert body.strip() != ""
-
-
-def test_the_reader_word_ceiling_follows_the_frozen_contract() -> None:
-    assert reader_word_limit(_composition()) == DEFAULT_READER_WORD_LIMIT
-    assert (
-        reader_word_limit(_composition(requested_word_limit=12000)) == 12000
-    )
-
-    points = [
-        _stated(
-            f"Statement {index} reports a measured result from the study that "
-            "was read for this topic and nothing beyond it.",
-            statement=_statement(
-                f"Statement {index} reports a measured result.",
-                statement_id=f"S{index}",
-            ),
-        )
-        for index in range(12)
-    ]
-    # Two words above the ceiling under test: the header's ``As of`` stamp
-    # says which date it states, and the ceiling charges the header like
-    # every other word. Fourteen more: the methodology's own "N checked
-    # claim(s) not used by a statement are listed in the evidence ledger"
-    # line is unconditional fixed cost too. What this test pins is the
-    # fitter's order, not the number.
-    composition = _evidence_composition(
-        requested_word_limit=266,
-        summary=points[:6],
-        sections=[ReportSection(title="Error correction", points=points[6:])],
-    )
-    # The ceiling is enforced where the composition is built; the renderer
-    # shows what it is given.
-    fitted, _ = fit_report_composition(composition)
-    reader = render_reader_report(fitted)
-
-    assert reader_word_count(reader) <= 266
-    assert "Statement 11" not in reader
-    assert "Statement 0 reports" in reader
-
-
-def test_the_backmatter_stays_within_the_reader_ceiling() -> None:
-    claims = [
-        _claim(
-            text=f"Measured result {index} was reported.",
-            urls=[f"https://example.test/study-{index}"],
-        )
-        for index in range(10)
-    ]
-    composition = _evidence_composition(
-        claims=claims,
-        sources=[
-            _source(
-                url=f"https://example.test/study-{index}",
-                title=f"Study {index}",
-            )
-            for index in range(10)
-        ],
-        constraints=[],
-        summary=[
-            _stated(
-                "One measured result was reported.",
-                claim_ids=[claims[0].claim_id],
-                source_urls=[claims[0].source_urls[0]],
-                statement=_statement("One measured result was reported."),
-            )
-        ],
-        sections=[
-            ReportSection(
-                title="Load-bearing evidence",
-                points=[
-                    _stated(
-                        f"Study {index} reports that its own measurement was "
-                        "taken over the recorded period, that the measurement "
-                        "was independently reviewed before publication, and "
-                        "that the review found no material disagreement with "
-                        "the reported figure or with the method used to "
-                        "obtain it.",
-                        claim_ids=[claim.claim_id],
-                        source_urls=[claim.source_urls[0]],
-                        statement=_statement(
-                            f"Study {index} reports a reviewed measurement.",
-                            statement_id=f"F{index}",
-                        ),
-                    )
-                    for index, claim in enumerate(claims[:8])
-                ],
-            )
-        ],
-    )
-    reader = render_reader_report(composition)
-
-    assert backmatter_ratio(reader) <= 0.35
-    # The ratio is not met by deleting citations: every cited URL survives.
-    for claim in claims[:2]:
-        assert reader.count(claim.source_urls[0]) == 1
-
-
-def test_citations_survive_when_the_backmatter_floor_cannot_be_met() -> None:
-    """A reference-heavy, prose-light report keeps its citations and says so.
-
-    Deleting a citation to reach a ratio is forbidden, so the honest outcome
-    is an over-ratio artifact with the reason recorded in the ledger.
-    """
-    claims = [
-        _claim(
-            text=f"Measured result {index} was reported.",
-            urls=[f"https://example.test/study-{index}"],
-        )
-        for index in range(10)
-    ]
-    composition = _evidence_composition(
-        claims=claims,
-        sources=[
-            _source(
-                url=f"https://example.test/study-{index}",
-                title=f"Study {index}",
-            )
-            for index in range(10)
-        ],
-        constraints=[],
-        sections=[
-            ReportSection(
-                title="Load-bearing evidence",
-                points=[
-                    _stated(
-                        "One measured result was reported.",
-                        claim_ids=[claims[0].claim_id],
-                        source_urls=[claims[0].source_urls[0]],
-                        statement=_statement(
-                            "One measured result was reported."
-                        ),
-                    )
-                ],
-            )
-        ],
-    )
-
-    reader = render_reader_report(composition)
-    ledger = render_evidence_ledger(composition)
-    references = [
-        line
-        for line in _section_body(reader, "## References").splitlines()
-        if re.match(r"^\d+\. ", line)
-    ]
-
-    assert backmatter_ratio(reader) > 0.35
-    # No citation was deleted to reach a ratio that cannot be reached.
-    assert len(references) == len(reader_citations(composition))
-    assert "backmatter_floor_reached" in ledger
-
-
-def test_methodology_does_not_claim_more_linkage_than_the_report_shows() -> None:
-    unlinked = ReportStatement(
-        statement_id="S7",
-        text="No cost evidence was acquired for this topic.",
-        mode="context",
-        basis="not acquired: no read was retrieved",
-    )
-    composition = _evidence_composition(
-        constraints=[],
-        summary=[_stated("Break-even was reached in 2025.")],
-        sections=[
-            ReportSection(
-                title="Error correction",
-                points=[
-                    _stated(),
-                    ReportPoint(text=unlinked.text, statement=unlinked),
-                ],
-            )
-        ],
-    )
-    section = _section_body(
-        render_reader_report(composition), "## Methodology"
-    )
-
-    assert "Every statement above is a claim-linked point" not in section
-    assert "1 statement(s) above carry no checked claim link" in section
-
-
-def test_methodology_claims_full_linkage_when_the_report_shows_it() -> None:
-    composition = _evidence_composition(
-        constraints=[],
-        summary=[_stated("Break-even was reached in 2025.")],
-        sections=[ReportSection(title="Error correction", points=[_stated()])],
-    )
-    section = _section_body(
-        render_reader_report(composition), "## Methodology"
-    )
-
-    assert "Every statement above carries a checked claim link" in section
-
-
-def test_the_header_separates_generation_from_the_evidence_date() -> None:
-    reader = render_reader_report(
-        _composition(
-            generated_on="2026-09-16",
-            date_basis="the question asks for current installed capacity",
-        )
-    )
-
-    assert f"**As of:** {EXTRACTED_AT}" in reader
-    assert "**Generated on:** 2026-09-16" in reader
-    assert "**Date basis:** the question asks for current installed capacity" in (
-        reader
-    )
-
-
-def test_source_dates_stay_distinct_in_the_ledger() -> None:
-    ledger = render_evidence_ledger(
-        _composition(
-            sources=[
-                _source(
-                    temporal=SourceTemporal(
-                        publication_date="2026-01-01",
-                        data_period="2024",
-                        forecast_horizon="2035",
-                        effective_date="2026-06-01",
-                        status="current",
-                    )
+    long_text = " ".join(["A refused figure that was drafted."] * 10)
+    assert len(long_text) > QUALITY_RECORD_TEXT_CHARS
+    log = render_finding_log(
+        _written_composition(
+            rejected_points=[
+                RejectedDraftPoint(
+                    where="summary[1]",
+                    text=long_text,
+                    finding_labels=["F03"],
+                    reason="an unsupported figure",
                 )
             ]
         )
     )
-    row = _table_rows(_section_body(ledger, "## Source assessment"))[2]
 
-    assert "publication=2026-01-01" in row
-    assert "data_period=2024" in row
-    assert "forecast=2035" in row
-    assert "effective=2026-06-01" in row
+    body = _section_body(log, "## Refused sentences")
 
-
-def test_uncertainty_context_is_grouped_by_what_it_is() -> None:
-    composition = _composition(
-        constraints=[],
-        summary=[],
-        sections=[],
-        uncertainty_notes=[],
-        uncertainty_statements=[
-            ReportStatement(
-                statement_id="S1",
-                text="No read was acquired for the cost topic.",
-                mode="context",
-                basis="not acquired: no read was retrieved",
-            ),
-            ReportStatement(
-                statement_id="S2",
-                text="Two reads disagree about the measured rate.",
-                mode="context",
-                basis="uncertain/conflicting: same period, different result",
-            ),
-            ReportStatement(
-                statement_id="S3",
-                text="The 2035 horizon is outside this pass's scope.",
-                mode="context",
-                basis="outside scope: the contract froze an earlier period",
-            ),
-        ],
-    )
-    uncertainty = _section_body(
-        render_reader_report(composition), "## Uncertainty and conflicting evidence"
-    )
-
-    assert "### Not acquired" in uncertainty
-    assert "### Uncertain or conflicting" in uncertainty
-    assert "### Outside scope" in uncertainty
-    assert "No read was acquired for the cost topic." in uncertainty
-
-
-def test_an_answered_dimension_requires_the_evidence_to_carry_it() -> None:
-    """A statement answers a required dimension only when its atom states it.
-
-    The proposition behind the cluster fills a place and a quantity, so a
-    target asking for geography and scale is answered on both; a target asking
-    for a mechanism is not, because nothing in the recorded evidence states
-    one.
-    """
-    claim = _claim()
-    cluster = _cluster(
-        claim_ids=[claim.claim_id],
-        evidence_ids=["e1"],
-    ).model_copy(
-        update={
-            "proposition": AtomicProposition(
-                text=claim.text,
-                subject="London pilot",
-                value="12",
-                unit="GW",
-                geography="London",
-            )
-        }
-    )
-    composition = _evidence_composition(
-        claims=[claim],
-        claim_clusters={"cluster-1": cluster},
-        sub_topics=[
-            SubTopic(
-                coverage_id="topic-01",
-                title="Alpha",
-                rationale="First.",
-                search_queries=["alpha"],
-                success_criteria=["alpha evidence"],
-                priority=1,
-                evidence_targets=[
-                    EvidenceTarget(
-                        target_id="t1",
-                        coverage_id="topic-01",
-                        question="Where, how much, and how?",
-                        required_dimensions=[
-                            "geography",
-                            "scale",
-                            "mechanism",
-                        ],
-                        required=True,
-                        critical=True,
-                        support_policy="independent_pair",
-                    )
-                ],
-            )
-        ],
-        constraints=[],
-        summary=[
-            ReportPoint(
-                text="The London pilot added 12 GW.",
-                claim_ids=[claim.claim_id],
-                source_urls=[SOURCE_URL],
-            )
-        ],
-        sections=[],
-    )
-
-    # The composition derives the record from the evidence it actually holds,
-    # which is where the answered dimensions come from.
-    statement = composition.summary[0].statement
-    assert statement is not None
-    assert statement.target_ids == ["t1"]
-    assert statement.answered_dimensions == ["geography", "scale"]
-
-
-def test_the_word_budget_never_drops_the_ranked_answer() -> None:
-    """A row the fit cannot remove must not be listed as droppable.
-
-    The ranked answer is the last thing a report should lose, and a row that
-    was popped but could not be dropped would free nothing while the loop ran
-    to its floor.
-    """
-    constraint = ReportConstraint(
-        text="Cordon tolling inside the central business district",
-        deployment_mechanism="not stated",
-        geography="not stated",
-        claim_ids=[_claim().claim_id],
-        source_urls=[SOURCE_URL],
-    )
-    findings = [
-        _stated(
-            f"Finding {index} reports a measured result from the study that "
-            "was read for this topic and nothing beyond it.",
-            statement=_statement(
-                f"Finding {index} reports a measured result.",
-                statement_id=f"S{index}",
-            ),
-        )
-        for index in range(12)
-    ]
-    composition = _evidence_composition(
-        requested_word_limit=330,
-        summary=[],
-        constraints=[constraint],
-        sections=[ReportSection(title="Findings", points=findings)],
-    )
-
-    # The fit is a build-time step now, so the test performs it explicitly.
-    fitted, _ = fit_report_composition(composition)
-    reader = render_reader_report(fitted)
-
-    assert "Cordon tolling inside the central business district" in reader
-    assert "Finding 11" not in reader
-    assert "Finding 0 reports" in reader
-    assert reader_word_count(reader) <= 330
-
-
-def test_the_ledger_describes_the_reader_the_reader_rendered() -> None:
-    """Both artifacts are rendered from one fit of one composition.
-
-    A statement dropped to meet the word ceiling takes its citation with it,
-    so a ledger that listed the source as cited would contradict the reader.
-    """
-    dropped_source = _source(url=OTHER_URL, title="Other study")
-    findings = [
-        _stated(
-            f"Finding {index} reports a measured result from the study that "
-            "was read for this topic and nothing beyond it.",
-            statement=_statement(
-                f"Finding {index} reports a measured result.",
-                statement_id=f"S{index}",
-            ),
-        )
-        for index in range(12)
-    ]
-    findings[-1] = _stated(
-        "Only this finding cites the other study, and it is the one the "
-        "ceiling drops because it is the longest statement in the report by "
-        "a wide margin.",
-        claim_ids=[_claim().claim_id],
-        source_urls=[OTHER_URL],
-        statement=_statement(
-            "Only this finding cites the other study.",
-            statement_id="S11",
-        ),
-    )
-    composition = _evidence_composition(
-        requested_word_limit=330,
-        sources=[_source(), dropped_source],
-        summary=[],
-        constraints=[],
-        sections=[ReportSection(title="Findings", points=findings)],
-    )
-
-    # One fit, at build time; both artifacts render the composition it
-    # produced. The fit reasons travel on the composition now, which is what
-    # lets the ledger describe a drop the reader never rendered.
-    fitted, _ = fit_report_composition(composition)
-    reader = render_reader_report(fitted)
-    ledger = render_evidence_ledger(fitted)
-    references = [
-        line
-        for line in _section_body(reader, "## References").splitlines()
-        if re.match(r"^\d+\. ", line)
-    ]
-    not_cited = _section_body(ledger, "## Reviewed but not cited")
-
-    assert references
-    assert not any(OTHER_URL in line for line in references)
-    assert OTHER_URL in not_cited
-    assert "length_budget_dropped" in _section_body(
-        ledger, "## Statement support map"
-    )
-
-
-def test_the_renderer_shows_the_composition_it_is_given() -> None:
-    """One statement set: the fit belongs to the build, not to each renderer.
-
-    A renderer that fits on its own renders a report the composition does not
-    describe, and every gate that reads the composition then judges a document
-    nobody was shown. The renderer's contract is now the composition it is
-    handed — which the build path has already fitted — so an over-long
-    composition renders whole rather than being silently trimmed here.
-    """
-    findings = [
-        _stated(
-            f"Finding {index} reports a measured result from the study that "
-            "was read for this topic and nothing beyond it.",
-            statement=_statement(
-                f"Finding {index} reports a measured result.",
-                statement_id=f"S{index}",
-            ),
-        )
-        for index in range(12)
-    ]
-    composition = _evidence_composition(
-        requested_word_limit=330,
-        summary=[],
-        constraints=[],
-        sections=[ReportSection(title="Findings", points=findings)],
-    )
-
-    reader = render_reader_report(composition)
-
-    assert "Finding 11" in reader
-    assert reader_word_count(reader) > 330
-
-
-def test_a_contradicted_claim_is_not_printed_as_corroborated() -> None:
-    """The reader's strength column reads the verdict, as the counts do.
-
-    The badge is written before adjudication finishes, so a claim an
-    independent source contradicted can still carry ``verified_pair``.
-    ``evidence_status_bucket`` — which the quality JSON's counts and the CLI
-    line already read through — maps that combination to contested, but the
-    reader's own column read the raw badge, so an accepted report could print
-    a contradicted fact as "independently corroborated" in the table a reader
-    is most likely to trust.
-    """
-    contradicted = _claim(verdict="contradicted", badge="verified_pair")
-    composition = _evidence_composition(
-        claims=[contradicted],
-        summary=[],
-        sections=[],
-        constraints=[
-            ReportConstraint(
-                text="Charge for driving inside the measured zone.",
-                deployment_mechanism="area licence with camera enforcement",
-                geography="not stated",
-                claim_ids=[contradicted.claim_id],
-                source_urls=[SOURCE_URL],
-            )
-        ],
-        answer_rows=[_answer_row()],
-    )
-
-    reader = render_reader_report(composition)
-
-    assert "contested; both sides recorded" in reader
-    assert "independently corroborated" not in reader
-    # The counts the quality record and the CLI publish read the same way.
-    assert evidence_status_counts([contradicted])["contested"] == 1
-
-
-def test_a_contradicting_passage_is_not_a_supporting_citation() -> None:
-    """A citation after a statement is its support, not its rebuttal.
-
-    ``_claim_urls`` added every recorded verification passage whatever its
-    stance, so a passage filed as contradicting the claim was printed as a
-    numbered citation supporting the statement it disputes — and counted by
-    ``reader_citations`` as a cited source, which is what the quality record's
-    ``cited`` field and ``cited_sources`` report.
-    """
-    claim = _claim(
-        verdict="insufficient_evidence",
-        passages=[
-            EvidencePassage(
-                source_url=SOURCE_URL,
-                source_title="QEC 2025",
-                locator="p. 1",
-                excerpt="The study reports the fall.",
-                stance="supports",
-            ),
-            EvidencePassage(
-                source_url=OTHER_URL,
-                source_title="Rebuttal",
-                locator="p. 2",
-                excerpt="The rebuttal disputes the fall.",
-                stance="contradicts",
-            ),
-        ],
-    )
-    composition = _evidence_composition(
-        claims=[claim],
-        sources=[_source(), _source(url=OTHER_URL, title="Rebuttal")],
-        summary=[_stated(claim_ids=[claim.claim_id], source_urls=[SOURCE_URL])],
-        sections=[],
-        constraints=[],
-    )
-    statement = composition.summary[0].statement
-    assert statement is not None
-
-    urls = statement_citation_urls(statement, composition)
-
-    assert SOURCE_URL in urls
-    assert OTHER_URL not in urls
-    assert OTHER_URL not in {
-        citation.url for citation in reader_citations(composition)
-    }
-
-
-def test_a_contradicted_verdicts_evidence_is_not_a_supporting_citation() -> None:
-    """A cluster's rebuttal citations do not support the statement either.
-
-    ``_cluster_urls`` unioned ``verdict_evidence`` across every recorded
-    verdict, so the URL filed under a ``contradicted`` verdict was printed
-    after the statement as one of its citations.
-    """
-    claim = _claim()
-    cluster = _cluster(
-        verdicts=["verified", "contradicted"],
-        verdict_evidence={"verified": [THIRD_URL], "contradicted": [OTHER_URL]},
-    )
-    composition = _evidence_composition(
-        claims=[claim],
-        claim_clusters={"cluster-1": cluster},
-        sources=[
-            _source(),
-            _source(url=THIRD_URL, title="Independent review"),
-            _source(url=OTHER_URL, title="Rebuttal"),
-        ],
-        summary=[_stated(statement=_statement(cluster_ids=["cluster-1"]))],
-        sections=[],
-        constraints=[],
-    )
-    statement = composition.summary[0].statement
-    assert statement is not None
-
-    urls = statement_citation_urls(statement, composition)
-
-    assert THIRD_URL in urls
-    assert OTHER_URL not in urls
-    assert OTHER_URL not in {
-        citation.url for citation in reader_citations(composition)
-    }
-
-
-def test_a_contested_statement_cites_the_source_that_disputes_it() -> None:
-    """§2.4: an attributed or contested point cites its contradiction.
-
-    The stance filter belongs to statements the report presents as
-    *supporting*. A statement presented as contested must carry the source
-    that disputes it — that is the citation a reader checks the disagreement
-    against — and a cluster's ``contradicted`` verdict evidence is that
-    record. Excluding both unconditionally left a contested bullet whose every
-    citation supported it, with the refuting source recorded and unpublished.
-    """
-    claim = _claim(
-        verdict="contradicted",
-        badge="contested",
-        passages=[
-            EvidencePassage(
-                source_url=SOURCE_URL,
-                source_title="QEC 2025",
-                locator="p. 1",
-                excerpt="The study reports the fall.",
-                stance="supports",
-            ),
-            EvidencePassage(
-                source_url=OTHER_URL,
-                source_title="Rebuttal",
-                locator="p. 2",
-                excerpt="The rebuttal disputes the fall.",
-                stance="contradicts",
-            ),
-        ],
-    )
-    composition = _evidence_composition(
-        claims=[claim],
-        sources=[_source(), _source(url=OTHER_URL, title="Rebuttal")],
-        summary=[
-            _stated(
-                claim_ids=[claim.claim_id],
-                source_urls=[SOURCE_URL],
-                statement=_statement(
-                    "Break-even was reached, and disputed.",
-                    mode="contested",
-                    evidence_ids=[],
-                ),
-            )
-        ],
-        sections=[],
-        constraints=[],
-    )
-    statement = composition.summary[0].statement
-    assert statement is not None
-
-    urls = statement_citation_urls(statement, composition)
-
-    assert SOURCE_URL in urls
-    assert OTHER_URL in urls
-    assert OTHER_URL in {
-        citation.url for citation in reader_citations(composition)
-    }
-
-
-def test_a_contested_statement_cites_a_contradicted_verdicts_evidence() -> None:
-    """The cluster half of the same rule: a contested point keeps its rebuttal."""
-    claim = _claim(verdict="contradicted", badge="contested")
-    cluster = _cluster(
-        verdicts=["contradicted"],
-        verdict_evidence={"contradicted": [OTHER_URL]},
-        source_urls=[SOURCE_URL],
-    )
-    composition = _evidence_composition(
-        claims=[claim],
-        claim_clusters={"cluster-1": cluster},
-        sources=[_source(), _source(url=OTHER_URL, title="Rebuttal")],
-        summary=[
-            _stated(
-                claim_ids=[claim.claim_id],
-                source_urls=[SOURCE_URL],
-                statement=_statement(
-                    "Break-even was reached, and disputed.",
-                    mode="contested",
-                    cluster_ids=["cluster-1"],
-                    evidence_ids=[],
-                ),
-            )
-        ],
-        sections=[],
-        constraints=[],
-    )
-    statement = composition.summary[0].statement
-    assert statement is not None
-
-    urls = statement_citation_urls(statement, composition)
-
-    assert OTHER_URL in urls
-    assert OTHER_URL in {
-        citation.url for citation in reader_citations(composition)
-    }
-
-
-def test_the_backmatter_boundary_is_the_last_methodology_heading() -> None:
-    """A statement naming the heading must not move the measured boundary."""
-    body = "# Report\n\n- The source's own ## Methodology section is quoted.\n\n" + (
-        "x" * 400
-    )
-    backmatter = "\n\n## Methodology\n\n- counts\n\n## References\n\n1. Source"
-    rendered = body + backmatter
-    boundary = rendered.rfind("## Methodology")
-
-    # The body names the heading, so the first occurrence is inside the body:
-    # measuring from it would count the body as backmatter.
-    assert rendered.find("## Methodology") < boundary
-    assert backmatter_ratio(rendered) == pytest.approx(
-        len(rendered[boundary:]) / len(rendered)
-    )
-
-
-def test_an_atom_dimension_record_lists_only_the_fields_that_are_filled() -> None:
-    """A period is not evidence of a forecast status."""
-    period_only = AtomicProposition(text="x", observation_period="2026")
-    both = AtomicProposition(
-        text="x", observation_period="2026", forecast_status="observed"
-    )
-
-    assert answered_atom_dimensions([period_only]) == ["observation_period"]
-    assert answered_atom_dimensions([both]) == [
-        "observation_period",
-        "forecast_status",
-    ]
-
-
-def test_an_unknown_answer_form_falls_back_to_the_form_its_heading_names() -> None:
-    """The heading and the table cannot disagree about what the section is."""
-    composition = _composition().model_copy(update={"answer_kind": "estimate"})
-    reader = render_reader_report(composition)
-
-    assert reader_sections("estimate")[1] == DEFAULT_ANSWER_HEADING
-    assert DEFAULT_ANSWER_HEADING in reader
-    assert "(no constraint was ranked for this pass)" in reader
-
-
-def test_every_evidence_badge_has_a_reader_label() -> None:
-    """A badge without a label would print its raw enum string to the reader.
-
-    ``_evidence_strength`` falls back to the badge itself, so adding a value
-    to ``Claim.evidence_status`` without adding it to ``EVIDENCE_BADGE_LABELS``
-    is the one way this surface can regress silently.
-    """
-    union = get_args(Claim.model_fields["evidence_status"].annotation)
-    badges = {value for member in union for value in get_args(member)}
-
-    assert badges
-    assert badges <= set(EVIDENCE_BADGE_LABELS)
-    # The no-badge case is a label too: a claim judged with nothing to
-    # classify is not the same as a claim with no row.
-    assert "" in EVIDENCE_BADGE_LABELS
-
-
-# --- helpers ------------------------------------------------------------------
-
-
-def _section_body(markdown: str, heading: str) -> str:
-    """The text between ``heading`` and the next H2 heading (or the end)."""
-    start = markdown.index(heading)
-    tail = markdown[start + len(heading) :]
-    match = re.search(r"(?m)^## ", tail)
-    return tail[: match.start()] if match else tail
-
-
-def _table_rows(body: str) -> list[str]:
-    return [line for line in body.splitlines() if line.startswith("| ")]
-
-
-def _cells(row: str) -> list[str]:
-    """One Markdown table row as its stripped cells.
-
-    Test-local: every row asserted through it is built from fixture text with
-    no escaped pipe, so splitting on the delimiter is exact.
-    """
-    return [cell.strip() for cell in row.strip().strip("|").split("|")]
-
-
-def _reader_points(composition: ReportComposition) -> list[ReportPoint]:
-    points: list[ReportPoint] = [*composition.summary, *composition.constraints]
-    for section in composition.sections:
-        points.extend(section.points)
-    return points
+    assert long_text in body
+    assert "F03" in body
+    assert "an unsupported figure" in body
 
 
 # --- the quality record -------------------------------------------------------
-#
-# The third published artifact: one JSON document that makes the other two
-# auditable. It carries IDs rather than prose, hashes the bytes it describes
-# without describing itself, and must serialize everything a replay needs to
-# resolve a cited statement back to the exact evidence it rests on.
 
 
-def _record_state(
-    composition: ReportComposition, **fields: object
-) -> ResearchState:
-    """The state the terminal finalizer holds when it publishes the set."""
-    state = ResearchState(
-        session_id=composition.session_id,
-        original_question=composition.question,
-        composition=composition,
-        report=render_reader_report(composition),
-        report_evidence=render_evidence_ledger(composition),
-        quality_contract_version=QUALITY_CONTRACT_VERSION,
-        **fields,  # type: ignore[arg-type]
-    )
-    return state.model_copy(
-        update={"quality": compute_report_quality(state, composition)}
-    )
-
-
-def _read(url: str, text: str, title: str = "Grid Storage Outlook 2024") -> ReadRecord:
-    """One complete read of a page, built through the shared read producer."""
-    return build_read_record(
-        session_id="session-1",
-        reader="web_scraper",
-        requested_url=url,
-        resolved_url=url,
-        title=title,
-        retrieved_at=EXTRACTED_AT,
-        text=text,
-        passages={"p-1": text},
-    )
-
-
-def _artifact_texts(composition: ReportComposition) -> dict[str, str]:
-    return {
-        "reader_markdown": render_reader_report(composition),
-        "evidence_markdown": render_evidence_ledger(composition),
-    }
-
-
-def test_the_quality_record_publishes_each_claims_target_bindings() -> None:
-    """The zero binding behind the audited run's zero coverage was invisible.
-
-    ``claims[]`` published ``consumed_coverage_ids`` and no target ids at all,
-    so a reader of the record could not tell a claim bound to no obligation
-    from one bound to an obligation nobody answered — which is exactly the
-    difference the run's own "0 of 11" turned on.
+def test_the_quality_record_publishes_each_statements_target_bindings() -> None:
+    """A statement bound to no obligation is distinguishable, from the record
+    alone, from one bound to an obligation nobody answered -- which is exactly
+    the difference a coverage reading turns on.
     """
-    claim = _claim(target_ids=["topic-01-target-01"])
-    composition = _evidence_composition(claims=[claim])
-    state = _record_state(composition)
+    composition = _written_composition(
+        summary=[
+            _point(
+                "The pilot added 12 GW.",
+                statement_id="S001",
+                target_ids=["topic-01-target-01"],
+            )
+        ]
+    )
 
-    record = render_quality_record(state, composition, None)
+    record = render_quality_record(_record_state(composition), composition, None)
 
     row = next(
-        row for row in record["claims"] if row["claim_id"] == claim.claim_id
+        row for row in record["statements"] if row["statement_id"] == "S001"
     )
     assert row["target_ids"] == ["topic-01-target-01"]
 
 
-
-def test_the_ledger_shows_the_full_drafted_text_of_a_rejected_point() -> None:
-    """'Rejected draft content' carries the full drafted point, not only the
-    terse reason: text, claim_ids and source_urls, never truncated.
+def test_the_quality_record_publishes_refused_sentences_in_full() -> None:
+    """The record's companion to the finding log's refusals: the same full
+    text, the labels it cited and the reason, keyed by where it was drafted.
     """
-    long_text = " ".join(["A refused figure that was drafted."] * 10)
-    assert len(long_text) > 240
-    ledger = render_evidence_ledger(
-        _composition(
-            rejected=["executive summary point 1: an unsupported figure"],
-            rejected_points=[
-                RejectedDraftPoint(
-                    where="executive summary point 1",
-                    text=long_text,
-                    claim_ids=["C999"],
-                    source_urls=[SOURCE_URL],
-                    reason="an unsupported figure",
-                )
-            ],
-        )
-    )
-
-    body = _section_body(ledger, "## Rejected draft content")
-    assert "executive summary point 1: an unsupported figure" in body
-    assert long_text in body
-    assert "C999" in body
-    assert SOURCE_URL in body
-
-
-def test_the_quality_record_publishes_rejected_points_in_full() -> None:
-    """The quality record's companion to the ledger section: the same full
-    text, claim_ids, source_urls and reason, keyed by where.
-    """
-    composition = _evidence_composition(
+    composition = _written_composition(
         rejected_points=[
             RejectedDraftPoint(
-                where="constraint 1",
-                text="A refused drafted constraint text.",
-                claim_ids=["C001"],
-                source_urls=[SOURCE_URL],
+                where="summary[1]",
+                text="A refused drafted sentence.",
+                finding_labels=["F03"],
                 reason="no evidence for this cell",
             )
         ]
     )
-    state = _record_state(composition)
 
-    record = render_quality_record(state, composition, None)
+    record = render_quality_record(_record_state(composition), composition, None)
 
-    assert record["rejected_points"] == [
+    assert record["refused_sentences"] == [
         {
-            "where": "constraint 1",
-            "text": "A refused drafted constraint text.",
-            "claim_ids": ["C001"],
-            "source_urls": [SOURCE_URL],
+            "where": "summary[1]",
+            "text": "A refused drafted sentence.",
+            "finding_labels": ["F03"],
             "reason": "no evidence for this cell",
         }
     ]
 
-def test_the_quality_record_publishes_claim_text_uncut() -> None:
-    """A 289-character claim was published cut mid-sentence at 240.
 
-    The cut travelled: it reached the writer's packet, and the audited report
-    told its reader that "the PUDL-derived claim is recorded only in part" —
-    an uncertainty its own evidence does not carry.
+def test_the_quality_record_publishes_statement_text_uncut() -> None:
+    """Nothing in the record is clipped a second time.
+
+    A 289-character sentence was published cut mid-sentence at
+    ``QUALITY_RECORD_TEXT_CHARS``, and the cut travelled: it reached the
+    writer's packet and the reader's report. A recorded sentence is published
+    as the pass recorded it.
     """
     text = (
         "PUDL covers electric power plants with 1 megawatt or greater "
@@ -4443,128 +573,50 @@ def test_the_quality_record_publishes_claim_text_uncut() -> None:
         "obligation about the grid-connection rule in the same sentence."
     )
     assert len(text) > QUALITY_RECORD_TEXT_CHARS
-    claim = _claim(text=text)
-    composition = _evidence_composition(claims=[claim])
-    state = _record_state(composition)
+    composition = _written_composition(
+        summary=[_point(text, statement_id="S001")]
+    )
 
-    record = render_quality_record(state, composition, None)
+    record = render_quality_record(_record_state(composition), composition, None)
 
     row = next(
-        row for row in record["claims"] if row["claim_id"] == claim.claim_id
+        row for row in record["statements"] if row["statement_id"] == "S001"
     )
     assert row["text"] == text
 
 
-def test_the_quality_record_publishes_the_supporting_span_not_the_page_head() -> (
-    None
-):
-    """Every published verification passage began with site navigation.
-
-    The record is the replay surface for the ledger, and its excerpts were the
-    first 200 characters of the page — "Skip to main content Advertisement
-    Register…" — so no reader could check what a claim actually rested on.
+def test_the_quality_record_carries_the_session_status_it_was_given() -> None:
+    """An operator reading only the record must see the run's own status, and a
+    review nobody made is ``None`` rather than a clean bill of health.
     """
-    page_head = "Skip to main content Advertisement Register " * 8
-    span = "Generators added 10.4 GW of new battery storage capacity in 2024."
-    passage = EvidencePassage(
-        source_url=THIRD_URL,
-        source_title="Independent review",
-        locator="p. 1",
-        excerpt=span,
-        stance="supports",
-    )
-    claim = _claim(urls=[THIRD_URL], passages=[passage])
-    composition = _evidence_composition(
-        claims=[claim], evidence_units={"e1": _unit(excerpt=page_head)}
-    )
-    state = _record_state(composition)
-
-    record = render_quality_record(state, composition, None)
-
-    row = next(
-        row for row in record["evidence"] if row["evidence_id"] == "e1"
-    )
-    assert row["excerpt"] == span
-    assert "Skip to main content" not in json.dumps(record)
-
-
-def test_an_evidence_unit_no_claim_rests_on_keeps_its_own_excerpt() -> None:
-    """With no supporting span there is nothing to publish but the read's own."""
-    excerpt = "The page states 26 gigawatts of cumulative capacity."
-    composition = _evidence_composition(
-        claims=[_claim(passages=[])],
-        evidence_units={"e1": _unit(excerpt=excerpt)},
-    )
-    state = _record_state(composition)
-
-    record = render_quality_record(state, composition, None)
-
-    row = next(
-        row for row in record["evidence"] if row["evidence_id"] == "e1"
-    )
-    assert row["excerpt"] == excerpt
-
-
-def test_the_quality_record_carries_the_session_critic_and_review_statuses() -> (
-    None
-):
-    """An operator reading only the record saw ``partial`` and nothing else.
-
-    The fatal critic error's details were withheld by design, so the record
-    could not say the critic never judged the report, that the semantic review
-    was never scored, or what the run's own status was.
-    """
-    composition = _evidence_composition()
-    critique = Critique(
-        score=1,
-        gaps=[],
-        unsupported_claims=[],
-        recommended_queries=[],
-        should_continue=False,
-        rationale="The model provider failed while the report was reviewed.",
-        review_status="failed",
-    )
-    state = _record_state(composition).model_copy(
-        update={"critique": critique}
-    )
+    composition = _written_composition()
 
     record = render_quality_record(
-        state, composition, None, session_status="failed"
+        _record_state(composition), composition, None, session_status="failed"
     )
 
-    assert record["statuses"] == {
-        "session": "failed",
-        "critic": "failed",
-        # The floor score is not a judgement: the reader report and the CLI
-        # both refuse to print it, so the record must not publish one either.
-        "critic_score": None,
-        "review": "",
-    }
+    assert record["session_status"] == "failed"
+    assert record["review"] is None
 
 
 def test_a_record_without_a_session_status_says_so_rather_than_guessing() -> None:
-    """No stamp is not a clean run: ``session`` stays empty."""
-    composition = _evidence_composition()
-    state = _record_state(composition)
+    """No stamp is not a clean run: ``session_status`` stays empty."""
+    composition = _written_composition()
 
-    record = render_quality_record(state, composition, None)
+    record = render_quality_record(_record_state(composition), composition, None)
 
-    assert record["statuses"]["session"] == ""
-    assert record["statuses"]["critic"] == ""
-    assert record["statuses"]["review"] == ""
+    assert record["session_status"] == ""
 
 
 def test_the_quality_record_registers_every_error_the_pass_recorded() -> None:
     """A replay must be able to find the failures the run continued past.
 
-    The evidence ledger publishes the same records as rows, and the quality
-    record publishes them by type, source and severity — the fields a caller
-    can address without parsing a message. ``details`` follow the ledger's one
-    publication decision (``_published_details``), so the two artifacts cannot
-    disagree about which details may be published at all: an unvetted type's
-    details stay out of both.
+    The record publishes them by type, source and severity -- the fields a
+    caller can address without parsing a message. ``details`` follow the one
+    publication decision (``_published_details``) the finding log shares, so an
+    unvetted type's details stay out of both.
     """
-    composition = _composition(
+    composition = _written_composition(
         errors=[
             ResearchError(
                 error_type="planner_plan_defects_unresolved",
@@ -4608,307 +660,41 @@ def test_the_quality_record_registers_every_error_the_pass_recorded() -> None:
     ]
 
 
-def test_the_quality_record_replays_every_statement_from_its_own_ids() -> None:
-    """Every cited statement resolves inside the record, with no prose parsing.
+def test_the_quality_record_resolves_every_id_it_publishes() -> None:
+    """Every id the record publishes resolves inside the record itself.
 
-    A replay reads the record alone: the statement rows it publishes, the claim
-    clusters and claims those rows name, the evidence units behind them, and the
-    source rows the reader's citations point at. Every link is asserted on the
-    serialized rows rather than on the composition that produced them — a record
-    whose statement rows carry no evidence ids is exactly the regression this
-    test exists to catch, and reading the composition would not see it.
+    A replay reads the record alone: the statement rows it publishes, the
+    finding registry those rows cite, and the fact rows keyed by the same
+    registry. Every link is asserted on the serialized rows rather than on the
+    composition that produced them -- a record whose statement rows carried no
+    finding ids is exactly the regression this test exists to catch, and
+    reading the composition would not see it.
     """
-    composition = _evidence_composition(
-        sources=[
-            _source(),
-            _source(url=THIRD_URL, title="Independent review"),
-        ]
-    )
-    state = _record_state(composition)
+    composition = _written_composition()
 
-    record = render_quality_record(
-        state, composition, None, artifacts=_artifact_texts(composition)
-    )
+    record = render_quality_record(_record_state(composition), composition, None)
 
+    finding_ids = {row["id"] for row in record["findings"]}
     statements = {row["statement_id"]: row for row in record["statements"]}
-    evidence_rows = {row["evidence_id"]: row for row in record["evidence"]}
-    cluster_rows = {row["cluster_id"]: row for row in record["claim_clusters"]}
-    claim_rows = {row["claim_id"] for row in record["claims"]}
-    source_rows = {row["url"] for row in record["sources"]}
 
+    assert finding_ids == set(composition.finding_labels.values())
     assert set(statements) == {
         statement.statement_id for statement in composition.statements
     }
-    assert evidence_rows
-    assert cluster_rows
-    # At least one statement row carries links: an emptied list on every row
-    # would otherwise satisfy every "is a subset" assertion below.
-    assert any(row["evidence_ids"] for row in record["statements"])
-    for row in record["statements"]:
-        assert set(row["evidence_ids"]) <= set(evidence_rows), row["statement_id"]
-        assert set(row["claim_cluster_ids"]) <= set(cluster_rows), (
-            row["statement_id"]
-        )
-        for cluster_id in row["claim_cluster_ids"]:
-            cluster = cluster_rows[cluster_id]
-            assert set(cluster["member_claim_ids"]) <= claim_rows
-            assert set(cluster["evidence_ids"]) <= set(evidence_rows)
-        for evidence_id in row["evidence_ids"]:
-            assert evidence_rows[evidence_id]["source_url"] in source_rows
-    cited = {citation.url for citation in reader_citations(composition)}
-    assert cited
-    # The URLs reached through those rows are source rows the reader cites.
-    cited_through_statements = {
-        evidence_rows[evidence_id]["source_url"]
+    cited = {
+        finding_id
         for row in record["statements"]
-        for evidence_id in row["evidence_ids"]
+        for finding_id in row["finding_ids"]
     }
-    assert cited_through_statements
-    assert cited_through_statements <= source_rows
-    assert cited_through_statements <= {
-        row["url"] for row in record["sources"] if row["cited"]
+    # At least one statement row carries a link: an emptied list on every row
+    # would otherwise satisfy every resolution check below.
+    assert cited
+    assert cited <= finding_ids
+    for row in record["fact_rows"]:
+        assert row["finding_id"] in finding_ids, row["row_id"]
+    assert {row["target_id"] for row in record["not_found"]} == {
+        target.target_id for target in composition.not_found
     }
-    # The reader's own reference numbers resolve to the same source rows.
-    assert {
-        citation.url for citation in reader_citations(composition)
-    } == {row["url"] for row in record["sources"] if row["cited"]}
-
-
-def test_the_quality_record_derives_the_coverage_id_lists_the_snapshot_lacks() -> (
-    None
-):
-    """The record's target id lists are derived on the snapshot path too.
-
-    The record prefers the snapshot the gates judged, which is where the
-    denominators come from — but that snapshot carries no ``accounted_target_ids``
-    and no list of every unanswered required target, only the unanswered
-    critical ones and the unaccounted ones. Re-deriving them from those two
-    fields published an empty "accounted" list and omitted an obligation that
-    ended with a recorded denial, so a replay reading the record saw a target
-    nobody could account for, or did not see it at all. The id lists come from
-    the same pure function that produced the snapshot's own counts.
-    """
-    claim = _claim()
-    sub_topics = [
-        SubTopic(
-            coverage_id="topic-01",
-            title="Alpha",
-            rationale="First.",
-            search_queries=["alpha"],
-            success_criteria=["alpha evidence"],
-            priority=1,
-            evidence_targets=[
-                EvidenceTarget(
-                    target_id="t1",
-                    coverage_id="topic-01",
-                    question="What did the pilot add?",
-                    required_dimensions=["finding"],
-                    required=True,
-                    critical=False,
-                    support_policy="primary_attribution",
-                ),
-                EvidenceTarget(
-                    target_id="t-deferred",
-                    coverage_id="topic-01",
-                    question="What mechanism did the denied source report?",
-                    required_dimensions=["mechanism"],
-                    required=True,
-                    critical=False,
-                    support_policy="primary_attribution",
-                ),
-            ],
-        )
-    ]
-    composition = _evidence_composition(
-        claims=[claim],
-        claim_clusters={"cluster-1": _cluster(claim_ids=[claim.claim_id])},
-        sub_topics=sub_topics,
-        summary=[
-            ReportPoint(
-                text="The pilot added 12 GW.",
-                claim_ids=[claim.claim_id],
-                source_urls=[SOURCE_URL],
-                statement=ReportStatement(
-                    statement_id="S001",
-                    text="The pilot added 12 GW.",
-                    mode="settled",
-                    claim_cluster_ids=[claim.claim_id],
-                    evidence_ids=["e1"],
-                    target_ids=["t1"],
-                    answered_dimensions=["finding"],
-                ),
-            )
-        ],
-        sections=[],
-    )
-    state = _record_state(
-        composition,
-        sub_topics=sub_topics,
-        evidence_dispositions=[
-            EvidenceDisposition(
-                item_id="t-deferred",
-                stage="access_denied",
-                reason="every candidate for this target was denied",
-                target_ids=["t-deferred"],
-            )
-        ],
-    )
-    assert state.quality is not None
-    assert state.quality.unaccounted_target_ids == []
-    assert state.quality.unanswered_critical_target_ids == []
-
-    record = render_quality_record(state, composition, None)
-    coverage = record["counts"]
-
-    assert coverage["unanswered_required_target_ids"] == ["t-deferred"]
-    assert coverage["accounted_target_ids"] == ["t-deferred"]
-    assert coverage["unaccounted_target_ids"] == []
-    # The scalars stay the snapshot's own measurement.
-    assert coverage["required_targets"] == state.quality.required_targets
-    assert coverage["answered_targets"] == state.quality.answered_targets
-
-
-def test_the_works_count_is_the_identity_the_work_map_publishes() -> None:
-    """The count and the map inside one record cannot disagree about a work.
-
-    Section 2.3: an assessed source's ``work_id`` is resolved once per snapshot,
-    with the anchors the Source Evaluator validated, and this record publishes
-    it in ``work_keys``. Counting the works a second way — from the reads
-    alone, with no anchors — resolves *less*: the DOI that joined a copy to its
-    original was validated as an anchor on the source, and a re-typeset mirror
-    never shared the original's bytes. The record then named one work in its map
-    and reported two in its count.
-    """
-    work_id = "doi:10.1234/grid.2025"
-    original = _read(SOURCE_URL, "Grid Storage Outlook 2024: 10 GW in 2024.")
-    mirror = _read(
-        OTHER_URL,
-        "Grid Storage Outlook 2024, re-typeset: 10 GW in 2024.",
-        title="Grid Storage Outlook 2024 (repository copy)",
-    )
-    composition = _evidence_composition(
-        sources=[
-            _source(url=SOURCE_URL, work_id=work_id),
-            _source(
-                url=OTHER_URL,
-                title="Grid Storage Outlook 2024 (repository copy)",
-                work_id=work_id,
-                transport="mirror",
-            ),
-        ]
-    )
-    state = _record_state(
-        composition,
-        read_records={original.read_id: original, mirror.read_id: mirror},
-    )
-
-    # The reads alone cannot see the join, which is why the count may not be
-    # re-derived from them: two rows, two keys.
-    assert len(set(resolve_read_works([original, mirror]).values())) == 2
-
-    record = render_quality_record(state, composition, None)
-
-    assert set(record["work_keys"].values()) == {work_id}
-    assert record["counts"]["unique_works"] == 1
-
-
-def test_the_work_map_accounts_for_every_retained_source_url() -> None:
-    """The map is the count's own keying, so the two cannot disagree.
-
-    The map and the count are one record read two ways, and they were two
-    resolutions: the map published only the sources whose persisted identity
-    was established, while the count fell back to the read-derived key for a
-    source whose identity was never established — so an identity-less read
-    could appear as a work the map never named. Publishing the keying the
-    count computes makes ``unique_works`` the map's distinct values by
-    construction, which is what the record's own comment claims.
-    """
-    work_id = "doi:10.1234/grid.2025"
-    original = _read(SOURCE_URL, "Grid Storage Outlook 2024: 10 GW in 2024.")
-    unlabelled = _read(
-        OTHER_URL,
-        "Grid Storage Outlook 2024, re-typeset: 10 GW in 2024.",
-        title="Grid Storage Outlook 2024 (repository copy)",
-    )
-    composition = _evidence_composition(
-        sources=[
-            _source(url=SOURCE_URL, work_id=work_id),
-            _source(
-                url=OTHER_URL,
-                title="Grid Storage Outlook 2024 (repository copy)",
-                rationale="Assessed, but the page evidences no issuer.",
-            ),
-        ]
-    )
-    state = _record_state(
-        composition,
-        read_records={original.read_id: original, unlabelled.read_id: unlabelled},
-    )
-
-    record = render_quality_record(state, composition, None)
-
-    assert set(record["work_keys"]) == {SOURCE_URL, OTHER_URL}
-    assert record["counts"]["unique_works"] == len(
-        set(record["work_keys"].values())
-    )
-    # The two sources carry different bytes and no shared alias, so they are
-    # two works: one resolved, one unresolved.
-    assert record["counts"]["unique_works"] == 2
-
-
-def test_a_source_no_assessment_covers_is_its_own_work_entry() -> None:
-    """An unresolved work stays its own entry; it is never folded into a peer.
-
-    The map publishes the identity that was established, so an unscored source
-    has no row in it. The count must not invent one for it either — by joining
-    it to whatever source sits beside it, or by dropping it — because a source
-    the run read is a work it retains whether or not anyone assessed it.
-    """
-    work_id = "doi:10.1234/grid.2025"
-    reads = [
-        _read(SOURCE_URL, "Grid Storage Outlook 2024: 10 GW in 2024."),
-        _read(
-            OTHER_URL,
-            "Grid Storage Outlook 2024, re-typeset: 10 GW in 2024.",
-            title="Grid Storage Outlook 2024 (repository copy)",
-        ),
-        _read(
-            THIRD_URL,
-            "Interconnection Queue 2024: 800 MW.",
-            title="Interconnection Queue 2024",
-        ),
-    ]
-    composition = _evidence_composition(
-        sources=[
-            _source(url=SOURCE_URL, work_id=work_id),
-            _source(
-                url=OTHER_URL,
-                title="Grid Storage Outlook 2024 (repository copy)",
-                work_id=work_id,
-                transport="mirror",
-            ),
-            _source(
-                url=THIRD_URL,
-                title="Interconnection Queue 2024",
-                status="unscored_cap",
-                rationale="The per-run source cap was reached first.",
-            ),
-        ]
-    )
-    state = _record_state(
-        composition, read_records={read.read_id: read for read in reads}
-    )
-
-    record = render_quality_record(state, composition, None)
-
-    # The map accounts for every retained URL, including the one no
-    # assessment covers, so the count is exactly its distinct values.
-    assert set(record["work_keys"]) == {SOURCE_URL, OTHER_URL, THIRD_URL}
-    assert record["counts"]["unique_works"] == len(
-        set(record["work_keys"].values())
-    )
-    # One joined work, plus the unassessed source's own unresolved entry.
-    assert record["counts"]["unique_works"] == 2
 
 
 def test_the_quality_record_hashes_the_published_bytes_and_never_itself() -> None:
@@ -4918,13 +704,11 @@ def test_the_quality_record_hashes_the_published_bytes_and_never_itself() -> Non
     so the quality JSON is deliberately outside its own ``artifacts`` map. The
     two Markdown digests are recomputed here from the exact strings published.
     """
-    composition = _evidence_composition()
+    composition = _written_composition()
     state = _record_state(composition)
     texts = _artifact_texts(composition)
 
-    record = render_quality_record(
-        state, composition, None, artifacts=texts
-    )
+    record = render_quality_record(state, composition, None, artifacts=texts)
     encoded = json.dumps(record, sort_keys=True, ensure_ascii=False)
 
     assert set(record["artifacts"]) == {
@@ -4940,262 +724,91 @@ def test_the_quality_record_hashes_the_published_bytes_and_never_itself() -> Non
     assert "quality_json" not in record["artifacts"]
 
 
-def test_the_semantic_fingerprint_moves_on_content_and_not_on_the_badge() -> None:
-    """The record's fingerprint excludes exactly the generated badge.
+def test_the_semantic_fingerprint_moves_on_judged_content_not_on_the_badge() -> (
+    None
+):
+    """The record's fingerprint covers the material a review judges, and only that.
 
     ``quality_status`` is presentation: the terminal finalizer rewrites it on
-    the way out, and a judgement must survive that. Everything a review judges
-    — content, references, targets — moves the fingerprint, so the record and
-    the review cannot disagree about which report was judged.
+    the way out, and a judgement must survive that. The plan is not judged
+    content either -- the reviewer never sees it -- while the statements, the
+    fact rows, the Not found list and the finding ids the report cites are
+    exactly what a review reads, so each of those moves the fingerprint.
     """
-    composition = _evidence_composition()
-    state = _record_state(composition)
+    composition = _written_composition()
 
-    base = render_quality_record(state, composition, None)
-    restamped = composition.model_copy(update={"quality_status": "accepted"})
-    assert render_quality_record(state, restamped, None)["configuration"][
-        "composition_fingerprint"
-    ] == base["configuration"]["composition_fingerprint"]
+    def fingerprint(candidate: ReportComposition) -> object:
+        return render_quality_record(
+            _record_state(candidate), candidate, None
+        )["configuration"]["composition_fingerprint"]
+
+    base = fingerprint(composition)
+    assert base
+    assert (
+        fingerprint(composition.model_copy(update={"quality_status": "accepted"}))
+        == base
+    )
+    assert (
+        fingerprint(
+            composition.model_copy(
+                update={
+                    "sub_topics": [
+                        *composition.sub_topics,
+                        _topic("topic-10", "topic-10-target-01"),
+                    ]
+                }
+            )
+        )
+        == base
+    )
 
     for field, value in (
-        ("scope", "A materially different scope."),
-        ("as_of", "2027-01-01T00:00:00+00:00"),
-        ("question", "A different question entirely?"),
+        ("summary", [_point("A materially different summary sentence.")]),
+        ("fact_rows", []),
+        ("not_found", []),
+        ("findings", [EIA_ACTUAL_2024]),
     ):
         changed = composition.model_copy(update={field: value})
-        assert render_quality_record(state, changed, None)["configuration"][
-            "composition_fingerprint"
-        ] != base["configuration"]["composition_fingerprint"], field
-
-    retargeted = composition.model_copy(
-        update={
-            "sub_topics": [
-                *composition.sub_topics,
-                SubTopic(
-                    coverage_id="topic-extra",
-                    title="A target the review never saw",
-                    rationale="Added after the review.",
-                    search_queries=["new query"],
-                    success_criteria=["A read source answers it."],
-                    priority=1,
-                ),
-            ]
-        }
-    )
-    assert render_quality_record(state, retargeted, None)["configuration"][
-        "composition_fingerprint"
-    ] != base["configuration"]["composition_fingerprint"]
+        assert fingerprint(changed) != base, field
 
 
 def test_the_quality_record_is_bounded_json_without_page_payloads() -> None:
-    """It is JSON, it is bounded, and a whole extracted page never enters it."""
+    """It is JSON, and a whole extracted page never enters it."""
     page = "the complete extracted page text " * 200
-    composition = _evidence_composition(
-        evidence_units={"e1": _unit(excerpt=page)}
+    snippet = "Generators added 10.4 GW of new battery storage capacity in 2024."
+    read = make_read(page, url=EIA_URL, title="Today in Energy")
+    finding = make_finding(
+        read,
+        snippet,
+        figures=[figure("10.4", "GW", "2024", "actual")],
+        target_ids=["topic-01-target-01"],
     )
-    state = _record_state(composition)
+    finding_id = finding_fingerprint(finding)
+    composition = _written_composition(
+        findings=[finding],
+        finding_labels={"F01": finding_id},
+        fact_rows=[],
+        sections=[],
+        summary=[
+            _point(
+                snippet,
+                statement_id="S001",
+                source_urls=[EIA_URL],
+                finding_ids=[finding_id],
+                target_ids=["topic-01-target-01"],
+            )
+        ],
+    )
+    state = _record_state(
+        composition, read_records={read.read_id: read}
+    )
 
     record = render_quality_record(state, composition, None)
     encoded = json.dumps(record, sort_keys=True)
 
+    assert record["findings"] and record["statements"]
     assert page not in encoded
-    for row in record["evidence"]:
-        assert len(row["excerpt"]) <= QUALITY_RECORD_EXCERPT_CHARS
-    for row in record["claims"]:
-        assert len(row["text"]) <= QUALITY_RECORD_TEXT_CHARS
     assert json.loads(encoded) == record
-
-
-@pytest.mark.asyncio
-async def test_the_quality_record_exports_the_identity_the_sources_carry() -> None:
-    """A replay reads work identity from the record, never re-derives it.
-
-    The sources come from the real assessment service: a DOI original, its
-    byte-identical DOI-less mirror, and a story stating the report's DOI as
-    its data source. The record must carry each source's aliases, basis,
-    status, issuer, lineage, and validated anchors — and its ``work_keys``
-    must be the sources' own work ids, not an anchor-less re-resolution of the
-    reads that would split the original from its mirror.
-    """
-    from deep_research.agents.evidence import build_read_record
-    from deep_research.agents.source_evaluator import (
-        SourceScoreDraft,
-        SourceScoresDraft,
-        assess_new_sources,
-    )
-    from tests.agent_fakes import ScriptedCompleter
-
-    report_text = (
-        "Grid Storage Outlook. Published by Example Lab on 2026-01-15. "
-        "Example Lab measured that 1,200 MW of interconnection capacity was "
-        "withheld during 2024. doi:10.1234/grid.2025"
-    )
-    story_text = (
-        "Queue backlog, by the numbers. Published by News Daily on "
-        "2026-02-02. Our analysis of the Example Lab report "
-        "(doi:10.1234/grid.2025) finds 1,200 MW was withheld during 2024."
-    )
-    original_url = "https://lab.example/report"
-    mirror_url = "https://mirror.example/grid-outlook"
-    story_url = "https://news.example/queue-story"
-
-    def read(url: str, title: str, text: str):  # type: ignore[no-untyped-def]
-        return build_read_record(
-            session_id="session-1",
-            reader="web_scraper",
-            requested_url=url,
-            resolved_url=url,
-            title=title,
-            retrieved_at=EXTRACTED_AT,
-            text=text,
-            passages={"chunk-0": text},
-            extraction_complete=True,
-        )
-
-    def draft(url: str, **fields: object) -> SourceScoreDraft:
-        return SourceScoreDraft(
-            url=url,
-            authority_score=0.9,
-            recency_score=0.8,
-            relevance_score=0.9,
-            rationale="Assessed from the read.",
-            **fields,  # type: ignore[arg-type]
-        )
-
-    reads = [
-        read(original_url, "Grid Storage Outlook", report_text),
-        read(mirror_url, "Grid Storage Outlook", report_text),
-        read(story_url, "Queue backlog, by the numbers", story_text),
-    ]
-    lab = {"source_role": "original_report", "issuer": "Example Lab"}
-    sources = await assess_new_sources(
-        ScriptedCompleter(
-            outputs=[
-                SourceScoresDraft(
-                    sources=[
-                        draft(
-                            original_url,
-                            transport_relation="original",
-                            doi="10.1234/grid.2025",
-                            **lab,
-                        ),
-                        draft(mirror_url, transport_relation="mirror", **lab),
-                        draft(
-                            story_url,
-                            source_role="independent_research",
-                            transport_relation="original",
-                            issuer="News Daily",
-                            derived_from=["10.1234/grid.2025"],
-                        ),
-                    ]
-                )
-            ]
-        ),
-        reads,
-    )
-    composition = _evidence_composition(sources=[_source(), *sources])
-    state = _record_state(
-        composition, read_records={item.read_id: item for item in reads}
-    )
-
-    record = json.loads(
-        json.dumps(render_quality_record(state, composition, None), sort_keys=True)
-    )
-
-    rows = {row["url"]: row for row in record["sources"]}
-    original, mirror, story = (
-        rows[original_url],
-        rows[mirror_url],
-        rows[story_url],
-    )
-    report_hash = f"sha256:{reads[0].content_sha256}"
-    assert original["work_id"] == mirror["work_id"] == "doi:10.1234/grid.2025"
-    for row in (original, mirror):
-        assert row["identity_status"] == "known"
-        assert row["identity_basis"]
-        assert set(row["work_aliases"]) == {"doi:10.1234/grid.2025", report_hash}
-        assert row["issuer_id"] == "example lab"
-        assert row["derives_from_work_ids"] == []
-    assert original["identity_anchors"]["doi"] == "10.1234/grid.2025"
-    assert original["identity_anchors"]["issuer"] == "Example Lab"
-    assert "doi" not in mirror["identity_anchors"]
-    assert story["identity_status"] == "known"
-    assert story["derives_from_work_ids"] == ["doi:10.1234/grid.2025"]
-    # The anchor is the cited work's id, the form a lineage comparison reads.
-    assert story["identity_anchors"]["derived_from"] == ["doi:10.1234/grid.2025"]
-    # One identity: the record's url -> work map is the sources' own.
-    identified = {row["url"]: row["work_id"] for row in record["sources"] if row["work_id"]}
-    assert identified
-    assert {
-        url: key for url, key in record["work_keys"].items() if url in identified
-    } == identified
-
-
-def test_every_corroboration_badge_has_its_own_distinct_count() -> None:
-    """Four labels, four counts, and they add up to the claims that were checked.
-
-    "Sixteen claims were checked" is not "sixteen claims are verified": the
-    counts below are the reader-facing reading of the badge each canonical
-    claim actually recorded, and a claim with no recorded classification is
-    counted as not established rather than as corroborated.
-    """
-    claims = [
-        _claim(),
-        _claim(
-            text="A claim with primary-source attribution.",
-            verdict="insufficient_evidence",
-        ),
-        _claim(text="A contested claim.", verdict="contradicted", badge="contested"),
-        _claim(text="A claim with no recorded badge.", verdict="unverified"),
-    ]
-
-    counts = evidence_status_counts(claims)
-
-    assert counts == {
-        "corroborated": 1,
-        "primary_attributed": 1,
-        "contested": 1,
-        "not_established": 1,
-    }
-    assert sum(counts.values()) == len(claims)
-    assert set(counts) == set(EVIDENCE_STATUS_LABELS)
-
-
-def test_a_contradicted_claim_is_counted_the_way_the_reader_reads_it() -> None:
-    """One claim, one reading: the counts follow the reader's own contract.
-
-    The badge is stamped before adjudication finishes, so the claim an
-    independent source contradicted can still carry ``verified_pair``. Counting
-    the badge alone published it as "independently corroborated" while the
-    reader's statement contract called the same claim contested — two surfaces
-    disagreeing about one claim. Section 2.1: verified requires that no
-    unresolved material contradiction defeats settlement.
-    """
-    contradicted = _claim(
-        text="An independent source contradicted this.",
-        verdict="contradicted",
-        badge="verified_pair",
-    )
-    settled = _claim()
-
-    assert evidence_status_counts([contradicted, settled]) == {
-        "corroborated": 1,
-        "primary_attributed": 0,
-        "contested": 1,
-        "not_established": 0,
-    }
-    assert statement_mode_for_claims([contradicted]) == "contested"
-    assert statement_mode_for_claims([settled]) == "settled"
-    assert (
-        evidence_status_bucket(
-            contradicted.evidence_status, verdict=contradicted.verdict
-        )
-        == "contested"
-    )
-    assert (
-        evidence_status_bucket(settled.evidence_status, verdict=settled.verdict)
-        == "corroborated"
-    )
 
 
 # --- the quality record a written pass publishes (§6.2; Task 4.5) -------------
@@ -5203,12 +816,6 @@ def test_a_contradicted_claim_is_counted_the_way_the_reader_reads_it() -> None:
 # The record is read from the composition the Report Writer produces -- built
 # here the way the writer's own tests build it -- never from a stand-in, so
 # these tests see what the terminal publication writes.
-
-BATTERY_QUESTION = (
-    "How much battery storage capacity was added in the United States in 2024, "
-    "and how much is expected in 2025?"
-)
-EIA = "U.S. Energy Information Administration"
 
 
 def _record_tracker() -> Tracker:
@@ -5219,69 +826,6 @@ def _record_tracker() -> Tracker:
         )
     )
 
-
-def _verified_finding(
-    url: str,
-    snippet: str,
-    *,
-    value: str,
-    unit: str,
-    period: str,
-    kind: str,
-    organisation: str,
-    target: str,
-    attribution: str = "own",
-    release_date: str | None = None,
-) -> Finding:
-    """One finding the Evidence Verifier kept, with its verified figure."""
-    read = make_read(snippet, url=url, title=f"{organisation} page")
-    finding = make_finding(
-        read,
-        snippet,
-        figures=[figure(value, unit, period, kind)],
-        target_ids=[target],
-        release_date=release_date,
-    )
-    result = FigureResult(
-        figure=finding.figures[0],
-        matched=True,
-        evidence_words=snippet,
-        context=FigureContext(
-            period=period, attribution=attribution, organisation=organisation, kind=kind
-        ),
-    )
-    return finding.model_copy(
-        update={
-            "verification": FindingVerification(
-                status="verified", figure_results=[result]
-            )
-        }
-    )
-
-
-EIA_ACTUAL_2024 = _verified_finding(
-    "https://www.eia.gov/todayinenergy/detail.php?id=64705",
-    "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024.",
-    value="10.4",
-    unit="GW",
-    period="2024",
-    kind="actual",
-    organisation=EIA,
-    target="topic-01-target-01",
-    release_date="2025-03-12",
-)
-STEO_FORECAST_2025 = _verified_finding(
-    "https://ent.news/2025/1/940.pdf",
-    "Battery storage capacity grows by 14 GW in 2025.",
-    value="14",
-    unit="GW",
-    period="2025",
-    kind="forecast",
-    organisation=EIA,
-    target="topic-02-target-01",
-    attribution="relayed",
-    release_date="2025-01-15",
-)
 
 _WRITTEN_DRAFT = ReportWriterDraft(
     executive_summary=[
@@ -5334,34 +878,14 @@ def _statement_check_reply(messages: list, schema: type) -> StatementCheckDraft:
     )
 
 
-def _written_snapshot(composition: ReportComposition) -> ReportQualitySnapshot:
-    """The snapshot Task 4.3 takes of this pass, with the step-4 fields."""
-    return ReportQualitySnapshot(
-        coverage_ratio=1.0,
-        planned_topics=1,
-        covered_topics=1,
-        unique_findings=len(composition.findings),
-        unique_sources=1,
-        cited_sources=1,
-        scored_cited_source_ratio=1.0,
-        verified_claims=0,
-        contradicted_claims=0,
-        duplicate_claims=0,
-        duplicate_source_rows=0,
-        uncited_settled_points=0,
-        hard_failures=[],
-        unjudged_sentences=[],
-        forecasts_without_release=1,
-    )
-
-
 def written_state() -> ResearchState:
     """A state whose composition is the one the Report Writer produces.
 
     The scripted provider answers the writer's draft request and then the
     Statement Check's batch, as the writer's own tests drive them, so the
     composition holds one kept sentence, one refused sentence, the key facts
-    and one required target no finding answers.
+    and one required target no finding answers. The state then carries the two
+    published artifacts and the snapshot of the pass that published them.
     """
     targets = [
         make_target(organisation=EIA),
@@ -5422,30 +946,50 @@ def written_state() -> ResearchState:
         )
 
     composition = asyncio.run(compose())
-    return state.model_copy(
+    state = state.model_copy(
         update={
             "composition": composition,
-            "quality": _written_snapshot(composition),
+            "report": render_written_report(composition),
+            "report_evidence": render_finding_log(composition),
         }
+    )
+    return state.model_copy(
+        update={"quality": compute_report_quality(state, composition)}
     )
 
 
 def test_the_quality_record_carries_the_verified_findings_and_refusals() -> None:
-    state = written_state()      # a ResearchState whose composition comes from compose_written_report
-    record = json.loads(render_quality_json(state, state.composition, None, quality_status="partial"))
-    assert {"quality", "review", "findings", "fact_rows", "not_found", "statements", "refused_sentences"} <= set(record)
-    assert record["refused_sentences"][0]["text"] and record["refused_sentences"][0]["finding_labels"]
-    assert all("verification" in f for f in record["findings"])
+    state = written_state()
+    record = json.loads(
+        render_quality_json(
+            state, state.composition, None, quality_status="partial"
+        )
+    )
+
+    assert {
+        "quality",
+        "review",
+        "findings",
+        "fact_rows",
+        "not_found",
+        "statements",
+        "refused_sentences",
+    } <= set(record)
+    assert record["refused_sentences"][0]["text"]
+    assert record["refused_sentences"][0]["finding_labels"]
+    assert all("verification" in row for row in record["findings"])
     assert "claims" not in record and "claim_clusters" not in record
 
 
-def test_the_quality_record_publishes_the_contract_version_the_state_carries() -> None:
+def test_the_quality_record_publishes_the_contract_version_the_state_carries() -> (
+    None
+):
     """The record publishes the state's own contract version, never a relabelling.
 
     A new run stamps ``utils.types.QUALITY_CONTRACT_VERSION`` onto its state
     (``graph.state``) and a snapshot written before the versioned contract
     keeps ``LEGACY_QUALITY_CONTRACT_VERSION``. The record must carry whichever
-    of the two the pass actually holds — in both stamping sites — because a
+    of the two the pass actually holds -- in both stamping sites -- because a
     consumer that finds a step-4 record has to be told it is one, and a
     consumer handed a legacy session's record has to be told that instead of
     being given the current build's number.
@@ -5516,4 +1060,3 @@ def test_the_quality_record_publishes_the_review_the_reviewer_recorded() -> None
         "dispositions": {"S001": "supported"},
         "missing_required_target_ids": ["topic-09-target-01"],
     }
-
