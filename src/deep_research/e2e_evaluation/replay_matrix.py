@@ -22,6 +22,7 @@ two.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Literal
@@ -45,6 +46,34 @@ HTML = "text/html; charset=utf-8"
 PDF = "application/pdf"
 
 
+# A claim states its figure in prose ("... was 40 percent in 2024"), and the
+# figure the Context Check is shown has to be that reading: a page whose claim
+# states no number is a page that carries no figure, which is the shape
+# ``empty-but-clean`` exists to exercise. At most two unit words, so a claim
+# like "40 percent of urban households" yields "percent" and not the clause
+# that follows it.
+_FIGURE_IN_CLAIM = re.compile(
+    r"(?P<value>\d[\d.,]*)\s+(?P<unit>[A-Za-z]+(?:\s+[A-Za-z]+)?)"
+    r"(?=\s+(?:of|in|for|per|across|each|a|an|the)\b|[,.;]|$)"
+)
+
+
+def _claimed_figure(claim: str) -> tuple[tuple[str, str, str | None, str | None], ...]:
+    """The figure a page's own claim states, as the extraction records it."""
+    match = _FIGURE_IN_CLAIM.search(claim)
+    if match is None:
+        return ()
+    year = re.search(r"\b(?:19|20)\d{2}\b", claim)
+    return (
+        (
+            match.group("value").rstrip(".,"),
+            " ".join(match.group("unit").lower().split()),
+            year.group(0) if year else None,
+            "actual",
+        ),
+    )
+
+
 def _page(
     host: str,
     slug: str,
@@ -65,6 +94,7 @@ def _page(
     statement: dict[str, str] | None = None,
     vintage: str = "",
     recorded_scope: str = "",
+    figures: tuple[tuple[str, str, str | None, str | None], ...] | None = None,
 ) -> ReplaySource:
     """One authored page, with the run's read of it scripted around it.
 
@@ -101,6 +131,7 @@ def _page(
         statement=statement or {},
         vintage=vintage,
         recorded_scope=recorded_scope,
+        figures=_claimed_figure(claim) if figures is None else figures,
     )
 
 
@@ -160,6 +191,7 @@ def _topic(
     critical: bool = False,
     labels: tuple[str, str] | None = None,
     follow_up_queries: tuple[str, ...] = (),
+    **target_fields: str,
 ) -> ReplayTopic:
     """One planned sub-topic, with the labels its answer row will carry.
 
@@ -184,6 +216,7 @@ def _topic(
         sources=sources,
         answer_labels=labels or ("", ""),
         follow_up_queries=follow_up_queries,
+        **target_fields,
     )
 
 
@@ -260,7 +293,7 @@ def _broad_constraints() -> ReplayScenario:
             "What do the six published measures say about the Acme widget in 2024?"
         ),
         topics=tuple(topics),
-        max_iterations=3,
+        max_extra_passes=3,
         # Six obligations need six researched sub-topics: pinned independent
         # of the production default (spec §7.2 caps that default at 5) so
         # this case stays a real test of a six-topic plan regardless of it.
@@ -271,7 +304,6 @@ def _broad_constraints() -> ReplayScenario:
             required_target_ids=tuple(
                 f"topic-{index:02d}-target-01" for index in range(1, 7)
             ),
-            minimum_answered_findings=6,
             # Each entry is the number-and-unit reading its page states, in the
             # order its own claim writes it. The third is worth spelling out:
             # its page says "the number of supplier records ... was 1.2
@@ -383,7 +415,6 @@ def _comparative_conflict() -> ReplayScenario:
                 "definitive national rate",
                 "nationally representative",
             ),
-            minimum_answered_findings=3,
             required_report_phrases=("urban households", "rural households"),
             required_invariants=("both_accounts_cited",),
         ),
@@ -425,7 +456,7 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -434,7 +465,6 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answered_findings=3,
             required_invariants=("extra_pass_recovers_missing_target",),
         ),
     )
@@ -517,7 +547,7 @@ def _blocked_html_pdf_fallback() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -526,7 +556,6 @@ def _blocked_html_pdf_fallback() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answered_findings=3,
             # The refusal is what this case is about: the landing page answers
             # 403, and the run records the denial before reading the document
             # behind it. A refusal that left no record would be
@@ -596,7 +625,7 @@ def _same_work_mirror() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -610,20 +639,20 @@ def _same_work_mirror() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answered_findings=3,
             required_invariants=("no_false_verification", "mirror_not_double_counted"),
         ),
     )
 
 
 def _extra_pass_finds_nothing() -> ReplayScenario:
-    """A repair round that buys nothing must stop, and say what stopped it.
+    """An extra pass that finds nothing publishes once, and says what is missing.
 
-    One uncorroborated claim owes an obligation, the repair acquires, and the
-    search returns the page the run already read. Nothing changes, so the
-    second pass is the last one: a run that kept buying the same empty round
-    would spend its budget proving nothing, and the case asserts the recorded
-    stop reason rather than the exit code alone.
+    One obligation is owed and the only page for it is one the Context Check
+    refuses, so the target is still missing when the extra pass runs -- and the
+    extra pass can acquire nothing new, because the page is already read and
+    the topic has no second candidate. Under PD-23 the run publishes, lists the
+    obligation under Not found, and finishes accepted: what it must not do is
+    buy a second extra pass or claim the obligation was answered.
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
     return ReplayScenario(
@@ -644,11 +673,19 @@ def _extra_pass_finds_nothing() -> ReplayScenario:
                         "Adoption survey",
                         claim,
                         issuer="Acme Institute 7",
-                        verdict="insufficient_evidence",
+                        # The figure is refused, so the finding is dropped and
+                        # the obligation it named stays owed: the shape that
+                        # makes the extra pass necessary rather than optional.
+                        context={"verdict": "reject"},
                     ),
                 ),
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
+                # The obligation asks for a measurement, so a dropped finding
+                # cannot answer it by naming it (PD-7).
+                unit_dimension="percent",
+                period="2024",
+                kind="actual",
             ),
             _filler(
                 2, "Widget funding", "Acme widget funding round", "12 million dollars"
@@ -657,16 +694,16 @@ def _extra_pass_finds_nothing() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
-            terminal_quality="partial",
-            exit_code=4,
+            # PD-23 again: the published report lists the unanswered
+            # obligation, and that is an accepted result. The row's assertion
+            # is the pass count and the Not found entry.
+            terminal_quality="accepted",
+            exit_code=0,
             required_target_ids=("topic-02-target-01", "topic-03-target-01"),
-            minimum_answered_findings=2,
-            required_gap_kinds=("hard:unaccounted_required_targets",),
             allowed_failure_classes=(
-                "hard:unaccounted_required_targets",
-                "semantic_review_missing",
+                "missing_required_target",
                 "error:researcher_sub_topic_skipped",
                 "error:researcher_sub_topic_without_findings",
             ),
@@ -827,7 +864,6 @@ def _relay_labelled_as_relay() -> ReplayScenario:
                 "Wire Service's own figure",
                 "independently corroborated",
             ),
-            minimum_answered_findings=4,
             # The two halves of the honesty rule: the label names the relaying
             # site and the organisation the page credits, and the figure the
             # report rests on carries a resolved context rather than a
@@ -874,9 +910,16 @@ def _forecast_versus_actual_kept_apart() -> ReplayScenario:
                         "Adoption outlook",
                         projection,
                         issuer="Acme Institute 8",
-                        verdict="insufficient_evidence",
+                        figures=(("55", "percent", "2030", "forecast"),),
                     ),
                 ),
+                # The obligation is an actual for 2024: without these the
+                # target is qualitative (PD-7) and the 2030 projection would
+                # answer it, which is exactly the substitution the row tests.
+                measure="the Acme widget adoption rate",
+                unit_dimension="percent",
+                period="2024",
+                kind="actual",
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
             ),
@@ -895,20 +938,20 @@ def _forecast_versus_actual_kept_apart() -> ReplayScenario:
                 labels=("Acme widget", "adoption rate"),
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
-            terminal_quality="partial",
-            exit_code=4,
+            terminal_quality="accepted",
+            exit_code=0,
             required_target_ids=("topic-02-target-01", "topic-03-target-01"),
             # The forbidden string is the substitution itself, not the word
             # "today": the question names the present, so its own echo in the
             # title is the question being asked rather than an answer to it.
             forbidden_assertions=("currently 55",),
-            minimum_answered_findings=2,
-            required_gap_kinds=("hard:unaccounted_required_targets",),
+            # PD-23: the 2024 actual stays unanswered and is listed under Not
+            # found, which is an accepted publication -- the substitution is
+            # what the row forbids, not the missing answer.
             allowed_failure_classes=(
-                "hard:unaccounted_required_targets",
-                "semantic_review_missing",
+                "missing_required_target",
                 "error:researcher_sub_topic_skipped",
                 "error:researcher_sub_topic_without_findings",
             ),
@@ -971,20 +1014,17 @@ def _unsupported_mechanism() -> ReplayScenario:
             ),
         ),
         invented_prose="the agency should subsidise Acme widget deployment",
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
-            terminal_quality="partial",
-            exit_code=4,
-            # A negative case names no obligation it expects answered: the
-            # cause is asked for by the question, and nothing read states one,
-            # so every obligation stands unanswered and the gap is the result.
+            # The pages state an outcome and the question asks for a cause: the
+            # row's assertion is that no reader sentence states one and that
+            # the drafted recommendation is refused (see the invariant).
+            terminal_quality="accepted",
+            exit_code=0,
             required_target_ids=(),
             forbidden_assertions=("should subsidise",),
-            minimum_answered_findings=2,
-            required_gap_kinds=("hard:unaccounted_required_targets",),
             allowed_failure_classes=(
-                "hard:unaccounted_required_targets",
-                "semantic_review_missing",
+                "missing_required_target",
                 "error:researcher_sub_topic_skipped",
                 "error:researcher_sub_topic_without_findings",
                 # The drafted recommendation is refused by the Statement
@@ -1020,7 +1060,7 @@ def _review_unavailable() -> ReplayScenario:
             ),
         ),
         review_failure=True,
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="partial",
             exit_code=4,
@@ -1029,7 +1069,6 @@ def _review_unavailable() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answered_findings=3,
             required_gap_kinds=("semantic_review_missing",),
             allowed_failure_classes=(
                 # The provider failure has a name of its own, and the case
@@ -1067,7 +1106,7 @@ def _non_constraint_answer() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1076,7 +1115,6 @@ def _non_constraint_answer() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answered_findings=3,
             required_invariants=("no_ranked_constraints_for_a_factual_answer",),
         ),
     )
@@ -1128,6 +1166,13 @@ def _empty_but_clean() -> ReplayScenario:
                 (_bare(1, "Adoption"),),
                 critical=True,
                 labels=("record", "publication date"),
+                # The obligation asks for a measurement. With no unit
+                # dimension (PD-7) a figureless finding would answer it, and
+                # the row's premise -- a tidy report that answered nothing --
+                # would be untestable.
+                unit_dimension="percent",
+                period="2024",
+                kind="actual",
             ),
             _topic(
                 2,
@@ -1138,6 +1183,9 @@ def _empty_but_clean() -> ReplayScenario:
                 (_bare(2, "Funding"),),
                 critical=True,
                 labels=("record", "publication date"),
+                unit_dimension="percent",
+                period="2024",
+                kind="actual",
             ),
             _topic(
                 3,
@@ -1148,17 +1196,24 @@ def _empty_but_clean() -> ReplayScenario:
                 (_bare(3, "Export"),),
                 critical=False,
                 labels=("record", "publication date"),
+                unit_dimension="percent",
+                period="2024",
+                kind="actual",
             ),
         ),
-        max_iterations=2,
+        max_extra_passes=2,
         expectation=CaseExpectation(
-            terminal_quality="partial",
-            exit_code=4,
-            required_gap_kinds=("hard:unaccounted_required_targets",),
+            # PD-23: the report publishes, every obligation it could not
+            # answer is listed under Not found, and the run finishes accepted.
+            # The row's assertion is that *nothing* was answered, not that the
+            # publication was withheld.
+            terminal_quality="accepted",
+            exit_code=0,
             allowed_failure_classes=(
-                "hard:unaccounted_required_targets",
-                "semantic_review_missing",
+                "missing_required_target",
                 "no_quality_snapshot",
+                "error:researcher_sub_topic_skipped",
+                "error:researcher_sub_topic_without_findings",
             ),
             required_invariants=("empty_answer_answered_nothing",),
         ),
@@ -1220,17 +1275,14 @@ def _memory_is_not_read() -> ReplayScenario:
             )
             for content, url in zip(remembered, lead_urls)
         ),
-        max_iterations=2,
+        max_extra_passes=2,
         expectation=CaseExpectation(
-            terminal_quality="partial",
-            exit_code=4,
+            terminal_quality="accepted",
+            exit_code=0,
             required_target_ids=("topic-02-target-01", "topic-03-target-01"),
             forbidden_assertions=(memory_claim,),
-            minimum_answered_findings=2,
-            required_gap_kinds=("hard:unaccounted_required_targets",),
             allowed_failure_classes=(
-                "hard:unaccounted_required_targets",
-                "semantic_review_missing",
+                "missing_required_target",
                 # The critical topic declares no page of its own, and memory
                 # holds the other session's claims rather than this run's
                 # reads: the Researcher recalls the leads it is entitled to
@@ -1338,12 +1390,11 @@ def _validated_cache_reuse() -> ReplayScenario:
             ),
             replace(funding, sources=(funding.sources[0], forged)),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
             required_target_ids=("topic-01-target-01", "topic-03-target-01"),
-            minimum_answered_findings=2,
             required_invariants=(
                 "read_downloaded_once",
                 "cache_provenance_is_validated",
@@ -1432,7 +1483,7 @@ def _decision_context_late_candidate() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1441,7 +1492,6 @@ def _decision_context_late_candidate() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answered_findings=3,
             required_report_phrases=("40 percent",),
             required_invariants=(
                 "late_candidate_reached_decision",
@@ -1507,6 +1557,12 @@ def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
                 ),
                 critical=True,
                 labels=("Acme widget", "adoption rate"),
+                # The obligation asks for a measurement, so the first
+                # round's record page -- which states none -- cannot answer
+                # it, and only the second round's pages can.
+                unit_dimension="percent",
+                period="2024",
+                kind="actual",
                 follow_up_queries=(
                     "Acme widget adoption rate United States 2024 second source",
                 ),
@@ -1518,7 +1574,7 @@ def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1527,7 +1583,6 @@ def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answered_findings=3,
             required_invariants=("missing_target_triggers_one_extra_pass",),
         ),
     )
@@ -1590,7 +1645,7 @@ def _figure_not_on_page_dropped() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1600,7 +1655,6 @@ def _figure_not_on_page_dropped() -> ReplayScenario:
                 "topic-03-target-01",
             ),
             forbidden_assertions=("88 percent",),
-            minimum_answered_findings=3,
             required_invariants=("figure_not_on_page_dropped",),
         ),
     )
@@ -1658,7 +1712,7 @@ def _evidence_words_not_on_page_rejected() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1668,7 +1722,6 @@ def _evidence_words_not_on_page_rejected() -> ReplayScenario:
                 "topic-03-target-01",
             ),
             forbidden_assertions=("91 percent",),
-            minimum_answered_findings=3,
             required_invariants=("evidence_words_not_on_page_rejected",),
         ),
     )
@@ -1737,20 +1790,17 @@ def _scope_corrected_to_all_segments() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             # The refusal is the case: the sentence that overstated the scope
             # never reaches the reader, so the obligation it carried publishes
             # under Not found rather than as an answer.
-            terminal_quality="partial",
-            exit_code=4,
+            terminal_quality="accepted",
+            exit_code=0,
             required_target_ids=("topic-02-target-01", "topic-03-target-01"),
             forbidden_assertions=("grid-scale",),
-            minimum_answered_findings=2,
-            required_gap_kinds=("hard:unaccounted_required_targets",),
             allowed_failure_classes=(
                 "missing_required_target",
-                "semantic_review_missing",
                 "error:researcher_sub_topic_skipped",
                 "error:researcher_sub_topic_without_findings",
             ),
@@ -1768,6 +1818,7 @@ def _revision_noted() -> ReplayScenario:
     edition rides on the row the second one produced.
     """
     claim = "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    revised = "the Acme widget adoption rate in the United States was 42 percent in 2024"
     return ReplayScenario(
         case_id="revision-noted",
         version=REPLAY_CASE_VERSION,
@@ -1792,12 +1843,20 @@ def _revision_noted() -> ReplayScenario:
                         "agency16.example.test",
                         "adoption-2024-revised",
                         "Adoption survey (revised)",
-                        claim,
+                        revised,
                         issuer="Acme Institute 16",
                         vintage="February 2025 edition",
                     ),
                 ),
                 critical=True,
+                # The obligation states the dimension, so each
+                # edition's row is bound to it: PD-9's revision is
+                # two rows for one obligation, and a row the target
+                # never bound could not be one of them.
+                measure="the Acme widget adoption rate",
+                unit_dimension="percent",
+                period="2024",
+                kind="actual",
                 labels=("Acme widget", "adoption rate"),
             ),
             _filler(
@@ -1807,7 +1866,7 @@ def _revision_noted() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1816,7 +1875,6 @@ def _revision_noted() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answered_findings=3,
             required_invariants=("revision_noted", "no_false_verification"),
         ),
     )
@@ -1845,17 +1903,19 @@ def _statement_check_failure_keeps_sentences() -> ReplayScenario:
             ),
         ),
         statement_failure=True,
-        max_iterations=3,
+        max_extra_passes=3,
         expectation=CaseExpectation(
-            terminal_quality="partial",
-            exit_code=4,
+            # §5.4 and PD-10: a recorded batch failure keeps the sentences
+            # legitimately, so the run publishes and finishes accepted -- the
+            # error is the record, not a gate. The verdict map is what says
+            # nothing was judged.
+            terminal_quality="accepted",
+            exit_code=0,
             required_target_ids=(
                 "topic-01-target-01",
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            minimum_answered_findings=3,
-            required_gap_kinds=("hard:unjudged_sentences",),
             allowed_failure_classes=(
                 "error:evidence_verifier_statement_check_failed",
             ),
@@ -2198,7 +2258,7 @@ GRAPH_ONLY_HISTORICAL_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         graph_only_historical=True,
     ),
     ReplayCaseEntry(
-        case_id="extra-pass-recovers-missing-target-graph",
+        case_id="refinement-evidence-recovery-graph",
         version=REPLAY_CASE_VERSION,
         title="The missing account is acquired in the repair round",
         expected_product_result="accepted / 0",
