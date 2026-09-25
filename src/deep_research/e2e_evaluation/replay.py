@@ -619,14 +619,33 @@ def _registry_entries(
     return entries
 
 
-def _cited_subline(body: str, label: str) -> str:
+def _cited_finding_blocks(body: str) -> list[tuple[str, str]]:
+    """One ``(own line, sub-lines)`` pair per cited finding in a block.
+
+    The packet indents each finding's own line by two spaces (``  <label>:
+    <figures or (no kept figures)>``) and its sub-lines by four (``    snippet:
+    …``), which is what tells one finding's lines from the next's. The block's
+    own lines -- ``sentence:``, ``cited findings:`` -- carry no indent.
+    """
+    blocks: list[tuple[str, str]] = []
+    for line in body.splitlines():
+        if line.startswith("  ") and not line.startswith("    "):
+            blocks.append((line, ""))
+            continue
+        if line.startswith("    ") and blocks:
+            own, sublines = blocks[-1]
+            blocks[-1] = (own, f"{sublines}{line}\n")
+    return blocks
+
+
+def _cited_subline(lines: str, label: str) -> str:
     """One indented ``    label: value`` line under a cited finding.
 
     The Statement Check packet indents a finding's own lines under its label
     (``    snippet: …``, ``    attributed to: …``), which is what tells them
     from the block's own unindented ``sentence:`` and ``cited findings:``.
     """
-    match = re.search(rf"(?m)^    {re.escape(label)}: (.*)$", body)
+    match = re.search(rf"(?m)^    {re.escape(label)}: (.*)$", lines)
     return match.group(1).strip() if match else ""
 
 
@@ -1176,29 +1195,36 @@ class ReplayCompleter(AgentCompleter):
         return StatementCheckDraft(statements=drafts)
 
     def _require_cited_findings(self, body: str, label: str) -> None:
-        """A cited line that kept no figure is shown with the body it carries.
+        """Every cited finding is shown with the lines the shipped format gives it.
 
-        The shipped packet prints ``(no kept figures)`` for a finding whose
-        page stated none, and then the sentence's own ``snippet:`` and the body
-        it is ``attributed to:`` (Task 5.7a: that second line belongs to the
-        figureless case alone, because a kept figure's line already states its
-        attribution). Both are what the checker judges the sentence against, so
-        a packet that states neither is a request the production writer cannot
-        build -- a harness fault to refuse rather than to answer "consistent"
-        about a sentence whose evidence was never shown.
+        The packet prints each finding on its own line, then the sentence's own
+        ``    snippet:``, and then the body it is ``    attributed to:`` -- that
+        last line for a finding whose line reads ``(no kept figures)`` alone,
+        because a kept figure's own line already states its attribution (Task
+        5.7a: a second, extraction-time body could credit a different one). Both
+        halves are checked, per finding: a line with no body to judge it against,
+        or a body line crediting a figure that was kept, is a packet the
+        production writer cannot build, and the double refuses it rather than
+        answering "consistent" about evidence that was never shown.
         """
-        if "(no kept figures)" not in body:
-            return
-        missing = [
-            name
-            for name in ("snippet", "attributed to")
-            if not _cited_subline(body, name)
-        ]
-        if missing:
-            raise ReplayContractError(
-                f"the Statement Check block {label} cites a finding with no kept "
-                f"figure and prints no {' or '.join(missing)} line for it"
-            )
+        for own, sublines in _cited_finding_blocks(body):
+            figureless = "(no kept figures)" in own
+            if not _cited_subline(sublines, "snippet"):
+                raise ReplayContractError(
+                    f"the Statement Check block {label} cites a finding with no "
+                    "snippet line under it"
+                )
+            attributed = bool(_cited_subline(sublines, "attributed to"))
+            if figureless and not attributed:
+                raise ReplayContractError(
+                    f"the Statement Check block {label} cites a finding with no "
+                    "kept figure and prints no attributed to line for it"
+                )
+            if attributed and not figureless:
+                raise ReplayContractError(
+                    f"the Statement Check block {label} prints an attributed to "
+                    "line for a finding whose figure was kept"
+                )
 
     def _statement_override(self, sentence: str) -> dict[str, str]:
         """The override of the page whose drafted sentence this is.

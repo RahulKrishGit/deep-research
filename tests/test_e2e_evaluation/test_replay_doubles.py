@@ -613,6 +613,30 @@ def test_the_statement_double_answers_a_cited_line_that_states_its_body() -> Non
     assert verdict.verdict == "consistent"
 
 
+def test_the_statement_double_refuses_an_attribution_line_with_a_figure() -> None:
+    """R2: the body line belongs to the figureless case alone (Task 5.7a).
+
+    A finding whose figure the Context Check kept states its attribution on the
+    figure's own line, so the shipped builder prints no second, extraction-time
+    body line for it: that line could credit a different body than the figure's
+    verdict did. A packet that printed one anyway is refused.
+    """
+    source = page("kept", value="10.4")
+    completer = ReplayCompleter(scenario(source))
+    request = statement_request([_statement_item(source, "Kept reports 10.4 GW.")])
+    assert "    attributed to: " not in request
+
+    wrong = re.sub(
+        r"(?m)^(    snippet: .*)$",
+        r"\1\n    attributed to: Acme Institute",
+        request,
+        count=1,
+    )
+
+    with pytest.raises(ReplayContractError):
+        completer._reply_StatementCheckDraft(wrong)
+
+
 def test_a_scenario_can_script_the_statement_check_failing() -> None:
     """The keep-on-batch-failure path: every sentence keeps its drafted text."""
     source = page("checked", value="10.4")
