@@ -39,7 +39,7 @@ GRAPH_ERROR_REASONS = {
         "the research run stopped."
     ),
     "graph_invalid_route": (
-        "The graph attempted a refinement pass with no budget left, so the "
+        "The graph attempted an extra pass with no budget left, so the "
         "research run stopped."
     ),
     "graph_request_attempt_limit_exceeded": (
@@ -64,10 +64,10 @@ GRAPH_ERROR_REASONS = {
 # failure in any one of them withholds every path.
 PUBLICATION_DOCUMENT_ARTIFACTS = ("reader", "evidence", "quality")
 
-# The one terminal write outside that set: a claim handed to memory, attempted
-# only for an accepted report and only after the documents. Its failure loses a
-# memory record — never a file the run advertised — so it must not be read as
-# an incomplete publication.
+# The one terminal write outside that set: a cited finding handed to memory,
+# attempted only for an accepted report and only after the documents. Its
+# failure loses a memory record — never a file the run advertised — so it must
+# not be read as an incomplete publication.
 PUBLICATION_MEMORY_ARTIFACT = "memory"
 
 # The terminal writes that fail independently of one another. Enumerated so a
@@ -166,18 +166,19 @@ def invalid_route_error(
     *,
     node: str,
     iteration: int,
-    max_iterations: int,
+    max_extra_passes: int,
 ) -> ResearchError:
-    """Record that a refinement was attempted with no budget left.
+    """Record that an extra pass was attempted with no budget left.
 
-    The router already forbids this. The guard exists because "iteration
-    bounds prevent infinite loops" is the one property this graph must not
-    lose to a future edit, and a second lock on that door costs three lines.
+    The router already forbids this. The guard exists because "the extra-pass
+    ceiling prevents an unbounded loop" is the one property this graph must
+    not lose to a future edit, and a second lock on that door costs three
+    lines.
     """
     return graph_error(
         error_type="graph_invalid_route",
         node=node,
-        details={"iteration": iteration, "max_iterations": max_iterations},
+        details={"iteration": iteration, "max_extra_passes": max_extra_passes},
     )
 
 

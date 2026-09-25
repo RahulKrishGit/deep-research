@@ -18,7 +18,7 @@ from deep_research.graph.orchestrator import (
     run_research_graph,
 )
 from deep_research.graph.state import (
-    DEFAULT_MAX_ITERATIONS,
+    DEFAULT_MAX_EXTRA_PASSES,
     PLANNER_NODE,
     ResearchGraphState,
     dump_state,
@@ -29,14 +29,14 @@ from deep_research.utils.config import GraphConfig
 from deep_research.utils.types import MemorySnapshot, ResearchState
 from tests.graph_fakes import (
     FakeAgent,
-    fake_claim,
-    fake_critique,
-    fake_finding,
+    FakeReviewer,
     fake_research_agents,
     fake_research_state,
     fake_scored_source,
-    fake_synthesis_update,
-    progressing_fact_checker,
+    fake_sub_topic,
+    fake_target,
+    fake_writer_update,
+    verified_pass,
 )
 from tests.test_observability_tracker import RecordingTraceFactory
 
@@ -100,6 +100,34 @@ def _event_types(state: ResearchState) -> list[str]:
     return [event.event_type for event in state.events]
 
 
+def _two_target_topic():
+    """One planned topic with one answerable target and one still owed."""
+    return fake_sub_topic(
+        targets=[
+            fake_target(),
+            fake_target("topic-01-target-02", question="What did it cost?"),
+        ]
+    )
+
+
+def _owed_agents(**overrides: object):
+    """A run that owes one target per pass, so the loop really turns.
+
+    The default pass answers topic-01-target-01 only, so every pass ends with
+    a missing required target and buys the next one until the ceiling is spent
+    — which is what makes a multi-pass run reachable at all.
+    """
+    defaults: dict[str, object] = {
+        "planner": FakeAgent("planner", [{"sub_topics": [_two_target_topic()]}]),
+        "report_writer": FakeAgent(
+            "report_writer", [], update_factory=fake_writer_update
+        ),
+        "report_reviewer": FakeReviewer(),
+    }
+    defaults.update(overrides)
+    return fake_research_agents(**defaults)
+
+
 @pytest.mark.asyncio
 async def test_a_run_returns_the_final_state_and_its_status(
     tracker: Tracker,
@@ -111,14 +139,14 @@ async def test_a_run_returns_the_final_state_and_its_status(
         tracker=tracker,
         session_id="session-1",
         question=QUESTION,
-        max_iterations=2,
+        max_extra_passes=2,
     )
 
     assert run.session_id == "session-1"
     assert run.status == "completed"
-    assert run.state.report == "# Research report: pass 1"
+    assert run.state.report
     assert run.state.original_question == QUESTION
-    assert run.state.max_iterations == 2
+    assert run.state.max_extra_passes == 2
 
 
 @pytest.mark.asyncio
@@ -174,13 +202,13 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace() -> None
     )
     first_source = fake_scored_source("https://example.org/a")
     second_source = fake_scored_source("https://example.org/b")
-    first_claim = fake_claim("Break-even was reached in 2025.")
-    second_claim = fake_claim("Logical error rates fell in 2025.")
+    one = verified_pass()
     agents = fake_research_agents(
-        # ``evaluated_sources`` and ``verified_claims`` are canonical snapshots,
-        # so each pass emits the whole list. The trace must then report the two
-        # sources and two claims the second pass carried — not three, which is
-        # what appending pass 1 to pass 2 would produce.
+        # ``evaluated_sources`` and ``verified_findings`` are canonical
+        # snapshots, so each pass emits the whole list. The trace must then
+        # report the two sources and the one verified finding the second pass
+        # carried — not three and two, which is what appending pass 1 to pass 2
+        # would produce.
         source_evaluator=FakeAgent(
             "source_evaluator",
             [
@@ -188,26 +216,16 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace() -> None
                 {"evaluated_sources": [first_source, second_source]},
             ],
         ),
-        fact_checker=FakeAgent(
-            "fact_checker",
+        evidence_verifier=FakeAgent(
+            "evidence_verifier",
             [
-                {"verified_claims": [first_claim]},
-                {"verified_claims": [first_claim, second_claim]},
+                {"verified_findings": [one.finding]},
+                {"verified_findings": [one.finding]},
             ],
         ),
-        critic=FakeAgent(
-            "critic",
-            [
-                {"critique": fake_critique(should_continue=True, score=4)},
-                {"critique": fake_critique(should_continue=False, score=9)},
-            ],
-        ),
-        # A Synthesizer that composes the typed composition production always
-        # composes. Since Task 10 a report with no statement records behind it
-        # cannot be reviewed, and a run whose report cannot be reviewed records
-        # that fact instead of reporting a clean trace.
-        synthesizer=FakeAgent(
-            "synthesizer", [], update_factory=fake_synthesis_update
+        planner=FakeAgent("planner", [{"sub_topics": [_two_target_topic()]}]),
+        report_writer=FakeAgent(
+            "report_writer", [], update_factory=fake_writer_update
         ),
     )
 
@@ -216,6 +234,7 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace() -> None
         tracker=tracker,
         session_id="session-1",
         question=QUESTION,
+        max_extra_passes=1,
     )
 
     completed = [
@@ -236,17 +255,15 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace() -> None
     assert session_run.end_calls[-1]["outputs"] == {
         "session_id": "session-1",
         "status": "completed",
-        "route_reason": "critique_satisfied",
-        "route_decisions": ["refinement_requested", "critique_satisfied"],
+        "route_reason": "report_accepted",
+        "route_decisions": ["extra_pass_requested", "report_accepted"],
         "iteration": 1,
-        "max_iterations": DEFAULT_MAX_ITERATIONS,
-        "repair_stop_reason": None,
-        "refinement_target_count": 1,
+        "max_extra_passes": 1,
+        "extra_pass_target_count": 1,
         "sub_topic_count": 1,
         "finding_count": 2,
+        "verified_finding_count": 1,
         "source_count": 2,
-        "claim_count": 2,
-        "critic_score": 9,
         "has_report": True,
         "error_count": 0,
     }
@@ -258,9 +275,8 @@ async def test_every_node_gets_its_own_agent_span(tracker: Tracker) -> None:
         planner=SpanningFakeAgent("planner", tracker),
         researcher=SpanningFakeAgent("researcher", tracker),
         source_evaluator=SpanningFakeAgent("source_evaluator", tracker),
-        fact_checker=SpanningFakeAgent("fact_checker", tracker),
-        synthesizer=SpanningFakeAgent("synthesizer", tracker),
-        critic=SpanningFakeAgent("critic", tracker),
+        evidence_verifier=SpanningFakeAgent("evidence_verifier", tracker),
+        report_writer=SpanningFakeAgent("report_writer", tracker),
     )
 
     await run_research_graph(
@@ -279,9 +295,8 @@ async def test_every_node_gets_its_own_agent_span(tracker: Tracker) -> None:
         "planner",
         "researcher",
         "source_evaluator",
-        "fact_checker",
-        "synthesizer",
-        "critic",
+        "evidence_verifier",
+        "report_writer",
     }
 
 
@@ -299,7 +314,7 @@ async def test_a_checkpointed_session_can_be_resumed_by_its_session_id(
         session_id="session-1",
         question=QUESTION,
     )
-    call_counts = [len(agents.planner.calls), len(agents.critic.calls)]
+    call_counts = [len(agents.planner.calls), len(agents.researcher.calls)]
 
     resumed = await resume_research_graph(
         graph=graph, tracker=tracker, session_id="session-1"
@@ -309,22 +324,18 @@ async def test_a_checkpointed_session_can_be_resumed_by_its_session_id(
     assert resumed.state.original_question == QUESTION
     assert resumed.status == "completed"
     # A finished session replays its checkpoint; no agent runs again.
-    assert [len(agents.planner.calls), len(agents.critic.calls)] == call_counts
+    assert [len(agents.planner.calls), len(agents.researcher.calls)] == call_counts
 
 
 @pytest.mark.asyncio
-async def test_a_resume_uses_the_checkpointed_iteration_budget(
+async def test_a_resume_uses_the_checkpointed_extra_pass_budget(
     tracker: Tracker,
 ) -> None:
-    agents = fake_research_agents(
+    agents = _owed_agents(
         researcher=FakeAgent(
             "researcher",
-            [RuntimeError("crash"), {"raw_findings": [fake_finding()]}],
-        ),
-        fact_checker=progressing_fact_checker(),
-        critic=FakeAgent(
-            "critic", [{"critique": fake_critique(should_continue=True, score=3)}]
-        ),
+            [RuntimeError("crash"), verified_pass().update()],
+        )
     )
     graph = compile_research_graph(
         agents, checkpointer=build_checkpointer(enabled=True)
@@ -332,27 +343,26 @@ async def test_a_resume_uses_the_checkpointed_iteration_budget(
 
     # A mid-run crash leaves the thread checkpointed but unfinished. The
     # budget the session started with must survive in the checkpoint, or a
-    # resume dies at a recursion bound derived from the runner's own
-    # default (3) instead of the session's real budget (6).
+    # resume runs under the runner's own default instead of the session's.
     with pytest.raises(RuntimeError, match="crash"):
         await run_research_graph(
             graph=graph,
             tracker=tracker,
             session_id="session-1",
             question=QUESTION,
-            max_iterations=6,
+            max_extra_passes=2,
         )
 
     resumed = await resume_research_graph(
         graph=graph, tracker=tracker, session_id="session-1"
     )
 
-    assert resumed.state.max_iterations == 6
-    assert resumed.state.iteration == 6
-    assert resumed.status == "max_iterations"
-    # Passes 0-6 of a budget-6 run, with the crashed pass re-run on resume:
-    # eight researcher calls in all.
-    assert len(agents.researcher.calls) == 8
+    assert resumed.state.max_extra_passes == 2
+    assert resumed.state.iteration == 2
+    assert resumed.status == "completed"
+    # The crashed pass re-runs on resume, and every pass the budget allows
+    # runs: four researcher calls in all.
+    assert len(agents.researcher.calls) == 4
 
 
 @pytest.mark.asyncio
@@ -526,7 +536,7 @@ async def test_an_empty_values_stream_on_a_nonterminal_resume_is_still_an_error(
     tracker: Tracker,
 ) -> None:
     checkpointed = SimpleNamespace(
-        values=dump_state(fake_research_state(max_iterations=2)),
+        values=dump_state(fake_research_state(max_extra_passes=2)),
         next=(PLANNER_NODE,),
     )
 
@@ -545,15 +555,11 @@ async def test_an_empty_values_stream_on_a_nonterminal_resume_is_still_an_error(
 async def test_an_unfinished_resume_streams_events_in_order_without_duplicates(
     tracker: Tracker,
 ) -> None:
-    agents = fake_research_agents(
+    agents = _owed_agents(
         researcher=FakeAgent(
             "researcher",
-            [RuntimeError("crash"), {"raw_findings": [fake_finding()]}],
-        ),
-        fact_checker=progressing_fact_checker(),
-        critic=FakeAgent(
-            "critic", [{"critique": fake_critique(should_continue=True, score=3)}]
-        ),
+            [RuntimeError("crash"), verified_pass().update()],
+        )
     )
     graph = compile_research_graph(
         agents, checkpointer=build_checkpointer(enabled=True)
@@ -564,7 +570,7 @@ async def test_an_unfinished_resume_streams_events_in_order_without_duplicates(
             tracker=tracker,
             session_id="session-1",
             question=QUESTION,
-            max_iterations=6,
+            max_extra_passes=2,
         )
 
     received = []
@@ -575,9 +581,9 @@ async def test_an_unfinished_resume_streams_events_in_order_without_duplicates(
         event_handler=received.append,
     )
 
-    assert resumed.status == "max_iterations"
+    assert resumed.status == "completed"
     # The crashed pass re-runs on resume, exactly as without a handler.
-    assert len(agents.researcher.calls) == 8
+    assert len(agents.researcher.calls) == 4
     assert received == resumed.state.events
     assert received[-1].event_type == "graph.session.completed"
 
@@ -601,5 +607,4 @@ async def test_a_failed_run_still_returns_its_state(tracker: Tracker) -> None:
 
 
 def test_the_graph_config_default_matches_the_graph_module_default() -> None:
-    assert GraphConfig().max_iterations == DEFAULT_MAX_ITERATIONS
-
+    assert GraphConfig().max_extra_passes == DEFAULT_MAX_EXTRA_PASSES

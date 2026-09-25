@@ -20,7 +20,7 @@ recorded error would hide it.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias, runtime_checkable
 
@@ -28,32 +28,26 @@ from pydantic import JsonValue
 
 from deep_research.agents.base import AgentRun
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
-from deep_research.agents.identity import merge_claim_snapshot, normalize_source_url
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.quality import (
-    apply_terminal_pursued_unmet_accounting,
     compute_report_quality,
     review_status_fields,
 )
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
-    render_evidence_ledger,
+    render_finding_log,
     render_quality_json,
-    render_reader_report,
-    terminal_report_state,
+    render_written_report,
 )
 from deep_research.agents.report_reviewer import (
     ReportReviewInput,
     build_report_review_input,
-    review_defects_as_refinement_jobs,
 )
 from deep_research.agents.report_writer import (
     evidence_report_filename,
+    finding_memory_payload,
     quality_report_filename,
     report_filename,
-)
-from deep_research.agents.synthesizer import (
-    high_confidence_claims,
-    memory_payload,
 )
 from deep_research.graph.errors import (
     GraphConfigurationError,
@@ -68,26 +62,20 @@ from deep_research.graph.errors import (
     request_attempt_limit_error,
 )
 from deep_research.graph.events import (
+    extra_pass_started_event,
     node_completed_event,
     node_skipped_event,
     node_started_event,
     quality_assessed_event,
-    refinement_started_event,
     report_published_event,
     report_review_completed_event,
     route_decided_event,
 )
 from deep_research.graph.state import (
-    CRITIC_NODE,
-    FACT_CHECKER_NODE,
+    EXTRA_PASS_NODE,
     FINALIZE_NODE,
-    PLANNER_NODE,
-    REFINE_NODE,
-    REPORT_REVIEW_NODE,
-    RESEARCHER_NODE,
-    ROUTE_FINALIZE,
-    SOURCE_EVALUATOR_NODE,
-    SYNTHESIZER_NODE,
+    REPORT_REVIEWER_NODE,
+    REPORT_WRITER_NODE,
     ResearchGraphState,
     dump_state,
     graph_quality_status,
@@ -95,18 +83,12 @@ from deep_research.graph.state import (
     graph_status,
     is_halted,
     load_state,
-    progress_snapshot,
-    repair_is_terminal,
-    repair_stop_reason,
 )
 from deep_research.providers import ProviderConfigurationError
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
-    Claim,
-    RefinementOrigin,
-    RefinementTarget,
-    RepairAction,
+    Finding,
     ReportComposition,
     ReportQualitySnapshot,
     ReportReview,
@@ -115,7 +97,6 @@ from deep_research.utils.types import (
     ResearchStateUpdate,
     advance_research_iteration,
     merge_research_state,
-    unanswered_required_targets,
 )
 
 GraphNode: TypeAlias = Callable[
@@ -260,12 +241,12 @@ def agent_node(
     return node
 
 
-def synthesizer_node(
+def report_writer_node(
     agent: ResearchAgent,
     *,
-    node_name: str = SYNTHESIZER_NODE,
+    node_name: str = REPORT_WRITER_NODE,
 ) -> GraphNode:
-    """Wrap the Synthesizer and score the artifacts it just composed.
+    """Wrap the Report Writer and score the artifacts it just composed.
 
     The deterministic quality pass runs here rather than inside the agent for
     one reason: ``compute_report_quality`` reads the state a pass *produced*,
@@ -287,30 +268,10 @@ def synthesizer_node(
         state = load_state(composed)
         if is_halted(state) or state.composition is None:
             return composed
-        terminal = state.iteration >= state.max_iterations
-        # At the terminal pass, record every "pursued, unmet" target as real
-        # data — one target-itemed EvidenceDisposition and one "Not acquired"
-        # uncertainty statement on the composition — before the quality pass
-        # measures this state and before either artifact is rendered to
-        # Markdown, so ``_accounts_for_target``, the review packet, the
-        # evidence ledger, and the reader's own "Not acquired" group all read
-        # the same recorded reason (see ``quality.
-        # apply_terminal_pursued_unmet_accounting``).
-        accounting_update = apply_terminal_pursued_unmet_accounting(state)
-        quality_state = (
-            merge_research_state(state, accounting_update)
-            if accounting_update
-            else state
-        )
-        quality = compute_report_quality(
-            quality_state,
-            quality_state.composition,
-            terminal=terminal,
-        )
+        quality = compute_report_quality(state, state.composition)
         return _with(
             state,
             {
-                **accounting_update,
                 "quality": quality,
                 "events": [
                     quality_assessed_event(
@@ -323,51 +284,11 @@ def synthesizer_node(
     return node
 
 
-def critic_node(
-    agent: ResearchAgent,
-    *,
-    node_name: str = CRITIC_NODE,
-) -> GraphNode:
-    """Wrap the Critic and record the route its critique produced.
-
-    The route event is recorded here rather than in the conditional edge
-    because a LangGraph router reads state and cannot write it.
-    ``graph_route`` is pure and the state does not change between this call
-    and ``route_after_critic``'s, so the recorded decision and the taken
-    edge agree by construction.
-    """
-    inner = agent_node(agent, node_name=node_name)
-
-    async def node(channel: ResearchGraphState) -> ResearchGraphState:
-        reviewed = await inner(channel)
-        state = load_state(reviewed)
-        destination, reason = graph_route(state)
-        critique = state.critique
-        return _with(
-            state,
-            {
-                "events": [
-                    route_decided_event(
-                        destination=destination,
-                        reason=reason,
-                        iteration=state.iteration,
-                        max_iterations=state.max_iterations,
-                        should_continue=(
-                            critique is not None and critique.should_continue
-                        ),
-                    )
-                ]
-            },
-        )
-
-    return node
-
-
 @runtime_checkable
 class ReportPublisher(Protocol):
     """The one writer of the terminal artifacts and long-term memory.
 
-    Structural on purpose. The Synthesizer agent already owns the
+    Structural on purpose. The Report Writer agent already owns the
     ``write_document`` and ``save_to_memory`` tools, so it satisfies this
     without the graph reaching into agent internals — and a test can pass a
     recording double instead of a filesystem. Every method returns the tool's
@@ -381,10 +302,10 @@ class ReportPublisher(Protocol):
         """Write one Markdown artifact and report the path it landed on."""
         raise NotImplementedError
 
-    async def publish_claim(
+    async def publish_finding(
         self, *, content: str, metadata: Mapping[str, JsonValue]
     ) -> ToolResult:
-        """Save one verified claim to long-term memory."""
+        """Save one cited finding to long-term memory."""
         raise NotImplementedError
 
 
@@ -419,23 +340,23 @@ def _terminal_artifacts(
     a pass that never had one; it is rendered as the empty record of a pass
     nothing composed.
 
-    The quality record is rendered from the *same* finalized composition the
-    other two render from, and hashes those two exact strings. One composition
-    in, three artifacts out: no renderer re-derives the fit, and no hash
-    describes a document other than the one written beside it.
+    The reader report is the Report Writer's own rendering of the composition
+    and the evidence artifact is the finding log of the same one, so the two
+    documents a reader and a checker receive describe one statement set. The
+    quality record is rendered from the *same* finalized composition and
+    hashes those two exact strings. One composition in, three artifacts out:
+    no renderer re-derives the fit, and no hash describes a document other
+    than the one written beside it.
 
     The composition's ``errors`` are refreshed from the state as it is
-    published. A composition is built by the Synthesizer, so its own error list
-    stops there — and the ledger's run-errors table renders that list, which
-    left every record made *after* synthesis invisible in the published ledger:
-    the Critic's, and the terminal review's "no judgement of this report
-    exists". The live run's own ledger does not say its report went unscored.
-    Refreshing here is the smallest place to say it, because publication is the
-    one point that knows the run is over; ``errors`` is also not part of
-    ``composition_semantic_fingerprint``, so this cannot invalidate the stored
-    semantic review, and the row format and ``_published_details`` withholding
-    are untouched. With no composition there is no ledger to re-render, and the
-    state's own text is published as it stands.
+    published. A composition is built by the Report Writer, so its own error
+    list stops there — and a record made *after* the writing (the review's "no
+    judgement of this report exists", for one) would otherwise be invisible in
+    everything published beside it. Refreshing here is the smallest place to
+    say it, because publication is the one point that knows the run is over;
+    ``errors`` is also not part of ``composition_semantic_fingerprint``, so
+    this cannot invalidate the stored review. With no composition there is
+    nothing to re-render, and the state's own text is published as it stands.
     """
     composition = state.composition
     run_status = graph_status(state)
@@ -458,13 +379,10 @@ def _terminal_artifacts(
         update={
             "quality_status": status,
             "errors": list(state.errors),
-            "terminal": terminal_report_state(
-                state, composition, run_status=run_status
-            ),
         }
     )
-    reader = render_reader_report(finalized).strip()
-    evidence = render_evidence_ledger(finalized).strip()
+    reader = render_written_report(finalized).strip()
+    evidence = render_finding_log(finalized).strip()
     quality = render_quality_json(
         state,
         finalized,
@@ -478,6 +396,42 @@ def _terminal_artifacts(
     return reader, evidence, quality, finalized
 
 
+def _cited_findings(state: ResearchState) -> list[Finding]:
+    """Every verified finding the published composition cites, in label order.
+
+    A finding is cited when a reader sentence rests on it or when it carries a
+    key-facts row: those are the two places a reader meets a citation, and both
+    are drawn from ``composition.findings`` — the verified snapshot — so the
+    fingerprint lookup can only miss for a row whose finding was dropped after
+    the fact, which is a row the renderer withholds anyway.
+    """
+    composition = state.composition
+    if composition is None:
+        return []
+    by_id = {
+        finding_fingerprint(finding): finding
+        for finding in composition.findings
+    }
+    cited: list[Finding] = []
+    seen: set[str] = set()
+    for statement in composition.statements:
+        finding_ids = list(statement.finding_ids)
+        for finding_id in finding_ids:
+            finding = by_id.get(finding_id)
+            if finding is None or finding_id in seen:
+                continue
+            seen.add(finding_id)
+            cited.append(finding)
+    for row in composition.fact_rows:
+        for finding_id in (row.finding_id, *row.duplicate_finding_ids):
+            finding = by_id.get(finding_id)
+            if finding is None or finding_id in seen:
+                continue
+            seen.add(finding_id)
+            cited.append(finding)
+    return cited
+
+
 async def _publish(
     state: ResearchState,
     publisher: ReportPublisher | None,
@@ -487,18 +441,19 @@ async def _publish(
     quality: str,
     status: str,
 ) -> _Publication:
-    """Write the artifact set, then keep claims only for an accepted report.
+    """Write the artifact set, then keep findings only for an accepted report.
 
     The three document writes are staged independently: each records its own
     error, so one failing never hides another and the failure record names
     every write that did not complete. What is *not* independent is what gets
     advertised. The paths are published only once the whole set — reader
-    Markdown, evidence Markdown, quality record — has been written, because a
+    Markdown, finding log, quality record — has been written, because a
     front-end handed two paths out of three cannot tell from the paths which
     artifact is missing, and the two documents on their own cannot be checked
-    against the IDs and hashes that describe them. Nothing here claims the set
+    against the IDs and hashes that describe them. Nothing here asserts the set
     is written atomically: the writes are separate operations, and this is a
-    decision about what may be advertised, not a claim about the filesystem.
+    decision about what may be advertised rather than a statement about the
+    filesystem.
 
     Memory is written last and only for ``accepted`` — a partial report is
     published, never remembered.
@@ -552,13 +507,11 @@ async def _publish(
 
     memory_writes = 0
     if status == QUALITY_STATUS_ACCEPTED:
-        for claim in high_confidence_claims(
-            merge_claim_snapshot([], state.verified_claims)
-        ):
-            content, metadata = memory_payload(
-                claim, session_id=state.session_id
+        for finding in _cited_findings(state):
+            content, metadata = finding_memory_payload(
+                finding, session_id=state.session_id
             )
-            result = await publisher.publish_claim(
+            result = await publisher.publish_finding(
                 content=content, metadata=metadata
             )
             if result.success:
@@ -611,17 +564,17 @@ async def _write_document(
 def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
     """Publish the composed artifact set, once, at the one terminal node.
 
-    This is the run's only writer — synthesis composes and writes nothing —
-    and it is reached only by a run that was not halted. It:
+    This is the run's only writer — the writing pass composes and writes
+    nothing — and it is reached only by a run that was not halted. It:
 
     * stamps the terminal quality status the router decided onto the report;
-    * writes the reader report, the evidence ledger and the quality record
-      from one frozen composition, recording a separate error for each write
-      that did not complete;
+    * writes the reader report, the finding log and the quality record from
+      one frozen composition, recording a separate error for each write that
+      did not complete;
     * advertises no artifact path unless the whole set was written, so a
-      front-end is never pointed at an earlier refinement pass's file and never
-      at an incomplete set;
-    * keeps high-confidence verified claims in long-term memory only when the
+      front-end is never pointed at an earlier pass's file and never at an
+      incomplete set;
+    * keeps the cited verified findings in long-term memory only when the
       status is ``accepted``;
     * emits the terminal ``graph.report.published`` event carrying all three
       paths — each ``None`` when the set is incomplete — and the truthful
@@ -630,7 +583,7 @@ def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
 
     Nothing here halts the run: a failed write is a recorded recoverable
     error, because the report a reader receives is the Markdown, not the file.
-    And nothing here claims the writes are one atomic filesystem operation:
+    And nothing here asserts the writes are one atomic filesystem operation:
     they are three separate writes, and what the incomplete case guarantees is
     that none of them is advertised.
     """
@@ -695,52 +648,61 @@ def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
     return node
 
 
-def report_review_node(reviewer: ReportReviewerLike | None) -> GraphNode:
-    """Run the terminal semantic review, then record the route it produced.
+def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
+    """Run the terminal review, stamp the routing record, and decide the edge.
 
-    This node is where the report is judged rather than merely measured. It
-    runs after the Critic and before the route, for one reason: a review that
-    refuses the report is a defect with somewhere to go, so its finding has to
-    exist before the edge is chosen. Nothing else about the graph changes —
-    the review buys no pass of its own, and a review that was never made buys
-    nothing at all.
+    This node is where the report is judged rather than merely measured, and it
+    is also the graph's decision point: the review it records is what
+    ``graph_route`` reads, and ``route_after_review`` reads the same pure
+    function, so the recorded route event and the taken edge agree by
+    construction.
 
     Three outcomes, and the difference between them is the point:
 
     * a *scored* review is recorded, the quality snapshot carries its status
-      and mean beside its structural diagnostics, and the route may consume one
-      refinement opportunity if it refused the report;
+      and mean beside its structural diagnostics, and the route may read the
+      missing required targets it is stamped with;
     * an *incomplete* or *provider_failed* review is recorded with no score at
-      all, a recoverable error names it, and the route is left exactly as the
-      Critic and the deterministic gates decided. Acceptance is then blocked by
-      ``graph_quality_status``, so the report publishes as ``partial`` — never
-      as accepted, and never as a graph failure;
+      all, a recoverable error names it, and the route publishes the report as
+      partial — never as accepted, and never as a graph failure;
     * a review that a previous pass already made over the identical semantic
       fingerprint is reused, at no provider cost, because the report it judged
       is the report this pass produced.
 
+    PD-5: ``missing_required_target_ids`` is computed by code — the writer
+    node's quality pass measures it — and stamped onto the record here
+    whatever the review said, because a reviewer that named no missing target
+    of its own cannot clear an obligation the deterministic pass measured. The
+    AI reviewer never produces it.
+
     A reused or skipped call is recorded as such in the review event, so the
     trace says whether a model was asked this pass.
     """
+
     async def node(channel: ResearchGraphState) -> ResearchGraphState:
         state = load_state(channel)
         if is_halted(state):
-            return _skipped(state, REPORT_REVIEW_NODE)
+            return _skipped(state, REPORT_REVIEWER_NODE)
 
         started = merge_research_state(
             state,
             {
                 "events": [
                     node_started_event(
-                        REPORT_REVIEW_NODE, iteration=state.iteration
+                        REPORT_REVIEWER_NODE, iteration=state.iteration
                     )
                 ]
             },
         )
-        before = graph_route(started)[1]
-
-        review, errors, reused = await _review_report(
-            started, reviewer
+        review, errors, reused = await _review_report(started, reviewer)
+        review = review.model_copy(
+            update={
+                "missing_required_target_ids": list(
+                    started.quality.missing_required_target_ids
+                )
+                if started.quality
+                else []
+            }
         )
         merged = merge_research_state(
             started,
@@ -750,43 +712,38 @@ def report_review_node(reviewer: ReportReviewerLike | None) -> GraphNode:
                 "errors": list(errors),
             },
         )
-        after, reason = graph_route(merged)
-        events = [
-            report_review_completed_event(
-                iteration=started.iteration,
-                review_status=review.status,
-                mean_score=review.mean_score,
-                material_defects=len(review.material_defects),
-                reviewed_statements=len(review.reviewed_statement_ids),
-                omitted_evidence=len(review.omitted_evidence_ids),
-                fingerprint=review.input_fingerprint,
-                reused=reused,
-            ),
-            node_completed_event(
-                REPORT_REVIEW_NODE,
-                iteration=started.iteration,
-                event_count=1,
-                error_count=len(errors),
-            ),
-        ]
-        if reason != before:
-            # The Critic's node already recorded the route as its own review
-            # left it. Only a review that *changed* the destination records a
-            # second decision, so the event stream shows one decision per run
-            # unless the semantic review is the reason it moved.
-            events.append(
-                route_decided_event(
-                    destination=after,
-                    reason=reason,
-                    iteration=started.iteration,
-                    max_iterations=started.max_iterations,
-                    should_continue=bool(
-                        merged.critique is not None
-                        and merged.critique.should_continue
+        destination, reason = graph_route(merged)
+        return _with(
+            merged,
+            {
+                "events": [
+                    report_review_completed_event(
+                        iteration=started.iteration,
+                        review_status=review.status,
+                        mean_score=review.mean_score,
+                        material_defects=len(review.material_defects),
+                        reviewed_statements=len(review.reviewed_statement_ids),
+                        fingerprint=review.input_fingerprint,
+                        reused=reused,
                     ),
-                )
-            )
-        return _with(merged, {"events": events})
+                    route_decided_event(
+                        destination=destination,
+                        reason=reason,
+                        iteration=started.iteration,
+                        max_extra_passes=started.max_extra_passes,
+                        missing_required_target_ids=list(
+                            review.missing_required_target_ids
+                        ),
+                    ),
+                    node_completed_event(
+                        REPORT_REVIEWER_NODE,
+                        iteration=started.iteration,
+                        event_count=1,
+                        error_count=len(errors),
+                    ),
+                ]
+            },
+        )
 
     return node
 
@@ -802,11 +759,7 @@ async def _review_report(
     reuse is checked against, and a composition-less report is recorded as
     unreviewable rather than as reviewed-and-fine.
     """
-    packet = build_report_review_input(
-        state,
-        state.composition,
-        terminal=state.iteration >= state.max_iterations,
-    )
+    packet = build_report_review_input(state, state.composition)
     previous = state.report_review
     if (
         previous is not None
@@ -833,7 +786,7 @@ async def _review_report(
             review,
             [
                 report_review_unavailable_error(
-                    node=REPORT_REVIEW_NODE,
+                    node=REPORT_REVIEWER_NODE,
                     review_status=review.status,
                     reason="report_unreviewable",
                 )
@@ -853,7 +806,7 @@ async def _review_report(
             review,
             [
                 report_review_unavailable_error(
-                    node=REPORT_REVIEW_NODE,
+                    node=REPORT_REVIEWER_NODE,
                     review_status=review.status,
                     reason="report_reviewer_unconfigured",
                 )
@@ -865,7 +818,7 @@ async def _review_report(
     if review.status != "scored":
         errors.append(
             report_review_unavailable_error(
-                node=REPORT_REVIEW_NODE,
+                node=REPORT_REVIEWER_NODE,
                 review_status=review.status,
                 reason=(
                     "report_review_provider_failed"
@@ -900,11 +853,6 @@ def _unreviewed(packet: ReportReviewInput, reason: str, *, status: str) -> Repor
         per_statement_dispositions={},
         reviewed_statement_ids=[],
         unreviewed_statement_ids=list(packet.expected_statement_ids),
-        reviewed_evidence_ids=[],
-        omitted_evidence_ids=list(packet.evidence_ids),
-        reviewed_batch_ids=[],
-        expected_batch_ids=list(packet.expected_batch_ids),
-        reviewed_target_ids=[target.target_id for target in packet.targets],
         input_fingerprint=packet.fingerprint,
         composition_fingerprint=packet.composition_fingerprint,
         rubric_version=packet.rubric_version,
@@ -930,445 +878,69 @@ def _quality_with_review(
     return quality.model_copy(update=review_status_fields(review))
 
 
-async def refine_node(channel: ResearchGraphState) -> ResearchGraphState:
-    """Open the next macro iteration, routing the repair it is about to run.
+async def extra_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
+    """Open the one extra pass the missing required targets justify (§6.5, D4).
 
     This exists as its own node because a LangGraph conditional edge routes
-    but cannot write, and both the macro-iteration increment and the repair
-    plan have to happen somewhere the graph can see and a test can call.
+    but cannot write, and both the macro-iteration increment and the pass's
+    job list have to happen somewhere the graph can see and a test can call.
 
-    Two things are settled here, and both are about the pass that just
-    finished rather than the one about to start:
+    The job list is the targets the review recorded as missing a verified
+    finding. It is *replaced*, never merged: the pass that is about to run
+    exists for those targets and no others, so a target an earlier pass owed
+    cannot keep the run alive after the newest decision dropped it.
 
-    * the typed repair jobs the next pass owes — the Critic's defects unioned
-      with the plan's mechanically unmet required targets — so a resumed run
-      can name exactly what it was about to repair, and the hop's own edge can
-      dispatch them;
-    * whether the pass just finished changed anything substantive, compared
-      against the snapshot the previous hop recorded. A whole repair job is
-      one unit here: a plan extension and the acquisition it triggered finish
-      together, so adding a target is never mistaken for answering one.
-
-    The reviews a *typed* repair invalidates are dropped here too, because this
-    is where the repair's inputs are declared to have changed. Mechanically
-    unmet targets are excluded on purpose: they produce an ``acquire`` job on
-    every pass, so invalidating on those would delete the claims of every
-    still-open obligation each time the loop turned.
-
-    The comparison is only made once a previous snapshot exists, so the first
-    refinement can never be called a stall, and the stop reason is evaluated
-    only while budget remains — the ceiling keeps its own reason.
+    The iteration bound is the graph's law and a second lock on the door: the
+    router already refuses to reach this node once the ceiling is spent, and a
+    run that somehow arrives anyway records ``graph_invalid_route`` — an
+    enumerated halt — rather than paying for a pass its declared ceiling
+    forbids.
     """
     state = load_state(channel)
     if is_halted(state):
-        return _skipped(state, REFINE_NODE)
-    if state.iteration >= state.max_iterations:
+        return _skipped(state, EXTRA_PASS_NODE)
+    started = merge_research_state(
+        state,
+        {"events": [node_started_event(EXTRA_PASS_NODE, iteration=state.iteration)]},
+    )
+    if state.iteration >= state.max_extra_passes:
         return _halt(
-            state,
+            started,
             invalid_route_error(
-                node=REFINE_NODE,
+                node=EXTRA_PASS_NODE,
                 iteration=state.iteration,
-                max_iterations=state.max_iterations,
+                max_extra_passes=state.max_extra_passes,
             ),
         )
 
-    previous = state.progress_history[-1] if state.progress_history else None
-    # The worklist this hop is about to dispatch on is computed first and the
-    # stop decision is judged against *it*, not against the list the previous
-    # hop left in state. ``_selectable_acquisition_keys`` reads
-    # ``refinement_targets``, and ``route_after_refine`` dispatches on the list
-    # written below, so judging the stale list let a satisfied topic's queue
-    # hold a stalled run open — and, worse, let a run stop on
-    # ``evidence_unavailable`` while the acquire job this hop had just routed
-    # for a review defect still owed work. ``refinement_targets_for`` is pure,
-    # so evaluating against its result changes nothing it computes.
-    targets = refinement_targets_for(state)
-    routed = state.model_copy(update={"refinement_targets": targets})
-    after = progress_snapshot(routed, previous=previous)
-    stopped = (
-        None
-        if previous is None
-        else repair_stop_reason(routed, before=previous, after=after)
+    review = state.report_review
+    targets = (
+        list(review.missing_required_target_ids)
+        if review is not None
+        else []
     )
-    recorded = merge_research_state(
-        state,
-        {
-            "refinement_targets": targets,
-            "progress_history": [after],
-            "repair_stop_reason": stopped,
-        },
-    )
-    if stopped is not None and repair_is_terminal(recorded):
-        # The pass just finished changed nothing another pass would change, so
-        # no further pass is opened: the iteration does not advance, no agent
-        # runs again, and the run goes straight to publication with the reason
-        # recorded on the same route vocabulary every other decision uses.
-        #
-        # Nothing is invalidated on this path. No pass follows to re-derive
-        # what an invalidation drops, so the ledger the publication reads has
-        # to stay the one the last review judged — otherwise the state behind
-        # the report (its claim count, its quality snapshot, the checkpoint)
-        # stops agreeing with the artifact, which is rendered from a
-        # composition that still cites the dropped claim.
-        return _with(
-            recorded,
-            {
-                "events": [
-                    route_decided_event(
-                        destination=ROUTE_FINALIZE,
-                        reason=stopped,
-                        iteration=state.iteration,
-                        max_iterations=state.max_iterations,
-                        should_continue=bool(
-                            recorded.critique is not None
-                            and recorded.critique.should_continue
-                        ),
-                    )
-                ]
-            },
-        )
-
-    # A pass will run, so the reviews the typed jobs change are dropped here and
-    # re-derived there. Mechanically unmet targets are excluded: their
-    # ``acquire`` job exists on every pass, so invalidating on one would delete
-    # the claims of every still-open obligation each time the loop turned.
-    recorded = merge_research_state(
-        recorded,
-        invalidation_update(
-            state,
-            [job for job in targets if job.origin != "unanswered_target"],
-        ),
-    )
-    advanced = advance_research_iteration(recorded)
+    advanced = advance_research_iteration(started)
     return _with(
         advanced,
         {
+            "extra_pass_target_ids": targets,
             "events": [
-                refinement_started_event(
+                extra_pass_started_event(
                     iteration=advanced.iteration,
-                    max_iterations=advanced.max_iterations,
-                )
-            ]
+                    max_extra_passes=advanced.max_extra_passes,
+                    targets=targets,
+                ),
+                node_completed_event(
+                    EXTRA_PASS_NODE,
+                    iteration=advanced.iteration,
+                    event_count=1,
+                    error_count=0,
+                ),
+            ],
         },
     )
 
 
-def route_after_critic(channel: ResearchGraphState) -> str:
-    """The conditional edge out of the Critic. Pure read of state."""
+def route_after_review(channel: ResearchGraphState) -> str:
+    """The conditional edge out of the Report Reviewer. Pure read of state."""
     return graph_route(load_state(channel))[0]
-
-
-def route_after_refine(channel: ResearchGraphState) -> str:
-    """The refinement hop's own edge: planner, researcher, or publication.
-
-    ``refine`` is where the stop reason and the typed worklist are decided, so
-    it is also where they take effect: a stall publishes without paying for one
-    more pass, and an ``extend_plan`` job goes to the Planner — which is the
-    only node that can add the obligation an original-question omission asks
-    for. Everything else opens an ordinary research pass. The names are the
-    three destinations the orchestrator wires.
-    """
-    state = load_state(channel)
-    if repair_is_terminal(state):
-        return "finalize"
-    if any(job.action == "extend_plan" for job in state.refinement_targets):
-        return "planner"
-    return "researcher"
-
-
-# --- Task 9: the typed repair route -----------------------------------------
-
-REPAIR_NODES: dict[RepairAction, str] = {
-    "extend_plan": PLANNER_NODE,
-    "acquire": RESEARCHER_NODE,
-    "assess_source": SOURCE_EVALUATOR_NODE,
-    "adjudicate": FACT_CHECKER_NODE,
-    "consolidate": FACT_CHECKER_NODE,
-    "synthesize": SYNTHESIZER_NODE,
-}
-"""One node per typed repair action, keyed by ``CritiqueGap.repair_action``.
-
-The keys are Task 8's normative ``REPAIR_ACTIONS`` literals and nothing else,
-so a defect the Critic typed is routed by exactly the vocabulary it was typed
-with. ``consolidate`` and ``adjudicate`` share the Fact Checker because
-merging duplicate claims *is* adjudication of them; the two actions stay
-distinct in the contract because the defect they repair is not the same.
-
-A test asserts this table's keys equal ``REPAIR_ACTIONS``: an action added
-without a node, or a node added without an action, is a routing hole rather
-than a new capability.
-"""
-
-# Which origin wins when two defects become one job. A Critic-named defect is
-# the most specific record of it — it carries the queries and the gap id — so
-# it outranks a defect the terminal reviewer named, which carries the same
-# typed shape from a different review; both outrank an assertion the
-# Synthesizer returned, which in turn outranks the graph's own mechanical
-# reading of an unmet target.
-_ORIGIN_RANK: dict[RefinementOrigin, int] = {
-    "critic_gap": 0,
-    "review_defect": 1,
-    "returned_assertion": 2,
-    "unanswered_target": 3,
-}
-
-_SEVERITY_RANK: dict[str, int] = {"critical": 3, "major": 2, "minor": 1}
-
-
-def route_refinement(target: RefinementTarget) -> str:
-    """The node one repair job runs, from its typed action alone.
-
-    An action this table does not know is an error, never a fallback: routing
-    an unknown defect to synthesis would publish a repair nobody asked for,
-    and would hide the contract drift that produced the unknown value.
-    """
-    node = REPAIR_NODES.get(target.action)
-    if node is None:
-        raise GraphConfigurationError(
-            f"no repair node is wired for repair action {target.action!r}"
-        )
-    return node
-
-
-def refinement_targets_for(state: ResearchState) -> list[RefinementTarget]:
-    """Every repair job this pass owes: the Critic's defects and the plan's.
-
-    The union is the point. A defect the Critic named is routed exactly as it
-    was typed — its action, its resolved scope, and its queries, never
-    re-resolved and never widened to the whole answer — and a mechanically
-    unmet required target is routed to acquisition whether or not the Critic
-    mentioned it. Critic silence therefore suppresses nothing a plan still
-    owes: the reviewed baseline skipped topic-04, topic-02 and topic-05
-    because one raw finding existed and no gap named them.
-
-    There is one job per ``(action, scope)``. Two defects that route to the
-    same node over the same records are one errand, and the Critic's version
-    survives because it carries the queries and the gap id. Two jobs that
-    differ in action stay apart even when their scope and their words are
-    identical: they are two nodes' work, and collapsing them would adopt one
-    node's repair for the other's defect.
-
-    ``target_ids=["question"]`` is read as what it is — an original-question
-    omission — and is carried through unchanged. It is never expanded into
-    planned ids here: the token is only ever correct because the plan has no
-    id for that obligation yet.
-    """
-    jobs: list[RefinementTarget] = []
-    critique = state.critique
-    if critique is not None and critique.review_status == "reviewed":
-        for gap in critique.gaps:
-            jobs.append(
-                RefinementTarget(
-                    gap_id=gap.gap_id,
-                    coverage_id=gap.coverage_id,
-                    target_ids=list(gap.target_ids),
-                    claim_cluster_ids=list(gap.claim_cluster_ids),
-                    statement_ids=list(gap.statement_ids),
-                    action=gap.repair_action,
-                    queries=list(gap.recommended_queries),
-                    origin="critic_gap",
-                    severity=gap.severity,
-                    problem=gap.problem,
-                )
-            )
-
-    for topic in state.sub_topics:
-        for target in unanswered_required_targets(state, topic):
-            jobs.append(
-                RefinementTarget(
-                    coverage_id=topic.coverage_id,
-                    target_ids=[target.target_id],
-                    action="acquire",
-                    origin="unanswered_target",
-                    severity="critical" if target.critical else "major",
-                    problem=(
-                        f"{topic.title}: the required obligation "
-                        f"{target.target_id!r} is not answered by any reader "
-                        "statement."
-                    ),
-                )
-            )
-
-    # The terminal semantic review's defects are jobs like any other: routed by
-    # the action they were typed with, over the scope they named. They are read
-    # only from a *scored* review, so a review that never happened contributes
-    # no "no defects found" and no invented work — the report is simply
-    # unreviewed, and `graph_quality_status` says so.
-    for gap in review_defects_as_refinement_jobs(state.report_review):
-        jobs.append(
-            RefinementTarget(
-                gap_id=gap.gap_id,
-                coverage_id=gap.coverage_id,
-                target_ids=list(gap.target_ids),
-                claim_cluster_ids=list(gap.claim_cluster_ids),
-                statement_ids=list(gap.statement_ids),
-                action=gap.repair_action,
-                queries=list(gap.recommended_queries),
-                origin="review_defect",
-                severity=gap.severity,
-                problem=gap.problem,
-            )
-        )
-
-    composition = state.composition
-    if composition is not None:
-        for assertion in composition.returned_to_fact_checker:
-            jobs.append(
-                RefinementTarget(
-                    action="adjudicate",
-                    origin="returned_assertion",
-                    severity="major",
-                    problem=assertion,
-                )
-            )
-    return _merged_jobs(jobs)
-
-
-def _merged_jobs(jobs: Sequence[RefinementTarget]) -> list[RefinementTarget]:
-    """Fold jobs that route identically over the same scope into one.
-
-    Order is first-seen, so a job's position is stable across passes. The
-    surviving wording is the most severe one's, the queries are the union of
-    every reading, and the gap id is kept from whichever job had one — a job
-    that came from a Critic gap stays addressable by that gap.
-    """
-    merged: list[RefinementTarget] = []
-    index: dict[tuple[object, ...], int] = {}
-    for job in jobs:
-        previous = index.get(job.identity)
-        if previous is None:
-            index[job.identity] = len(merged)
-            merged.append(job)
-            continue
-        incumbent = merged[previous]
-        survivor = (
-            job
-            if _ORIGIN_RANK[job.origin] < _ORIGIN_RANK[incumbent.origin]
-            else incumbent
-        )
-        other = incumbent if survivor is job else job
-        factual = max(
-            (survivor, other), key=lambda item: _SEVERITY_RANK[item.severity]
-        )
-        merged[previous] = survivor.model_copy(
-            update={
-                "queries": list(
-                    dict.fromkeys([*survivor.queries, *other.queries])
-                ),
-                "severity": factual.severity,
-                "problem": factual.problem,
-                "gap_id": survivor.gap_id or other.gap_id,
-            }
-        )
-    return merged
-
-
-def invalidation_update(
-    state: ResearchState,
-    targets: Sequence[RefinementTarget],
-) -> ResearchStateUpdate:
-    """The reviews a repair invalidates, and nothing else.
-
-    A publication-changing repair drops the verified claims it touches — a
-    claim whose target, cluster, or statement the repair names — along with
-    the quality snapshot that judged a report those claims no longer support.
-    Surviving claims keep their ``claim_id``, their cluster, and their
-    citations, so unrelated verified claims and the target coverage they
-    carry are preserved rather than re-derived.
-
-    A source re-assessment additionally drops the *source* reviews its claims
-    rested on: ``evaluated_sources`` rows for the URLs those claims cite, since
-    a score for a body whose assessment is being redone is the same stale
-    judgement the claims were just told to stop relying on. No other action
-    touches source rows.
-
-    A presentation-only repair invalidates nothing at all: ``synthesize``
-    rewrites prose over evidence the run already holds, and dropping verified
-    claims for a re-worded paragraph is exactly the evidence loss this
-    distinction prevents.
-
-    Nothing is *deleted* here: the claim cluster registry keeps every identity
-    and its provenance, so the invalidation is visible as "not currently
-    reviewed" rather than as evidence that never existed.
-    """
-    changing = [target for target in targets if target.publication_changing]
-    if not changing:
-        return {}
-
-    target_scope = {
-        target_id for target in changing for target_id in target.target_ids
-    }
-    cluster_scope = {
-        cluster_id
-        for target in changing
-        for cluster_id in target.claim_cluster_ids
-    }
-    statement_scope = {
-        statement_id
-        for target in changing
-        for statement_id in target.statement_ids
-    }
-    cluster_scope.update(_clusters_of_statements(state.composition, statement_scope))
-
-    kept = [
-        claim
-        for claim in state.verified_claims
-        if not _claim_is_invalidated(claim, target_scope, cluster_scope)
-    ]
-    update: ResearchStateUpdate = {"quality": None}
-    if len(kept) != len(state.verified_claims):
-        update["verified_claims"] = kept
-
-    if any(target.action == "assess_source" for target in changing):
-        # Normalized on both sides: a cited URL and a scored row can be written
-        # in two spellings of one address, and comparing the raw strings would
-        # leave a stale score standing for a source that was just invalidated.
-        cited = {
-            normalize_source_url(url)
-            for claim in state.verified_claims
-            if _claim_is_invalidated(claim, target_scope, cluster_scope)
-            for url in claim.source_urls
-        }
-        kept_sources = [
-            source
-            for source in state.evaluated_sources
-            if normalize_source_url(source.url) not in cited
-        ]
-        if len(kept_sources) != len(state.evaluated_sources):
-            update["evaluated_sources"] = kept_sources
-    return update
-
-
-def _clusters_of_statements(
-    composition: ReportComposition | None,
-    statement_ids: set[str],
-) -> set[str]:
-    """The clusters the named reader statements rest on."""
-    if composition is None or not statement_ids:
-        return set()
-    return {
-        cluster_id
-        for statement in composition.statements
-        if statement.statement_id in statement_ids
-        for cluster_id in statement.claim_cluster_ids
-    }
-
-
-def _claim_is_invalidated(
-    claim: Claim,
-    target_scope: set[str],
-    cluster_scope: set[str],
-) -> bool:
-    """True when a repair touches this claim's obligation or cluster."""
-    if target_scope.intersection(claim.target_ids):
-        return True
-    if claim.cluster_id is not None and claim.cluster_id in cluster_scope:
-        return True
-    if cluster_scope.intersection(claim.cluster_aliases):
-        return True
-    if claim.claim_id in cluster_scope:
-        return True
-    return any(
-        coverage_id in cluster_scope
-        for coverage_id in claim.consumed_coverage_ids
-    )
