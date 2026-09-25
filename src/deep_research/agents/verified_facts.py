@@ -234,6 +234,10 @@ def same_period(left: str | None, right: str | None) -> bool:
 # Fable §8.6 step 2's filler words, less "a" and "an": a single letter can be a
 # model's name ("Model A"), and the subset rule already tolerates an article.
 _SUBJECT_FILLER = frozenset({"the", "of", "for", "in", "on", "and", "or", "its", "this", "that"})
+# An article is filler in a *target's* words but never in a subject's: "Model A"
+# and "Model B" differ by one letter, so a question's "a kettle" must not erase
+# it (fix round 1, CRITICAL 1).
+_ARTICLE = frozenset({"a", "an"})
 
 
 def _subject_tokens(text: str | None) -> tuple[str, ...]:
@@ -248,19 +252,40 @@ def _subject_words(text: str | None) -> frozenset[str]:
     return frozenset(_subject_tokens(text))
 
 
+def _stated_words(*texts: str | None) -> frozenset[str]:
+    """The words a target states in these texts, less its articles (fix round 1, CRITICAL 1)."""
+    words: set[str] = set()
+    for text in texts:
+        words |= _subject_words(text)
+    return frozenset(words) - _ARTICLE
+
+
 def subject_context(target_ids: Iterable[str], targets: Iterable[EvidenceTarget]) -> frozenset[str]:
-    """Fable §8.6 step 3: the words of these targets' measure, question and geography.
+    """Fable §8.6 step 3: the words *every* one of these targets states.
 
     A subject that only restates what its targets already say ("United States"
-    on a target about the United States) names nothing, so it matches any subject.
+    on a target about the United States) names nothing, so it matches any
+    subject. The words are the shared ones, not the pooled ones (fix round 1,
+    IMPORTANT 2): of two sibling targets asking one thing of two places
+    ("Spain", "Italy"), each name belongs to one target alone, so neither
+    subject is stripped. With one shared target this is that target's words.
+    Articles never count (fix round 1, CRITICAL 1), so "Model A" keeps its "A"
+    even when the target's question says "a kettle".
     """
     wanted = set(target_ids)
-    words: set[str] = set()
+    shared: frozenset[str] | None = None
     for target in targets:
         if target.target_id in wanted:
-            for text in (target.measure, target.question, target.geography):
-                words |= _subject_words(text)
-    return frozenset(words)
+            words = _stated_words(target.measure, target.question, target.geography)
+            shared = words if shared is None else shared & words
+    return shared or frozenset()
+
+
+def _names_one_thing(left: frozenset[str], right: frozenset[str]) -> bool:
+    """Fable §8.6 steps 4-5: either side names nothing, or one set contains the other."""
+    if not left or not right:
+        return True
+    return left <= right or right <= left
 
 
 def same_subject(left: str | None, right: str | None, *,
@@ -271,11 +296,8 @@ def same_subject(left: str | None, right: str | None, *,
     words contains the other ("X200" and "Acme X200"). Overlap is not enough:
     "version 10.02" and "version 10.03" share "version" and stay apart.
     """
-    left_words = _subject_words(left) - context_words
-    right_words = _subject_words(right) - context_words
-    if not left_words or not right_words:
-        return True
-    return left_words <= right_words or right_words <= left_words
+    return _names_one_thing(_subject_words(left) - context_words,
+                            _subject_words(right) - context_words)
 
 
 def _periods_match(left_period: str | None, right_period: str | None,
@@ -325,16 +347,20 @@ def _subject_fits(figure: VerifiedFigure, target: EvidenceTarget,
     Siblings share measure, period, kind, unit dimension and organisation, so
     the words of a target's question and geography that not all of them share
     name its subject ("Spain", "Model A"). A plan without siblings, or a figure
-    without a subject, is never refused here.
+    without a subject, is never refused here. The subject keeps its own
+    articles and the target's words do not (fix round 1, CRITICAL 1): a
+    question's "in a lab" must not read as the "A" of "Model A".
     """
     siblings = [t for t in plan_targets if t.target_id != target.target_id and _asks_the_same(t, target)]
     if not siblings or not figure.context.subject:
         return True
     shared = frozenset.intersection(
-        *(_subject_words(f"{t.question} {t.geography or ''}") for t in (target, *siblings))
+        *(_stated_words(t.question, t.geography) for t in (target, *siblings))
     )
-    return same_subject(figure.context.subject, f"{target.question} {target.geography or ''}",
-                        context_words=shared)
+    return _names_one_thing(
+        _subject_words(figure.context.subject) - shared,
+        _stated_words(target.question, target.geography) - shared,
+    )
 
 
 def canonical_scopes(text: str | None) -> set[str]:
@@ -497,11 +523,25 @@ def _value_text(figure: FindingFigure) -> str:
     return f"{figure.value} {figure.unit}"
 
 
+def _shared_target_words(left_ids: Iterable[str], right_ids: Iterable[str],
+                         by_id: Mapping[str, EvidenceTarget]) -> frozenset[str]:
+    """The words the two sides' shared targets state, less their articles (fix round 1)."""
+    return subject_context(set(left_ids) & set(right_ids), by_id.values())
+
+
+def _figures_share_a_subject(left: VerifiedFigure, right: VerifiedFigure,
+                             by_id: Mapping[str, EvidenceTarget]) -> bool:
+    """Whether two figures are about the same thing (their shared targets' words)."""
+    return same_subject(left.context.subject, right.context.subject,
+                        context_words=_shared_target_words(left.finding.target_ids,
+                                                          right.finding.target_ids, by_id))
+
+
 def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
                by_id: Mapping[str, EvidenceTarget]) -> bool:
     if left.context.kind != right.context.kind:
         return False
-    words = subject_context(set(left.finding.target_ids) & set(right.finding.target_ids), by_id.values())
+    words = _shared_target_words(left.finding.target_ids, right.finding.target_ids, by_id)
     if not same_subject(left.context.subject, right.context.subject, context_words=words):
         return False
     if not _periods_match(left.context.period, right.context.period,
@@ -528,7 +568,14 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
     groups: list[list[VerifiedFigure]] = []
     for figure in verified_figures(findings):
         for group in groups:
-            if _same_fact(group[0], figure, by_id):
+            # The first member's test is the BASE rule, so a run with no subjects
+            # groups exactly as before; the subject is then checked against every
+            # *member*, not only the first, so a subject-less figure cannot act as
+            # a wildcard that admits a second subject to one row (fix round 1,
+            # IMPORTANT 3).
+            if _same_fact(group[0], figure, by_id) and all(
+                _figures_share_a_subject(member, figure, by_id) for member in group
+            ):
                 group.append(figure)
                 break
         else:
@@ -571,15 +618,19 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) ->
 
 def _same_period_and_subject(left: FactRow, right: FactRow,
                              by_id: Mapping[str, EvidenceTarget]) -> bool:
-    """Whether two rows state one period and one subject (PD-9, ruling N1).
+    """Whether two rows are about one thing in one period (PD-9, ruling N1, fix round 1).
 
-    The context words come from the targets the two rows share, so two rows
-    that restate one target still fold, while two versions of one product
-    ("version 10.02", "version 10.03") never do.
+    A fold claims a release history, so the two subjects must name the *same*
+    thing: their distinctive words equal once the shared targets' words are
+    dropped. "X200" and "X200 Pro" are one mergeable fact but two subjects, so
+    they never fold; two rows with no subject at all are still one subject, as
+    at BASE, and merely nested spellings ("Acme X200" and "X200") still merge
+    under ``_same_fact`` — they just do not earn a release history.
     """
-    words = subject_context(set(left.target_ids) & set(right.target_ids), by_id.values())
-    return same_subject(left.subject, right.subject, context_words=words) and _periods_match(
-        left.period, right.period, left.subject, right.subject, context_words=words)
+    words = _shared_target_words(left.target_ids, right.target_ids, by_id)
+    if _subject_words(left.subject) - words != _subject_words(right.subject) - words:
+        return False
+    return _periods_match(left.period, right.period, left.subject, right.subject, context_words=words)
 
 
 def _fold_revisions(rows: Sequence[tuple[FactRow, Finding]],
