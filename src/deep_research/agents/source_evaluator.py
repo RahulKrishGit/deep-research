@@ -1191,8 +1191,12 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         provider_failed = False
         assessed: dict[str, ScoredSource] = {}
         gate = asyncio.Semaphore(self._config.source_scoring_concurrency)
+        # One slot per batch, so the errors are merged in `task.groups` order
+        # however the batches were scheduled, and each batch's groups are
+        # marked from the batch's own failure alone.
+        batch_errors: list[list[ResearchError]] = [[] for _ in batches]
 
-        async def score_one(batch: list[SourceGroup]) -> None:
+        async def score_one(position: int, batch: list[SourceGroup]) -> None:
             """Score one batch, marking its own sources when it fails."""
             nonlocal provider_failed
             request = task.model_copy(update={"groups": batch})
@@ -1207,7 +1211,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                     )
             except ProviderError as error:
                 provider_failed = True
-                errors.append(
+                batch_errors[position].append(
                     scoring_provider_error(error, sources=len(batch))
                 )
                 for group in batch:
@@ -1242,7 +1246,23 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                         dossier=task.dossiers.get(group.url),
                     )
 
-        await asyncio.gather(*(score_one(batch) for batch in batches))
+        settled = await asyncio.gather(
+            *(
+                score_one(position, batch)
+                for position, batch in enumerate(batches)
+            ),
+            return_exceptions=True,
+        )
+        # Batch order, whatever the completion order was: a run's error record
+        # must read the way the plan reads.
+        for slot in batch_errors:
+            errors.extend(slot)
+        # Every batch has settled by now, so an unexpected failure is re-raised
+        # after its siblings -- never leaving a scoring call unawaited -- and
+        # the first one in batch order is the one reported.
+        for result in settled:
+            if isinstance(result, BaseException):
+                raise result
 
         sources: list[ScoredSource] = []
         for group in task.groups:

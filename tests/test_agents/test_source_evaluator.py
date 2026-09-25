@@ -58,6 +58,7 @@ from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
     ProviderOutputLimitError,
     ProviderResponseTelemetry,
+    ProviderTimeoutError,
 )
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -3298,3 +3299,93 @@ def test_a_scoring_dossier_reserves_an_excerpt_for_each_obligation() -> None:
     assert "10.3 GW" in shown
     # Two obligations, two distinct reserved passages.
     assert dossier.excerpts[0] != dossier.excerpts[1]
+
+
+class _FailingBatchProbe:
+    """Fail every scoring batch, the later batches first.
+
+    The reply is chosen from the batch's own request body, so the probe knows
+    which batch it is answering however the two are scheduled; the first batch
+    sleeps so the second batch's failure is recorded first, which is what makes
+    the order the caller merges its errors in observable.
+    """
+
+    def __init__(self, *, first_batch_url: str) -> None:
+        self._first_batch_url = first_batch_url
+        self.batches: list[str] = []
+        self._in_flight = 0
+        self.max_in_flight = 0
+
+    async def complete_structured(
+        self,
+        messages: object,
+        schema: type[object],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+    ) -> SourceScoresDraft:
+        del agent_name, max_tokens, reasoning_effort
+        assert schema is SourceScoresDraft
+        body = messages[1].content  # type: ignore[index]
+        first = self._first_batch_url in body
+        self.batches.append("first" if first else "second")
+        self._in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        try:
+            await asyncio.sleep(0.05 if first else 0)
+            if first:
+                raise ProviderTimeoutError("timed out")
+            raise _output_limit_error()
+        finally:
+            self._in_flight -= 1
+
+    async def complete_react(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("the Source Evaluator runs no ReAct loop")
+
+
+@pytest.mark.asyncio
+async def test_two_failing_batches_record_their_errors_in_batch_order(
+    tracker: Tracker,
+) -> None:
+    """A batch failure is reported in `task.groups` order, not the order the
+    batches happened to fail in, and one batch's failure never leaves a sibling
+    unawaited.
+
+    The later batch fails first, so completion order and batch order disagree:
+    the run's error record must still read batch one, then batch two.
+    """
+    findings = [
+        _eval_finding(f"https://source-{index}.test/page")
+        for index in range(4)
+    ]
+    probe = _FailingBatchProbe(first_batch_url="https://source-0.test/page")
+    agent = _evaluator(
+        tracker,
+        probe,  # type: ignore[arg-type]
+        batch_size=2,
+        max_total_sources=4,
+        config=AgentRuntimeConfig(
+            max_iterations=2, tool_budget=0, source_scoring_concurrency=2
+        ),
+    )
+
+    task, _, _ = await agent.lookup_reputations(
+        agent.build_task(_eval_state(findings))
+    )
+    sources, errors, provider_failed = await agent.score_sources(task)
+
+    # Both batches really did run, and the later one really did fail first.
+    assert probe.batches == ["first", "second"]
+    assert probe.max_in_flight == 2
+    assert provider_failed is True
+    assert [error.details["provider_failure"]["kind"] for error in errors] == [
+        "provider_timeout",
+        "output_limit",
+    ]
+    assert [source.evaluation_status for source in sources] == [
+        "unscored_provider",
+        "unscored_provider",
+        "unscored_provider",
+        "unscored_provider",
+    ]
