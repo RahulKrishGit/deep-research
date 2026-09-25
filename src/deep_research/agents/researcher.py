@@ -43,6 +43,7 @@ from deep_research.agents.evidence import (
     neighbouring_passage_text,
     retained_work_count,
 )
+from deep_research.agents.figures import is_a_date
 from deep_research.agents.identity import deduplicate_findings
 from deep_research.agents.prompts import (
     AgentTask,
@@ -109,6 +110,14 @@ MAX_UNIQUE_SOURCES_PER_SUB_TOPIC = 4
 # one required target from making the cap meaningless. An obligation's answer
 # is one claim and its strongest restatement, not twenty-five of them.
 MAX_EXEMPT_PER_REQUIRED_TARGET = 2
+# How the bounded re-extraction is bounded at its input. The pre-flights that
+# handed one call every owed passage of a topic's read ended at a 32,768- or
+# 49,152-token output from about 10,000 tokens of input, so a packet carries at
+# most eight passages and a pass spends at most two packets: what a bounded
+# packet cannot hold stays unmined, and the passages that owe the most are the
+# ones asked about first.
+MAX_OWED_PASSAGES_PER_BATCH = 8
+MAX_OWED_BATCHES = 2
 DEFAULT_EVIDENCE_CHARS = 4000
 
 Clock = Callable[[], datetime]
@@ -755,6 +764,11 @@ def _unbound_required_targets(
     ]
 
 
+def _own_words(target: EvidenceTarget) -> frozenset[str]:
+    """The words one target asks in its own voice: the question it states."""
+    return frozenset(_tokens(target.question))
+
+
 def _units_owing_own_words(
     evidence: Mapping[str, EvidenceUnit],
     *,
@@ -780,31 +794,89 @@ def _units_owing_own_words(
     it. What is left is the only claim this test makes — the passage states
     the target's words — and the extraction still decides whether it answers
     the question.
-
-    Order is the focus, because the floor cannot be one: the request is bounded
-    by its character budget, so the packet leads with the units that state the
-    target's words most completely and the tail is what a budget cuts. Ties
-    keep the read's own order, so a packet differs only where its words do.
     """
     if not targets:
         return []
     admitted = set(used)
-    own = {target.target_id: frozenset(_tokens(target.question)) for target in targets}
-    owing: list[tuple[int, EvidenceUnit]] = []
+    own = {target.target_id: _own_words(target) for target in targets}
+    owing: list[EvidenceUnit] = []
     for unit in evidence.values():
         if target_ids and not set(target_ids).intersection(unit.target_ids):
             continue
         if (unit.read_id, unit.locator) in admitted:
             continue
         stated = set(_tokens(unit.excerpt))
-        stated_words = max(
-            (len(stated.intersection(words)) for words in own.values()), default=0
-        )
-        if not stated_words:
+        if not any(stated.intersection(words) for words in own.values()):
             continue
-        owing.append((stated_words, unit))
-    owing.sort(key=lambda row: row[0], reverse=True)
-    return [unit for _, unit in owing]
+        owing.append(unit)
+    return owing
+
+
+def _owed_signals(
+    unit: EvidenceUnit,
+    *,
+    bases: Collection[str],
+    own_words: Mapping[str, frozenset[str]],
+) -> int:
+    """How many things one passage states that the targets ask for.
+
+    A numeral in a measure base a target asks for is one, a word of an
+    unanswered target's own question is another, and the count decides which
+    passages a bounded re-extraction asks about first.
+    """
+    counted = sum(
+        1
+        for base, match in _unit_mentions(unit.excerpt)
+        if base in bases
+        and _TRAILING_NUMERAL.search(unit.excerpt[: match.start()])
+    )
+    stated = set(_tokens(unit.excerpt))
+    return counted + max(
+        (len(stated.intersection(words)) for words in own_words.values()),
+        default=0,
+    )
+
+
+def _ordered_owed_units(
+    units: Sequence[EvidenceUnit],
+    *,
+    bases: Collection[str],
+    own_words: Mapping[str, frozenset[str]],
+) -> list[EvidenceUnit]:
+    """The owed passages, the ones that owe the most first, each once.
+
+    This order is the re-extraction's focus, because its input is bounded: the
+    passages that state the most of what the targets ask for are the ones
+    whose packets are sent first, and what the bound cannot hold stays unmined
+    rather than filling a packet that cannot carry it. A passage that owes
+    both a figure and a target's own words appears in both owed lists and is
+    asked about once; ties keep the figure-owed list's order and then the
+    word-owed one's, so a packet differs only where its evidence does.
+    """
+    ordered: dict[str, EvidenceUnit] = {}
+    for unit in units:
+        ordered.setdefault(unit.evidence_id, unit)
+    return sorted(
+        ordered.values(),
+        key=lambda unit: _owed_signals(
+            unit, bases=bases, own_words=own_words
+        ),
+        reverse=True,
+    )
+
+
+def _owed_batches(units: Sequence[EvidenceUnit]) -> list[list[EvidenceUnit]]:
+    """The bounded packets a re-extraction asks about, in order.
+
+    At most :data:`MAX_OWED_PASSAGES_PER_BATCH` passages per packet and at
+    most :data:`MAX_OWED_BATCHES` packets: a packet that carried a whole
+    topic's read is what ran the extraction away to its output cap, so what
+    the bound cannot hold is left unmined and reported rather than sent.
+    """
+    return [
+        list(units[start : start + MAX_OWED_PASSAGES_PER_BATCH])
+        for start in range(0, len(units), MAX_OWED_PASSAGES_PER_BATCH)
+    ][:MAX_OWED_BATCHES]
 
 
 def extraction_messages(
@@ -1290,6 +1362,13 @@ def _admitted_figures(
     ``dropped`` list, never in the finding's own rejection reasons: a figure
     a draft could not usably state is not a reason to distrust the finding
     itself, so it is left off ``figures`` alone and the finding still stands.
+
+    A calendar date is not a measure, so it is refused the same way here
+    rather than admitted into a slot only a quantity fits (improvement 9's
+    researcher half): a figure whose value or unit is date-shaped
+    (``figures.is_a_date``) is dropped from ``figures`` alone, and the date
+    itself stays where it is evidence — in the excerpt the finding rests on,
+    and in its statement date and data period.
     """
     figures: list[FindingFigure] = []
     dropped: list[str] = []
@@ -1298,6 +1377,12 @@ def _admitted_figures(
         if not value or not unit:
             dropped.append(
                 f"finding {index}: figure {position} has no value or unit"
+            )
+            continue
+        if is_a_date(value, unit):
+            dropped.append(
+                f"finding {index}: figure {position} states a date, not a "
+                "measure"
             )
             continue
         kind = (draft.kind or "").strip().casefold()
@@ -2259,7 +2344,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
         findings, rejected = mine(draft)
         errors: list[ResearchError] = []
-        owed: list[EvidenceUnit] = []
         unanswered: list[EvidenceTarget] = []
         if policy is not None:
             own_targets = counted_evidence_targets(task.sub_topic.evidence_targets)
@@ -2295,60 +2379,85 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 targets=unanswered,
                 used=admitted_keys,
             )
-            owed = list(
-                {
-                    unit.evidence_id: unit
-                    for unit in (*owed_figures, *owed_own_words)
-                }.values()
+            # The passages that owe the most are the ones asked about first,
+            # and the packets are bounded: a request that carried every owed
+            # passage of the read is what ran this call away to its output cap.
+            batches = _owed_batches(
+                _ordered_owed_units(
+                    [*owed_figures, *owed_own_words],
+                    bases=_measure_bases(own_targets),
+                    own_words={
+                        target.target_id: _own_words(target)
+                        for target in unanswered
+                    },
+                )
             )
-            if owed:
-                # ONE bounded second extraction, never a loop: a first packet
-                # ranks dozens of passages, and the passage that carries the
-                # figure the target asks for is exactly what a ranking can
-                # bury. The re-ask is over those passages alone, so the model
-                # is not asked to find them again in a packet they were lost
-                # in. A provider failure here costs the retry only: the
-                # findings already extracted stand, and every owed unit keeps
-                # its own disposition, which is what the ledger discloses.
-                try:
-                    retry_draft = await self.provider.complete_structured(
-                        extraction_messages(
-                            task,
-                            run,
-                            evidence_chars=self._evidence_chars,
-                            acquisition_context=build_acquisition_context(
-                                policy.state,
-                                policy.reads,
-                                {unit.evidence_id: unit for unit in owed},
-                                limit=self._evidence_packet_chars,
-                                target_id=policy.target_id,
-                                dispositions=policy.dispositions,
-                                focus_ids=[unit.evidence_id for unit in owed],
+            if batches:
+                # At most MAX_OWED_BATCHES packets of at most
+                # MAX_OWED_PASSAGES_PER_BATCH passages, never a loop: a first
+                # packet ranks dozens of passages, and the passage that
+                # carries what the target asks for is exactly what a ranking
+                # can bury. Each packet is over its own passages alone, so the
+                # model is not asked to find them again in a packet they were
+                # lost in. A provider failure costs the packet it happened in:
+                # the findings already extracted stand, the remaining packets
+                # are still asked, and every owed unit the pass asked about
+                # keeps its own disposition, which is what the ledger
+                # discloses.
+                for batch in batches:
+                    try:
+                        retry_draft = await self.provider.complete_structured(
+                            extraction_messages(
+                                task,
+                                run,
+                                evidence_chars=self._evidence_chars,
+                                acquisition_context=build_acquisition_context(
+                                    policy.state,
+                                    policy.reads,
+                                    {
+                                        unit.evidence_id: unit
+                                        for unit in batch
+                                    },
+                                    limit=self._evidence_packet_chars,
+                                    target_id=policy.target_id,
+                                    dispositions=policy.dispositions,
+                                    focus_ids=[
+                                        unit.evidence_id for unit in batch
+                                    ],
+                                ),
+                                planned_targets=planned_targets,
+                                owed_passages=True,
+                                owed_targets=unanswered,
                             ),
-                            planned_targets=planned_targets,
-                            owed_passages=True,
-                            owed_targets=unanswered,
-                        ),
-                        SubTopicFindingsDraft,
-                        agent_name=self.name,
-                    )
-                except ProviderError as error:
-                    errors.append(owed_extraction_provider_error(run, error))
-                else:
+                            SubTopicFindingsDraft,
+                            agent_name=self.name,
+                        )
+                    except ProviderError as error:
+                        errors.append(owed_extraction_provider_error(run, error))
+                        continue
                     retry_findings, retry_rejected = mine(retry_draft)
                     findings = [*findings, *retry_findings]
                     rejected = [*rejected, *retry_rejected]
             # Unit-level, so a passage is "used" only when that exact passage
-            # produced an admitted finding. Whatever the re-extraction left
-            # unmined says so in its own reason rather than "irrelevant".
-            owed_figure_ids = [unit.evidence_id for unit in owed_figures]
+            # produced an admitted finding. What the pass asked about and left
+            # unmined says so in its own reason rather than "irrelevant";
+            # whatever the bound never asked about keeps the plain one.
+            asked = {
+                unit.evidence_id for batch in batches for unit in batch
+            }
+            owed_figure_ids = [
+                unit.evidence_id
+                for unit in owed_figures
+                if unit.evidence_id in asked
+            ]
             policy.record_extraction_dispositions(
                 admitted_keys,
                 unmined_quantity_ids=owed_figure_ids,
                 unmined_target_ids=[
                     unit.evidence_id
                     for unit in owed_own_words
-                    if unit.evidence_id not in set(owed_figure_ids)
+                    if unit.evidence_id in asked
+                    and unit.evidence_id not in set(owed_figure_ids)
                 ],
             )
             # The obligation this pass completed is the ACTIVE topic's, and a
