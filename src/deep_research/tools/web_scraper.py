@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from datetime import date
 from html import unescape
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -114,6 +115,7 @@ class WebScraperTool(BaseTool):
         "content_type": "string",
         "content_sha256": "string",
         "extraction_complete": "boolean",
+        "page_date": "string|null",
     }
 
     def __init__(
@@ -189,7 +191,7 @@ class WebScraperTool(BaseTool):
                 recoverable=False,
                 details={"content_type": _bounded_content_type(content_type)},
             )
-        title, text = _extract_html(response.text)
+        title, text, page_date = _extract_html(response.text)
         if not text.strip():
             if _is_large_markup(response.text):
                 # A chrome-shaped shell whose data held no prose: everything
@@ -223,6 +225,8 @@ class WebScraperTool(BaseTool):
             "content_sha256": normalized_content_sha256(text),
             "extraction_complete": True,
         }
+        if page_date is not None:
+            data["page_date"] = page_date
         return ToolExecution(
             data=data,
             output_summary={
@@ -332,8 +336,8 @@ def _bounded_content_type(content_type: str) -> str:
     return media_type
 
 
-def _extract_html(html: str) -> tuple[str, str]:
-    """The page's title and its readable text.
+def _extract_html(html: str) -> tuple[str, str, str | None]:
+    """The page's title, its readable text, and its own date (D14).
 
     The readable text is the visible text, unless the page is a *shell*:
     visible text within ``_SHELL_CONTENT_MAX_CHARS`` in markup of at least
@@ -343,6 +347,11 @@ def _extract_html(html: str) -> tuple[str, str]:
     (``_is_chrome``) and whose data holds no prose has no readable text at all,
     since chrome is not the page: a short paragraph or a table in large markup
     is a body, and is read as before.
+
+    The page's own date is read once, from whichever of its own sources
+    states one (see :func:`_extract_page_date`), against the text this
+    extraction settles on -- never against markup a shell classification
+    already discarded.
     """
     soup = BeautifulSoup(html, "html.parser")
     title = soup.title.get_text(strip=True) if soup.title else ""
@@ -352,11 +361,183 @@ def _extract_html(html: str) -> tuple[str, str]:
         element.decompose()
     visible = " ".join(soup.stripped_strings)
     if len(visible) > _SHELL_CONTENT_MAX_CHARS or not _is_large_markup(html):
-        return title, visible
-    prose = _shell_prose(soup, scripts)
-    if not prose and _is_chrome(soup):
-        return title, ""
-    return title, " ".join([visible, *prose] if visible else prose)
+        text = visible
+    else:
+        prose = _shell_prose(soup, scripts)
+        text = (
+            ""
+            if not prose and _is_chrome(soup)
+            else " ".join([visible, *prose] if visible else prose)
+        )
+    return title, text, _extract_page_date(soup, scripts, text)
+
+
+# --------------------------------------------------------------------------
+# D14: the page's own date, captured once at scrape time.
+# --------------------------------------------------------------------------
+#
+# Read in this order, most reliable first: a publisher's own syndication
+# metadata (Open Graph, then JSON-LD) is a structured claim about the page
+# itself, so it is trusted ahead of prose. A byline in the page's opening
+# text is the fallback for a page that publishes neither. Every reader
+# normalises what it found and refuses what it cannot parse instead of
+# guessing at a day or month the page never gave -- an impossible calendar
+# date is dropped rather than salvaged into a coarser one.
+
+# ``article:published_time`` before ``article:modified_time``: a page that
+# carries both is dated by when it first published, not by its last edit.
+_META_DATE_PROPERTIES = ("article:published_time", "article:modified_time")
+
+# ``datePublished`` before ``dateModified``, in a page's JSON-LD -- the same
+# published-first order as the meta properties above.
+_JSON_LD_DATE_KEYS = ("datePublished", "dateModified")
+
+_ISO_DATE_PATTERN = re.compile(r"^\s*(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?")
+
+
+def _normalize_page_date(raw: str) -> str | None:
+    """``raw`` at the calendar precision it states, or ``None``.
+
+    Accepts an ISO 8601 date or timestamp the way page metadata publishes it
+    ("2026-09-17T10:00:00Z", "2026-09-17", "2026-09", "2026") and keeps only
+    the calendar portion, never inventing a month or day the source did not
+    carry. An impossible calendar date ("2026-02-30") is not a date the page
+    carries, so it is refused rather than salvaged into its year or month.
+    """
+    match = _ISO_DATE_PATTERN.match(raw)
+    if match is None:
+        return None
+    year_s, month_s, day_s = match.groups()
+    if not (1000 <= int(year_s) <= 9999):
+        return None
+    if month_s is None:
+        return year_s
+    if not 1 <= int(month_s) <= 12:
+        return None
+    if day_s is None:
+        return f"{year_s}-{month_s}"
+    try:
+        date(int(year_s), int(month_s), int(day_s))
+    except ValueError:
+        return None
+    return f"{year_s}-{month_s}-{day_s}"
+
+
+def _meta_date(soup: BeautifulSoup) -> str | None:
+    """The date a page's own Open Graph article metadata states, if any."""
+    for prop in _META_DATE_PROPERTIES:
+        meta = soup.find("meta", attrs={"property": prop})
+        if meta is None:
+            continue
+        content = meta.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        normalized = _normalize_page_date(content)
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _is_json_ld_script(script: Tag) -> bool:
+    kind = script.get("type")
+    return isinstance(kind, str) and kind.strip().casefold() == "application/ld+json"
+
+
+def _json_ld_nodes(payload: object) -> Iterator[object]:
+    """Every mapping in one JSON-LD payload, walking an ``@graph`` array too."""
+    if isinstance(payload, list):
+        for item in payload:
+            yield from _json_ld_nodes(item)
+    elif isinstance(payload, Mapping):
+        yield payload
+        graph = payload.get("@graph")
+        if graph is not None:
+            yield from _json_ld_nodes(graph)
+
+
+def _json_ld_date_from(payload: object) -> str | None:
+    """The date one JSON-LD payload states, walking its ``@graph`` if any."""
+    for node in _json_ld_nodes(payload):
+        if not isinstance(node, Mapping):
+            continue
+        for key in _JSON_LD_DATE_KEYS:
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                normalized = _normalize_page_date(value)
+                if normalized is not None:
+                    return normalized
+    return None
+
+
+def _json_ld_date(scripts: list[Tag]) -> str | None:
+    """The date a page's own JSON-LD states, if any script carries one."""
+    for script in scripts:
+        if not _is_json_ld_script(script):
+            continue
+        try:
+            payload = json.loads(script.get_text())
+        except (ValueError, RecursionError):
+            continue
+        found = _json_ld_date_from(payload)
+        if found is not None:
+            return found
+    return None
+
+
+# The month names a byline spells out, folded to the month each one names.
+_BYLINE_MONTH_NUMBERS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5,
+    "june": 6, "july": 7, "august": 8, "september": 9, "october": 10,
+    "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7, "aug": 8,
+    "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_BYLINE_SPELLED_DATE = re.compile(
+    r"(?P<month>" + "|".join(sorted(_BYLINE_MONTH_NUMBERS, key=len, reverse=True))
+    + r")\.?\s+(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?P<year>\d{4})",
+    re.IGNORECASE,
+)
+# A byline names the page's date beside one of these words ("Published",
+# "Updated", "Posted", "By Jane Doe"), so a date the opening text mentions in
+# ordinary prose -- "On September 17, 2026, the agency announced..." -- is
+# never mistaken for the page's own byline.
+_BYLINE_CUE = re.compile(
+    r"(?:published|updated|posted|last\s+modified|by)\b[:\s]*", re.IGNORECASE
+)
+# How much of the page's opening text is read for a byline, and how far past
+# a cue word its date may sit -- a caption or a byline line reaches it, an
+# unrelated later paragraph does not.
+_BYLINE_WINDOW_CHARS = 500
+_BYLINE_DATE_REACH = 40
+
+
+def _byline_date(text: str) -> str | None:
+    """A day-precision date the page's own opening states beside a byline cue."""
+    opening = text[:_BYLINE_WINDOW_CHARS]
+    for cue in _BYLINE_CUE.finditer(opening):
+        tail = opening[cue.end() : cue.end() + _BYLINE_DATE_REACH]
+        match = _BYLINE_SPELLED_DATE.search(tail)
+        if match is None:
+            continue
+        month = _BYLINE_MONTH_NUMBERS[match.group("month").casefold()]
+        year, day = int(match.group("year")), int(match.group("day"))
+        try:
+            date(year, month, day)
+        except ValueError:
+            continue
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    return None
+
+
+def _extract_page_date(soup: BeautifulSoup, scripts: list[Tag], text: str) -> str | None:
+    """The page's own date, in the order the page most reliably states it.
+
+    Metadata a publisher writes for its own syndication is preferred over
+    prose because it is the page's structured claim about itself; a byline
+    in the opening text is the fallback for a page that publishes neither.
+    ``None`` when the page states no date of its own -- never a guess.
+    """
+    return _meta_date(soup) or _json_ld_date(scripts) or _byline_date(text)
 
 
 def _is_large_markup(html: str) -> bool:

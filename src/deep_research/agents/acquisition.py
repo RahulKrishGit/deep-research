@@ -409,7 +409,10 @@ def _last_boundary(text: str, floor: int, window: int) -> int:
 
 def _payload_read_parts(
     result: ToolResult,
-) -> tuple[str, str, str, str, str, dict[str, str], bool, str | None] | None:
+) -> (
+    tuple[str, str, str, str, str, dict[str, str], bool, str | None, str | None]
+    | None
+):
     """Extract the complete read shape produced by either read tool."""
     if not result.success or (
         result.error is not None
@@ -431,6 +434,10 @@ def _payload_read_parts(
         ]
         reader = "web_scraper"
         title = _text(data.get("title")) or resolved
+        # D14: the scraper's own page date, threaded straight from its
+        # payload -- never re-derived here, so the extraction lives in one
+        # place (``tools.web_scraper``).
+        page_date = _text(data.get("page_date")) or None
     elif result.tool_name == "document_reader":
         raw_chunks = data.get("chunks")
         if not isinstance(raw_chunks, list) or not raw_chunks:
@@ -485,6 +492,9 @@ def _payload_read_parts(
             return None
         reader = "document_reader"
         title = _text(data.get("title")) or resolved
+        # A document has no page carrying the HTML metadata D14 reads; never
+        # inventing one is the honest default.
+        page_date = None
     else:
         return None
     try:
@@ -504,6 +514,7 @@ def _payload_read_parts(
         passages,
         extraction_complete,
         declared_hash,
+        page_date,
     )
 
 
@@ -575,6 +586,7 @@ def build_read_record_from_tool_result(
         passages,
         extraction_complete,
         declared_hash,
+        page_date,
     ) = parts
     try:
         return build_read_record(
@@ -589,6 +601,7 @@ def build_read_record_from_tool_result(
             extraction_complete=extraction_complete,
             declared_content_sha256=declared_hash,
             target_ids=target_ids,
+            page_date=page_date,
         )
     except (TypeError, ValueError):
         return None
@@ -1698,6 +1711,7 @@ class AcquisitionPolicy:
         *,
         status: Literal["read", "denied", "unusable"],
         read_id: str | None = None,
+        reason: str | None = None,
     ) -> None:
         url = normalize_source_url(url)
         records = dict(self.state.candidate_records)
@@ -1717,11 +1731,20 @@ class AcquisitionPolicy:
                 discovered_via="document_link",
                 status=status,
                 read_id=read_id,
+                denial_reason=reason,
             )
             records[url] = existing
         elif existing is not None:
             records[url] = existing.model_copy(
-                update={"status": status, "read_id": read_id or existing.read_id}
+                update={
+                    "status": status,
+                    "read_id": read_id or existing.read_id,
+                    # I2: a candidate's denial reason tracks its current
+                    # status -- ``None`` once it is read, so a URL denied on
+                    # one attempt and read on a later one never keeps a stale
+                    # refusal beside a successful read.
+                    "denial_reason": reason,
+                }
             )
         queue = [item for item in self.state.candidate_urls if item != url]
         denied = list(self.state.denied_urls)
@@ -2011,7 +2034,7 @@ class AcquisitionPolicy:
             )
         )
         status: Literal["denied", "unusable"] = "denied" if denied else "unusable"
-        self._mark_candidate(requested, status=status)
+        self._mark_candidate(requested, status=status, reason=reason)
 
     def _record_deferred_passages(
         self,

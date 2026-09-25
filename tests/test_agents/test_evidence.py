@@ -123,6 +123,43 @@ def _identity_metadata(record: ReadRecord, **extra: object) -> dict[str, object]
     }
 
 
+def test_build_read_record_carries_the_page_date_captured_at_scrape_time() -> None:
+    """D14: the scraper's own page date, once verified, rides on the record."""
+    record = build_read_record(
+        session_id=SESSION_ID,
+        reader="web_scraper",
+        requested_url="https://lab.example/dated",
+        resolved_url="https://lab.example/dated",
+        title="Dated Report",
+        retrieved_at=RETRIEVED_AT,
+        text=TEXT,
+        passages={"p-1": PASSAGE},
+        target_ids=("target-1",),
+        page_date="2026-09-17",
+    )
+
+    assert record.page_date == "2026-09-17"
+
+
+def test_build_read_record_refuses_a_malformed_page_date() -> None:
+    """Never invent a date: a value that is not a real calendar date is
+    dropped rather than stored as the page's own."""
+    record = build_read_record(
+        session_id=SESSION_ID,
+        reader="web_scraper",
+        requested_url="https://lab.example/dated",
+        resolved_url="https://lab.example/dated",
+        title="Dated Report",
+        retrieved_at=RETRIEVED_AT,
+        text=TEXT,
+        passages={"p-1": PASSAGE},
+        target_ids=("target-1",),
+        page_date="not-a-date",
+    )
+
+    assert record.page_date is None
+
+
 # --------------------------------------------------------------------------
 # canonical text and exact excerpt membership
 # --------------------------------------------------------------------------
@@ -1571,6 +1608,7 @@ def test_the_read_registry_keeps_ids_independent_of_assessments() -> None:
         "requested_url",
         "resolved_url",
         "title",
+        "page_date",
         "reader",
         "retrieved_at",
         "content_sha256",
@@ -3293,6 +3331,59 @@ def test_a_date_counts_as_the_publication_date_only_when_the_page_says_so() -> N
     assert validated_temporal(
         data_year, data_period=_claim("2025", "2025"), status="stale_data"
     ).data_period == "2025"
+
+
+def test_a_day_precision_date_in_the_opening_credits_needs_no_cue() -> None:
+    """Fable's run-3 case: a model quoted "The page is dated Sep 17, 2026"
+    from the page's own opening and the claim was refused because neither
+    "published" nor "updated" sat beside it. A day-precision date the page's
+    own opening states is its date even with no such word, the same way the
+    opening credits an author with no "published by" cue
+    (``_opening_credits_organisation``)."""
+    read = _dated(
+        "Grid Storage Outlook. The page is dated Sep 17, 2026. Battery "
+        "storage capacity grew across every region this year."
+    )
+
+    dated = validated_temporal(
+        read,
+        publication_date=_claim("2026-09-17", "The page is dated Sep 17, 2026"),
+        status="current",
+    )
+
+    assert dated.publication_date == "2026-09-17"
+    assert dated.status == "current"
+
+
+def test_a_day_precision_date_outside_the_opening_credits_still_needs_a_cue() -> None:
+    """The rule is a window, not a blanket exemption: a day-precision date
+    the page states well past its own opening still needs a
+    Published/Updated cue, the same way ``_opening_credits_organisation``
+    never credits a name the document mentions only deep in its body."""
+    passages = {
+        "p-1": "Grid Storage Outlook. An unrelated opening paragraph about "
+        "capacity trends nationwide.",
+        "p-2": "A second paragraph about interconnection queues and "
+        "permitting delays across every region.",
+        "p-3": "A third paragraph about transmission upgrades planned "
+        "across several regions this decade.",
+        "p-4": "The page is dated Sep 17, 2026, deep in an appendix "
+        "nobody reads first.",
+    }
+    read = _web_read(
+        "https://lab.example/late-date",
+        text=" ".join(passages.values()),
+        passages=passages,
+    )
+
+    dated = validated_temporal(
+        read,
+        publication_date=_claim("2026-09-17", "The page is dated Sep 17, 2026"),
+        status="current",
+    )
+
+    assert dated.publication_date is None
+    assert dated.status == "unknown"
 
 
 # ---------------------------------------------------------------------------
