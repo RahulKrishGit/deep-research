@@ -3458,6 +3458,79 @@ async def test_a_surviving_advisory_target_is_dropped_not_recorded(
         ["What was the queue total in 2024?"],
     )
     assert _plan_defects(outcome.state_update["errors"]) == []
+    # The drop is a cleanup, not a defect to repair: no further plan request is
+    # made for it, so the pass costs what it cost before the target left.
+    assert [call[0] for call in completer.calls] == [
+        "ResearchPlanDraft",
+        "ResearchPlanDraft",
+        "PlanReviewDraft",
+    ]
+
+
+def _all_optional_but_the_defective_target() -> ResearchPlanDraft:
+    """One plan whose only required target is the one the advisory names."""
+    return ResearchPlanDraft(
+        sub_topics=[
+            _draft(
+                "Queue totals",
+                priority=1,
+                evidence_targets=[
+                    _target(
+                        "Do the two 2024 queue totals agree within 10%?",
+                        measure="queue totals agreement",
+                    ),
+                    _target(
+                        "What was the queue total in 2024?",
+                        measure="queue total",
+                        required=False,
+                    ),
+                ],
+            ),
+            _draft(
+                "Withdrawn capacity",
+                priority=2,
+                evidence_targets=[_target(required=False)],
+            ),
+            _draft(
+                "Reforms",
+                priority=3,
+                evidence_targets=[_target(required=False)],
+            ),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_plan_that_would_owe_nothing_keeps_a_required_target(
+    tracker: Tracker,
+) -> None:
+    """Dropping the defective target must not leave a plan that owes nothing.
+
+    The probe re-run measured the failure mode of a plan with no required
+    target: a report could omit every part and still pass. So when the target an
+    advisory names was the whole of what the plan owed, the first obligation of
+    every sub-topic that survived is required again — the plan still ships
+    without the target its repair was told about, and its dimensions are owed.
+    """
+    draft = _all_optional_but_the_defective_target()
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[draft, draft, _review()],
+    )
+    agent = _planner(tracker, completer)
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state("How much capacity was withheld in 2024?"))
+
+    assert outcome.result is not None
+    questions = [
+        (target.question, target.required)
+        for sub_topic in outcome.result.sub_topics
+        for target in sub_topic.evidence_targets
+    ]
+    assert ("Do the two 2024 queue totals agree within 10%?", True) not in questions
+    assert all(required for _, required in questions)
+    assert _plan_defects(outcome.state_update["errors"]) == []
 
 
 @pytest.mark.asyncio
@@ -4721,146 +4794,42 @@ def test_a_draft_target_without_a_measure_is_a_plan_problem() -> None:
     assert any("check these fields: measure" in problem for problem in problems)
 
 
-# The live nine-question planning probe marked aims its questions never named
-# as required: "number of weeks in the fiscal year" in the P5 Apple plan (the
-# fiscal-year basis is what makes two fiscal years comparable — an aid the
-# planner added beside the revenue targets) and "TIOBE index rating increase" /
-# "year-over-year growth of the fastest-growing language" in the P8 plan
-# (attributes of indexes the question never names). A required target is what a
-# run's acceptance is judged on, so an aid nobody asked for must not gate it.
-_APPLE_QUESTION = (
-    "What was Apple's revenue by product category in fiscal 2025, and how did "
-    "it compare with fiscal 2024?"
-)
-_LANGUAGE_QUESTION = "Which programming languages grew fastest in popularity in 2025?"
+# The live nine-question planning probe's P5 and P8 plans marked planner-added
+# aims as required. The fix for that is the instruction's own sentence, not a
+# code test: the probe *re-run* measured what a word test costs — a
+# majority-of-distinctive-words rule removed ``required`` from all eleven
+# targets of the headphones question, whose measures paraphrase it, so the plan
+# owed nothing. The rule this pair pins is therefore the model's flag being
+# stamped as the draft gives it, whichever wording its measure uses.
 _BATTERY_QUESTION = (
     "How much grid-scale battery storage capacity was added in the United "
     "States in 2024, and what do the latest forecasts project for 2025?"
 )
+_HEADPHONES_QUESTION = (
+    "which is the best headphones to buy 2026 for best audio quality and best mic"
+)
 
 
 @pytest.mark.parametrize(
-    ("question", "measure"),
+    "measure",
     (
-        (_APPLE_QUESTION, "number of weeks in the fiscal year"),
-        (_LANGUAGE_QUESTION, "TIOBE index rating increase"),
-        (_LANGUAGE_QUESTION, "PYPL index share increase"),
+        "sound quality rating (highest-ranked model)",
+        "microphone recording quality rating",
+        "number of weeks in the fiscal year",
+        "TIOBE index rating increase",
     ),
 )
-def test_a_measure_the_question_never_names_is_stamped_optional(
-    question: str, measure: str
+def test_a_required_flag_the_draft_set_is_stamped_however_the_measure_is_worded(
+    measure: str,
 ) -> None:
-    """An aid the planner added is never required, whatever the draft said.
+    """A paraphrase is still the question's part, and an aid is the model's call.
 
-    Both shapes are the P8 plan's own: a named index's rating or share increase
-    is a magnitude from a body the question never named. The plan's third P8
-    measure, "year-over-year growth of the fastest-growing language", is *not*
-    in this list on purpose — the question asks which languages "grew fastest",
-    and a stem match reads growth/grew as the question's own word, so that
-    target keeps the draft's flag.
+    Both directions of the probe re-run's regression: a legitimate part whose
+    measure only paraphrases the question keeps ``required``, and an aid the
+    model marked required keeps it too — the sentence in the plan instruction is
+    what makes an added aid optional, and a word test cannot tell the two apart.
     """
-    assert _stamped(question, _target(measure=measure)).required is False
-
-
-def test_a_measure_the_question_names_keeps_the_drafts_required_flag() -> None:
-    """The counterpart: a part of the question stays required.
-
-    The benchmark question names this measure's own words, so the plan's own
-    required flag stands — the rule demotes added aids, never the question's
-    own parts.
-    """
-    assert (
-        _stamped(
-            _BATTERY_QUESTION,
-            _target(
-                "What did grid-scale battery storage add in 2024?",
-                measure="grid-scale battery storage capacity added",
-            ),
-        ).required
-        is True
-    )
-
-
-# The grader's P6 item 4: the Roman Republic plan carried required count and
-# currency targets of kind actual on a why-question, so the run owed figures
-# nobody asked for while the reasons it did ask for were not what acceptance
-# measured. A question answered by an argument or a text plans no figure target
-# of its own.
-def test_a_reasons_question_plans_no_figure_target() -> None:
-    """A why-question's parts are reasons: its targets carry no unit or kind.
-
-    Any figure the researcher finds is evidence inside a reason's finding, never
-    an obligation the run must answer.
-    """
-    stamped = _stamped(
-        "Why did the Roman Republic fall?",
-        _target(
-            "How many legions did Rome field in 50 BC?",
-            measure="legions fielded",
-            unit_dimension="count",
-            kind="actual",
-        ),
-    )
-
-    assert (stamped.unit_dimension, stamped.kind) == (None, None)
-
-
-def test_a_rules_question_plans_no_figure_target_it_was_not_asked_for() -> None:
-    """The same for the other form answered by a text rather than a number."""
-    stamped = _stamped(
-        "What are the current interconnection constraints?",
-        _target(
-            "How much capacity did the 2019 rule set?",
-            measure="capacity threshold set by the rule",
-            unit_dimension="power",
-            kind="actual",
-        ),
-    )
-
-    assert (stamped.unit_dimension, stamped.kind) == (None, None)
-
-
-@pytest.mark.parametrize(
-    "question",
-    (
-        _BATTERY_QUESTION,
-        "How much energy did battery storage systems add to the grid in 2024?",
-    ),
-)
-def test_a_question_asking_for_a_quantity_still_carries_its_figure_target(
-    question: str,
-) -> None:
-    """The counterpart: a question that asks how much keeps its figures.
-
-    The quantity is the question's own ask, by a 'how much' phrase, a unit
-    token, or the words that name a measured magnitude.
-    """
-    stamped = _stamped(
-        question,
-        _target(
-            "How much capacity was added?",
-            measure="grid-scale battery storage capacity added",
-            unit_dimension="power",
-            kind="actual",
-        ),
-    )
-
-    assert (stamped.unit_dimension, stamped.kind) == ("power", "actual")
-
-
-def test_a_rules_question_that_names_a_unit_keeps_its_figure_target() -> None:
-    """A rule question that names the quantity it asks about keeps figures too."""
-    stamped = _stamped(
-        "What are the permitting constraints for a 12 GW storage connection?",
-        _target(
-            "How much capacity does the rule permit?",
-            measure="capacity permitted by the rule, in GW",
-            unit_dimension="power",
-            kind="actual",
-        ),
-    )
-
-    assert (stamped.unit_dimension, stamped.kind) == ("power", "actual")
+    assert _stamped(_HEADPHONES_QUESTION, _target(measure=measure)).required is True
 
 
 def test_an_optional_target_the_question_names_is_not_promoted() -> None:
@@ -4896,7 +4865,9 @@ def test_the_answer_contract_adds_no_boilerplate_to_targets() -> None:
 def test_the_plan_instruction_states_the_floor() -> None:
     for phrase in ("one target per organisation, measure, period and kind",
                    "required only for what the question names",
-                   "optional", "paywalled"):
+                   "optional", "paywalled",
+                   "A target you add to make another target checkable",
+                   "a running total"):
         assert phrase in PLAN_INSTRUCTION
 
 

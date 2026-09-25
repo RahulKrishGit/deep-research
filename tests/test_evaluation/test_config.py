@@ -762,8 +762,16 @@ from deep_research.utils.config import (
 # spell their bodies as names for the same reason. Module source and two
 # instruction strings of the planner's own; the researcher, the other three and
 # the judge are unchanged.
+# The probe re-run's regression ruling moved the planner once more,
+# 07d3633895c1 -> 8e875d9b2b53: the required-flag word test is gone (it removed
+# required from all eleven targets of the headphones question, whose
+# measures paraphrase it, so the plan owed nothing), the plan instruction now
+# carries the sentence that makes a planner-added aid optional, and a plan whose
+# dropped defective target was the whole of what it owed has its first surviving
+# obligation required again. The instruction string moved with it; the
+# researcher, the other three and the judge are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "07d3633895c1",
+    "planner": "8e875d9b2b53",
     "researcher": "c490b869021b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "21c413e91f94",
