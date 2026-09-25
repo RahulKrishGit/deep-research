@@ -418,6 +418,11 @@ async def compose_written_report(
             )]
 
     stated_rows: set[str] = set()
+    # §6.4 (Task 4.3): the Statement Check's own outcome for every sentence
+    # this pass kept, keyed by the sentence's statement id -- "unchecked" when
+    # its batch failed or its label was omitted (D8). A refused sentence is
+    # not kept, so it has no entry.
+    statement_verdicts: dict[str, str] = {}
 
     def finalize(candidate: _Candidate, *, dedup: bool) -> ReportPoint | None:
         def reject(reason: str) -> None:
@@ -464,6 +469,12 @@ async def compose_written_report(
             finding_ids=[ids[label] for label in candidate.finding_labels],
             target_ids=sorted({t for t, fids in task.answered.items() if cited_ids & set(fids)}),
         )
+        # Recorded at the one line that keeps the sentence: every refusal
+        # above returned already, so the map holds exactly what the report
+        # prints -- never a sentence this pass did not clear.
+        statement_verdicts[candidate.key] = (
+            "unchecked" if verdict is None else verdict.verdict
+        )
         return ReportPoint(text=text, source_urls=list(dict.fromkeys(f.source_url for f in own_first)),
                            statement=statement)
 
@@ -481,6 +492,7 @@ async def compose_written_report(
         summary=summary, sections=sections, rejected=[r.reason for r in rejected],
         rejected_points=rejected, fact_rows=list(task.facts), not_found=list(task.not_found),
         finding_labels={label: finding_id for label, finding_id in ids.items()},
+        statement_verdicts=statement_verdicts,
         generated_on=task.generated_on, errors=check_errors,
     )
 
