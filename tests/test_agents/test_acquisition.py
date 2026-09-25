@@ -524,10 +524,11 @@ def test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones() -> None
     opening passage is its header. The audited run's market-monitor read
     deferred its opening chunk — the headline "2025 U.S. Energy Storage
     Installations Set New Record, Surpass 2024 by 52%" — in both batches
-    selection ran. A read's own first passage is therefore always selected: it
-    shares the bound when the ranking left room, and adds one passage when the
-    bound was already full, so the header can never be the one part of a page
-    no packet may show.
+    selection ran. A read's own first passage therefore ranks on the same
+    character budget (D1) as everything else: here both the lede and the
+    ranked passage are short enough to share it, so both are admitted, in
+    rank order; the header never depends on a separate rule to be shown at
+    all, and the passage neither of them took is still accounted for.
     """
     lede = (
         "The U.S. installed 18.9 GW of utility, C&I, and residential battery "
@@ -556,14 +557,14 @@ def test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones() -> None
     )
 
     assert admission is not None
-    assert [unit.locator for unit in admission.evidence.values()] == [
+    assert {unit.locator for unit in admission.evidence.values()} == {
         "page-1-chunk-0",
         "page-1-chunk-1",
-    ]
-    assert [unit.excerpt for unit in admission.evidence.values()] == [
+    }
+    assert {unit.excerpt for unit in admission.evidence.values()} == {
         lede,
         ranked,
-    ]
+    }
     # The passage neither the ranking nor the lede took is still accounted for.
     assert [item.item_id for item in admission.dispositions] == [
         f"{read.read_id}/page-1-chunk-2"
@@ -605,6 +606,100 @@ def test_verification_selects_by_relevance_without_the_lede() -> None:
         "page-1-chunk-0",
         "page-1-chunk-1",
     ]
+
+
+def test_a_navigation_lede_is_never_forced_into_selection() -> None:
+    """D1: a link-dense opening passage is never admitted as the lede.
+
+    The lede rule exists for a wire release's own headline (see
+    :func:`select_passages_with_lede`), but the audited run's reads often
+    open on a site's own navigation bar instead, and the rule forced that
+    navigation into every packet regardless of relevance. A lede this
+    link-dense must never be forced in; an ordinary prose opening still is
+    (``test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones``).
+    """
+    navigation = (
+        "Reviews Deals News Forum Search Sign In Subscribe Newsletter Store "
+        "Support Community Careers Contact Privacy Terms Accessibility"
+    )
+    verdict = (
+        "The microphone performed well in calls and voice quality was clear."
+    )
+    unrelated = "Shipping resumes on Monday after the regional holiday."
+    result = _chunked_document_result(navigation, verdict, unrelated)
+
+    admission = admit_read_result(
+        result,
+        session_id="session-1",
+        query="microphone call quality",
+        selected_limit=1,
+    )
+
+    assert admission is not None
+    assert [unit.locator for unit in admission.evidence.values()] == [
+        "page-1-chunk-1"
+    ]
+
+
+def test_admission_spends_a_character_budget_not_a_fixed_count() -> None:
+    """D1: selection admits by a character budget, not a fixed passage count.
+
+    The audited run admitted twelve of a page's 208 chunks against a fixed
+    count of four, deferring several that answered the question. A page with
+    many short, relevant chunks is not capped at a raw count: as long as
+    their combined length fits the budget the count previously implied,
+    every one of them is admitted.
+    """
+    chunks = [
+        f"Call quality scored best in class, item {index}." for index in range(6)
+    ]
+    result = _chunked_document_result(*chunks)
+
+    admission = admit_read_result(
+        result,
+        session_id="session-1",
+        query="call quality",
+        selected_limit=4,
+    )
+
+    assert admission is not None
+    assert len(admission.evidence) == 6
+
+
+def test_the_packet_orders_a_reads_passage_dump_by_rank_when_a_query_is_given() -> None:
+    """D2: the packet renders selected chunks by rank first and spends its
+    budget on them, never the document-order dump that put navigation
+    first -- proof that a mid-page chunk answering the query outranks a
+    read's chunk-0 navigation.
+    """
+    navigation = (
+        "Reviews Deals News Forum Search Sign In Subscribe Newsletter Store "
+        "Support Community Careers Contact Privacy Terms Accessibility"
+    )
+    verdict = "The microphone performed well in calls and voice quality was clear."
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url="https://example.test/review",
+        resolved_url="https://example.test/review",
+        title="Review",
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text=navigation + verdict,
+        passages={"chunk-0": navigation, "chunk-1": verdict},
+        extraction_complete=True,
+    )
+    state = AcquisitionState()
+
+    ranked = build_acquisition_context(
+        state, {read.read_id: read}, {}, limit=24000,
+        query="microphone call quality",
+    )
+    unranked = build_acquisition_context(
+        state, {read.read_id: read}, {}, limit=24000,
+    )
+
+    assert ranked.index("locator=chunk-1") < ranked.index("locator=chunk-0")
+    assert unranked.index("locator=chunk-0") < unranked.index("locator=chunk-1")
 
 
 def _chunked_document_result(*chunks: str) -> ToolResult:
@@ -1419,9 +1514,22 @@ _MODEL_TURNS = 7
 
 
 def _paged_result(pages: int, *, text: str) -> ToolResult:
-    """A document_reader payload carrying one extracted chunk per page."""
+    """A document_reader payload carrying one extracted chunk per page.
+
+    Padded to the reader's own passage bound (``WEB_PASSAGE_CHARS``): a
+    synthetic chunk this short would never occur in a real read, and the
+    budget a real selection spends (D1) is real characters, not a count a
+    tiny fixture happens to produce.
+    """
+
+    def _padded(page: int) -> str:
+        body = f"{text} page {page}"
+        if len(body) >= WEB_PASSAGE_CHARS:
+            return body
+        return (body + " " + "." * WEB_PASSAGE_CHARS)[:WEB_PASSAGE_CHARS]
+
     chunks = [
-        {"text": f"{text} page {page}", "chunk_index": 0, "page": page}
+        {"text": _padded(page), "chunk_index": 0, "page": page}
         for page in range(1, pages + 1)
     ]
     return ToolResult(
@@ -2819,22 +2927,28 @@ def _search_step_result(
 async def test_a_late_csv_row_reaches_the_extraction_packet(tracker) -> None:
     """A CSV row past the first passage batch still reaches extraction.
 
-    The reader chunks rows two at a time, the first batch takes the two
-    highest-scoring chunks, and the row carrying the units and the footnote is
-    in neither. Only the bounded continuation batch can hand it over; without
-    one, the target is frozen and the measurement never reaches extraction.
+    The reader chunks rows two at a time. Padded to a realistic row length
+    (D1's budget is real characters, not a count a toy fixture happens to
+    produce), the first batch's budget covers the highest-scoring chunks and
+    the row carrying the units and the footnote is in neither. Only the
+    bounded continuation batch can hand it over; without one, the target is
+    frozen and the measurement never reaches extraction.
     """
+    pad = (
+        " measured over the complete twelve month observation window used "
+        "across every region in this survey"
+    )
     body = (
         "project,queue_delay_months,commissioning_cost_musd,note\n"
-        "Alpha,12,40,queue delay commissioning cost measured\n"
-        "Bravo,18,55,queue delay commissioning cost measured\n"
-        "Charlie,21,63,queue delay commissioning cost measured\n"
-        "Delta,25,71,queue delay commissioning cost measured\n"
-        "Echo,29,84,queue delay commissioning cost measured\n"
-        "Foxtrot,31,97,queue delay commissioning cost measured\n"
-        "Basin C,41,152,units are months and million USD; commissioning "
-        "cost measured\n"
-        "Footnote,3,,12 percent reported a negative net benefit\n"
+        f"Alpha,12,40,queue delay commissioning cost{pad}\n"
+        f"Bravo,18,55,queue delay commissioning cost{pad}\n"
+        f"Charlie,21,63,queue delay commissioning cost{pad}\n"
+        f"Delta,25,71,queue delay commissioning cost{pad}\n"
+        f"Echo,29,84,queue delay commissioning cost{pad}\n"
+        f"Foxtrot,31,97,queue delay commissioning cost{pad}\n"
+        f"Basin C,41,152,units are months and million USD; commissioning "
+        f"cost{pad}\n"
+        f"Footnote,3,,12 percent reported a negative net benefit{pad}\n"
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2985,7 +3099,13 @@ def _fixture_sub_topic() -> SubTopic:
 async def test_the_report_fixture_table_units_and_footnotes_reach_extraction(
     tracker,
 ) -> None:
-    """A cover/contents report's late table and footnotes reach the packet."""
+    """A cover/contents report's late table and footnotes reach the packet.
+
+    ``selected_passages_per_read=2`` keeps this small, 1.8 KB fixture from
+    fitting a single character budget (D1) whole: a realistic page's own
+    passage sizes are what force a genuine first-batch/continuation split,
+    not a document this size on its own.
+    """
     filename = "usgs-shaped-report.md"
     result = await _read_fixture(tracker, filename)
 
@@ -2995,7 +3115,10 @@ async def test_the_report_fixture_table_units_and_footnotes_reach_extraction(
     document = "".join(chunk["text"] for chunk in result.data["chunks"])
     url = result.data["resolved_source"]
     policy = _gateway_policy(
-        candidate_urls=[url], remaining_calls=3, query=_FIXTURE_QUERY
+        candidate_urls=[url],
+        remaining_calls=3,
+        query=_FIXTURE_QUERY,
+        selected_passages_per_read=2,
     )
     policy.after_action(_document_step(result, url))
 
