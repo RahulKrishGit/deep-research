@@ -2019,8 +2019,10 @@ def _two_subjects_one_value() -> ReplayScenario:
             exit_code=0,
             required_target_ids=("topic-01-target-01",),
             # The Subject column exists because these rows need it, and both
-            # subjects are printed: a row that lost one would fail here.
-            required_report_phrases=("| Subject |", "Kettle K1", "Kettle K2"),
+            # subjects are printed in it: the phrase is the table cell, which
+            # no other part of the report writes, so a row that lost one fails
+            # here rather than passing on the summary sentence alone.
+            required_report_phrases=("| Subject |", "| Kettle K1 |", "| Kettle K2 |"),
             required_invariants=("subjects_stay_apart",),
         ),
     )
@@ -2246,40 +2248,26 @@ def _count_unit_period() -> ReplayScenario:
 
     The page states two counts of one measure -- 12,345 in 2025 and 10,000 in
     2024 -- and the obligation asks for 2025, so only the 2025 figure may answer
-    it. Its own topic is starved in the opening round by six registers that
-    refuse the read, so ``topic-01-target-01`` is missing at the first review,
-    buys exactly one extra pass, and the page the second search surfaces is what
-    answers it.
+    it. The plan also declares a 2026 forecast obligation, and no page states a
+    2026 projection: that obligation is required, it is what the review finds
+    missing, so code buys the one extra pass for it (D4, §6.5) and the pass
+    finds nothing. The reader is told rather than left with silence: the
+    obligation is listed under Not found, which is what a scored report with a
+    remaining obligation has to do (§6.4), and the run finishes accepted with
+    ``missing_required_target`` recorded.
 
-    The plan also declares a 2026 forecast obligation, and no page states a
-    2026 projection: the fixture declares it with ``required=False`` -- the
-    optional shape the plan's own vocabulary marks for a planner-added target --
-    because the extra pass is bought for *every* missing required target at once
-    (``graph/nodes.py``: ``review.missing_required_target_ids``). A required
-    obligation no page answers would therefore be a second job for the pass, and
-    ``missing_target_triggers_one_extra_pass`` -- the invariant this row
-    declares -- requires the pass to be bought for one obligation alone and to
-    turn it into an answer.
+    ``extra_pass_finds_nothing`` is the invariant, not
+    ``missing_target_triggers_one_extra_pass``: the pass is bought for the
+    forecast obligation, which no page can answer, so a checker that required
+    the pass to turn its obligation into an answer could never hold here.
     """
-    registers = tuple(
-        _page(
-            f"registry{position}.example.test",
-            f"record-{position}",
-            f"Kettle register {position}",
-            "the Kettle register lists a title and a publication date and "
-            "states no counted value",
-            issuer=f"Example Registry {position}",
-            # A register that refuses the read spends a turn and yields no
-            # finding, which is what leaves the turn budget to be exhausted
-            # before the second search can be issued.
-            status=403,
-        )
-        for position in range(1, 7)
-    )
     return ReplayScenario(
         case_id="count-unit-period",
         version=REPLAY_CASE_VERSION,
-        question="How many Kettle units shipped in 2025?",
+        question=(
+            "How many Kettle units shipped in 2025 and how many are expected "
+            "in 2026?"
+        ),
         max_extra_passes=1,
         topics=(
             _topic(
@@ -2289,7 +2277,6 @@ def _count_unit_period() -> ReplayScenario:
                 "the number of Kettle units shipped",
                 "Kettle units shipped 2025 count",
                 (
-                    *registers,
                     _page(
                         "counts.example.test",
                         "shipments",
@@ -2297,7 +2284,6 @@ def _count_unit_period() -> ReplayScenario:
                         "the number of Kettle units shipped was 12,345 units in "
                         "2025 and 10,000 units in 2024",
                         issuer="Example Tester",
-                        discovered=2,
                         figures=(
                             ("12,345", "units", "2025", "actual"),
                             ("10,000", "units", "2024", "actual"),
@@ -2307,7 +2293,6 @@ def _count_unit_period() -> ReplayScenario:
                 unit_dimension="count",
                 period="2025",
                 kind="actual",
-                follow_up_queries=("Kettle units shipped 2025 total",),
                 labels=("Kettle units", "12,345"),
             ),
             _topic(
@@ -2329,7 +2314,6 @@ def _count_unit_period() -> ReplayScenario:
                 unit_dimension="count",
                 period="2026",
                 kind="forecast",
-                required=False,
             ),
             _filler(
                 3, "Widget funding", "Acme widget funding round", "12 million dollars"
@@ -2344,11 +2328,8 @@ def _count_unit_period() -> ReplayScenario:
             # obligation's measure beside the 2024 period, which is the row
             # this phrase forbids.
             forbidden_assertions=("| the number of Kettle units shipped | 2024 |",),
-            allowed_failure_classes=(
-                "error:agent_tool_failed",
-                "error:researcher_sub_topic_without_findings",
-            ),
-            required_invariants=("missing_target_triggers_one_extra_pass",),
+            allowed_failure_classes=("missing_required_target",),
+            required_invariants=("extra_pass_finds_nothing",),
         ),
     )
 
@@ -2542,7 +2523,13 @@ def _unattributed_relay_prose() -> ReplayScenario:
             exit_code=0,
             required_target_ids=("topic-01-target-01",),
             forbidden_assertions=("according to Example Institute",),
-            required_report_phrases=(corrected,),
+            # The credit the reader has to see on the unattributed figure's own
+            # row: the site that carries it, and the statement that the page
+            # attributes it to nobody.
+            required_report_phrases=(
+                corrected,
+                "Example News (source does not attribute it)",
+            ),
         ),
     )
 
@@ -2976,8 +2963,9 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         expected_product_result="accepted / 0",
         decisive_assertion=(
             "Of two counts on one page only the 2025 one answers the 2025 "
-            "obligation, the missing obligation buys one extra pass, and the "
-            "page that pass reaches is what answers it"
+            "obligation, and the 2026 forecast obligation no page answers buys "
+            "one extra pass, is listed under Not found, and leaves the run "
+            "accepted"
         ),
         build=_count_unit_period,
     ),
