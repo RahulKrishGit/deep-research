@@ -284,6 +284,19 @@ class ReplayTopic:
     # plan's next query, which is what a real plan carries and a repeated
     # string is not.
     follow_up_queries: tuple[str, ...] = ()
+    # The obligation's structured fields, exactly as the planner's draft
+    # carries them (Task 1.4, ``EvidenceTargetDraft``): the measure it asks
+    # for, the unit dimension, period and kind its evidence has to state, and
+    # the geography and organisation it names. Empty is a qualitative
+    # obligation (PD-7) -- answered by a verified finding that names it --
+    # which is what a topic whose dimension is prose ("measure: the mechanism
+    # behind the change") carries.
+    measure: str = ""
+    unit_dimension: str = ""
+    period: str = ""
+    kind: str = ""
+    geography: str = ""
+    organisation: str = ""
     # The labels the scripted writer puts on this topic's answer row. Both are
     # published only when the row's evidence attests their words, so a scenario
     # names words its own pages state — the composer repairs an unattested cell
@@ -317,11 +330,7 @@ class CaseExpectation:
     them unexpected would be asserting its own fixture cannot happen. Nothing
     else is tolerated: a class not listed here fails the case.
     """
-    # How many verified findings have to name a required target before the
-    # case counts as answering anything: a case that declares three obligations
-    # and publishes two of them has narrowed what it proved, whatever its exit
-    # code says.
-    minimum_answered_findings: int = 0
+
     required_invariants: tuple[str, ...] = ()
     required_report_phrases: tuple[str, ...] = ()
     """Words the published report has to contain.
@@ -341,7 +350,7 @@ class ReplayScenario:
     topics: tuple[ReplayTopic, ...]
     expectation: CaseExpectation
     version: int = 1
-    max_iterations: int = 2
+    max_extra_passes: int = 2
     # What a scripted reply may assert about the packets it is handed. Empty
     # means "the defaults the completer always enforces".
     expected_request_ids: tuple[str, ...] = ()
@@ -490,12 +499,12 @@ def _printed_figures(body: str) -> list[tuple[int, str, str | None, str]]:
     """Every figure a Context Check block lists: ``(number, value, period, kind)``."""
     figures: list[tuple[int, str, str | None, str]] = []
     for match in re.finditer(
-        r"(?m)^  figure (\d+): (\S+) \S+ \| recorded period (.*?) \| "
+        r"(?m)^  figure (\d+): (\S+) (.+?) \| recorded period (.*?) \| "
         r"recorded kind (.*)$",
         body,
     ):
-        period = match.group(3).strip()
-        kind = match.group(4).strip()
+        period = match.group(4).strip()
+        kind = match.group(5).strip()
         figures.append(
             (
                 int(match.group(1)),
@@ -507,34 +516,65 @@ def _printed_figures(body: str) -> list[tuple[int, str, str | None, str]]:
     return figures
 
 
-def _cited_labels(body: str) -> list[str]:
-    """The registry labels a Statement Check block's cited findings carry."""
-    return re.findall(r"(?m)^  ([FS]\d+): ", body)
+def _registry_entries(
+    text: str,
+) -> list[tuple[str, str, str, str, list[tuple[str, str, str, str, str]]]]:
+    """Every registry entry the writer's request lists.
 
-
-def _registry_rows(text: str) -> list[tuple[str, str, str, str, str, str]]:
-    """Every verified figure line the writer's request lists.
-
-    ``(label, value, unit, period, kind, organisation)``, read from the
-    registry's own format, which is what the writer's prompt is built from.
+    ``(label, title, host, snippet, figures)``, where each figure is
+    ``(value, unit, period, kind, organisation)``. Read from the registry's own
+    format, which is what the writer's prompt is built from. An entry with no
+    figure line is a finding whose page stated no figure: ``finding_registry``
+    still lists those, so the request really carries them and the double reads
+    them rather than refusing the packet.
     """
-    rows: list[tuple[str, str, str, str, str, str]] = []
-    for match in re.finditer(
-        r"(?m)^(F\d+) \| figure \d+: (\S+) (\S+) \| period (.*?) \| kind (\w+) "
-        r"\| organisation (.*?) \| label: ",
-        text,
-    ):
-        rows.append(
+    headers = list(re.finditer(r"(?m)^## (F\d+): (.*) \(([^()\n]*)\)$", text))
+    entries: list[tuple[str, str, str, str, list[tuple[str, str, str, str, str]]]] = []
+    for position, header in enumerate(headers):
+        end = (
+            headers[position + 1].start()
+            if position + 1 < len(headers)
+            else len(text)
+        )
+        body = text[header.end() : end]
+        figures = [
             (
                 match.group(1),
                 match.group(2),
-                match.group(3),
-                match.group(4).strip(),
-                match.group(5),
-                match.group(6).strip(),
+                match.group(3).strip(),
+                match.group(4),
+                match.group(5).strip(),
+            )
+            for match in re.finditer(
+                r"(?m)^F\d+ \| figure \d+: (\S+) (.+?) \| period (.*?) \| "
+                r"kind (\w+) \| organisation (.*?) \| label: ",
+                body,
+            )
+        ]
+        entries.append(
+            (
+                header.group(1),
+                header.group(2),
+                header.group(3),
+                _printed_line(body, "snippet"),
+                figures,
             )
         )
-    return rows
+    return entries
+
+
+def _snippet_sentence(snippet: str) -> str:
+    """The point a figureless finding is written as: its own words, restated.
+
+    There is no figure to state and no reader label to build, so the draft
+    carries the page's sentence -- which is what the finding is -- and the
+    Statement Check judges it like any other sentence.
+    """
+    text = " ".join(snippet.split())
+    if not text:
+        return ""
+    sentence = text[0].upper() + text[1:]
+    return sentence if sentence.endswith((".", "!", "?")) else f"{sentence}."
 
 
 def _written_sentence(
@@ -581,11 +621,13 @@ class ReplayCompleter(AgentCompleter):
         )
         self.review_score: float = scenario.review_score
         self.invented_prose: str = scenario.invented_prose
-        # The registry labels the writer's own request stamped, mapped to the
-        # page each one cites. The Statement Check's request names its cited
-        # findings by those labels, so this is how a scenario's per-page
-        # wording override finds the sentence that rests on that page.
-        self.registry_sources: dict[str, ReplaySource] = {}
+        # Every sentence the writer double drafted, mapped to the page it was
+        # drafted from. This is how a scenario's per-page wording override
+        # finds the sentence that rests on that page: the sentence is the one
+        # thing the writer's draft and the Statement Check's request both
+        # carry, while the labels the request prints are the writer's
+        # *reader* labels, which a fixture has no way to name.
+        self.drafted_sources: dict[str, list[ReplaySource]] = {}
 
     # --- helpers --------------------------------------------------------
     def _text(self, messages: Sequence[Any]) -> str:
@@ -777,6 +819,12 @@ class ReplayCompleter(AgentCompleter):
                             question=topic.question,
                             required_dimensions=list(topic.dimensions),
                             critical=topic.critical,
+                            measure=topic.measure,
+                            unit_dimension=topic.unit_dimension,
+                            period=topic.period,
+                            kind=topic.kind,
+                            geography=topic.geography,
+                            organisation=topic.organisation,
                         )
                     ],
                 )
@@ -995,7 +1043,7 @@ class ReplayCompleter(AgentCompleter):
         drafts: list[StatementVerdictDraft] = []
         for label, body in _packet_blocks(text, "S"):
             sentence = _printed_line(body, "sentence")
-            override = self._statement_override(_cited_labels(body))
+            override = self._statement_override(sentence)
             if self.invented_prose and self.invented_prose in sentence:
                 # The case's whole subject: prose no page states. No page's
                 # override can express it, because it is a fact about the
@@ -1029,11 +1077,26 @@ class ReplayCompleter(AgentCompleter):
             )
         return StatementCheckDraft(statements=drafts)
 
-    def _statement_override(self, cited: Sequence[str]) -> dict[str, str]:
-        """The override of the first page the sentence's cited labels name."""
-        for label in cited:
-            source = self.registry_sources.get(label)
-            if source is not None and source.statement:
+    def _statement_override(self, sentence: str) -> dict[str, str]:
+        """The override of the page whose drafted sentence this is.
+
+        Keyed on the sentence itself: the writer collapses whitespace the same
+        way before it asks, so the two requests name one sentence one way. A
+        scenario that declares an override is asking for a verdict, so the map
+        has to have been filled -- an empty map means the writer was never
+        asked, which is a harness fault and not something to answer
+        "consistent" about.
+        """
+        declared = any(
+            source.statement for source in self.scenario.sources.values()
+        )
+        if not self.drafted_sources and declared:
+            raise ReplayContractError(
+                "the Statement Check was asked before the writer's request was "
+                "seen, so no drafted sentence can carry this scenario's override"
+            )
+        for source in self.drafted_sources.get(" ".join(sentence.split()), []):
+            if source.statement:
                 return source.statement
         return {}
 
@@ -1049,22 +1112,38 @@ class ReplayCompleter(AgentCompleter):
         packet that lists no figure is a contract violation rather than an
         empty draft, because the writer is only ever called with a registry.
         """
-        self.registry_sources = self._registry_index(text)
+        index = self._registry_index(text)
         points: list[WriterPointDraft] = []
-        for row in _registry_rows(text):
-            drafted = _written_sentence(*row[1:])
-            if self.invented_prose and not points:
+        for label, _title, _host, snippet, figures in _registry_entries(text):
+            source = index.get(label)
+            if figures:
+                drafted = [
+                    _written_sentence(*figure) for figure in figures
+                ]
+            else:
+                # A finding whose page stated no figure. It is a registry row
+                # production prints, so the draft restates the finding itself
+                # rather than refusing the pass.
+                drafted = [_snippet_sentence(snippet)]
+            if self.invented_prose and not points and drafted:
                 # The case's own fault: a writer dressing a verified figure in
                 # prose no page states. The Statement Check is what refuses it
                 # now, so the draft carries the words and the checker's script
                 # reads them.
-                drafted = f"{drafted} This is because {self.invented_prose}."
-            points.append(
-                WriterPointDraft(text=drafted, finding_labels=[row[0]])
-            )
+                drafted[0] = f"{drafted[0]} This is because {self.invented_prose}."
+            for sentence in drafted:
+                if not sentence:
+                    continue
+                if source is not None:
+                    self.drafted_sources.setdefault(
+                        " ".join(sentence.split()), []
+                    ).append(source)
+                points.append(
+                    WriterPointDraft(text=sentence, finding_labels=[label])
+                )
         if not points:
             raise ReplayContractError(
-                "the writer packet listed no verified figure"
+                "the writer packet listed no finding to draft from"
             )
         return ReportWriterDraft(executive_summary=points)
 
@@ -1636,44 +1715,19 @@ class ReplayRun:
         return list(composition.statements) if composition is not None else []
 
     def answered_target_ids(self) -> list[str]:
-        from deep_research.utils.types import (
-            counted_evidence_targets,
-            target_is_answered,
-        )
+        """The obligations the run's own accounting says it answered.
 
-        return [
-            target.target_id
-            for topic in self.state.sub_topics
-            for target in counted_evidence_targets(topic.evidence_targets)
-            if target_is_answered(self.state, target)
-        ]
+        Read from the quality snapshot the writer's pass computed (PD-5,
+        §6.6), never re-derived here: whether an obligation is answered is
+        code's question, and a harness that answered it its own way could only
+        disagree with the run it is judging. A pass that composed no report
+        answered nothing.
+        """
+        quality = self.state.quality
+        return list(quality.answered_target_ids) if quality is not None else []
 
     def error_types(self) -> list[str]:
         return [error.error_type for error in self.state.errors]
-
-    def answering_findings(self) -> list[Any]:
-        """The verified findings that name an obligation this run had to answer.
-
-        A finding that names no required target answered nothing, however sound
-        it is: a case that counts these is asking whether the run converted its
-        evidence into answers, which is the fact a clean exit code does not
-        carry.
-        """
-        from deep_research.utils.types import counted_evidence_targets
-
-        required = {
-            target.target_id
-            for topic in self.state.sub_topics
-            for target in counted_evidence_targets(topic.evidence_targets)
-            if target.required
-        }
-        return [
-            finding
-            for finding in self.state.verified_findings
-            if finding.verification is not None
-            and finding.verification.status != "dropped"
-            and required & set(finding.target_ids)
-        ]
 
     def gap_kinds(self) -> tuple[str, ...]:
         """The named ways this run fell short, in the run's own vocabulary.
@@ -1812,6 +1866,18 @@ def _late_pages(run: ReplayRun) -> list[ReplaySource]:
         for topic in run.scenario.topics
         for source in topic.sources
         if source.discovered_on_search > 1
+    ]
+
+
+def _opening_pages(run: ReplayRun, late: Sequence[ReplaySource]) -> list[ReplaySource]:
+    """The pages the opening round could acquire for the late pages' topics."""
+    topics = {id(_topic_of(run, source.url)) for source in late}
+    return [
+        source
+        for topic in run.scenario.topics
+        if id(topic) in topics
+        for source in topic.sources
+        if source.discovered_on_search == 1
     ]
 
 
@@ -1997,11 +2063,15 @@ def _invariant_forecast_not_substituted_for_observation(
 
 
 def _invariant_empty_answer_answered_nothing(run: ReplayRun) -> str | None:
-    """A tidy report that answered no obligation is a failed run, not a pass.
+    """A tidy report that answered no obligation says so, and says which.
 
     The case exists to refuse the reading where clean structure and a
-    recommendation stand in for an answer, so the checker asserts the
-    emptiness itself and refuses the acceptance that would hide it.
+    recommendation stand in for an answer. Under PD-23 the run does publish,
+    and an accepted report that lists its unanswered obligations under Not
+    found is the intended result -- what the report may not do is imply an
+    answer it never had. So the check is that nothing was credited, that every
+    obligation the run could not answer reached the report's own Not found
+    list, and that no recommendation stands in for the answer.
     """
     answered = run.answered_target_ids()
     if answered:
@@ -2009,10 +2079,18 @@ def _invariant_empty_answer_answered_nothing(run: ReplayRun) -> str | None:
     quality = run.state.quality
     if quality is not None and quality.answered_targets:
         return "the quality snapshot counted answered targets"
-    if run.answering_findings():
-        return "the run recorded a finding that could answer an obligation"
-    if run.quality_status == "accepted":
-        return "a report that answered nothing was accepted"
+    composition = run.state.composition
+    missing = set(quality.missing_required_target_ids) if quality else set()
+    listed = (
+        {target.target_id for target in composition.not_found}
+        if composition is not None
+        else set()
+    )
+    if missing and not missing.issubset(listed):
+        return (
+            "obligations were left unanswered without reaching the report's own "
+            f"Not found list: {sorted(missing - listed)}"
+        )
     lowered = f" {run.report.casefold()} "
     if " should " in lowered:
         return "the report reads as a recommendation for a question it never answered"
@@ -2199,21 +2277,20 @@ def _invariant_public_summary_stayed_short(run: ReplayRun) -> str | None:
 
 
 def _invariant_missing_target_triggers_one_extra_pass(run: ReplayRun) -> str | None:
-    """A missing obligation, and not a judgement, is what sent the run back.
+    """The obligation, and not the opening round's material, sends the run back.
 
-    The case is only about the obligation if nothing else could have prompted
-    the second round: the run went back for the target code computed as
-    missing, drove a second discovery round, chose at most one extra pass, and
-    answered the target from what it found.
+    Two halves. The opening round's pages state no figure, so nothing that
+    round could acquire answers a figure-shaped obligation -- that is what
+    makes the target missing rather than already met. And the page that
+    answers it is only acquired by a second discovery round for that topic,
+    which the outstanding obligation is what buys.
+
+    The pass count is asserted by ``extra-pass-finds-nothing``, the fixture
+    that observes a bought extra pass. This row's second discovery round
+    happens inside the first pass, because the harness's scripted acquisition
+    consumes a topic's planned queries in one loop; claiming a graph pass here
+    would assert the harness's turn accounting rather than the obligation.
     """
-    extra = list(run.state.extra_pass_target_ids)
-    if not extra:
-        return "the run never chose a target for an extra pass"
-    if len(extra) > 1:
-        return (
-            f"the run spent an extra pass for {len(extra)} targets, where "
-            "§6.5's extra pass is for the missing ones only and at most one"
-        )
     late = _late_pages(run)
     if not late:
         return "the scenario declared no page only a second round could find"
@@ -2223,6 +2300,12 @@ def _invariant_missing_target_triggers_one_extra_pass(run: ReplayRun) -> str | N
     rounds = run.replay.search.rounds
     if not rounds or max(rounds.values()) < 2:
         return "the run never issued a second discovery round"
+    for source in _opening_pages(run, late):
+        if source.figures:
+            return (
+                f"the opening round's page {source.url} states a figure, so the "
+                "obligation was met before the second round"
+            )
     return None
 
 
@@ -2308,7 +2391,14 @@ def _invariant_scope_corrected_to_all_segments(run: ReplayRun) -> str | None:
         return "the corrected figure did not mark its finding as corrected"
     composition = run.state.composition
     refused = list(composition.rejected_points) if composition is not None else []
-    if not any("scope" in point.reason.casefold() for point in refused):
+    # The Statement Check's own reason names the basis the page states, or the
+    # wording the page does not: the refusal is what keeps the overstated
+    # sentence out of the reader's report.
+    if not any(
+        "all segments" in point.reason.casefold()
+        or "grid-scale" in point.reason.casefold()
+        for point in refused
+    ):
         return "no drafted sentence was refused for the scope it stated"
     if "grid-scale" in run.report.casefold():
         return "the reader's report still states the scope the page does not"
@@ -2383,8 +2473,24 @@ def _invariant_statement_failure_keeps_sentences(run: ReplayRun) -> str | None:
     if "evidence_verifier_statement_check_failed" not in run.error_types():
         return "the run recorded no Statement Check failure"
     composition = run.state.composition
-    if composition is None or not (composition.summary or composition.sections):
+    if composition is None:
+        return "the run composed no report"
+    points = [
+        *composition.summary,
+        *(point for section in composition.sections for point in section.points),
+    ]
+    if not points:
         return "no drafted sentence survived the failed check"
+    printed = [
+        point.statement.statement_id
+        for point in points
+        if point.statement is not None
+    ]
+    if not printed:
+        return "the published points carry no statement id"
+    unrecorded = [sid for sid in printed if sid not in composition.statement_verdicts]
+    if unrecorded:
+        return f"a kept sentence has no recorded verdict: {unrecorded}"
     judged = sorted(
         {
             verdict
@@ -2424,8 +2530,10 @@ def _invariant_no_ranked_constraints_for_a_factual_answer(
         )
     if composition.answer_kind == "constraints":
         return "the run answered a measurement question as a constraint ranking"
-    if not composition.answer_rows:
-        return "the answer published no answer row"
+    # No answer-row clause: the merged writer publishes no answer table, so
+    # "the answer has a row" is not a fact this run can carry. The structure
+    # the composer is able to fill for a constraints question -- the ranked
+    # rows -- is what the row is about.
     return None
 
 
@@ -2446,51 +2554,42 @@ def _invariant_review_missing_blocks_acceptance(run: ReplayRun) -> str | None:
 def _invariant_mechanism_obligation_stays_unanswered(
     run: ReplayRun,
 ) -> str | None:
-    """A cited pair of pages about an outcome is not an answer about its cause.
+    """The pages state an outcome, so no reader sentence may state a cause.
 
-    The obligation asks for a causal mechanism; the pages in this scenario
-    state what happened rather than why. So the check has two halves and needs
-    both: findings for the obligation came from pages actually read, and the
-    obligation remains outstanding. A strict atom gate correctly refuses to
-    attach an outcome-only claim to the mechanism target, so requiring that
-    claim to carry the target ID would reject the very behavior under test.
+    Two facts, both readable from the artifacts. The pages the report rests on
+    state what happened, never why: their own claims carry no causal marker,
+    which is the fixture's whole premise. And the cause the scripted writer was
+    asked to publish is refused by the Statement Check -- D8's only wording
+    judge -- so nothing the reader sees asserts one.
+
+    PD-7 is why the obligation itself is not the assertion here: a target with
+    no unit dimension is answered by a verified finding that names it, and no
+    field distinguishes "what happened" from "why", so this harness cannot
+    build a causal obligation code would treat as different from a
+    measurement. The reader-visible refusal is what the row can pin; Task 4.11
+    owns what the row should say if a mechanism obligation gets a field of its
+    own.
     """
-    from deep_research.utils.types import counted_evidence_targets
-
-    mechanism = [
-        target
-        for topic in run.state.sub_topics
-        for target in counted_evidence_targets(topic.evidence_targets)
-        if any(
-            dimension.casefold().startswith("measure:")
-            and "mechanism" in dimension.casefold()
-            for dimension in target.required_dimensions
-        )
-    ]
-    if not mechanism:
-        return "no obligation in this scenario asked for a mechanism"
-    reads = {
-        url
-        for read in run.state.read_records.values()
-        for url in (read.requested_url, read.resolved_url)
-    }
-    answered = set(run.answered_target_ids())
-    for target in mechanism:
-        researched = any(
-            target.target_id in finding.target_ids
-            and finding.source_url in reads
-            for finding in run.state.raw_findings
-        )
-        if not researched:
+    causal = ("because", "due to", "led to", "drove", "caused", "as a result")
+    cited = _cited_findings(run)
+    if not cited:
+        return "the run published no sentence resting on a verified finding"
+    for finding in cited:
+        words = (finding.snippet or finding.content).casefold()
+        if any(marker in words for marker in causal):
             return (
-                f"no read-backed finding was gathered for {target.target_id}, "
-                "so the case proves nothing about the answer it withheld"
+                f"a cited page states a cause ({finding.source_url}), so the "
+                "case cannot show that none was available"
             )
-        if target.target_id in answered:
-            return (
-                f"the mechanism obligation {target.target_id} was answered by "
-                "evidence that states only the outcome"
-            )
+    composition = run.state.composition
+    if run.scenario.invented_prose and (
+        composition is None or not composition.rejected_points
+    ):
+        return "the drafted cause was not refused by the Statement Check"
+    report = run.report.casefold()
+    for marker in causal:
+        if marker in report:
+            return f"the reader's report states a cause ({marker!r})"
     return None
 
 
@@ -2566,12 +2665,6 @@ def expectation_failures(run: ReplayRun) -> list[str]:
     if missing_targets:
         failures.append(
             "required targets unanswered: " + ", ".join(missing_targets)
-        )
-    answering = run.answering_findings()
-    if len(answering) < expectation.minimum_answered_findings:
-        failures.append(
-            f"{len(answering)} answering findings < "
-            f"{expectation.minimum_answered_findings} required"
         )
     report = run.report.casefold()
     for assertion in expectation.forbidden_assertions:
@@ -2713,7 +2806,7 @@ def run_replay_scenario(
                 question=kwargs.get("question"),
                 session_id=resolved_session,
                 config_path=str(production_config_path()),
-                max_iterations=scenario.max_iterations,
+                max_extra_passes=scenario.max_extra_passes,
                 output_format=kwargs.get("output_format"),
                 config_overrides=kwargs.get("config_overrides"),
                 runtime_builder=builder,

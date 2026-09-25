@@ -15,9 +15,9 @@ instead of counting requests.
 from __future__ import annotations
 
 from collections.abc import Sequence
+import re
 
 import pytest
-
 from deep_research.agents.evidence_verifier import (
     ContextItem,
     FigureMatch,
@@ -73,6 +73,7 @@ def page(
     kind: str | None = "actual",
     text: str | None = None,
     excerpt: str | None = None,
+    figures: tuple[tuple[str, str, str | None, str | None], ...] | None = None,
     **fields: object,
 ) -> ReplaySource:
     """One declared page whose excerpt states one figure."""
@@ -86,7 +87,9 @@ def page(
         text=text or f"{excerpt} The {slug} analysis covers the United States.",
         excerpt=excerpt,
         claim=excerpt,
-        figures=((value, unit, period, kind),),
+        figures=(
+            ((value, unit, period, kind),) if figures is None else figures
+        ),
         **fields,  # type: ignore[arg-type]
     )
 
@@ -143,8 +146,16 @@ def statement_request(items: Sequence[StatementCheckItem]) -> str:
 
 
 def verified(source: ReplaySource, *, organisation: str | None = None) -> Finding:
-    """The finding one page's figure becomes once the verifier has kept it."""
+    """The finding one page's figures become once the verifier has kept them."""
     _, finding = read_and_finding(source)
+    if not finding.figures:
+        # A finding whose page stated no figure: Figure Match keeps it and no
+        # Context Check runs for it (evidence_verifier's own branch).
+        return finding.model_copy(
+            update={
+                "verification": FindingVerification(status="verified")
+            }
+        )
     spec = source.figures[0]
     result = FigureResult(
         figure=finding.figures[0],
@@ -305,6 +316,50 @@ def test_a_context_override_can_reject_a_figure() -> None:
     assert draft.reason
 
 
+def test_a_figure_whose_unit_is_more_than_one_word_is_read_by_the_context_double() -> None:
+    """The real line is ``figure 1: 12 million dollars | recorded period …``."""
+    source = page("dollars", value="12", unit="million dollars")
+    completer = ReplayCompleter(scenario(source))
+    read, finding = read_and_finding(source)
+
+    [draft] = completer._reply_ContextCheckDraft(
+        context_request([(read, finding)])
+    ).figures
+
+    assert (draft.finding, draft.figure) == ("F01", 1)
+    assert draft.kind == "actual"
+    assert draft.period == "2024"
+
+
+def test_the_writer_double_keeps_a_multi_word_unit_whole() -> None:
+    source = page("units", value="3.4", unit="million units")
+    completer = ReplayCompleter(scenario(source))
+    task = writer_task([("F01", verified(source))])
+
+    draft = completer._reply_ReportWriterDraft(request_text(task))
+
+    assert draft.executive_summary[0].text.startswith("Acme Institute reports 3.4 million units")
+
+
+def test_the_writer_double_drafts_a_point_for_a_finding_with_no_figure() -> None:
+    """A figureless finding is a registry row production really prints.
+
+    ``EvidenceVerifierAgent`` marks a finding whose page stated no figure
+    ``verified`` without a Context Check, and ``finding_registry`` still lists
+    it: the writer is asked to write about it. A packet that lists findings and
+    no figure line is therefore a valid request, and the double drafts the
+    finding's own words rather than refusing the whole pass.
+    """
+    source = page("plain", value="40", figures=())
+    completer = ReplayCompleter(scenario(source))
+    task = writer_task([("F01", verified(source))])
+
+    draft = completer._reply_ReportWriterDraft(request_text(task))
+
+    assert [point.finding_labels for point in draft.executive_summary] == [["F01"]]
+    assert source.excerpt.split()[-3:] == draft.executive_summary[0].text.split()[-3:]
+
+
 def test_a_context_override_the_verifier_does_not_read_is_refused() -> None:
     """A fixture typo must fail loudly, not silently script nothing."""
     with pytest.raises(ValueError) as raised:
@@ -339,9 +394,16 @@ def test_the_statement_double_answers_one_verdict_per_label_the_request_lists() 
         assert draft.reason
 
 
-def test_a_statement_override_corrects_or_refuses_the_sentence_that_cites_it() -> None:
-    """The override travels with the page, and finds its statement through the
-    registry label the writer's own request stamped on that finding (R2)."""
+@pytest.mark.asyncio
+async def test_a_statement_override_corrects_or_refuses_through_the_real_writer() -> None:
+    """The override must reach the verdict the real composer applies.
+
+    R1: the items are built by ``compose_written_report`` itself, so the labels
+    each item carries are the writer's own reader labels -- never the ``F01``
+    registry labels a hand-built item would invent, which the real request does
+    not contain. A page scripted ``inconsistent`` has to leave a refused point
+    behind, and a page scripted ``corrected`` has to replace the sentence.
+    """
     kept = page("kept", value="10.4")
     corrected = page(
         "corrected", value="9.8",
@@ -362,26 +424,30 @@ def test_a_statement_override_corrects_or_refuses_the_sentence_that_cites_it() -
             ("F03", verified(refused)),
         ]
     )
-    # The writer runs first in a real pass, and its request is what tells the
-    # Statement Check double which page each cited label belongs to.
-    completer._reply_ReportWriterDraft(request_text(task))
-    items = [
-        StatementCheckItem(label="S001", text="Kept reports 10.4 GW for 2024.",
-                           findings=[verified(kept)], labels=["F01"]),
-        StatementCheckItem(label="S002", text="Corrected reports 9.8 GW for 2024.",
-                           findings=[verified(corrected)], labels=["F02"]),
-        StatementCheckItem(label="S003", text="Refused reports 18.9 GW of grid-scale storage.",
-                           findings=[verified(refused)], labels=["F03"]),
+
+    composition = await compose_written_report(
+        task,
+        completer._reply_ReportWriterDraft(request_text(task)),
+        provider=completer,
+        fingerprint=None,
+    )
+
+    # The checker really was asked, and with the writer's own labels: a reader
+    # label is not a registry label, which is the distinction this pins.
+    request = completer.packets["evidence_verifier:StatementCheckDraft"]
+    assert "cited findings:" in request
+    assert "Acme Institute's own figure" in request
+    assert not re.search(r"(?m)^  F\d+: ", request)
+
+    kept_texts = [point.text for point in composition.summary]
+    assert "Acme Institute reports 10.4 GW for 2024." in kept_texts
+    assert "Corrected reports 9.8 GW for 2024." in kept_texts
+    assert not any("18.9" in text for text in kept_texts)
+    refused_points = [
+        point for point in composition.rejected_points if "18.9" in point.text
     ]
-
-    reply = completer._reply_StatementCheckDraft(statement_request(items))
-    by_label = {draft.label: draft for draft in reply.statements}
-
-    assert by_label["S001"].verdict == "consistent"
-    assert by_label["S002"].verdict == "corrected"
-    assert by_label["S002"].corrected_text == "Corrected reports 9.8 GW for 2024."
-    assert by_label["S003"].verdict == "inconsistent"
-    assert "all segments" in by_label["S003"].reason
+    assert len(refused_points) == 1
+    assert "all segments" in refused_points[0].reason
 
 
 def test_a_scenario_can_script_the_statement_check_failing() -> None:
