@@ -418,11 +418,6 @@ async def compose_written_report(
             )]
 
     stated_rows: set[str] = set()
-    # §6.4 (Task 4.3): the Statement Check's own outcome for every sentence
-    # this pass kept, keyed by the sentence's statement id -- "unchecked" when
-    # its batch failed or its label was omitted (D8). A refused sentence is
-    # not kept, so it has no entry.
-    statement_verdicts: dict[str, str] = {}
 
     def finalize(candidate: _Candidate, *, dedup: bool) -> ReportPoint | None:
         def reject(reason: str) -> None:
@@ -469,12 +464,6 @@ async def compose_written_report(
             finding_ids=[ids[label] for label in candidate.finding_labels],
             target_ids=sorted({t for t, fids in task.answered.items() if cited_ids & set(fids)}),
         )
-        # Recorded at the one line that keeps the sentence: every refusal
-        # above returned already, so the map holds exactly what the report
-        # prints -- never a sentence this pass did not clear.
-        statement_verdicts[candidate.key] = (
-            "unchecked" if verdict is None else verdict.verdict
-        )
         return ReportPoint(text=text, source_urls=list(dict.fromkeys(f.source_url for f in own_first)),
                            statement=statement)
 
@@ -484,6 +473,20 @@ async def compose_written_report(
         built = [p for c in points if (p := finalize(c, dedup=False)) is not None]
         if built and title:
             sections.append(ReportSection(title=title, points=built))
+
+    # §6.4 (Task 4.3): the Statement Check's own outcome for every sentence the
+    # reader report prints, keyed by its statement id -- "unchecked" when its
+    # batch failed or its label was omitted (D8). Derived from the printed
+    # points rather than recorded as they are finalized: a section with no
+    # title is dropped whole, and its points are no part of the report.
+    printed = [*summary, *(point for section in sections for point in section.points)]
+    statement_verdicts = {
+        point.statement_id: (
+            "unchecked" if (verdict := verdicts.get(point.statement_id)) is None
+            else verdict.verdict
+        )
+        for point in printed
+    }
 
     return ReportComposition(
         question=task.question, session_id=task.session_id, iteration=task.iteration,
