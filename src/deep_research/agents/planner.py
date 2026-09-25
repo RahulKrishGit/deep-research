@@ -443,7 +443,9 @@ PLANNER_PLAN_SYSTEM_PROMPT = (
     "the request. Do not propose or describe another lookup.\n"
     "The scoping notes and the recalled memory below are leads, not facts: they "
     "may shape scope and search wording, and no plan field carries an answer "
-    "they suggest."
+    "they suggest. When a `# Plan under repair` section is printed, the "
+    "`# Repair` list names defects of that plan by target id: return that "
+    "plan with each named defect corrected, not a fresh one."
 )
 
 PLAN_INSTRUCTION = (
@@ -462,8 +464,10 @@ PLAN_INSTRUCTION = (
     "measures, two periods or two jurisdictions into one target, and never "
     "require two sources to agree within a numeric tolerance unless the "
     "question itself states that tolerance. A target asks only for what a page "
-    "can state: never for a verdict, a pick, a ranking, a comparison the "
-    "question did not ask for, or a combination of other targets' answers.\n"
+    "can state: never for a verdict, a pick, a ranking or a comparison the "
+    "run itself would have to make — a pick or a ranking a page states is "
+    "evidence, the run's own is not — and never for a combination of other "
+    "targets' answers.\n"
     "For every target fill the fields a program checks answers against. "
     "measure: the thing the evidence must state, in the question's own words "
     "when the question has them, otherwise the attribute or dimension the "
@@ -474,8 +478,9 @@ PLAN_INSTRUCTION = (
     "unless the question asks for that quantity itself. period: the period the "
     "question names for it, or empty. kind: actual for a measured or reported "
     "outcome, forecast for a projection or outlook; empty when the answer is "
-    "not a quantity. geography: the scope the question or the evidence names, "
-    "or empty. organisation: the body the question names as its source; when "
+    "not a quantity. geography: the scope the question or the answer "
+    "contract names, or empty. organisation: the body the question names "
+    "as its source; when "
     "it names none, the body that publishes the primary or official record of "
     "that measure — the name its pages will carry as the source, or empty when "
     "no single body does. Never stamp an adopting or enacting body, a joined "
@@ -486,7 +491,7 @@ PLAN_INSTRUCTION = (
     "event, item or attribute the question does not name; a body the plan "
     "chooses where the question names none; a target you add to make another "
     "target checkable — a magnitude, a definition, a supporting statistic or a "
-    "running total; and any further body's evidence where the question asks "
+    "derived total; and any further body's evidence where the question asks "
     "for several without naming them. Optional targets never fail a run, while "
     "a required target no source answers fails acceptance, so require nothing "
     "the question did not ask for and expect nothing of a page: a required "
@@ -496,7 +501,10 @@ PLAN_INSTRUCTION = (
     "a part a complete answer needs, and every part gets its own target. An "
     "item set with its attributes is one target per attribute, its measure "
     "naming the attribute, over the items the research finds — never one item "
-    "selected by another target's answer. The number of targets follows the "
+    "selected by another target's answer. A question that asks why or how is "
+    "answered by the reasons or the mechanism as sources state them: that is "
+    "its required target, and the factors, episodes or examples you "
+    "introduce to find them are optional. The number of targets follows the "
     "question: as many as its parts need, and no more. Plan one target per "
     "organisation, measure, period and kind the question asks for.\n"
     "Search queries say where to look, never what the answer is: a query may "
@@ -532,9 +540,9 @@ PLAN_INSTRUCTION = (
     "it, narrow it or widen it, and do not assert an assumption it does not "
     "carry. Cover benefits and risks (or harms) only when the question asks "
     "about them — 'is it good', 'what are the drawbacks' — and cover what "
-    "the question asks about and nothing else: a sub-topic, a criterion or a "
-    "target the question did not call for widens its scope, which the plan "
-    "review names as a defect.\n"
+    "the question asks about and nothing else: a sub-topic the question did "
+    "not call for, or a required target it did not ask for, widens its "
+    "scope, which the plan review names as a defect.\n"
     "Two sub-topics must never share a title."
 )
 
@@ -553,7 +561,8 @@ PLAN_INSTRUCTION = (
 # question.
 _PLAN_REPLY_EXAMPLES = (
     (
-        "Example input: compare bus and rail options for a city.",
+        "Example input: compare the ridership and cost of bus and rail "
+        "options for a city.",
         '{"sub_topics":['
         '{"title":"travel demand and coverage",'
         '"rationale":"Establish which trips each option must serve.",'
@@ -582,7 +591,7 @@ _PLAN_REPLY_EXAMPLES = (
         '"priority":2,'
         '"evidence_targets":['
         '{"question":"What capital cost per route kilometre does each option '
-        'report?","required":false,'
+        'report?","required":true,'
         '"measure":"capital cost per route kilometre","unit_dimension":"currency",'
         '"period":"","kind":"",'
         '"geography":"the city","organisation":""}]},'
@@ -595,7 +604,7 @@ _PLAN_REPLY_EXAMPLES = (
         'period it covers."],"priority":3,'
         '"evidence_targets":['
         '{"question":"What on-time performance did each option report?",'
-        '"required":true,'
+        '"required":false,'
         '"measure":"on-time performance","unit_dimension":"percent",'
         '"period":"","kind":"actual",'
         '"geography":"the city","organisation":""}]}'
@@ -611,7 +620,7 @@ _PLAN_REPLY_EXAMPLES = (
         'the regional health authority."],'
         '"priority":1,"evidence_targets":['
         '{"question":"What MMR first-dose coverage did the regional health '
-        'authority report for 2024?","required":true,'
+        'authority report for 2024?","required":false,'
         '"measure":"MMR first-dose coverage","unit_dimension":"percent",'
         '"period":"2024","kind":"actual",'
         '"geography":"the region","organisation":""}]},'
@@ -620,9 +629,9 @@ _PLAN_REPLY_EXAMPLES = (
         '"search_queries":["regional health authority measles outbreak report 2024 causes"],'
         '"success_criteria":["A published outbreak report naming the causes it identified, with its release date."],'
         '"priority":2,"evidence_targets":['
-        '{"question":"What causes of the 2024 rise did the regional health '
-        'authority\'s outbreak report identify?","required":true,'
-        '"measure":"causes identified by the outbreak report","unit_dimension":"",'
+        '{"question":"What causes of the 2024 rise do published outbreak '
+        'investigations identify?","required":true,'
+        '"measure":"causes identified by the outbreak investigations","unit_dimension":"",'
         '"period":"2024","kind":"",'
         '"geography":"the region","organisation":""}]},'
         '{"title":"immunity threshold",'
@@ -1114,9 +1123,9 @@ def geographic_scope_for(question: str) -> tuple[str, list[str]]:
         "unspecified",
         [
             "The question names no geography, so the plan assumes none: give a "
-            "target a geography only when the question or its evidence states "
-            "one, leave it empty otherwise, and no regional sample may support "
-            "a global conclusion.",
+            "target a geography only when the question or this contract's "
+            "scope names one, leave it empty otherwise, and no regional "
+            "sample may support a global conclusion.",
         ],
     )
 
@@ -2504,8 +2513,9 @@ def format_plan_problems(problems: Sequence[str]) -> str:
     """Render plan problems as the corrective instruction for one repair."""
     listed = "\n".join(f"- {problem}" for problem in problems)
     return (
-        "The previous plan was rejected. Fix every problem listed below and "
-        f"return a corrected plan.\n{listed}"
+        "The plan under repair is printed above. Fix every problem listed "
+        "below, each named by its target id, and return that plan "
+        f"corrected.\n{listed}"
     )
 
 
@@ -2544,9 +2554,10 @@ def format_review_problems(review: PlanReviewDraft) -> str:
         lines.append(f"- the reviewer's correction: {instruction}")
     listed = "\n".join(lines)
     return (
-        "The plan review found the plan unsound. The original question is "
-        "unchanged and must not be rephrased, narrowed, or widened. Fix every "
-        f"defect listed below and return a corrected plan.\n{listed}"
+        "The plan review found the plan under repair, printed above, "
+        "unsound. The original question is unchanged and must not be "
+        "rephrased, narrowed, or widened. Fix every defect listed below and "
+        f"return that plan corrected.\n{listed}"
     )
 
 
@@ -2615,6 +2626,16 @@ def plan_messages(
         material.append(f"# Context\n{task.guidance}")
     material.append(f"# Scoping notes\n{_render_notes(run)}")
     if repair is not None:
+        if plan_under_repair:
+            # A repair request names its problems by target id
+            # ("topic-01-target-02 asks 2 questions at once"), so it has to
+            # print the plan those ids belong to: without it the model is
+            # asked to correct a plan it cannot see, and the repair is a
+            # fresh sample rather than a correction.
+            material.append(
+                "# Plan under repair (correct this plan; do not restate it)\n"
+                f"{render_plan_for_review(plan_under_repair)}"
+            )
         material.append(f"# Repair\n{repair}")
     return [
         ChatMessage(role="developer", content=PLANNER_PLAN_SYSTEM_PROMPT),
@@ -2650,8 +2671,10 @@ PLAN_REVIEW_INSTRUCTION = (
     "jurisdiction. The text of a rule, a list or a set of items the question "
     "asks for in one clause is one atomic target; a target that requires two "
     "measures, two periods or two jurisdictions to be settled is compound even "
-    "when it reads as one sentence. Name each compound target in "
-    "`atomicity_defects`.\n"
+    "when it reads as one sentence. A target whose answer is a rule's date, "
+    "deadline, threshold or duration carries no unit or kind unless the "
+    "question asks for that quantity itself; name one that does in "
+    "`atomicity_defects`. Name each compound target in `atomicity_defects`.\n"
     "- No target asks for a verdict, a pick, a ranking, a comparison or a "
     "combination the question did not ask for, or for an item selected by "
     "another target's answer. Name each one in `atomicity_defects`.\n"
@@ -2660,7 +2683,11 @@ PLAN_REVIEW_INSTRUCTION = (
     "evidence; a query says where to look, never the value, date, item or pick "
     "a target asks for. Name each such premise in `unsupported_premises`.\n"
     "- The plan stays inside the frozen scope and as-of date. Name a target "
-    "that widens the scope or re-anchors the period in `unsupported_premises`.\n"
+    "that widens the scope or re-anchors the period in "
+    "`unsupported_premises`. When the as-of date is past a period the "
+    "question frames as a forecast, the plan holds an optional target for "
+    "that period's actual outcome; name its absence in "
+    "`missing_dimensions`.\n"
     "`repair_instruction` carries the corrections, one per defect you named; "
     "leave it empty when sound is true. Name the question's own parts, never "
     "rephrase the original question."
