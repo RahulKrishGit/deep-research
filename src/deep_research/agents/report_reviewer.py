@@ -103,8 +103,6 @@ from deep_research.utils.types import (
     ResearchError,
     ResearchState,
     ReviewDefect,
-    ScoredSource,
-    SourceTemporal,
     StatementReviewDisposition,
     UnitScore,
 )
@@ -129,22 +127,6 @@ The version is what keeps a stored judgement of the older packet from being
 read as a judgement of this one.
 """
 
-REPORT_REVIEW_MAX_TOKENS = 65536
-"""Output headroom for reasoning and the complete structured judgement.
-
-The 32768-token cap truncated the pre-flight's whole-report request with
-32768 completion tokens consumed. DeepSeek accepted 65536 for a planner
-request with thinking enabled; this is a verified setting, not a maximum.
-"""
-
-REPORT_REVIEW_EVIDENCE_BATCH_CHARS = 4000
-"""How much rendered evidence one batch carried while batches existed.
-
-Kept, with the batch shapes below, for the step-4 sweep (PD-21): the name is
-exported by ``agents/__init__.py``, so a parallel task must not delete it. The
-review no longer batches anything — the packet carries no evidence batch, and
-one request judges the whole report.
-"""
 
 REPORT_REVIEW_OPERATION = "report_review"
 """The operation label this reviewer's records carry.
@@ -1780,262 +1762,11 @@ def review_defects_as_refinement_jobs(
     return iter(review.material_defects)
 
 
-# --- shapes kept for the step-4 sweep (PD-21) --------------------------------
-#
-# ``agents/__init__.py`` exports these names and ``e2e_evaluation/replay.py``
-# imports ``ReviewBatchDraft``, so a parallel step-4 task must not delete them:
-# PD-21 has Task 4.10 remove every name left without a caller, in one sweep,
-# together with the modules that import them. Nothing in the review flow above
-# calls any of it — the packet carries no evidence batch, no checked claim and
-# no ranked row, and one request judges the whole report — so this block is the
-# old packet vocabulary waiting for its sweep, not a second code path.
-
-
-class ReviewEvidenceItem(ContractModel):
-    """One exact read excerpt a review could treat as evidence.
-
-    Kept for the sweep (PD-21): only a registered ``EvidenceUnit`` ever became
-    one of these, and the step-4 packet cites findings and their labels instead
-    of raw excerpts.
-    """
-
-    evidence_id: str = Field(min_length=1)
-    read_id: str = Field(min_length=1)
-    source_url: str = Field(min_length=1)
-    source_title: str = Field(min_length=1)
-    locator: str = Field(min_length=1)
-    excerpt: str = Field(min_length=1)
-    target_ids: list[str] = Field(default_factory=list)
-    badge: str = ""
-    badge_label: str = Field(min_length=1)
-    cited_by_statement_ids: list[str] = Field(default_factory=list)
-
-
-class ReviewEvidenceBatch(ContractModel):
-    """A bounded group of evidence items, rendered under one heading."""
-
-    batch_id: str = Field(min_length=1)
-    items: list[ReviewEvidenceItem] = Field(min_length=1)
-    chars: int = Field(ge=1)
-
-    @property
-    def evidence_ids(self) -> list[str]:
-        return [item.evidence_id for item in self.items]
-
-
-class ReviewTargetView(ContractModel):
-    """One planned obligation, with what the report actually answered."""
-
-    target_id: str = Field(min_length=1)
-    coverage_id: str = Field(min_length=1)
-    coverage_title: str = ""
-    question: str = Field(min_length=1)
-    required: bool = True
-    critical: bool = False
-    required_dimensions: list[str] = Field(default_factory=list)
-    answered_dimension_ids: list[str] = Field(default_factory=list)
-    answered_by_statement_ids: list[str] = Field(default_factory=list)
-    answered: bool = False
-    accounted: bool = False
-    account_reason: str = ""
-
-
-class ReviewClaimView(ContractModel):
-    """One checked claim, as a Critic-era review could see it.
-
-    Deliberately without the recorded confidence: a number the adjudicator
-    produced is a model judgement about the claim, not evidence for it.
-    """
-
-    claim_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    verdict: str = Field(min_length=1)
-    evidence_status: str = ""
-    badge_label: str = Field(min_length=1)
-    source_urls: list[str] = Field(default_factory=list)
-    target_ids: list[str] = Field(default_factory=list)
-
-
-class ReviewSourceView(ContractModel):
-    """One assessed source, identified without its scores.
-
-    Publisher and work identity are what an independence judgement turns on,
-    so they travel — with the aliases, status, and evidenced lineage that
-    resolved them. The numeric scores do not: they are a model's rating of a
-    source. Retained for the sweep (PD-21); the step-4 review reads findings,
-    not the source registry.
-    """
-
-    url: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    publisher_id: str = ""
-    work_id: str = ""
-    evaluation_status: str = ""
-    source_role: str = ""
-    self_interest: str = ""
-    transport_relation: str = ""
-    temporal: SourceTemporal = Field(default_factory=SourceTemporal)
-    assessment_revision: str = ""
-    identity_status: str = ""
-    """``known``/``unknown``/``conflicting``; empty when none was resolved."""
-    work_aliases: list[str] = Field(default_factory=list)
-    derives_from_work_ids: list[str] = Field(default_factory=list)
-
-
-def review_source_view(source: ScoredSource) -> ReviewSourceView:
-    """The one view of an assessed source a Critic-era packet read and keyed by."""
-    identity = source.work_identity
-    return ReviewSourceView(
-        url=source.url,
-        title=source.title,
-        publisher_id=source.publisher_id or "",
-        work_id=source.work_id or "",
-        evaluation_status=source.evaluation_status,
-        source_role=source.source_role,
-        self_interest=source.self_interest,
-        transport_relation=source.transport_relation,
-        temporal=source.temporal,
-        assessment_revision=source.assessment_revision,
-        identity_status=identity.identity_status if identity is not None else "",
-        work_aliases=list(identity.aliases) if identity is not None else [],
-        derives_from_work_ids=(
-            list(identity.derives_from_work_ids) if identity is not None else []
-        ),
-    )
-
-
-class ReviewRankedRow(ContractModel):
-    """One row of a report's ranked or compared table, in the printed order."""
-
-    rank: int = Field(ge=1)
-    statement_id: str = Field(min_length=1)
-    text: str = Field(min_length=1)
-    cell_texts: list[str] = Field(default_factory=list)
-    evidence_ids: list[str] = Field(default_factory=list)
-
-
-class ReviewBatchDraft(ContractModel):
-    """One provider-reported batch review.
-
-    A batch reply carries no dimensions: the seven scores are a judgement of
-    the whole report, and a per-batch score would be an average over sections
-    pretending to be one. Kept for the sweep (PD-21); ``defects`` is typed with
-    this review's own draft, so nothing here imports the Critic.
-    """
-
-    batch_id: str = Field(min_length=1)
-    statement_dispositions: list[StatementDispositionDraft] = Field(
-        default_factory=list
-    )
-    defects: list[ReviewDefectDraft] = Field(default_factory=list)
-    reviewed_statement_ids: list[str] = Field(default_factory=list)
-    reviewed_evidence_ids: list[str] = Field(default_factory=list)
-    problem: str = ""
-
-
-def _batch_evidence(
-    items: Sequence[ReviewEvidenceItem],
-) -> list[ReviewEvidenceBatch]:
-    """Fill bounded batches in order, never dropping or re-cutting an item.
-
-    Kept with the batch shapes above (PD-21): it is what gives
-    ``REPORT_REVIEW_EVIDENCE_BATCH_CHARS`` its meaning, and Task 4.10 removes
-    the words and the shapes together.
-    """
-    batches: list[ReviewEvidenceBatch] = []
-    current: list[ReviewEvidenceItem] = []
-    current_chars = 0
-
-    def rendered_chars(item: ReviewEvidenceItem) -> int:
-        return len(item.excerpt) + len(item.source_title) + len(item.locator) + 64
-
-    def flush() -> None:
-        nonlocal current, current_chars
-        if not current:
-            return
-        batches.append(
-            ReviewEvidenceBatch(
-                batch_id=f"batch-{len(batches) + 1:02d}",
-                items=list(current),
-                chars=max(1, current_chars),
-            )
-        )
-        current = []
-        current_chars = 0
-
-    for item in items:
-        size = rendered_chars(item)
-        if current and current_chars + size > REPORT_REVIEW_EVIDENCE_BATCH_CHARS:
-            flush()
-        current.append(item)
-        current_chars += size
-    flush()
-    return batches
-
-
-def _render_evidence_item(item: ReviewEvidenceItem) -> str:
-    return (
-        f"### {item.evidence_id}\n"
-        f"source: {item.source_title} — {item.source_url}\n"
-        f"read: {item.read_id} locator: {item.locator}\n"
-        f"corroboration: {item.badge_label}\n"
-        f"cited by: {', '.join(item.cited_by_statement_ids) or '-'}\n"
-        f"excerpt:\n{item.excerpt}"
-    )
-
-
-def batch_review_messages(
-    packet: ReportReviewInput,
-    batch: ReviewEvidenceBatch,
-) -> list[ChatMessage]:
-    """The follow-up request for one evidence batch, from the batched era.
-
-    Kept for the sweep (PD-21): nothing in the step-4 flow calls it, because
-    there are no batches to follow up — the reply is one judgement over the
-    whole packet.
-    """
-    sections = [
-        f"# Research question\n{packet.question}",
-        (
-            "# Packet fingerprint\n"
-            f"Packet fingerprint: {packet.fingerprint}\n"
-            f"Evidence batch under review: {batch.batch_id}"
-        ),
-        (
-            "# Reader statements\n"
-            "The statements whose evidence this batch carries, with their "
-            "text.\n" + _render_statements(packet)
-        ),
-        (
-            f"# Evidence — {batch.batch_id}\n"
-            "Read every passage in this batch and record what it supports, "
-            "contradicts, or leaves unestablished.\n"
-            + "\n\n".join(_render_evidence_item(item) for item in batch.items)
-        ),
-        (
-            "# Response contract\n"
-            "Return one JSON object with these fields and no others: "
-            "batch_id (this batch's id), statement_dispositions (one entry per "
-            "statement you can now judge), defects (typed, naming the ids "
-            "above), reviewed_statement_ids, reviewed_evidence_ids (every "
-            "evidence id in this batch that you read), and problem (anything "
-            "that stopped you reading it, or an empty string).\n\n"
-            + _render_defect_contract(packet)
-        ),
-    ]
-    return [
-        ChatMessage(role="developer", content=REPORT_REVIEW_SYSTEM_PROMPT),
-        ChatMessage(role="user", content="\n\n".join(sections)),
-    ]
-
-
 __all__ = [
     "DIMENSION_GUIDANCE",
     "MAX_REVIEW_DEFECTS",
     "REPORT_REVIEWER_ROLE",
-    "REPORT_REVIEW_EVIDENCE_BATCH_CHARS",
     "REPORT_REVIEW_INSTRUCTION",
-    "REPORT_REVIEW_MAX_TOKENS",
     "REPORT_REVIEW_OPERATION",
     "REPORT_REVIEW_PROMPT_VERSION",
     "REPORT_REVIEW_SYSTEM_PROMPT",
@@ -2047,20 +1778,12 @@ __all__ = [
     "ReportReviewDraft",
     "ReportReviewInput",
     "ReportReviewer",
-    "ReviewBatchDraft",
-    "ReviewClaimView",
     "ReviewDefectDraft",
     "ReviewDeterministic",
     "ReviewDimensionScores",
-    "ReviewEvidenceBatch",
-    "ReviewEvidenceItem",
     "ReviewFindingView",
-    "ReviewRankedRow",
-    "ReviewSourceView",
     "ReviewStatementView",
-    "ReviewTargetView",
     "StatementDispositionDraft",
-    "batch_review_messages",
     "build_report_review_input",
     "composition_semantic_fingerprint",
     "report_review_input_fingerprint",
@@ -2068,6 +1791,5 @@ __all__ = [
     "review_defects_as_refinement_jobs",
     "review_messages",
     "review_report",
-    "review_source_view",
     "semantic_review_passes",
 ]

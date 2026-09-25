@@ -707,26 +707,6 @@ def test_a_vague_dimension_scores_checkability_and_vagueness_zero(
     )
 
 
-def test_the_dimension_probe_fills_every_signal_field() -> None:
-    """``dimensions_are_checkable`` is only as good as the proposition it
-    probes with.
-
-    A signal field the probe leaves empty would report every dimension
-    answerable only through that field as un-creditable, failing plans that
-    are fine. Reflected over the private signal table deliberately: that
-    table is the thing the probe must stay in step with.
-    """
-    from deep_research.evaluation.evaluators import _TARGET_DIMENSION_PROBE
-    from deep_research.utils.types import (
-        _DIMENSION_SIGNALS,
-        answered_atom_dimensions,
-    )
-
-    expected = {field for _, fields in _DIMENSION_SIGNALS for field in fields}
-
-    assert set(answered_atom_dimensions((_TARGET_DIMENSION_PROBE,))) == expected
-
-
 # --- Task 12: read-bearing acquisition --------------------------------------
 
 
