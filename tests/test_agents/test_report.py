@@ -1310,3 +1310,21 @@ def test_the_finding_log_shows_the_passage_the_statement_check_read() -> None:
 
     plain = render_finding_log(_written_composition())
     assert "- Passage:" not in plain
+
+
+def test_a_quoted_findings_evidence_log_entry_says_so() -> None:
+    """D21: a no-figure finding the Evidence Verifier only quoted (its
+    snippet is on the page, but neither check judged it for relevance or
+    attribution) must never read as "verified" in the evidence log."""
+    read = make_read("The grant covers travel.", url="https://example.test/grant",
+                     title="Example grant page")
+    quoted = make_finding(read, "The grant covers travel.").model_copy(
+        update={"verification": FindingVerification(status="quoted")}
+    )
+    log = render_finding_log(_written_composition(
+        findings=[EIA_ACTUAL_2024, STEO_FORECAST_2025, quoted],
+    ))
+
+    assert ("- Verification: quoted (snippet found on the page; not checked "
+            "for context)") in log
+

@@ -151,6 +151,7 @@ def compute_report_quality(
         missing_required_target_ids=missing, unaccounted_target_ids=unaccounted,
         verified_findings=sum(1 for v in statuses if v.status == "verified"),
         corrected_findings=sum(1 for v in statuses if v.status == "verified_corrected"),
+        quoted_findings=sum(1 for v in statuses if v.status == "quoted"),
         dropped_findings=sum(1 for v in statuses if v.status == "dropped"),
         context_unchecked_findings=sum(1 for v in statuses if v.context_unchecked),
         dropped_figures=sum(1 for v in statuses for r in v.figure_results if not r.kept),
