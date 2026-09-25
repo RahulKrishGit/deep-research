@@ -771,3 +771,125 @@ def test_a_target_needs_its_required_flag() -> None:
 
     with pytest.raises(ValidationError):
         EvidenceTarget(**payload)
+
+
+from deep_research.utils.types import (
+    BottomLineDraft,
+    ItemMark,
+    ItemMarkDraft,
+    PageCredit,
+    ReportPart,
+    ReportPoint,
+    ReportSection,
+    ReportStatement,
+    ReportTable,
+    SectionDraft,
+    TableCell,
+    TableEntry,
+    UnreachablePage,
+    WriterPointDraft,
+)
+
+
+def test_a_report_table_rejects_a_row_whose_width_does_not_match_its_columns() -> None:
+    """A renderer indexes cells by column position; a short or long row would misalign every cell after it."""
+    with pytest.raises(ValidationError, match="column"):
+        ReportTable(
+            shape="findings",
+            columns=["What was measured", "Result", "Who reported it (and when)", "Source"],
+            rows=[[TableCell(text="10.4 GW"), TableCell(text="actual")]],
+        )
+
+
+def test_a_report_table_accepts_rows_matching_its_column_count() -> None:
+    table = ReportTable(
+        shape="options",
+        columns=["Option", "Recommended by"],
+        rows=[[
+            TableCell(text="Sony WH-1000XM6"),
+            TableCell(entries=[TableEntry(source_url="https://soundguys.com/a")]),
+        ]],
+        caption="Each cell quotes the report's own sentence about the option in that part.",
+    )
+    assert len(table.rows[0]) == len(table.columns)
+
+
+def test_a_composition_round_trips_the_table_parts_credits_marks_and_item_marks() -> None:
+    """T2-T6's fixed contract: every field the writer, table builder and renderer share."""
+    mark = ItemMark(
+        name="Sony WH-1000XM6",
+        verdict="best wireless headphones",
+        picked=True,
+        source_url="https://soundguys.com/a",
+    )
+    statement = ReportStatement(
+        statement_id="S001",
+        text="SoundGuys names the Sony WH-1000XM6 the best wireless headphones.",
+        finding_ids=["F01"],
+        items=[mark],
+    )
+    table = ReportTable(
+        shape="options",
+        columns=["Option", "Recommended by"],
+        rows=[[
+            TableCell(text="Sony WH-1000XM6", statement_ids=["S001"], finding_ids=["F01"]),
+            TableCell(entries=[TableEntry(source_url="https://soundguys.com/a", date="2026-09-17")]),
+        ]],
+        caption="Each cell quotes the report's own sentence about the option in that part.",
+    )
+    composition = ReportComposition(
+        question="q",
+        session_id="s",
+        summary=[ReportPoint(text=statement.text, statement=statement)],
+        sections=[ReportSection(title="Sound quality", coverage_id="topic-01", points=[])],
+        parts=[ReportPart(
+            coverage_id="topic-01",
+            sub_topic_title="Sound quality",
+            finding_ids=["F01"],
+            context_finding_ids=[],
+            status="written",
+        )],
+        table=table,
+        page_credits={"https://soundguys.com/a": PageCredit(publisher="SoundGuys", date="2026-09-17")},
+        unreachable=[UnreachablePage(url="https://example.com/denied", title="Denied page")],
+        dropped_marks=["S004: 'Model A' is not in the sentence"],
+    )
+
+    round_tripped = ReportComposition.model_validate(composition.model_dump(mode="json"))
+
+    assert round_tripped == composition
+    assert round_tripped.statements[0].items == [mark]
+    assert round_tripped.parts[0].status == "written"
+    assert round_tripped.table.rows[0][0].text == "Sony WH-1000XM6"
+    assert round_tripped.page_credits["https://soundguys.com/a"].publisher == "SoundGuys"
+    assert round_tripped.unreachable[0].url == "https://example.com/denied"
+    assert round_tripped.dropped_marks == ["S004: 'Model A' is not in the sentence"]
+
+
+def test_an_older_composition_snapshot_without_the_new_report_fields_still_validates() -> None:
+    """A composition persisted before this contract carries no table, parts, credits or marks."""
+    legacy_payload = {"question": "q", "session_id": "s"}
+
+    composition = ReportComposition.model_validate(legacy_payload)
+
+    assert composition.parts == []
+    assert composition.table is None
+    assert composition.page_credits == {}
+    assert composition.unreachable == []
+    assert composition.dropped_marks == []
+
+
+def test_section_and_bottom_line_drafts_carry_point_option_marks() -> None:
+    """The parallel writer's two reply schemas (spec §6.3): one point shape, shared."""
+    mark = ItemMarkDraft(name="Model A", verdict="4.5 out of 5", picked=True, by="F01")
+    point = WriterPointDraft(
+        text="Example Tester gives Model A a noise rating of 4.5 out of 5.",
+        finding_labels=["F01"],
+        items=[mark],
+    )
+
+    section = SectionDraft(title="Sound quality", points=[point])
+    bottom_line = BottomLineDraft(sentences=[point])
+
+    assert section.points[0].items == [mark]
+    assert bottom_line.sentences[0].items == [mark]

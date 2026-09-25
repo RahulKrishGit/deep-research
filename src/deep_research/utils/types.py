@@ -1319,6 +1319,20 @@ class Citation(ContractModel):
     title: str = Field(min_length=1)
 
 
+class ItemMark(ContractModel):
+    """One option mark over a checked sentence's final text (spec §5, §6.4 rule 8).
+
+    ``name`` and ``verdict`` must be verbatim spans of the statement they
+    mark, so every table cell code assembles from them is a span of checked
+    wording, never independently judged prose.
+    """
+
+    name: str                  # verbatim span of the statement text, <= 80 chars
+    verdict: str = ""          # verbatim span, <= 80 chars
+    picked: bool = False       # the sentence reports that this page picks or recommends the option
+    source_url: str            # the page this mark rests on (resolved from the draft's `by`)
+
+
 class ReportStatement(ContractModel):
     """One reader statement, with the evidence mapping that makes it auditable.
 
@@ -1333,6 +1347,8 @@ class ReportStatement(ContractModel):
     text: str = Field(min_length=1)
     target_ids: list[str] = Field(default_factory=list)
     finding_ids: list[str] = Field(default_factory=list)
+    items: list[ItemMark] = Field(default_factory=list)
+    """This statement's option marks (spec §5); code assembles the options table from them."""
 
 
 class ReportPoint(ContractModel):
@@ -1357,6 +1373,8 @@ class ReportSection(ContractModel):
 
     title: str = Field(min_length=1)
     points: list[ReportPoint] = Field(default_factory=list)
+    coverage_id: str = ""
+    """The plan sub-topic this section renders; "" for a legacy composition."""
 
 
 class ReportTerminalState(ContractModel):
@@ -1458,6 +1476,77 @@ class NotFoundTarget(ContractModel):
     searched: bool = False                                 # the acquisition ran at all
 
 
+class ReportPart(ContractModel):
+    """One plan sub-topic's partition record: which findings it owns and
+    whether its writer call ran, carried over, or failed (spec §6.1, §6.7).
+    """
+
+    coverage_id: str
+    sub_topic_title: str
+    finding_ids: list[str] = Field(default_factory=list)          # the partition (§6.1)
+    context_finding_ids: list[str] = Field(default_factory=list)  # D16 (§6.2)
+    status: Literal["written", "carried_over", "failed", "empty"]
+
+
+class PageCredit(ContractModel):
+    """One page's printed identity, computed once at compose time (spec §8).
+
+    A renderer is pure and never reads a page itself, so every Sources line,
+    options-table cell and Recommended-by date comes from this record.
+    """
+
+    publisher: str
+    date: str | None = None
+
+
+class UnreachablePage(ContractModel):
+    """One page a required target's acquisition could not open (spec §6.7, §10)."""
+
+    url: str
+    title: str = ""
+    reason: str = ""           # empty until §12 I2 lands
+
+
+class TableEntry(ContractModel):
+    """One page's contribution to one options-table cell (spec §5)."""
+
+    text: str = ""             # verbatim spans joined "; " in options cells; "" for Recommended by
+    source_url: str
+    date: str | None = None    # Recommended by only
+
+
+class TableCell(ContractModel):
+    """One cell of a ``ReportTable`` row, with the evidence it renders (spec §5, §9)."""
+
+    text: str = ""             # findings-table text; "" with no entries renders "—"
+    entries: list[TableEntry] = Field(default_factory=list)
+    statement_ids: list[str] = Field(default_factory=list)
+    finding_ids: list[str] = Field(default_factory=list)
+    row_ids: list[str] = Field(default_factory=list)
+
+
+class ReportTable(ContractModel):
+    """The question-shaped table code assembles from checked statements (spec §4).
+
+    Never written by a model call: ``shape`` names the structural rule that
+    built it.
+    """
+
+    shape: Literal["options", "findings"]
+    columns: list[str]
+    rows: list[list[TableCell]]   # validator: len(row) == len(columns)
+    caption: str = ""
+
+    @model_validator(mode="after")
+    def rows_match_columns(self) -> "ReportTable":
+        width = len(self.columns)
+        if any(len(row) != width for row in self.rows):
+            raise ValueError(
+                "every table row must carry exactly one cell per column"
+            )
+        return self
+
+
 class ReportComposition(ContractModel):
     """Everything one written pass composed, and the evidence it renders.
 
@@ -1527,6 +1616,14 @@ class ReportComposition(ContractModel):
     errors: list[ResearchError] = Field(default_factory=list)
     summary: list[ReportPoint] = Field(default_factory=list)
     sections: list[ReportSection] = Field(default_factory=list)
+    parts: list[ReportPart] = Field(default_factory=list)
+    """One partition record per non-empty plan sub-topic (spec §6.1, §6.7)."""
+    table: ReportTable | None = None
+    """The question-shaped table (spec §4); ``None`` when no shape qualifies."""
+    page_credits: dict[str, PageCredit] = Field(default_factory=dict)  # normalized URL -> credit
+    unreachable: list[UnreachablePage] = Field(default_factory=list)
+    """Denied or blocked pages for a required target (spec §6.7)."""
+    dropped_marks: list[str] = Field(default_factory=list)            # "S004: 'Model A' is not in the sentence"
     uncertainty_notes: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
     """Drafted content this pass refused, as project-generated reasons."""
@@ -1593,6 +1690,45 @@ class ReportComposition(ContractModel):
             seen.add(statement.statement_id)
             unique.append(statement)
         return unique
+
+
+# --- The parallel writer's reply schemas (spec §6.3) ------------------------
+#
+# One point shape shared by both calls: a section drafts a titled list of
+# them, and the bottom-line call drafts an untitled list of the same shape,
+# fed only the sections' own checked statements.
+
+
+class ItemMarkDraft(ContractModel):
+    """One option mark as the writer drafts it, before the Statement Check
+    re-validates it as a verbatim span of the point's final text.
+    """
+
+    name: str
+    verdict: str = ""
+    picked: bool = False
+    by: str = ""                      # a finding label; required when the point cites pages of more than one site
+
+
+class WriterPointDraft(ContractModel):
+    """One drafted sentence: its text, the findings it cites, and its option marks."""
+
+    text: str
+    finding_labels: list[str] = Field(default_factory=list)
+    items: list[ItemMarkDraft] = Field(default_factory=list)
+
+
+class SectionDraft(ContractModel):
+    """One part's drafted reply: a title and its kept points (spec §6.3)."""
+
+    title: str
+    points: list[WriterPointDraft] = Field(default_factory=list)
+
+
+class BottomLineDraft(ContractModel):
+    """The bottom-line call's drafted reply: 2-4 sentences (spec §6.6)."""
+
+    sentences: list[WriterPointDraft] = Field(default_factory=list)
 
 
 class ResearchState(ContractModel):
