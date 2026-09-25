@@ -94,6 +94,7 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     EVIDENCE_BADGE_LABELS,
     ClaimProvenance,
+    LEGACY_QUALITY_CONTRACT_VERSION,
     QUALITY_CONTRACT_VERSION,
     REVIEW_DIMENSIONS,
     AtomicProposition,
@@ -5438,18 +5439,33 @@ def test_the_quality_record_carries_the_verified_findings_and_refusals() -> None
     assert "claims" not in record and "claim_clusters" not in record
 
 
-def test_the_quality_record_stamps_the_step_four_contract_version() -> None:
-    """The record publishes the contract the state was stamped with.
+def test_the_quality_record_publishes_the_contract_version_the_state_carries() -> None:
+    """The record publishes the state's own contract version, never a relabelling.
 
     A new run stamps ``utils.types.QUALITY_CONTRACT_VERSION`` onto its state
-    (``graph.state``), and the record must publish exactly that — never the
-    legacy default, which would label a step-4 record as a claim-era one — and
-    the contract this build writes is version 2.
+    (``graph.state``) and a snapshot written before the versioned contract
+    keeps ``LEGACY_QUALITY_CONTRACT_VERSION``. The record must carry whichever
+    of the two the pass actually holds — in both stamping sites — because a
+    consumer that finds a step-4 record has to be told it is one, and a
+    consumer handed a legacy session's record has to be told that instead of
+    being given the current build's number.
     """
     state = written_state()
-    record = json.loads(render_quality_json(state, state.composition, None))
-    assert record["quality_contract_version"] == QUALITY_CONTRACT_VERSION
-    assert QUALITY_CONTRACT_VERSION == "2"
+    legacy = state.model_copy(
+        update={"quality_contract_version": LEGACY_QUALITY_CONTRACT_VERSION}
+    )
+
+    current = json.loads(render_quality_json(state, state.composition, None))
+    historical = json.loads(render_quality_json(legacy, legacy.composition, None))
+
+    assert current["quality_contract_version"] == QUALITY_CONTRACT_VERSION
+    assert current["configuration"]["quality_contract_version"] == (
+        QUALITY_CONTRACT_VERSION
+    )
+    assert historical["quality_contract_version"] == LEGACY_QUALITY_CONTRACT_VERSION
+    assert historical["configuration"]["quality_contract_version"] == (
+        LEGACY_QUALITY_CONTRACT_VERSION
+    )
 
 
 def test_the_quality_record_publishes_the_review_the_reviewer_recorded() -> None:
