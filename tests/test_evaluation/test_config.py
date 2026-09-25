@@ -880,9 +880,6 @@ from deep_research.utils.config import (
 # attaches to in the next, and the excerpt drawn from the read then spans both.
 # No prompt string was edited, and ``agents.prompts`` was untouched, so the other
 # four target pins and the Judge pin are unchanged.
-PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "852f96eefee7",
-    "researcher": "90f46cf12b62",
 # Run-2 improvement wave (FixSelection, improvements 1B and 4): the
 # Researcher's own module source moved `3853aff7e02c` -> `e5bbfe3ede99` — a
 # required target left unanswered after a read that states its own words now
@@ -892,15 +889,19 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
 # `unmined_target` disposition. No prompt string was edited, and
 # ``agents.prompts`` was untouched, so the other four target pins and the
 # Judge pin are unchanged.
-    "researcher": "e5bbfe3ede99",
+# The run-2 wave merged two researcher changes (FixScraper's improvement 3,
+# alone `90f46cf12b62`, and FixSelection's 1B+4, alone `e5bbfe3ede99`); the
+# merged module is `068c5fe435ef`. FF2's improvements 2 and 11 moved the
+# report writer `a3a73e32c3c0` -> `24ccad97fb9f`.
+PINNED_TARGET_PROMPT_FINGERPRINTS = {
+    "planner": "852f96eefee7",
+    "researcher": "068c5fe435ef",
     "source_evaluator": "58c4e7d909ef",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
     # verdict. No other agent's text changed, and the Judge pin is unchanged.
     "evidence_verifier": "9f5515f04833",
-    "report_writer": "a3a73e32c3c0",
-    "evidence_verifier": "e8d10a516459",
     "report_writer": "24ccad97fb9f",
 }
 
