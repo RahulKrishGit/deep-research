@@ -363,8 +363,7 @@ def test_a_replay_report_is_dated_by_the_harness_clock(
     lines = run.report.splitlines()
     assert attempts == []
     assert any(
-        line.startswith("*As of ")
-        and REPLAY_CLOCK_INSTANT.isoformat() in line
+        line.startswith(f"*As of {REPLAY_CLOCK_INSTANT:%Y-%m-%d %H:%M} UTC. ")
         for line in lines
     )
 
