@@ -978,7 +978,16 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # The evidence-log item (review F5) moved the writer once more: the
     # Statement Check's bounded passages are computed once for the items and
     # kept on the published record (`9387d2a0d77a` -> `e81da5da252b`).
-    "report_writer": "e81da5da252b",
+    # The prompt-fix wave (Fable's review; WRI-1 to WRI-3 and EXTRA-5, PD-17)
+    # rewrote the writer's system prompt, its rules and its two reply examples:
+    # a host is where a statement was read, a snippet may end mid-clause, a
+    # "not found" line never withholds an answer, an effective date the question
+    # asks for is not page housekeeping, the label decides the credit and its own
+    # words are never printed, a qualifier travels with its number, and the
+    # examples mirror registry entries. Prompt drift only, module code untouched:
+    # `e81da5da252b` -> `80de0d1e2168`; the four other target pins and the Judge
+    # pin are unchanged.
+    "report_writer": "80de0d1e2168",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

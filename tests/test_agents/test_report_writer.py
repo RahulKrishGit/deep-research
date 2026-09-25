@@ -16,6 +16,8 @@ from deep_research.agents.report_writer import (
     MAX_POINT_CHARS,
     REPORT_WRITER_INSTRUCTION,
     REPORT_WRITER_NAME,
+    REPORT_WRITER_SYSTEM_PROMPT,
+    _WRITER_REPLY_EXAMPLES,
     ReportWriterAgent,
     ReportWriterDraft,
     WriterPointDraft,
@@ -240,15 +242,72 @@ def test_the_writer_instruction_states_the_point_length_bound() -> None:
 
 
 def test_the_writer_rules_keep_titles_in_the_cited_words_and_metadata_out_of_the_prose() -> None:
-    """Improvement 11: an own-voice heading ("pending") and a page's own disclaimer are not the report.
+    """Improvement 11 and WRI-2 defects 2 and 11.
 
-    The live run printed a "pending amendments" heading no cited page supported
-    and two filler bullets -- a document's own entry-into-force line and a site
-    disclaimer.
+    An own-voice heading no cited page supported and a page's housekeeping are
+    not the report -- but an effective date is not housekeeping when the question
+    asks when something applies (run 2: the article's own coming-into-force date
+    *was* half the answer).
     """
     assert "A section title names its subject in the cited findings' own words" in REPORT_WRITER_INSTRUCTION
-    assert "never states the report's own judgement or status" in REPORT_WRITER_INSTRUCTION
-    assert "Never print a page's own metadata or disclaimer as a point" in REPORT_WRITER_INSTRUCTION
+    assert "never a framing the findings do not state" in REPORT_WRITER_INSTRUCTION
+    assert "Never print a page's housekeeping as a point" in REPORT_WRITER_INSTRUCTION
+    assert ("An effective date is not housekeeping when the question asks when "
+            "something applies" in REPORT_WRITER_INSTRUCTION)
+
+
+def test_the_writer_rules_never_withhold_an_answer_and_never_print_a_host_as_speaker() -> None:
+    """WRI-2 defects 1 and 3, WRI-1 defect 1: the code list discloses absence; a host is a place.
+
+    Run 2 obeyed the old rule by suppressing verified dates (the report then
+    contradicted its own Not found list) and obeyed the label rule by copying
+    label text into prose ("RTINGS.com reports 916 headphones bought and tested,
+    with the period not stated"). A host credited as the author of a document the
+    page reproduces is a relay presented as the issuer.
+    """
+    assert "a \"not found\" line never suppresses what a finding states" in REPORT_WRITER_INSTRUCTION
+    assert "a point never announces an absence of its own" in REPORT_WRITER_INSTRUCTION
+    assert "Never print a label's own words" in REPORT_WRITER_INSTRUCTION
+    host_rule = "host is where a statement was read, never the body that made it"
+    assert host_rule in REPORT_WRITER_INSTRUCTION
+    assert host_rule in REPORT_WRITER_SYSTEM_PROMPT
+
+
+def test_the_writer_rules_keep_a_snippet_s_complete_part_only_and_a_qualifier_with_its_number() -> None:
+    """WRI-1 defect 2 and WRI-2 defects 4 and 7: cut clauses and dropped qualifiers.
+
+    Run 2 closed a cut clause with its own object ("identify and comply with
+    *it*") and stated a cut rule unconditionally; the dry run printed "nearly
+    65 GW" as "65 GW".
+    """
+    assert "A snippet is verbatim and may end mid-clause" in REPORT_WRITER_SYSTEM_PROMPT
+    assert "never supply an object, a condition or an ending it does not carry" in REPORT_WRITER_INSTRUCTION
+    assert "keep the finding's own qualifier with the number it qualifies" in REPORT_WRITER_INSTRUCTION
+
+
+def test_the_writer_examples_mirror_a_registry_entry_and_invent_nothing() -> None:
+    """WRI-3: the output uses only its input's words, and the shapes taught are the hard ones.
+
+    The old example turned the line's "12 percent" into "12 percent reduction" --
+    a measure word the input never carried, the class of run 1's line 7 and run
+    2's line 9 -- and taught neither a statement-only finding nor a host.
+    """
+    assert len(_WRITER_REPLY_EXAMPLES) == 2
+    figure_input, figure_output = _WRITER_REPLY_EXAMPLES[0]
+    assert "## F01:" in figure_input and "snippet:" in figure_input
+    assert "figure 1:" in figure_input and "label:" in figure_input
+    assert "more capacity" in figure_input and "more capacity" in figure_output
+    assert "reduction" not in figure_output
+    assert "Example Statistical Agency" in figure_output
+
+    statement_input, statement_output = _WRITER_REPLY_EXAMPLES[1]
+    assert "statement | attributed to" in statement_input
+    assert "as reproduced at example-register.test" in statement_output
+    assert "according to example-register.test" not in statement_output
+
+    printed = figure_output + statement_output
+    assert not any(label_word in printed for label_word in
+                   ("own figure", "not stated", "does not attribute it"))
 
 
 def test_the_writer_rules_require_additive_sections_and_a_criterion_for_a_judgement() -> None:
