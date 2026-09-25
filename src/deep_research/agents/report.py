@@ -938,10 +938,14 @@ def _header_counts(composition: ReportComposition) -> str:
     corrected = sum(1 for v in statuses if v.status == "verified_corrected")
     unchecked = sum(1 for v in statuses if v.status != "dropped" and v.context_unchecked)
     dropped = sum(1 for v in statuses if v.status == "dropped")
+    # ``not_found`` holds the *required* targets no finding answered
+    # (``verified_facts.not_found_targets``), so an empty list proves the
+    # required questions were answered and says nothing about optional ones:
+    # the sentence claims no more than that (F7).
     unanswered = (
-        _counted(len(composition.not_found), "planned question", "planned questions")
+        _counted(len(composition.not_found), "required question", "required questions")
         + " unanswered, listed under Not found."
-        if composition.not_found else "every planned question is answered."
+        if composition.not_found else "every required question is answered."
     )
     return (f"{len(written_citations(composition))} sources cited; {checked} findings checked against "
             f"their pages ({corrected} with corrected context, {unchecked} with unchecked context), "

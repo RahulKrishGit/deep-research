@@ -133,23 +133,38 @@ def test_the_header_names_the_plan_without_its_identifiers() -> None:
     assert "planned sub-topic" not in header and "required target" not in header
 
 
-def test_the_header_counts_unanswered_planned_questions_and_points_to_not_found() -> None:
-    """A reader is told how many planned questions are open and where they are listed."""
+def test_the_header_counts_unanswered_required_questions_and_points_to_not_found() -> None:
+    """A reader is told how many questions are open and where they are listed."""
     unanswered = _plain_composition(
         not_found=[NotFoundTarget(target_id="topic-01-target-01", question="Which one ranks first?"),
                    NotFoundTarget(target_id="topic-02-target-01", question="What does the lab measure?")],
     )
-    assert ("2 planned questions unanswered, listed under Not found."
+    assert ("2 required questions unanswered, listed under Not found."
             in render_written_report(unanswered).splitlines()[2])
 
     one = _plain_composition(
         not_found=[NotFoundTarget(target_id="topic-01-target-01", question="Which one ranks first?")],
     )
-    assert ("1 planned question unanswered, listed under Not found."
+    assert ("1 required question unanswered, listed under Not found."
             in render_written_report(one).splitlines()[2])
 
     answered = _plain_composition(not_found=[])
-    assert "every planned question is answered." in render_written_report(answered).splitlines()[2]
+    assert "every required question is answered." in render_written_report(answered).splitlines()[2]
+
+
+def test_the_header_never_claims_more_than_the_not_found_list_proves() -> None:
+    """F7: an unanswered *optional* question is not in ``not_found``, so the header may not claim it away.
+
+    ``verified_facts.not_found_targets`` (verified_facts.py:1212) lists a target
+    only when it is ``required`` and unanswered, so an empty ``not_found``
+    proves that every required question was answered and nothing at all about
+    the optional ones. The sentence says exactly that much.
+    """
+    header = render_written_report(_plain_composition(not_found=[])).splitlines()[2]
+
+    assert "every required question is answered." in header
+    assert "every planned question is answered." not in header
+    assert "every question is answered." not in header
 
 
 def test_a_not_found_entry_states_the_search_without_dumping_it() -> None:
