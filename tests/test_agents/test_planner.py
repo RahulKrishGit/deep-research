@@ -354,9 +354,15 @@ def test_problems_render_as_one_corrective_instruction() -> None:
     rendered = format_plan_problems(["problem one", "problem two"])
 
     assert rendered.startswith("The plan under repair is printed above.")
-    assert "each named by its target id" in rendered
+    assert "each names the target, the sub-topic or the plan it concerns" in rendered
     assert "- problem one" in rendered
     assert "- problem two" in rendered
+    # A draft with no valid sub-topic prints no plan, and the wrapper must not
+    # point at one.
+    unprinted = format_plan_problems(["problem one"], plan_printed=False)
+    assert "printed above" not in unprinted
+    assert unprinted.startswith("The previous plan could not be validated")
+    assert "- problem one" in unprinted
 
 
 def test_plan_messages_carry_question_notes_and_requirements() -> None:
@@ -986,12 +992,21 @@ async def test_planner_preserves_final_plan_provider_cause_without_reachability_
     tracker: Tracker,
 ) -> None:
     provider_error = _output_limit_error()
+    retry_error = ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=32768,
+            usage=TokenUsage(input_tokens=5, output_tokens=32768),
+            request_attempt=1,
+            structured_attempt=1,
+        )
+    )
     agent = _planner(
         tracker,
         ScriptedCompleter(
             decisions=[finish("No lookup needed.", "Three angles matter.")],
             # A truncated draft is re-asked once; the retry truncates too.
-            outputs=[provider_error, _output_limit_error()],
+            outputs=[provider_error, retry_error],
         ),
     )
 
@@ -999,10 +1014,14 @@ async def test_planner_preserves_final_plan_provider_cause_without_reachability_
         async with tracker.session_span("session-1", "q"):
             await agent.run(_state())
 
-    # The cause is the retry's own truncation, as a redacted copy: the typed
-    # provider cause is kept, the provider response it was read from is not.
-    assert isinstance(caught.value.__cause__, ProviderOutputLimitError)
-    assert caught.value.__cause__ is not provider_error
+    # The cause is the retry's own truncation (its telemetry, not the first
+    # call's), as a redacted copy: the typed provider cause is kept, the
+    # provider response it was read from is not.
+    cause = caught.value.__cause__
+    assert isinstance(cause, ProviderOutputLimitError)
+    assert cause.telemetry == retry_error.telemetry
+    assert cause.telemetry != provider_error.telemetry
+    assert cause is not retry_error
     assert "reach" not in str(caught.value).casefold()
     assert "plan" in str(caught.value).casefold()
 
@@ -1328,7 +1347,7 @@ async def test_the_lint_repair_request_carries_unlabelled_problems(
     # The plan the problems name is printed above the repair list, so an id in
     # that list names something the model can see and correct: the defect Fable
     # blocked on, pinned on the request the provider actually receives.
-    assert "# Plan under repair (correct this plan; do not restate it)" in (
+    assert "# Plan under repair (return this plan corrected, not unchanged)" in (
         repair_request
     )
     assert repair_request.index("# Plan under repair") < repair_request.index(
@@ -1339,7 +1358,8 @@ async def test_the_lint_repair_request_carries_unlabelled_problems(
         f"\n\n{STRUCTURED_REQUEST_END}", 1
     )[0] == (
         "The plan under repair is printed above. Fix every problem listed "
-        "below, each named by its target id, and return that plan corrected.\n"
+        "below — each names the target, the sub-topic or the plan it concerns "
+        "— and return that plan corrected.\n"
         "- topic-01-target-01 anchors currency to 2019 for a session as of "
         "2026-09-16; ask for the latest available evidence instead"
     )
@@ -5179,3 +5199,40 @@ async def test_a_truncated_plan_review_is_re_asked_once_at_the_retry_effort(
     assert completer.efforts == [None, None, "high"]
     assert completer.budgets[1] == completer.budgets[2]
     assert _plan_defects(outcome.state_update["errors"]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_fails_validation_keeps_its_diagnostics_as_a_redacted_copy(
+    tracker: Tracker,
+) -> None:
+    """A non-truncation failure of the retry is redacted like a second truncation.
+
+    The reviewer's rule (``_re_ask_truncated``): the retry's failure keeps its
+    type and its provider-free diagnostics, so ``structured_output_problems``
+    still names what failed validation, but the caller receives a fresh copy
+    with the provider exception chain cut, not the object the provider raised.
+    """
+    schema_failure = StructuredOutputError(
+        "the draft failed validation",
+        diagnostics=[{"attempt": 2, "field_paths": ["sub_topics"]}],
+    )
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_output_limit_error(), schema_failure],
+    )
+    agent = _planner(tracker, completer)
+
+    with pytest.raises(PlanningError) as caught:
+        async with tracker.session_span("session-1", "q"):
+            await agent.run(_state())
+
+    cause = caught.value.__cause__
+    assert isinstance(cause, StructuredOutputError)
+    assert cause is not schema_failure
+    assert cause.__cause__ is None and cause.__suppress_context__
+    assert cause.diagnostics == schema_failure.diagnostics
+    assert any(
+        "failed schema validation on attempt 2 at sub_topics" in problem
+        for problem in caught.value.problems
+    )
+    assert completer.efforts == [None, "high"]

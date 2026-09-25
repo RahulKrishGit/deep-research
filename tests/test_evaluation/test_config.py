@@ -943,8 +943,18 @@ from deep_research.utils.config import (
 # recorded as a planner_output_limit_retry, and a second truncation propagates
 # as before. Module source only: no prompt string moved, and the researcher,
 # the other three and the judge are unchanged.
+# The retry-review P3s (RevPlannerRetry) moved the planner, 646e8c2dbdf3 -> 8879aec67208: a
+# retry that fails other than by truncation now reaches the caller as a
+# redacted copy (diagnostics kept, provider chain cut), the reviewer's rule.
+# Module source only; the judge and the other four are unchanged.
+# Fable's round-2 optional planner follow-ups moved it again, 8879aec67208 -> 632bdf446f27:
+# the repair header reads "return this plan corrected, not unchanged", the lint
+# wrapper names what each problem concerns and says when no plan is printed,
+# PLAN-5's verdict check mirrors PLAN-3's run-judgement rule, and example 1
+# names the capital cost its required target measures (kind actual). Prompt
+# strings and module source of the planner's own; the others are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "646e8c2dbdf3",
+    "planner": "632bdf446f27",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
