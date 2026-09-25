@@ -826,8 +826,14 @@ from deep_research.utils.config import (
 # words literally or in the spelling their own fold agrees on ("Q1'25" is
 # "Q1 2025"). No prompt string was edited, and ``agents.prompts`` was untouched,
 # so the other four target pins and the Judge pin are unchanged.
+# D10 (controller, before the second live run): the planner's instruction
+# carried a worked example drawn from one of the eight probe questions (a drug
+# maker's name and "the manufacturer of" that drug). The example is now neutral
+# ("Siemens"; "the manufacturer of the product"); the planner moved
+# `3e987c934fae` -> `852f96eefee7`. The other four target pins and the Judge
+# pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "3e987c934fae",
+    "planner": "852f96eefee7",
     "researcher": "c490b869021b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "2a68e627d577",
