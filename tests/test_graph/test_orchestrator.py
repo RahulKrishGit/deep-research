@@ -277,9 +277,10 @@ async def test_run_publishes_when_the_context_check_fails(
     quality = publisher.document_named("-quality.json")[1]
     assert "unchecked context" in reader
     assert "context unchecked" in ledger
-    # The sentence the report prints is the one the real writer's scripted
-    # draft composed, and it is there because the real Statement Check judged
-    # it: a double running neither path could not produce either fact.
+    # What these two assertions check: the sentence the drafted point carried
+    # reached the reader unchanged — a sentence the Statement Check refused
+    # would drop SNIPPET from the report — and every sentence the report
+    # prints carries the consistent verdict that check returned.
     assert SNIPPET in reader
     assert state.composition is not None
     assert set(state.composition.statement_verdicts.values()) == {"consistent"}
