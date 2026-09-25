@@ -545,21 +545,6 @@ def compute_report_quality(
         ("missing_reader_report", not state.report), ("missing_evidence_ledger", not state.report_evidence),
     ) if failed]
     return ReportQualitySnapshot(
-        # The claim-era readings this function used to measure -- claimed
-        # coverage, claim counts, source scoring -- have no gate and no
-        # producer left (PD-10). Their fields stay required on the type until
-        # Task 4.10 deletes them, so they are written as the empty value of
-        # their own scale: an unmeasured zero, never a stale one.
-        coverage_ratio=0.0,
-        planned_topics=0,
-        covered_topics=0,
-        unique_findings=0,
-        unique_sources=0,
-        scored_cited_source_ratio=0.0,
-        verified_claims=0,
-        contradicted_claims=0,
-        duplicate_claims=0,
-        duplicate_source_rows=0,
         required_target_ids=required, answered_target_ids=sorted(answered),
         missing_required_target_ids=missing, unaccounted_target_ids=unaccounted,
         verified_findings=sum(1 for v in statuses if v.status == "verified"),
