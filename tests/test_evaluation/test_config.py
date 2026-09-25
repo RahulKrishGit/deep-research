@@ -784,11 +784,18 @@ from deep_research.utils.config import (
 # that module's ``_WRITER_ATTEMPT_EFFORTS`` comment (the last "synthesizer"
 # mention in it), a comment-only edit that moves the same value again,
 # ``6dbc0f346565`` -> ``69b86b8b87a2``; the four other pins stay put.
+# Task FF1 follow-up (reporting cues, the own-page host rule, a publication cue
+# for the quoted date; final review slice 1): the Evidence Verifier's own module
+# source moved `25e9124b78a1` -> `c24bfe646317` — `_owns_page` now takes PD-18's
+# own-page rule first and counts an identity-words match with the Source
+# Evaluator's issuer only beside the page's own credit of itself. No prompt
+# string was edited, and ``agents.prompts`` was untouched, so the other four
+# target pins and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "07d3633895c1",
     "researcher": "c490b869021b",
     "source_evaluator": "58c4e7d909ef",
-    "evidence_verifier": "25e9124b78a1",
+    "evidence_verifier": "c24bfe646317",
     "report_writer": "69b86b8b87a2",
 }
 

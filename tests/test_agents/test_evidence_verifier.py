@@ -11,6 +11,7 @@ import pytest
 from deep_research.agents.evidence_verifier import (
     _CONTEXT_CHECK_REPLY_EXAMPLES,
     _checked,
+    _owns_page,
     _page_date_basis,
     CONTEXT_CHECK_BATCH_SIZE,
     CONTEXT_CHECK_CONCURRENCY,
@@ -1555,3 +1556,30 @@ async def test_a_provider_configuration_error_halts_the_context_check(tracker: T
     with pytest.raises(ProviderConfigurationError):
         async with tracker.session_span("session-1", "question"):
             await agent.run(state)
+
+
+def test_an_organisation_merely_mentioned_does_not_own_the_page() -> None:
+    """Slice-3 review: ``_owns_page`` asks whether the page *is* the
+    organisation's, not whether the organisation appears on it.
+
+    The Source Evaluator's validated issuer (PD-25) is a judgement about the
+    read, so an identity-words match with it counts only beside the page's own
+    credit of itself: a news page quoting "the Example Statistical Agency" is
+    not the agency's own page, and the agency's own .gov page is.
+    """
+    text = ("Battery storage grew 66% in 2024. The Example Statistical Agency said demand "
+            "will double by 2026.")
+    news = make_read(text, url="https://www.utilitydive.com/news/storage", title="Storage grew")
+    own = make_read(text, url="https://www.esa.gov/data", title="Storage data")
+
+    assert not _owns_page(news, "Example Statistical Agency", "Example Statistical Agency")
+    assert _owns_page(own, "Example Statistical Agency", None)
+
+
+def test_the_pages_own_masthead_still_evidences_the_validated_issuer() -> None:
+    """The bound on the rule above: a page that credits itself with the name the
+    Source Evaluator validated is still its own page."""
+    text = "Grid Storage Outlook. Published by Example Lab, March 2026. Capacity grew 66%."
+    read = make_read(text, url="https://www.examplelab.com/outlook", title="Grid Storage Outlook")
+
+    assert _owns_page(read, "Example Lab", "Example Lab")
