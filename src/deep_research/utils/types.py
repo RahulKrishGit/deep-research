@@ -1684,6 +1684,20 @@ class ResearchState(ContractModel):
     consumer that reads only the snapshot still sees which judgement stood —
     and sees that there was none.
     """
+    run_telemetry: RunTelemetry | None = None
+    """The run's §7.3 telemetry, stamped at publication, or ``None``.
+
+    The collector's own snapshot, taken by the terminal finalizer from the one
+    collector ``build_runtime`` created for the run, so it covers every
+    provider call of the run rather than one pass's. Replaced on every write
+    and never appended: it is the reading of *this* run, and a stale reading
+    beside a fresh one would double-count the peak.
+
+    ``None`` means the run carried no collector — a harness that built its
+    providers directly, or a snapshot written before there was one. That is
+    the honest value: an empty snapshot would publish a measured idle run in
+    place of a run nothing measured.
+    """
     iteration: int = Field(default=0, ge=0)
     max_extra_passes: int = Field(default=1, ge=0)
     """How many extra research passes this run may still buy (D4, §6.5).
@@ -1734,6 +1748,7 @@ class ResearchStateUpdate(TypedDict, total=False):
     acquisition_state_by_target: dict[str, AcquisitionState]
     quality_contract_version: str
     report_review: ReportReview | None
+    run_telemetry: RunTelemetry | None
     max_extra_passes: int
     extra_pass_target_ids: list[str]
     memory_context: MemorySnapshot

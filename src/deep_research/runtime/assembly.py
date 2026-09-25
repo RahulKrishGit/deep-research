@@ -32,7 +32,7 @@ from deep_research.memory.errors import MemoryInitializationError
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
+from deep_research.observability import RunTelemetryCollector, Tracker
 from deep_research.providers import (
     ProviderConfigurationError,
     build_chat_provider,
@@ -307,6 +307,19 @@ class ResearchRuntime:
     graph: Any
     long_term: LongTermMemory | None
     procedural: ProceduralMemory | None
+    run_telemetry: RunTelemetryCollector | None = None
+    """The run's §7.3 collector, or ``None`` for a runtime that has none.
+
+    Created beside ``request_budget`` and handed to the providers and the
+    graph, so every provider call of the run reports to one object. It is
+    read here, at the runtime's own edge, by the entry point that installs it
+    on the budget's observer: the assembly builds it but never observes with
+    it, because the observer slot belongs to whoever starts the run.
+
+    Defaulted rather than required so a runtime assembled without one — a
+    test's, a harness's — still builds, and so "no collector" is a value the
+    runtime can carry instead of a case it cannot express.
+    """
 
 
 async def build_runtime(
@@ -397,9 +410,19 @@ async def build_runtime(
     # double every declared ceiling while each half looked correct on its own.
     request_budget = RequestBudget(settings.request_budget)
 
+    # Exactly one telemetry collector for the whole run, for the same reason
+    # there is one budget: §7.3's peak is a figure about calls that overlap
+    # each other, so a collector per collaborator would report a peak of one
+    # forever. It is handed to the providers exactly as the budget is, and to
+    # the graph, whose terminal finalizer stamps its snapshot into the state.
+    run_telemetry = RunTelemetryCollector()
+
     try:
         provider = chat_provider or build_chat_provider(
-            settings.llm, tracker, request_budget=request_budget
+            settings.llm,
+            tracker,
+            request_budget=request_budget,
+            telemetry=run_telemetry,
         )
     except ProviderConfigurationError as error:
         raise configuration_error(
@@ -442,6 +465,7 @@ async def build_runtime(
         checkpointer=build_checkpointer(
             enabled=settings.graph.checkpointing_enabled
         ),
+        run_telemetry=run_telemetry,
     )
     return ResearchRuntime(
         session_id=session_id,
@@ -451,4 +475,5 @@ async def build_runtime(
         graph=graph,
         long_term=long_term,
         procedural=procedural,
+        run_telemetry=run_telemetry,
     )

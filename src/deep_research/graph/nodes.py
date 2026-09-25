@@ -84,6 +84,7 @@ from deep_research.graph.state import (
     is_halted,
     load_state,
 )
+from deep_research.observability import RunTelemetryCollector
 from deep_research.providers import ProviderConfigurationError
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import ToolResult
@@ -561,7 +562,11 @@ async def _write_document(
     return (path if isinstance(path, str) and path else None), None
 
 
-def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
+def finalize_report_node(
+    publisher: ReportPublisher | None,
+    *,
+    run_telemetry: RunTelemetryCollector | None = None,
+) -> GraphNode:
     """Publish the composed artifact set, once, at the one terminal node.
 
     This is the run's only writer — the writing pass composes and writes
@@ -586,6 +591,13 @@ def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
     And nothing here asserts the writes are one atomic filesystem operation:
     they are three separate writes, and what the incomplete case guarantees is
     that none of them is advertised.
+
+    ``run_telemetry`` is the run's §7.3 collector, stamped into the state
+    before the record is rendered so the published JSON carries the run's own
+    figures. It is optional in the same sense the budget is not: a graph built
+    without one — a unit test, an injected double — publishes ``telemetry:
+    None``, which says the run measured nothing rather than that it measured
+    zeroes.
     """
 
     async def node(channel: ResearchGraphState) -> ResearchGraphState:
@@ -596,11 +608,23 @@ def finalize_report_node(publisher: ReportPublisher | None) -> GraphNode:
         started = merge_research_state(
             state,
             {
+                # The run's §7.3 reading, taken here because this is the one
+                # node that knows the run is over and the one whose renderer
+                # publishes it: the quality record rendered below reads the
+                # telemetry out of the state, so stamping it in the same merge
+                # that starts the node is what keeps the published figures and
+                # the stored ones the same reading. ``None`` when the run
+                # carried no collector, never an empty snapshot.
+                "run_telemetry": (
+                    run_telemetry.snapshot()
+                    if run_telemetry is not None
+                    else None
+                ),
                 "events": [
                     node_started_event(
                         FINALIZE_NODE, iteration=state.iteration
                     )
-                ]
+                ],
             },
         )
         status = graph_quality_status(started)

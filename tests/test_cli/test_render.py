@@ -26,9 +26,10 @@ from deep_research.graph.events import (
     session_completed_event,
 )
 from deep_research.graph.orchestrator import GraphRun
-from deep_research.observability import TokenUsage
+from deep_research.observability import RunTelemetryCollector, TokenUsage
 from deep_research.request_budget import (
     ProviderCategory,
+    RequestBudget,
     RequestBudgetSnapshot,
 )
 from deep_research.runtime.outcome import ResearchOutcome, ToolCallSummary
@@ -49,6 +50,7 @@ from deep_research.utils.types import (
     ResearchEvent,
     ResearchState,
     ReviewDefect,
+    RunTelemetry,
     ScoredSource,
     SubTopic,
 )
@@ -966,6 +968,118 @@ def test_the_integrity_line_counts_the_unjudged_sentences_it_lists() -> None:
         "Integrity: 1 duplicate fact rows; 2 uncited statements; "
         "2 unjudged sentences; 3 forecasts without release" in joined
     )
+
+
+def run_telemetry_snapshot(
+    *,
+    seconds: float = 223.4,
+    output_tokens: int = 61_200,
+    rate_limits: int = 3,
+    rate_limit_recovered: int = 2,
+) -> RunTelemetry:
+    """One run's §7.3 figures, through the collector's own two seams.
+
+    A real budget drives the peak (one model call reserved by the researcher),
+    and ``record_call`` supplies the slow, near-cap reply of the plan's own
+    example line: 61,200 of 65,536 output tokens is 93% of the writer's cap.
+    """
+    collector = RunTelemetryCollector()
+    budget = RequestBudget()
+    budget.set_observer(collector.observe_budget)
+    collector.note_call_starting("researcher")
+    budget.reserve("deepseek")
+    collector.record_call(
+        agent="researcher",
+        operation="structured_output",
+        seconds=4.0,
+        output_tokens=1_000,
+        configured_cap=65_536,
+        truncated=False,
+    )
+    collector.record_call(
+        agent="report_writer",
+        operation="structured_output",
+        seconds=seconds,
+        output_tokens=output_tokens,
+        configured_cap=65_536,
+        truncated=False,
+    )
+    for _ in range(rate_limits):
+        collector.note_rate_limit()
+    collector.note_rate_limit_recovered(rate_limit_recovered)
+    return collector.snapshot()
+
+
+TELEMETRY_LINE = (
+    "Telemetry: peak 1 provider calls in flight (researcher); 3 rate limits "
+    "(2 recovered); slowest call report_writer 223.4 s; report_writer output "
+    "61,200 of 65,536 tokens (93% of its cap); 0 truncated"
+)
+
+
+def test_the_summary_prints_one_telemetry_line_after_the_integrity_line() -> None:
+    """One line, in the §7.3 order and wording, and one only.
+
+    It sits with the other evidence readings -- after the Integrity line and
+    before the artifact paths -- because it is read the same way: a fact about
+    the run, not a judgement of the report.
+    """
+    lines = render_summary(
+        build_outcome(state=quality_state(run_telemetry=run_telemetry_snapshot())),
+        verbose=False,
+    )
+
+    assert lines.count(TELEMETRY_LINE) == 1
+    assert index_of(lines, "Integrity:") < lines.index(TELEMETRY_LINE)
+    assert lines.index(TELEMETRY_LINE) < index_of(lines, "Report:")
+
+
+def test_the_summary_prints_the_advice_the_telemetry_triggers() -> None:
+    """Both triggers fire: three rate limits, and a reply at 93% of its cap.
+
+    The strings are the ones the telemetry's own renderer produces -- the knob
+    of the agent at the peak, and the config key that bounded the fullest
+    operation, never a bare "raise the cap".
+    """
+    lines = render_summary(
+        build_outcome(state=quality_state(run_telemetry=run_telemetry_snapshot())),
+        verbose=False,
+    )
+
+    assert (
+        "rate limits hit 3 times; consider lowering agents.sub_topic_concurrency"
+        in lines
+    )
+    assert (
+        "output within 93% of the report_writer cap (llm.max_tokens); "
+        "consider raising it" in lines
+    )
+
+
+def test_a_quiet_run_prints_its_telemetry_without_advice() -> None:
+    """No rate limits and a reply well inside its cap: the line still prints,
+    and nothing is recommended — advice a run did not earn is noise."""
+    quiet = run_telemetry_snapshot(
+        seconds=12.0,
+        output_tokens=1_000,
+        rate_limits=0,
+        rate_limit_recovered=0,
+    )
+    lines = render_summary(
+        build_outcome(state=quality_state(run_telemetry=quiet)), verbose=False
+    )
+
+    assert sum(line.startswith("Telemetry:") for line in lines) == 1
+    assert [line for line in lines if line.startswith("rate limits hit")] == []
+    assert [line for line in lines if line.startswith("output within")] == []
+
+
+def test_a_run_that_recorded_no_telemetry_prints_no_telemetry_line() -> None:
+    """A harness or a run with no collector measured nothing: no line, and no
+    row of zeroes standing in for a measurement nobody took."""
+    lines = render_summary(build_outcome(state=quality_state()), verbose=False)
+
+    assert [line for line in lines if line.startswith("Telemetry:")] == []
 
 
 def test_the_verdict_carries_the_review_status_and_mean() -> None:

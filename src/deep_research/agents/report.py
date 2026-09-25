@@ -544,6 +544,19 @@ def render_quality_record(
             if state.quality is not None
             else {}
         ),
+        # The run's own §7.3 reading, as the terminal finalizer stamped it: the
+        # run's collector, not this pass's, so the record describes the run the
+        # report belongs to. Every number here came from a provider seam, and
+        # the config key beside each operation is the knob an operator would
+        # raise. ``None`` for a run with no collector, because a row of zeroes
+        # would publish a measurement nobody took -- and zeros here would read
+        # as an idle run rather than as an unmeasured one. Nothing reads this
+        # block back: the run never tunes itself (§12).
+        "telemetry": (
+            state.run_telemetry.model_dump(mode="json")
+            if state.run_telemetry is not None
+            else None
+        ),
         "review": _review_record(review),
         "findings": [
             _quality_finding_row(label, finding)

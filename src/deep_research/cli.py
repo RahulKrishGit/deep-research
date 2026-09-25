@@ -50,6 +50,10 @@ from deep_research.main import (
     SUPPORTED_OUTPUT_FORMATS,
     run_research_sync,
 )
+from deep_research.observability import (
+    render_telemetry_advice,
+    render_telemetry_line,
+)
 from deep_research.request_budget import (
     RequestBudgetSnapshot,
     RequestBudgetUpdate,
@@ -866,6 +870,26 @@ def _evidence_lines(outcome: ResearchOutcome) -> list[str]:
     ]
 
 
+def _telemetry_lines(outcome: ResearchOutcome) -> list[str]:
+    """The run's §7.3 figures: one line, then the advice they trigger.
+
+    Rendered by the telemetry's own renderers, never re-rendered here: the
+    line's wording, its order and the config keys in the advice are one
+    implementation's, so the CLI and the quality record cannot describe the
+    same run in two ways. Nothing is computed and nothing is acted on — the
+    advice is for an operator reading the summary, and the run never tunes
+    itself (§12).
+
+    A run whose collector recorded nothing is a run nothing measured — a
+    harness, or a runtime with no collector — and it prints no line at all:
+    a row of zeroes would read as a measured idle run.
+    """
+    telemetry = outcome.state.run_telemetry
+    if telemetry is None:
+        return []
+    return [render_telemetry_line(telemetry), *render_telemetry_advice(telemetry)]
+
+
 def _request_budget_lines(
     snapshots: Sequence[RequestBudgetSnapshot],
 ) -> list[str]:
@@ -1163,6 +1187,11 @@ def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
     lines.extend(_source_lines(outcome))
     lines.extend(_review_line(outcome))
     lines.extend(_evidence_lines(outcome))
+
+    # Directly after the integrity readings, which it belongs with: both are
+    # facts about the run rather than judgements of the report, and the
+    # advice below them is the operator's to act on, never the run's.
+    lines.extend(_telemetry_lines(outcome))
 
     lines.extend(_unresolved_lines(outcome))
     lines.extend(_artifact_lines(outcome))

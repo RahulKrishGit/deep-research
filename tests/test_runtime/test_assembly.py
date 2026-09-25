@@ -12,6 +12,7 @@ from deep_research.agents.evidence import build_read_record
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
+from deep_research.observability import RunTelemetryCollector
 from deep_research.providers import validate_agent_model_configs
 from deep_research.request_budget import RequestBudget
 from deep_research.runtime.assembly import (
@@ -839,6 +840,53 @@ async def test_build_runtime_compiles_a_graph_from_injected_collaborators(
     assert runtime.procedural is procedural
     assert procedural.loaded is True
     assert runtime.graph is not None
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_creates_one_collector_for_the_run(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """One collector per run, handed to the providers and to the graph alike.
+
+    The two seams must receive the *same* object: a collector per collaborator
+    would record two halves of one run, and the peak in flight -- which is
+    about calls that overlap each other -- would be counted by nobody.
+    """
+    built: dict[str, object] = {}
+    provider = RecordingProvider()
+    real_compile = assembly.compile_research_graph
+
+    def recording_chat_provider(config, received_tracker, **kwargs):
+        built["telemetry"] = kwargs.get("telemetry")
+        return provider
+
+    def recording_compile(agents, *, checkpointer=None, **_kwargs):
+        built["graph_telemetry"] = _kwargs.get("run_telemetry")
+        return real_compile(agents, checkpointer=checkpointer)
+
+    monkeypatch.setattr(assembly, "build_chat_provider", recording_chat_provider)
+    monkeypatch.setattr(assembly, "compile_research_graph", recording_compile)
+    monkeypatch.setattr(
+        assembly.LongTermMemory,
+        "from_config",
+        lambda config, *, embeddings, tracker: LongTermMemory(
+            collection=FakeCollection(), embeddings=embeddings
+        ),
+    )
+
+    runtime = await build_runtime(
+        ConfigSettings.model_validate(
+            {"output": {"directory": str(tmp_path)}}
+        ),
+        session_id="session-1",
+        tracker=tracker,
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+        search_client=FakeSearchClient(),
+    )
+
+    assert isinstance(runtime.run_telemetry, RunTelemetryCollector)
+    assert built["telemetry"] is runtime.run_telemetry
+    assert built["graph_telemetry"] is runtime.run_telemetry
 
 
 class CountingProceduralMemory(ProceduralMemory):
