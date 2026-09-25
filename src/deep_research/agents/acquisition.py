@@ -65,6 +65,25 @@ WEB_PASSAGE_CHARS = 600
 # passage keeps the whitespace that belongs to it and the split stays lossless.
 _PARAGRAPH_BREAK = re.compile(r"\n[ \t\r]*\n")
 
+# The end of a sentence and the end of a clause, whitespace included, used when
+# no paragraph break fits inside the bound. A cut at the last space inside the
+# bound can fall mid-clause, so a rule's clause ends one passage and the object
+# the page attaches to it opens the next: a snippet drawn from the first reads
+# as the whole rule although the page states a narrower or wider one. A cut at a
+# sentence, or at a comma, semicolon or colon when the sentence runs on, keeps
+# the rule's own words together. A sentence ends only where what follows opens a
+# new one -- a capital letter, or another letter with no case -- so "Art. 53",
+# "No. 4" and "10.5 percent" are not sentence ends; an initialism followed by a
+# capital ("U.S. Energy ...") still reads as one, and the cut then falls at that
+# whitespace rather than at a later boundary.
+_SENTENCE_END = re.compile(r"[.!?\u2026]\s+(?=[\"'(\[]?[^\Wa-z\d_])")
+_CLAUSE_BREAK = re.compile(r"[,;:]\s+")
+
+# The boundary must sit in the last half of the window: one earlier would answer
+# a mid-clause cut with a passage that is mostly bound and little text, and every
+# later passage would be short for the same reason.
+_BOUNDARY_FLOOR_DIVISOR = 2
+
 # How much text a page may carry and still be read as an automated-access
 # shell. A browser check, a consent wall, or a denial page is always a few
 # hundred characters; a real document is not, which is what keeps a report
@@ -285,8 +304,10 @@ def split_read_body(
     back to it exactly, so the content hash of a read — and therefore its
     identity — is what one unsplit read of the same bytes would have. Cuts
     fall after a paragraph break where one fits inside the bound, otherwise
-    after the last whitespace, so a passage ends mid-word only where the
-    document has no whitespace to cut on.
+    after the last sentence or clause end in the window's second half, and
+    otherwise after the last whitespace, so a passage ends mid-word only where
+    the document has no whitespace to cut on and mid-clause only where the
+    window's second half holds no boundary either.
 
     A body shorter than the bound is one passage, which is what a short page
     or a short document chunk was before; the split only ever changes how a
@@ -307,6 +328,9 @@ def split_read_body(
             for match in _PARAGRAPH_BREAK.finditer(text, position, window)
         ]
         cut = breaks[-1] if breaks and breaks[-1] > position else 0
+        if not cut:
+            floor = position + limit // _BOUNDARY_FLOOR_DIVISOR
+            cut = _last_boundary(text, floor, window)
         if not cut:
             whitespace = max(
                 text.rfind(" ", position, window),
@@ -338,6 +362,23 @@ def split_read_body(
         merged[1] = merged[0] + merged[1]
         merged = merged[1:]
     return merged
+
+
+def _last_boundary(text: str, floor: int, window: int) -> int:
+    """The last sentence or clause end inside ``text[floor:window]``, or ``0``.
+
+    The last one, not the strongest: both keep a rule's clause whole, and the
+    last boundary near the bound carries the most of the body a passage can
+    hold, so the passages a read is addressed by stay as long as they were.
+    """
+    return max(
+        (
+            match.end()
+            for pattern in (_SENTENCE_END, _CLAUSE_BREAK)
+            for match in pattern.finditer(text, floor, window)
+        ),
+        default=0,
+    )
 
 
 def _payload_read_parts(

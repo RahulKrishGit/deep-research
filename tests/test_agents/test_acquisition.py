@@ -2996,6 +2996,76 @@ def test_a_hard_cut_never_splits_a_decomposed_character() -> None:
             "NFC", body
         )
 
+
+def test_a_passage_cut_lands_on_a_clause_boundary_before_whitespace() -> None:
+    """A clause and the object it carries stay in one passage.
+
+    The audited run's extraction cut a rule at the last space inside the
+    bound, so a snippet ended at the rule's clause and the object the page
+    attached to it sat in the next passage; the live report then closed the
+    sentence with an object of its own. A cut at the clause boundary keeps the
+    rule's own words together.
+    """
+    from deep_research.agents.acquisition import split_read_body
+
+    filler = "word " * 100  # 500 characters with no boundary of their own
+    tail = "object " * 40  # runs past the bound, as a rule's object does
+    body = filler + ", " + tail
+
+    passages = split_read_body(body)
+
+    assert "".join(passages) == body
+    assert passages[0] == filler + ", "
+    assert passages[1] == tail
+
+
+def test_a_passage_cut_lands_on_a_sentence_boundary_before_whitespace() -> None:
+    """A complete sentence ends a passage where a long one would be cut.
+
+    A passage that ends mid-sentence hands the reader half a rule: the words
+    that complete it sit in the next passage, and a snippet drawn from the
+    first looks like the whole of it. The cut falls at the last sentence end
+    the window holds.
+    """
+    from deep_research.agents.acquisition import split_read_body
+
+    sentences = "The operator records every measurement. " * 8  # 320 characters
+    # A sentence that runs past the bound: no sentence ends, no clauses, so the
+    # cut can only fall back to whitespace inside it.
+    run_on = "And the register is published with the annual statement " * 20
+    body = sentences + run_on
+
+    passages = split_read_body(body)
+
+    assert "".join(passages) == body
+    assert passages[0] == sentences
+    assert all(
+        passage.strip() and len(passage) <= WEB_PASSAGE_CHARS
+        for passage in passages
+    )
+
+
+def test_a_boundary_early_in_the_window_is_not_used() -> None:
+    """A boundary is taken from the second half of the window, so no fragment.
+
+    Cutting at a comma the window's opening held would answer a mid-clause
+    cut with a passage that is mostly bound and little text, and every later
+    passage would be short for the same reason. A cut with no boundary near
+    it falls back to whitespace, exactly as before.
+    """
+    from deep_research.agents.acquisition import split_read_body
+
+    body = "word " * 20 + ", " + "word " * 120
+
+    passages = split_read_body(body)
+
+    assert "".join(passages) == body
+    # The comma at 102 was not used: the cut is the last space inside the
+    # bound, exactly as a body with no boundary near its end was cut before.
+    whitespace_cut = body.rfind(" ", 0, WEB_PASSAGE_CHARS) + 1
+    assert passages[0] == body[:whitespace_cut]
+    assert ", " in passages[0]
+
 # Two real slices of the stored document page the run read (unit
 # ev-6e27eec03e00aa5dcf3abc6d, page-7-chunk-6 of the grid-storage FAQ, 6,005
 # characters) and of the EIA-860 instructions page, used to a length past the

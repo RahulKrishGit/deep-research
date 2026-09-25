@@ -859,9 +859,17 @@ from deep_research.utils.config import (
 # keeps the own-page reading while a body the page is not stays unattributed. No
 # prompt string was edited, and ``agents.prompts`` was untouched, so the other
 # four target pins and the Judge pin are unchanged.
+# Run-2 improvement 3 (passage cutting): the researcher's own module source moved
+# `3853aff7e02c` -> `90f46cf12b62` — a finding's snippet is now admitted when the
+# read carries it at the finding's locator *or* in the immediate neighbouring
+# passage (``_snippet_admitted_at``), because a passage cut at a sentence or
+# clause boundary can leave a rule's clause in one passage and the object it
+# attaches to in the next, and the excerpt drawn from the read then spans both.
+# No prompt string was edited, and ``agents.prompts`` was untouched, so the other
+# four target pins and the Judge pin are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "852f96eefee7",
-    "researcher": "3853aff7e02c",
+    "researcher": "90f46cf12b62",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "e8d10a516459",
     "report_writer": "a3a73e32c3c0",
