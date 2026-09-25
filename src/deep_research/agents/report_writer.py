@@ -48,6 +48,7 @@ from deep_research.agents.steps import ReActRun
 from deep_research.agents.verified_facts import (
     answered_target_ids,
     citable_findings,
+    claimed_organisation,
     fact_rows,
     not_found_targets,
 )
@@ -63,6 +64,7 @@ from deep_research.utils.types import (
     FactRow,
     Finding,
     NotFoundTarget,
+    ReadRecord,
     RejectedDraftPoint,
     ReportComposition,
     ReportPoint,
@@ -197,6 +199,10 @@ class ReportWriterTask(AgentTask):
     facts: list[FactRow] = Field(default_factory=list)
     not_found: list[NotFoundTarget] = Field(default_factory=list)
     answered: dict[str, list[str]] = Field(default_factory=dict)
+    reads: dict[str, ReadRecord] = Field(default_factory=dict)
+    """Read id -> the page it read, so the Statement Check can see each cited
+    finding's bounded passage (improvement 8). Empty for a caller with no reads
+    in hand, which shows the snippet alone as before."""
 
 
 class WrittenReport(ContractModel):
@@ -208,16 +214,20 @@ class WrittenReport(ContractModel):
     refused_count: int = Field(ge=0)
 
 
-def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarget]) -> list[tuple[str, Finding]]:
+def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
+                     sub_topics: Sequence[SubTopic] = ()) -> list[tuple[str, Finding]]:
     """One label per citable finding: answers to required targets first, then the rest.
 
     The answers are resolved against every target, so an optional sibling
     still keeps a figure about its subject off a required target's answers
-    (F11), and only the required targets' answers are then ranked first.
+    (F11), and only the required targets' answers are then ranked first. The
+    plan resolves an unbound extraction's own sub-topic (improvement 1A), so a
+    finding that answers a required obligation that way ranks with the rest.
     """
     citable = citable_findings(findings)
     required = {t.target_id for t in targets if t.required}
-    answered = {t: ids for t, ids in answered_target_ids(citable, targets).items() if t in required}
+    answered = {t: ids for t, ids in answered_target_ids(
+        citable, targets, sub_topics=sub_topics).items() if t in required}
     first = list(dict.fromkeys(fid for ids in answered.values() for fid in ids))
     rank = {fid: n for n, fid in enumerate(first)}
     ordered = sorted(citable, key=lambda f: rank.get(finding_fingerprint(f), len(rank)))
@@ -276,6 +286,33 @@ def quality_report_filename(*, session_id: str, iteration: int) -> str:
     return f"{stem.removesuffix('.md')}-quality.json"
 
 
+def statement_passages(findings: Sequence[Finding],
+                       reads: Mapping[str, ReadRecord]) -> dict[str, str]:
+    """Finding id -> the bounded passage of the page it was read from (improvement 8).
+
+    A snippet is cut at its passage's boundary, so the condition, exception or
+    object a reported rule attaches to can sit just past the cut and a sentence
+    that drops it looks supported. ``context_passage`` is the same bounded
+    window the Context Check judged the figure in; a finding whose read this
+    task does not carry contributes nothing, and the block shows its snippet
+    alone.
+    """
+    # Imported at call time for the same reason the checker is: the unit tests
+    # substitute the checker's own names, and nothing here should bind before
+    # that substitution can be seen.
+    from deep_research.agents.evidence_verifier import context_passage
+
+    passages: dict[str, str] = {}
+    for finding in findings:
+        read = reads.get(finding.read_id)
+        if read is None:
+            continue
+        passages[finding_fingerprint(finding)] = context_passage(
+            read, finding.locator, finding.snippet
+        )
+    return passages
+
+
 def registry_lines(label: str, finding: Finding) -> list[str]:
     lines = [f"## {label}: {finding.source_title} ({publisher_identity(finding.source_url)})",
              f"snippet: {finding.snippet or finding.content}"]
@@ -286,10 +323,16 @@ def registry_lines(label: str, finding: Finding) -> list[str]:
         number += 1
         context = result.context
         subject = f" | subject {context.subject}" if context.subject else ""
+        # Improvement 7: an unattributed figure of a relay-shaped page has no
+        # organisation to claim, and naming the page's owner here is what the
+        # writer turned into "<the site> states …"; the label beside it already
+        # says "source does not attribute it".
+        organisation = claimed_organisation(context, finding)
         lines.append(
             f"{label} | figure {number}: {result.figure.value} {result.figure.unit}{subject} | period "
-            f"{context.period or 'not stated'} | kind {context.kind} | organisation "
-            f"{context.organisation} | label: {_figure_label_for(finding, context)}"
+            f"{context.period or 'not stated'} | kind {context.kind}"
+            + (f" | organisation {organisation}" if organisation else "")
+            + f" | label: {_figure_label_for(finding, context)}"
         )
     if number == 0:
         name = finding.attributed_issuer or publisher_identity(finding.source_url)
@@ -509,7 +552,8 @@ async def compose_written_report(
         )
         items = [
             StatementCheckItem(label=c.key, text=c.text, findings=c.findings,
-                               labels=[_finding_label(f) for f in c.findings])
+                               labels=[_finding_label(f) for f in c.findings],
+                               passages=statement_passages(c.findings, task.reads))
             for c in all_candidates
         ]
         try:
@@ -710,7 +754,8 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         """Bind this run to the verified findings recorded so far."""
         targets = [target for topic in state.sub_topics for target in topic.evidence_targets]
         findings = list(state.verified_findings)
-        answered = answered_target_ids(citable_findings(findings), targets)
+        answered = answered_target_ids(citable_findings(findings), targets,
+                                       sub_topics=state.sub_topics)
         return ReportWriterTask(
             instruction=state.original_question,
             session_id=state.session_id,
@@ -724,10 +769,11 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             targets=targets,
             findings=findings,
             sources=list(state.evaluated_sources),
-            registry=finding_registry(findings, targets),
-            facts=fact_rows(findings, targets),
+            registry=finding_registry(findings, targets, state.sub_topics),
+            facts=fact_rows(findings, targets, state.sub_topics),
             not_found=not_found_targets(state.sub_topics, answered, state.acquisition_state_by_target),
             answered=answered,
+            reads=dict(state.read_records),
         )
 
     async def draft(self, task: ReportWriterTask) -> tuple[ReportWriterDraft | None, list[ResearchError]]:

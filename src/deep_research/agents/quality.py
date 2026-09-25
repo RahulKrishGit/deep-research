@@ -82,7 +82,11 @@ def compute_report_quality(
     """
     targets = [t for topic in state.sub_topics for t in topic.evidence_targets]
     required = [t.target_id for t in targets if t.required]
-    answered = answered_target_ids(state.verified_findings, targets)
+    # The plan goes in with the findings (improvement 1A): an extraction that
+    # bound no target is answered through the sub-topic it names, which is what
+    # stops the gate declaring an obligation the report itself answers.
+    answered = answered_target_ids(state.verified_findings, targets,
+                                   sub_topics=state.sub_topics)
     missing = [t for t in required if t not in answered]
     listed = {row.target_id for row in composition.not_found}
     unaccounted = [t for t in missing if t not in listed]

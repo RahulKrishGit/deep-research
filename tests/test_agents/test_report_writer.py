@@ -719,6 +719,7 @@ class _FakeStatementCheckItem:
     text: str
     findings: list = field(default_factory=list)
     labels: list = field(default_factory=list)
+    passages: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1111,3 +1112,43 @@ async def test_two_periods_of_one_value_are_two_facts_not_a_restatement(writer, 
         "The agency expects growth of 12 percent in 2025.",
     ]
     assert composition.rejected_points == []
+
+
+@pytest.mark.asyncio
+async def test_the_statement_check_is_handed_the_cited_findings_bounded_passage(
+    writer, checker
+) -> None:
+    """Improvement 8: the checker judges a snippet cut at its passage's boundary
+    against the bounded passage of its own page, which is where the condition or
+    exception the draft dropped lives."""
+    snippet = "The grant covers travel when the visit is approved"
+    page = snippet + " in advance. It does not cover stays longer than five days."
+    read = make_read(page, url="https://example.test/grant", title="Example Lab page")
+    finding = make_finding(read, snippet, figures=[figure("5", "days", "2025", "actual")],
+                           target_ids=["topic-01-target-01"])
+    finding = finding.model_copy(update={"verification": FindingVerification(
+        status="verified",
+        figure_results=[FigureResult(
+            figure=finding.figures[0], matched=True, evidence_words=snippet,
+            context=FigureContext(period="2025", scope=None, attribution="own",
+                                  organisation="Example Lab", kind="actual"))])})
+    state = _task_state().model_copy(update={
+        "verified_findings": [finding], "read_records": {read.read_id: read}})
+
+    task = writer.build_task(state)
+    label = _labels(task.registry)["example.test"]
+
+    assert task.reads == {read.read_id: read}
+    # A task with no reads in hand carries no passages: the block is the snippet
+    # alone, exactly as before the caller had one to give.
+    assert writer.build_task(_task_state()).reads == {}
+
+    draft = ReportWriterDraft(
+        executive_summary=[WriterPointDraft(text="The grant covers travel.",
+                                            finding_labels=[label])], sections=[])
+    await compose_written_report(task, draft, provider=writer.provider, fingerprint=writer.fingerprint_call)
+
+    item = checker.calls[0][0]
+    passage = item.passages[finding_fingerprint(finding)]
+    assert "It does not cover stays longer than five days." in passage
+    assert passage.startswith(snippet)

@@ -1333,25 +1333,28 @@ def _serves_another_body(finding: Finding, owner: str) -> str | None:
     return None
 
 
-def _row_organisation(figure: VerifiedFigure) -> str:
-    """The organisation a row claims, or "" when it claims none (improvement 7).
+def claimed_organisation(context: FigureContext | None, finding: Finding) -> str:
+    """The organisation a reader-facing line may claim for one figure, or "" for none.
 
-    An ``unattributed`` row's organisation is the page's owner, and a page
+    An ``unattributed`` figure's organisation is the page's owner, and a page
     serving another body's work is not the figure's organisation however the
-    page's name reads: the row would name the relaying site beside the reader's
-    "source does not attribute it" label, which is the run's
-    "<the site> states…" sentence. Such a row claims no organisation. Every
-    other attribution keeps the context's own organisation, which the verifier
-    resolved and the reader's label prints.
+    page's name reads: naming it beside the reader's "source does not attribute
+    it" label is the run's "<the site> states…" sentence (improvement 7). Such a
+    line claims no organisation. Every other attribution keeps the context's own
+    organisation, which the verifier resolved and the reader's label prints.
     """
-    context = figure.context
     if context is None:
         return ""
     if context.attribution == "unattributed" and _serves_another_body(
-        figure.finding, context.organisation
+        finding, context.organisation
     ):
         return ""
     return context.organisation
+
+
+def _row_organisation(figure: VerifiedFigure) -> str:
+    """``claimed_organisation`` for one figure of one row."""
+    return claimed_organisation(figure.context, figure.finding)
 
 
 def _same_period_and_subject(left: FactRow, right: FactRow,

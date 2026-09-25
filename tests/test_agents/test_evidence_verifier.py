@@ -1942,3 +1942,39 @@ def test_a_correct_verdict_still_drops_an_unbacked_scope() -> None:
                      scope="utility-scale", verdict="correct", evidence_words=text)
 
     assert dropped.dropped_reason == "correction_not_on_page"
+
+
+def test_the_statement_check_is_told_no_body_for_an_unattributed_relay_figure() -> None:
+    """Improvement 7 in the Statement Check's block: the page owner of a page
+    that serves another body's work is not the figure's organisation, so the
+    checker is not invited to credit the relaying site with the words."""
+    snippet = "The grant covers travel when the visit is approved"
+    page = snippet + " in advance."
+    relayed_page = make_read(page, url="https://example-relay.example/law/12",
+                             title="Article 12: Registration | Example Act | Example Relay")
+    relayed = make_finding(relayed_page, snippet,
+                           figures=[figure("5", "days", None, "actual")]).model_copy(
+        update={"verification": FindingVerification(status="verified", figure_results=[
+            FigureResult(figure=figure("5", "days", None, "actual"), matched=True,
+                         evidence_words=snippet,
+                         context=FigureContext(period=None, scope=None, attribution="unattributed",
+                                               organisation="Example Relay", kind="actual"))])})
+    own_page = make_read(page, url="https://example-lab.example/grant", title="Example Lab page")
+    own = make_finding(own_page, snippet, figures=[figure("5", "days", None, "actual")]).model_copy(
+        update={"verification": FindingVerification(status="verified", figure_results=[
+            FigureResult(figure=figure("5", "days", None, "actual"), matched=True,
+                         evidence_words=snippet,
+                         context=FigureContext(period=None, scope=None, attribution="unattributed",
+                                               organisation="Example Lab", kind="actual"))])})
+
+    relayed_body = statement_check_messages(
+        [StatementCheckItem(label="S001", text="The grant covers travel.", findings=[relayed],
+                            labels=["F01"])],
+        question="What does the grant cover?")[1].content
+    own_body = statement_check_messages(
+        [StatementCheckItem(label="S001", text="The grant covers travel.", findings=[own],
+                            labels=["F01"])],
+        question="What does the grant cover?")[1].content
+
+    assert "| unattributed |" in relayed_body and "Example Relay" not in relayed_body
+    assert "unattributed (Example Lab)" in own_body
