@@ -4965,3 +4965,106 @@ def test_the_plan_request_puts_its_requirements_before_the_question() -> None:
     assert body.startswith("# Plan requirements\n")
     assert body.index("# Reply format") < body.index("# Research question")
     assert body.rstrip().endswith(STRUCTURED_REQUEST_END)
+
+
+def test_a_reasons_question_drops_a_quantity_target_of_its_own() -> None:
+    """A the-planner-added "how many" on a why-question is optional and formless.
+
+    The final probe's P6 plan added "the number of senators reported as
+    proscribed under Sulla" to a why-question. The question asks for no
+    quantity, so the target carries no figure (rule 4's first half) and no
+    obligation: a figure the evidence holds belongs inside the reason's finding.
+    """
+    stamped = _stamped(
+        "Why did the Roman Republic fall?",
+        _target(
+            "How many senators were proscribed under Sulla?",
+            measure="number of senators proscribed under Sulla",
+            unit_dimension="count",
+            kind="actual",
+        ),
+    )
+
+    assert (stamped.unit_dimension, stamped.kind, stamped.required) == (
+        None,
+        None,
+        False,
+    )
+
+
+def test_a_magnitude_word_inside_a_measure_is_not_a_quantity_ask() -> None:
+    """The measure's own wording alone never demotes: only an ask does.
+
+    This is the shape the probe re-run caught — a word list reading "totals"
+    inside a sub-topic's own words removed ``required`` from a legitimate target.
+    """
+    stamped = _stamped(
+        "What are the current interconnection constraints?",
+        _target(
+            "What does the queue report say?",
+            measure="queue total reported",
+        ),
+    )
+
+    assert stamped.required is True
+
+
+def test_a_figure_target_carries_the_window_the_question_bounds() -> None:
+    """The P7 defect: the window the question states, on every figure target.
+
+    Two of that plan's three sea-level targets carried "since 1993" and the third
+    was left empty, which the reviewer then had to repair.
+    """
+    stamped = _stamped(
+        "How much has global mean sea level risen since 1993, and what are the "
+        "main contributors?",
+        _target(
+            "How much has sea level risen?",
+            measure="sea level rise",
+            unit_dimension="distance",
+            kind="actual",
+        ),
+    )
+
+    assert stamped.period == "1993"
+
+
+def test_a_year_the_question_does_not_bound_is_not_a_period() -> None:
+    """The counterpart: a year that names when the reader buys stays no period."""
+    stamped = _stamped(
+        "which is the best headphones to buy 2026 for best audio quality and best mic",
+        _target(
+            "What is the highest-rated model's audio score?",
+            measure="sound quality rating",
+            unit_dimension="rating",
+            kind="actual",
+        ),
+    )
+
+    assert stamped.period is None
+
+
+def test_the_instruction_says_which_targets_are_optional_and_which_body_is_the_authority() -> None:
+    """The final probe's grade, pinned where code can pin it.
+
+    The three sentences are instruction text: the required flag and the body a
+    measure's authority is are the model's call, and the controller's ruling
+    removed code judgement of a target's wording. What code can pin is that each
+    sentence is in the instruction *and* in the request the model reads.
+    """
+    for phrase in (
+        "A target is required only when the question itself asks for that thing",
+        "a sub-category, aspect, example, event or list item you introduce",
+        "never the maker",
+        "the body that adopted it, never the office that publishes it",
+        "every figure target for that window",
+    ):
+        assert phrase in PLAN_INSTRUCTION
+    body = plan_messages(
+        AgentTask(instruction="Why did the Roman Republic fall?"), _run()
+    )[1].content
+    for phrase in (
+        "a sub-category, aspect, example, event or list item you introduce",
+        "never the maker",
+    ):
+        assert phrase in body

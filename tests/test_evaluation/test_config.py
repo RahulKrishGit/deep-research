@@ -770,8 +770,21 @@ from deep_research.utils.config import (
 # dropped defective target was the whole of what it owed has its first surviving
 # obligation required again. The instruction string moved with it; the
 # researcher, the other three and the judge are unchanged.
+# The final probe's independent grade moved the planner once more,
+# 8e875d9b2b53 -> 3e987c934fae: the instruction now says a target the plan
+# introduces to organise the research is optional (a sub-category, aspect,
+# example, event or list item) and that a product's or drug's performance is
+# answered by the body that measured, tested or approved it rather than the
+# maker, while a law's authority is the body that adopted it rather than the
+# office that publishes it; and it says every figure target of a windowed
+# question carries that window as its period. Code moved with it: the question's
+# own bounded window is stamped on figure targets that state no period, a
+# text-answered question's added quantity target is optional and formless, and a
+# plan never owes nothing after either correction. The instruction strings and
+# the planner's own module moved; the researcher, the other three and the judge
+# are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "8e875d9b2b53",
+    "planner": "3e987c934fae",
     "researcher": "c490b869021b",
     "source_evaluator": "58c4e7d909ef",
     "evidence_verifier": "21c413e91f94",
