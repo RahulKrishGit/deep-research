@@ -6864,6 +6864,77 @@ async def test_two_pages_that_both_owe_passages_get_their_own_concurrent_re_asks
 
 
 @pytest.mark.asyncio
+async def test_two_pages_malformed_owed_retry_findings_are_prefixed_by_page(
+    tracker: Tracker,
+) -> None:
+    """ReRevS6 P3: two owing pages' own malformed owed-retry findings stay
+    distinguishable in the merged errors.
+
+    Both pages own an owed re-ask (as above), and both owed replies name a
+    snippet that is not verbatim on their own page, so ``build_findings``
+    rejects both -- each as its own "finding 1: ..." -- and the merge must
+    tell them apart by prefixing each with its own read id, or the two
+    rejections would report identically despite coming from different pages.
+    """
+    sub_topic = _sub_topic("Alpha", 1).model_copy(
+        update={"evidence_targets": [_owed_page_target()]}
+    )
+    call_count = 0
+
+    def _factory(
+        read_id: str, url: str, title: str, locator: str, snippet: str
+    ) -> SubTopicFindingsDraft:
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return SubTopicFindingsDraft(findings=[])
+        # The owed retry: a snippet that is not the read's own words, so
+        # ``build_findings`` rejects it ("snippet was not admitted at
+        # locator") rather than admitting a claim it never actually reads.
+        return SubTopicFindingsDraft(
+            findings=[
+                FindingDraft(
+                    content="A claim without a real snippet.",
+                    source_url=url,
+                    source_title=title,
+                    confidence=0.8,
+                    read_id=read_id,
+                    locator=locator,
+                    snippet="this text is not verbatim on the page",
+                    target_ids=["topic-01"],
+                )
+            ]
+        )
+
+    completer = _PerPageCompleter(
+        decisions=_two_scrape_decisions(),
+        output_factory=_factory,
+    )
+
+    outcome = await _run_two_page_sub_topic(
+        tracker,
+        completer,
+        sub_topic=sub_topic,
+        body_a=_OWED_BODY,
+        body_b=(
+            "A separate registrant category exists for late renewal "
+            "filings, according to a related registry notice."
+        ),
+    )
+
+    page_a_read_id = completer.calls[0]
+    page_b_read_id = completer.calls[1]
+    invalid = next(
+        error for error in outcome.errors if error.error_type == "researcher_invalid_finding"
+    )
+    rejected = invalid.details["rejected"]
+    assert any(reason.startswith(f"{page_a_read_id}: ") for reason in rejected)
+    assert any(reason.startswith(f"{page_b_read_id}: ") for reason in rejected)
+    # Genuinely distinguishable, not the same string twice.
+    assert len(set(rejected)) == len(rejected)
+
+
+@pytest.mark.asyncio
 async def test_a_page_task_never_outlives_the_run_after_a_later_decision_fails(
     tracker: Tracker,
 ) -> None:

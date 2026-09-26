@@ -1098,8 +1098,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # rebounded per page and run concurrently, a decision turn no longer
     # wiping accumulated per-page overflow, merged rejections prefixed with
     # their read id) moved the source a sixth time, no prompt sentence
-    # changing: `3af571b120bc` -> `06a492b0d768`.
-    "researcher": "06a492b0d768",
+    # changing: `3af571b120bc` -> `06a492b0d768`. ReRevS6's residual P3
+    # (the owed-batch retry's own rejections carried no read id either)
+    # moved the source a seventh time, no prompt sentence changing:
+    # `06a492b0d768` -> `8f97523e05d5`.
+    "researcher": "8f97523e05d5",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
