@@ -1682,7 +1682,12 @@ def extraction_messages(
             "and share words with a statement the run has already kept. "
             "They are candidates, not answers: only a passage that "
             "actually disputes, qualifies or dates a step, cause, figure "
-            "or provision one of these statements gives is a finding.",
+            "or provision one of these statements gives is a finding in "
+            "this request. A passage that restates one of these "
+            "statements, or states a fact that disputes, qualifies or "
+            "dates none of them, yields no finding here, even where the "
+            "contract above would count it as a fact bearing on a "
+            "target.",
         ]
         if disputed_statements:
             dissent_lines.append(
@@ -1694,10 +1699,12 @@ def extraction_messages(
         dissent_lines.append(
             "Return one finding per passage that disputes, qualifies or "
             "dates one of these statements: snippet the disputing "
-            "sentence, and bind the finding to that statement's own "
-            "target ids, in the same registry shape the contract above "
-            "requires. Return an empty list when none of these passages "
-            "does."
+            "sentence, and put in target_ids only that statement's own "
+            "ids, copied from its D-line, and no other target, even "
+            "where the contract above would bind more -- a finding bound "
+            "to any other target is dropped. Everything else keeps the "
+            "registry shape the contract above requires. Return an empty "
+            "list when none of these passages does."
         )
         sections.append("\n".join(dissent_lines))
     sections.append(
@@ -3509,18 +3516,22 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             )
             if dissent_statements is not None:
                 # Validated post-admission (RevZ1, run 7 fix wave review,
-                # P2): every returned finding was previously marked
-                # disputes=True unconditionally, trusting the reply's own
-                # read_id/locator and target_ids without checking either
-                # against what the packet actually asked about. Kept only
-                # when its own passage is one the packet actually sent and
-                # its target ids are a non-empty subset of the disputed
-                # statements' own targets -- an unbound reply, or one bound
-                # to a target none of them names, is dropped rather than
-                # admitted as a dispute or as ordinary evidence carrying a
-                # target it does not answer. ``build_findings`` itself
-                # stays ignorant of the dissent re-ask (minimal blast
-                # radius).
+                # P2; narrowed rather than dropped on an extra target per
+                # Fable's prompt review, R3): every returned finding was
+                # previously marked disputes=True unconditionally,
+                # trusting the reply's own read_id/locator and target_ids
+                # without checking either against what the packet actually
+                # asked about. Kept only when its own passage is one the
+                # packet actually sent, and its own target ids are
+                # narrowed to their intersection with the disputed
+                # statements' own targets -- a conscientious model that
+                # also binds one more target it believes the content
+                # answers must not lose the dispute finding entirely for
+                # it. Dropped only when its passage is not the packet's
+                # own, or that intersection is empty (an unbound reply, or
+                # one bound to targets none of the statements name).
+                # ``build_findings`` itself stays ignorant of the dissent
+                # re-ask (minimal blast radius).
                 batch_keys = {(unit.read_id, unit.locator) for unit in batch}
                 disputed_target_ids = {
                     target_id
@@ -3529,20 +3540,37 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 }
                 validated: list[Finding] = []
                 for finding in retry_findings:
-                    bound = set(finding.target_ids)
-                    if (finding.read_id, finding.locator) not in batch_keys or (
-                        not bound or not bound <= disputed_target_ids
-                    ):
-                        admitted_keys.remove((finding.read_id, finding.locator))
+                    if (finding.read_id, finding.locator) not in batch_keys:
+                        admitted_keys.remove(
+                            (finding.read_id, finding.locator)
+                        )
                         rejected.append(
                             f"{read_id}: dissent reply names a passage "
-                            "outside its own packet, or is not bound to a "
+                            "outside its own packet, dropped"
+                        )
+                        continue
+                    kept_target_ids = [
+                        target_id
+                        for target_id in finding.target_ids
+                        if target_id in disputed_target_ids
+                    ]
+                    if not kept_target_ids:
+                        admitted_keys.remove(
+                            (finding.read_id, finding.locator)
+                        )
+                        rejected.append(
+                            f"{read_id}: dissent reply is not bound to any "
                             "listed disputed statement's own target, "
                             "dropped"
                         )
                         continue
                     validated.append(
-                        finding.model_copy(update={"disputes": True})
+                        finding.model_copy(
+                            update={
+                                "disputes": True,
+                                "target_ids": kept_target_ids,
+                            }
+                        )
                     )
                 retry_findings = validated
             findings.extend(retry_findings)

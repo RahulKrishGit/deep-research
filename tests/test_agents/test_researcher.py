@@ -8359,9 +8359,9 @@ def _dissent_reask_reply_wrong_target(
 async def test_a_dissent_reply_bound_to_an_unlisted_target_is_not_kept(
     tracker: Tracker,
 ) -> None:
-    """RevZ1 P2: a reply bound to a planned target that is valid but that
-    none of the listed disputed statements carries is dropped, not
-    admitted with a binding its own passage never earned.
+    """RevZ1 P2 / Fable's prompt review R3: a reply bound to unlisted
+    targets alone -- its intersection with the listed statements' own
+    targets is empty -- is dropped, not kept with an empty binding.
     """
     completer = ScriptedCompleter(
         decisions=_dissent_decisions(),
@@ -8377,6 +8377,59 @@ async def test_a_dissent_reply_bound_to_an_unlisted_target_is_not_kept(
         _DISSENT_OTHER_TARGET_ID in finding.target_ids
         for finding in outcome.result.findings
     )
+
+
+def _dissent_reask_reply_extra_target(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """A dissent reply bound to the listed statement's own target plus one
+    extra, unlisted target -- R3's own repro (Fable's prompt review, run 7
+    fix wave)."""
+    del schema
+    packet = messages[1].content
+    read_id, locator, excerpt = _packet_passage_for("little evidence", packet)
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "Later field surveys found little evidence for the "
+                    "enrollment decline the annual assessment describes."
+                ),
+                source_url=_DISSENT_URL,
+                source_title=_DISSENT_TITLE,
+                confidence=0.7,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+                target_ids=[_DISSENT_TARGET_ID, _DISSENT_OTHER_TARGET_ID],
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_dissent_reply_with_an_extra_target_is_kept_intersected(
+    tracker: Tracker,
+) -> None:
+    """Fable's prompt review R3: a reply bound to the listed statement's
+    own target plus one extra, unlisted target is kept, its target ids
+    narrowed to the listed target alone -- not dropped for adding one
+    target a conscientious model believed its content also answered.
+    """
+    completer = ScriptedCompleter(
+        decisions=_dissent_decisions(),
+        outputs=[_dissent_main_reply, _dissent_reask_reply_extra_target],
+    )
+
+    outcome = await _run_dissent_state(
+        tracker, completer, sub_topic=_dissent_sub_topic_with_second_target()
+    )
+
+    disputes = [
+        finding for finding in outcome.result.findings if finding.disputes
+    ]
+    assert len(disputes) == 1
+    assert disputes[0].target_ids == [_DISSENT_TARGET_ID]
 
 
 def _dissent_reference_list_paragraph(index: int) -> str:
