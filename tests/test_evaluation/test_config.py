@@ -1112,7 +1112,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # exactly (no behaviour change). Moved `639232e40a48` -> `a967b15b311d`.
     # Run-4 fix wave (Fable audit 65/100; reviews and Fable prompt review GREEN
     # at 409fc35). Moved `a967b15b311d` -> `71849bdb488d`.
-    "researcher": "71849bdb488d",
+    # Run-5 fix wave (Fable audit 56.5/100; reviews and Fable prompt review).
+    # Moved `71849bdb488d` -> `5431883ccaec`.
+    "researcher": "5431883ccaec",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1190,7 +1192,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # media-title wording. Moved `aa2d17feb972` -> `aee44f66d137`.
     # Run-4 fix wave (Fable audit 65/100; reviews and Fable prompt review GREEN
     # at 409fc35). Moved `aee44f66d137` -> `b96cadd4419a`.
-    "evidence_verifier": "b96cadd4419a",
+    # Run-5 fix wave (Fable audit 56.5/100; reviews and Fable prompt review).
+    # Moved `b96cadd4419a` -> `624687fd7ae1`.
+    "evidence_verifier": "624687fd7ae1",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1274,7 +1278,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # report_writer_all_parts_refused. Moved `a4eafe23b35a` -> `c7fb91fd9f90`.
     # Run-4 fix wave (Fable audit 65/100; reviews and Fable prompt review GREEN
     # at 409fc35). Moved `c7fb91fd9f90` -> `dccfc1149817`.
-    "report_writer": "dccfc1149817",
+    # Run-5 fix wave (Fable audit 56.5/100; reviews and Fable prompt review).
+    # Moved `dccfc1149817` -> `ffa83c134496`.
+    "report_writer": "ffa83c134496",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
@@ -1285,8 +1291,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
 # T5 scoped-re-review addendum) is visible the same way a target or judge
 # prompt change is. T5: "report-review-4" -> "report-review-5" (the packet's
 # renamed sections, the new Table block, per-finding status lines, and the
-# scoped re-review after a redraft all landed under this version).
-PINNED_REPORT_REVIEWER_PROMPT_VERSION = "report-review-6"
+# scoped re-review after a redraft all landed under this version). Run-4 wave:
+# "report-review-6" (the bounded passage). Run-5 wave: "report-review-7" (the
+# source evaluation's kind line, W2).
+PINNED_REPORT_REVIEWER_PROMPT_VERSION = "report-review-7"
 
 # The judge half of the same contract. A Judge prompt change moves this value and
 # invalidates Judge evidence for every agent, so it is pinned next to the targets

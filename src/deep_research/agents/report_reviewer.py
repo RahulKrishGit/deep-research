@@ -126,7 +126,7 @@ Preflight validates it exactly like an agent, so a misconfigured reviewer
 fails the run before any collaborator exists.
 """
 
-REPORT_REVIEW_PROMPT_VERSION = "report-review-6"
+REPORT_REVIEW_PROMPT_VERSION = "report-review-7"
 """The prompt and reply contract this review's requests are versioned under.
 
 Version 2 was the whole-report Critic-era packet, which carried checked claims,
@@ -148,6 +148,9 @@ rule for a sentence that credits a body or states a fact its cited findings do
 not carry: it is judged against that finding's snippet *or* passage, so a
 credit or fact the passage names but the snippet's own cut drops is supported,
 not a false defect.
+Version 7 (run-5 prompt review, W2) shows each finding the source evaluation's
+kind line, the same line the writer names a weak page's kind from. A sentence
+may describe the page by that kind, in those words and in no others.
 The version is what keeps a stored judgement of the older packet from being
 read as a judgement of this one.
 """

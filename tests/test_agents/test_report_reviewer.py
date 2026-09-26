@@ -2149,10 +2149,6 @@ def test_the_prompt_never_claims_a_sentence_without_a_label_states_no_figure() -
 # --- spec §11.1: the renamed packet sections, the table, finding status -----
 
 
-def test_the_prompt_version_is_report_review_6() -> None:
-    assert REPORT_REVIEW_PROMPT_VERSION == "report-review-6"
-
-
 def test_the_prompt_no_longer_says_the_code_built_label_it_ends_with() -> None:
     assert "the code-built label it ends with" not in REPORT_REVIEW_SYSTEM_PROMPT
 
