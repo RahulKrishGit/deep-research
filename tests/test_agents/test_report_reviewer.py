@@ -2130,12 +2130,6 @@ def test_the_prompt_version_is_report_review_6() -> None:
     assert REPORT_REVIEW_PROMPT_VERSION == "report-review-6"
 
 
-def test_the_unsupported_credit_rule_now_reads_snippet_or_passage() -> None:
-    """D5/D13: a credited body or fact the passage names, not just the
-    snippet, must not be recorded as unsupported."""
-    assert "snippet or passage" in REPORT_REVIEW_SYSTEM_PROMPT
-
-
 def test_the_prompt_no_longer_says_the_code_built_label_it_ends_with() -> None:
     assert "the code-built label it ends with" not in REPORT_REVIEW_SYSTEM_PROMPT
 

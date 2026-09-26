@@ -317,8 +317,10 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
     "it, asserts more. A sentence that credits a body its cited findings' "
     "snippet or passage does not name — \"according to X\" beside findings "
     "whose snippet or passage attributes the figure to no one or to another "
-    "organisation — is unsupported; a body or fact the passage names is "
-    "supported even where the snippet alone does not carry it. The "
+    "organisation — is unsupported; a sentence whose credited body the "
+    "passage itself credits with that fact, or whose fact the passage "
+    "states, is supported even where the snippet alone does not carry it. "
+    "The "
     "table is assembled by code from the statements' option marks and the "
     "verified figures: a cell crediting a source with a verdict or pick its "
     "backing statement does not carry is a defect against that statement's "
@@ -1209,8 +1211,8 @@ def _cited_findings_block(packet: ReportReviewInput) -> str:
         "labels built from their verified context, each finding's own "
         "verified/corrected/quoted status, its snippet and, where this run "
         "read one, the bounded passage around it. This is the evidence a "
-        "sentence is judged against: a credited body or fact named in "
-        "either is supported.\n" + _render_findings(packet)
+        "sentence is judged against: a credit or fact either one states is "
+        "supported.\n" + _render_findings(packet)
     )
 
 
