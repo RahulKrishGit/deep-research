@@ -242,3 +242,36 @@ def test_an_abbreviation_inside_the_declaring_sentence_does_not_end_it_early() -
         "This role-play, prepared with Prof. Vale of Example University, "
         "was written for a negotiation course."
     )
+
+
+# --- Fable prompt review: category 2's "illustrative" over-reaches onto ---
+# --- a data table's own note and a regulator's own guidance on its rules --
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Values in this table are simplified for illustrative purposes only.",
+        "The examples in this guidance are illustrative and simplified for "
+        "illustrative purposes.",
+    ],
+)
+def test_illustrative_purposes_alone_is_not_a_self_description(
+    sentence: str,
+) -> None:
+    """A statistical agency's table note and a regulator's own guidance on
+    its own rules are not teaching material; "illustrative" alone is too
+    common a hedge word on a primary data or rule page to signal a relay."""
+    read = make_read(sentence)
+    assert derivative_self_description(read) is None
+
+
+def test_simplified_and_adapted_for_educational_purposes_is_still_a_self_description() -> None:
+    read = make_read(
+        "The account has been simplified accordingly and adapted for "
+        "educational purposes."
+    )
+    assert derivative_self_description(read) == (
+        "The account has been simplified accordingly and adapted for "
+        "educational purposes."
+    )

@@ -87,10 +87,16 @@ def _is_teaching_material(sentence: str) -> bool:
 
 # Category 2: simplified, adapted or fictionalised for a teaching purpose --
 # independent of category 1's kind noun, since a document may say this of
-# itself without naming what kind of material it is.
+# itself without naming what kind of material it is. "illustrative" is
+# deliberately absent: a statistical agency's table note ("simplified for
+# illustrative purposes only") and a regulator's guidance on its own rules
+# ("illustrative and simplified for illustrative purposes") both use it as
+# an ordinary hedge word, not a declaration that the page is teaching
+# material -- the writer's bottom-line floor would otherwise withhold a
+# primary data or rule page for this alone.
 _SIMPLIFIED_FOR_TEACHING = re.compile(
     r"\b(?:simplified|adapted|fictionalised|fictionalized)\b.{0,80}?\bfor\b"
-    r".{0,40}?\b(?:educational|teaching|classroom|training|illustrative)"
+    r".{0,40}?\b(?:educational|teaching|classroom|instructional|training)"
     r"\s+purposes\b",
     re.IGNORECASE,
 )
@@ -152,9 +158,9 @@ def derivative_self_description(read: ReadRecord) -> str | None:
     developed or adapted as such (an ambiguous kind -- a simulation, an
     exercise, a case study, a scenario, a game -- only counts alongside a
     teaching cue in the same sentence); simplified, adapted or
-    fictionalised for an educational, teaching, classroom, training or
-    illustrative purpose; based on an encyclopedia's or a chatbot's content;
-    or AI-written by its own words.
+    fictionalised for an educational, teaching, classroom, instructional or
+    training purpose; based on an encyclopedia's or a chatbot's content; or
+    AI-written by its own words.
 
     Verbatim, cut at 300 characters on a word boundary. ``None`` when the
     document makes no such declaration.
