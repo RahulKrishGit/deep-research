@@ -45,6 +45,7 @@ from deep_research.agents.sources import (
 )
 from deep_research.utils.types import (
     INCOMPLETE_CONTENT_SHA256,
+    MAX_SNIPPET_CHARS,
     QUALITY_CONTRACT_VERSION,
     BoundaryAudit,
     ContractModel,
@@ -1101,6 +1102,133 @@ def neighbouring_passage_text(read: ReadRecord, locator: str) -> str:
     index = keys.index(locator)
     neighbours = keys[max(0, index - 1) : index + 2]
     return " ".join(read.passages[key] for key in neighbours)
+
+
+# How far a snippet-admission window may grow past a snippet's own length
+# before giving up on one candidate start: enough slack for the far edge of
+# one more passage, never the whole page. A genuine snippet can never need
+# more room than its own length, so the bound is tied to it rather than to a
+# fixed passage count -- the same reason a document of many short passages
+# and one of a few long ones are both covered.
+_SNIPPET_WINDOW_SLACK = MAX_SNIPPET_CHARS
+
+
+def _grown_snippet_window(
+    read: ReadRecord,
+    keys: Sequence[str],
+    start_index: int,
+    normalized_snippet: str,
+) -> str | None:
+    """The shortest run of passages from ``keys[start_index]`` forward that
+    contains ``normalized_snippet`` (already :func:`cosmetic_text`-normalised,
+    the way :func:`excerpt_matches` normalises its own ``excerpt`` argument),
+    or ``None`` when no such run exists within a snippet's own length.
+    """
+    limit = len(normalized_snippet) + _SNIPPET_WINDOW_SLACK
+    text = ""
+    for key in keys[start_index:]:
+        text = f"{text} {read.passages[key]}" if text else read.passages[key]
+        if (
+            normalized_snippet in cosmetic_text(text)
+            or normalized_snippet in cosmetic_text(text, join_hyphenation=False)
+        ):
+            return text
+        if len(text) > limit:
+            return None
+    return None
+
+
+def snippet_span_text(read: ReadRecord, locator: str, snippet: str) -> str:
+    """Every passage ``snippet`` actually runs through, starting at ``locator``.
+
+    A read passage is capped well below a kept snippet's own length limit, so
+    a snippet several passages long has to be windowed by where it actually
+    ends, never by a fixed number of neighbours: this is what a consumer that
+    must see a whole kept snippet's context -- the Context Check, the report
+    registry's passage line -- needs in place of
+    :func:`neighbouring_passage_text`'s fixed one-neighbour-either-side
+    window. When ``snippet`` is not the read's own words at ``locator`` at
+    all, the single passage at ``locator`` is returned -- the same degraded
+    case :func:`neighbouring_passage_text` already leaves an unmatched
+    locator in.
+    """
+    keys = list(read.passages.keys())
+    if locator not in keys:
+        return ""
+    normalized_snippet = cosmetic_text(snippet)
+    if normalized_snippet:
+        matched = _grown_snippet_window(
+            read, keys, keys.index(locator), normalized_snippet
+        )
+        if matched is not None:
+            return matched
+    return read.passages[locator]
+
+
+def locate_snippet(
+    read: ReadRecord, snippet: str, *, claimed_locator: str = ""
+) -> str | None:
+    """The passage id ``snippet`` verbatim begins in, read against the whole page.
+
+    Admission is a whole-page fact, never a locator-relative one: ``snippet``
+    (after the same cosmetic normalisation :func:`excerpt_matches` applies)
+    must occur as one contiguous, verbatim span of the read's own words --
+    every passage, in reader order -- never merely somewhere across passages
+    read separately. A snippet stitched from two spans the page does not
+    actually run together is refused exactly like a paraphrase: neither is a
+    span the page states. The model's own ``claimed_locator`` is only a
+    hint: when the span occurs more than once, the occurrence closest to it,
+    in passage order, wins; with no claim, or none on the page, the first
+    occurrence does.
+
+    Returns the id of the passage the match's first character falls in, or
+    ``None`` when no contiguous, verbatim span of ``snippet`` exists
+    anywhere on the page.
+    """
+    keys = list(read.passages.keys())
+    if not keys:
+        return None
+    normalized_snippet = cosmetic_text(snippet)
+    if not normalized_snippet:
+        return None
+    claimed_index = keys.index(claimed_locator) if claimed_locator in keys else None
+    for join_hyphenation in (True, False):
+        normalized_passages = [
+            cosmetic_text(read.passages[key], join_hyphenation=join_hyphenation)
+            for key in keys
+        ]
+        boundaries: list[int] = []
+        offset = 0
+        for part in normalized_passages:
+            boundaries.append(offset)
+            offset += len(part) + 1
+        full_text = " ".join(normalized_passages)
+        starts: list[int] = []
+        search_from = 0
+        while True:
+            found = full_text.find(normalized_snippet, search_from)
+            if found == -1:
+                break
+            starts.append(found)
+            search_from = found + 1
+        if not starts:
+            continue
+        indices = sorted({_passage_index(boundaries, start) for start in starts})
+        if claimed_index is None:
+            return keys[indices[0]]
+        return keys[min(indices, key=lambda index: abs(index - claimed_index))]
+    return None
+
+
+def _passage_index(boundaries: Sequence[int], offset: int) -> int:
+    """Which passage ``offset`` (into the boundaries' own joined text) falls in."""
+    index = 0
+    for candidate, boundary in enumerate(boundaries):
+        if boundary <= offset:
+            index = candidate
+        else:
+            break
+    return index
 
 
 # The words that turn a mention of a body into a claim about who published a

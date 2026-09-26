@@ -1067,7 +1067,17 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # the report-format spec is the main protection. The module source
     # moved `0e92c7cf1206` -> `4245163b56a8`; no other agent's text changed,
     # so the other four target pins and the Judge pin are unchanged.
-    "researcher": "4245163b56a8",
+    # Whole-page snippet admission (controller decision, P1): a kept
+    # snippet's admission and its finding's own locator no longer trust the
+    # model's claimed locator or a fixed one-neighbour window --
+    # ``_snippet_admitted_at`` now returns the passage
+    # ``evidence.locate_snippet`` finds the snippet's own words in anywhere
+    # on the page, and ``build_findings`` stamps every downstream field
+    # (attribution, the finding itself, the admitted-evidence key) from that
+    # relocated locator. No prompt string moved; only this module's own
+    # source did, so the other four target pins and the Judge pin are
+    # unchanged. Moved `4245163b56a8` -> `ecb64eeaf882`.
+    "researcher": "ecb64eeaf882",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

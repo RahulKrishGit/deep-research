@@ -33,6 +33,7 @@ from deep_research.agents.evidence import (
     canonical_read_text,
     cosmetic_text,
     excerpt_matches,
+    locate_snippet,
     merge_boundary_audits,
     merge_evidence_dispositions,
     merge_evidence_units,
@@ -51,6 +52,7 @@ from deep_research.agents.evidence import (
     resolve_read_works,
     resolve_work_identities,
     retained_work_count,
+    snippet_span_text,
     validate_cached_read,
     validated_temporal,
 )
@@ -3472,3 +3474,159 @@ def test_a_reporting_noun_phrase_credits_the_body_it_names() -> None:
     read = make_read(mention, url="https://www.utilitydive.com/news/x", title="x")
     assert not relay_attribution_on_page(read, "page-1-chunk-0", mention,
                                          "Example Statistical Agency")
+
+
+# ---------------------------------------------------------------------------
+# locate_snippet / snippet_span_text: whole-page admission and relocation
+# ---------------------------------------------------------------------------
+
+# A three-passage span: the quote's own words start near the end of the
+# first passage (past six repeats of unrelated lead filler), run the whole
+# of the second, and end partway through the third. 617 characters, inside
+# the model-facing snippet range (601-1200) a single ~600-character passage
+# cannot hold alone.
+_SPAN3_LEAD_FILLER = (
+    "Filler introduction text that never appears in any quoted rule at all "
+    "today. "
+)
+_SPAN3_TAIL_A = "The operator shall file the annual return with the county office."
+_SPAN3_MID_B = (
+    "The filing states the total acreage under cultivation for the season, "
+    "the count of registered cultivators within the county boundary, the "
+    "volume of produce declared for the district warehouse during the "
+    "reporting period, the names of every tenant holding a lease longer "
+    "than one growing season, the aggregate irrigation drawn from the "
+    "shared district canal since the last filing, and the total weight of "
+    "grain moved through the county depot during the same reporting window."
+)
+_SPAN3_HEAD_C = (
+    "A copy of the filing shall remain in the register for three years "
+    "afterward."
+)
+_SPAN3_FILLER_C = (
+    " Additional filler conclusion text that the quoted rule never reaches "
+    "at all."
+)
+_SPAN3_PASSAGE_A = (_SPAN3_LEAD_FILLER * 6) + _SPAN3_TAIL_A
+_SPAN3_PASSAGE_B = _SPAN3_MID_B
+_SPAN3_PASSAGE_C = _SPAN3_HEAD_C + _SPAN3_FILLER_C
+_SPAN3_SNIPPET = f"{_SPAN3_TAIL_A} {_SPAN3_MID_B} {_SPAN3_HEAD_C}"
+_SPAN3_STITCHED_SNIPPET = f"{_SPAN3_TAIL_A} {_SPAN3_HEAD_C}"
+
+
+def _span3_read() -> ReadRecord:
+    return make_read(
+        f"{_SPAN3_PASSAGE_A} {_SPAN3_PASSAGE_B} {_SPAN3_PASSAGE_C}",
+        url="https://example.test/three-passage-span",
+        passages={
+            "chunk-a": _SPAN3_PASSAGE_A,
+            "chunk-b": _SPAN3_PASSAGE_B,
+            "chunk-c": _SPAN3_PASSAGE_C,
+        },
+    )
+
+
+def test_locate_snippet_admits_a_span_across_three_passages_at_its_start() -> None:
+    """A 601-1200-char quote spanning three passages is admitted at its own start.
+
+    ``MAX_SNIPPET_CHARS`` (1200) is up to twice one read passage's own cap, so
+    a kept snippet routinely needs more than a locator and one neighbour to
+    be found whole. 617 characters here, none of it stitched: every word is
+    the page's own, run together exactly as the page prints it.
+    """
+    assert len(_SPAN3_SNIPPET) == 617
+    read = _span3_read()
+
+    assert locate_snippet(read, _SPAN3_SNIPPET, claimed_locator="chunk-a") == "chunk-a"
+
+
+def test_locate_snippet_relocates_a_quote_cited_at_the_wrong_locator() -> None:
+    """The model's claimed locator is a hint, not the authority.
+
+    The same three-passage quote, claimed at the passage it ends in rather
+    than the one it starts in, is still admitted -- and still resolves to
+    its true start, not the claim.
+    """
+    read = _span3_read()
+
+    assert locate_snippet(read, _SPAN3_SNIPPET, claimed_locator="chunk-c") == "chunk-a"
+
+
+def test_locate_snippet_refuses_a_quote_stitched_from_non_adjacent_passages() -> None:
+    """Two genuine spans the page never runs together are not one quote.
+
+    ``_SPAN3_STITCHED_SNIPPET`` joins the first passage's own words to the
+    third passage's own words, skipping the second passage's text the real
+    page actually prints between them -- verbatim on each side, but a
+    contiguous span nowhere on the page.
+    """
+    read = _span3_read()
+
+    assert locate_snippet(read, _SPAN3_STITCHED_SNIPPET, claimed_locator="chunk-a") is None
+
+
+_REPEATED_SENTENCE = (
+    "Every registered operator shall renew its licence before the calendar "
+    "year ends."
+)
+
+
+def _repeated_sentence_read() -> ReadRecord:
+    return make_read(
+        " ".join(
+            [
+                _REPEATED_SENTENCE,
+                "Unrelated filler paragraph about something else entirely, "
+                "stated only once here now.",
+                "Another unrelated filler paragraph, again about something "
+                "else, stated only once.",
+                _REPEATED_SENTENCE,
+            ]
+        ),
+        url="https://example.test/repeated-sentence",
+        passages={
+            "chunk-1": _REPEATED_SENTENCE,
+            "chunk-2": (
+                "Unrelated filler paragraph about something else entirely, "
+                "stated only once here now."
+            ),
+            "chunk-3": (
+                "Another unrelated filler paragraph, again about something "
+                "else, stated only once."
+            ),
+            "chunk-4": _REPEATED_SENTENCE,
+        },
+    )
+
+
+def test_locate_snippet_resolves_a_repeated_sentence_to_the_nearest_claimed_locator() -> None:
+    """Two genuine occurrences: the claim breaks the tie, never the first one found.
+
+    The sentence sits at ``chunk-1`` and ``chunk-4``; claimed at ``chunk-3``
+    (one passage from ``chunk-4``, two from ``chunk-1``), the nearer
+    occurrence wins.
+    """
+    read = _repeated_sentence_read()
+
+    assert (
+        locate_snippet(read, _REPEATED_SENTENCE, claimed_locator="chunk-3")
+        == "chunk-4"
+    )
+
+
+def test_snippet_span_text_contains_the_whole_three_passage_snippet() -> None:
+    """The window a Context Check style consumer would read holds every word.
+
+    ``neighbouring_passage_text`` stops at one neighbour either side and
+    would cut this quote's own third passage; ``snippet_span_text`` grows
+    forward from the locator until the whole quote is inside it.
+    """
+    read = _span3_read()
+
+    window = snippet_span_text(read, "chunk-a", _SPAN3_SNIPPET)
+
+    assert excerpt_matches(window, _SPAN3_SNIPPET)
+    assert excerpt_matches(window, _SPAN3_HEAD_C)
+    assert not excerpt_matches(
+        neighbouring_passage_text(read, "chunk-a"), _SPAN3_SNIPPET
+    )

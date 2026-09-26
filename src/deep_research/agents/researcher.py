@@ -40,6 +40,7 @@ from deep_research.agents.evidence import (
     _quote_states,
     attribution_cue_adjacent,
     excerpt_matches,
+    locate_snippet,
     neighbouring_passage_text,
     retained_work_count,
 )
@@ -1275,23 +1276,19 @@ def _admitted_period(value: object) -> str | None:
     return period if any(character.isdigit() for character in period) else None
 
 
-def _snippet_admitted_at(read: ReadRecord, locator: str, snippet: str) -> bool:
-    """Whether the read carries ``snippet`` at ``locator`` or beside it.
+def _snippet_admitted_at(read: ReadRecord, locator: str, snippet: str) -> str | None:
+    """The locator ``snippet`` is admitted at, or ``None`` when it is not the read's own words.
 
-    The excerpt's own passage is the locator's, and a passage cut at a clause
-    boundary can still leave a rule's words straddling the cut: its clause ends
-    one passage and its object opens the next, so a verbatim excerpt can span
-    the two. The immediate neighbour is read with the passage for that reason --
-    the same bounded window the attribution and relay checks read, never the
-    whole page, because a snippet three passages away is a different part of the
-    document.
+    Admission reads the whole page, never merely ``locator``'s own passage or
+    a fixed neighbour either side of it: :func:`evidence.locate_snippet`
+    finds where ``snippet`` runs, verbatim and contiguous, in the read's own
+    text. That position -- not the model's own claim -- is what every later
+    stage reads the finding's context from, so ``locator`` only breaks a tie
+    when the same words genuinely appear more than once on the page. A
+    paraphrase, or a snippet stitched from two spans the page never runs
+    together, still finds nowhere to admit.
     """
-    passage = read.passages.get(locator)
-    if passage is None:
-        return False
-    if excerpt_matches(passage, snippet):
-        return True
-    return excerpt_matches(neighbouring_passage_text(read, locator), snippet)
+    return locate_snippet(read, snippet, claimed_locator=locator)
 
 
 # RES-4's snippet rule: a verdict must carry the thing it judges. A bare
@@ -1522,6 +1519,7 @@ def build_findings(
         read = None
         source_url = item.source_url
         source_title = item.source_title
+        locator = item.locator
         if known_reads is not None and item.read_id is None:
             rejected.append(
                 f"finding {index}: the acquisition path requires an admitted "
@@ -1551,11 +1549,13 @@ def build_findings(
                     f"finding {index}: snippet longer than {MAX_SNIPPET_CHARS} characters"
                 )
                 continue
-            if not _snippet_admitted_at(read, item.locator, item.snippet):
+            admitted_locator = _snippet_admitted_at(read, item.locator, item.snippet)
+            if admitted_locator is None:
                 rejected.append(
                     f"finding {index}: snippet was not admitted at locator"
                 )
                 continue
+            locator = admitted_locator
             if _bare_pronoun_judgement(item.snippet, item.content):
                 rejected.append(
                     f"finding {index}: snippet's subject is a bare pronoun "
@@ -1580,7 +1580,7 @@ def build_findings(
                 item.attributed_issuer,
                 item.attribution_quote,
                 read=read,
-                locator=item.locator,
+                locator=locator,
             )
             if read is not None:
                 figures, figure_drops = _admitted_figures(item.figures, index=index)
@@ -1606,7 +1606,7 @@ def build_findings(
                     release_date=_admitted_stated_date(read, item.release_date),
                     snippet=item.snippet if read is not None else None,
                     read_id=item.read_id if read is not None else None,
-                    locator=item.locator if read is not None else None,
+                    locator=locator if read is not None else None,
                     figures=figures,
                 )
             )
@@ -1616,9 +1616,9 @@ def build_findings(
         if (
             admitted_evidence_keys is not None
             and item.read_id is not None
-            and item.locator
+            and locator
         ):
-            admitted_evidence_keys.append((item.read_id, item.locator))
+            admitted_evidence_keys.append((item.read_id, locator))
     return findings, rejected
 
 

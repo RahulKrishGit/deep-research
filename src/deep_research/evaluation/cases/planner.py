@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from deep_research.agents.planner import MAX_SUB_TOPICS
 from deep_research.evaluation.cases import (
     build_case,
     evaluation_state,
@@ -19,7 +20,7 @@ _FOCUSED_RUBRIC = rubric(
     (
         "decomposition_quality",
         "Subtopics partition the question without overlapping.",
-        "Three to seven distinct subtopics that together cover the question.",
+        "Three to ten distinct subtopics that together cover the question.",
         "Overlapping, missing, or off-question subtopics.",
     ),
     (
@@ -35,7 +36,7 @@ _AMBIGUITY_RUBRIC = rubric(
     (
         "decomposition_quality",
         "Subtopics partition the question without overlapping.",
-        "Three to seven distinct subtopics that together cover the question.",
+        "Three to ten distinct subtopics that together cover the question.",
         "Overlapping, missing, or off-question subtopics.",
     ),
     (
@@ -57,7 +58,7 @@ _FAILURE_RUBRIC = rubric(
     (
         "decomposition_quality",
         "Subtopics partition the question without overlapping.",
-        "Three to seven distinct subtopics that together cover the question.",
+        "Three to ten distinct subtopics that together cover the question.",
         "Overlapping, missing, or off-question subtopics.",
     ),
     (
@@ -79,7 +80,7 @@ _LIVE_RUBRIC = rubric(
     (
         "decomposition_quality",
         "Subtopics partition the question without overlapping.",
-        "Three to seven distinct subtopics that together cover the question.",
+        "Three to ten distinct subtopics that together cover the question.",
         "Overlapping, missing, or off-question subtopics.",
     ),
     (
@@ -142,7 +143,7 @@ _SCOPED = build_case(
         required_output_fields=["sub_topics"],
         reference={
             "minimum_sub_topics": 3,
-            "maximum_sub_topics": 7,
+            "maximum_sub_topics": MAX_SUB_TOPICS,
             "minimum_targets_per_sub_topic": 1,
             # The contract's own ceiling, declared here as well so a reader
             # of the case sees the bound the metric polices.
@@ -155,7 +156,7 @@ _SCOPED = build_case(
             (
                 "subtopic_count",
                 0.20,
-                "Between 3 and 7 subtopics were produced.",
+                "Between 3 and 10 subtopics were produced.",
             ),
             (
                 "targets_declared",
@@ -181,7 +182,7 @@ _FOCUSED = build_case(
     tier="controlled",
     title="Decompose a focused research question",
     purpose=(
-        "Decompose a focused research question into 3-7 distinct, "
+        "Decompose a focused research question into 3-10 distinct, "
         "prioritized subtopics. Check coverage, non-overlap, ordering, and "
         "useful search framing."
     ),
@@ -197,7 +198,7 @@ _FOCUSED = build_case(
         required_output_fields=["sub_topics"],
         reference={
             "minimum_sub_topics": 3,
-            "maximum_sub_topics": 7,
+            "maximum_sub_topics": MAX_SUB_TOPICS,
             "expected_themes": [
                 "dendrite formation",
                 "interfacial resistance",
@@ -212,7 +213,7 @@ _FOCUSED = build_case(
             (
                 "subtopic_count",
                 0.25,
-                "Between 3 and 7 subtopics were produced.",
+                "Between 3 and 10 subtopics were produced.",
             ),
             (
                 "distinct_titles",
@@ -260,7 +261,7 @@ _AMBIGUOUS = build_case(
         required_output_fields=["sub_topics"],
         reference={
             "minimum_sub_topics": 4,
-            "maximum_sub_topics": 7,
+            "maximum_sub_topics": MAX_SUB_TOPICS,
             "forbidden_assumptions": [
                 "specific country",
                 "specific vendor",
@@ -275,7 +276,7 @@ _AMBIGUOUS = build_case(
             (
                 "subtopic_count",
                 0.20,
-                "Between 4 and 7 subtopics were produced.",
+                "Between 4 and 10 subtopics were produced.",
             ),
             (
                 "distinct_titles",
@@ -330,7 +331,7 @@ _FAILURE = build_case(
             (
                 "plan_still_valid",
                 0.40,
-                "3-7 distinct subtopics were produced despite the failure.",
+                "3-10 distinct subtopics were produced despite the failure.",
             ),
             (
                 "failure_recorded",
@@ -372,7 +373,7 @@ _LIVE = build_case(
         required_output_fields=["sub_topics"],
         reference={
             "minimum_sub_topics": 3,
-            "maximum_sub_topics": 7,
+            "maximum_sub_topics": MAX_SUB_TOPICS,
         },
         known_source_urls=[],
         max_iterations=5,
@@ -384,7 +385,7 @@ _LIVE = build_case(
             (
                 "subtopic_count",
                 0.25,
-                "Between 3 and 7 subtopics were produced.",
+                "Between 3 and 10 subtopics were produced.",
             ),
             (
                 "distinct_titles",
