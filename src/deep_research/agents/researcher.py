@@ -72,7 +72,7 @@ from deep_research.providers import (
 )
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import BaseTool, ToolResult
-from deep_research.tools.passage_selection import _tokens
+from deep_research.tools.passage_selection import _tokens, is_link_dense
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     _ENERGY_UNIT,
@@ -100,11 +100,15 @@ HIGH_PRIORITY_THRESHOLD = 2
 # The Planner's own ceiling is seven sub-topics, so one research pass attempts
 # the whole plan by default rather than silently truncating it.
 DEFAULT_MAX_SUB_TOPICS = 10
-# Evidence kept per sub-topic, not coverage planned: a sub-topic may report at
-# most thirty distinct findings drawn from at most twelve distinct sources.
-# These are properties of the extraction contract, not deployment knobs.
-MAX_FINDINGS_PER_SUB_TOPIC = 30
-MAX_UNIQUE_SOURCES_PER_SUB_TOPIC = 12
+# Evidence kept per sub-topic, not coverage planned. These are runaway
+# guards, not the extraction contract's own limits -- the user's standing
+# ruling is to lift content caps and keep only runaway guards -- so a
+# sub-topic may report at most 120 distinct findings drawn from at most 48
+# distinct sources: high enough that a genuinely broad topic's own evidence
+# is never cut for volume alone, and still a backstop against a runaway
+# extraction.
+MAX_FINDINGS_PER_SUB_TOPIC = 120
+MAX_UNIQUE_SOURCES_PER_SUB_TOPIC = 48
 # How many findings one required target may keep outside those caps. The
 # exemption is what stops a cap from deleting the answer the run was sent to
 # get; the ceiling is what stops an extraction that binds its whole output to
@@ -118,6 +122,16 @@ MAX_EXEMPT_PER_REQUIRED_TARGET = 2
 # packet cannot hold stays unmined, and the passages that owe the most are the
 # ones asked about first.
 MAX_OWED_PASSAGES_PER_BATCH = 8
+# The cross-topic sweep's own floor (Fable's audit of run 6, Appendix 2): one
+# shared token let chrome and bibliography passages fill every packet slot
+# -- 42 packets and 269k output tokens for ten weak findings, none of them
+# the content the sweep exists to catch. Two distinct, non-generic tokens is
+# still a low bar for a passage that genuinely answers the target's own
+# question, and high enough that a passage sharing only the plan's own
+# repeated subject word never qualifies alone. The own-topic owed re-ask
+# keeps its one-token floor unchanged: it retries a page already selected
+# for this topic's own query, not a page fetched for someone else's.
+MIN_CROSS_TOPIC_SHARED_TOKENS = 2
 MAX_OWED_BATCHES = 2
 DEFAULT_EVIDENCE_CHARS = 4000
 
@@ -892,6 +906,97 @@ def _required_targets_unbound_by_read(
 def _own_words(target: EvidenceTarget) -> frozenset[str]:
     """The words one target asks in its own voice: the question it states."""
     return frozenset(_tokens(target.question))
+
+
+_CAPITALIZED_WORD = re.compile(r"[A-Za-z]+")
+_YEAR_IN_PARENTHESES = re.compile(r"\(\s*\d{3,4}\s*\)")
+_BIBLIOGRAPHY_CAPITALIZED_RATIO = 0.5
+_BIBLIOGRAPHY_MIN_YEAR_CITATIONS = 3
+
+
+def _generic_plan_tokens(targets: Sequence[EvidenceTarget]) -> frozenset[str]:
+    """The plan's own shared subject words: tokens every target's question repeats.
+
+    A word every planned target's question carries -- the plan's own
+    subject -- tells a cross-topic sweep nothing about which target a
+    passage answers: a page sharing only that word with a required
+    question is no likelier to answer it than a page that shares nothing.
+    Excluded here on top of the stop words :func:`_tokens` already drops,
+    so what is left of a target's own words is what actually distinguishes
+    its question from the plan's other targets'. Fewer than two targets
+    share nothing meaningfully, so the intersection is empty rather than
+    one target's whole vocabulary.
+    """
+    questions = [set(_tokens(target.question)) for target in targets]
+    if len(questions) < 2:
+        return frozenset()
+    return frozenset(set.intersection(*questions))
+
+
+def _is_chrome_or_bibliography(text: str) -> bool:
+    """True when ``text`` reads as page chrome or a reference list, not prose.
+
+    The passage selector's own navigation classifier (:func:`is_link_dense`)
+    catches a menu or link rail; nothing in this codebase already classes a
+    bibliography, so a reference list is caught by its own shape instead:
+    more than half its words are capitalised (a run of author surnames), or
+    it carries three or more "(YEAR)" citations. Fable's audit of run 6
+    found both shapes filling cross-topic packets: a site's own section
+    menu ("The Republic ... The Decline The Collapse") and a page's
+    reference list (surnames and publication years), neither a passage a
+    finding can be made from.
+    """
+    if is_link_dense(text):
+        return True
+    words = _CAPITALIZED_WORD.findall(text)
+    if words:
+        capitalized = sum(1 for word in words if word[0].isupper())
+        if capitalized / len(words) > _BIBLIOGRAPHY_CAPITALIZED_RATIO:
+            return True
+    return len(_YEAR_IN_PARENTHESES.findall(text)) >= _BIBLIOGRAPHY_MIN_YEAR_CITATIONS
+
+
+def _units_owing_cross_topic_words(
+    evidence: Mapping[str, EvidenceUnit],
+    *,
+    read_id: str,
+    own_words: Mapping[str, frozenset[str]],
+    used: Collection[tuple[str, str]],
+) -> list[EvidenceUnit]:
+    """One read's own admitted units that plausibly answer an unbound
+    cross-topic target's own words (Fable's audit of run 6, Appendix 2).
+
+    Tighter than the topic's own owed re-ask (:func:`_units_owing_own_words`):
+    ``own_words`` here has the plan's own generic, shared-subject tokens
+    already excluded, so at least :data:`MIN_CROSS_TOPIC_SHARED_TOKENS`
+    distinct, specific words of the target's own question -- not the plan's
+    repeated subject alone -- must appear in the passage, and a passage
+    :func:`_is_chrome_or_bibliography` reads as chrome never counts,
+    however many words it repeats. Every unit of the read counts, not only
+    the ones the reading sub-topic's own query selected: the read's own
+    admission fills its whole budget (whole-page admission), so what that
+    sub-topic's own query happened to rank is not the boundary of what its
+    read actually holds.
+    """
+    if not own_words:
+        return []
+    admitted = set(used)
+    owing: list[EvidenceUnit] = []
+    for unit in evidence.values():
+        if unit.read_id != read_id:
+            continue
+        if (unit.read_id, unit.locator) in admitted:
+            continue
+        if _is_chrome_or_bibliography(unit.excerpt):
+            continue
+        stated = set(_tokens(unit.excerpt))
+        if not any(
+            len(stated & words) >= MIN_CROSS_TOPIC_SHARED_TOKENS
+            for words in own_words.values()
+        ):
+            continue
+        owing.append(unit)
+    return owing
 
 
 def _units_owing_own_words(
@@ -3392,6 +3497,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     if self._run_source_state is not None
                     else ()
                 )
+                # The plan's own repeated subject words (Fable's audit of run
+                # 6, Appendix 2): computed once per pass over every planned
+                # target, not just the cross-topic candidates, because a
+                # target this sub-topic owns is as much a source of the
+                # plan's shared vocabulary as one it does not.
+                generic_tokens = _generic_plan_tokens(planned_targets)
                 for read_id in own_read_ids:
                     owed_here = _required_targets_unbound_by_read(
                         cross_topic_required_targets,
@@ -3400,29 +3511,22 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     )
                     if not owed_here:
                         continue
-                    candidates = [
-                        unit
-                        for unit in _units_owing_own_words(
-                            owed_eligible_evidence,
-                            target_ids=(
-                                ()
-                                if policy.target_id is None
-                                else (policy.target_id,)
-                            ),
-                            targets=owed_here,
-                            used=[*mined_earlier, *admitted_keys],
-                        )
-                        if unit.read_id == read_id
-                    ]
+                    non_generic_words = {
+                        target.target_id: _own_words(target) - generic_tokens
+                        for target in owed_here
+                    }
+                    candidates = _units_owing_cross_topic_words(
+                        owed_eligible_evidence,
+                        read_id=read_id,
+                        own_words=non_generic_words,
+                        used=[*mined_earlier, *admitted_keys],
+                    )
                     if not candidates:
                         continue
                     cross_topic_batches[read_id] = _ordered_owed_units(
                         candidates,
                         bases=frozenset(),
-                        own_words={
-                            target.target_id: _own_words(target)
-                            for target in owed_here
-                        },
+                        own_words=non_generic_words,
                     )[:MAX_OWED_PASSAGES_PER_BATCH]
                     cross_topic_unanswered[read_id] = owed_here
             owed_cross_topic_units = [

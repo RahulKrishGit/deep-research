@@ -255,8 +255,8 @@ def _tool_step(
 def test_priority_and_selection_defaults_match_the_plan() -> None:
     assert HIGH_PRIORITY_THRESHOLD == 2
     assert DEFAULT_MAX_SUB_TOPICS == 10
-    assert MAX_FINDINGS_PER_SUB_TOPIC == 30
-    assert MAX_UNIQUE_SOURCES_PER_SUB_TOPIC == 12
+    assert MAX_FINDINGS_PER_SUB_TOPIC == 120
+    assert MAX_UNIQUE_SOURCES_PER_SUB_TOPIC == 48
 
 
 def test_the_default_cap_attempts_the_whole_planner_output() -> None:
@@ -701,7 +701,8 @@ def test_duplicate_findings_are_folded_before_the_cap() -> None:
 
 
 def test_the_cap_keeps_the_most_confident_findings() -> None:
-    total = MAX_FINDINGS_PER_SUB_TOPIC + 2
+    max_findings = 30
+    total = max_findings + 2
     confidences = [round(0.01 * step, 4) for step in range(total, 0, -1)]
     findings = [
         _finding(
@@ -713,18 +714,19 @@ def test_the_cap_keeps_the_most_confident_findings() -> None:
         for index, confidence in enumerate(confidences, start=1)
     ]
 
-    budget = bound_sub_topic_findings(findings)
+    budget = bound_sub_topic_findings(findings, max_findings=max_findings)
 
     assert [finding.confidence for finding in budget.retained] == sorted(
         confidences, reverse=True
-    )[:MAX_FINDINGS_PER_SUB_TOPIC]
+    )[:max_findings]
     assert budget.dropped_duplicate == 0
     assert budget.dropped_cap == 2
     assert budget.sources_retained == 1
 
 
 def test_the_cap_keeps_at_most_the_configured_distinct_sources() -> None:
-    total = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 2
+    max_sources = 12
+    total = max_sources + 2
     confidences = [round(0.01 * step, 4) for step in range(total, 0, -1)]
     findings = [
         _finding(
@@ -736,14 +738,13 @@ def test_the_cap_keeps_at_most_the_configured_distinct_sources() -> None:
         for index, confidence in enumerate(confidences, start=1)
     ]
 
-    budget = bound_sub_topic_findings(findings)
+    budget = bound_sub_topic_findings(findings, max_sources=max_sources)
 
     assert {finding.source_url for finding in budget.retained} == {
-        f"https://s{index}.test/one"
-        for index in range(1, MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 1)
+        f"https://s{index}.test/one" for index in range(1, max_sources + 1)
     }
     assert budget.dropped_cap == 2
-    assert budget.sources_retained == MAX_UNIQUE_SOURCES_PER_SUB_TOPIC
+    assert budget.sources_retained == max_sources
 
 
 def test_a_second_source_keeps_a_slot_confidence_alone_would_fill() -> None:
@@ -753,7 +754,8 @@ def test_a_second_source_keeps_a_slot_confidence_alone_would_fill() -> None:
     confidence ranking would keep the whole first page and drop the single
     independent source, which is the one a reader most needs to see.
     """
-    count = MAX_FINDINGS_PER_SUB_TOPIC + 1
+    max_findings = 30
+    count = max_findings + 1
     confidences = [round(0.99 - 0.01 * step, 4) for step in range(count)]
     findings = [
         _finding(
@@ -769,9 +771,9 @@ def test_a_second_source_keeps_a_slot_confidence_alone_would_fill() -> None:
         )
     ]
 
-    budget = bound_sub_topic_findings(findings)
+    budget = bound_sub_topic_findings(findings, max_findings=max_findings)
 
-    kept_a = sorted(confidences, reverse=True)[: MAX_FINDINGS_PER_SUB_TOPIC - 1]
+    kept_a = sorted(confidences, reverse=True)[: max_findings - 1]
     assert [finding.source_url for finding in budget.retained] == [
         "https://a.test/one" for _ in kept_a
     ] + ["https://b.test/two"]
@@ -825,7 +827,8 @@ def test_findings_bound_to_a_required_target_are_exempt_from_the_source_cap() ->
     -- a publisher the source cap would drop -- is the only record of a
     required target.
     """
-    total = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 2
+    max_sources = 12
+    total = max_sources + 2
     confidences = [round(0.99 - 0.01 * step, 4) for step in range(total)]
     findings = [
         _finding(
@@ -841,15 +844,16 @@ def test_findings_bound_to_a_required_target_are_exempt_from_the_source_cap() ->
     )
 
     budget = bound_sub_topic_findings(
-        [*findings[:-1], required], required_target_ids=[PLANNED_TARGET_ID]
+        [*findings[:-1], required],
+        required_target_ids=[PLANNED_TARGET_ID],
+        max_sources=max_sources,
     )
 
     assert {finding.source_url for finding in budget.retained} == {
-        f"https://s{index}.test/one"
-        for index in range(1, MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 1)
+        f"https://s{index}.test/one" for index in range(1, max_sources + 1)
     } | {f"https://s{total}.test/one"}
     assert budget.dropped_cap == 1
-    assert budget.sources_retained == MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 1
+    assert budget.sources_retained == max_sources + 1
 
 
 def test_the_required_target_exemption_has_a_ceiling() -> None:
@@ -865,7 +869,8 @@ def test_the_required_target_exemption_has_a_ceiling() -> None:
     binding outranks one that is not, and bounded by the ordinary source
     cap the same as anything else.
     """
-    bound_count = MAX_FINDINGS_PER_SUB_TOPIC + 10
+    max_findings = 30
+    bound_count = max_findings + 10
     bound = [
         _finding(
             "Alpha",
@@ -891,7 +896,10 @@ def test_the_required_target_exemption_has_a_ceiling() -> None:
     ]
 
     budget = bound_sub_topic_findings(
-        [*bound, *others], required_target_ids=[PLANNED_TARGET_ID]
+        [*bound, *others],
+        required_target_ids=[PLANNED_TARGET_ID],
+        max_findings=max_findings,
+        max_sources=12,
     )
 
     # Exempt: the two most confident bound findings. Ordinary pool: the
@@ -919,7 +927,8 @@ def test_the_exemption_ceiling_is_counted_per_required_target() -> None:
     obligation's third, non-exempt finding also outranks every one of the
     independent sources, however more confidently scored they are.
     """
-    others_count = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 6
+    max_sources = 12
+    others_count = max_sources + 6
     findings = [
         _finding(
             "Alpha",
@@ -952,6 +961,7 @@ def test_the_exemption_ceiling_is_counted_per_required_target() -> None:
     budget = bound_sub_topic_findings(
         findings,
         required_target_ids=[PLANNED_TARGET_ID, OTHER_TARGET_ID],
+        max_sources=max_sources,
     )
 
     assert budget.findings_retained == 16
@@ -976,7 +986,8 @@ def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
     not required, or to none at all, is evidence like any other and the cap
     still ranks it by confidence.
     """
-    total = MAX_FINDINGS_PER_SUB_TOPIC + 2
+    max_findings = 30
+    total = max_findings + 2
     confidences = [round(0.01 * step, 4) for step in range(1, total + 1)]
     findings = [
         _finding(
@@ -993,10 +1004,12 @@ def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
     ]
 
     budget = bound_sub_topic_findings(
-        [*bound, *findings[2:]], required_target_ids=[PLANNED_TARGET_ID]
+        [*bound, *findings[2:]],
+        required_target_ids=[PLANNED_TARGET_ID],
+        max_findings=max_findings,
     )
 
-    assert len(budget.retained) == MAX_FINDINGS_PER_SUB_TOPIC
+    assert len(budget.retained) == max_findings
     assert budget.dropped_cap == 2
     assert not any(finding.target_ids for finding in budget.retained)
 
@@ -1019,7 +1032,7 @@ def test_the_cap_keeps_the_sub_topics_own_obligation_ahead_of_other_target_rows(
         content="Own obligation, third.",
         confidence=0.35,
     ).model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
-    other_count = MAX_FINDINGS_PER_SUB_TOPIC
+    other_count = 30
     other_topic_rows = [
         _finding(
             "Alpha",
@@ -1037,6 +1050,7 @@ def test_the_cap_keeps_the_sub_topics_own_obligation_ahead_of_other_target_rows(
         [exempt_a, exempt_b, own_overflow, *other_topic_rows],
         required_target_ids=[PLANNED_TARGET_ID],
         own_target_ids=[PLANNED_TARGET_ID],
+        max_findings=other_count,
     )
 
     retained_content = {finding.content for finding in budget.retained}
@@ -3764,7 +3778,7 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
     """Bounded evidence must be visible: what was kept, and what was not.
 
     Thirty-five drafted findings collapse under the cap: three restatements of
-    one claim, and thirty-two distinct claims over the findings cap. An
+    one claim, and the rest distinct claims over the findings cap. An
     operator reading only the event stream has to be able to see both, and
     see that the retained findings came from a single source.
 
@@ -3777,7 +3791,7 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
     sentences = [
         *(
             f"Claim {index}: the measured error rate fell by {index}0 percent in 2025."
-            for index in range(1, 33)
+            for index in range(1, MAX_FINDINGS_PER_SUB_TOPIC + 3)
         ),
         restated,
     ]
@@ -3856,12 +3870,12 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
         for event in outcome.state_update["events"]
         if event.event_type == "researcher.sub_topic.completed"
     )
-    assert completed.metadata["findings"] == 30
+    assert completed.metadata["findings"] == MAX_FINDINGS_PER_SUB_TOPIC
     assert completed.metadata["findings_dropped_duplicate"] == 2
     assert completed.metadata["findings_dropped_cap"] == 3
     assert completed.metadata["sources_retained"] == 1
 
-    assert len(outcome.result.findings) == 30
+    assert len(outcome.result.findings) == MAX_FINDINGS_PER_SUB_TOPIC
     assert max(
         finding.confidence for finding in outcome.result.findings
     ) == 0.9
@@ -7286,9 +7300,9 @@ _CROSS_TOPIC_OWN_PREAMBLE = (
 # the only shared-word passage is already consumed by the bound finding,
 # so a broken skip check would still find nothing left to ask about.
 _CROSS_TOPIC_FILLER = (
-    "The report also lists every crew that took part in the inspection "
-    "cycle and the equipment each crew checked along the way. "
-) * 3
+    "The report also lists the crews assigned to each site. "
+    "It lists the equipment those crews checked. "
+) * 4
 _CROSS_TOPIC_OVERLAP_SENTENCE = (
     "Published assessments trace the outage's underlying cause to a "
     "corroded busbar in the substation, a separate review states."
@@ -7446,7 +7460,7 @@ def _cross_topic_sweep_reply(
 
 
 def _cross_topic_agent(
-    tracker: Tracker, completer: ScriptedCompleter
+    tracker: Tracker, completer: ScriptedCompleter, *, body: str = _CROSS_TOPIC_BODY
 ) -> ResearcherAgent:
     return _researcher(
         tracker,
@@ -7454,7 +7468,7 @@ def _cross_topic_agent(
         search=FakeSearchClient(
             [search_response(title=_CROSS_TOPIC_TITLE, url=_CROSS_TOPIC_URL)]
         ),
-        http=page_client(title=_CROSS_TOPIC_TITLE, body=_CROSS_TOPIC_BODY),
+        http=page_client(title=_CROSS_TOPIC_TITLE, body=body),
         max_sub_topics=1,
     )
 
@@ -7464,8 +7478,9 @@ async def _run_cross_topic_state(
     completer: ScriptedCompleter,
     *,
     sub_topics: list[SubTopic],
+    body: str = _CROSS_TOPIC_BODY,
 ) -> AgentRun[ResearchFindings]:
-    agent = _cross_topic_agent(tracker, completer)
+    agent = _cross_topic_agent(tracker, completer, body=body)
     async with tracker.session_span("session-1", "q"):
         return await agent.run(_state(sub_topics=sub_topics))
 
@@ -7685,3 +7700,154 @@ async def test_a_later_pass_does_not_re_sweep_a_read_the_run_already_bound(
     # cross-topic-sweep request for a target the run's own record already
     # answers, even though this pass's own findings alone do not show it.
     assert len(_extraction_requests(completer2)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Y1: tightening the cross-topic sweep's passage selection (Fable's audit of
+# run 6, Appendix 2: 42 packets and 269k output tokens bought ten weak
+# findings, none of them the disagreement the sweep exists to catch -- a
+# one-shared-token floor filled every packet slot with chrome (a site's own
+# section menu) and bibliography entries that happened to repeat the plan's
+# own subject word).
+# ---------------------------------------------------------------------------
+
+_CHROME_MENU_PASSAGE = (
+    "Home Reports About Us Contact Archive Outage Explanation Categories "
+    "Published Assessments Underlying Cause Notices Index Privacy Policy "
+    "Terms Site Map Search Help"
+)
+_CHROME_EXCLUDED_BODY = f"{_CROSS_TOPIC_OWN_PREAMBLE}\n\n{_CHROME_MENU_PASSAGE}"
+
+_TWO_TOKEN_PASSAGE = (
+    "A separate maintenance log briefly notes the outage, and a "
+    "technician's memo adds the underlying wiring diagram was outdated."
+)
+_TWO_TOKEN_BODY = f"{_CROSS_TOPIC_OWN_PREAMBLE}\n\n{_TWO_TOKEN_PASSAGE}"
+
+_ONE_TOKEN_PASSAGE = (
+    "A separate maintenance log briefly notes an unrelated outage at a "
+    "different facility last spring. The log also records routine site "
+    "visits, staffing levels and weather conditions for that week."
+)
+_ONE_TOKEN_BODY = f"{_CROSS_TOPIC_OWN_PREAMBLE}\n\n{_ONE_TOKEN_PASSAGE}"
+
+
+def _two_token_sweep_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The bound finding the sweep is asked to return for the passage that
+    shares exactly two non-generic tokens with the target's own question.
+    """
+    del schema
+    packet = messages[1].content
+    assert "Passages owed a finding" in packet
+    read_id, locator, excerpt = _packet_passage_for("wiring diagram", packet)
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "A technician's memo attributes the outage to outdated "
+                    "underlying wiring."
+                ),
+                source_url=_CROSS_TOPIC_URL,
+                source_title=_CROSS_TOPIC_TITLE,
+                confidence=0.8,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+                target_ids=[_CROSS_TOPIC_TARGET_ID],
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_chrome_passage_sharing_the_targets_words_is_not_selected(
+    tracker: Tracker,
+) -> None:
+    """A menu of section names that happens to include the target's own
+    words is never sent as an owed passage.
+    """
+    completer = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply],
+    )
+
+    await _run_cross_topic_state(
+        tracker,
+        completer,
+        sub_topics=[
+            _cross_topic_reading_sub_topic(),
+            _cross_topic_required_sub_topic(),
+        ],
+        body=_CHROME_EXCLUDED_BODY,
+    )
+
+    # One request: the page's own main extraction. The menu shares six of
+    # the target's own words, well past the two-token floor, but is a menu
+    # of section names, not a passage a finding can be made from.
+    requests = _extraction_requests(completer)
+    assert len(requests) == 1
+    assert "Passages owed a finding" not in requests[0]
+
+
+@pytest.mark.asyncio
+async def test_a_passage_with_two_non_generic_shared_tokens_is_selected(
+    tracker: Tracker,
+) -> None:
+    """A passage sharing exactly two non-generic tokens with the required
+    target's own question is sent, and its finding is bound.
+    """
+    completer = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply, _two_token_sweep_reply],
+    )
+
+    outcome = await _run_cross_topic_state(
+        tracker,
+        completer,
+        sub_topics=[
+            _cross_topic_reading_sub_topic(),
+            _cross_topic_required_sub_topic(),
+        ],
+        body=_TWO_TOKEN_BODY,
+    )
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 2
+    assert "Passages owed a finding" in requests[1]
+    assert "wiring diagram" in requests[1]
+
+    bound = [
+        finding
+        for finding in outcome.result.findings
+        if _CROSS_TOPIC_TARGET_ID in finding.target_ids
+    ]
+    assert len(bound) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_packet_is_sent_when_nothing_qualifies(
+    tracker: Tracker,
+) -> None:
+    """A passage sharing only one token of the target's own question never
+    buys a packet: the floor is two, not one.
+    """
+    completer = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply],
+    )
+
+    await _run_cross_topic_state(
+        tracker,
+        completer,
+        sub_topics=[
+            _cross_topic_reading_sub_topic(),
+            _cross_topic_required_sub_topic(),
+        ],
+        body=_ONE_TOKEN_BODY,
+    )
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 1
+    assert "Passages owed a finding" not in requests[0]
