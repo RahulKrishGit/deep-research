@@ -3006,7 +3006,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 iteration=iteration,
                 steps=steps,
                 decision_context=policy.context(
-                    limit=self._decision_context_chars
+                    limit=self._decision_context_chars, for_decision=True
                 ),
                 scratchpad=scratchpad,
             )

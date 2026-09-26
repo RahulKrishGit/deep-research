@@ -1081,8 +1081,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # and the finding/source caps) landed on the same head and moved the
     # researcher's own module source a second time: `ecb64eeaf882` ->
     # `5472a4abdedf`. Recomputed after the merge, not carried from either
-    # parent's own value.
-    "researcher": "5472a4abdedf",
+    # parent's own value. RevSelectionR3's S1 review fixes (P1 decision-turn
+    # row plan; the decision-context call site now passes
+    # ``for_decision=True``) moved it a third time: `5472a4abdedf` ->
+    # `b1416cf42008`.
+    "researcher": "b1416cf42008",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
