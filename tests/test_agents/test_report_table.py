@@ -8,7 +8,7 @@ acceptance paragraph and the §13.2/§13.3 examples.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report_table import build_table, findings_table, options_table
@@ -89,6 +89,57 @@ def _stmt(
             items=list(items),
         ),
     )
+
+
+def _finding_for_url(url: str, *, title: str = "Page") -> Finding:
+    """One minimal Finding whose own page is ``url``, so a mark citing it passes
+    the mark-source-url guard (``report_table._resolve_marks``)."""
+    read = make_read(f"Content about {url}.", url=url, title=title)
+    return make_finding(read, f"Content about {url}.")
+
+
+def _backed_stmt(
+    statement_id: str,
+    text: str,
+    *,
+    items: Sequence[ItemMark],
+    findings_by_url: Mapping[str, Finding],
+) -> ReportPoint:
+    """Like ``_stmt``, but derives ``finding_ids`` from each mark's own page via
+    ``findings_by_url``, so the marks are backed by a real cited finding."""
+    finding_ids = list(
+        dict.fromkeys(
+            finding_fingerprint(findings_by_url[mark.source_url]) for mark in items
+        )
+    )
+    return _stmt(statement_id, text, items=items, finding_ids=finding_ids)
+
+
+def _backed(
+    points: Sequence[ReportPoint], findings_by_url: Mapping[str, Finding]
+) -> list[ReportPoint]:
+    """Fill each point's ``finding_ids`` from its own marks' pages, so the
+    mark-source-url guard trusts them (``report_table._resolve_marks``)."""
+    backed: list[ReportPoint] = []
+    for point in points:
+        statement = point.statement
+        assert statement is not None
+        finding_ids = list(
+            dict.fromkeys(
+                finding_fingerprint(findings_by_url[mark.source_url])
+                for mark in statement.items
+            )
+        )
+        backed.append(
+            point.model_copy(
+                update={
+                    "statement": statement.model_copy(
+                        update={"finding_ids": finding_ids}
+                    )
+                }
+            )
+        )
+    return backed
 
 
 def _section(
@@ -368,15 +419,34 @@ def _fable_prices_points() -> list[ReportPoint]:
     ]
 
 
+def _fable_findings_by_url() -> dict[str, Finding]:
+    return {
+        url: _finding_for_url(url)
+        for url in (SOUNDGUYS, CNET, WHATHIFI, BUSINESSINSIDER)
+    }
+
+
 def _fable_composition(
     *, extra_prices_point: ReportPoint | None = None
 ) -> ReportComposition:
-    prices_points = _fable_prices_points()
+    findings_by_url = _fable_findings_by_url()
+    prices_points = _backed(_fable_prices_points(), findings_by_url)
     if extra_prices_point is not None:
-        prices_points = [*prices_points, extra_prices_point]
+        prices_points = [
+            *prices_points,
+            *_backed([extra_prices_point], findings_by_url),
+        ]
     sections = [
-        _section("topic-01", "Sound quality", _fable_sound_quality_points()),
-        _section("topic-02", "Microphone", _fable_microphone_points()),
+        _section(
+            "topic-01",
+            "Sound quality",
+            _backed(_fable_sound_quality_points(), findings_by_url),
+        ),
+        _section(
+            "topic-02",
+            "Microphone",
+            _backed(_fable_microphone_points(), findings_by_url),
+        ),
         _section("topic-03", "Prices", prices_points),
     ]
     all_ids = [p.statement_id for section in sections for p in section.points]
@@ -386,6 +456,7 @@ def _fable_composition(
             _topic("topic-02", required=True, priority=2),
             _topic("topic-03", required=False, priority=3),
         ],
+        findings=list(findings_by_url.values()),
         sections=sections,
         page_credits=_fable_page_credits(),
         statement_verdicts=_verdicts(*all_ids),
@@ -1738,14 +1809,16 @@ def test_choice_rule_two_required_parts_with_one_option_each_give_no_options_tab
 
 
 def test_choice_rule_one_required_part_with_two_options_gives_options_table() -> None:
+    findings_by_url = {"https://a.test/x": _finding_for_url("https://a.test/x")}
     composition = _composition(
         sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=list(findings_by_url.values()),
         sections=[
             _section(
                 "topic-01",
                 "Sound",
                 [
-                    _stmt(
+                    _backed_stmt(
                         "S1",
                         "Site A says Model A is great.",
                         items=[
@@ -1755,8 +1828,9 @@ def test_choice_rule_one_required_part_with_two_options_gives_options_table() ->
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
-                    _stmt(
+                    _backed_stmt(
                         "S2",
                         "Site A says Model B is great.",
                         items=[
@@ -1766,6 +1840,7 @@ def test_choice_rule_one_required_part_with_two_options_gives_options_table() ->
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
                 ],
             ),
@@ -1890,8 +1965,10 @@ def test_bottom_line_mark_lands_only_in_the_part_of_its_own_cited_page() -> None
 def test_verbatim_span_guard_drops_a_mark_whose_verdict_is_not_in_the_sentence() -> (
     None
 ):
+    findings_by_url = {"https://a.test/x": _finding_for_url("https://a.test/x")}
     composition = _composition(
         sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=list(findings_by_url.values()),
         sections=[
             _section(
                 "topic-01",
@@ -1908,7 +1985,7 @@ def test_verbatim_span_guard_drops_a_mark_whose_verdict_is_not_in_the_sentence()
                             )
                         ],
                     ),
-                    _stmt(
+                    _backed_stmt(
                         "S2",
                         "Site A says Model B is great.",
                         items=[
@@ -1918,8 +1995,9 @@ def test_verbatim_span_guard_drops_a_mark_whose_verdict_is_not_in_the_sentence()
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
-                    _stmt(
+                    _backed_stmt(
                         "S3",
                         "Site A says Model C is great.",
                         items=[
@@ -1929,6 +2007,7 @@ def test_verbatim_span_guard_drops_a_mark_whose_verdict_is_not_in_the_sentence()
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
                 ],
             )
@@ -1942,14 +2021,19 @@ def test_verbatim_span_guard_drops_a_mark_whose_verdict_is_not_in_the_sentence()
 
 
 def test_option_keys_fold_case_whitespace_and_dash_variants() -> None:
+    findings_by_url = {
+        "https://a.test/x": _finding_for_url("https://a.test/x"),
+        "https://b.test/y": _finding_for_url("https://b.test/y"),
+    }
     composition = _composition(
         sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=list(findings_by_url.values()),
         sections=[
             _section(
                 "topic-01",
                 "Sound",
                 [
-                    _stmt(
+                    _backed_stmt(
                         "S1",
                         "Site A says Sony WH-1000XM6 is great.",
                         items=[
@@ -1959,8 +2043,9 @@ def test_option_keys_fold_case_whitespace_and_dash_variants() -> None:
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
-                    _stmt(
+                    _backed_stmt(
                         "S2",
                         "Site B says sony  wh \u2013 1000xm6 is excellent.",
                         items=[
@@ -1970,8 +2055,9 @@ def test_option_keys_fold_case_whitespace_and_dash_variants() -> None:
                                 source_url="https://b.test/y",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
-                    _stmt(
+                    _backed_stmt(
                         "S3",
                         "Site A says Model B is fine.",
                         items=[
@@ -1981,6 +2067,7 @@ def test_option_keys_fold_case_whitespace_and_dash_variants() -> None:
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
                 ],
             )
@@ -1996,3 +2083,196 @@ def test_option_keys_fold_case_whitespace_and_dash_variants() -> None:
         "https://a.test/x",
         "https://b.test/y",
     }
+
+
+# =============================================================================
+# Review round 2: fail closed when a statement cites no known finding.
+# =============================================================================
+
+
+def test_mark_with_no_cited_findings_is_dropped_not_trusted() -> None:
+    findings_by_url = {"https://a.test/x": _finding_for_url("https://a.test/x")}
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=list(findings_by_url.values()),
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "Site A says Model A is great.",
+                        items=[
+                            ItemMark(
+                                name="Model A",
+                                verdict="great",
+                                source_url="https://anywhere.test/x",
+                            )
+                        ],
+                        finding_ids=[],
+                    ),
+                    _backed_stmt(
+                        "S2",
+                        "Site A says Model B is great.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                        findings_by_url=findings_by_url,
+                    ),
+                    _backed_stmt(
+                        "S3",
+                        "Site A says Model C is great.",
+                        items=[
+                            ItemMark(
+                                name="Model C",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                        findings_by_url=findings_by_url,
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2", "S3"),
+    )
+    table = options_table(composition)
+    assert "Model A" not in labels_of(table)
+    assert "Model B" in labels_of(table)
+    assert "Model C" in labels_of(table)
+    assert any(
+        "Model A" in msg and "the statement cites no finding this report carries" in msg
+        for msg in composition.dropped_marks
+    )
+
+
+def test_mark_citing_only_unknown_finding_ids_is_dropped_not_trusted() -> None:
+    findings_by_url = {"https://a.test/x": _finding_for_url("https://a.test/x")}
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=list(
+            findings_by_url.values()
+        ),  # "F-unknown" resolves to nothing: no such finding is carried
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "Site A says Model A is great.",
+                        items=[
+                            ItemMark(
+                                name="Model A",
+                                verdict="great",
+                                source_url="https://anywhere.test/x",
+                            )
+                        ],
+                        finding_ids=["F-unknown"],
+                    ),
+                    _backed_stmt(
+                        "S2",
+                        "Site A says Model B is great.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                        findings_by_url=findings_by_url,
+                    ),
+                    _backed_stmt(
+                        "S3",
+                        "Site A says Model C is great.",
+                        items=[
+                            ItemMark(
+                                name="Model C",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                        findings_by_url=findings_by_url,
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2", "S3"),
+    )
+    table = options_table(composition)
+    assert "Model A" not in labels_of(table)
+    assert "Model B" in labels_of(table)
+    assert "Model C" in labels_of(table)
+    assert any(
+        "Model A" in msg and "the statement cites no finding this report carries" in msg
+        for msg in composition.dropped_marks
+    )
+
+
+def test_earlier_edition_with_no_known_finding_prints_no_date_and_no_vintage() -> None:
+    row, finding = _row(
+        "K001",
+        url="https://a.test/x",
+        value="10",
+        unit="GW",
+        target_ids=["req-a"],
+        finding_target_ids=["req-a"],
+        earlier=[
+            EarlierEdition(
+                value="9 GW",
+                release="January 2024 Preliminary Inventory",
+                finding_id="F-unknown-earlier",
+            )
+        ],
+    )
+    other_row, other_finding = _row(
+        "K002",
+        url="https://b.test/y",
+        value="20",
+        unit="GW",
+        target_ids=["req-b"],
+        finding_target_ids=["req-b"],
+    )
+    composition = _composition(
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="req-a",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                    EvidenceTarget(
+                        target_id="req-b",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                ],
+            )
+        ],
+        findings=[
+            finding,
+            other_finding,
+        ],  # note: no "F-unknown-earlier" finding in the composition
+        fact_rows=[row, other_row],
+    )
+    table = findings_table(composition)
+    assert table is not None
+    result = {r[0].row_ids[0]: r[1].text for r in table.rows}["K001"]
+    assert result == "10 GW; earlier: 9 GW"
+    assert "January 2024 Preliminary Inventory" not in result

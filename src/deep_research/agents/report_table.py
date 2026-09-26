@@ -150,10 +150,11 @@ def _resolve_marks(composition: ReportComposition) -> list[_ResolvedMark]:
     ``verdict`` are verbatim spans of the statement's final text; and the
     mark's own ``source_url`` is the page of one of the findings the
     statement cites — a mark cannot credit a page the sentence never rested
-    on. A mark failing that last check is dropped and recorded in
-    ``composition.dropped_marks`` (a statement citing no known finding skips
-    this check rather than dropping every mark it carries, since there is
-    nothing to validate the source against).
+    on, and a statement that cites no known finding at all fails this check
+    too (a mark trusts nothing it cannot check against). A mark failing
+    either source check is dropped and recorded in
+    ``composition.dropped_marks``, so a mismatch is visible in the evidence
+    log rather than silently invisible.
 
     A section statement's marks count toward its own section's part. A
     bottom-line statement can cite findings from more than one part; a mark
@@ -178,7 +179,13 @@ def _resolve_marks(composition: ReportComposition) -> list[_ResolvedMark]:
             if mark.verdict and not excerpt_matches(statement.text, mark.verdict):
                 continue
             mark_url = _norm(mark.source_url)
-            if cited_urls and mark_url not in cited_urls:
+            if not cited_urls:
+                composition.dropped_marks.append(
+                    f"{statement.statement_id}: '{mark.name}' credits a page, but "
+                    "the statement cites no finding this report carries"
+                )
+                continue
+            if mark_url not in cited_urls:
                 composition.dropped_marks.append(
                     f"{statement.statement_id}: '{mark.name}' credits a page "
                     "the statement does not cite"
