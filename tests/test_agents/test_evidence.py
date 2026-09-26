@@ -3238,6 +3238,38 @@ def test_a_cue_still_credits_a_name_in_the_same_sentence() -> None:
     assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Institute")
 
 
+def test_a_cue_still_credits_across_a_us_style_abbreviation() -> None:
+    """D11a follow-up (RevV4 P1): a period inside a two-letter initialism
+    like 'U.S.' is not a sentence end -- 'according to the U.S. EIA' must
+    still credit EIA, or a relayed figure reads as the host's own."""
+    snippet = "According to the U.S. EIA, the total reached ten by 2019."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "EIA")
+
+
+def test_a_cue_still_credits_across_a_title_abbreviation() -> None:
+    """D11a follow-up (RevV4 P1): 'Dr.' is a title abbreviation, not a
+    sentence end -- 'according to Dr. Vale' must still credit Vale."""
+    snippet = "According to Dr. Vale, the total reached ten by 2019."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Vale")
+
+
+def test_said_still_credits_across_a_company_suffix_abbreviation() -> None:
+    """D11a follow-up (RevV4 P1): 'Inc.' is a company-suffix abbreviation,
+    not a sentence end -- 'Acme Inc. said ...' must still credit Acme
+    Inc, exactly as the page spells it."""
+    snippet = "Acme Inc. said revenue reached ten billion in 2019."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Acme Inc")
+
+
 def test_a_stale_locator_windows_around_the_snippet_not_the_whole_page() -> None:
     """A stale locator falls back to a bounded window centred on the snippet,
     never the unbounded page: a distant, unrelated mention on the far side of

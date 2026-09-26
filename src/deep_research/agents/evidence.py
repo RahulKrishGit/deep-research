@@ -1430,9 +1430,46 @@ _POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
 # not a whole unrelated clause standing between them. The reach never
 # crosses a sentence end either (D11a, run 8): "according to some sources.
 # That number ..." must not credit "That" with the next sentence's own
-# statement just because it falls within the character reach.
+# statement just because it falls within the character reach -- but a mark
+# only ends a sentence when it is followed by whitespace, an optional
+# opening quote or paren, and a capital letter, AND the token right before
+# it is not itself an abbreviation (RevV4 P1 follow-up): "U.S.", "Dr.",
+# "St.", "Inc." are not sentence ends, so "according to the U.S. EIA",
+# "according to Dr. Vale" and "Acme Inc. said ..." keep crediting.
 _ATTRIBUTION_CUE_REACH = 15
-_SENTENCE_END_IN_GAP = re.compile(r"[.!?]")
+_SENTENCE_END_MARK = re.compile(r"[.!?]")
+_SENTENCE_CONTINUATION = re.compile(r"\s+[\"'\u2018\u201c(]?[A-Z]")
+_PRECEDING_TOKEN = re.compile(r"([A-Za-z]+)$")
+_SINGLE_CAPITAL_INITIAL = re.compile(r"^[A-Z]$")
+_SENTENCE_ABBREVIATIONS = frozenset({
+    "dr", "mr", "mrs", "ms", "prof", "st", "inc", "corp", "co", "ltd",
+    "jr", "sr", "no", "vol", "fig",
+})
+
+
+def _is_abbreviation_mark(phrase: str, mark_index: int) -> bool:
+    """Whether the ``.``/``!``/``?`` at ``mark_index`` closes an
+    abbreviation rather than a sentence: the word right before it is a
+    single capital letter ("U.S.", "J.") or a short title or company
+    abbreviation (Dr, Mr, Mrs, Ms, Prof, St, Inc, Corp, Co, Ltd, Jr, Sr,
+    No, Vol, Fig), case-insensitively.
+    """
+    match = _PRECEDING_TOKEN.search(phrase, 0, mark_index)
+    if match is None:
+        return False
+    token = match.group(1)
+    return bool(_SINGLE_CAPITAL_INITIAL.fullmatch(token)) or token.casefold() in _SENTENCE_ABBREVIATIONS
+
+
+def _gap_crosses_a_sentence_end(phrase: str, start: int, end: int) -> bool:
+    """Whether a genuine sentence end -- not an abbreviation's own mark --
+    falls inside ``phrase[start:end]``."""
+    for mark in _SENTENCE_END_MARK.finditer(phrase, start, end):
+        if _is_abbreviation_mark(phrase, mark.start()):
+            continue
+        if _SENTENCE_CONTINUATION.match(phrase, mark.end()):
+            return True
+    return False
 
 
 def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
@@ -1461,14 +1498,12 @@ def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
     ):
         return True
     for cue in ATTRIBUTION_CUE_PATTERN.finditer(phrase):
-        before_gap = phrase[cue.end() : name_match.start()]
         if 0 <= name_match.start() - cue.end() <= _ATTRIBUTION_CUE_REACH and not (
-            _SENTENCE_END_IN_GAP.search(before_gap)
+            _gap_crosses_a_sentence_end(phrase, cue.end(), name_match.start())
         ):
             return True
-        after_gap = phrase[name_match.end() : cue.start()]
         if 0 <= cue.start() - name_match.end() <= _ATTRIBUTION_CUE_REACH and not (
-            _SENTENCE_END_IN_GAP.search(after_gap)
+            _gap_crosses_a_sentence_end(phrase, name_match.end(), cue.start())
         ):
             return True
     return False

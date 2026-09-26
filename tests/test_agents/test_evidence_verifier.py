@@ -2241,6 +2241,43 @@ def test_resolve_attribution_rejects_a_pronoun_as_the_organisation() -> None:
     assert attribution == "unattributed"
 
 
+def test_resolve_attribution_rejects_a_pronoun_read_back_from_evidence_words() -> None:
+    """D11b (RevV4 P1 follow-up): the Context Check's own evidence words can
+    read a pronoun back as a name through the same cue that reads a real
+    one ('That number, however, grew ...') -- the production path passes
+    `words` (line 861), so the rejection must hold there too, not only for
+    the model's own `organisation` argument."""
+    snippet = "At first, there were two officials, according to some sources."
+    words = (
+        "At first, there were two officials—or possibly four or five, "
+        "according to some sources. That number, however, grew to ten."
+    )
+    read = make_read(snippet, url="https://example-register.test/notes", title="Notes")
+    finding = make_finding(read, snippet)
+
+    attribution, organisation = resolve_attribution(
+        proposed="unattributed", organisation=None, finding=finding, read=read,
+        issuer=None, words=words,
+    )
+
+    assert organisation != "That"
+
+
+def test_resolve_attribution_rejects_a_pronoun_as_the_admitted_issuer() -> None:
+    """D11b (RevV4 P1 follow-up): a researcher-admitted
+    ``finding.attributed_issuer`` of 'That' is rejected the same way a
+    model-proposed or evidence-words-read pronoun is."""
+    snippet = "That study found ten sites in the region."
+    read = make_read(snippet, url="https://example-register.test/notes", title="Notes")
+    finding = make_finding(read, snippet, attributed_issuer="That")
+
+    attribution, organisation = resolve_attribution(
+        proposed=None, organisation=None, finding=finding, read=read, issuer=None,
+    )
+
+    assert organisation != "That"
+
+
 def test_the_statement_check_shows_the_passage_a_rules_conditions_live_in() -> None:
     """Improvement 8: a snippet cut at the passage boundary is judged against the
     bounded passage, so a condition or an exception past the cut is seen."""

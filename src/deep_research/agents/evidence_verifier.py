@@ -574,6 +574,23 @@ def _title_names_the_body(read: ReadRecord, name: str) -> bool:
     return any(same_organisation(segment, name) for segment in title_segments(read.title))
 
 
+# D11b (run 8; RevV4 P1 follow-up): a determiner, pronoun or single function
+# word never names a body, wherever the verifier would otherwise accept a
+# name -- the model's own proposal, a name read back out of the Context
+# Check's evidence words ("That number, however, grew ..." reads "That" as
+# a name plus a source noun), or a researcher-admitted
+# ``finding.attributed_issuer`` -- so it is rejected at each of those, the
+# same way an empty name already is.
+_REJECTED_ORGANISATION_WORDS = frozenset({
+    "that", "this", "it", "they", "these", "some", "one",
+})
+
+
+def _is_rejected_organisation_name(name: str) -> bool:
+    words = name.split()
+    return len(words) == 1 and words[0].casefold() in _REJECTED_ORGANISATION_WORDS
+
+
 def _body_credited_in_words(words: str | None) -> str | None:
     """The body a finding's own evidence words credit, or ``None``.
 
@@ -588,28 +605,14 @@ def _body_credited_in_words(words: str | None) -> str | None:
         return None
     for candidate in _cued_name_candidates(words, _NAME_AFTER_CUES):
         name = _stripped_name(candidate)
-        if name:
+        if name and not _is_rejected_organisation_name(name):
             return name
     match = _NAME_BEFORE_CUE_PATTERN.search(words)
     if match is not None:
-        return _stripped_name(match.group("name")) or None
+        name = _stripped_name(match.group("name")) or None
+        if name and not _is_rejected_organisation_name(name):
+            return name
     return None
-
-
-# D11b (run 8): a determiner, pronoun or single function word the model
-# proposes as an organisation names no body -- "according to some sources.
-# That number ..." is not "According to That" whatever cue sits beside it
-# (D11a closes the main way the cue reaches across a sentence for this),
-# so it is rejected wherever the verifier accepts a model-proposed
-# organisation, the same way an empty name already is.
-_REJECTED_ORGANISATION_WORDS = frozenset({
-    "that", "this", "it", "they", "these", "some", "one",
-})
-
-
-def _is_rejected_organisation_name(name: str) -> bool:
-    words = name.split()
-    return len(words) == 1 and words[0].casefold() in _REJECTED_ORGANISATION_WORDS
 
 
 def resolve_attribution(
@@ -644,6 +647,8 @@ def resolve_attribution(
             # arrives here -- _owns_page answered that above.
             return "relayed", name
     admitted = finding.attributed_issuer
+    if admitted and _is_rejected_organisation_name(admitted):
+        admitted = None
     if admitted and not (
         proposed == "relayed" and name and not same_organisation(name, admitted)
     ):

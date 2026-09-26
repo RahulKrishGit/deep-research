@@ -1730,11 +1730,14 @@ def _finding_label_map(composition: ReportComposition) -> dict[str, str]:
 
 def _verified_figures_lines(composition: ReportComposition) -> list[str]:
     """§9: today's Key Facts table, unchanged, moved to the evidence log --
-    every verified figure a statement the report prints actually cites,
-    including one that answers no planned target (decision #4's "full
-    fact-row table"), with finding labels in the Source column. A verified
-    figure no bottom-line or section statement cites stays out of this
-    table (D11c, run 8): it is a candidate the writer never used, and this
+    every verified figure a statement or the reader report's own
+    question-shaped table actually cites, including one that answers no
+    planned target (decision #4's "full fact-row table"), with finding
+    labels in the Source column. A verified figure no bottom-line or
+    section statement cites, and no table cell reaches either directly
+    (``cell.finding_ids``) or through a fact row (``cell.row_ids``), stays
+    out of this table (D11c, run 8; RevV4 P2 follow-up): it is a candidate
+    the writer never used anywhere the reader report prints, and this
     table is the report's own evidence, not everything the Evidence
     Verifier merely confirmed. It still prints under its own finding in
     the Findings section below.
@@ -1744,6 +1747,16 @@ def _verified_figures_lines(composition: ReportComposition) -> list[str]:
         for statement in composition.statements
         for finding_id in statement.finding_ids
     }
+    if composition.table is not None:
+        fact_rows_by_id = {row.row_id: row for row in composition.fact_rows}
+        for table_row in composition.table.rows:
+            for cell in table_row:
+                cited_ids.update(cell.finding_ids)
+                for row_id in cell.row_ids:
+                    fact_row = fact_rows_by_id.get(row_id)
+                    if fact_row is not None:
+                        cited_ids.add(fact_row.finding_id)
+                        cited_ids.update(fact_row.duplicate_finding_ids)
     rows = [
         row for row in composition.fact_rows
         if row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids)
@@ -1929,12 +1942,15 @@ def render_finding_log(composition: ReportComposition) -> str:
             # verdict can rest on the sentence just past the cut. The ledger
             # prints the same bounded passage the Statement Check read.
             lines.append(f'- Passage: "{passage}"')
-        lines.append(f"- Verification: {status}")
         if finding.disputes:
-            # Audit observability (run 8): so an audit can tell whether the
-            # dissent re-ask (D2's `disputes=True` findings) fired on this
-            # finding, without re-deriving it from the model's own replies.
-            lines.append("- disputes: yes")
+            # Audit observability (run 8; RevV4 P3 follow-up): before
+            # Verification, so an audit can tell whether the dissent
+            # re-ask (D2's `disputes=True` findings) fired on this
+            # finding, without re-deriving it from the model's own
+            # replies, and without splitting Verification from its own
+            # nested figure lines.
+            lines.append("- Disputes: yes")
+        lines.append(f"- Verification: {status}")
         for result in verification.figure_results if verification else []:
             text = _figure_value_text(result.figure)
             if result.kept and result.context is not None:

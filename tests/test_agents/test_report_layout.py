@@ -20,9 +20,11 @@ from deep_research.agents.report import (
     render_written_report,
     written_citations,
 )
+from deep_research.agents.report_table import findings_table
 from deep_research.agents.sources import normalize_source_url
 from deep_research.utils.types import (
     EarlierEdition,
+    EvidenceTarget,
     FactRow,
     FigureContext,
     FigureResult,
@@ -1152,10 +1154,40 @@ def test_the_verified_figures_table_omits_an_uncited_figure() -> None:
     assert f"| {base.fact_rows[1].value} |" not in figures_section
 
 
+def test_the_verified_figures_table_includes_a_table_only_figure() -> None:
+    """D11c/P2 (RevV4 follow-up): a figure the reader report's own
+    question-shaped table prints -- bound to a required target, never cited
+    by a bottom-line or section statement -- still needs a row in the
+    evidence log's Verified figures table, the traceability that table
+    exists for."""
+    base = _composition()
+    steo_finding = base.findings[1].model_copy(update={"target_ids": ["topic-02-target-01"]})
+    topic_one = SubTopic(coverage_id="topic-01", title="Capacity added", rationale="r",
+                         search_queries=["q"], success_criteria=["c"], priority=1,
+                         evidence_targets=[make_target("topic-01-target-01")])
+    topic_two = SubTopic(coverage_id="topic-02", title="Forecast", rationale="r",
+                         search_queries=["q"], success_criteria=["c"], priority=1,
+                         evidence_targets=[make_target("topic-02-target-01")])
+    composition = base.model_copy(update={
+        "summary": [base.summary[0]], "sections": [],
+        "findings": [base.findings[0], steo_finding],
+        "sub_topics": [topic_one, topic_two],
+    })
+    table = findings_table(composition)
+    assert table is not None
+    composition = composition.model_copy(update={"table": table})
+
+    log = render_finding_log(composition)
+
+    figures_section = _section_body(log, "## Verified figures")
+    assert f"| {base.fact_rows[1].value} |" in figures_section
+
+
 def test_the_evidence_log_marks_a_disputing_finding() -> None:
-    """Audit observability (run 8): the evidence log's finding block prints
-    'disputes: yes' for a finding with ``Finding.disputes``, so an audit
-    can tell whether the dissent re-ask fired."""
+    """Audit observability (run 8; RevV4 P3 follow-up): the evidence log's
+    finding block prints '- Disputes: yes', before Verification and its own
+    nested figure lines, for a finding with ``Finding.disputes``, so an
+    audit can tell whether the dissent re-ask fired."""
     base = _composition()
     disputing = base.findings[0].model_copy(update={"disputes": True})
     composition = base.model_copy(update={"findings": [disputing, base.findings[1]]})
@@ -1163,7 +1195,7 @@ def test_the_evidence_log_marks_a_disputing_finding() -> None:
     log = render_finding_log(composition)
 
     findings_section = _section_body(log, "## Findings")
-    assert "disputes: yes" in findings_section
+    assert "- Disputes: yes\n- Verification:" in findings_section
 
 
 def test_a_kept_figures_spelled_value_is_not_doubled_with_its_unit() -> None:
