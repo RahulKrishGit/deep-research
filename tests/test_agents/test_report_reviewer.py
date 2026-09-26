@@ -140,7 +140,8 @@ WRITTEN_SENTENCES = {
         "new generating capacity that year."
     ),
     "S003": (
-        "Capacity growth from battery storage could set a record in 2025."
+        "The EIA projects capacity growth from battery storage could set "
+        "a record in 2025."
     ),
 }
 

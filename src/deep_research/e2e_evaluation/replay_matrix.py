@@ -1207,8 +1207,8 @@ def _empty_but_clean() -> ReplayScenario:
         # check, so a sentence recased to start with a capital is a page that
         # does not state its claim, and a case that cannot even be built.
         claim = (
-            "The record lists a title and a publication date and no measured "
-            "value"
+            f"Acme Registry {index}'s record lists a title and a publication date "
+            "and no measured value"
         )
         body = (
             f"{title}. Published by Acme Registry {index}. "

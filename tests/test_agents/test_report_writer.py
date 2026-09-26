@@ -1445,14 +1445,14 @@ def test_consider_section_point_refuses_a_point_sharing_only_topic_words_with_th
     Sharing topic words is not naming a source; the point still credits
     nobody."""
     from deep_research.agents.report_writer import _consider_section_point
-    read = make_read("Economic policy changed after new regional reform measures took effect.",
+    read = make_read("Economic policy changed after new regional reform activity increased.",
                      url="https://a.test/1", title="Economic reform and regional policy change")
-    finding = make_finding(read, "Economic policy changed after new regional reform measures took effect.",
+    finding = make_finding(read, "Economic policy changed after new regional reform activity increased.",
                            target_ids=[])
     finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
     part_labels = {"F01": finding}
     point = WriterPointDraft(
-        text="Economic policy changed after new regional reform measures took effect.",
+        text="Economic policy changed after new regional reform activity increased.",
         finding_labels=["F01"],
     )
     rejected: list = []
@@ -1489,18 +1489,19 @@ def test_names_a_source_accepts_the_kept_figures_organisation():
 
 
 def test_names_a_source_accepts_the_titles_own_author_work_segment():
-    """RevZ2 S005: run 7's exact shape -- a primary-source page's title
-    follows the "Author, Work" convention and carries no
-    ``attributed_issuer`` of its own; the title's first comma-delimited
-    segment names the author when it looks like a name (each word
-    capitalised or a particle, at most four words)."""
+    """RevZ2 S005 / ReRevZ2 P1: run 7's exact shape -- a primary-source
+    page's title follows the "Author, Work" convention and carries no
+    ``attributed_issuer`` of its own, and the point uses the title's
+    author segment directly before an authorial verb ("Sallust traced
+    the civil war to ..." against the title "Sallust, Catiline's War
+    5-16", here with a neutral stand-in)."""
     from deep_research.agents.report_writer import _names_a_source
     read = make_read("A field account.", url="https://a.test/1",
                      title="Jordan Vale, Field Notes on Coastal Erosion")
     finding = make_finding(read, "A field account.", target_ids=[])
     finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
     assert _names_a_source(
-        "Jordan Vale observed an unusual erosion pattern near the estuary after storms in 2019.",
+        "Jordan Vale traced the erosion pattern to a decade of coastal storms.",
         [finding],
     )
 
@@ -1517,6 +1518,54 @@ def test_names_a_source_refuses_a_titles_lower_case_opening_word_as_an_author():
     assert not _names_a_source(
         "The overview reached no firm conclusion about the trend.", [finding],
     )
+
+
+def test_names_a_source_refuses_a_title_authors_bare_appearance_without_a_construction():
+    """ReRevZ2 P1: a "Surname, Forenames" title (a reference work's own
+    entry format, "Vale, Jordan (1901-1960)") makes "Vale" name-shaped,
+    but the point must still use it as an author, not merely contain
+    it -- run 7's S043 shape again, this time through the title-author
+    path P1-a's own fix closed the door on."""
+    from deep_research.agents.report_writer import _names_a_source
+    read = make_read("A biography.", url="https://a.test/1",
+                     title="Vale, Jordan (1901-1960)")
+    finding = make_finding(read, "A biography.", target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert not _names_a_source("Jordan Vale abolished the fee in 1931.", [finding])
+
+
+def test_names_a_source_refuses_a_titles_first_word_as_an_unused_topic_name():
+    """ReRevZ2 P1: "Climate, the great challenge of our age" is exactly
+    as name-shaped as "Sallust, Catiline's War" ("Climate" is one
+    capitalised word before the comma), but a point that merely shares
+    that topic word, never using it as an author, credits nobody."""
+    from deep_research.agents.report_writer import _names_a_source
+    read = make_read("A commentary.", url="https://a.test/1",
+                     title="Climate, the great challenge of our age")
+    finding = make_finding(read, "A commentary.", target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert not _names_a_source("Climate policy shifted sharply after the vote.", [finding])
+
+
+def test_consider_section_point_refuses_a_point_naming_only_a_determiner_adjacent_verb():
+    """ReRevZ2 P2: a determiner immediately before the matched word
+    makes it the noun, not the verb -- "the dates" is a topic, not a
+    source, the same way "the state" and "the report" are; nobody is
+    credited."""
+    from deep_research.agents.report_writer import _consider_section_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    part_labels = {"F01": finding}
+    point = WriterPointDraft(text="The dates of the change are uncertain.", finding_labels=["F01"])
+    rejected: list = []
+
+    candidates = _consider_section_point(
+        point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
+        context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
+        key_prefix="P01.",
+    )
+
+    assert candidates == []
+    assert rejected[0].reason == "states a fact without crediting the source that states it"
 
 
 def test_consider_section_point_refuses_a_point_naming_only_the_united_states():
@@ -1591,6 +1640,63 @@ def test_names_a_source_still_accepts_a_named_source_using_states():
     assert _names_a_source("Example Institute states the total was 10.4 GW.", [])
 
 
+def test_names_a_source_accepts_fables_probe_rates():
+    """ReRevZ2 R1 (Fable's probe): "rates" is a real credit verb, not
+    only the writer's own established list -- a finding whose title has
+    no separator and whose host does not name the subject at all, so
+    only the verb can credit it."""
+    from deep_research.agents.report_writer import _names_a_source
+    read = make_read("A review.", url="https://a.test/1", title="A field report")
+    finding = make_finding(read, "A review.", target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert _names_a_source("Example Tester rates Model A 4.5 out of 5 for noise.", [finding])
+
+
+def test_names_a_source_accepts_fables_probe_measured():
+    """ReRevZ2 R1 (Fable's probe): "measured" credits too."""
+    from deep_research.agents.report_writer import _names_a_source
+    read = make_read("A review.", url="https://a.test/1", title="A field report")
+    finding = make_finding(read, "A review.", target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert _names_a_source(
+        "Example Institute measured a rise in compliance costs after a 2019 regulation.", [finding],
+    )
+
+
+def test_names_a_source_accepts_fables_probe_attributes():
+    """ReRevZ2 R1 (Fable's probe): "attributes" credits too, not only
+    inside the title-author construction."""
+    from deep_research.agents.report_writer import _names_a_source
+    read = make_read("A review.", url="https://a.test/1", title="A field report")
+    finding = make_finding(read, "A review.", target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert _names_a_source("Example Institute attributes the cost rise to a 2019 regulation.", [finding])
+
+
+def test_names_a_source_accepts_fables_probe_names():
+    """ReRevZ2 R1 (Fable's probe): "names" credits too -- and, matched
+    case-sensitively like the rest of the list, never collides with the
+    plural noun "names" the way "States"/"Records" would capitalised."""
+    from deep_research.agents.report_writer import _names_a_source
+    read = make_read("A review.", url="https://a.test/1", title="A field report")
+    finding = make_finding(read, "A review.", target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert _names_a_source("Example Register names Model B the one to beat for the price.", [finding])
+
+
+def test_names_a_source_matches_a_hyphenated_host_with_its_spaces_restored():
+    """ReRevZ2 R1: "example-institute.test" also yields "example
+    institute" -- prose credits an organisation by its own name, never
+    by its domain's own hyphenation, so a host-only match needs the
+    space back. No credit verb in the point text, so only the host
+    match can be keeping it."""
+    from deep_research.agents.report_writer import _names_a_source
+    read = make_read("A review.", url="https://example-institute.test/report", title="A field report")
+    finding = make_finding(read, "A review.", target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert _names_a_source("Example Institute's own figure was 10.4 GW.", [finding])
+
+
 # --- D12: no finding labels leak into point text ----------------------------
 
 
@@ -1650,7 +1756,7 @@ def test_consider_bottom_line_point_strips_a_parenthesised_label_group_without_r
     rejected: list = []
 
     candidates = _consider_bottom_line_point(
-        point, "bottom_line[0]", cited_by_sections=cited_by_sections, disputed_target_ids=set(),
+        point, "bottom_line[0]", cited_by_sections=cited_by_sections, disputed_labels=set(),
         numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
     )
 
@@ -1663,10 +1769,11 @@ def test_consider_bottom_line_point_strips_a_parenthesised_label_group_without_r
 # --- Z1/Z2 item 4: the disputed-target guard --------------------------------
 
 
-def test_consider_bottom_line_point_refuses_a_disputed_target_with_no_difference_marker():
-    """Audit D1 fix (b): a sentence that cites a statement bound to a
-    disputed target, with no marker of difference, is refused -- run 7's
-    D1 (the disputed step carried into the bottom line as settled fact)."""
+def test_consider_bottom_line_point_refuses_a_disputed_label_with_no_difference_marker():
+    """Audit D1 fix (b), ReRevZ2 C7: a sentence that cites a finding a
+    marked point disputes, with no marker of difference, is refused --
+    run 7's D1 (the disputed step carried into the bottom line as
+    settled fact). Label-scoped, not target-scoped."""
     from deep_research.agents.report_writer import _consider_bottom_line_point
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
     cited_by_sections = {"F01": finding}
@@ -1676,7 +1783,7 @@ def test_consider_bottom_line_point_refuses_a_disputed_target_with_no_difference
 
     candidates = _consider_bottom_line_point(
         point, "bottom_line[0]", cited_by_sections=cited_by_sections,
-        disputed_target_ids={"topic-01-target-01"},
+        disputed_labels={"F01"},
         numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
     )
 
@@ -1684,8 +1791,8 @@ def test_consider_bottom_line_point_refuses_a_disputed_target_with_no_difference
     assert rejected[0].reason == "states a disputed step without its dispute"
 
 
-def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_with_a_difference_marker():
-    """The other branch: the same disputed target, with a difference
+def test_consider_bottom_line_point_keeps_a_disputed_label_sentence_with_a_difference_marker():
+    """The other branch: the same disputed label, with a difference
     marker, is kept."""
     from deep_research.agents.report_writer import _consider_bottom_line_point
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
@@ -1698,7 +1805,7 @@ def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_with_a_diff
 
     candidates = _consider_bottom_line_point(
         point, "bottom_line[0]", cited_by_sections=cited_by_sections,
-        disputed_target_ids={"topic-01-target-01"},
+        disputed_labels={"F01"},
         numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
     )
 
@@ -1706,7 +1813,7 @@ def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_with_a_diff
     assert rejected == []
 
 
-def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_using_disputes():
+def test_consider_bottom_line_point_keeps_a_disputed_label_sentence_using_disputes():
     """RevZ2 P1-b: the marker regex matches stems, so "disputes" (not
     only bare "dispute") counts as a difference marker."""
     from deep_research.agents.report_writer import _consider_bottom_line_point
@@ -1720,7 +1827,7 @@ def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_using_dispu
 
     candidates = _consider_bottom_line_point(
         point, "bottom_line[0]", cited_by_sections=cited_by_sections,
-        disputed_target_ids={"topic-01-target-01"},
+        disputed_labels={"F01"},
         numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
     )
 
@@ -1728,7 +1835,7 @@ def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_using_dispu
     assert rejected == []
 
 
-def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_using_differently():
+def test_consider_bottom_line_point_keeps_a_disputed_label_sentence_using_differently():
     """RevZ2 P1-b: "differently" (not only bare "differ") counts too."""
     from deep_research.agents.report_writer import _consider_bottom_line_point
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
@@ -1741,7 +1848,7 @@ def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_using_diffe
 
     candidates = _consider_bottom_line_point(
         point, "bottom_line[0]", cited_by_sections=cited_by_sections,
-        disputed_target_ids={"topic-01-target-01"},
+        disputed_labels={"F01"},
         numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
     )
 
@@ -1749,10 +1856,11 @@ def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_using_diffe
     assert rejected == []
 
 
-def test_bottom_line_messages_lists_a_statement_under_disputed_steps_when_its_target_disputes():
-    """Audit D1 fix (b): a checked statement bound to a disputed target is
-    listed again under its own heading, so the bottom line can state both
-    sides or drop the step."""
+def test_bottom_line_messages_lists_a_marked_statement_under_disputed_first():
+    """Audit D1 fix (b), ReRevZ2 C7: a checked statement the writer
+    marked ``disputes: true`` is listed again under "Disputed", first,
+    as the dispute itself -- so the bottom line can state both sides or
+    leave the step out."""
     task = _one_target_task()
     statement = ReportStatement(statement_id="S001", text="According to the source, 10.4 GW in 2024.",
                                 finding_ids=[finding_fingerprint(task.findings[0])],
@@ -1760,13 +1868,14 @@ def test_bottom_line_messages_lists_a_statement_under_disputed_steps_when_its_ta
     section = ReportSection(title="Capacity added", coverage_id="topic-01",
                             points=[ReportPointFor("According to the source, 10.4 GW in 2024.", statement)])
 
-    body = bottom_line_messages(task, [section], disputed_target_ids=frozenset({"topic-01-target-01"}))[-1].content
+    body = bottom_line_messages(task, [section], disputed_statement_ids=frozenset({"S001"}))[-1].content
 
-    assert "# Disputed steps: state both sides or leave the step out" in body
-    assert "According to the source, 10.4 GW in 2024." in body.split("# Disputed steps")[1]
+    assert "# Disputed: state both sides, or leave the disputed step, figure or provision out" in body
+    assert "The dispute, as a section point states it:" in body
+    assert "According to the source, 10.4 GW in 2024." in body.split("# Disputed:")[1]
 
 
-def test_bottom_line_messages_omit_the_disputed_steps_heading_when_nothing_disputes():
+def test_bottom_line_messages_omit_the_disputed_heading_when_nothing_disputes():
     task = _one_target_task()
     statement = ReportStatement(statement_id="S001", text="According to the source, 10.4 GW in 2024.",
                                 finding_ids=[finding_fingerprint(task.findings[0])],
@@ -1776,7 +1885,84 @@ def test_bottom_line_messages_omit_the_disputed_steps_heading_when_nothing_dispu
 
     body = bottom_line_messages(task, [section])[-1].content
 
-    assert "# Disputed steps" not in body
+    assert "# Disputed:" not in body
+
+
+def test_bottom_line_dispute_scope_is_the_labels_the_marked_point_cites_not_its_target():
+    """ReRevZ2 C7's own proving test: a part with a marked point citing
+    F01+F02 and an undisputed dating point citing F03 on the same
+    target. A bottom-line sentence citing F03 alone is kept without a
+    marker; one citing F01 without a marker is refused; and the block
+    lists the marked point first, with F03 nowhere in it -- target
+    scoping would have listed F03 too and refused a sentence stating it
+    alone (run 7's topic-01 wrote 13 points on one target)."""
+    from deep_research.agents.report_writer import _consider_bottom_line_point
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding_1 = _statement_finding("https://a.test/1", "The annual assessment states enrollment fell steeply.",
+                                   target_ids=["topic-01-target-01"])
+    finding_2 = _statement_finding(
+        "https://b.test/1",
+        "Field Review states later field surveys found little evidence for that decline.",
+        target_ids=["topic-01-target-01"],
+    )
+    finding_3 = _statement_finding("https://c.test/1", "Example Register records that the transport subsidy ended in March 2016.",
+                                   target_ids=["topic-01-target-01"])
+    task = ReportWriterTask(
+        instruction="Q?", session_id="s1", question="Q?", as_of="2026-08-01",
+        sub_topics=[_topic("topic-01", "Outreach", [target])],
+        targets=[target], findings=[finding_1, finding_2, finding_3], sources=[],
+        registry=finding_registry([finding_1, finding_2, finding_3], [target]),
+        answered={target.target_id: [finding_fingerprint(finding_1)]},
+        not_found=[], defects=[], previous=None,
+    )
+    cited_by_sections = {"F01": finding_1, "F02": finding_2, "F03": finding_3}
+    disputed_labels = {"F01", "F02"}
+
+    kept_rejected: list = []
+    kept = _consider_bottom_line_point(
+        WriterPointDraft(
+            text="Example Register records that the transport subsidy ended in March 2016.",
+            finding_labels=["F03"],
+        ),
+        "bottom_line[0]", cited_by_sections=cited_by_sections, disputed_labels=disputed_labels,
+        numbers=iter(range(1, 100)), rejected=kept_rejected, key_prefix="B",
+    )
+    assert len(kept) == 1
+    assert kept_rejected == []
+
+    refused_rejected: list = []
+    refused = _consider_bottom_line_point(
+        WriterPointDraft(text="According to the source, enrollment fell steeply.", finding_labels=["F01"]),
+        "bottom_line[0]", cited_by_sections=cited_by_sections, disputed_labels=disputed_labels,
+        numbers=iter(range(1, 100)), rejected=refused_rejected, key_prefix="B",
+    )
+    assert refused == []
+    assert refused_rejected[0].reason == "states a disputed step without its dispute"
+
+    marked_text = (
+        "The annual assessment states enrollment fell steeply, while Field Review "
+        "states later field surveys found little evidence for that decline."
+    )
+    dating_text = "Example Register records that the transport subsidy ended in March 2016."
+    marked_statement = ReportStatement(
+        statement_id="S001", text=marked_text,
+        finding_ids=[finding_fingerprint(finding_1), finding_fingerprint(finding_2)],
+        target_ids=["topic-01-target-01"],
+    )
+    dating_statement = ReportStatement(
+        statement_id="S002", text=dating_text, finding_ids=[finding_fingerprint(finding_3)],
+        target_ids=["topic-01-target-01"],
+    )
+    section = ReportSection(title="Outreach", coverage_id="topic-01", points=[
+        ReportPointFor(marked_text, marked_statement),
+        ReportPointFor(dating_text, dating_statement),
+    ])
+
+    body = bottom_line_messages(task, [section], disputed_statement_ids=frozenset({"S001"}))[-1].content
+    dispute_block = body.split("# Disputed:")[1]
+    dispute_group = dispute_block.split("The dispute, as a section point states it:")[1]
+    assert marked_text in dispute_group.split("Statements that cite")[0]
+    assert dating_text not in dispute_block
 
 
 @pytest.mark.asyncio
@@ -2525,11 +2711,13 @@ def test_apply_marks_resolves_finding_id_from_by_even_when_findings_share_one_pa
 async def test_bottom_line_fallback_prefers_the_parts_own_marked_disputing_point(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """RevZ2 P1-c: the naive first-kept-point pick the fallback used to
-    make could itself be silent about a dispute its own target carries;
-    when it touches a disputed target but is not the part's own marked
-    point, the marked point is preferred instead, so the fallback never
-    prints a disputed step as settled."""
+    """RevZ2 P1-c, ReRevZ2 C7: the naive first-kept-point pick the
+    fallback used to make could itself be silent about a dispute one of
+    its own cited findings carries; when it cites one of the marked
+    point's own labels but is not itself the part's marked point, the
+    marked point is preferred instead, so the fallback never prints a
+    disputed step as settled. Label-scoped: the naive pick and the
+    marked point share a finding (F01), not merely a target."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding_a = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
                         target_ids=["topic-01-target-01"])
@@ -2542,8 +2730,8 @@ async def test_bottom_line_fallback_prefers_the_parts_own_marked_disputing_point
         SectionDraft(title="Capacity added", points=[
             WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"]),
             WriterPointDraft(
-                text="According to the source, a later account differs, giving 11 GW in 2024 instead.",
-                finding_labels=["F02"], disputes=True,
+                text="According to the source, a later account revises the earlier EIA figure to 11 GW.",
+                finding_labels=["F01", "F02"], disputes=True,
             ),
         ]),
         _output_limit_error(), _output_limit_error(),
@@ -2555,7 +2743,7 @@ async def test_bottom_line_fallback_prefers_the_parts_own_marked_disputing_point
 
     assert len(composition.summary) == 1
     assert composition.summary[0].text == (
-        "According to the source, a later account differs, giving 11 GW in 2024 instead."
+        "According to the source, a later account revises the earlier EIA figure to 11 GW."
     )
 
 
