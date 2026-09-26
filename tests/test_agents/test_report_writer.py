@@ -490,8 +490,13 @@ def test_finding_registry_orders_a_required_targets_answers_by_authority():
     """D1, D3: within the required-target-answering group, the stronger
     source's finding gets the lower label, not merely the one that
     extracted first -- so the strongest sources of a target get the
-    first labels."""
-    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    first labels. ``unit_dimension=None`` so both findings actually
+    reach group 0 (a figure-dimensioned target needs a figure to be
+    recognised as answering it, which a no-figure statement finding
+    never has); the scores still differ (0.3 vs 0.8), so this proves
+    authority order, not merely the group-0/1 split or the tiebreak."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
+                         unit_dimension=None)
     weak = _statement_finding("https://weak.test/1", "A weak claim.", target_ids=["topic-01-target-01"])
     strong = _statement_finding("https://strong.test/1", "A strong claim.", target_ids=["topic-01-target-01"])
     weak_source = _authority_source("https://weak.test/1", authority=0.3)

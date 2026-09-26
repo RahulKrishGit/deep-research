@@ -217,11 +217,13 @@ SECTION_INSTRUCTION = (
     "originator of the words. Never supply a name the passage does not give: quoted "
     "words with no name in the snippet or passage are \"a passage the page quotes\", "
     "named by the page's host and by no author.\n"
-    "- When the source line describes the page's kind (a student paper, a class "
-    "assignment, a teaching or role-play document, an enthusiast site, a blog post, a "
-    "reader comment, a podcast or course description), say so when you credit it, in "
-    "the source line's own words; never a kind the source line does not state: "
-    "\"a student paper read at example.edu states …\".\n"
+    "- When the source line or the self-description line describes the page's kind "
+    "(a student paper, a class assignment, a teaching or role-play document, a "
+    "simplified or adapted rendering, content based on an encyclopedia's or a "
+    "chatbot's entries, an enthusiast site, a blog post, a reader comment, a podcast "
+    "or course description), say so when you credit it, in that line's own words; "
+    "never a kind neither line states: \"a student paper read at example.edu "
+    "states …\", \"a role-play read at example.edu states …\".\n"
     "- Every judgement, ranking or recommendation is attributed to the source that made "
     "it, as the finding names it; where findings disagree, state each; never a pick, "
     "ranking, verdict or criterion of your own.\n"
@@ -255,18 +257,21 @@ SECTION_INSTRUCTION = (
     "and, for a mechanism, its last step states the outcome the question's subject "
     "reached, where a cited finding states that outcome, with its date where that "
     "finding gives it; a finding that dates the outcome, or the whole span the "
-    "question's subject ran through, dates the last step, and mark the point that "
-    "states that outcome outcome: true. "
+    "question's subject ran through, dates the last step. "
     "State an optional target's answer only where it adds a fact the required targets' "
     "points do not carry. Every required target a listed finding answers is still "
     "stated by at least one point citing a finding that answers it; a point never "
     "announces an absence of its own -- an unanswered target is code's to disclose, "
     "not yours. A target marked \"(through its sub-topic only)\" is answered by a "
     "finding matched to its sub-topic, not bound to that target explicitly; state it "
-    "the same as any other answer. In a part answering why or how, a point states a "
-    "cause, a step of the mechanism, or a dispute about one; a count, a price, a "
-    "variant account of an incidental detail, or a description of a work is context, "
-    "stated only where a step turns on it.\n"
+    "the same as any other answer.\n"
+    "- In a part answering why or how, a point states a cause, a step of the "
+    "mechanism, or a dispute about one; a count, a price, a variant account of an "
+    "incidental detail, or a description of a work that no required target asks for "
+    "is context, stated only where a step turns on it. The point that states the "
+    "outcome the question's subject reached (the mechanism's last step, dated as "
+    "the rule above says) sets outcome to true (the point's own boolean field); "
+    "every other point keeps outcome false.\n"
     "- When several findings state the same fact, state it once and credit the "
     "sources together (\"Example Institute, example-register.test and Example News "
     "state that ...\", citing all their labels), never one clause per source; each "
@@ -342,13 +347,22 @@ _SECTION_REPLY_EXAMPLES = (
         "(example-tester.test) | content: Example Tester names Model C, not Model "
         "B, the one to beat for the price. | snippet: Model C, not Model B, is the "
         "one to beat for the price. | F03 | statement | read at example-tester.test "
-        "| actual",
+        "| actual ## F04: Example Tester's review (example-tester.test) | content: "
+        "Example Tester's own lab measured Model A at a noise rating of 4.5 out of "
+        "5. | snippet: Example Tester gives Model A a noise rating of 4.5 out of "
+        "5. | F04 | figure 1: 4.5 out of 5 | subject Model A | period 2026 | kind "
+        "actual | organisation Example Tester | label: Example Tester's own figure; "
+        "actual",
         '{"title":"Value for money","points":[{"text":"example-register.test says '
         'Model B is the one to beat for the price, while Example Tester says Model '
         'C is the one to beat for the price; the two differ.","finding_labels":'
-        '["F02","F03"],"disputes":true,"items":[{"name":"Model B","verdict":"the '
-        'one to beat for the price","picked":true,"by":"F02"},{"name":"Model C",'
-        '"verdict":"the one to beat for the price","picked":true,"by":"F03"}]}]}',
+        '["F02","F03"],"disputes":true,"outcome":false,"items":[{"name":"Model B",'
+        '"verdict":"the one to beat for the price","picked":true,"by":"F02"},'
+        '{"name":"Model C","verdict":"the one to beat for the price","picked":true,'
+        '"by":"F03"}]},{"text":"Example Tester gives Model A a noise rating of 4.5 '
+        'out of 5.","finding_labels":["F04"],"disputes":false,"outcome":false,'
+        '"items":[{"name":"Model A","verdict":"a noise rating of 4.5 out of 5",'
+        '"picked":false,"by":"F04"}]}]}',
     ),
 )
 
@@ -431,16 +445,19 @@ _BOTTOM_LINE_REPLY_EXAMPLES = (
         'one to beat for the price","picked":true,"by":"F02"}]}]}',
     ),
     (
-        "Example input: # Checked statements ## Cause - Example Institute reports "
-        "that a 2018 funding cut reduced the outreach budget. (cites F04) ## Step - "
-        "Example Register states that the reduced budget forced staff reductions "
-        "through 2019. (cites F05) ## Outcome - Example Register records that the "
-        "outreach program closed in 2020. (cites F06)",
+        "Example input: # Checked statements ## Why the program closed - Example "
+        "Institute reports that a 2018 funding cut reduced the outreach budget. "
+        "(cites F04) - Example Register states that the reduced budget forced staff "
+        "reductions through 2019. (cites F05) - Example Register records that the "
+        "outreach program closed in 2020 after its funding ended. (cites F06) "
+        "# Outcome - Example Register records that the outreach program closed in "
+        "2020 after its funding ended. (cites F06)",
         '{"sentences":[{"text":"According to Example Institute, a 2018 funding cut '
         'reduced the outreach budget, and Example Register says the reduced budget '
         'forced staff reductions through 2019.","finding_labels":["F04","F05"],'
-        '"items":[]},{"text":"Example Register records that the outreach program '
-        'closed in 2020.","finding_labels":["F06"],"items":[]}]}',
+        '"items":[]},{"text":"The outreach program then closed in 2020 after the '
+        'funding ended, Example Register records.","finding_labels":["F06"],'
+        '"items":[]}]}',
     ),
 )
 
@@ -1191,7 +1208,13 @@ def bottom_line_messages(
             "disputed step, figure or provision as settled."
         )
     if outcome_lines:
-        material.append("# Outcome\n" + "\n".join(outcome_lines))
+        material.append(
+            "# Outcome\n"
+            "The outcome the question's subject reached, as a section point states "
+            "it: on a mechanism answer the last step ends on one of these, credited "
+            "and dated as it states it, within the two to four sentences.\n"
+            + "\n".join(outcome_lines)
+        )
     if previous:
         material.append(f"# Your previous bottom line\n{_rendered_previous_bottom_line(previous)}")
     if defects:
@@ -2692,7 +2715,8 @@ async def _run_bottom_line(
                     problem=(
                         'The bottom line names no outcome. End it with the outcome '
                         'the statements under "Outcome" state, credited and dated as '
-                        'they state it.'
+                        'they state it, within four sentences: fold the outcome into '
+                        'the last sentence or replace one, never add a fifth.'
                     ),
                 )
             )
