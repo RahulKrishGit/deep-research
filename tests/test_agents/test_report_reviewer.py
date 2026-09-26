@@ -36,17 +36,31 @@ from deep_research.agents.report import (
 from deep_research.agents.report_reviewer import (
     _fact_row_line,
     REPORT_REVIEWER_ROLE,
+    REPORT_REVIEW_PROMPT_VERSION,
     REPORT_REVIEW_SYSTEM_PROMPT,
     REVIEW_DIMENSIONS,
     REVIEW_RUBRIC_VERSION,
+    SCOPED_REPORT_REVIEW_INSTRUCTION,
+    SCOPED_REPORT_REVIEW_SYSTEM_PROMPT,
     SEMANTIC_REVIEW_MEAN,
+    PreviousDefectResolutionDraft,
+    PreviousDefectView,
     ReportReviewer,
     ReviewDefectDraft,
+    ReviewDimensionScores,
+    StatementDispositionDraft,
+    ScopedReportReviewDraft,
+    ScopedReportReviewInput,
     build_report_review_input,
+    build_scoped_report_review_input,
     composition_semantic_fingerprint,
+    remap_review_for_redraft,
     report_review_input_fingerprint,
     review_messages,
     review_report,
+    review_scoped_report,
+    scoped_report_review_input_fingerprint,
+    scoped_review_messages,
     semantic_review_passes,
 )
 from deep_research.observability import (
@@ -67,13 +81,19 @@ from deep_research.utils.types import (
     FigureContext,
     FigureResult,
     FindingVerification,
+    ItemMark,
     NotFoundTarget,
+    ReportPart,
     ReportQualitySnapshot,
     ReportReview,
     ReportStatement,
+    ReportTable,
     ResearchState,
     ReviewDefect,
     SubTopic,
+    TableCell,
+    TableEntry,
+    UnreachablePage,
     FactRow,
 )
 from tests.agent_fakes import ScriptedCompleter
@@ -587,7 +607,10 @@ def test_a_statement_carries_its_code_built_label_and_its_findings_labels() -> N
     # the labels of the findings it cites.
     assert second.label == ""
     assert second.finding_labels == summary.finding_labels
-    assert summary.label in built.reader_content
+    # The label is packet-only material now (spec §3.1 rule 8 cuts it from the
+    # printed report; it never reached ``reader_content``, only the request).
+    assert summary.label not in built.reader_content
+    assert summary.label in _render(built)
 
 
 def test_the_finding_block_carries_the_snippet_host_and_figure_labels() -> None:
@@ -2074,3 +2097,496 @@ def test_the_prompt_never_claims_a_sentence_without_a_label_states_no_figure() -
     assert "a unit this report does not label" in REPORT_REVIEW_SYSTEM_PROMPT
     assert "or one no cited finding carries" in REPORT_REVIEW_SYSTEM_PROMPT
     assert "against their figure labels" in REPORT_REVIEW_SYSTEM_PROMPT
+
+
+# --- spec §11.1: the renamed packet sections, the table, finding status -----
+
+
+def test_the_prompt_version_is_report_review_5() -> None:
+    assert REPORT_REVIEW_PROMPT_VERSION == "report-review-5"
+
+
+def test_the_prompt_no_longer_says_the_code_built_label_it_ends_with() -> None:
+    assert "the code-built label it ends with" not in REPORT_REVIEW_SYSTEM_PROMPT
+
+
+def test_the_packet_renames_key_facts_to_verified_figures() -> None:
+    rendered = _render(packet())
+    assert "# Verified figures" in rendered
+    assert "# Key facts" not in rendered
+
+
+def test_the_packet_renames_not_found_to_what_the_report_could_not_confirm() -> None:
+    rendered = _render(packet())
+    assert "# What the report could not confirm" in rendered
+    assert "# Not found" not in rendered
+    assert "must list these and must not present them as answered" in rendered
+
+
+def _table_composition() -> ReportComposition:
+    """A composition with a one-row findings table, for the packet's own
+    ``# Table`` block (spec §11.1)."""
+    table = ReportTable(
+        shape="findings",
+        columns=["What was measured", "Result", "Who reported it (and when)", "Source"],
+        rows=[
+            [
+                TableCell(text="battery storage capacity added", statement_ids=["S001"], row_ids=["K001"]),
+                TableCell(text="10.4 GW", statement_ids=["S001"], row_ids=["K001"]),
+                TableCell(text=EIA, statement_ids=["S001"], row_ids=["K001"]),
+                TableCell(
+                    text="",
+                    entries=[TableEntry(text="", source_url=EIA_URL)],
+                    statement_ids=["S001"],
+                    row_ids=["K001"],
+                ),
+            ]
+        ],
+        caption="No figure in this table is a forecast.",
+    )
+    return _written_composition().model_copy(update={"table": table})
+
+
+def test_the_packet_carries_a_table_block_with_backing_ids() -> None:
+    built = build_report_review_input(state_with_written_report(composition=_table_composition()))
+    rendered = _render(built)
+    assert "# Table" in rendered
+    assert "backing statements: S001" in rendered
+    assert "backing fact rows: K001" in rendered
+    assert "10.4 GW" in rendered
+
+
+def test_a_report_with_no_table_reads_as_none_qualified() -> None:
+    built = packet()
+    assert built.table_lines == []
+    assert "(no table qualified for this report)" in _render(built)
+
+
+def test_the_finding_block_carries_a_status_line() -> None:
+    built = packet()
+    assert built.findings[0].status == "verified"
+    assert "status: verified" in _render(built)
+
+
+def test_a_verified_corrected_finding_reads_verified_with_corrections() -> None:
+    finding = _written_finding()
+    corrected = finding.model_copy(
+        update={
+            "verification": finding.verification.model_copy(
+                update={"status": "verified_corrected"}
+            )
+        }
+    )
+    composition = _written_composition().model_copy(update={"findings": [corrected]})
+    built = build_report_review_input(state_with_written_report(composition=composition))
+    assert built.findings[0].status == "verified with corrections"
+    assert "status: verified with corrections" in _render(built)
+
+
+def test_a_quoted_finding_reads_quoted_not_checked_for_context() -> None:
+    finding = _written_finding()
+    quoted = finding.model_copy(
+        update={
+            "verification": finding.verification.model_copy(
+                update={"status": "quoted", "figure_results": []}
+            )
+        }
+    )
+    composition = _written_composition().model_copy(update={"findings": [quoted]})
+    built = build_report_review_input(state_with_written_report(composition=composition))
+    assert built.findings[0].status == "quoted, not checked for context"
+
+
+def test_the_composition_fingerprint_moves_with_the_table() -> None:
+    before = composition_semantic_fingerprint(_written_composition())
+    after = composition_semantic_fingerprint(_table_composition())
+    assert before != after
+
+
+def test_the_composition_fingerprint_moves_with_parts() -> None:
+    before = composition_semantic_fingerprint(_written_composition())
+    with_parts = _written_composition().model_copy(
+        update={
+            "parts": [
+                ReportPart(
+                    coverage_id="topic-01",
+                    sub_topic_title="Battery storage additions",
+                    finding_ids=["F01"],
+                    status="written",
+                )
+            ]
+        }
+    )
+    assert before != composition_semantic_fingerprint(with_parts)
+
+
+def test_the_composition_fingerprint_moves_with_unreachable_pages() -> None:
+    before = composition_semantic_fingerprint(_written_composition())
+    with_unreachable = _written_composition().model_copy(
+        update={"unreachable": [UnreachablePage(url="https://example.com/denied", title="Denied")]}
+    )
+    assert before != composition_semantic_fingerprint(with_unreachable)
+
+
+# --- T5 addendum: scoped re-review after a redraft --------------------------
+
+
+PART_A = "topic-01"
+PART_B = "topic-02"
+
+
+def _redraft_fixture(
+    *, extra_defect: bool = False
+) -> tuple[ReportComposition, ReportComposition, ReportReview]:
+    """The composition a first full review judged, the redrafted composition
+    that followed it, and that first review -- built by hand so Part A's
+    statement id can drift between the two (as real renumbering would) while
+    its words stay identical, and Part B's text and id both change.
+    """
+    finding = _written_finding()
+    finding_id = finding_fingerprint(finding)
+
+    def statement(statement_id: str, text: str) -> ReportStatement:
+        return ReportStatement(
+            statement_id=statement_id, text=text, finding_ids=[finding_id], target_ids=[TARGET_ID]
+        )
+
+    def point(stmt: ReportStatement) -> ReportPoint:
+        return ReportPoint(text=stmt.text, source_urls=[EIA_URL], statement=stmt)
+
+    old_bottom = statement("S001", "Old bottom line, before the redraft.")
+    old_a = statement("S002", "Part A's point, which the redraft will not touch.")
+    old_b = statement("S003", "Part B's point, which the redraft will replace.")
+    old = ReportComposition(
+        question=QUESTION, session_id=SESSION_ID, iteration=0, max_extra_passes=1,
+        as_of="2026-08-01", scope="United States",
+        findings=[finding], fact_rows=[_fact_row(finding_id)],
+        finding_labels={"F01": finding_id},
+        summary=[point(old_bottom)],
+        sections=[
+            ReportSection(title="Part A", coverage_id=PART_A, points=[point(old_a)]),
+            ReportSection(title="Part B", coverage_id=PART_B, points=[point(old_b)]),
+        ],
+    )
+    new_bottom = statement("S010", "New bottom line, after the redraft.")
+    new_a = statement("S011", "Part A's point, which the redraft will not touch.")
+    new_b = statement("S012", "Part B's point, now backed by the finding.")
+    new = ReportComposition(
+        question=QUESTION, session_id=SESSION_ID, iteration=0, max_extra_passes=1,
+        as_of="2026-08-01", scope="United States",
+        findings=[finding], fact_rows=[_fact_row(finding_id)],
+        finding_labels={"F01": finding_id},
+        summary=[point(new_bottom)],
+        sections=[
+            ReportSection(title="Part A", coverage_id=PART_A, points=[point(new_a)]),
+            ReportSection(title="Part B", coverage_id=PART_B, points=[point(new_b)]),
+        ],
+        parts=[
+            ReportPart(coverage_id=PART_A, sub_topic_title="Part A", finding_ids=[finding_id], status="carried_over"),
+            ReportPart(coverage_id=PART_B, sub_topic_title="Part B", finding_ids=[finding_id], status="written"),
+        ],
+    )
+    defects = [
+        ReviewDefect(
+            defect_id="review-01", kind="missing_support", severity="major",
+            statement_ids=["S003"], target_ids=[TARGET_ID],
+            problem="Part B's claim isn't backed by a cited finding.",
+        )
+    ]
+    if extra_defect:
+        defects.append(
+            ReviewDefect(
+                defect_id="review-02", kind="presentation", severity="minor",
+                statement_ids=["S002"], target_ids=[],
+                problem="Part A repeats a qualifier the bottom line already gave.",
+            )
+        )
+    previous_review = ReportReview(
+        status="scored",
+        dimensions=_scores(0.85),
+        defects=defects,
+        per_statement_dispositions={
+            "S001": "supported", "S002": "supported", "S003": "unsupported",
+        },
+        reviewed_statement_ids=["S001", "S002", "S003"],
+        input_fingerprint="old-packet-fp",
+        composition_fingerprint=composition_semantic_fingerprint(old),
+        rubric_version=REVIEW_RUBRIC_VERSION,
+        rationale="The first full review.",
+    )
+    return old, new, previous_review
+
+
+def _redraft_state(new: ReportComposition) -> ResearchState:
+    return state_with_written_report(composition=new, report=render_written_report(new))
+
+
+def test_a_scoped_packet_marks_changed_and_unchanged_and_carries_previous_defects() -> None:
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+    assert set(scoped.changed_statement_ids) == {"S010", "S012"}
+    assert scoped.unchanged_statement_ids == ["S011"]
+    assert [defect.defect_id for defect in scoped.previous_defects] == ["review-01"]
+    assert scoped.previous_defects[0].problem == "Part B's claim isn't backed by a cited finding."
+    rendered = "\n\n".join(m.content for m in scoped_review_messages(scoped))
+    assert "S010" in rendered and "S012" in rendered
+    assert "S011" in rendered
+    assert "review-01" in rendered
+
+
+def test_an_unchanged_part_whose_text_differs_forces_a_full_review() -> None:
+    """T5 addendum: a part changed without a redraft request is not scoped."""
+    old, new, previous_review = _redraft_fixture()
+    tampered_section = new.sections[0].model_copy(
+        update={
+            "points": [
+                new.sections[0].points[0].model_copy(
+                    update={"text": "Part A's point, secretly rewritten."}
+                )
+            ]
+        }
+    )
+    tampered = new.model_copy(update={"sections": [tampered_section, new.sections[1]]})
+
+    assert remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=tampered
+    ) is None
+
+
+def test_a_composition_with_nothing_carried_over_is_not_scoped() -> None:
+    old, new, previous_review = _redraft_fixture()
+    all_written = new.model_copy(
+        update={
+            "parts": [
+                part.model_copy(update={"status": "written"}) for part in new.parts
+            ]
+        }
+    )
+    assert remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=all_written
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_a_resolved_defect_is_recorded_as_resolved_and_an_unresolved_one_as_unresolved() -> None:
+    old, new, previous_review = _redraft_fixture(extra_defect=True)
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+    assert {d.defect_id for d in scoped.previous_defects} == {"review-01", "review-02"}
+
+    reply = ScopedReportReviewDraft(
+        dimensions=ReviewDimensionScores(**_scores()),
+        statement_dispositions=[
+            StatementDispositionDraft(statement_id="S010", disposition="supported"),
+            StatementDispositionDraft(statement_id="S012", disposition="supported"),
+        ],
+        previous_defect_resolutions=[
+            PreviousDefectResolutionDraft(defect_id="review-01", resolved=False),
+            PreviousDefectResolutionDraft(defect_id="review-02", resolved=True, note="Fixed."),
+        ],
+        new_defects=[],
+        rationale="Re-checked the report as it now stands.",
+    )
+    reviewer = ReportReviewer(provider=ScriptedCompleter(outputs=[reply]))
+
+    review = await reviewer.review_scoped(scoped)
+
+    ids = {defect.defect_id for defect in review.defects}
+    assert "review-01" in ids
+    assert "review-02" not in ids
+    assert "Resolved by the redraft: review-02" in review.rationale
+    assert "Still unresolved: review-01" in review.rationale
+
+
+@pytest.mark.asyncio
+async def test_a_new_defect_in_a_changed_part_is_accepted() -> None:
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+
+    reply = ScopedReportReviewDraft(
+        dimensions=ReviewDimensionScores(**_scores()),
+        statement_dispositions=[
+            StatementDispositionDraft(statement_id="S010", disposition="supported"),
+            StatementDispositionDraft(statement_id="S012", disposition="unsupported"),
+        ],
+        previous_defect_resolutions=[
+            PreviousDefectResolutionDraft(defect_id="review-01", resolved=True),
+        ],
+        new_defects=[
+            ReviewDefectDraft(
+                kind="missing_support", severity="major", statement_ids=["S012"],
+                target_ids=[], problem="The redrafted point still overstates the finding.",
+            )
+        ],
+        rationale="Found a new problem in the redrafted part.",
+    )
+    reviewer = ReportReviewer(provider=ScriptedCompleter(outputs=[reply]))
+
+    review = await reviewer.review_scoped(scoped)
+
+    problems = [defect.problem for defect in review.defects]
+    assert "The redrafted point still overstates the finding." in problems
+
+
+@pytest.mark.asyncio
+async def test_a_new_defect_claimed_on_an_unchanged_part_is_refused() -> None:
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+
+    reply = ScopedReportReviewDraft(
+        dimensions=ReviewDimensionScores(**_scores()),
+        statement_dispositions=[
+            StatementDispositionDraft(statement_id="S010", disposition="supported"),
+            StatementDispositionDraft(statement_id="S012", disposition="supported"),
+        ],
+        previous_defect_resolutions=[
+            PreviousDefectResolutionDraft(defect_id="review-01", resolved=True),
+        ],
+        new_defects=[
+            ReviewDefectDraft(
+                kind="presentation", severity="minor", statement_ids=["S011"],
+                target_ids=[], problem="Part A alone reads a little repetitive.",
+            )
+        ],
+        rationale="Nothing else changed.",
+    )
+    reviewer = ReportReviewer(provider=ScriptedCompleter(outputs=[reply]))
+
+    review = await reviewer.review_scoped(scoped)
+
+    problems = [defect.problem for defect in review.defects]
+    assert "Part A alone reads a little repetitive." not in problems
+    assert "may not raise a new defect against unchanged statements alone" in review.rationale
+
+
+@pytest.mark.asyncio
+async def test_a_new_defect_citing_a_changed_and_unchanged_contradiction_is_accepted() -> None:
+    """T5 addendum: naming a changed id together with the unchanged one it
+    contradicts still names a changed id, so this one rule covers both."""
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+
+    reply = ScopedReportReviewDraft(
+        dimensions=ReviewDimensionScores(**_scores()),
+        statement_dispositions=[
+            StatementDispositionDraft(statement_id="S010", disposition="supported"),
+            StatementDispositionDraft(statement_id="S012", disposition="unsupported"),
+        ],
+        previous_defect_resolutions=[
+            PreviousDefectResolutionDraft(defect_id="review-01", resolved=True),
+        ],
+        new_defects=[
+            ReviewDefectDraft(
+                kind="contradiction", severity="major", statement_ids=["S012", "S011"],
+                target_ids=[], problem="The redrafted Part B now contradicts Part A.",
+            )
+        ],
+        rationale="Found a cross-part contradiction.",
+    )
+    reviewer = ReportReviewer(provider=ScriptedCompleter(outputs=[reply]))
+
+    review = await reviewer.review_scoped(scoped)
+
+    problems = [defect.problem for defect in review.defects]
+    assert "The redrafted Part B now contradicts Part A." in problems
+
+
+@pytest.mark.asyncio
+async def test_the_merged_scoped_review_feeds_the_acceptance_gate_like_a_full_review() -> None:
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+
+    reply = ScopedReportReviewDraft(
+        dimensions=ReviewDimensionScores(**_scores()),
+        statement_dispositions=[
+            StatementDispositionDraft(statement_id="S010", disposition="supported"),
+            StatementDispositionDraft(statement_id="S012", disposition="supported"),
+        ],
+        previous_defect_resolutions=[
+            PreviousDefectResolutionDraft(defect_id="review-01", resolved=True),
+        ],
+        new_defects=[],
+        rationale="Clean redraft.",
+    )
+    reviewer = ReportReviewer(provider=ScriptedCompleter(outputs=[reply]))
+
+    review = await reviewer.review_scoped(scoped)
+
+    assert review.status == "scored"
+    assert semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_review_call_fingerprints_under_its_own_schema_name() -> None:
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+    reply = ScopedReportReviewDraft(
+        dimensions=ReviewDimensionScores(**_scores()),
+        statement_dispositions=[
+            StatementDispositionDraft(statement_id="S010", disposition="supported"),
+            StatementDispositionDraft(statement_id="S012", disposition="supported"),
+        ],
+        previous_defect_resolutions=[
+            PreviousDefectResolutionDraft(defect_id="review-01", resolved=True),
+        ],
+        new_defects=[],
+        rationale="Clean redraft.",
+    )
+    reviewer = ReportReviewer(provider=ScriptedCompleter(outputs=[reply]))
+
+    await reviewer.review_scoped(scoped)
+
+    assert "ScopedReportReviewDraft" in reviewer.call_fingerprints
+    full_fingerprint = reviewer.fingerprint_call("ReportReviewDraft")
+    assert reviewer.call_fingerprints["ScopedReportReviewDraft"] != full_fingerprint
+
+
+def test_the_scoped_packet_fingerprint_differs_from_the_full_packets() -> None:
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+    assert scoped.fingerprint == scoped_report_review_input_fingerprint(scoped)
+    assert scoped.fingerprint != scoped.base.fingerprint
+
+
+def test_the_scoped_prompt_asks_for_each_previous_defects_own_resolution() -> None:
+    assert "say whether the redraft resolved it" in SCOPED_REPORT_REVIEW_SYSTEM_PROMPT
+    assert "previous_defect_resolutions" in SCOPED_REPORT_REVIEW_INSTRUCTION

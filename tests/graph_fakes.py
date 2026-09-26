@@ -588,6 +588,33 @@ class FakeReviewer:
             update["per_statement_dispositions"] = dispositions
         return review.model_copy(update=update)
 
+    async def review_scoped(self, scoped: object) -> ReportReview:
+        """Serve the next scripted review for a scoped re-review call.
+
+        Mirrors ``.review()``'s bookkeeping over ``scoped.base`` (the packet a
+        full review of the same content would build), since that is what the
+        merged record is stamped against (T5 addendum).
+        """
+        base = getattr(scoped, "base", scoped)
+        fingerprint = getattr(base, "fingerprint", "")
+        self.packets.append(scoped)
+        position = min(len(self.packets) - 1, len(self._reviews) - 1)
+        review = self._reviews[position]
+        update: dict[str, object] = {"input_fingerprint": fingerprint}
+        if review.status == "scored":
+            update["composition_fingerprint"] = getattr(
+                base, "composition_fingerprint", ""
+            )
+            reviewed = list(review.reviewed_statement_ids) or list(
+                getattr(base, "expected_statement_ids", [])
+            )
+            update["reviewed_statement_ids"] = reviewed
+            dispositions = dict(review.per_statement_dispositions)
+            for statement_id in reviewed:
+                dispositions.setdefault(statement_id, "supported")
+            update["per_statement_dispositions"] = dispositions
+        return review.model_copy(update=update)
+
 
 def fake_research_agents(**overrides: object) -> ResearchAgents:
     """A full set of agents whose default pass answers the question once.

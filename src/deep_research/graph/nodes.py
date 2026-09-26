@@ -44,7 +44,10 @@ from deep_research.agents.report import (
 )
 from deep_research.agents.report_reviewer import (
     ReportReviewInput,
+    ScopedReportReviewInput,
     build_report_review_input,
+    build_scoped_report_review_input,
+    remap_review_for_redraft,
 )
 from deep_research.agents.report_writer import (
     finding_memory_payload,
@@ -150,6 +153,14 @@ class ReportReviewerLike(Protocol):
         previous: ReportReview | None = None,
     ) -> ReportReview:
         """Judge one report packet, reusing an identical earlier judgement."""
+        raise NotImplementedError
+
+    async def review_scoped(
+        self,
+        scoped: ScopedReportReviewInput,
+    ) -> ReportReview:
+        """Judge only a redraft's changed parts (T5 addendum), carrying the
+        rest of the previous review forward."""
         raise NotImplementedError
 
 
@@ -266,26 +277,51 @@ def report_writer_node(
     touching state, so any composition still in the channel belongs to an
     *earlier* pass, and re-scoring it would emit a verdict labelled with this
     pass's iteration for work this pass never did.
+
+    T5 addendum: this is also the redraft-to-reviewer handoff. ``composition``
+    changing invalidates the stored review by construction
+    (``merge_research_state``), which is right for a genuinely new report but
+    would throw away exactly what a scoped re-review needs. When this pass
+    ran with a scored ``report_review`` already in hand (a redraft, spec
+    §6.9), :func:`remap_review_for_redraft` is asked -- with both the
+    composition that review judged and the one this pass just produced still
+    local Python objects -- to carry it onto the new statement ids. It comes
+    back ``None`` unless every part the new composition marks carried over is
+    byte-identical to what the review judged, so a part that changed without
+    a redraft request simply leaves the review dropped, and the reviewer node
+    falls back to a full review.
     """
     inner = agent_node(agent, node_name=node_name)
 
     async def node(channel: ResearchGraphState) -> ResearchGraphState:
+        pre_state = load_state(channel)
         composed = await inner(channel)
         state = load_state(composed)
         if is_halted(state) or state.composition is None:
             return composed
         quality = compute_report_quality(state, state.composition)
-        return _with(
-            state,
-            {
-                "quality": quality,
-                "events": [
-                    quality_assessed_event(
-                        iteration=state.iteration, quality=quality
-                    )
-                ],
-            },
-        )
+        update: dict[str, object] = {
+            "quality": quality,
+            "events": [
+                quality_assessed_event(
+                    iteration=state.iteration, quality=quality
+                )
+            ],
+        }
+        previous_review = pre_state.report_review
+        if (
+            previous_review is not None
+            and previous_review.status == "scored"
+            and pre_state.composition is not None
+        ):
+            remapped = remap_review_for_redraft(
+                previous_review,
+                previous_composition=pre_state.composition,
+                composition=state.composition,
+            )
+            if remapped is not None:
+                update["report_review"] = remapped
+        return _with(state, update)
 
     return node
 
@@ -845,8 +881,22 @@ async def _review_report(
             ],
             False,
         )
+    # T5 addendum: ``previous`` here is either the ordinary stored review (the
+    # reuse check above already handled the identical-fingerprint case) or a
+    # remapped carried-over review ``report_writer_node`` restored after a
+    # redraft (:func:`remap_review_for_redraft`). Only the latter yields a
+    # scoped packet, since only it carries a disposition for at least one
+    # unchanged statement; a stale unrelated review yields ``None`` from
+    # ``build_scoped_report_review_input`` just as safely, falling back to a
+    # full review below.
+    scoped = None
+    if previous is not None and previous.status == "scored":
+        scoped = build_scoped_report_review_input(state, previous_review=previous)
     try:
-        review = await reviewer.review(packet, previous=previous)
+        if scoped is not None:
+            review = await reviewer.review_scoped(scoped)
+        else:
+            review = await reviewer.review(packet, previous=previous)
     except (RequestAttemptLimitError, ProviderConfigurationError) as error:
         # The one collaborator refusal that is not a judgement: a spent
         # request ceiling, or a provider this run cannot reach at all. Both are

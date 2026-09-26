@@ -30,11 +30,13 @@ from deep_research.evaluation.config import (
 from deep_research.evaluation.judging import judge_prompt_fingerprint
 from deep_research.evaluation.models import AGENT_NAMES
 from deep_research.providers import validate_agent_model_configs
+from deep_research.agents.report_reviewer import REPORT_REVIEW_PROMPT_VERSION
 from deep_research.utils.config import (
     AgentRuntimeConfig,
     ConfigSettings,
     EvaluationConfig,
     LLMConfig,
+    SERVICE_ROLE_NAMES,
     load_config,
 )
 
@@ -1153,6 +1155,17 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "report_writer": "0b9c9239f932",
 }
 
+# The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
+# target: it carries no slot in ``AGENT_NAMES`` and so no place in the matrix
+# above or in the judge's own module-source hash below. Its own versioned
+# contract -- ``REPORT_REVIEW_PROMPT_VERSION`` -- is pinned here instead,
+# beside the other two, so a change to its packet or prompt (spec §11.1; the
+# T5 scoped-re-review addendum) is visible the same way a target or judge
+# prompt change is. T5: "report-review-4" -> "report-review-5" (the packet's
+# renamed sections, the new Table block, per-finding status lines, and the
+# scoped re-review after a redraft all landed under this version).
+PINNED_REPORT_REVIEWER_PROMPT_VERSION = "report-review-5"
+
 # The judge half of the same contract. A Judge prompt change moves this value and
 # invalidates Judge evidence for every agent, so it is pinned next to the targets
 # rather than only inside the judge's own tests.
@@ -1537,6 +1550,17 @@ def test_the_judge_fingerprint_is_pinned_beside_the_target_pins() -> None:
 
     assert judge == PINNED_JUDGE_PROMPT_FINGERPRINT
     assert judge not in set(PINNED_TARGET_PROMPT_FINGERPRINTS.values())
+
+
+def test_the_reviewer_prompt_version_is_pinned_beside_the_target_and_judge_pins() -> None:
+    """The reviewer is a service role, not an agent target or the judge: its
+    own versioned contract is pinned on its own (T5 addendum: "the pin
+    moves" -- this is the value that moved, from "report-review-4" to
+    "report-review-5").
+    """
+    assert SERVICE_ROLE_NAMES == ("report_reviewer",)
+    assert "report_reviewer" not in PINNED_TARGET_PROMPT_FINGERPRINTS
+    assert REPORT_REVIEW_PROMPT_VERSION == PINNED_REPORT_REVIEWER_PROMPT_VERSION
 
 
 def test_the_target_fingerprint_covers_the_shared_prompt_module() -> None:

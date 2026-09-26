@@ -9,8 +9,14 @@ from pathlib import Path
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import render_finding_log, render_written_report
-from deep_research.agents.report_reviewer import build_report_review_input
+from deep_research.agents.report_reviewer import (
+    ScopedReportReviewInput,
+    build_report_review_input,
+    composition_semantic_fingerprint,
+    remap_review_for_redraft,
+)
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report_writer import ReportWriterAgent
 from deep_research.graph.errors import GRAPH_ERROR_REASONS, GraphConfigurationError
@@ -54,6 +60,13 @@ from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     REVIEW_DIMENSIONS,
+    REVIEW_RUBRIC_VERSION,
+    ReportComposition,
+    ReportPart,
+    ReportPoint,
+    ReportSection,
+    ReportStatement,
+    ReportReview,
     ResearchError,
     ResearchState,
     ReviewDefect,
@@ -62,6 +75,7 @@ from deep_research.agents.report_writer import REPORT_WRITER_NAME
 from tests.agent_fakes import ScriptedCompleter
 from tests.graph_fakes import (
     SNIPPET,
+    SOURCE_URL,
     FakeAgent,
     FakePublisher,
     FakeReviewer,
@@ -930,6 +944,175 @@ async def test_the_redraft_hop_skips_a_halted_run() -> None:
     assert skipped.writer_redrafts == 0
     assert _event_types(skipped) == ["graph.node.skipped"]
     assert skipped.events[-1].source == f"graph.{REDRAFT_NODE}"
+
+
+# --- T5 addendum: the redraft-to-reviewer handoff ---------------------------
+
+
+_PART_A = "topic-01"
+_PART_B = "topic-02"
+
+
+def _redraft_compositions() -> tuple[ReportComposition, ReportComposition]:
+    """The composition a first full review judged, and the one a redraft
+    produces from it: Part A carried over (same words, a different id, as
+    real renumbering gives it), Part B rewritten.
+    """
+    finding = verified_pass().finding
+    finding_id = finding_fingerprint(finding)
+
+    def statement(statement_id: str, text: str) -> ReportStatement:
+        return ReportStatement(statement_id=statement_id, text=text, finding_ids=[finding_id])
+
+    def point(stmt: ReportStatement) -> ReportPoint:
+        return ReportPoint(text=stmt.text, source_urls=[SOURCE_URL], statement=stmt)
+
+    old = ReportComposition(
+        question="How much battery storage capacity was added in 2024?",
+        session_id="session-redraft", iteration=0, max_extra_passes=1,
+        findings=[finding],
+        summary=[point(statement("S001", "Old bottom line, before the redraft."))],
+        sections=[
+            ReportSection(title="Part A", coverage_id=_PART_A, points=[point(statement("S002", "Part A's point."))]),
+            ReportSection(title="Part B", coverage_id=_PART_B, points=[point(statement("S003", "Part B's point, before the redraft."))]),
+        ],
+    )
+    new = ReportComposition(
+        question=old.question, session_id=old.session_id, iteration=0, max_extra_passes=1,
+        findings=[finding],
+        summary=[point(statement("S010", "New bottom line, after the redraft."))],
+        sections=[
+            ReportSection(title="Part A", coverage_id=_PART_A, points=[point(statement("S011", "Part A's point."))]),
+            ReportSection(title="Part B", coverage_id=_PART_B, points=[point(statement("S012", "Part B's point, after the redraft."))]),
+        ],
+        parts=[
+            ReportPart(coverage_id=_PART_A, sub_topic_title="Part A", finding_ids=[finding_id], status="carried_over"),
+            ReportPart(coverage_id=_PART_B, sub_topic_title="Part B", finding_ids=[finding_id], status="written"),
+        ],
+    )
+    return old, new
+
+
+def _redraft_review(old: ReportComposition) -> ReportReview:
+    return ReportReview(
+        status="scored",
+        dimensions={name: 0.85 for name in REVIEW_DIMENSIONS},
+        defects=[
+            ReviewDefect(
+                defect_id="review-01", kind="missing_support", severity="major",
+                statement_ids=["S003"], target_ids=[],
+                problem="Part B's claim isn't backed by a cited finding.",
+            )
+        ],
+        per_statement_dispositions={"S001": "supported", "S002": "supported", "S003": "unsupported"},
+        reviewed_statement_ids=["S001", "S002", "S003"],
+        input_fingerprint="old-fp",
+        composition_fingerprint=composition_semantic_fingerprint(old),
+        rubric_version=REVIEW_RUBRIC_VERSION,
+        rationale="The first full review.",
+    )
+
+
+def _writer_redraft_state() -> ResearchState:
+    """A writer pass about to redraft: the old composition and its full review."""
+    old, _new = _redraft_compositions()
+    base = _pass_state()
+    return base.model_copy(
+        update={
+            "composition": old,
+            "report": render_written_report(old),
+            "report_evidence": render_finding_log(old),
+            "report_review": _redraft_review(old),
+            "writer_redrafts": 1,
+        }
+    )
+
+
+def _redrafted_writer_agent(new: ReportComposition) -> FakeAgent:
+    return FakeAgent(
+        "report_writer",
+        [
+            {
+                "report": render_written_report(new),
+                "report_evidence": render_finding_log(new),
+                "composition": new,
+            }
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_report_writer_node_carries_the_previous_review_across_a_verified_redraft() -> None:
+    """The redraft-to-reviewer handoff: a carried-over part's dispositions
+    move onto its new statement id; a changed part's do not, and the merge's
+    ordinary composition-change drop is what would otherwise have dropped the
+    whole review.
+    """
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+
+    loaded = load_state(await report_writer_node(_redrafted_writer_agent(new))(dump_state(state)))
+
+    assert loaded.report_review is not None
+    assert loaded.report_review.per_statement_dispositions == {"S011": "supported"}
+    assert loaded.report_review.composition_fingerprint == composition_semantic_fingerprint(new)
+    assert [defect.defect_id for defect in loaded.report_review.defects] == ["review-01"]
+
+
+
+
+@pytest.mark.asyncio
+async def test_report_writer_node_drops_the_review_when_a_carried_over_part_actually_changed() -> None:
+    """An unchanged part whose text differs forces a full review: the writer
+    node leaves the review dropped rather than restore a mismatched one."""
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    tampered_section = new.sections[0].model_copy(
+        update={"points": [new.sections[0].points[0].model_copy(update={"text": "Secretly rewritten."})]}
+    )
+    tampered = new.model_copy(update={"sections": [tampered_section, new.sections[1]]})
+
+    loaded = load_state(
+        await report_writer_node(_redrafted_writer_agent(tampered))(dump_state(state))
+    )
+
+    assert loaded.report_review is None
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_node_asks_a_scoped_review_after_a_verified_redraft() -> None:
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    redrafted = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+    reviewer = FakeReviewer([fake_report_review(reviewed_statement_ids=("S010", "S011", "S012"))])
+
+    await report_reviewer_node(reviewer)(dump_state(redrafted))
+
+    assert len(reviewer.packets) == 1
+    scoped = reviewer.packets[0]
+    assert isinstance(scoped, ScopedReportReviewInput)
+    assert set(scoped.changed_statement_ids) == {"S010", "S012"}
+    assert scoped.unchanged_statement_ids == ["S011"]
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_node_falls_back_to_a_full_review_without_a_verified_redraft() -> None:
+    """A stored review whose dispositions name no statement id this
+    composition carries is not a carried-over redraft review: it is not
+    scoped, so the node asks a full review exactly as it always did."""
+    stale = fake_report_review(
+        fingerprint="unrelated", dispositions={"X999": "supported"},
+        reviewed_statement_ids=("X999",),
+    )
+    state = _writer_state(report_review=stale)
+    reviewer = FakeReviewer([fake_report_review(reviewed_statement_ids=("S001",))])
+
+    await report_reviewer_node(reviewer)(dump_state(state))
+
+    assert len(reviewer.packets) == 1
+    assert not isinstance(reviewer.packets[0], ScopedReportReviewInput)
 
 
 # --- the terminal publication ------------------------------------------------
