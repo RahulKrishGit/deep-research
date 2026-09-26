@@ -96,7 +96,7 @@ def test_a_legacy_sub_topic_without_targets_still_loads() -> None:
     assert stamped.evidence_targets == [target]
 
 
-def test_a_sub_topic_carries_at_most_four_targets() -> None:
+def test_a_sub_topic_carries_at_most_six_targets() -> None:
     def _target(index: int) -> EvidenceTarget:
         return EvidenceTarget(
             target_id=f"target-01-{index:02d}",
@@ -114,7 +114,7 @@ def test_a_sub_topic_carries_at_most_four_targets() -> None:
             search_queries=["alpha 2025"],
             success_criteria=["A named source about Alpha."],
             priority=1,
-            evidence_targets=[_target(index) for index in range(1, 6)],
+            evidence_targets=[_target(index) for index in range(1, 8)],
         )
 
 

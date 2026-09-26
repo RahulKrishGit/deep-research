@@ -5374,7 +5374,7 @@ def test_build_findings_refuses_a_snippet_the_locator_does_not_carry() -> None:
 
 
 def test_build_findings_refuses_a_snippet_over_the_cap() -> None:
-    long_text = "Battery storage grew. " * 40
+    long_text = "Battery storage grew. " * 60
     read = make_read(long_text)
     findings, rejected = _build(read, _draft(read, snippet=long_text.strip()))
     assert findings == [] and f"longer than {MAX_SNIPPET_CHARS}" in rejected[0]

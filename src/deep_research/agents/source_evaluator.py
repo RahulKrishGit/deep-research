@@ -99,8 +99,8 @@ DEFAULT_MAX_TOTAL_SOURCES = 36
 # Compatibility alias for callers that imported the old cap constant. The
 # old single-pass cap is now represented by ``max_total_sources``.
 DEFAULT_MAX_SOURCES = DEFAULT_MAX_TOTAL_SOURCES
-DEFAULT_EXCERPT_CHARS = 600
-_RATIONALE_CHARS = 400
+DEFAULT_EXCERPT_CHARS = 2000
+_RATIONALE_CHARS = 1000
 
 # Enumerated, project-generated reasons a source was recorded without a
 # model judgement. Never provider text: these strings reach prompts,
