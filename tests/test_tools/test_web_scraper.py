@@ -1830,6 +1830,28 @@ async def test_scraper_falls_back_when_the_site_segment_matches_the_host(
 
 
 @pytest.mark.asyncio
+async def test_scraper_prefers_a_fuller_metadata_title_over_a_truncated_raw_title(tracker) -> None:
+    """D9: a publisher's own <title> is sometimes truncated mid-word; when a
+    metadata title (citation_title, DC.title, og:title) starts with that
+    same truncated title and is longer, the fuller metadata title is used
+    instead of the cut one."""
+    page = (
+        "<html><head>"
+        "<title>A study of the regional grid modernization plans for the northern distr</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        '<meta name="citation_title" '
+        'content="A study of the regional grid modernization plans for the northern district">'
+        "</head><body><p>Further detail follows in the body text.</p></body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == (
+        "A study of the regional grid modernization plans for the northern district"
+    )
+
+
+@pytest.mark.asyncio
 async def test_scraper_skips_a_generic_one_word_og_title(tracker) -> None:
     """D3 (run 5): a generic single-word ``og:title`` is skipped the same
     way a title equal to the site's own name is, while a later, differing

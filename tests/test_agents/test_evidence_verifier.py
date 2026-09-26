@@ -2224,6 +2224,23 @@ def test_an_own_verdict_naming_the_first_party_owner_stands() -> None:
                                read=read, issuer=None) == ("unattributed", "apple.com")
 
 
+def test_resolve_attribution_rejects_a_pronoun_as_the_organisation() -> None:
+    """D11b (run 8): a determiner, pronoun or single function word is never
+    an organisation, whatever cue the page carries beside it -- 'According
+    to That' names nobody, so the figure falls back to unattributed rather
+    than crediting 'That'."""
+    snippet = "According to That, the total reached ten by 2019."
+    read = make_read(snippet, url="https://example-register.test/notes", title="Notes")
+    finding = make_finding(read, snippet)
+
+    attribution, organisation = resolve_attribution(
+        proposed="relayed", organisation="That", finding=finding, read=read, issuer=None,
+    )
+
+    assert organisation != "That"
+    assert attribution == "unattributed"
+
+
 def test_the_statement_check_shows_the_passage_a_rules_conditions_live_in() -> None:
     """Improvement 8: a snippet cut at the passage boundary is judged against the
     bounded passage, so a condition or an exception past the cut is seen."""

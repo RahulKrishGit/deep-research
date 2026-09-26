@@ -1018,9 +1018,12 @@ def test_an_earlier_editions_value_traces_to_both_pages_in_the_evidence_log() ->
                       "19.6", "GW", organisation="Example Agency", kind="forecast", period="2026")
     earlier = _finding("https://agency.example.test/outlook-jan", "18.2 GW was expected.",
                        "18.2", "GW", organisation="Example Agency", kind="forecast", period="2025")
+    point = ReportPoint(text="19.6 GW is expected in 2026.", source_urls=[latest.source_url],
+                        statement=ReportStatement(statement_id="S001", text="19.6 GW is expected in 2026.",
+                                                  finding_ids=[finding_fingerprint(latest)]))
     composition = ReportComposition(
         question="What capacity is expected?", session_id="s", as_of="2026-09-24T00:00:00+00:00",
-        findings=[latest, earlier],
+        findings=[latest, earlier], summary=[point],
         fact_rows=[FactRow(row_id="K001", organisation="Example Agency", attribution="own",
                            measure="capacity", period="2026", value="19.6 GW", kind="forecast",
                            release="released 2025-06-14", finding_id=finding_fingerprint(latest),
@@ -1131,6 +1134,36 @@ def test_a_fact_row_rate_value_keeps_its_real_unit() -> None:
     log = render_finding_log(composition)
 
     assert "| 2 days per year |" in log
+
+
+def test_the_verified_figures_table_omits_an_uncited_figure() -> None:
+    """D11c (run 8): the 'Verified figures' table lists rows only for
+    findings the report actually cites (a bottom-line or section
+    statement's own finding_ids) -- a verified figure no statement cites
+    stays out of that table, though it remains printed under its own
+    finding in the Findings section below."""
+    base = _composition()
+    composition = base.model_copy(update={"summary": [base.summary[0]], "sections": []})
+
+    log = render_finding_log(composition)
+
+    figures_section = _section_body(log, "## Verified figures")
+    assert f"| {base.fact_rows[0].value} |" in figures_section
+    assert f"| {base.fact_rows[1].value} |" not in figures_section
+
+
+def test_the_evidence_log_marks_a_disputing_finding() -> None:
+    """Audit observability (run 8): the evidence log's finding block prints
+    'disputes: yes' for a finding with ``Finding.disputes``, so an audit
+    can tell whether the dissent re-ask fired."""
+    base = _composition()
+    disputing = base.findings[0].model_copy(update={"disputes": True})
+    composition = base.model_copy(update={"findings": [disputing, base.findings[1]]})
+
+    log = render_finding_log(composition)
+
+    findings_section = _section_body(log, "## Findings")
+    assert "disputes: yes" in findings_section
 
 
 def test_a_kept_figures_spelled_value_is_not_doubled_with_its_unit() -> None:

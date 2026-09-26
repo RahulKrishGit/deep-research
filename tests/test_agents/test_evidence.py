@@ -3216,6 +3216,28 @@ def test_a_bare_put_it_does_not_credit_a_nearby_name() -> None:
     assert not relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Council")
 
 
+def test_a_cue_does_not_reach_across_a_sentence_end() -> None:
+    """D11a: an attribution cue's reach stops at a sentence end --
+    'according to some sources. That amount ...' never credits 'That', a
+    sentence-boundary word a model might otherwise propose as an
+    organisation."""
+    snippet = "According to some sources. That amount was later revised."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", snippet, "That")
+
+
+def test_a_cue_still_credits_a_name_in_the_same_sentence() -> None:
+    """D11a: the sentence-boundary fix must not break the ordinary case --
+    'according to Example Institute' still credits Example Institute."""
+    snippet = "According to Example Institute, the total grew to ten by 2019."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Institute")
+
+
 def test_a_stale_locator_windows_around_the_snippet_not_the_whole_page() -> None:
     """A stale locator falls back to a bounded window centred on the snippet,
     never the unbounded page: a distant, unrelated mention on the far side of

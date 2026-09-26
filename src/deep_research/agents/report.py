@@ -1729,11 +1729,25 @@ def _finding_label_map(composition: ReportComposition) -> dict[str, str]:
 
 
 def _verified_figures_lines(composition: ReportComposition) -> list[str]:
-    """§9: today's Key Facts table, unchanged, moved to the evidence log and
-    unfiltered -- every verified figure, including one that answers no
-    planned target (decision #4's "full fact-row table"), with finding labels
-    in the Source column."""
-    rows = composition.fact_rows
+    """§9: today's Key Facts table, unchanged, moved to the evidence log --
+    every verified figure a statement the report prints actually cites,
+    including one that answers no planned target (decision #4's "full
+    fact-row table"), with finding labels in the Source column. A verified
+    figure no bottom-line or section statement cites stays out of this
+    table (D11c, run 8): it is a candidate the writer never used, and this
+    table is the report's own evidence, not everything the Evidence
+    Verifier merely confirmed. It still prints under its own finding in
+    the Findings section below.
+    """
+    cited_ids = {
+        finding_id
+        for statement in composition.statements
+        for finding_id in statement.finding_ids
+    }
+    rows = [
+        row for row in composition.fact_rows
+        if row.finding_id in cited_ids or cited_ids & set(row.duplicate_finding_ids)
+    ]
     if not rows:
         return ["No figure passed the Evidence Verifier."]
     with_subjects = any(row.subject for row in rows)
@@ -1916,6 +1930,11 @@ def render_finding_log(composition: ReportComposition) -> str:
             # prints the same bounded passage the Statement Check read.
             lines.append(f'- Passage: "{passage}"')
         lines.append(f"- Verification: {status}")
+        if finding.disputes:
+            # Audit observability (run 8): so an audit can tell whether the
+            # dissent re-ask (D2's `disputes=True` findings) fired on this
+            # finding, without re-deriving it from the model's own replies.
+            lines.append("- disputes: yes")
         for result in verification.figure_results if verification else []:
             text = _figure_value_text(result.figure)
             if result.kept and result.context is not None:

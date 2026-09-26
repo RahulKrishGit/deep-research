@@ -588,16 +588,43 @@ def _is_unhelpful_title(value: str, site_name: str | None, host_label: str) -> b
     )
 
 
+# D9: a publisher's own <title> is sometimes truncated mid-word ("... for
+# the northern distr"), while a metadata title carries it in full. When a
+# metadata title starts with the raw title -- compared case- and
+# space-insensitively -- and is strictly longer, it is a fuller version of
+# the same title, not a different candidate, so it is preferred over the
+# cut one.
+def _uncut_metadata_title(raw_title: str, soup: BeautifulSoup) -> str | None:
+    normalized_raw = " ".join(raw_title.casefold().split())
+    best: str | None = None
+    for candidate in (
+        _meta_name_content(soup, "citation_title"),
+        _meta_name_content(soup, "DC.title"),
+        _meta_property_content(soup, "og:title"),
+    ):
+        if not candidate or len(candidate) <= len(raw_title):
+            continue
+        normalized_candidate = " ".join(candidate.casefold().split())
+        if normalized_candidate.startswith(normalized_raw) and (
+            best is None or len(candidate) > len(best)
+        ):
+            best = candidate
+    return best
+
+
 def _page_title(soup: BeautifulSoup, url: str) -> str:
-    """The page's title (D3, RevW5Titles P1-a/P2; run 5 D3, D10).
+    """The page's title (D3, RevW5Titles P1-a/P2; run 5 D3, D10; run 8 D9).
 
     The raw ``<title>`` tag is kept whenever it is not empty and does not
     name only the site, a generic placeholder, or a title that is generic
-    apart from its own site segment; only then does ``og:title``,
-    ``twitter:title``, a non-banner ``h1`` or ``h2``, ``DC.title``,
-    ``citation_title``, or the leading clause of ``DC.description`` stand
-    in for it, in that order, skipping any of those that are themselves
-    unhelpful while a later, differing one remains.
+    apart from its own site segment -- unless a metadata title
+    (``citation_title``, ``DC.title``, ``og:title``) is a strict, longer
+    superstring of it, in which case that fuller title is used instead
+    (D9); only otherwise does ``og:title``, ``twitter:title``, a
+    non-banner ``h1`` or ``h2``, ``DC.title``, ``citation_title``, or the
+    leading clause of ``DC.description`` stand in for it, in that order,
+    skipping any of those that are themselves unhelpful while a later,
+    differing one remains.
     """
     site_name = _meta_property_content(soup, "og:site_name")
     host_label = _host_label(url)
@@ -607,7 +634,7 @@ def _page_title(soup: BeautifulSoup, url: str) -> str:
         and not _is_just_site_name(raw_title, site_name)
         and not _is_unhelpful_title(raw_title, site_name, host_label)
     ):
-        return raw_title
+        return _uncut_metadata_title(raw_title, soup) or raw_title
     description = _meta_name_content(soup, "DC.description")
     candidates: list[str | None] = [
         _meta_property_content(soup, "og:title"),

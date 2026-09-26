@@ -596,6 +596,22 @@ def _body_credited_in_words(words: str | None) -> str | None:
     return None
 
 
+# D11b (run 8): a determiner, pronoun or single function word the model
+# proposes as an organisation names no body -- "according to some sources.
+# That number ..." is not "According to That" whatever cue sits beside it
+# (D11a closes the main way the cue reaches across a sentence for this),
+# so it is rejected wherever the verifier accepts a model-proposed
+# organisation, the same way an empty name already is.
+_REJECTED_ORGANISATION_WORDS = frozenset({
+    "that", "this", "it", "they", "these", "some", "one",
+})
+
+
+def _is_rejected_organisation_name(name: str) -> bool:
+    words = name.split()
+    return len(words) == 1 and words[0].casefold() in _REJECTED_ORGANISATION_WORDS
+
+
 def resolve_attribution(
     *,
     proposed: FigureAttribution | None,
@@ -613,6 +629,8 @@ def resolve_attribution(
     from them, so the label never contradicts the sentence the page states.
     """
     name = (organisation or "").strip()
+    if _is_rejected_organisation_name(name):
+        name = ""
     if proposed == "relayed" and name:
         if _owns_page(read, name, issuer):
             return "own", name

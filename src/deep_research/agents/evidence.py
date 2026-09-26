@@ -1427,8 +1427,12 @@ _PUTS_IT_TAIL_PATTERN = re.compile(r"^\s*puts?\s+it\b", re.IGNORECASE)
 _POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
 # How many characters may separate a cue from the name it attributes: the
 # connective words an attribution is written with ("the", a comma, a colon),
-# not a whole unrelated clause standing between them.
+# not a whole unrelated clause standing between them. The reach never
+# crosses a sentence end either (D11a, run 8): "according to some sources.
+# That number ..." must not credit "That" with the next sentence's own
+# statement just because it falls within the character reach.
 _ATTRIBUTION_CUE_REACH = 15
+_SENTENCE_END_IN_GAP = re.compile(r"[.!?]")
 
 
 def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
@@ -1457,9 +1461,15 @@ def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
     ):
         return True
     for cue in ATTRIBUTION_CUE_PATTERN.finditer(phrase):
-        if 0 <= name_match.start() - cue.end() <= _ATTRIBUTION_CUE_REACH:
+        before_gap = phrase[cue.end() : name_match.start()]
+        if 0 <= name_match.start() - cue.end() <= _ATTRIBUTION_CUE_REACH and not (
+            _SENTENCE_END_IN_GAP.search(before_gap)
+        ):
             return True
-        if 0 <= cue.start() - name_match.end() <= _ATTRIBUTION_CUE_REACH:
+        after_gap = phrase[name_match.end() : cue.start()]
+        if 0 <= cue.start() - name_match.end() <= _ATTRIBUTION_CUE_REACH and not (
+            _SENTENCE_END_IN_GAP.search(after_gap)
+        ):
             return True
     return False
 
