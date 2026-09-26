@@ -2914,7 +2914,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 dropped_figures=dropped_figures,
             )
             findings.extend(retry_findings)
-            rejected.extend(retry_rejected)
+            # Prefixed with this page's own read id (RevSelectionR3 P3,
+            # ReRevS6): two different pages that both return a malformed
+            # owed retry finding would otherwise both report "finding 1:
+            # ...", indistinguishable in the merged errors.
+            rejected.extend(f"{read_id}: {reason}" for reason in retry_rejected)
         return _OwedPageResult(
             read_id=read_id,
             findings=findings,
