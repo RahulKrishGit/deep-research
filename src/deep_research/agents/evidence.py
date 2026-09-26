@@ -2003,36 +2003,32 @@ _PUBLICATION_CUES = re.compile(
 _PUBLICATION_CUE_CHARS = 200
 
 
-def _is_day_precision_date(value: str) -> bool:
-    """True when ``value`` names a specific day, not a coarser year or month."""
-    match = _VALUE_DATE_PATTERN.match(value)
-    return match is not None and match.group("atom").count("-") == 2
-
-
 def _states_it_as_the_publication_date(
     read: ReadRecord, quote: str, stated: str | None = None
 ) -> bool:
     """True when the page states the quoted date as its own publication date.
 
     The cue may sit in the quote itself, or beside the date on the page, which
-    is where a model that quotes only the date leaves it. A day-precision date
-    the page's own opening states needs no such word at all (D14): a byline
-    dated "Sep 17, 2026" at the top of a page is that page's own date the same
-    way the opening credits an author with no "published by" cue beside their
-    name (``_opening_credits_organisation``) -- but only there, in the page's
-    own opening, never from a day-precision date the page merely happens to
-    mention well past it.
+    is where a model that quotes only the date leaves it. A cue-less quote is
+    admitted only when it names exactly the date the page's own metadata
+    already captured (D14, ``ReadRecord.page_published``) -- coarser than the
+    captured date is also admitted (a cue-less "2026" beside a captured
+    "2026-09-17" is still that page's year), but never merely because a
+    day-precision date sits early in the page's text. A first cut of this
+    rule read *position* alone as the cue and admitted an event date, a
+    data-period date, an effective date, and a related article's own date the
+    same way it admitted a real byline (RevDatesR3 P0) -- so position is not
+    a substitute for what the page's own metadata actually states.
     """
     if _PUBLICATION_CUES.search(quote):
         return True
     window = _windowed_passage(_document_text(read), quote, chars=_PUBLICATION_CUE_CHARS)
     if _PUBLICATION_CUES.search(window):
         return True
-    return bool(
-        stated is not None
-        and _is_day_precision_date(stated)
-        and excerpt_matches(_opening_credits(read), quote)
-    )
+    page_published = read.page_published
+    if page_published is None or stated is None:
+        return False
+    return stated == page_published or page_published.startswith(f"{stated}-")
 
 
 def _temporal_claim(claimed: object) -> TemporalClaim | None:
@@ -2536,7 +2532,8 @@ def build_read_record(
     extraction_complete: bool = True,
     declared_content_sha256: str | None = None,
     target_ids: Sequence[str] = (),
-    page_date: str | None = None,
+    page_published: str | None = None,
+    page_updated: str | None = None,
 ) -> ReadRecord:
     """Build the one admissible read record for a successful read.
 
@@ -2554,11 +2551,12 @@ def build_read_record(
     exact excerpt with a locator from a successful same-run read), while
     letting it keep a digest would identify a work nobody fully read.
 
-    ``page_date`` (D14) is the page's own date, already normalised by the
-    reader that scraped it; a value that is not a real calendar date at the
-    year, year-month, or year-month-day precision this contract dates
-    everything at is dropped here rather than stored, the same refusal
-    ``_is_date_atom`` gives an impossible date read from a document's body.
+    ``page_published``/``page_updated`` (D14) are the page's own dates, from
+    its own metadata only and already normalised by the reader that scraped
+    it; a value that is not a real calendar date at the year, year-month, or
+    year-month-day precision this contract dates everything at is dropped
+    here rather than stored, the same refusal ``_is_date_atom`` gives an
+    impossible date read from a document's body.
     """
     if reader not in ("web_scraper", "document_reader"):
         raise EvidenceContractError(
@@ -2607,9 +2605,9 @@ def build_read_record(
             )
         content_sha256 = INCOMPLETE_CONTENT_SHA256
 
-    normalized_page_date = (page_date or "").strip()
-    if not (normalized_page_date and _is_date_atom(normalized_page_date)):
-        normalized_page_date = None
+    def _normalized_page_date(value: str | None) -> str | None:
+        candidate = (value or "").strip()
+        return candidate if candidate and _is_date_atom(candidate) else None
 
     return ReadRecord(
         read_id=build_read_id(
@@ -2622,7 +2620,8 @@ def build_read_record(
         requested_url=requested,
         resolved_url=resolved,
         title=" ".join(title.split()) or resolved,
-        page_date=normalized_page_date,
+        page_published=_normalized_page_date(page_published),
+        page_updated=_normalized_page_date(page_updated),
         reader=reader,
         retrieved_at=retrieved_at,
         content_sha256=content_sha256,

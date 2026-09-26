@@ -410,7 +410,10 @@ def _last_boundary(text: str, floor: int, window: int) -> int:
 def _payload_read_parts(
     result: ToolResult,
 ) -> (
-    tuple[str, str, str, str, str, dict[str, str], bool, str | None, str | None]
+    tuple[
+        str, str, str, str, str, dict[str, str], bool, str | None,
+        str | None, str | None,
+    ]
     | None
 ):
     """Extract the complete read shape produced by either read tool."""
@@ -434,10 +437,11 @@ def _payload_read_parts(
         ]
         reader = "web_scraper"
         title = _text(data.get("title")) or resolved
-        # D14: the scraper's own page date, threaded straight from its
-        # payload -- never re-derived here, so the extraction lives in one
-        # place (``tools.web_scraper``).
-        page_date = _text(data.get("page_date")) or None
+        # D14: the scraper's own dates, threaded straight from its payload
+        # -- never re-derived here, so the extraction lives in one place
+        # (``tools.web_scraper``).
+        page_published = _text(data.get("page_published")) or None
+        page_updated = _text(data.get("page_updated")) or None
     elif result.tool_name == "document_reader":
         raw_chunks = data.get("chunks")
         if not isinstance(raw_chunks, list) or not raw_chunks:
@@ -494,7 +498,8 @@ def _payload_read_parts(
         title = _text(data.get("title")) or resolved
         # A document has no page carrying the HTML metadata D14 reads; never
         # inventing one is the honest default.
-        page_date = None
+        page_published = None
+        page_updated = None
     else:
         return None
     try:
@@ -514,7 +519,8 @@ def _payload_read_parts(
         passages,
         extraction_complete,
         declared_hash,
-        page_date,
+        page_published,
+        page_updated,
     )
 
 
@@ -586,7 +592,8 @@ def build_read_record_from_tool_result(
         passages,
         extraction_complete,
         declared_hash,
-        page_date,
+        page_published,
+        page_updated,
     ) = parts
     try:
         return build_read_record(
@@ -601,7 +608,8 @@ def build_read_record_from_tool_result(
             extraction_complete=extraction_complete,
             declared_content_sha256=declared_hash,
             target_ids=target_ids,
-            page_date=page_date,
+            page_published=page_published,
+            page_updated=page_updated,
         )
     except (TypeError, ValueError):
         return None
@@ -2005,13 +2013,24 @@ class AcquisitionPolicy:
             }
             if error.type in extraction_failure_types:
                 reason = error.type
+            elif error.type == "HTTPStatusError":
+                # web_scraper reports every exhausted HTTP status failure
+                # under this one exception name; the status code, not the
+                # exception type, says whether the page was refused, missing,
+                # or failed some other way (RevDatesR3 P2) -- collapsing all
+                # three into "access_denied" described a missing page as a
+                # refusal.
+                status_code = error.details.get("status_code")
+                if status_code in {401, 402, 403, 451}:
+                    reason = "access_denied"
+                elif status_code in {404, 410}:
+                    reason = "not_found"
+                else:
+                    reason = "http_error"
+            elif error.type in {"robots_disallowed", "access_denied"}:
+                reason = "access_denied"
             else:
-                reason = (
-                    "access_denied"
-                    if error.type
-                    in {"robots_disallowed", "access_denied", "HTTPStatusError"}
-                    else "transport_failure"
-                )
+                reason = "transport_failure"
         else:
             # A successful result that could not satisfy the read contract is
             # still a visible attempted read; no body may disappear silently.
