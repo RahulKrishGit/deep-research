@@ -1117,15 +1117,15 @@ def test_scraper_constructor_rejects_invalid_limits(tracker) -> None:
 
 
 # ---------------------------------------------------------------------------
-# D14: the page's own date, captured once at scrape time.
+# D14: the page's own dates, captured once at scrape time, metadata only.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_scraper_captures_the_page_date_from_article_published_time_meta(
+async def test_scraper_captures_published_time_from_open_graph_meta(
     tracker,
 ) -> None:
-    """A page's own ``article:published_time`` meta names its date."""
+    """A page's own ``article:published_time`` meta names its publish date."""
     page = (
         "<html><head><title>Grid Storage Outlook</title>"
         '<meta property="article:published_time" content="2026-09-17T10:00:00Z">'
@@ -1135,14 +1135,15 @@ async def test_scraper_captures_the_page_date_from_article_published_time_meta(
 
     result = await _read_served_page(tracker, page)
 
-    assert result.data["page_date"] == "2026-09-17"
+    assert result.data["page_published"] == "2026-09-17"
+    assert "page_updated" not in result.data
 
 
 @pytest.mark.asyncio
-async def test_scraper_falls_back_to_modified_time_meta_when_no_published_time(
+async def test_scraper_captures_modified_time_separately_from_published_time(
     tracker,
 ) -> None:
-    """A page that names only when it was last edited still dates itself."""
+    """A page's last-edit date is its own field, never a published-date stand-in."""
     page = (
         "<html><head><title>Grid Storage Outlook</title>"
         '<meta property="article:modified_time" content="2026-08-01">'
@@ -1152,21 +1153,83 @@ async def test_scraper_falls_back_to_modified_time_meta_when_no_published_time(
 
     result = await _read_served_page(tracker, page)
 
-    assert result.data["page_date"] == "2026-08-01"
+    assert "page_published" not in result.data
+    assert result.data["page_updated"] == "2026-08-01"
 
 
 @pytest.mark.asyncio
-async def test_scraper_captures_the_page_date_from_json_ld_inside_a_graph(
+async def test_scraper_captures_og_updated_time(tracker) -> None:
+    """``og:updated_time`` is read the same way as ``article:modified_time``."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta property="og:updated_time" content="2026-08-01">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_updated"] == "2026-08-01"
+
+
+@pytest.mark.asyncio
+async def test_scraper_captures_microdata_date_published(tracker) -> None:
+    """A microdata ``itemprop="datePublished"`` names the page's own date."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title></head>"
+        '<body><time itemprop="datePublished" datetime="2026-09-17">'
+        "Sep 17, 2026</time>"
+        "<p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2026-09-17"
+
+
+@pytest.mark.asyncio
+async def test_scraper_captures_a_citation_meta_date(tracker) -> None:
+    """A ``citation_publication_date`` meta names the page's own date."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta name="citation_publication_date" content="2026-09-17">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2026-09-17"
+
+
+@pytest.mark.asyncio
+async def test_scraper_captures_a_dublin_core_modified_meta_date(tracker) -> None:
+    """``dcterms.modified`` is a modification date, never a publish date."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta name="dcterms.modified" content="2026-08-01">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert "page_published" not in result.data
+    assert result.data["page_updated"] == "2026-08-01"
+
+
+@pytest.mark.asyncio
+async def test_scraper_captures_date_published_only_from_article_shaped_json_ld_nodes(
     tracker,
 ) -> None:
-    """``datePublished`` reached only by walking a JSON-LD ``@graph`` array."""
+    """RevDatesR3 P1: a site-wide ``WebSite`` node never outranks an article node."""
     ld_json = json.dumps(
         {
-            "@context": "https://schema.org",
             "@graph": [
-                {"@type": "Organization", "name": "Example Lab"},
+                {"@type": "WebSite", "dateModified": "2020-01-01"},
                 {"@type": "NewsArticle", "datePublished": "2026-09-17"},
-            ],
+            ]
         }
     )
     page = (
@@ -1178,18 +1241,65 @@ async def test_scraper_captures_the_page_date_from_json_ld_inside_a_graph(
 
     result = await _read_served_page(tracker, page)
 
-    assert result.data["page_date"] == "2026-09-17"
+    assert result.data["page_published"] == "2026-09-17"
+    assert "page_updated" not in result.data
 
 
 @pytest.mark.asyncio
-async def test_scraper_captures_a_byline_date_in_the_opening_text_with_no_metadata(
+async def test_scraper_never_reads_a_comment_nodes_json_ld_date(tracker) -> None:
+    """RevDatesR3 P1: a ``Comment`` node's timestamp is never the page's date."""
+    ld_json = json.dumps(
+        {
+            "@graph": [
+                {"@type": "Comment", "datePublished": "2026-10-01"},
+                {"@type": "Article", "datePublished": "2026-09-17"},
+            ]
+        }
+    )
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        f'<script type="application/ld+json">{ld_json}</script>'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2026-09-17"
+
+
+@pytest.mark.asyncio
+async def test_scraper_reads_each_json_ld_date_from_its_own_article_shaped_node(
     tracker,
 ) -> None:
-    """A byline in the page's own opening text, with no meta or JSON-LD.
+    """RevDatesR3 P1: an Article's own modified date and a WebPage's published
+    date are each kept, never crossed with the other node's field."""
+    ld_json = json.dumps(
+        {
+            "@graph": [
+                {"@type": "Article", "dateModified": "2026-09-20"},
+                {"@type": "WebPage", "datePublished": "2026-09-01"},
+            ]
+        }
+    )
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        f'<script type="application/ld+json">{ld_json}</script>'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
 
-    Fable's run-3 case: the page carried its date nowhere but a byline
-    sentence in its opening text, and no date was ever captured for it.
-    """
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2026-09-01"
+    assert result.data["page_updated"] == "2026-09-20"
+
+
+@pytest.mark.asyncio
+async def test_scraper_never_captures_a_byline_date_from_prose(tracker) -> None:
+    """RevDatesR3 P1: the prose byline fallback is removed -- structured
+    metadata only. A page with no meta/microdata/JSON-LD gets no date, even
+    when its opening text carries what looks like a byline."""
     page = (
         "<html><head><title>Grid Storage Outlook</title></head><body>"
         "<p>By Jane Doe. Published September 17, 2026.</p>"
@@ -1199,14 +1309,15 @@ async def test_scraper_captures_a_byline_date_in_the_opening_text_with_no_metada
 
     result = await _read_served_page(tracker, page)
 
-    assert result.data["page_date"] == "2026-09-17"
+    assert "page_published" not in result.data
+    assert "page_updated" not in result.data
 
 
 @pytest.mark.asyncio
-async def test_scraper_omits_the_page_date_key_when_the_page_states_none(
+async def test_scraper_omits_both_date_keys_when_the_page_states_neither(
     tracker,
 ) -> None:
-    """Never invent a date: a page that carries none gets no key at all."""
+    """Never invent a date: a page that carries none gets no keys at all."""
     page = (
         "<html><head><title>Grid Storage Outlook</title></head><body>"
         "<p>Battery storage capacity grew across every region this decade.</p>"
@@ -1215,7 +1326,8 @@ async def test_scraper_omits_the_page_date_key_when_the_page_states_none(
 
     result = await _read_served_page(tracker, page)
 
-    assert "page_date" not in result.data
+    assert "page_published" not in result.data
+    assert "page_updated" not in result.data
 
 
 @pytest.mark.asyncio
@@ -1230,7 +1342,7 @@ async def test_scraper_keeps_only_the_precision_the_page_states(tracker) -> None
 
     result = await _read_served_page(tracker, page)
 
-    assert result.data["page_date"] == "2026-09"
+    assert result.data["page_published"] == "2026-09"
 
 
 @pytest.mark.asyncio
@@ -1245,4 +1357,21 @@ async def test_scraper_refuses_an_impossible_calendar_date(tracker) -> None:
 
     result = await _read_served_page(tracker, page)
 
-    assert "page_date" not in result.data
+    assert "page_published" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_scraper_refuses_epoch_seconds_content(tracker) -> None:
+    """RevDatesR3 P2: an unanchored ISO prefix let epoch seconds through as a
+    fabricated year; the digits after a valid date's own end must be end of
+    string, a time separator, or a timezone designator."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta property="article:published_time" content="1758067200">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert "page_published" not in result.data
