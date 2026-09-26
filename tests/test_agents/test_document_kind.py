@@ -11,6 +11,8 @@ verbatim, cut at 300 characters on a word boundary, or ``None``.
 
 from __future__ import annotations
 
+import pytest
+
 from deep_research.agents.document_kind import derivative_self_description
 from tests.evidence_fakes import make_read
 
@@ -135,3 +137,108 @@ def test_a_long_matching_sentence_is_cut_at_300_characters_on_a_word_boundary() 
     # Cut cleanly at a word boundary: what follows the cut in the original
     # sentence starts a new word, it is never sliced mid-word.
     assert len(result) == len(sentence) or sentence[len(result)] == " "
+
+
+# --- P1: "based on" flags the document as a relay only when the relay is --
+# --- the source of *its own* content, not merely a nearby word ------------
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "This regulation is based on the risk classification of AI systems "
+        "set out in the framework.",
+        "The framework is based on input from AI experts at Example "
+        "Institute.",
+        "The ruling was based on evidence that AI models had copied the "
+        "works.",
+        "The service is based on ChatGPT and launched in 2023.",
+        "This review is based on two weeks of testing with the phone's AI "
+        "assistant.",
+        "The film's plot is loosely based on an AI researcher's memoir.",
+    ],
+)
+def test_a_document_that_is_merely_about_ai_is_not_a_self_description(
+    sentence: str,
+) -> None:
+    """A primary regulatory, legal or review text on an AI topic is not a
+    relay of an encyclopedia's or a chatbot's content just because the
+    word "AI" sits near "based on"."""
+    read = make_read(sentence)
+    assert derivative_self_description(read) is None
+
+
+def test_a_self_referencing_subject_based_on_a_relay_with_no_middle_noun() -> None:
+    read = make_read(
+        "This summary is based on content from an online encyclopedia."
+    )
+    assert derivative_self_description(read) == (
+        "This summary is based on content from an online encyclopedia."
+    )
+
+
+# --- P2: an ambiguous kind (simulation, exercise, case study, scenario, ---
+# --- game) counts only with a teaching cue in the same sentence; the ------
+# --- inherently-teaching kinds (role-play, teaching case, teaching note, --
+# --- lesson, worksheet, sample essay, model answer) never need one --------
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "This simulation was designed by the county emergency office to "
+        "test response times.",
+        "This exercise was developed by the fire department with teachers.",
+        "This case study was prepared by Example Institute researchers "
+        "using data from the 2019 regulation's filings.",
+    ],
+)
+def test_an_ambiguous_kind_without_a_teaching_cue_is_not_a_self_description(
+    sentence: str,
+) -> None:
+    """A news report on a real drill, or a research institute's own case
+    study, is not teaching material just because it uses one of these
+    ambiguous nouns with no teaching cue anywhere in the sentence."""
+    read = make_read(sentence)
+    assert derivative_self_description(read) is None
+
+
+def test_an_ambiguous_kind_with_a_teaching_cue_is_a_self_description() -> None:
+    read = make_read("This simulation was designed for a negotiation course.")
+    assert derivative_self_description(read) == (
+        "This simulation was designed for a negotiation course."
+    )
+
+
+# --- P2: phrasings the earlier pattern missed ------------------------------
+
+
+def test_has_been_prepared_is_accepted_alongside_was_and_is() -> None:
+    read = make_read(
+        "This case study has been prepared by the outreach program for "
+        "classroom discussion."
+    )
+    assert derivative_self_description(read) == (
+        "This case study has been prepared by the outreach program for "
+        "classroom discussion."
+    )
+
+
+def test_up_to_two_modifier_words_may_sit_between_this_and_the_kind_noun() -> None:
+    read = make_read(
+        "This negotiation role-play was written by the outreach program."
+    )
+    assert derivative_self_description(read) == (
+        "This negotiation role-play was written by the outreach program."
+    )
+
+
+def test_an_abbreviation_inside_the_declaring_sentence_does_not_end_it_early() -> None:
+    read = make_read(
+        "This role-play, prepared with Prof. Vale of Example University, "
+        "was written for a negotiation course."
+    )
+    assert derivative_self_description(read) == (
+        "This role-play, prepared with Prof. Vale of Example University, "
+        "was written for a negotiation course."
+    )
