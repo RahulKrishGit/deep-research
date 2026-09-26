@@ -1174,13 +1174,16 @@ async def test_scraper_captures_og_updated_time(tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_scraper_captures_microdata_date_published(tracker) -> None:
-    """A microdata ``itemprop="datePublished"`` names the page's own date."""
+    """A microdata ``itemprop="datePublished"`` scoped to the article itself
+    names the page's own date (RevDatesR3 round 2: an itemprop with no
+    ``itemscope`` ancestor names nothing)."""
     page = (
         "<html><head><title>Grid Storage Outlook</title></head>"
-        '<body><time itemprop="datePublished" datetime="2026-09-17">'
+        '<body><article itemscope itemtype="https://schema.org/NewsArticle">'
+        '<time itemprop="datePublished" datetime="2026-09-17">'
         "Sep 17, 2026</time>"
         "<p>Battery storage capacity grew across every region.</p>"
-        "</body></html>"
+        "</article></body></html>"
     )
 
     result = await _read_served_page(tracker, page)
@@ -1368,6 +1371,163 @@ async def test_scraper_refuses_epoch_seconds_content(tracker) -> None:
     page = (
         "<html><head><title>Grid Storage Outlook</title>"
         '<meta property="article:published_time" content="1758067200">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert "page_published" not in result.data
+
+
+# ---------------------------------------------------------------------------
+# RevDatesR3 round 2: JSON-LD outranks microdata, microdata is scoped to the
+# page's own content, and the generic citation names are gone.
+# ---------------------------------------------------------------------------
+
+_ARTICLE_JSON_LD = json.dumps(
+    {
+        "@type": "NewsArticle",
+        "datePublished": "2026-09-17",
+        "dateModified": "2026-09-20",
+    }
+)
+
+
+@pytest.mark.asyncio
+async def test_a_sidebar_cards_microdata_date_never_beats_the_articles_json_ld(
+    tracker,
+) -> None:
+    """RevDatesR3 P1: a related-post card before the article is real
+    ``BlogPosting`` microdata -- itemscope-valid on its own -- but the
+    article's own JSON-LD is read first and settles both fields before the
+    card is ever consulted."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        f'<script type="application/ld+json">{_ARTICLE_JSON_LD}</script>'
+        "</head><body>"
+        '<aside itemscope itemtype="https://schema.org/BlogPosting">'
+        '<time itemprop="datePublished" datetime="2024-01-05">Jan 5, 2024</time>'
+        "</aside>"
+        "<p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2026-09-17"
+    assert result.data["page_updated"] == "2026-09-20"
+
+
+@pytest.mark.asyncio
+async def test_a_comments_microdata_date_never_beats_the_articles_json_ld(
+    tracker,
+) -> None:
+    """RevDatesR3 P1: a comment's own timestamp after the article is never
+    read as the page's date, whether or not JSON-LD is present."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        f'<script type="application/ld+json">{_ARTICLE_JSON_LD}</script>'
+        "</head><body>"
+        "<p>Battery storage capacity grew across every region.</p>"
+        '<div itemscope itemtype="https://schema.org/Comment">'
+        '<time itemprop="datePublished" datetime="2026-10-02">Oct 2, 2026</time>'
+        "</div>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2026-09-17"
+    assert result.data["page_updated"] == "2026-09-20"
+
+
+@pytest.mark.asyncio
+async def test_a_comment_scoped_microdata_date_is_never_captured_alone(
+    tracker,
+) -> None:
+    """The scoping guard itself, isolated: with no JSON-LD to mask it, a
+    ``Comment``-scoped ``itemprop`` still yields no date at all."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title></head><body>"
+        "<p>Battery storage capacity grew across every region.</p>"
+        '<div itemscope itemtype="https://schema.org/Comment">'
+        '<time itemprop="datePublished" datetime="2026-10-02">Oct 2, 2026</time>'
+        "</div>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert "page_published" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_an_unscoped_microdata_date_is_never_captured(tracker) -> None:
+    """An ``itemprop`` with no ``itemscope`` ancestor at all names nothing:
+    it is not attached to any item, article-shaped or otherwise."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title></head><body>"
+        '<time itemprop="datePublished" datetime="2026-10-02">Oct 2, 2026</time>'
+        "<p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert "page_published" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_a_date_meta_build_stamp_never_beats_the_articles_json_ld(
+    tracker,
+) -> None:
+    """RevDatesR3 P2: a generic ``name="date"`` meta -- often a template's
+    build stamp -- never outranks the article's own JSON-LD."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta name="date" content="2026-09-25">'
+        f'<script type="application/ld+json">{_ARTICLE_JSON_LD}</script>'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2026-09-17"
+    assert result.data["page_updated"] == "2026-09-20"
+
+
+@pytest.mark.asyncio
+async def test_a_dcterms_date_meta_never_beats_the_articles_json_ld(tracker) -> None:
+    """RevDatesR3 P2: Dublin Core's generic ``dcterms.date`` -- often a
+    last-modified date, not a publication date -- never outranks JSON-LD."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta name="dcterms.date" content="2019-01-01">'
+        f'<script type="application/ld+json">{_ARTICLE_JSON_LD}</script>'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2026-09-17"
+    assert result.data["page_updated"] == "2026-09-20"
+
+
+@pytest.mark.asyncio
+async def test_the_generic_date_and_dcterms_date_names_are_never_read(
+    tracker,
+) -> None:
+    """RevDatesR3 P2: ``date``, ``dc.date`` and ``dcterms.date`` are removed
+    entirely, not merely reordered -- with no JSON-LD to mask them, they
+    yield nothing at all."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        '<meta name="date" content="2026-09-25">'
+        '<meta name="dc.date" content="2026-09-26">'
+        '<meta name="dcterms.date" content="2026-09-27">'
         "</head><body><p>Battery storage capacity grew across every region.</p>"
         "</body></html>"
     )
