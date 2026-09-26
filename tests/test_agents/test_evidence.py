@@ -3507,8 +3507,8 @@ _SPAN3_FILLER_C = (
     " Additional filler conclusion text that the quoted rule never reaches "
     "at all."
 )
-_SPAN3_PASSAGE_A = (_SPAN3_LEAD_FILLER * 6) + _SPAN3_TAIL_A
-_SPAN3_PASSAGE_B = _SPAN3_MID_B
+_SPAN3_PASSAGE_A = (_SPAN3_LEAD_FILLER * 6) + _SPAN3_TAIL_A + " "
+_SPAN3_PASSAGE_B = _SPAN3_MID_B + " "
 _SPAN3_PASSAGE_C = _SPAN3_HEAD_C + _SPAN3_FILLER_C
 _SPAN3_SNIPPET = f"{_SPAN3_TAIL_A} {_SPAN3_MID_B} {_SPAN3_HEAD_C}"
 _SPAN3_STITCHED_SNIPPET = f"{_SPAN3_TAIL_A} {_SPAN3_HEAD_C}"
@@ -3516,7 +3516,7 @@ _SPAN3_STITCHED_SNIPPET = f"{_SPAN3_TAIL_A} {_SPAN3_HEAD_C}"
 
 def _span3_read() -> ReadRecord:
     return make_read(
-        f"{_SPAN3_PASSAGE_A} {_SPAN3_PASSAGE_B} {_SPAN3_PASSAGE_C}",
+        f"{_SPAN3_PASSAGE_A}{_SPAN3_PASSAGE_B}{_SPAN3_PASSAGE_C}",
         url="https://example.test/three-passage-span",
         passages={
             "chunk-a": _SPAN3_PASSAGE_A,
@@ -3629,4 +3629,60 @@ def test_snippet_span_text_contains_the_whole_three_passage_snippet() -> None:
     assert excerpt_matches(window, _SPAN3_HEAD_C)
     assert not excerpt_matches(
         neighbouring_passage_text(read, "chunk-a"), _SPAN3_SNIPPET
+    )
+
+
+def test_snippet_span_text_does_not_stop_at_a_repeat_in_the_preceding_passage() -> None:
+    """A repeat of the snippet's own words one passage early must not win.
+
+    RevLimitsLift's repro: the same sentence sits in both the passage before
+    the relocated locator and the locator's own passage. The window must
+    still hold the locator's own passage -- here, the one that turns the
+    figure into a 2030 forecast -- not stop at the repeat one passage early.
+    """
+    read = make_read(
+        "Section A intro. Capacity reached 10.4 GW. Section B on forecasts. "
+        "Capacity reached 10.4 GW. by 2030 under the plan.",
+        url="https://example.test/repeat-before",
+        passages={
+            "c0": "Section A intro. Capacity reached 10.4 GW. ",
+            "c1": (
+                "Section B on forecasts. Capacity reached 10.4 GW. by 2030 "
+                "under the plan."
+            ),
+        },
+    )
+
+    window = snippet_span_text(read, "c1", "Capacity reached 10.4 GW.")
+
+    assert "by 2030 under the plan" in window
+
+
+def test_locate_snippet_admits_a_quote_crossing_a_line_break_hyphen() -> None:
+    """A PDF-style mid-word passage cut must not defeat admission.
+
+    RevLimitsLift's repro: ``split_read_body`` can cut a passage inside a
+    line-break hyphen when the second half opens with no sentence or clause
+    boundary of its own ("...stor-\\n" / "age..."), and the quote spans the
+    join. Normalising each passage on its own -- before either side has ever
+    seen the other -- drops the join the page's own words state; the whole
+    body has to be joined first.
+    """
+    read = make_read(
+        "Operators must file a plan for every battery stor-\n"
+        "age system above ten megawatts.",
+        url="https://example.test/hyphen-cross",
+        passages={
+            "c0": "Operators must file a plan for every battery stor-\n",
+            "c1": "age system above ten megawatts.",
+        },
+    )
+
+    assert (
+        locate_snippet(
+            read,
+            "every battery storage system above ten megawatts",
+            claimed_locator="c0",
+        )
+        == "c0"
     )

@@ -1116,26 +1116,40 @@ _SNIPPET_WINDOW_SLACK = MAX_SNIPPET_CHARS
 def _grown_snippet_window(
     read: ReadRecord,
     keys: Sequence[str],
-    start_index: int,
+    seed_start_index: int,
+    seed_end_index: int,
     normalized_snippet: str,
 ) -> str | None:
-    """The shortest run of passages from ``keys[start_index]`` forward that
-    contains ``normalized_snippet`` (already :func:`cosmetic_text`-normalised,
-    the way :func:`excerpt_matches` normalises its own ``excerpt`` argument),
-    or ``None`` when no such run exists within a snippet's own length.
+    """The shortest run of passages containing ``normalized_snippet``
+    (already :func:`cosmetic_text`-normalised, the way
+    :func:`excerpt_matches` normalises its own ``excerpt`` argument), seeded
+    with ``keys[seed_start_index]`` through ``keys[seed_end_index]`` before
+    the first containment check and grown forward one passage at a time past
+    that, or ``None`` when no such run exists within a snippet's own length.
+
+    The seed is never skipped: a repeat of the snippet's own words in an
+    earlier seeded passage must not end the search before every seeded
+    passage has ever been assembled together, or the window silently drops
+    the locator's own passage for a stranger's repeat of the same words.
     """
     limit = len(normalized_snippet) + _SNIPPET_WINDOW_SLACK
-    text = ""
-    for key in keys[start_index:]:
-        text = f"{text} {read.passages[key]}" if text else read.passages[key]
-        if (
-            normalized_snippet in cosmetic_text(text)
-            or normalized_snippet in cosmetic_text(text, join_hyphenation=False)
+    text = " ".join(
+        read.passages[key] for key in keys[seed_start_index : seed_end_index + 1]
+    )
+    remaining = keys[seed_end_index + 1 :]
+    index = 0
+    while True:
+        normalized = cosmetic_text(text)
+        if normalized_snippet in normalized or normalized_snippet in cosmetic_text(
+            text, join_hyphenation=False
         ):
             return text
-        if len(text) > limit:
+        if len(normalized) > limit:
             return None
-    return None
+        if index >= len(remaining):
+            return None
+        text = f"{text} {read.passages[remaining[index]]}"
+        index += 1
 
 
 def snippet_span_text(read: ReadRecord, locator: str, snippet: str) -> str:
@@ -1147,22 +1161,26 @@ def snippet_span_text(read: ReadRecord, locator: str, snippet: str) -> str:
     must see a whole kept snippet's context -- the Context Check, the report
     registry's passage line, the relay attribution search -- needs in place
     of :func:`neighbouring_passage_text`'s fixed one-neighbour-either-side
-    window. The search still starts one passage before ``locator``, exactly
-    as :func:`neighbouring_passage_text` does, because an attribution
-    sentence or a rule's own opening clause can sit in the passage just
-    before the one an excerpt was drawn from; from there it grows forward,
-    in document order, until the whole of ``snippet`` is inside it. When
-    ``snippet`` is not the read's own words anywhere in that reach,
-    :func:`neighbouring_passage_text`'s own fixed window is returned instead
-    -- the same degraded case it already leaves an unmatched locator in.
+    window. The window is seeded with the passage before ``locator`` through
+    ``locator`` itself, exactly as :func:`neighbouring_passage_text` starts,
+    because an attribution sentence or a rule's own opening clause can sit in
+    the passage just before the one an excerpt was drawn from -- and the
+    locator's own passage is never dropped for an earlier repeat of the same
+    words; from the seed it grows forward, in document order, until the
+    whole of ``snippet`` is inside it. When ``snippet`` is not the read's own
+    words anywhere in that reach, :func:`neighbouring_passage_text`'s own
+    fixed window is returned instead -- the same degraded case it already
+    leaves an unmatched locator in.
     """
     keys = list(read.passages.keys())
     if locator not in keys:
         return ""
     normalized_snippet = cosmetic_text(snippet)
     if normalized_snippet:
-        start_index = max(0, keys.index(locator) - 1)
-        matched = _grown_snippet_window(read, keys, start_index, normalized_snippet)
+        index = keys.index(locator)
+        matched = _grown_snippet_window(
+            read, keys, max(0, index - 1), index, normalized_snippet
+        )
         if matched is not None:
             return matched
     return neighbouring_passage_text(read, locator)
@@ -1184,6 +1202,15 @@ def locate_snippet(
     in passage order, wins; with no claim, or none on the page, the first
     occurrence does.
 
+    The passages are joined with nothing between them and normalised once,
+    as one body, never normalised alone and joined afterward: a passage cut
+    that falls inside a line-break hyphen or a numeric range -- the read's
+    own passages rebuild the body exactly, so a raw join reproduces it --
+    only reads as one joined word or one range when both of its own halves
+    are read together. Normalising each side alone first, before either has
+    ever seen the other, leaves the hyphen or the range marker exactly where
+    the cut fell and never finds the word or the number the page states.
+
     Returns the id of the passage the match's first character falls in, or
     ``None`` when no contiguous, verbatim span of ``snippet`` exists
     anywhere on the page.
@@ -1195,17 +1222,16 @@ def locate_snippet(
     if not normalized_snippet:
         return None
     claimed_index = keys.index(claimed_locator) if claimed_locator in keys else None
+    raw_passages = [read.passages[key] for key in keys]
     for join_hyphenation in (True, False):
-        normalized_passages = [
-            cosmetic_text(read.passages[key], join_hyphenation=join_hyphenation)
-            for key in keys
-        ]
         boundaries: list[int] = []
-        offset = 0
-        for part in normalized_passages:
-            boundaries.append(offset)
-            offset += len(part) + 1
-        full_text = " ".join(normalized_passages)
+        prefix = ""
+        for part in raw_passages:
+            boundaries.append(
+                len(cosmetic_text(prefix, join_hyphenation=join_hyphenation))
+            )
+            prefix += part
+        full_text = cosmetic_text(prefix, join_hyphenation=join_hyphenation)
         starts: list[int] = []
         search_from = 0
         while True:
@@ -1224,7 +1250,7 @@ def locate_snippet(
 
 
 def _passage_index(boundaries: Sequence[int], offset: int) -> int:
-    """Which passage ``offset`` (into the boundaries' own joined text) falls in."""
+    """Which passage ``offset`` (into the boundaries' own normalised prefix) falls in."""
     index = 0
     for candidate, boundary in enumerate(boundaries):
         if boundary <= offset:
