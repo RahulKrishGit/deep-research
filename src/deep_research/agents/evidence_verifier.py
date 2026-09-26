@@ -184,7 +184,7 @@ CONTEXT_CHECK_INSTRUCTION = (
     "title names it; null for unattributed.\n"
     "- kind: forecast for an outcome the page presents as projected, expected, "
     "planned or targeted rather than reported as having happened — it stays a "
-    "forecast whatever the run's date, with its issuer and release; actual for a "
+    "forecast whatever the run's date; actual for a "
     "quantity the page states as measured, reported or observed, and for a term a "
     "plan, proposal, law or provision itself sets (the limit, threshold or amount "
     "it imposes), enacted or not, in force yet or not; an outcome such a text aims "
