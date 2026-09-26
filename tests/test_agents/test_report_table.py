@@ -546,14 +546,16 @@ def test_fable_options_table_ninth_option_triggers_cap_caption() -> None:
 
 
 def test_choice_rule_marks_only_in_optional_part_give_no_options_table() -> None:
+    findings_by_url = {"https://a.test/x": _finding_for_url("https://a.test/x")}
     composition = _composition(
         sub_topics=[_topic("topic-09", required=False, priority=1)],
+        findings=list(findings_by_url.values()),
         sections=[
             _section(
                 "topic-09",
                 "Prices",
                 [
-                    _stmt(
+                    _backed_stmt(
                         "S1",
                         "Site A lists Model A at $10.",
                         items=[
@@ -563,8 +565,9 @@ def test_choice_rule_marks_only_in_optional_part_give_no_options_table() -> None
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
-                    _stmt(
+                    _backed_stmt(
                         "S2",
                         "Site A lists Model B at $20.",
                         items=[
@@ -574,6 +577,7 @@ def test_choice_rule_marks_only_in_optional_part_give_no_options_table() -> None
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
                 ],
             )
@@ -676,14 +680,16 @@ def test_choice_rule_one_row_gives_no_table() -> None:
 
 
 def test_marks_on_unchecked_statements_are_ignored() -> None:
+    findings_by_url = {"https://a.test/x": _finding_for_url("https://a.test/x")}
     composition = _composition(
         sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=list(findings_by_url.values()),
         sections=[
             _section(
                 "topic-01",
                 "Sound quality",
                 [
-                    _stmt(
+                    _backed_stmt(
                         "S1",
                         "Site A says Model A is the best.",
                         items=[
@@ -693,8 +699,9 @@ def test_marks_on_unchecked_statements_are_ignored() -> None:
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
-                    _stmt(
+                    _backed_stmt(
                         "S2",
                         "Site A says Model B is the best.",
                         items=[
@@ -704,6 +711,7 @@ def test_marks_on_unchecked_statements_are_ignored() -> None:
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     ),
                 ],
             )
@@ -1762,17 +1770,28 @@ def test_mark_credited_to_an_uncited_page_is_dropped() -> None:
 def test_choice_rule_two_required_parts_with_one_option_each_give_no_options_table() -> (
     None
 ):
+    """P1 regression: the >=2 test is per required part, not a cross-part union.
+
+    An optional part where BOTH options are marked is added deliberately: it
+    gives ``_build_options_table`` a qualifying column to hang >= 2 rows on,
+    so a reverted, union-counting gate would actually publish a 2-row table
+    here rather than being masked by the separate "fewer than 2 rows, fall
+    through" safety net (see the mutation-tested proof in the review reply).
+    """
+    findings_by_url = {"https://a.test/x": _finding_for_url("https://a.test/x")}
     composition = _composition(
         sub_topics=[
             _topic("topic-01", required=True, priority=1),
             _topic("topic-02", required=True, priority=2),
+            _topic("topic-03", required=False, priority=3),
         ],
+        findings=list(findings_by_url.values()),
         sections=[
             _section(
                 "topic-01",
                 "Sound",
                 [
-                    _stmt(
+                    _backed_stmt(
                         "S1",
                         "Site A says Model A is great.",
                         items=[
@@ -1782,6 +1801,7 @@ def test_choice_rule_two_required_parts_with_one_option_each_give_no_options_tab
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     )
                 ],
             ),
@@ -1789,7 +1809,7 @@ def test_choice_rule_two_required_parts_with_one_option_each_give_no_options_tab
                 "topic-02",
                 "Mic",
                 [
-                    _stmt(
+                    _backed_stmt(
                         "S2",
                         "Site A says Model B is great.",
                         items=[
@@ -1799,11 +1819,42 @@ def test_choice_rule_two_required_parts_with_one_option_each_give_no_options_tab
                                 source_url="https://a.test/x",
                             )
                         ],
+                        findings_by_url=findings_by_url,
                     )
                 ],
             ),
+            _section(
+                "topic-03",
+                "Prices",
+                [
+                    _backed_stmt(
+                        "S3",
+                        "Site A lists Model A at $10.",
+                        items=[
+                            ItemMark(
+                                name="Model A",
+                                verdict="$10",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                        findings_by_url=findings_by_url,
+                    ),
+                    _backed_stmt(
+                        "S4",
+                        "Site A lists Model B at $20.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="$20",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                        findings_by_url=findings_by_url,
+                    ),
+                ],
+            ),
         ],
-        statement_verdicts=_verdicts("S1", "S2"),
+        statement_verdicts=_verdicts("S1", "S2", "S3", "S4"),
     )
     assert build_table(composition) is None
 
