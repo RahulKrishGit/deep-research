@@ -489,8 +489,9 @@ def _sources_record(
                 "number": citation.number,
                 "url": citation.url,
                 "publisher": publisher,
-                "title": _stripped_title(citation.title, publisher),
+                "title": _printed_title(citation.title, publisher),
                 "date": credit.date if credit is not None else None,
+                "date_kind": credit.date_kind if credit is not None else None,
             }
         )
     return rows
@@ -1064,21 +1065,76 @@ def _evidence_line(composition: ReportComposition, index: Sequence[Citation]) ->
     return f"Evidence as of {date} · {_counted(len(index), 'source', 'sources')}"
 
 
+#: A trailing closing quote or paren the sentence's own stop can sit inside
+#: of ("the best.\"", "5 GW.)"): markers land before the stop, and this run
+#: stays after it, unchanged (§3.1 rule 3 P3).
+_CLOSING_RUN = re.compile(r'["”’)]*$')
+
+#: An ASCII ellipsis is one unit, not three stops in a row: the markers land
+#: before the whole run, never splitting it.
+_ELLIPSIS = "..."
+
+
 def _sentence_with_markers(text: str, markers: str) -> str:
     """Move ``markers`` to just before ``text``'s own final stop (§3.1 rule 3).
 
     A deterministic move of trailing punctuation that leaves the verified
     words unchanged: whatever punctuation the drafted point already ends with
-    -- a period, or an internal clause's semicolon when the point continues --
-    the markers land immediately before it, never after. A point with no
+    -- a period, an ellipsis, or an internal clause's semicolon when the
+    point continues -- the markers land immediately before it, never after,
+    and never adding a second stop. A trailing closing quote or parenthesis
+    is not itself the stop; the markers land before whatever stop it closes
+    over, and the quote or parenthesis stays after it. A point with no
     citation prints as written.
     """
     stripped = " ".join(text.split())
     if not markers:
         return stripped
-    if stripped and stripped[-1] in _STOP_CHARS:
-        return f"{stripped[:-1]} {markers}{stripped[-1]}"
+    if not stripped:
+        return stripped
+    closing = _CLOSING_RUN.search(stripped).group()
+    core = stripped[: len(stripped) - len(closing)] if closing else stripped
+    if core.endswith(_ELLIPSIS):
+        return f"{core[: -len(_ELLIPSIS)]} {markers}{_ELLIPSIS}{closing}"
+    if core and core[-1] in _STOP_CHARS:
+        return f"{core[:-1]} {markers}{core[-1]}{closing}"
     return f"{stripped} {markers}."
+
+
+def _who_text_for(
+    row: FactRow, cited_ids: set[str], by_id: Mapping[str, Finding],
+    page_credits: Mapping[str, PageCredit],
+) -> str:
+    """The row's Who/when text as the sentence's own citation reads it (D13).
+
+    Mirrors ``_row_label_for``, but builds the findings table's own Who
+    wording (``_who_text``) instead of the old ``figure_label`` style: a
+    sentence that cites a duplicate of a row's fact -- the relayed copy of
+    it, say -- gets that page's own attribution, organisation and dates, not
+    the row primary's. A synthetic row-with-the-duplicate's-context is built
+    (rather than reimplementing ``_who_text``) because ``_who_text`` reads
+    its wording from ``row.attribution``/``row.organisation``/``row.
+    relay_host``, which the *cited* page's own context supplies here, and its
+    dates from the finding, which ``by_id`` supplies.
+    """
+    if row.finding_id in cited_ids:
+        return _who_text(row, by_id.get(row.finding_id), page_credits)
+    for fingerprint in row.duplicate_finding_ids:
+        finding = by_id.get(fingerprint)
+        if fingerprint not in cited_ids or finding is None:
+            continue
+        context = _cited_figure_context(finding, row)
+        if context is None:
+            continue
+        relay_host = publisher_identity(finding.source_url) if context.attribution == "relayed" else None
+        cited_row = row.model_copy(update={
+            "attribution": context.attribution,
+            "organisation": context.organisation,
+            "relay_host": relay_host,
+            "kind": context.kind,
+        })
+        return _who_text(cited_row, finding, page_credits)
+    return _who_text(row, by_id.get(row.finding_id), page_credits)
 
 
 def _unchecked_provenance(point: ReportPoint, composition: ReportComposition) -> str:
@@ -1086,6 +1142,8 @@ def _unchecked_provenance(point: ReportPoint, composition: ReportComposition) ->
     fact row ends with a deterministic provenance line, in the findings
     table's own Who wording (§4.3) -- the only sentence printed without an
     independent check keeps a provenance line, so the exception is visible.
+    The Who text is built from the finding the sentence actually cites
+    (D13), never a duplicate's primary the report may not even cite.
     """
     if point.statement is None:
         return ""
@@ -1099,7 +1157,7 @@ def _unchecked_provenance(point: ReportPoint, composition: ReportComposition) ->
         return ""
     by_id = _findings_by_id(composition)
     row = rows[0]
-    who = _who_text(row, by_id.get(row.finding_id), composition.page_credits)
+    who = _who_text_for(row, cited, by_id, composition.page_credits)
     return f" (figure: {who})"
 
 
@@ -1146,7 +1204,15 @@ def _written_bullet(
 
 def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]) -> str:
     """§3.1 rule 3 and §10: one paragraph, or a fallback when nothing was
-    written."""
+    written.
+
+    The "nothing answered" sentence is reserved for a pass that cites
+    nothing at all: an empty ``index`` and no table and no section with kept
+    points. An empty bottom line over a pass that *does* cite something (a
+    D8 batch outage on the bottom-line call alone) gets its own honest
+    sentence instead -- the old, wider fallback claimed the report answered
+    nothing while the table and sections below it plainly did.
+    """
     if composition.summary:
         return " ".join(
             _rendered_point(point, composition, index) for point in composition.summary
@@ -1157,6 +1223,16 @@ def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]
         return (
             "This report's sections could not be written this time; "
             f"{table_note}the evidence log shows what was verified."
+        )
+    has_content = (
+        bool(index)
+        or composition.table is not None
+        or any(section.points for section in composition.sections)
+    )
+    if has_content:
+        return (
+            "A summary could not be written this time; the sections below "
+            "give what was found."
         )
     return "No source we could check answers this question."
 
@@ -1248,7 +1324,7 @@ def _table_lines(
     by_id = _findings_by_id(composition)
     last = len(table.columns) - 1
     lines = [
-        "| " + " | ".join(table.columns) + " |",
+        "| " + " | ".join(_table_cell(column) for column in table.columns) + " |",
         "|" + "---|" * len(table.columns),
     ]
     for row in table.rows:
@@ -1260,6 +1336,32 @@ def _table_lines(
     if table.caption:
         lines += ["", f"*{table.caption}*"]
     return lines
+
+
+#: Characters that would splice an attacker's own destination into the
+#: printed link if a page's own (untrusted) title carried them raw: a
+#: backslash (to keep the escape itself literal), then the two brackets that
+#: could prematurely close ``[title]`` and open ``(url)``.
+_TITLE_ESCAPES = (("\\", "\\\\"), ("[", "\\["), ("]", "\\]"))
+
+#: Characters that would break the ``(url)`` destination or the evaluator's
+#: own single-token parse of it if a scraped URL carried them raw: a space
+#: (not `\S`), and parens/angle brackets (which either close the destination
+#: early or require ``<...>`` wrapping that cannot itself hold a space).
+#: Percent-encoding keeps the destination one token and the same resource.
+_URL_ESCAPES = {" ": "%20", "(": "%28", ")": "%29", "<": "%3C", ">": "%3E"}
+
+
+def _markdown_safe_title(title: str) -> str:
+    """A page title made safe as literal ``[...]`` link text (spec §8)."""
+    for character, escaped in _TITLE_ESCAPES:
+        title = title.replace(character, escaped)
+    return title
+
+
+def _markdown_safe_url(url: str) -> str:
+    """``url`` as a safe, single-token Markdown link destination."""
+    return "".join(_URL_ESCAPES.get(character, character) for character in url)
 
 
 def _stripped_title(title: str, publisher: str) -> str:
@@ -1280,12 +1382,23 @@ def _stripped_title(title: str, publisher: str) -> str:
     return " | ".join(remaining) if remaining else title
 
 
+def _printed_title(citation_title: str, publisher: str) -> str:
+    """The title exactly as it prints: publisher-segment stripped (§8), then
+    made Markdown-safe for the ``[...]`` position it prints in -- the one
+    title text both the Sources line and the quality JSON's "title as
+    printed" field use, so the two can never disagree about what was
+    published.
+    """
+    return _markdown_safe_title(_stripped_title(citation_title, publisher))
+
+
 def _source_line(citation: Citation, composition: ReportComposition) -> str:
     """§8: ``n. Publisher — [Title](url) (date)``."""
     credit = composition.page_credits.get(normalize_source_url(citation.url))
     publisher = credit.publisher if credit is not None else publisher_identity(citation.url)
-    title = _stripped_title(citation.title, publisher)
-    return f"{citation.number}. {publisher} — [{title}]({citation.url}){_date_suffix(credit)}"
+    title = _printed_title(citation.title, publisher)
+    url = _markdown_safe_url(citation.url)
+    return f"{citation.number}. {publisher} — [{title}]({url}){_date_suffix(credit)}"
 
 
 def _unreachable_reason_text(reason: str) -> str:
@@ -1337,7 +1450,7 @@ def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]
             *[_unreachable_line(page) for page in shown],
         ]
         if len(composition.unreachable) > _MAX_UNREACHABLE_LINES:
-            lines.append("- and others, listed in the evidence log.")
+            lines.append("- and others, listed in the evidence log")
         groups.append(lines)
     return groups
 
@@ -1557,8 +1670,8 @@ def _about_this_report_lines(composition: ReportComposition) -> list[str]:
 
 
 def _unplaced_findings_lines(composition: ReportComposition) -> list[str]:
-    """§9's new Unplaced findings: findings no part's partition placed
-    (spec §6.1) -- recorded, not written."""
+    """§9's new Unplaced findings: findings no part's partition placed --
+    recorded, not written."""
     placed = {
         fingerprint
         for part in composition.parts
@@ -1573,8 +1686,8 @@ def _unplaced_findings_lines(composition: ReportComposition) -> list[str]:
         return []
     lines = [
         "## Unplaced findings", "",
-        "Findings the researcher recorded that no part's partition placed "
-        "(spec §6.1); not written, but kept here for audit.", "",
+        "Findings the researcher recorded that no part's partition placed; "
+        "not written, but kept here for audit.", "",
     ]
     for finding in unplaced:
         label = id_to_label.get(finding_fingerprint(finding), "")

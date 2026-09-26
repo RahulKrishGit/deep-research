@@ -16,6 +16,7 @@ from deep_research.agents.report import (
     evidence_report_filename,
     figure_label,
     render_finding_log,
+    render_quality_record,
     render_written_report,
     written_citations,
 )
@@ -36,6 +37,7 @@ from deep_research.utils.types import (
     ReportSection,
     ReportStatement,
     ReportTable,
+    ResearchState,
     SubTopic,
     TableCell,
     UnreachablePage,
@@ -376,6 +378,35 @@ def test_bottom_line_markers_land_before_each_sentences_final_stop() -> None:
     assert "EIA expects 14 GW of battery storage to be added in 2025 [2]." in body
 
 
+def _single_point_composition(text: str) -> ReportComposition:
+    finding = _bare_finding("https://agency.example.test/report", "A report", text)
+    point = ReportPoint(text=text, source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001", text=text,
+                                                  finding_ids=[finding_fingerprint(finding)]))
+    return ReportComposition(question="q", session_id="s", findings=[finding], summary=[point])
+
+
+def test_bottom_line_markers_land_before_a_closing_quote_after_the_stop() -> None:
+    """P3: a closing quote after the sentence's stop keeps the stop where it
+    was, with the markers before it -- never a second stop after the quote."""
+    composition = _single_point_composition('He called it "the best."')
+    body = _section_body(render_written_report(composition), "## Bottom line")
+    assert body.strip() == 'He called it "the best [1]."'
+
+
+def test_bottom_line_markers_treat_an_ellipsis_as_one_unit() -> None:
+    composition = _single_point_composition("It rose to 5 GW...")
+    body = _section_body(render_written_report(composition), "## Bottom line")
+    assert body.strip() == "It rose to 5 GW [1]..."
+
+
+def test_bottom_line_markers_land_before_a_closing_paren_after_the_stop() -> None:
+    composition = _single_point_composition("It rose to 5 GW.)")
+    body = _section_body(render_written_report(composition), "## Bottom line")
+    assert body.strip() == "It rose to 5 GW [1].)"
+
+
+
 def test_the_bottom_line_falls_back_when_nothing_was_answered() -> None:
     composition = ReportComposition(question="q", session_id="s")
     report = render_written_report(composition)
@@ -396,6 +427,31 @@ def test_the_bottom_line_falls_back_when_every_part_failed() -> None:
 
     assert ("This report's sections could not be written this time; "
            "the evidence log shows what was verified.") in body
+
+
+def test_the_bottom_line_does_not_deny_an_answer_the_sections_give() -> None:
+    """P0: an empty bottom line (a D8 outage -- the draft returned no kept
+    sentence) must not claim the report cites nothing when a section below
+    it, or the table, does answer."""
+    finding = _finding("https://agency.example.test/report",
+                       "The agency reports 10 GW added in 2024.",
+                       "10", "GW", organisation="Example Agency")
+    point = ReportPoint(text="The agency reports 10 GW added in 2024.",
+                        source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001",
+                                                  text="The agency reports 10 GW added in 2024.",
+                                                  finding_ids=[finding_fingerprint(finding)]))
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[finding],
+        sections=[ReportSection(title="Capacity", points=[point])],
+    )
+
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "No source we could check answers this question." not in body
+    assert "A summary could not be written this time" in body
+
 
 
 # --- §5, §3.1.7-9: citation order and the Sources line --------------------------
@@ -486,6 +542,62 @@ def test_the_sources_line_falls_back_to_the_host_publisher_without_a_credit() ->
     assert "1. example-agency.test — [A report on capacity](https://example-agency.test/report)" in report
 
 
+def test_the_sources_line_escapes_a_title_that_could_hijack_the_link() -> None:
+    """P2: an untrusted page title containing ``](url)`` must not let the
+    printed Sources link point somewhere other than the cited page."""
+    finding = _bare_finding("https://cnet.com/real-page",
+                            "Guide](https://evil.example.test) to headphones",
+                            "CNET reports on headphones.")
+    composition = _cited_composition(finding)
+
+    report = render_written_report(composition)
+
+    assert "Guide\\](https://evil.example.test)" in report
+    assert re.search(r"(?<!\\)\]\(https://evil\.example\.test\)", report) is None
+    assert "](https://cnet.com/real-page)" in report
+
+
+def test_the_sources_line_percent_encodes_unsafe_url_characters() -> None:
+    """P2: a link destination with a raw space or an unbalanced paren must
+    still be one non-whitespace Markdown token pointing at the cited page."""
+    finding = _bare_finding("https://x.example.test/a b", "A report",
+                            "X reports on something.")
+    composition = _cited_composition(finding)
+
+    report = render_written_report(composition)
+
+    assert "https://x.example.test/a%20b" in report
+    assert "https://x.example.test/a b" not in report
+
+
+def test_the_quality_records_printed_title_matches_the_sources_line() -> None:
+    finding = _bare_finding("https://cnet.com/real-page",
+                            "Guide](https://evil.example.test) to headphones",
+                            "CNET reports on headphones.")
+    composition = _cited_composition(finding, page_credits={
+        normalize_source_url(finding.source_url): PageCredit(publisher="CNET")
+    })
+    state = ResearchState(session_id=composition.session_id, original_question=composition.question)
+
+    record = render_quality_record(state, composition, None)
+
+    assert record["sources"][0]["title"] == "Guide\\](https://evil.example.test) to headphones"
+
+
+def test_the_table_header_escapes_a_pipe_in_a_column_title() -> None:
+    """P2: an options-table column title is the writer's section title
+    (model text); an embedded pipe must not break the GFM table."""
+    table = ReportTable(shape="options", columns=["Option", "Price | value", "Recommended by"],
+                        rows=[[TableCell(text="A"), TableCell(), TableCell()]])
+    composition = ReportComposition(question="q", session_id="s", table=table)
+
+    report = render_written_report(composition)
+
+    header = next(line for line in report.splitlines() if line.startswith("| Option"))
+    assert header == "| Option | Price \\| value | Recommended by |"
+
+
+
 # --- §10, §3.1.6: what we couldn't confirm --------------------------------------
 
 
@@ -531,7 +643,8 @@ def test_what_we_couldnt_confirm_lists_up_to_five_unreachable_pages_with_plain_r
     assert "- Denied 0 (denied0.example.test) — access was denied" in report
     assert "- Denied 4 (denied4.example.test) — access was denied" in report
     assert "Denied 5" not in report
-    assert "- and others, listed in the evidence log." in report
+    assert "- and others, listed in the evidence log" in report
+    assert "- and others, listed in the evidence log." not in report
 
 
 def test_an_unreachable_pages_reason_reads_in_plain_words() -> None:
@@ -598,6 +711,43 @@ def test_a_checked_sentence_with_a_fact_row_keeps_no_provenance_line() -> None:
     report = render_written_report(composition)
 
     assert "(figure:" not in report
+
+
+
+def test_an_unchecked_sentence_citing_a_relay_copy_gets_the_relays_provenance() -> None:
+    """P1/D13: an unchecked sentence that cites only the relay duplicate of a
+    fact row must not credit the row's primary page's issuer and release --
+    a page the report never even cites."""
+    own_page = _finding("https://agency.example.test/own-release",
+                        "The agency expects 14 GW of additions in 2025.",
+                        "14", "GW", organisation="Example Agency", kind="forecast", period="2025")
+    own_page = own_page.model_copy(update={"release_date": "2025-01-14"})
+    relay_page = _finding("https://gazette.example.test/story",
+                          "According to the Example Agency, as reported by the Example Gazette, "
+                          "14 GW of additions are expected in 2025.",
+                          "14", "GW", organisation="Example Agency", attribution="relayed",
+                          kind="forecast", period="2025")
+    primary = finding_fingerprint(own_page)
+    row = FactRow(row_id="K001", organisation="Example Agency", attribution="own", measure="additions",
+                  period="2025", value="14 GW", kind="forecast", finding_id=primary,
+                  duplicate_finding_ids=[finding_fingerprint(relay_page)],
+                  target_ids=["topic-01-target-01"])
+    text = ("According to the Example Agency, as reported by the Example Gazette, "
+           "14 GW of additions are expected in 2025.")
+    point = ReportPoint(text=text, source_urls=[relay_page.source_url],
+                        statement=ReportStatement(statement_id="S001", text=text,
+                                                  finding_ids=[finding_fingerprint(relay_page)]))
+    composition = ReportComposition(
+        question="What is the outlook for additions?", session_id="s",
+        findings=[own_page, relay_page], fact_rows=[row], summary=[point],
+        statement_verdicts={"S001": "unchecked"},
+    )
+
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "2025-01-14" not in body
+    assert "reported by gazette.example.test" in body
 
 
 # --- §9: the evidence log ------------------------------------------------------
@@ -792,6 +942,7 @@ def test_the_evidence_log_lists_dropped_marks_and_unplaced_findings() -> None:
     assert "S004: 'Model A' is not in the sentence" in log
     assert "## Unplaced findings" in log
     assert unplaced.source_url in _section_body(log, "## Unplaced findings")
+    assert "spec §6.1" not in log
 
 
 def test_the_evidence_log_lists_every_unreachable_page_uncapped() -> None:
@@ -804,3 +955,448 @@ def test_the_evidence_log_lists_every_unreachable_page_uncapped() -> None:
 
     assert "## Pages that could not be opened" in log
     assert "Denied 5" in log  # the reader report caps at 5; the ledger does not
+
+
+# --- §13: end-to-end goldens (T3 acceptance) -----------------------------------
+#
+# Each composition is built the way the named run's own quality JSON would
+# carry it -- findings, a hand-set table, page credits, not-found targets --
+# so the assertion exercises the renderer's own assembly, numbering and
+# Sources logic against the spec's literal text, not the writer's sentence
+# generation or the table builder's own algorithm (both covered by their own
+# tests, T4 and T2).
+
+
+def _pre_flight_run_composition() -> ReportComposition:
+    """§13.2 -- pre-flight run 4 (session ``9390e6e1...``, pass 0)."""
+    house = _bare_finding(
+        "https://docs.house.gov/meetings/II/II00/20260513/119199/HHRG-119-II00-20260513-SD003.pdf",
+        "U.S. battery capacity increased 66% in 2024",
+        "Generators added 10.4 GW of new battery storage capacity in 2024.",
+    )
+    utility_dive = _bare_finding(
+        "https://utilitydive.com/news/us-utility-scale-energy-storage-to-double-reach-65-gw-by-2027-eia/750338",
+        "US utility-scale energy storage to double, reach 65 GW by 2027: EIA",
+        "Domestic storage capacity will rise to 64.9 GW.",
+    )
+    eia = _bare_finding(
+        "https://eia.gov/todayinenergy/detail.php?id=67925",
+        "Battery storage capacity averaged 70% growth over the last three years",
+        "By the end of 2025 the U.S. power system had 43.6 GW.",
+    )
+    energi = _bare_finding(
+        "https://energi.media/news/u-s-electricity-generation-set-to-rise-as-solar-and-battery-capacity-expand-eia-forecasts",
+        "U.S. Electricity Generation Set to Rise as Solar and Battery Capacity Expand: EIA Forecasts - Thoughtful Journalism",
+        "ERCOT battery capacity will rise to 37 GW by 2027.",
+    )
+    house_id = finding_fingerprint(house)
+    utility_dive_id = finding_fingerprint(utility_dive)
+    eia_id = finding_fingerprint(eia)
+    energi_id = finding_fingerprint(energi)
+
+    def point(n: int, text: str, url: str) -> ReportPoint:
+        return ReportPoint(text=text, source_urls=[url],
+                           statement=ReportStatement(statement_id=f"S{n:03d}", text=text))
+
+    summary = [
+        point(1, "For 2024, house.gov reports that generators added 10.4 GW of new "
+                "battery storage capacity, the second-largest generating capacity "
+                "addition after solar.", house.source_url),
+        point(2, "The Energy Information Administration's forecast, released "
+                "2025-06-10 and reported by Utility Dive, projects domestic storage "
+                "capacity rising from about 28 GW at the end of Q1 2025 to 64.9 GW "
+                "at the end of 2026.", utility_dive.source_url),
+        point(3, "The U.S. Energy Information Administration reports that by the end "
+                "of 2025 the U.S. power system had operational battery storage "
+                "capacity of 43.6 GW.", eia.source_url),
+    ]
+
+    table_rows = [
+        ('"Generators added 10.4 GW of new battery storage capacity in 2024, the '
+         'second-largest generating capacity addition after solar."',
+         "10.4 GW, actual", "house.gov (stated 2025-03-12)", house_id),
+        ('"cumulative utility-scale battery storage capacity exceeded 26 gigawatts '
+         '(GW) in 2024, according to our January 2025 Preliminary Monthly…"',
+         "26 gigawatts (GW), actual", "house.gov (stated 2025-03-12)", house_id),
+        ("Battery storage capacity, 2025", "43.6 gigawatts (GW), actual",
+         "U.S. Energy Information Administration (stated 2026-08-07)", eia_id),
+        ("Battery storage (first six months of 2026)", "8.3 GW, actual",
+         "U.S. Energy Information Administration (stated 2026-08-07)", eia_id),
+        ('"Utility-scale battery storage in the United States is poised to more '
+         'than double over the next two years and will close out 2026 at nearly '
+         '65 GW…"', "65 GW, forecast",
+         "Energy Information Administration, reported by Utility Dive (released 2025-06-10)",
+         utility_dive_id),
+        ("Battery storage (utility-scale), Q1 2024", "17 GW, actual",
+         "Energy Information Administration, reported by Utility Dive (released 2025-06-10)",
+         utility_dive_id),
+        ('"Counting projects larger than 1 MW in the electric power sector, EIA '
+         "said domestic storage capacity will rise from about 28 GW at the end of "
+         "Q1'25…\"", "28 GW, actual",
+         "Energy Information Administration, reported by Utility Dive (released 2025-06-10)",
+         utility_dive_id),
+        ('"…EIA said domestic storage capacity will rise from about 28 GW at the '
+         "end of Q1'25 to 64.9 GW at the end of 2026.\"", "64.9 GW, forecast",
+         "Energy Information Administration, reported by Utility Dive (released 2025-06-10)",
+         utility_dive_id),
+        ("ERCOT, 2025", "15 GW, actual", "EIA, reported by energi.media (stated 2026-01-21)", energi_id),
+        ("ERCOT, 2027", "37 GW, forecast", "EIA, reported by energi.media (stated 2026-01-21)", energi_id),
+    ]
+    table = ReportTable(
+        shape="findings",
+        columns=["What was measured", "Result", "Who reported it (and when)", "Source"],
+        rows=[[TableCell(text=what), TableCell(text=result), TableCell(text=who),
+              TableCell(finding_ids=[fid])]
+             for what, result, who, fid in table_rows],
+    )
+
+    sections = [
+        ReportSection(title="Capacity added in 2024", points=[
+            point(4, "For 2024, house.gov reports that generators added 10.4 GW of "
+                    "new battery storage capacity, the second-largest generating "
+                    "capacity addition after solar, from the January 2025 "
+                    "Preliminary Monthly Electric Generator Inventory.", house.source_url),
+            point(5, "house.gov also reports that cumulative utility-scale battery "
+                    "storage capacity exceeded 26 GW in 2024, from the same January "
+                    "2025 Preliminary Monthly Electric Generator Inventory.", house.source_url),
+            point(6, "The U.S. Energy Information Administration reports that by "
+                    "the end of 2025 the U.S. power system had operational battery "
+                    "storage capacity of 43.6 GW.", eia.source_url),
+            point(7, "The U.S. Energy Information Administration reports that "
+                    "operators added another 8.3 GW of battery storage during the "
+                    "first six months of 2026.", eia.source_url),
+        ]),
+        ReportSection(title="The EIA's forecasts", points=[
+            point(8, "According to the Energy Information Administration, as "
+                    "reported by Utility Dive and released 2025-06-10, domestic "
+                    "storage capacity will rise from about 28 GW at the end of Q1 "
+                    "2025 to 64.9 GW at the end of 2026, counting projects larger "
+                    "than 1 MW in the electric power sector.", utility_dive.source_url),
+            point(9, "According to the Energy Information Administration, as "
+                    "reported by Utility Dive, utility-scale battery storage in the "
+                    "United States is forecast to more than double over the next "
+                    "two years and to close out 2026 at nearly 65 GW, a rise from "
+                    "17 GW in the first quarter of 2024 (forecast released "
+                    "2025-06-10).", utility_dive.source_url),
+        ]),
+        ReportSection(title="Other forecasts", points=[
+            point(10, "The EIA expects battery capacity in ERCOT to rise from "
+                     "about 15 GW in 2025 to 37 GW by the end of 2027, according "
+                     "to EIA, as reported by energi.media.", energi.source_url),
+        ]),
+    ]
+
+    return ReportComposition(
+        question=("How much grid-scale battery storage capacity was added in the "
+                  "United States in 2024, and what do the latest forecasts project "
+                  "for 2025?"),
+        session_id="9390e6e10b324fb6a6dc17477738a531", iteration=0,
+        as_of="2026-09-25T00:00:00+00:00",
+        findings=[house, utility_dive, eia, energi],
+        summary=summary, sections=sections, table=table,
+        page_credits={
+            normalize_source_url(house.source_url): PageCredit(publisher="house.gov"),
+            normalize_source_url(utility_dive.source_url): PageCredit(publisher="Utility Dive"),
+            normalize_source_url(eia.source_url): PageCredit(publisher="U.S. Energy Information Administration"),
+            normalize_source_url(energi.source_url): PageCredit(publisher="energi.media"),
+        },
+        not_found=[
+            NotFoundTarget(
+                target_id="topic-01-target-01",
+                question=("How much grid-scale battery storage capacity did the "
+                          "United States add in 2024, according to the U.S. Energy "
+                          "Information Administration?"),
+                searched=True,
+            ),
+            NotFoundTarget(
+                target_id="topic-02-target-01",
+                question=("What 2025 grid-scale battery storage capacity additions "
+                          "did the U.S. Energy Information Administration's latest "
+                          "forecast covering 2025 project?"),
+                searched=True,
+            ),
+        ],
+    )
+
+
+_PRE_FLIGHT_RUN_GOLDEN = """\
+# How much grid-scale battery storage capacity was added in the United States in 2024, and what do the latest forecasts project for 2025?
+
+Evidence as of 2026-09-25 · 4 sources
+
+## Bottom line
+
+For 2024, house.gov reports that generators added 10.4 GW of new battery storage capacity, the second-largest generating capacity addition after solar [1]. The Energy Information Administration's forecast, released 2025-06-10 and reported by Utility Dive, projects domestic storage capacity rising from about 28 GW at the end of Q1 2025 to 64.9 GW at the end of 2026 [2]. The U.S. Energy Information Administration reports that by the end of 2025 the U.S. power system had operational battery storage capacity of 43.6 GW [3].
+
+| What was measured | Result | Who reported it (and when) | Source |
+|---|---|---|---|
+| "Generators added 10.4 GW of new battery storage capacity in 2024, the second-largest generating capacity addition after solar." | 10.4 GW, actual | house.gov (stated 2025-03-12) | [1] |
+| "cumulative utility-scale battery storage capacity exceeded 26 gigawatts (GW) in 2024, according to our January 2025 Preliminary Monthly…" | 26 gigawatts (GW), actual | house.gov (stated 2025-03-12) | [1] |
+| Battery storage capacity, 2025 | 43.6 gigawatts (GW), actual | U.S. Energy Information Administration (stated 2026-08-07) | [3] |
+| Battery storage (first six months of 2026) | 8.3 GW, actual | U.S. Energy Information Administration (stated 2026-08-07) | [3] |
+| "Utility-scale battery storage in the United States is poised to more than double over the next two years and will close out 2026 at nearly 65 GW…" | 65 GW, forecast | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| Battery storage (utility-scale), Q1 2024 | 17 GW, actual | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| "Counting projects larger than 1 MW in the electric power sector, EIA said domestic storage capacity will rise from about 28 GW at the end of Q1'25…" | 28 GW, actual | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| "…EIA said domestic storage capacity will rise from about 28 GW at the end of Q1'25 to 64.9 GW at the end of 2026." | 64.9 GW, forecast | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| ERCOT, 2025 | 15 GW, actual | EIA, reported by energi.media (stated 2026-01-21) | [4] |
+| ERCOT, 2027 | 37 GW, forecast | EIA, reported by energi.media (stated 2026-01-21) | [4] |
+
+## Capacity added in 2024
+
+- For 2024, house.gov reports that generators added 10.4 GW of new battery storage capacity, the second-largest generating capacity addition after solar, from the January 2025 Preliminary Monthly Electric Generator Inventory [1].
+- house.gov also reports that cumulative utility-scale battery storage capacity exceeded 26 GW in 2024, from the same January 2025 Preliminary Monthly Electric Generator Inventory [1].
+- The U.S. Energy Information Administration reports that by the end of 2025 the U.S. power system had operational battery storage capacity of 43.6 GW [3].
+- The U.S. Energy Information Administration reports that operators added another 8.3 GW of battery storage during the first six months of 2026 [3].
+
+## The EIA's forecasts
+
+- According to the Energy Information Administration, as reported by Utility Dive and released 2025-06-10, domestic storage capacity will rise from about 28 GW at the end of Q1 2025 to 64.9 GW at the end of 2026, counting projects larger than 1 MW in the electric power sector [2].
+- According to the Energy Information Administration, as reported by Utility Dive, utility-scale battery storage in the United States is forecast to more than double over the next two years and to close out 2026 at nearly 65 GW, a rise from 17 GW in the first quarter of 2024 (forecast released 2025-06-10) [2].
+
+## Other forecasts
+
+- The EIA expects battery capacity in ERCOT to rise from about 15 GW in 2025 to 37 GW by the end of 2027, according to EIA, as reported by energi.media [4].
+
+## What we couldn't confirm
+
+We found no source we could check that answers:
+- How much grid-scale battery storage capacity did the United States add in 2024, according to the U.S. Energy Information Administration?
+- What 2025 grid-scale battery storage capacity additions did the U.S. Energy Information Administration's latest forecast covering 2025 project?
+
+## Sources
+
+1. house.gov — [U.S. battery capacity increased 66% in 2024](https://docs.house.gov/meetings/II/II00/20260513/119199/HHRG-119-II00-20260513-SD003.pdf)
+2. Utility Dive — [US utility-scale energy storage to double, reach 65 GW by 2027: EIA](https://utilitydive.com/news/us-utility-scale-energy-storage-to-double-reach-65-gw-by-2027-eia/750338)
+3. U.S. Energy Information Administration — [Battery storage capacity averaged 70% growth over the last three years](https://eia.gov/todayinenergy/detail.php?id=67925)
+4. energi.media — [U.S. Electricity Generation Set to Rise as Solar and Battery Capacity Expand: EIA Forecasts - Thoughtful Journalism](https://energi.media/news/u-s-electricity-generation-set-to-rise-as-solar-and-battery-capacity-expand-eia-forecasts)
+
+How this was researched: [evidence log](report-9390e6e10b324fb6a6dc17477738a531-0-evidence.md)
+"""
+
+
+def test_the_1322_pre_flight_run_renders_the_spec_golden() -> None:
+    """§14 T3 acceptance: §13.2's exact rendering from a hand-built
+    composition shaped like the run's own quality JSON."""
+    assert render_written_report(_pre_flight_run_composition()) == _PRE_FLIGHT_RUN_GOLDEN
+
+
+def _electoral_college_composition() -> ReportComposition:
+    """§13.3 -- the generality smoke run (session ``e5d6cc40...``, pass 0; a
+    capped run, 12 required targets left unsearched)."""
+    cornell_article_ii = _bare_finding(
+        "https://law.cornell.edu/constitution/articleii",
+        "Article II | U.S. Constitution | US Law | LII / Legal Information Institute",
+        "Each State appoints electors as its Legislature directs.",
+    )
+    justia = _bare_finding(
+        "https://law.justia.com/constitution/us/article-2/03-electoral-college.html",
+        "Electoral College :: Article II. Executive Department :: U.S. Constitution Annotated :: Justia",
+        "No Senator or Representative shall be appointed an elector.",
+    )
+    archives_allocation = _bare_finding(
+        "https://archives.gov/electoral-college/allocation",
+        "Distribution of Electoral Votes",
+        "538 electoral votes in all, 270 needed to elect.",
+    )
+    archives_about = _bare_finding(
+        "https://archives.gov/electoral-college/about",
+        "What is the Electoral College?",
+        "Every State receives a number of votes equal to its delegation.",
+    )
+    cornell_chiafalo = _bare_finding(
+        "https://law.cornell.edu/supremecourt/text/19-465",
+        "CHIAFALO v. WASHINGTON | Supreme Court | US Law | LII / Legal Information Institute",
+        "A State may enforce an elector's pledge.",
+    )
+    archives_allocation_id = finding_fingerprint(archives_allocation)
+
+    def point(n: int, text: str, *urls: str) -> ReportPoint:
+        return ReportPoint(text=text, source_urls=list(urls),
+                           statement=ReportStatement(statement_id=f"S{n:03d}", text=text))
+
+    summary = [
+        point(1, "Under the Constitution, each State appoints, in the manner its "
+                "Legislature directs, a number of electors equal to its Senators "
+                "and Representatives in Congress;",
+             cornell_article_ii.source_url, justia.source_url),
+        point(2, "archives.gov reports 538 electoral votes in all, with 270 needed "
+                "to elect, for the 2024 and 2028 presidential elections.",
+             archives_allocation.source_url),
+        point(3, "The electors meet in their respective states and vote by ballot "
+                "for two persons,", cornell_article_ii.source_url),
+        point(4, "and if two or more candidates remain with equal votes, the "
+                "Senate chooses the Vice President from them by ballot.", justia.source_url),
+    ]
+
+    table_rows = [
+        ("The District of Columbia", "three electors", "National Archives"),
+        ('"…Senators and Representatives in its U.S. Congressional delegation—two '
+         'votes for its Senators in the U.S. Senate…"', "two votes", "National Archives"),
+        ("Total Electoral Votes, 2024 and 2028 presidential elections",
+         "538 electoral votes", "National Archives"),
+        ("Majority Needed to Elect, 2024 and 2028 presidential elections",
+         "270 votes", "National Archives"),
+    ]
+    table = ReportTable(
+        shape="findings",
+        columns=["What was measured", "Result", "Who reported it (and when)", "Source"],
+        rows=[[TableCell(text=what), TableCell(text=result), TableCell(text=who),
+              TableCell(finding_ids=[archives_allocation_id])]
+             for what, result, who in table_rows],
+        caption="No figure in this table is a forecast.",
+    )
+
+    sections = [
+        ReportSection(title="How many electors there are", points=[
+            point(5, "archives.gov reports 538 total electoral votes and 270 votes "
+                    "as the majority needed to elect, for the 2024 and 2028 "
+                    "presidential elections, on allocations based on the 2020 "
+                    "Census.", archives_allocation.source_url),
+            point(6, "archives.gov states that under the 23rd Amendment of the "
+                    "Constitution the District of Columbia is allocated three "
+                    "electors and treated like a State for purposes of the "
+                    "Electoral College.", archives_allocation.source_url),
+            point(7, "archives.gov states that electoral votes are allocated among "
+                    "the States based on the Census, every State receiving a "
+                    "number of votes equal to the number of Senators and "
+                    "Representatives in its U.S. Congressional delegation — two "
+                    "votes for its Senators in the U.S. Senate plus a number of "
+                    "votes equal to the number of its Congressional districts, one "
+                    "for each Member in the House of Representatives.",
+                 archives_allocation.source_url, archives_about.source_url),
+        ]),
+        ReportSection(title="How electors are appointed and who may serve", points=[
+            point(8, "According to cornell.edu and justia.com, the Constitution "
+                    "provides that each State shall appoint, in such manner as the "
+                    "Legislature thereof may direct, a number of electors equal to "
+                    "the whole number of Senators and Representatives to which the "
+                    "State may be entitled in the Congress.",
+                 cornell_article_ii.source_url, justia.source_url),
+            point(9, "According to justia.com and cornell.edu, no Senator or "
+                    "Representative, or person holding an office of trust or "
+                    "profit under the United States, shall be appointed an "
+                    "elector.", cornell_article_ii.source_url, justia.source_url),
+            point(10, "cornell.edu states that the Constitution's text and the "
+                     "Nation's history both support allowing a State to enforce an "
+                     "elector's pledge to support his party's nominee — and the "
+                     "state voters' choice — for President.", cornell_chiafalo.source_url),
+        ]),
+        ReportSection(title="How the electors vote", points=[
+            point(11, "According to cornell.edu, the electors shall meet in their "
+                     "respective states and vote by ballot for two persons, of "
+                     "whom one at least shall not be an inhabitant of the same "
+                     "state with themselves.", cornell_article_ii.source_url),
+        ]),
+        ReportSection(title="When no candidate has a majority", points=[
+            point(12, "According to justia.com, if two or more candidates should "
+                     "remain with equal votes, the Senate shall choose from them "
+                     "by ballot the Vice President.", justia.source_url),
+        ]),
+    ]
+
+    unresearched_questions = [
+        "What date does federal law set for the appointment of presidential electors?",
+        "Which states award their electoral votes by congressional district rather than statewide?",
+        "On what day must the presidential electors meet to cast their votes?",
+        "In what place must the electors meet to cast their votes?",
+        "What instrument must a state's executive issue to certify which electors were appointed?",
+        "To which officials must the certificate identifying a state's appointed electors be transmitted?",
+        "What legal effect does a state's determination of its electors have if it is made under the federal safe-harbor provision?",
+        "On what date must Congress count the electoral votes?",
+        "Who presides over the joint session at which Congress counts the electoral votes?",
+        "Which body elects the President if no candidate receives a majority of the electoral votes?",
+        "What voting arrangement governs the House of Representatives when it elects the President?",
+        "What voting arrangement governs the Senate when it elects the Vice President?",
+    ]
+
+    return ReportComposition(
+        question="How does the U.S. Electoral College work?",
+        session_id="e5d6cc40fa74403ab7af075a9153c305", iteration=0,
+        as_of="2026-09-25T00:00:00+00:00",
+        findings=[cornell_article_ii, justia, archives_allocation, archives_about, cornell_chiafalo],
+        summary=summary, sections=sections, table=table,
+        page_credits={
+            normalize_source_url(cornell_article_ii.source_url): PageCredit(publisher="cornell.edu"),
+            normalize_source_url(justia.source_url): PageCredit(publisher="Justia"),
+            normalize_source_url(archives_allocation.source_url): PageCredit(publisher="National Archives"),
+            normalize_source_url(archives_about.source_url): PageCredit(publisher="National Archives"),
+            normalize_source_url(cornell_chiafalo.source_url): PageCredit(publisher="cornell.edu"),
+        },
+        not_found=[
+            NotFoundTarget(target_id=f"topic-{n:02d}-target-01", question=question, searched=False)
+            for n, question in enumerate(unresearched_questions, start=1)
+        ],
+    )
+
+
+_ELECTORAL_COLLEGE_GOLDEN = """\
+# How does the U.S. Electoral College work?
+
+Evidence as of 2026-09-25 · 5 sources
+
+## Bottom line
+
+Under the Constitution, each State appoints, in the manner its Legislature directs, a number of electors equal to its Senators and Representatives in Congress [1][2]; archives.gov reports 538 electoral votes in all, with 270 needed to elect, for the 2024 and 2028 presidential elections [3]. The electors meet in their respective states and vote by ballot for two persons [1], and if two or more candidates remain with equal votes, the Senate chooses the Vice President from them by ballot [2].
+
+| What was measured | Result | Who reported it (and when) | Source |
+|---|---|---|---|
+| The District of Columbia | three electors | National Archives | [3] |
+| "…Senators and Representatives in its U.S. Congressional delegation—two votes for its Senators in the U.S. Senate…" | two votes | National Archives | [3] |
+| Total Electoral Votes, 2024 and 2028 presidential elections | 538 electoral votes | National Archives | [3] |
+| Majority Needed to Elect, 2024 and 2028 presidential elections | 270 votes | National Archives | [3] |
+
+*No figure in this table is a forecast.*
+
+## How many electors there are
+
+- archives.gov reports 538 total electoral votes and 270 votes as the majority needed to elect, for the 2024 and 2028 presidential elections, on allocations based on the 2020 Census [3].
+- archives.gov states that under the 23rd Amendment of the Constitution the District of Columbia is allocated three electors and treated like a State for purposes of the Electoral College [3].
+- archives.gov states that electoral votes are allocated among the States based on the Census, every State receiving a number of votes equal to the number of Senators and Representatives in its U.S. Congressional delegation — two votes for its Senators in the U.S. Senate plus a number of votes equal to the number of its Congressional districts, one for each Member in the House of Representatives [3][4].
+
+## How electors are appointed and who may serve
+
+- According to cornell.edu and justia.com, the Constitution provides that each State shall appoint, in such manner as the Legislature thereof may direct, a number of electors equal to the whole number of Senators and Representatives to which the State may be entitled in the Congress [1][2].
+- According to justia.com and cornell.edu, no Senator or Representative, or person holding an office of trust or profit under the United States, shall be appointed an elector [1][2].
+- cornell.edu states that the Constitution's text and the Nation's history both support allowing a State to enforce an elector's pledge to support his party's nominee — and the state voters' choice — for President [5].
+
+## How the electors vote
+
+- According to cornell.edu, the electors shall meet in their respective states and vote by ballot for two persons, of whom one at least shall not be an inhabitant of the same state with themselves [1].
+
+## When no candidate has a majority
+
+- According to justia.com, if two or more candidates should remain with equal votes, the Senate shall choose from them by ballot the Vice President [2].
+
+## What we couldn't confirm
+
+This run did not research:
+- What date does federal law set for the appointment of presidential electors?
+- Which states award their electoral votes by congressional district rather than statewide?
+- On what day must the presidential electors meet to cast their votes?
+- In what place must the electors meet to cast their votes?
+- What instrument must a state's executive issue to certify which electors were appointed?
+- To which officials must the certificate identifying a state's appointed electors be transmitted?
+- What legal effect does a state's determination of its electors have if it is made under the federal safe-harbor provision?
+- On what date must Congress count the electoral votes?
+- Who presides over the joint session at which Congress counts the electoral votes?
+- Which body elects the President if no candidate receives a majority of the electoral votes?
+- What voting arrangement governs the House of Representatives when it elects the President?
+- What voting arrangement governs the Senate when it elects the Vice President?
+
+## Sources
+
+1. cornell.edu — [Article II | U.S. Constitution | US Law | LII / Legal Information Institute](https://law.cornell.edu/constitution/articleii)
+2. Justia — [Electoral College :: Article II. Executive Department :: U.S. Constitution Annotated :: Justia](https://law.justia.com/constitution/us/article-2/03-electoral-college.html)
+3. National Archives — [Distribution of Electoral Votes](https://archives.gov/electoral-college/allocation)
+4. National Archives — [What is the Electoral College?](https://archives.gov/electoral-college/about)
+5. cornell.edu — [CHIAFALO v. WASHINGTON | Supreme Court | US Law | LII / Legal Information Institute](https://law.cornell.edu/supremecourt/text/19-465)
+
+How this was researched: [evidence log](report-e5d6cc40fa74403ab7af075a9153c305-0-evidence.md)
+"""
+
+
+def test_the_1333_electoral_college_smoke_renders_the_spec_golden() -> None:
+    """§14 T3 acceptance: §13.3's exact rendering from a hand-built
+    composition shaped like the run's own quality JSON (a capped run, 12
+    required targets never searched)."""
+    assert render_written_report(_electoral_college_composition()) == _ELECTORAL_COLLEGE_GOLDEN
