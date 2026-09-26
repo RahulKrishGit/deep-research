@@ -144,8 +144,9 @@ _AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
     "planner": lambda reputation, **shared: PlannerAgent(**shared),
     "researcher": lambda reputation, **shared: ResearcherAgent(
         max_sub_topics=shared["config"].max_sub_topics,
-        selected_passages_per_read=shared["config"].selected_passages_per_read,
+        read_admission_chars=shared["config"].read_admission_chars,
         evidence_packet_chars=shared["config"].evidence_packet_chars,
+        decision_context_chars=shared["config"].decision_context_chars,
         **shared,
     ),
     "source_evaluator": lambda reputation, **shared: SourceEvaluatorAgent(

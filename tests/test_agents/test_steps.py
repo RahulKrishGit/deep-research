@@ -23,7 +23,7 @@ from deep_research.utils.types import ResearchError
 
 
 def test_summary_limit_default_is_prompt_sized() -> None:
-    assert DEFAULT_SUMMARY_LIMIT == 200
+    assert DEFAULT_SUMMARY_LIMIT == 2000
 
 
 def test_summarize_text_collapses_whitespace() -> None:

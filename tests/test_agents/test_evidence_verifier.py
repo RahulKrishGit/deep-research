@@ -656,23 +656,30 @@ class _ConcurrencyProbe:
 
 
 @pytest.mark.asyncio
-async def test_the_concurrency_cap_is_eight(tracker: Tracker) -> None:
-    """§5.2/D8: batches run concurrently, at most 8 at once. More batches
-    than the cap, all racing for the same semaphore, prove the cap holds
-    rather than merely happening to fit."""
-    batch_count = 10
+async def test_the_concurrency_cap_is_respected(tracker: Tracker) -> None:
+    """§5.2/D8: batches run concurrently, at most the configured cap at
+    once. More batches than the cap, all racing for the same semaphore,
+    prove the cap holds rather than merely happening to fit -- against
+    whatever ``agents.verifier_concurrency`` is configured to, not a
+    number pinned in the test."""
+    config = AgentRuntimeConfig()
+    cap = config.verifier_concurrency
+    batch_count = cap + 2
     total = batch_count * CONTEXT_CHECK_BATCH_SIZE
     read = make_read(_metrics_page(total), url="https://example.test/cap", title="Cap test")
     findings = [_metric_finding(read, i) for i in range(total)]
     probe = _ConcurrencyProbe()
-    agent = _evidence_verifier(tracker, probe)
+    agent = _evidence_verifier(tracker, probe, config=config)
     state = _state(raw_findings=findings, read_records={read.read_id: read})
 
     async with tracker.session_span("session-1", "question"):
         outcome = await agent.run(state)
 
     assert len(probe.calls) == batch_count
-    assert probe.max_in_flight == CONTEXT_CHECK_CONCURRENCY
+    # Never exceeds the cap, and reaches it: more batches were queued than
+    # the cap allows in flight at once.
+    assert probe.max_in_flight <= cap
+    assert probe.max_in_flight == cap
     assert len(outcome.state_update["verified_findings"]) == total
 
 

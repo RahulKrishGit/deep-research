@@ -11,6 +11,7 @@ the experiment.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from deep_research.evaluation.dependencies import (
     SCENARIOS,
     DependencyBundle,
     read_url_fingerprints,
+    source_url_fingerprint,
 )
 from deep_research.evaluation.factory import (
     AgentConstructionError,
@@ -290,6 +292,31 @@ def _minimal_output(
         target_model_requested=target_model,
         target_reasoning_effort=target_reasoning_effort,  # type: ignore[arg-type]
     )
+
+
+_SOURCE_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
+
+
+def _redact_source_urls(text: str) -> str:
+    """Replace every URL in ``text`` with its fingerprint, before any clamp.
+
+    A trajectory's public observation prose is bounded by
+    ``observation_summary_chars`` so a downstream reader sees a short prefix,
+    not the packet -- but a length bound is not a privacy boundary, and a
+    clamp long enough to carry a source URL in full must never do it in the
+    clear. So a URL is redacted first, and the clamp is applied to the
+    redacted text: the boundary holds whatever the clamp is, rather than
+    depending on the URL falling past it by luck. A URL that cannot carry a
+    fingerprint (not an absolute HTTP(S) URL) is replaced with a generic
+    marker instead of leaking the raw text unredacted.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        url = match.group(0)
+        fingerprint = source_url_fingerprint(url)
+        return f"source:{fingerprint}" if fingerprint else "[redacted-url]"
+
+    return _SOURCE_URL_PATTERN.sub(_replace, text)
 
 
 def _finish(
@@ -588,7 +615,7 @@ def _success_output(
                 None if step.observation is None else step.observation.success
             ),
             observation_summary=(
-                step.observation.summary[:limit]
+                _redact_source_urls(step.observation.summary)[:limit]
                 if step.observation is not None
                 else ""
             ),

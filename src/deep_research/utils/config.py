@@ -173,7 +173,7 @@ class SourceEvaluatorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     batch_size: int = Field(default=12, ge=1)
-    max_total_sources: int = Field(default=36, ge=1)
+    max_total_sources: int = Field(default=100, ge=1)
 
 
 # The five agents one production run assembles, in graph order. Per-agent
@@ -276,18 +276,33 @@ class AgentRuntimeConfig(BaseModel):
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
     tool_budget_overrides: dict[str, int] = Field(default_factory=dict)
-    max_sub_topics: int = Field(default=7, ge=1)
-    selected_passages_per_read: int = Field(default=4, ge=1)
-    evidence_packet_chars: int = Field(default=24000, ge=1)
-    prompt_context_entries: int = Field(default=8, ge=0)
-    observation_summary_chars: int = Field(default=200, ge=1)
+    max_sub_topics: int = Field(default=10, ge=1)
+    read_admission_chars: int = Field(default=200000, ge=1)
+    """Per-read admission cap, in characters (fix-round: whole-page admission).
+
+    Every passage of a read is admitted, in ranked order, up to this cap; only
+    an extreme document (past it) still defers passages to a continuation
+    batch. Replaces the old passage-count cap (``selected_passages_per_read``),
+    which starved a page of many short, on-topic chunks or wasted the whole
+    allowance on a few long ones -- a raw count never matched a real page's
+    own character size.
+    """
+    evidence_packet_chars: int = Field(default=400000, ge=1)
+    """The extraction packet's own budget: a sub-topic's whole admitted reads
+    plus row overhead, so an extraction call sees everything it read."""
+    decision_context_chars: int = Field(default=24000, ge=1)
+    """Every ReAct decision turn's own, much smaller budget: a turn is a
+    routing choice (search again? read another candidate? extract?), never
+    the place a whole page belongs."""
+    prompt_context_entries: int = Field(default=20, ge=0)
+    observation_summary_chars: int = Field(default=2000, ge=1)
     # Spec §7.3's four concurrency bounds (D9/PD-27). The mission defaults the
     # module constants carry stay as the code-level defaults; these are what a
     # production run reads.
     sub_topic_concurrency: int = Field(default=5, ge=1)
-    source_scoring_concurrency: int = Field(default=3, ge=1)
+    source_scoring_concurrency: int = Field(default=6, ge=1)
     verifier_batch_size: int = Field(default=5, ge=1)
-    verifier_concurrency: int = Field(default=8, ge=1)
+    verifier_concurrency: int = Field(default=16, ge=1)
     planner_final_max_tokens: int = Field(default=65536, ge=1)
     report_review_max_tokens: int = Field(default=65536, ge=1)
     """Output headroom for the report reviewer's one request per review.
@@ -519,11 +534,9 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_MAX_ITERATIONS": ("agents", "max_iterations"),
     "AGENTS_TOOL_BUDGET": ("agents", "tool_budget"),
     "AGENTS_MAX_SUB_TOPICS": ("agents", "max_sub_topics"),
-    "AGENTS_SELECTED_PASSAGES_PER_READ": (
-        "agents",
-        "selected_passages_per_read",
-    ),
+    "AGENTS_READ_ADMISSION_CHARS": ("agents", "read_admission_chars"),
     "AGENTS_EVIDENCE_PACKET_CHARS": ("agents", "evidence_packet_chars"),
+    "AGENTS_DECISION_CONTEXT_CHARS": ("agents", "decision_context_chars"),
     "AGENTS_SOURCE_EVALUATOR_BATCH_SIZE": (
         "agents",
         "source_evaluator",

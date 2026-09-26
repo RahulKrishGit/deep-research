@@ -1065,9 +1065,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # where the previous round wrongly refused it too. Later heuristic edge
     # cases on this guard are accepted residuals; the writer-side fix in
     # the report-format spec is the main protection. The module source
-    # moved `0e92c7cf1206` -> `4245163b56a8`; no other agent's text changed,
-    # so the other four target pins and the Judge pin are unchanged.
-    "researcher": "4245163b56a8",
+    # moved `0e92c7cf1206` -> `4245163b56a8` -> `4c360ee7ebd1`, the second
+    # move from this slice's whole-page admission rework (S1: passage
+    # selection, packet building, and the finding/source caps); no other
+    # agent's text changed, so the other four target pins and the Judge pin
+    # are unchanged.
+    "researcher": "4c360ee7ebd1",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
