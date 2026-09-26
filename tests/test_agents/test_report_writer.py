@@ -419,6 +419,66 @@ def test_a_bottom_line_redraft_shows_its_previous_text():
     assert "Old bottom line." in body
 
 
+def test_section_messages_carry_the_own_voice_and_actual_outcome_rules():
+    """Fable prompt review (Required 1, Recommended 5): both new rules reach
+    the model, not just the constant."""
+    task = _one_target_task()
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=task.targets, findings=task.findings, context_findings=[],
+                 previous=None, defects=[], redraft=True)
+
+    body = section_messages(task, job)[-1].content
+
+    assert "never a pick, ranking, verdict or criterion of your own" in body
+    assert ("an actual as a reported outcome with its period, never with a "
+           "forecast verb" in body)
+
+
+def test_section_messages_explain_the_sub_topic_only_suffix():
+    """Fable prompt review (Recommended 4)."""
+    task = _one_target_task()
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=task.targets, findings=task.findings, context_findings=[],
+                 previous=None, defects=[], redraft=True)
+
+    body = section_messages(task, job)[-1].content
+
+    assert ("answered by a finding matched to its sub-topic, not bound to that "
+           "target explicitly" in body)
+
+
+def test_bottom_line_messages_carry_the_figure_credit_and_page_date_rules():
+    """Fable prompt review (Required 2, Recommended 3): both new rules reach
+    the model, not just the constant."""
+    task = _one_target_task()
+
+    body = bottom_line_messages(task, [])[-1].content
+
+    assert ("Credit every figure, judgement, pick or ranking to its source "
+           "exactly as the statement credits it, keeping \"according to "
+           "<organisation>, as reported by <site>\" where the statement has it." in body)
+    assert ("Never state a page's own date (the sources list prints it); a "
+           "forecast's release is not a page date and stays." in body)
+
+
+def test_answer_form_line_does_not_double_its_own_label():
+    """Fable prompt review (item 6): _ANSWER_FORM_REQUIREMENTS' values start
+    with their own literal "answer form: " prefix (for planner.py's inline
+    use); printed under this module's own "# Answer form" heading unchanged,
+    that doubled the label."""
+    task = _one_target_task()
+    task = task.model_copy(update={"answer_kind": "factual"})
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=task.targets, findings=task.findings, context_findings=[],
+                 previous=None, defects=[], redraft=True)
+
+    body = section_messages(task, job)[-1].content
+    answer_form_section = body.split("# Answer form\n", 1)[1].split("\n# ", 1)[0].rstrip("\n")
+
+    assert answer_form_section == "the specific thing asked for, in the form its evidence takes \u2014 a figure with its value, unit and date; items with their attributes; dated events; reasons; a rule's provisions"
+    assert "answer form:" not in answer_form_section.lower()
+
+
 # --- prompt content: WRI-2/WRI-5 directions ---------------------------------
 
 
@@ -460,8 +520,9 @@ def test_bottom_line_instruction_forbids_a_pick_of_its_own():
     assert "never a pick, ranking or criterion of your own" in BOTTOM_LINE_INSTRUCTION
 
 
-def test_bottom_line_instruction_forbids_stating_a_sources_date():
-    assert "Never state a source's date" in BOTTOM_LINE_INSTRUCTION
+def test_bottom_line_instruction_forbids_stating_a_pages_own_date():
+    assert "Never state a page's own date" in BOTTOM_LINE_INSTRUCTION
+    assert "a forecast's release is not a page date and stays" in BOTTOM_LINE_INSTRUCTION
 
 
 # --- generality (D10): no domain or probe wording in model-read text -------
@@ -1081,6 +1142,51 @@ async def test_the_table_is_built_after_page_credits_exist_not_before(
     )
     assert "reported by Utility Dive" in who_cell
     assert "utilitydive.com" not in who_cell
+
+
+@pytest.mark.asyncio
+async def test_a_relayed_figures_attribution_survives_into_the_bottom_line(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """Fable prompt review: SECTION_INSTRUCTION's relay-credit phrase
+    ("according to <organisation>, as reported by <site>") reaches the
+    bottom line's own request unchanged (the checked-statements block copies
+    a kept point's text verbatim) and survives the Statement Check and
+    restatement dedup to print in the final bottom line unchanged."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    relay_url = "https://www.utilitydive.com/news/storage-2025"
+    relay_read = make_read("Wood Mackenzie reports 16 GW of storage in 2025.",
+                           url=relay_url, title="Storage in 2025 | Utility Dive")
+    finding = _checked(relay_url, "Wood Mackenzie reports 16 GW of storage in 2025.", "16", "GW",
+                       organisation="Wood Mackenzie", attribution="relayed",
+                       target_ids=["topic-01-target-01"])
+    finding = finding.model_copy(update={"read_id": relay_read.read_id})
+    topic = _topic("topic-01", "Storage capacity", [target])
+    state = ResearchState(
+        session_id="s1", original_question="Q?", sub_topics=[topic],
+        verified_findings=[finding], read_records={relay_read.read_id: relay_read},
+    )
+    credited_sentence = ("According to Wood Mackenzie, as reported by Utility Dive, "
+                        "storage capacity reached 16 GW in 2025.")
+    captured_bottom_line_body = {}
+
+    def route(messages, schema):
+        if schema is BottomLineDraft:
+            captured_bottom_line_body["text"] = messages[-1].content
+            return BottomLineDraft(sentences=[WriterPointDraft(
+                text=credited_sentence, finding_labels=["F01"])])
+        return SectionDraft(title="Storage capacity",
+                            points=[WriterPointDraft(text=credited_sentence, finding_labels=["F01"])])
+
+    completer = ScriptedCompleter(outputs=[route, route])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert credited_sentence in captured_bottom_line_body["text"]
+    assert [point.text for point in composition.summary] == [credited_sentence]
+
 
 
 @pytest.mark.asyncio

@@ -173,7 +173,8 @@ SECTION_INSTRUCTION = (
     "- Cite by label only: every point lists in finding_labels the labels it rests on. "
     "Never write a URL.\n"
     "- State a forecast with a forecast verb (\"projects\", \"expects\", \"forecasts\"), never "
-    "as a completed outcome.\n"
+    "as a completed outcome, and an actual as a reported outcome with its period, never "
+    "with a forecast verb.\n"
     "- Use only the numbers and dates of the cited findings, and keep the finding's own "
     "qualifier with the number it qualifies (\"nearly\", \"more than\", \"about\").\n"
     "- Use the scope words the finding states, never the question's.\n"
@@ -192,6 +193,9 @@ SECTION_INSTRUCTION = (
     "names no publisher. A host is where a statement was read, never the body that made "
     "it. Never print a label's own words (\"own figure\", \"not stated\", \"does not "
     "attribute it\") in a point.\n"
+    "- Every judgement, ranking or recommendation is attributed to the source that made "
+    "it, as the finding names it; where findings disagree, state each; never a pick, "
+    "ranking, verdict or criterion of your own.\n"
     "- State every answer the listed findings carry for this part's targets, required "
     "targets first in the listed order, each in the form its evidence takes: a figure "
     "with its period and its organisation; a forecast with its issuer and release; items "
@@ -199,7 +203,9 @@ SECTION_INSTRUCTION = (
     "give, and stated as the findings state them; reasons, mechanisms or provisions as the "
     "cited findings state them. Every required target a listed finding answers is stated "
     "by a point citing that finding; a point never announces an absence of its own -- an "
-    "unanswered target is code's to disclose, not yours.\n"
+    "unanswered target is code's to disclose, not yours. A target marked \"(through its "
+    "sub-topic only)\" is answered by a finding matched to its sub-topic, not bound to "
+    "that target explicitly; state it the same as any other answer.\n"
     f"- Keep every point under {MAX_POINT_CHARS} characters. A longer point is split "
     "at a sentence boundary and every piece kept with the same citations, so a "
     "sentence that long on its own is refused: write one fact per point.\n"
@@ -243,7 +249,8 @@ _SECTION_REPLY_EXAMPLES = (
         "Example input: ## F01: Example Tester's review (example-tester.test) | "
         "content: Example Tester's own lab measured Model A at a noise rating of "
         "4.5 out of 5. | snippet: Example Tester gives Model A a noise rating of 4.5 "
-        "out of 5. | F01 | figure 1: 4.5 out of 5 | period 2026 | kind actual | "
+        "out of 5. | F01 | figure 1: 4.5 out of 5 | subject Model A | period 2026 | "
+        "kind actual | "
         "organisation Example Tester | label: Example Tester's own figure; actual",
         '{"title":"Noise ratings","points":[{"text":"Example Tester gives Model A a '
         'noise rating of 4.5 out of 5.","finding_labels":["F01"],"items":[{"name":'
@@ -277,16 +284,17 @@ BOTTOM_LINE_INSTRUCTION = (
     "- Cite by label only: every sentence lists in finding_labels the labels it "
     "rests on, and every label must be one the listed statements cite -- never a "
     "label a listed statement does not carry.\n"
-    "- Credit every judgement, pick or ranking to its source exactly as the "
-    "statement credits it.\n"
+    "- Credit every figure, judgement, pick or ranking to its source exactly as the "
+    "statement credits it, keeping \"according to <organisation>, as reported by "
+    "<site>\" where the statement has it.\n"
     "- For a question asking which option is best, say which option each source "
     "picks and by what criterion, giving each source's pick where the sources "
     "differ, and never a pick, ranking or criterion of your own.\n"
     "- A forecast keeps its issuer, its release and a forecast verb.\n"
     "- Keep the qualifiers and the criteria the statements state.\n"
-    "- Never state a source's date (the report prints it), never announce an "
-    "absence, never list every option (the table does), and never copy a "
-    "statement word for word.\n"
+    "- Never state a page's own date (the sources list prints it); a forecast's "
+    "release is not a page date and stays. Never announce an absence, never list "
+    "every option (the table does), and never copy a statement word for word.\n"
     "- Every judgement, pick or verdict names the item it is about, exactly as the "
     "statement names it: never a bare pronoun or an unnamed reference. Such a "
     "sentence is refused.\n"
@@ -602,7 +610,15 @@ class PartJob:
 
 
 def _answer_form_line(task: ReportWriterTask) -> str:
-    return answer_form_requirement(task.answer_kind) if task.answer_kind else "not classified"
+    """The frozen contract's answer-form requirement, under this module's own
+    ``# Answer form`` heading -- ``_ANSWER_FORM_REQUIREMENTS``' values carry
+    their own literal ``"answer form: "`` prefix for ``planner.render_answer_contract``'s
+    inline use, which would otherwise double the label here."""
+    if not task.answer_kind:
+        return "not classified"
+    requirement = answer_form_requirement(task.answer_kind)
+    prefix = "answer form: "
+    return requirement[len(prefix):] if requirement.lower().startswith(prefix) else requirement
 
 
 def _target_line(
