@@ -402,17 +402,18 @@ def _extract_html(html: str) -> tuple[str, str, str | None, str | None]:
 _OG_PUBLISHED_PROPERTIES = ("article:published_time",)
 _OG_UPDATED_PROPERTIES = ("article:modified_time", "og:updated_time")
 
-# Citation and Dublin Core ``<meta name="...">`` conventions. Only
-# ``dcterms.modified`` names an edit; every other name in this family names a
-# publication date.
+# Citation and Dublin Core ``<meta name="...">`` conventions -- only the
+# names that specifically mean *publication*. The generic ``date``,
+# ``dc.date`` and ``dcterms.date`` are deliberately absent: a probe of an
+# earlier cut of this rule found ``name="date"`` holding a template's build
+# stamp and ``dcterms.date`` holding a last-modified date, both outranking a
+# page's own correct JSON-LD (RevDatesR3 P2). ``dcterms.modified`` is the one
+# name in this family that specifically means an edit.
 _CITATION_PUBLISHED_META_NAMES = (
     "citation_publication_date",
     "citation_date",
-    "dc.date",
     "dc.date.issued",
     "dcterms.issued",
-    "dcterms.date",
-    "date",
 )
 _CITATION_UPDATED_META_NAMES = ("dcterms.modified",)
 
@@ -504,10 +505,61 @@ def _first_meta_name_date(soup: BeautifulSoup, names: tuple[str, ...]) -> str | 
     return None
 
 
+# A microdata itemprop's date is read only when the item it belongs to is
+# shaped like the page's own content -- the same Article family JSON-LD
+# reads, plus a bare ``WebPage``. Reusing that vocabulary keeps "what shape
+# counts as the page's own content" one answer, not two that could drift.
+_ITEMSCOPE_ALLOWED_TYPES = _JSON_LD_ARTICLE_TYPES | _JSON_LD_FALLBACK_TYPES
+
+
+def _itemtype_names(itemtype: str) -> set[str]:
+    """The type keywords one ``itemtype`` attribute names, from its URL(s).
+
+    ``itemtype`` is one or more space-separated schema URLs
+    ("https://schema.org/BlogPosting"); the keyword is the final path
+    segment, which is what this module's JSON-LD ``@type`` vocabulary
+    already names its own types by.
+    """
+    return {
+        token.rstrip("/").rsplit("/", 1)[-1].casefold()
+        for token in itemtype.split()
+        if token.rstrip("/")
+    }
+
+
+def _nearest_itemscope_types(tag: Tag) -> set[str] | None:
+    """The type keywords of ``tag``'s nearest ``itemscope`` item, or ``None``.
+
+    ``None`` means the element carries no ``itemprop`` context at all -- no
+    ancestor (or itself) declares ``itemscope`` -- which is not the page's
+    own content by any reading and is never a candidate here.
+    """
+    node: Tag | None = tag
+    while node is not None:
+        if node.has_attr("itemscope"):
+            itemtype = node.get("itemtype")
+            return _itemtype_names(itemtype) if isinstance(itemtype, str) else set()
+        node = node.parent if isinstance(node.parent, Tag) else None
+    return None
+
+
 def _first_itemprop_date(soup: BeautifulSoup, prop: str) -> str | None:
-    """The date one microdata ``itemprop`` states, from whichever attribute
-    or text the element carries it in."""
+    """The date one microdata ``itemprop`` states, read only from an item
+    shaped like the page's own content.
+
+    An itemprop with no ``itemscope`` ancestor, or one scoped to a
+    ``Comment``, ``Person``, ``Organization`` or ``WebSite`` item, is
+    skipped: that is exactly the shape a related-post card, a recent-posts
+    widget or a comment's own timestamp carries, and reading it the same way
+    as the article's own date is how a comment's timestamp became the page's
+    date (RevDatesR3 P1).
+    """
     for tag in soup.find_all(attrs={"itemprop": prop}):
+        scope_types = _nearest_itemscope_types(tag)
+        if not scope_types or scope_types & _JSON_LD_EXCLUDED_TYPES:
+            continue
+        if not (scope_types & _ITEMSCOPE_ALLOWED_TYPES):
+            continue
         value = tag.get("content") or tag.get("datetime")
         if not isinstance(value, str) or not value.strip():
             value = tag.get_text(strip=True)
@@ -638,22 +690,27 @@ def _extract_page_date(soup: BeautifulSoup, scripts: list[Tag]) -> tuple[str | N
     """The page's own (published, updated) dates, from its own metadata only.
 
     Each field independently takes the first source, in order, that states
-    it: Open Graph, then microdata, then a citation/Dublin Core meta name,
-    then JSON-LD -- so a page whose Open Graph tags name only a publish date
-    still gets its edit date from wherever else it states one. ``None`` for a
-    field the page's metadata never states -- never a guess, and never read
-    from prose.
+    it: Open Graph, then JSON-LD, then microdata scoped to the page's own
+    content, then a citation/Dublin Core meta name naming publication
+    specifically -- so a page whose Open Graph tags name only a publish date
+    still gets its edit date from wherever else it states one. JSON-LD ranks
+    above microdata (RevDatesR3 P1): a correct article node then settles both
+    fields before a mis-scoped or unscoped ``itemprop`` elsewhere on the page
+    is ever consulted. ``None`` for a field the page's metadata never states
+    -- never a guess, and never read from prose.
     """
-    published: str | None = None
-    updated: str | None = None
-    for source in (_og_dates, _microdata_dates, _citation_dates):
-        found_published, found_updated = source(soup)
+    published, updated = _og_dates(soup)
+    for source in (
+        lambda: _json_ld_dates(scripts),
+        lambda: _microdata_dates(soup),
+        lambda: _citation_dates(soup),
+    ):
+        if published and updated:
+            break
+        found_published, found_updated = source()
         published = published or found_published
         updated = updated or found_updated
-        if published and updated:
-            return published, updated
-    ld_published, ld_updated = _json_ld_dates(scripts)
-    return published or ld_published, updated or ld_updated
+    return published, updated
 
 
 def _is_large_markup(html: str) -> bool:
