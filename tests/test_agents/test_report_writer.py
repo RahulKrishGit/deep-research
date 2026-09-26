@@ -510,16 +510,23 @@ def test_section_instruction_describes_the_option_marks():
 
 def test_section_instruction_defines_picked_and_by_for_a_relayed_recommendation():
     """Whole-branch review P1-1: a relayed pick (a body the page reports as
-    recommending an option, not the page's own voice) is not ambiguous."""
-    assert ("picked true when the finding reports a recommendation by the body it "
-           "attributes" in SECTION_INSTRUCTION)
-    assert "by the finding whose page reports the recommendation" in SECTION_INSTRUCTION
+    recommending an option, not the page's own voice) is not ambiguous, and
+    `by` names the finding's *label* -- a body name in `by` gets the mark
+    dropped by `_apply_marks` as citing no finding."""
+    assert ("picked true when the finding reports a recommendation, pick or "
+           "first-place ranking by the body it attributes" in SECTION_INSTRUCTION)
+    assert ("by the label of the finding whose page reports the recommendation"
+           in SECTION_INSTRUCTION)
 
 
 def test_section_instruction_keeps_the_criterion_in_the_verdict_span():
     """Whole-branch review P2-2: the "shortest span" rule must not cut the
-    criterion the sentence states the verdict by."""
+    criterion the sentence states the verdict by, and states the
+    `_MARK_SPAN_CHARS` cap that would otherwise silently drop the mark."""
+    from deep_research.agents.report_writer import _MARK_SPAN_CHARS
     assert "including the criterion the sentence states it by" in SECTION_INSTRUCTION
+    assert (f"at most {_MARK_SPAN_CHARS} characters (a longer span drops the mark)"
+           in SECTION_INSTRUCTION)
 
 
 
