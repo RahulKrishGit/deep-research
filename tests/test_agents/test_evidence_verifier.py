@@ -2251,6 +2251,30 @@ def test_the_statement_check_shows_the_passage_a_rules_conditions_live_in() -> N
     assert '    passage: "' not in without
 
 
+def test_the_statement_check_shows_the_source_line_a_kind_is_named_from() -> None:
+    """W2: the writer's rule lets a sentence name a weak page's kind "in the
+    source line's own words", so the checker must be shown that line too, or
+    it judges the naming against a block that never carried it."""
+    finding = make_finding(make_read("A claim."), "A claim.").model_copy(
+        update={"verification": FindingVerification(status="verified")})
+    item = StatementCheckItem(
+        label="S001", text="A student paper read at example.edu states a claim.",
+        findings=[finding], labels=["F01"],
+        source_lines={finding_fingerprint(finding): "A student paper hosted at a university."},
+    )
+
+    body = statement_check_messages([item], question="What does the page state?")[1].content
+    assert "    source: A student paper hosted at a university." in body
+
+    # Without a source line the block carries none: the checker is never
+    # asked to judge a kind it was not shown.
+    without = statement_check_messages(
+        [StatementCheckItem(label="S001", text="A claim.", findings=[finding], labels=["F01"])],
+        question="What does the page state?",
+    )[1].content
+    assert "    source: " not in without
+
+
 def test_a_date_figure_carries_no_period_correction_and_is_never_dropped() -> None:
     """Improvement 9, on the run's shape: the date a page states *is* the figure,
     so the reply proposing it as the period corrects nothing, and a date the

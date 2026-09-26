@@ -204,10 +204,12 @@ SECTION_INSTRUCTION = (
     "attribute it\") in a point.\n"
     "- When a snippet or passage shows the page quoting a named author or work "
     "(quotation marks with the author named, a footnote or a parenthetical citation), "
-    "credit that author or work as the passage names it, as reported by the page: "
-    "\"according to Example Author, as quoted by example-register.test\". A page "
-    "quoting someone is not the originator of the words. Never supply a name the "
-    "passage does not give.\n"
+    "credit that author or work as the passage names it, as reported by the page, even "
+    "where the finding's line says only where it was read: \"according to Example "
+    "Author, as quoted by example-register.test\". A page quoting someone is not the "
+    "originator of the words. Never supply a name the passage does not give: quoted "
+    "words with no name in the snippet or passage are \"a passage the page quotes\", "
+    "named by the page's host and by no author.\n"
     "- When the source line describes the page's kind (a student paper, a class "
     "assignment, a teaching or role-play document, an enthusiast site, a blog post, a "
     "reader comment, a podcast or course description), say so when you credit it, in "
@@ -221,8 +223,8 @@ SECTION_INSTRUCTION = (
     "which source dates its value or names the document it rests on.\n"
     "- When two findings state opposite judgements of the same thing, state both in "
     "one point, say they differ, and, where a cited finding shows it, name which one "
-    "is dated later or which the page calls the current view. Never pick one "
-    "yourself.\n"
+    "is dated later or which a cited finding's page calls the current view. Never "
+    "pick one yourself.\n"
     "- Within the point budget this request states, state each distinct fact the "
     "listed findings carry for this part's targets once, in one point citing together "
     "every finding that states it, required targets first in the listed order, each in "
@@ -239,11 +241,13 @@ SECTION_INSTRUCTION = (
     "the same as any other answer.\n"
     "- When several findings state the same fact, state it once and credit the "
     "sources together (\"Example Institute, example-register.test and Example News "
-    "state that ...\", citing all their labels), never one clause per source.\n"
-    f"- Keep every point under {MAX_POINT_CHARS} characters. A longer point is split "
-    "at a sentence boundary and every piece kept with the same citations, so a "
-    "sentence that long on its own is refused: write one fact per point.\n"
-    f"- Keep every point under {MAX_POINT_WORDS} words.\n"
+    "state that ...\", citing all their labels), never one clause per source; each "
+    "source keeps the credit its own line decides, so a relay among them stays "
+    "\"according to <organisation>, as reported by <site>\".\n"
+    f"- Keep every point under {MAX_POINT_CHARS} characters and under "
+    f"{MAX_POINT_WORDS} words. A longer point is split at a sentence boundary and "
+    "every piece kept with the same citations, so a sentence that long on its own "
+    "is refused: write one fact per point.\n"
     "- A section title names the part of the question this section answers, in the "
     "question's own words where it has them: at most eight words, never a judgement or "
     "a status.\n"
@@ -344,9 +348,10 @@ BOTTOM_LINE_INSTRUCTION = (
     "- Every judgement, pick or verdict names the item it is about, exactly as the "
     "statement names it: never a bare pronoun or an unnamed reference. Such a "
     "sentence is refused.\n"
-    "- A sentence never refers to the question's own subject by a bare pronoun once "
-    "an earlier clause is cut or condensed: name the subject again in full, every "
-    "time, even where the same sentence named it a clause before.\n"
+    "- Never refer to the question's subject by a pronoun or possessive (\"it\", "
+    "\"its\", \"they\", \"their\"): name the subject in full every time, even where "
+    "the same sentence named it a clause before -- a condensed clause loses its "
+    "antecedent.\n"
     "- Mark each option your sentence is about, in items, the same way a section "
     "does: name, verdict, picked, and by when the sentence cites more than one "
     "site.\n"
@@ -371,16 +376,17 @@ _BOTTOM_LINE_REPLY_EXAMPLES = (
     (
         "Example input: # Checked statements ## Why the change happened - Example "
         "Institute reports that a 2019 regulation raised the compliance cost for "
-        "small operators. (cites F03) - Example Register and example-news.test state "
-        "that the cost rise pushed several small operators to exit the market. (cites "
-        "F04, F05) - Example Journal reports that the market exit concentrated supply "
-        "among the remaining larger operators. (cites F06)",
+        "small operators. (cites F03) - Example Register states that the cost rise "
+        "pushed several small operators to exit the market. (cites F04) - "
+        "example-news.test states that the cost rise drove several small operators "
+        "out of the market. (cites F05) - Example Journal reports that the market "
+        "exit concentrated supply among the remaining larger operators. (cites F06)",
         '{"sentences":[{"text":"According to Example Institute, a 2019 regulation '
         'drove up compliance costs for small operators, and Example Register and '
-        'example-news.test say the rise pushed several of them out of the market.",'
-        '"finding_labels":["F03","F04","F05"],"items":[]},{"text":"Example Journal '
-        'reports that those exits left supply concentrated among the larger operators '
-        'that remained.","finding_labels":["F06"],"items":[]}]}',
+        'example-news.test both say the rise pushed several small operators out of '
+        'the market.","finding_labels":["F03","F04","F05"],"items":[]},{"text":'
+        '"Example Journal reports that those exits left supply concentrated among '
+        'the larger operators that remained.","finding_labels":["F06"],"items":[]}]}',
     ),
 )
 
@@ -694,6 +700,29 @@ def report_parts(
 def sources_by_url(sources: Sequence[ScoredSource]) -> dict[str, ScoredSource]:
     """Every scored source, keyed by its normalized URL."""
     return {normalize_source_url(source.url): source for source in sources}
+
+
+def finding_source_lines(
+    findings: Sequence[Finding], sources: Mapping[str, ScoredSource]
+) -> dict[str, str]:
+    """Finding id (``finding_fingerprint``) -> its ``source:`` registry line
+    (W2), when its source carries one.
+
+    The same line ``registry_lines`` prints for the writer -- the run's own
+    source evaluation of the page's kind, in that evaluation's own words --
+    now built once and handed to the Statement Check and the terminal review
+    too, so a sentence naming a weak page's kind (the writer's own rule, "in
+    the source line's own words") can be judged against what those checkers
+    were actually shown, not invented against a block that never carried it.
+    """
+    lines: dict[str, str] = {}
+    for finding in findings:
+        rationale_line = _source_rationale_line(
+            sources.get(normalize_source_url(finding.source_url))
+        )
+        if rationale_line:
+            lines[finding_fingerprint(finding)] = rationale_line
+    return lines
 
 
 def is_context_only(
@@ -1440,7 +1469,7 @@ def _finalize_candidate(
 async def _check(
     provider: AgentCompleter, candidates: Sequence[_Candidate], *, question: str,
     gate: asyncio.Semaphore, batch_size: int, fingerprint: Callable[[str], object] | None,
-    passages: Mapping[str, str],
+    passages: Mapping[str, str], source_lines: Mapping[str, str],
 ) -> tuple[Mapping[str, _Verdict | None], list[ResearchError]]:
     """Run the Statement Check over one part's (or the bottom line's)
     candidates, through the shared gate (spec §6.5, D8, PD-12)."""
@@ -1454,7 +1483,8 @@ async def _check(
 
     items = [
         StatementCheckItem(label=c.key, text=c.text, findings=c.findings,
-                           labels=[_finding_label(f) for f in c.findings], passages=passages)
+                           labels=[_finding_label(f) for f in c.findings], passages=passages,
+                           source_lines=source_lines)
         for c in candidates
     ]
     try:
@@ -1621,6 +1651,7 @@ async def _run_part(
     verdicts, check_errors = await _check(
         provider, candidates, question=task.question, gate=check_gate,
         batch_size=batch_size, fingerprint=fingerprint, passages=task.passages,
+        source_lines=finding_source_lines(task.findings, sources_by_url(task.sources)),
     )
 
     stated_rows: set[str] = set()
@@ -1754,6 +1785,7 @@ async def _check_and_finalize_bottom_line(
     verdicts, check_errors = await _check(
         provider, candidates, question=task.question, gate=check_gate,
         batch_size=batch_size, fingerprint=fingerprint, passages=task.passages,
+        source_lines=finding_source_lines(task.findings, sources_by_url(task.sources)),
     )
 
     stated_rows: set[str] = set()
@@ -1925,7 +1957,10 @@ async def _run_bottom_line(
         reask_defects = [
             ReviewDefect(
                 defect_id=f"bottom-line-reask-{n:02d}", kind="missing_support", severity="major",
-                problem=f'The sentence "{text}" was refused: {reason}',
+                problem=f'The sentence "{text}" was refused by the check and dropped '
+                        f'({reason}). Restate what it said from the listed statements '
+                        'that state it, credited exactly as they credit it, or leave '
+                        'it out when none does.',
             )
             for n, (text, reason) in enumerate(refusals, start=1)
         ]

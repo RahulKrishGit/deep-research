@@ -90,6 +90,7 @@ from deep_research.utils.types import (
     ReportStatement,
     ReportTable,
     ResearchState,
+    ScoredSource,
     ReviewDefect,
     SubTopic,
     TableCell,
@@ -651,6 +652,28 @@ def test_a_finding_with_no_read_passage_carries_none() -> None:
     built = packet()
     assert built.findings[0].passage is None
     assert "passage:" not in _render(built)
+
+
+def test_the_finding_view_carries_the_sources_kind_line() -> None:
+    """W2: the writer names a weak page's kind "in the source line's own
+    words" -- the reviewer must be shown that same line, or it judges the
+    naming against a block that never carried it."""
+    source = ScoredSource(
+        url=EIA_URL, title=EIA_TITLE, authority_score=0.5, recency_score=0.5,
+        relevance_score=0.8, overall_score=0.5,
+        rationale="A student paper hosted at a university.",
+    )
+    built = build_report_review_input(
+        state_with_written_report(evaluated_sources=[source])
+    )
+    assert built.findings[0].kind_line == "A student paper hosted at a university."
+    assert "kind: A student paper hosted at a university." in _render(built)
+
+
+def test_a_finding_with_no_source_rationale_carries_no_kind_line() -> None:
+    built = packet()
+    assert built.findings[0].kind_line is None
+    assert "kind:" not in _render(built)
 
 
 def _second_eia_finding() -> object:

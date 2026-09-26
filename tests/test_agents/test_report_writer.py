@@ -891,6 +891,7 @@ class _FakeStatementCheckItem:
     findings: list = field(default_factory=list)
     labels: list = field(default_factory=list)
     passages: dict = field(default_factory=dict)
+    source_lines: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -1011,6 +1012,38 @@ async def test_one_non_empty_part_makes_one_section_call_and_one_bottom_line_cal
     assert composition.sections[0].coverage_id == "topic-01"
     assert len(composition.summary) == 1
     assert [p.status for p in composition.parts] == ["written"]
+
+
+@pytest.mark.asyncio
+async def test_a_findings_source_line_reaches_the_statement_check(writer, checker) -> None:
+    """W2: the Statement Check and the reviewer must see the same
+    ``source:`` line the writer's own registry prints, so a sentence naming
+    a weak page's kind can be judged against what it was shown, not
+    invented against a block that never carried it."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding = _checked("https://a.test/1", "The EIA reported 10.4 GW in 2024.", "10.4", "GW",
+                       organisation=EIA)
+    source = ScoredSource(
+        url="https://a.test/1", title="A page", authority_score=0.5, recency_score=0.5,
+        relevance_score=0.8, overall_score=0.5,
+        rationale="A student paper hosted at a university.",
+    )
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="How much capacity was added?",
+                          sub_topics=[topic], verified_findings=[finding], evaluated_sources=[source])
+    task = writer.build_task(state)
+    writer.provider._outputs.extend([
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+    ])
+
+    await compose_written_report(task, provider=writer.provider, section_concurrency=7)
+
+    finding_id = finding_fingerprint(finding)
+    assert len(checker.calls) == 2
+    for batch in checker.calls:
+        assert batch[0].source_lines[finding_id] == "A student paper hosted at a university."
 
 
 @pytest.mark.asyncio

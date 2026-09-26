@@ -1141,7 +1141,13 @@ STATEMENT_CHECK_SYSTEM_PROMPT = (
     "page's own title and the site it was read on, and a document that title "
     "names may be named by the sentence; a line saying where a statement was "
     "read names the site, not the body that made it, so a sentence presenting "
-    "that site as the author of a document is not supported."
+    "that site as the author of a document is not supported. A source line, "
+    "where the block prints one, is the kind of page the run's own source "
+    "evaluation found it to be, in that evaluation's words: a sentence may "
+    "describe the page by that kind in those words and by no other. A name "
+    "the passage gives beside quoted words -- in the sentence, a footnote or "
+    "a parenthetical citation -- credits that name with those words, as "
+    "quoted by the page."
 )
 
 STATEMENT_CHECK_INSTRUCTION = (
@@ -1234,6 +1240,15 @@ class StatementCheckItem(ContractModel):
     the snippet; a caller with no reads in hand leaves this empty and the block
     is exactly what it was.
     """
+    source_lines: dict[str, str] = Field(default_factory=dict)
+    """Finding id (``finding_fingerprint``) -> its ``source:`` registry line
+    (W2), the run's own source evaluation of the page's kind, in that
+    evaluation's own words. The same line the writer's registry shows beside
+    the finding, now shown here too: a sentence naming a weak page's kind is
+    judged against this line, not invented against a block that never
+    printed it. A finding with no rationale line, or whose caller has none in
+    hand, is left out.
+    """
 
 
 class StatementVerdictDraft(ContractModel):
@@ -1268,7 +1283,12 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
     also carries its ``release`` (Fable's final prompt review, High): a
     forecast's release is part of the honesty rule "a forecast carries its
     issuer and release", so a sentence that states it correctly must be able
-    to survive the check, and a correction must be able to recover it.
+    to survive the check, and a correction must be able to recover it. A
+    ``source`` line, printed under ``page`` when the caller supplied one
+    (W2), is the run's own source evaluation of the page's kind, in that
+    evaluation's own words: the same words the writer's registry prints, so
+    a sentence naming a weak page's kind can be judged against what it was
+    actually shown.
     """
     lines: list[str] = []
     for finding, label in zip(item.findings, item.labels):
@@ -1291,6 +1311,9 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
         lines.append(
             f"    page: {finding.source_title} ({publisher_identity(finding.source_url)})"
         )
+        source_line = item.source_lines.get(finding_fingerprint(finding))
+        if source_line:
+            lines.append(f"    source: {source_line}")
         lines.append(f'    snippet: "{finding.snippet or finding.content}"')
         passage = item.passages.get(finding_fingerprint(finding))
         if passage:

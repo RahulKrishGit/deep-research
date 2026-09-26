@@ -76,6 +76,8 @@ from deep_research.agents.report import (
 from deep_research.agents.report_writer import (
     # The other half of R1: one label string per cited finding.
     _finding_label,
+    finding_source_lines,
+    sources_by_url,
 )
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.observability import Tracker
@@ -318,7 +320,8 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
     "its cited findings' snippet or passage credits that same body with "
     "that fact, and a sentence crediting a fact to the page itself — the "
     "publisher or document its source line's title names, or the site "
-    "it was read on — is supported when the snippet or passage states "
+    "it was read on, described by the kind its kind line states and by "
+    "no other — is supported when the snippet or passage states "
     "that fact and credits no other body with it. A sentence that "
     "credits a body the snippet or passage does not credit with that "
     "fact — \"according to X\" beside findings whose snippet or passage "
@@ -507,6 +510,11 @@ class ReviewFindingView(ContractModel):
     own cut is not a false defect. ``None`` for a finding this run has no read
     passage for. ``status`` is the finding's own verified/corrected/quoted
     outcome (spec §11.1), rendered in the same words the evidence log uses.
+    ``kind_line`` (W2) is the run's own source evaluation of the page's kind,
+    in that evaluation's own words -- the same ``source:`` line the writer's
+    registry shows -- so a sentence naming a weak page's kind can be judged
+    against what the writer was actually shown. ``None`` when the source
+    carries no such line.
     """
 
     label: str = Field(min_length=1)
@@ -517,6 +525,7 @@ class ReviewFindingView(ContractModel):
     passage: str | None = None
     figure_labels: list[str] = Field(default_factory=list)
     status: str = ""
+    kind_line: str | None = None
 
 
 class ReviewDeterministic(ContractModel):
@@ -633,6 +642,10 @@ def build_report_review_input(
         composition = state.composition
     statements = _statement_views(composition)
     quality = state.quality
+    source_lines = (
+        finding_source_lines(composition.findings, sources_by_url(state.evaluated_sources))
+        if composition is not None else {}
+    )
     packet = ReportReviewInput(
         question=state.original_question,
         answer_contract=state.answer_contract,
@@ -641,6 +654,7 @@ def build_report_review_input(
         findings=_finding_views(
             composition,
             composition.statement_passages if composition is not None else None,
+            source_lines,
         ),
         fact_rows=_fact_row_lines(composition),
         table_lines=_table_lines(composition),
@@ -742,6 +756,7 @@ def _statement_labels(composition: ReportComposition) -> dict[str, str]:
 def _finding_views(
     composition: ReportComposition | None,
     passages: Mapping[str, str] | None = None,
+    source_lines: Mapping[str, str] | None = None,
 ) -> list[ReviewFindingView]:
     """One view per cited finding, paired with its own registered label.
 
@@ -754,11 +769,15 @@ def _finding_views(
     ``passages`` is the finding id -> bounded passage map the writer and the
     Statement Check read from (``statement_passages`` in ``report_writer.py``,
     D5/D13) -- the composition's own field, never a second computation of it.
-    A finding this run has no read passage for carries ``None``.
+    A finding this run has no read passage for carries ``None``. ``source_lines``
+    is the same finding id -> ``source:`` registry line the Statement Check
+    now reads too (``finding_source_lines`` in ``report_writer.py``, W2): a
+    finding whose source carries no rationale line carries ``None``.
     """
     if composition is None:
         return []
     passages = passages or {}
+    source_lines = source_lines or {}
     views: list[ReviewFindingView] = []
     for label, finding in _finding_registry_pairs(composition):
         if label is None:
@@ -778,6 +797,7 @@ def _finding_views(
                     for result in _kept_results(finding)
                 ],
                 status=_finding_status_label(finding),
+                kind_line=source_lines.get(finding_fingerprint(finding)),
             )
         )
     return views
@@ -1123,17 +1143,22 @@ def _render_statements(packet: ReportReviewInput) -> str:
 
 def _render_findings(packet: ReportReviewInput) -> str:
     """Every cited finding whole: its labels, its page, its status, its
-    snippet, and the bounded passage around it when this run read one."""
+    snippet, its kind line (when the source carries one), and the bounded
+    passage around it when this run read one."""
     blocks: list[str] = []
     for finding in packet.findings:
         lines = [
             f"### {finding.label}",
             f"source: {finding.source_title} — {finding.host}",
+        ]
+        if finding.kind_line:
+            lines.append(f"kind: {finding.kind_line}")
+        lines.extend([
             f"status: {finding.status or 'verified'}",
             f"figure labels: "
             f"{' | '.join(finding.figure_labels) or '(no figure was kept)'}",
             f"snippet:\n{finding.snippet}",
-        ]
+        ])
         if finding.passage:
             lines.append(f"passage:\n{finding.passage}")
         blocks.append("\n".join(lines))
