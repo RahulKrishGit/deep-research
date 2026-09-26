@@ -424,7 +424,10 @@ def _review_record(review: ReportReview | None) -> dict[str, JsonValue] | None:
     dimensions, and ``None`` without a full set — so the record cannot
     disagree with the acceptance helper that judged the same review. A defect
     keeps its recorded id, kind, severity, materiality and its *whole*
-    problem text (D19: never clamped -- no field this module publishes is)
+    problem text (D19: never clamped -- no field this module publishes is),
+    along with the ``resolution`` a scoped re-review recorded for it
+    (``"resolved"``, ``"unresolved"``, or ``None`` for one no scoped review
+    has judged yet) and the coverage ids it carries (T5 addendum item 4)
     — the record is the surface a replay checks it on. A review nobody made
     is ``None`` rather than an empty object that reads as a judgement with
     nothing to report.
@@ -444,6 +447,8 @@ def _review_record(review: ReportReview | None) -> dict[str, JsonValue] | None:
                 "target_ids": list(defect.target_ids),
                 "statement_ids": list(defect.statement_ids),
                 "problem": defect.problem,
+                "resolution": defect.resolution,
+                "coverage_ids": list(defect.coverage_ids),
             }
             for defect in review.defects
         ],

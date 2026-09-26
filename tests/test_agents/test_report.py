@@ -1093,11 +1093,104 @@ def test_the_quality_record_publishes_the_review_the_reviewer_recorded() -> None
                 "target_ids": [],
                 "statement_ids": ["S001"],
                 "problem": "The summary repeats the table's own release wording.",
+                "resolution": None,
+                "coverage_ids": [],
             }
         ],
         "dispositions": {"S001": "supported"},
         "missing_required_target_ids": ["topic-09-target-01"],
     }
+
+
+def test_the_quality_record_surfaces_each_defects_resolution_and_coverage_ids() -> None:
+    """T5 addendum item 4: a scoped re-review's own resolved/unresolved
+    reading of a previous defect, and its carried ``coverage_ids``, are
+    surfaced in the quality JSON's review record -- not only kept on the
+    in-memory ``ReviewDefect`` for the acceptance gate to read. A fresh
+    defect no scoped review has judged yet dumps ``resolution: null`` and
+    whatever ``coverage_ids`` it carries.
+    """
+    state = written_state()
+    review = ReportReview(
+        status="scored",
+        dimensions=dict.fromkeys(REVIEW_DIMENSIONS, 0.9),
+        defects=[
+            ReviewDefect(
+                defect_id="review-01",
+                kind="coverage",
+                severity="major",
+                target_ids=["topic-09-target-01"],
+                problem="The question's second part names no answer.",
+                coverage_ids=["topic-09"],
+                resolution="resolved",
+            ),
+            ReviewDefect(
+                defect_id="review-02",
+                kind="contradiction",
+                severity="major",
+                statement_ids=["S001"],
+                problem="The report states a rule its own findings qualify.",
+                coverage_ids=["topic-02"],
+                resolution="unresolved",
+            ),
+            ReviewDefect(
+                defect_id="review-03",
+                kind="presentation",
+                severity="minor",
+                statement_ids=["S002"],
+                problem="A heading repeats the bottom line verbatim.",
+            ),
+        ],
+        reviewed_statement_ids=["S001", "S002"],
+        per_statement_dispositions={"S001": "supported", "S002": "supported"},
+        input_fingerprint="packet-1",
+    )
+
+    record = json.loads(render_quality_json(state, state.composition, review))
+
+    defects_by_id = {row["defect_id"]: row for row in record["review"]["defects"]}
+    assert defects_by_id["review-01"]["resolution"] == "resolved"
+    assert defects_by_id["review-01"]["coverage_ids"] == ["topic-09"]
+    assert defects_by_id["review-02"]["resolution"] == "unresolved"
+    assert defects_by_id["review-02"]["coverage_ids"] == ["topic-02"]
+    assert defects_by_id["review-03"]["resolution"] is None
+    assert defects_by_id["review-03"]["coverage_ids"] == []
+
+
+def test_an_older_review_record_with_no_resolution_or_coverage_ids_still_loads() -> None:
+    """A ``ReviewDefect`` built the way an older run's stored state would
+    supply it -- with neither field named -- validates and dumps the same
+    ``None``/``[]`` defaults a fresh defect gets, so a pre-addendum snapshot
+    is read exactly as it was written."""
+    legacy_defect = ReviewDefect.model_validate(
+        {
+            "defect_id": "review-01",
+            "kind": "coverage",
+            "severity": "major",
+            "target_ids": ["topic-09-target-01"],
+            "statement_ids": [],
+            "problem": "The question's second part names no answer.",
+        }
+    )
+
+    assert legacy_defect.resolution is None
+    assert legacy_defect.coverage_ids == []
+
+    state = written_state()
+    review = ReportReview(
+        status="scored",
+        dimensions=dict.fromkeys(REVIEW_DIMENSIONS, 0.9),
+        defects=[legacy_defect],
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        input_fingerprint="packet-1",
+    )
+
+    record = json.loads(render_quality_json(state, state.composition, review))
+
+    (row,) = record["review"]["defects"]
+    assert row["resolution"] is None
+    assert row["coverage_ids"] == []
 
 
 # --- the run's telemetry block (§7.3; Task 4.14b) -----------------------------
