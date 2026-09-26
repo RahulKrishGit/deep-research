@@ -184,6 +184,8 @@ SECTION_INSTRUCTION = (
     "- State a forecast with a forecast verb (\"projects\", \"expects\", \"forecasts\"), never "
     "as a completed outcome, and an actual as a reported outcome with its period, never "
     "with a forecast verb.\n"
+    "- A source's prediction or general theory is stated as its prediction or theory, "
+    "with the date the finding gives, never as an account of what happened.\n"
     "- Use only the numbers and dates of the cited findings, and keep the finding's own "
     "qualifier with the number it qualifies (\"nearly\", \"more than\", \"about\").\n"
     "- Use the scope words the finding states, never the question's.\n"
@@ -218,9 +220,16 @@ SECTION_INSTRUCTION = (
     "- Every judgement, ranking or recommendation is attributed to the source that made "
     "it, as the finding names it; where findings disagree, state each; never a pick, "
     "ranking, verdict or criterion of your own.\n"
+    "- When the listed findings show that sources disagree about the answer (competing "
+    "explanations, or a step one source states and another disputes or qualifies), "
+    "state that disagreement in this part's first points: who holds which view, and "
+    "where they agree. A point that states it cites the findings on each side.\n"
     "- When two findings give different values or dates for the same thing, state both "
     "in one point, say that they differ, and, where a cited finding shows it, name "
-    "which source dates its value or names the document it rests on.\n"
+    "which source dates its value or names the document it rests on. Only values or "
+    "dates of the same measured thing differ: a period and an event, or two different "
+    "measures, are not a disagreement. Never say sources differ when they state "
+    "different things.\n"
     "- When two findings state opposite judgements of the same thing, state both in "
     "one point, say they differ, and, where a cited finding shows it, name which one "
     "is dated later or which a cited finding's page calls the current view. Never "
@@ -244,6 +253,9 @@ SECTION_INSTRUCTION = (
     "state that ...\", citing all their labels), never one clause per source; each "
     "source keeps the credit its own line decides, so a relay among them stays "
     "\"according to <organisation>, as reported by <site>\".\n"
+    "- When a weaker and a stronger source state the same fact, cite the stronger; a "
+    "weaker source's own distinct fact may still be stated, with its kind named when "
+    "its source line names one.\n"
     f"- Keep every point under {MAX_POINT_CHARS} characters and under "
     f"{MAX_POINT_WORDS} words. A longer point is split at a sentence boundary and "
     "every piece kept with the same citations, so a sentence that long on its own "
@@ -265,6 +277,10 @@ SECTION_INSTRUCTION = (
     "finding's content or passage names it: never a bare pronoun (\"it\", \"this\", "
     "\"these\") or an unnamed reference (\"the model\", \"the device\"). Such a point is "
     "refused.\n"
+    "- Name a person, place or period as the finding's passage identifies it (a title "
+    "or family name shared by several people is given with the name and year the "
+    "passage uses); never leave \"that followed\" or \"at that time\" without the event "
+    "or year the passage gives.\n"
     "- A point never rests only on findings listed under \"# Context only\": they are "
     "background, not citable evidence.\n"
     "- Mark each option (a product, place, service or other thing the question asks to "
@@ -327,8 +343,12 @@ BOTTOM_LINE_INSTRUCTION = (
     "to four sentences: each step states a cause, its effect and the sources that "
     "state it, in order, and a sentence carries one step or consecutive steps. Where "
     "several listed statements state the same step, say so by naming them and cite "
-    "them all; agreement among the findings is a fact of the findings, not a verdict "
-    "of your own.\n"
+    "them all -- write \"X, Y and Z all state that …\", never \"X states …, while Y "
+    "states …\"; agreement among the findings is a fact of the findings, not a "
+    "verdict of your own.\n"
+    "- When the checked statements dispute a step (one states it, another disputes "
+    "or qualifies it), state both and say they differ; never state a disputed step "
+    "as settled.\n"
     "- Cite by label only: every sentence lists in finding_labels the labels it "
     "rests on, and every label must be one the listed statements cite -- never a "
     "label a listed statement does not carry.\n"
@@ -352,6 +372,10 @@ BOTTOM_LINE_INSTRUCTION = (
     "\"its\", \"they\", \"their\"): name the subject in full every time, even where "
     "the same sentence named it a clause before -- a condensed clause loses its "
     "antecedent.\n"
+    "- Name a person, place or period as the finding's passage identifies it (a "
+    "title or family name shared by several people is given with the name and year "
+    "the passage uses); never leave \"that followed\" or \"at that time\" without "
+    "the event or year the passage gives.\n"
     "- Mark each option your sentence is about, in items, the same way a section "
     "does: name, verdict, picked, and by when the sentence cites more than one "
     "site.\n"
@@ -440,9 +464,12 @@ class ReportWriterTask(AgentTask):
     contract's own ``requested_word_limit`` when the question asked for
     one, else ``agents.report_target_words`` (spec §6.3)."""
     authority_floor: float = 0.4
-    """D6/D7: ``agents.writer_authority_floor`` -- a bound finding below
-    this authority is context-only once a finding at or above it answers
-    one of the same targets (``is_context_only``)."""
+    """D6/D7: ``agents.writer_authority_floor`` -- the bottom line's own
+    per-statement floor filter (``_statement_meets_authority_floor``): a
+    checked statement resting only on below-floor findings is dropped from
+    the bottom line's citable pool once an above-floor statement exists
+    elsewhere. No longer read by ``is_context_only`` (reverted, Y2.1,
+    audit D3)."""
 
 
 class WrittenReport(ContractModel):
@@ -725,61 +752,34 @@ def finding_source_lines(
     return lines
 
 
-def is_context_only(
-    finding: Finding, sources: Mapping[str, ScoredSource], *,
-    answered: Mapping[str, Sequence[str]] | None = None,
-    findings_by_id: Mapping[str, Finding] | None = None,
-    authority_floor: float = DEFAULT_WRITER_AUTHORITY_FLOOR,
-) -> bool:
-    """D16 (spec §6.2) plus D6/D7's authority floor.
+def is_context_only(finding: Finding, sources: Mapping[str, ScoredSource]) -> bool:
+    """D16 (spec §6.2): unbound, and from a low-relevance or low-confidence source.
 
-    Unbound and from a low-relevance or low-confidence source, as before. A
-    *bound* finding is also context-only when its own source is
-    low-confidence or its authority is at or below ``authority_floor`` (D8/D9:
-    inclusive -- a source AT the floor is weak), and
-    EVERY target it binds has another, citable finding at or above the
-    floor answering it too (``answered``, ``findings_by_id``) -- one
-    stronger sibling on one of several bound targets never gates the
-    others: a target with no stronger source still gets its answer
-    unchanged (D6: "nothing changes").
+    Context-only findings are listed under a part's ``# Context only``
+    heading rather than its verified-findings registry, and a point resting
+    only on them is refused (mechanical rule 3). A bound finding is never
+    context-only, whatever its source's score.
+
+    Y2.1 (audit D3, CODE 4; reverted, run-6 wave): the run-4/5 waves' gate
+    also made a *bound* weak-authority finding context-only once a
+    stronger finding answered one of the same targets. That target-level
+    comparison erased distinct facts wholesale -- 14 of 16 civil-war
+    findings on one run, gone because one Wikipedia finding merely touched
+    the same target. Citing the stronger source when both state the same
+    fact is now the model's own job (``SECTION_INSTRUCTION``'s "cite the
+    stronger" rule), not code's to enforce by hiding the weaker finding
+    entirely -- its own distinct fact stays citable. The bottom line's
+    separate per-statement floor filter (``_statement_meets_authority_floor``)
+    is unaffected by this revert; it never gated a section's findings.
     """
     source = sources.get(normalize_source_url(finding.source_url))
     if source is None:
         return False
-    if not finding.target_ids:
-        if source.low_confidence:
-            return True
-        return source.relevance_score is not None and source.relevance_score < CONTEXT_ONLY_RELEVANCE
-    weak = source.low_confidence or (
-        source.authority_score is not None and source.authority_score <= authority_floor
-    )
-    if not weak:
+    if finding.target_ids:
         return False
-    answered = answered or {}
-    findings_by_id = findings_by_id or {}
-    own_id = finding_fingerprint(finding)
-
-    def stronger_answer_exists(target_id: str) -> bool:
-        for other_id in answered.get(target_id, []):
-            if other_id == own_id:
-                continue
-            other = findings_by_id.get(other_id)
-            if other is None:
-                continue
-            other_source = sources.get(normalize_source_url(other.source_url))
-            if other_source is None or other_source.low_confidence:
-                continue
-            # The candidate must itself be citable: an unbound other finding
-            # that D16's own low-relevance rule already makes context-only
-            # carries no answer to lean on.
-            if (not other.target_ids and other_source.relevance_score is not None
-                    and other_source.relevance_score < CONTEXT_ONLY_RELEVANCE):
-                continue
-            if other_source.authority_score is not None and other_source.authority_score > authority_floor:
-                return True
-        return False
-
-    return all(stronger_answer_exists(target_id) for target_id in finding.target_ids)
+    if source.low_confidence:
+        return True
+    return source.relevance_score is not None and source.relevance_score < CONTEXT_ONLY_RELEVANCE
 
 
 # --- §6.3/§6.6: the section and bottom-line requests ------------------------
@@ -804,12 +804,15 @@ class PartJob:
     redraft: bool
     """Whether this part's call runs at all: ``False`` means carried over
     unchanged from ``previous`` (spec §6.9), no call made."""
-    drafted_part_count: int = 1
-    """D11: how many of this report's parts have at least one citable,
-    non-context-only finding -- the reader-length point budget's own
+    part_weight_sum: int = 1
+    """Y2.2 (audit D2, CODE 2): the sum of every drafted part's weight
+    (``_part_weight``: 3 for a part that owns a required target, 1
+    otherwise) -- the weighted reader-length point/word budget's own
     denominator, computed once across every ``PartJob`` a report builds
     (spec §6.3). Defaults to 1 so a caller that builds one ``PartJob``
-    directly (a unit test) still gets a sane budget."""
+    directly (a unit test) still gets this part's own weight as the
+    denominator: the whole budget, exactly as if no other part existed to
+    share it with."""
 
 
 def _answer_form_line(task: ReportWriterTask) -> str:
@@ -926,27 +929,39 @@ def _required_targets_answered(job: PartJob, task: ReportWriterTask, own_finding
     )
 
 
+def _part_weight(targets: Sequence[EvidenceTarget]) -> int:
+    """Y2.2 (audit D2, CODE 2): a part that owns a required target pulls
+    three times the reader length of a part that does not, so a required
+    target's answer is never capped to the same handful of points as an
+    optional part (D2: a required-target part with 48 citable findings got
+    six points under the old flat division)."""
+    return 3 if any(target.required for target in targets) else 1
+
+
 def _point_budget(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str]) -> int:
-    """D11's reader-length point budget (spec §6.3): an instruction to the
-    model only -- code never truncates or drops a checked point for
-    exceeding it. ``max`` of the part's own required-target count, the
-    report's word budget divided evenly across its drafted parts at ~45
-    words per point, and 3 (never fewer)."""
-    parts = max(job.drafted_part_count, 1)
-    length_budget = round(task.target_words / parts / 45)
-    return max(_required_targets_answered(job, task, own_finding_ids), length_budget, 3)
+    """D11's reader-length point budget (spec §6.3), weighted toward the
+    required target (Y2.2, audit D2, CODE 2): an instruction to the model
+    only -- code never truncates or drops a checked point for exceeding
+    it. ``W_part`` is this part's own weighted share of the report's word
+    budget: the budget times this part's weight (``_part_weight``)
+    divided by the sum of every drafted part's weight
+    (``job.part_weight_sum``). Points are ``max`` of the part's own
+    required-target count, ``W_part`` at ~45 words per point, and 3
+    (never fewer)."""
+    weight = _part_weight(job.targets)
+    w_part = task.target_words * weight / max(job.part_weight_sum, weight)
+    return max(_required_targets_answered(job, task, own_finding_ids), round(w_part / 45), 3)
 
 
 def _word_budget(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str]) -> int:
-    """D14's word budget (spec §6.3): an instruction to the model only --
-    code refuses nothing new; ``MAX_POINT_CHARS`` stays the runaway guard.
-    W = the report's word budget divided evenly across its drafted parts,
-    never below ``MAX_POINT_WORDS`` times the part's own required-target
-    count."""
-    parts = max(job.drafted_part_count, 1)
-    raw = round(task.target_words / parts)
+    """D14's word budget (spec §6.3), the same weighted share
+    ``_point_budget`` uses (Y2.2, audit D2, CODE 2): code refuses nothing
+    new; ``MAX_POINT_CHARS`` stays the runaway guard. Never below
+    ``MAX_POINT_WORDS`` times the part's own required-target count."""
+    weight = _part_weight(job.targets)
+    w_part = task.target_words * weight / max(job.part_weight_sum, weight)
     floor = MAX_POINT_WORDS * _required_targets_answered(job, task, own_finding_ids)
-    return max(raw, floor)
+    return max(round(w_part), floor)
 
 
 def _point_budget_line(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str]) -> str:
@@ -1729,7 +1744,8 @@ def _statement_meets_authority_floor(
 ) -> bool:
     """D6/D7 bullet 3, and D8/D9's inclusive floor: whether one of
     ``finding_ids``' sources is citable and above ``authority_floor`` -- the
-    exact complement of ``is_context_only``'s own-source ``weak`` test."""
+    bottom line's own per-statement floor test (Y2.1: ``is_context_only``
+    no longer makes a comparison like this one; this filter is unchanged)."""
     for finding_id in finding_ids:
         finding = findings_by_id.get(finding_id)
         if finding is None:
@@ -2193,23 +2209,26 @@ async def compose_written_report(
     else:
         routed_coverage_ids, defects_by_coverage = set(), {}
 
-    findings_by_id = {finding_fingerprint(f): f for f in citable}
     part_findings: list[tuple[PartPlacement, list[Finding], list[Finding]]] = []
     for placement in placements:
         regular: list[Finding] = []
         context: list[Finding] = []
         for finding in placement.findings:
-            bucket = context if is_context_only(
-                finding, src_by_url, answered=task.answered, findings_by_id=findings_by_id,
-                authority_floor=task.authority_floor,
-            ) else regular
+            bucket = context if is_context_only(finding, src_by_url) else regular
             bucket.append(finding)
         part_findings.append((placement, regular, context))
-    drafted_part_count = max(1, sum(1 for _, regular, _ in part_findings if regular))
+    targets_by_coverage = {
+        placement.coverage_id: [t for t in task.targets if t.coverage_id == placement.coverage_id]
+        for placement, _, _ in part_findings
+    }
+    part_weight_sum = max(1, sum(
+        _part_weight(targets_by_coverage[placement.coverage_id])
+        for placement, regular, _ in part_findings if regular
+    ))
 
     jobs: list[PartJob] = []
     for order, (placement, regular, context) in enumerate(part_findings):
-        targets_here = [t for t in task.targets if t.coverage_id == placement.coverage_id]
+        targets_here = targets_by_coverage[placement.coverage_id]
         previous_section = previous_sections_by_coverage.get(placement.coverage_id)
         if not is_redraft:
             redraft_this, defects_here = True, []
@@ -2221,7 +2240,7 @@ async def compose_written_report(
             coverage_id=placement.coverage_id, sub_topic_title=placement.sub_topic_title,
             order=order, targets=targets_here, findings=regular, context_findings=context,
             previous=previous_section, defects=defects_here, redraft=redraft_this,
-            drafted_part_count=drafted_part_count,
+            part_weight_sum=part_weight_sum,
         ))
 
     section_gate = asyncio.Semaphore(max(1, section_concurrency))
@@ -2409,14 +2428,14 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         # §6.13: the Not-found computation excludes context-only answers, so
         # a required target answered only that way reads as unconfirmed; the
         # gate's own ``answered`` (below, unfiltered) still accounts for it.
+        # Y2.1: a *bound* finding is never context-only (the target-level
+        # authority gate was reverted), so this can still exclude only an
+        # unbound finding matched here through the sub-topic fallback.
         answered_for_report: dict[str, list[str]] = {}
         for target_id, finding_ids in answered.items():
             kept = [
                 fid for fid in finding_ids
-                if fid not in findings_by_id or not is_context_only(
-                    findings_by_id[fid], src_by_url, answered=answered,
-                    findings_by_id=findings_by_id, authority_floor=authority_floor,
-                )
+                if fid not in findings_by_id or not is_context_only(findings_by_id[fid], src_by_url)
             ]
             if kept:
                 answered_for_report[target_id] = kept
