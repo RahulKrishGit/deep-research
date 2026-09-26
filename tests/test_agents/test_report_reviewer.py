@@ -866,22 +866,17 @@ def test_the_manifest_marks_which_target_ids_are_required() -> None:
 
 @pytest.mark.asyncio
 async def test_a_real_written_report_builds_the_same_packet(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The fixture is the writer's shape: proved against the writer itself.
 
-    ``compose_written_report`` numbers its candidates S001… in summary-then-
-    sections order, and a real composition must produce the same three
-    statement ids, the same label and the same key facts line the hand-built
-    fixture does.
+    ``compose_written_report`` numbers its candidates S001… in bottom-line-
+    then-sections render order (spec §6.7), and a real composition must
+    produce the same three statement ids, the same label and the same key
+    facts line the hand-built fixture does.
     """
-    from deep_research.agents.report_writer import (
-        ReportWriterDraft,
-        ReportWriterTask,
-        WriterPointDraft,
-        WriterSectionDraft,
-        compose_written_report,
-    )
+    from deep_research.agents.report_writer import ReportWriterTask, compose_written_report
+    from deep_research.utils.types import BottomLineDraft, SectionDraft, WriterPointDraft as _WriterPointDraft
 
     class _Verdict:
         def __init__(self, label: str) -> None:
@@ -892,10 +887,11 @@ async def test_a_real_written_report_builds_the_same_packet(
 
     async def consistent(
         provider, items, *, question, fingerprint=None,
-        batch_size=None, concurrency=None,
+        batch_size=None, concurrency=None, gate=None,
     ):
-        # The bounds are part of the call the real checker accepts (PD-12).
-        del provider, question, fingerprint, batch_size, concurrency
+        # The bounds and the shared gate are part of the call the real
+        # checker accepts (PD-12; spec §6.5's shared semaphore).
+        del provider, question, fingerprint, batch_size, concurrency, gate
         return {item.label: _Verdict(item.label) for item in items}, []
 
     monkeypatch.setattr(
@@ -920,23 +916,25 @@ async def test_a_real_written_report_builds_the_same_packet(
         not_found=[],
         answered={TARGET_ID: [finding_fingerprint(finding)]},
     )
-    draft = ReportWriterDraft(
-        executive_summary=[
-            WriterPointDraft(text=WRITTEN_SENTENCES["S001"], finding_labels=["F01"])
-        ],
-        sections=[
-            WriterSectionDraft(
+    completer = ScriptedCompleter(
+        outputs=[
+            SectionDraft(
                 title="Additions in 2024",
                 points=[
-                    WriterPointDraft(text=WRITTEN_SENTENCES["S002"], finding_labels=["F01"]),
-                    WriterPointDraft(text=WRITTEN_SENTENCES["S003"], finding_labels=["F01"]),
+                    _WriterPointDraft(text=WRITTEN_SENTENCES["S002"], finding_labels=["F01"]),
+                    _WriterPointDraft(text=WRITTEN_SENTENCES["S003"], finding_labels=["F01"]),
                 ],
-            )
-        ],
+            ),
+            BottomLineDraft(
+                sentences=[
+                    _WriterPointDraft(text=WRITTEN_SENTENCES["S001"], finding_labels=["F01"])
+                ]
+            ),
+        ]
     )
-    composition = await compose_written_report(
-        task, draft, provider=ScriptedCompleter(), fingerprint=None
-    )
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
     built = build_report_review_input(
         state_with_written_report(
             composition=composition, report=render_written_report(composition)
