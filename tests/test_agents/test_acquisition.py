@@ -42,6 +42,7 @@ from deep_research.graph.state import dump_state, load_state
 from deep_research.tools.base import BaseTool, ToolError, ToolResult
 from deep_research.tools.document_reader import DocumentReaderTool
 from deep_research.tools.passage_selection import select_relevant_passages
+from deep_research.tools.web_scraper import _extract_html
 from deep_research.utils.types import (
     AcquisitionState,
     BoundaryAudit,
@@ -1656,6 +1657,43 @@ def test_a_served_error_page_is_refused_its_read() -> None:
     assert (
         build_read_record_from_tool_result(
             _error_page_result(), session_id="session-1"
+        )
+        is None
+    )
+
+
+def test_a_served_error_page_with_a_banner_h1_is_still_refused_its_read() -> None:
+    """RevW5Titles P1-a/P2: an organisation banner ``h1`` must never crowd
+    out an error page's own ``<title>``. The raw title is kept whenever it
+    is not empty and does not name only the site, so the error label the
+    read-admission check reads is unaffected by the banner underneath it.
+    """
+    html = (
+        "<html><head><title>EIA - Sorry! Unexpected Error</title></head>"
+        "<body><header><h1>U.S. Energy Information Administration</h1></header>"
+        "<nav>" + ("Link " * 500) + "</nav>"
+        "<p>Sorry! An error was encountered. Please try again later.</p>"
+        "</body></html>"
+    )
+    title, text, _published, _updated = _extract_html(html)
+
+    assert title == "EIA - Sorry! Unexpected Error"
+    assert (
+        build_read_record_from_tool_result(
+            ToolResult(
+                tool_name="web_scraper",
+                success=True,
+                data={
+                    "url": _ERROR_PAGE_URL,
+                    "requested_url": _ERROR_PAGE_URL,
+                    "resolved_url": _ERROR_PAGE_URL,
+                    "title": title,
+                    "text": text,
+                    "extraction_complete": True,
+                },
+                latency_ms=0,
+            ),
+            session_id="session-1",
         )
         is None
     )

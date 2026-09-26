@@ -6,6 +6,7 @@ import asyncio
 import csv
 import io
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
@@ -175,7 +176,9 @@ class DocumentReaderTool(BaseTool):
                 details={"format": document_format, "error_type": type(error).__name__},
             ) from error
         document_text = _document_text(chunks)
-        title = _document_title(metadata_title, document_text, source, resolved_source)
+        title = _document_title(
+            document_format, metadata_title, document_text, source, resolved_source
+        )
         data = {
             "source": source,
             "requested_source": source,
@@ -454,40 +457,104 @@ def _pdf_metadata_title(document: object) -> str | None:
 # in this project uses to distinguish a label from a body (D3).
 _HEADING_MAX_CHARS = 200
 
+# A page number, running header, download stamp or copyright line is never
+# a document's title, however early it sits in the extracted text
+# (RevW5Titles P2): a scanned journal article's first text line is
+# routinely one of these, not the paper's own title.
+_PAGE_NUMBER_LINE_PATTERN = re.compile(
+    r"^(?:page\s+)?\d+(?:\s*(?:of|/)\s*\d+)?$", re.IGNORECASE
+)
+_HEADING_URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
+_RUNNING_HEADER_PATTERN = re.compile(r"\b(?:Vol|pp|No)\.", re.IGNORECASE)
+_SKIPPED_LINE_PREFIXES = ("\u00a9", "copyright", "downloaded from")
+
+# A heading is one clause: a line carrying a period (or "!"/"?") followed by
+# another sentence is a paragraph a PDF's own layout never broke onto its
+# own line, not a title. A synthetic or single-block PDF whose whole body is
+# one such line has no real heading, and must fall through to the
+# URL/search-candidate title path rather than adopt its first sentence.
+_MULTI_SENTENCE_PATTERN = re.compile(r"[.!?]\s+[A-Z0-9]")
+
+
+def _is_skippable_heading_line(line: str) -> bool:
+    """Whether ``line`` is a running artefact or ordinary prose, not a heading."""
+    if _PAGE_NUMBER_LINE_PATTERN.match(line):
+        return True
+    if _HEADING_URL_PATTERN.search(line):
+        return True
+    if line.casefold().startswith(_SKIPPED_LINE_PREFIXES):
+        return True
+    if _RUNNING_HEADER_PATTERN.search(line):
+        return True
+    return bool(_MULTI_SENTENCE_PATTERN.search(line))
+
 
 def _heading_line(text: str) -> str | None:
     """The document's first heading-shaped line, or ``None`` when it has
     none: a title is short, so a line longer than ``_HEADING_MAX_CHARS`` is
-    prose, not a heading, however early it sits in the extracted text.
+    prose, not a heading, however early it sits in the extracted text, and
+    a page number, URL, copyright line or running header is skipped rather
+    than mistaken for one.
     """
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped and len(stripped) <= _HEADING_MAX_CHARS:
-            return stripped
+        if not stripped or len(stripped) > _HEADING_MAX_CHARS:
+            continue
+        if _is_skippable_heading_line(stripped):
+            continue
+        return stripped
     return None
 
 
 def _source_names(requested: str, resolved: str) -> set[str]:
     """Every string that names the source itself -- never its content: the
-    requested and resolved locations, and each one's bare file name.
+    requested and resolved locations, and each one's bare file name and
+    stem (a file name without its extension, e.g. an authoring tool's
+    metadata title echoing ``Hardy2017`` for ``Hardy2017.pdf``).
     """
     names = {requested, resolved}
     for source in (requested, resolved):
-        name = Path(urlsplit(source).path if _is_remote(source) else source).name
-        if name:
-            names.add(name)
+        path = Path(urlsplit(source).path if _is_remote(source) else source)
+        if path.name:
+            names.add(path.name)
+        if path.stem:
+            names.add(path.stem)
     return names
 
 
-def _document_title(
-    metadata_title: str | None, document_text: str, requested: str, resolved: str
-) -> str:
-    """The document's title (D3): its metadata title, unless the metadata
-    carries none or names only the source itself (the URL or file name a
-    reader already sees), in which case its first heading-shaped line
-    stands in for it. An empty result lets the read registry's own default
-    (the resolved source) apply, exactly as a missing title always has.
+# Authoring-tool placeholders that name no document at all (RevW5Titles P2):
+# a save dialog's default caption, never a document's own title.
+_JUNK_METADATA_TITLE_PATTERN = re.compile(
+    r"^Microsoft (?:Word|PowerPoint|Excel) - |^untitled$|^PowerPoint Presentation$",
+    re.IGNORECASE,
+)
+
+
+def _is_usable_metadata_title(title: str, requested: str, resolved: str) -> bool:
+    """Whether ``title`` names the document, rather than its own source or
+    an authoring tool's placeholder caption.
     """
-    if metadata_title and metadata_title not in _source_names(requested, resolved):
+    if title in _source_names(requested, resolved):
+        return False
+    return not _JUNK_METADATA_TITLE_PATTERN.search(title)
+
+
+def _document_title(
+    document_format: str,
+    metadata_title: str | None,
+    document_text: str,
+    requested: str,
+    resolved: str,
+) -> str:
+    """The document's title (D3, RevW5Titles P1-b): a PDF's own metadata
+    title, unless it is missing, names only the source itself, or is an
+    authoring tool's placeholder, in which case its first heading-shaped
+    line stands in for it. Every other format returns ``""`` so the read
+    registry's own URL-then-search-candidate title path applies, exactly as
+    it did before a document ever carried a title of its own.
+    """
+    if document_format != "pdf":
+        return ""
+    if metadata_title and _is_usable_metadata_title(metadata_title, requested, resolved):
         return metadata_title
     return _heading_line(document_text) or ""

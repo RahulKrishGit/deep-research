@@ -1615,9 +1615,10 @@ async def test_two_disagreeing_article_json_ld_nodes_give_no_date_at_all(
 
 
 # ---------------------------------------------------------------------------
-# D3: title precedence -- og:title, then twitter:title, then the first h1,
-# then the raw <title> tag, and never a title equal to og:site_name while a
-# later, differing candidate exists.
+# D3: title precedence (RevW5Titles P1-a, P2). The raw <title> tag is kept
+# whenever it is not empty and does not name only the site; only then does
+# og:title, twitter:title or a non-banner h1 stand in for it, skipping any
+# of those equal to og:site_name while a later, differing one remains.
 # ---------------------------------------------------------------------------
 
 
@@ -1654,10 +1655,37 @@ async def test_scraper_uses_the_title_tag_when_no_other_candidate_exists(
 
 
 @pytest.mark.asyncio
-async def test_scraper_prefers_the_first_h1_over_a_site_name_title(tracker) -> None:
-    """An ``h1`` outranks a ``<title>`` that only names the site itself."""
+async def test_scraper_keeps_the_raw_headline_publisher_title_over_og_title(
+    tracker,
+) -> None:
+    """RevW5Titles P1-a: a 'Headline - Publisher' ``<title>`` is kept over
+    ``og:title``, since only the raw title carries the publisher segment the
+    issuer-evidence and page-owner checks read."""
+    page = (
+        "<html><head>"
+        "<title>Battery storage capacity grew in 2024 - "
+        "U.S. Energy Information Administration (EIA)</title>"
+        '<meta property="og:title" content="Battery storage capacity grew in 2024">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == (
+        "Battery storage capacity grew in 2024 - "
+        "U.S. Energy Information Administration (EIA)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scraper_prefers_h1_when_og_title_only_names_the_site(tracker) -> None:
+    """An ``og:title`` equal to the site's own name never beats a real ``h1``
+    headline (RevW5Titles P3#1)."""
     page = (
         "<html><head><title>Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        '<meta property="og:title" content="Example Register">'
         "</head><body><h1>Model A outperforms Model B in the trial</h1>"
         "<p>Further detail about the trial follows in the body text.</p>"
         "</body></html>"
@@ -1666,3 +1694,25 @@ async def test_scraper_prefers_the_first_h1_over_a_site_name_title(tracker) -> N
     result = await _read_served_page(tracker, page)
 
     assert result.data["title"] == "Model A outperforms Model B in the trial"
+
+
+@pytest.mark.asyncio
+async def test_scraper_skips_a_banner_h1_when_choosing_the_fallback_heading(
+    tracker,
+) -> None:
+    """RevW5Titles P2: a theme's site-title banner heading is never read as
+    the page's own headline; the first non-banner ``h1`` stands in when the
+    title is just the site's own name."""
+    page = (
+        "<html><head><title>Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        "</head><body>"
+        '<header><h1 class="site-title">Example Register</h1></header>'
+        "<h1>Real headline about filings</h1>"
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Real headline about filings"

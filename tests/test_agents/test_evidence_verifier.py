@@ -49,6 +49,7 @@ from deep_research.providers import (
     ProviderResponseTelemetry,
     ProviderTimeoutError,
 )
+from deep_research.tools.web_scraper import _extract_html
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     FigureContext,
@@ -843,6 +844,32 @@ def test_page_owner_never_credits_a_merely_similar_name_on_a_gov_host() -> None:
         title="DOE Newsroom | EIA",
     )
     assert page_owner(read) == "energy.gov"
+
+
+def test_page_owner_reads_the_publisher_from_a_kept_headline_publisher_title() -> None:
+    """RevW5Titles P1-a/P3#2: a 'Headline - Publisher' ``<title>`` is kept
+    over ``og:title`` by the scraper's own title precedence, so page_owner
+    still reads the publisher from its own segment rather than falling back
+    to the bare host label."""
+    html = (
+        "<html><head>"
+        "<title>Battery storage capacity grew in 2024 - "
+        "U.S. Energy Information Administration (EIA)</title>"
+        '<meta property="og:title" content="Battery storage capacity grew in 2024">'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+    title, _text, _published, _updated = _extract_html(html)
+    assert title == (
+        "Battery storage capacity grew in 2024 - "
+        "U.S. Energy Information Administration (EIA)"
+    )
+    read = make_read(
+        "Battery storage capacity grew across every region.",
+        url="https://www.eia.gov/todayinenergy/detail.php?id=64705",
+        title=title,
+    )
+    assert page_owner(read) == "U.S. Energy Information Administration"
 
 
 def test_page_owner_stops_a_cued_run_at_the_sentence_end() -> None:

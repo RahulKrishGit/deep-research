@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup, Tag
 from bs4.element import NavigableString, PreformattedString
 
 from deep_research.agents.evidence import normalized_content_sha256
+from deep_research.agents.wording import title_segments
 from deep_research.observability import Tracker
 from deep_research.tools.base import (
     BaseTool,
@@ -377,14 +378,18 @@ def _extract_html(html: str) -> tuple[str, str, str | None, str | None]:
 
 
 # --------------------------------------------------------------------------
-# D3: title precedence. A page's own structured claim about itself
-# (``og:title``, then ``twitter:title``) outranks markup shaped like a
-# heading (the first ``h1``), which outranks the raw ``<title>`` tag -- a
-# browser-tab label a template can fill with nothing but the site's own
-# name. A candidate equal to ``og:site_name`` (the site's name for itself,
-# e.g. a platform's bare name) is skipped whenever a later, differing
-# candidate exists: a probe of a live page found ``<title>`` holding only
-# the site's own name while ``og:title`` held the page's real headline.
+# D3: title precedence (RevW5Titles P1-a, P2). The raw ``<title>`` tag
+# usually carries a publisher-credit segment a browser tab shows and a
+# reader relies on ("Headline - Publisher"), and the issuer-evidence and
+# page-owner checks read that segment from nowhere else. It is kept
+# whenever it says anything beyond the site's own name for itself. Only
+# when it is empty, or names only the site (verbatim, or as its one
+# segment, per ``title_segments``), does a page's own claim about *this*
+# page stand in for it: ``og:title``, then ``twitter:title``, then a
+# heading that is not itself a site banner -- skipping any of those equal
+# to the site name while a later, differing one remains. A probe of a live
+# page found ``<title>`` holding only the site's own name while ``og:title``
+# held the page's real headline (the audited case, ``<title>Medium</title>``).
 # --------------------------------------------------------------------------
 
 
@@ -406,27 +411,60 @@ def _meta_name_content(soup: BeautifulSoup, name: str) -> str | None:
     return content.strip() if isinstance(content, str) and content.strip() else None
 
 
-def _first_h1_text(soup: BeautifulSoup) -> str | None:
-    heading = soup.find("h1")
-    if heading is None:
-        return None
-    text = heading.get_text(strip=True)
-    return text or None
+# A banner or logo heading names the site, not the page: a theme's
+# ``<header><h1 class="site-title">...</h1></header>`` or a ``<nav>``
+# heading is never a headline (RevW5Titles P2), so it is excluded before the
+# first ``h1`` is read as a fallback title candidate.
+_BANNER_H1_ANCESTORS = ("header", "nav")
+_BANNER_H1_CLASSES = frozenset({"site-title", "logo"})
+
+
+def _is_banner_h1(heading: Tag) -> bool:
+    if heading.find_parent(_BANNER_H1_ANCESTORS) is not None:
+        return True
+    classes = heading.get("class") or []
+    return any(str(cls).casefold() in _BANNER_H1_CLASSES for cls in classes)
+
+
+def _first_usable_h1_text(soup: BeautifulSoup) -> str | None:
+    for heading in soup.find_all("h1"):
+        if _is_banner_h1(heading):
+            continue
+        text = heading.get_text(strip=True)
+        if text:
+            return text
+    return None
+
+
+def _is_just_site_name(raw_title: str, site_name: str | None) -> bool:
+    """Whether ``raw_title`` names only the site itself: it is ``og:site_name``
+    verbatim, or has exactly one segment (see :func:`title_segments`) equal
+    to it.
+    """
+    if not site_name:
+        return False
+    if raw_title == site_name:
+        return True
+    segments = title_segments(raw_title)
+    return len(segments) == 1 and segments[0] == site_name
 
 
 def _page_title(soup: BeautifulSoup) -> str:
-    """The page's title, by D3's precedence: ``og:title``, ``twitter:title``,
-    the first ``h1``, then the raw ``<title>`` tag -- skipping any candidate
-    equal to ``og:site_name`` while a later, differing candidate remains, so
-    the site's own name for itself never stands in for one of its pages.
+    """The page's title (D3, RevW5Titles P1-a/P2).
+
+    The raw ``<title>`` tag is kept whenever it is not empty and does not
+    name only the site; only then does ``og:title``, ``twitter:title`` or a
+    non-banner ``h1`` stand in for it, in that order, skipping any of those
+    equal to the site name while a later, differing one remains.
     """
     site_name = _meta_property_content(soup, "og:site_name")
     raw_title = soup.title.get_text(strip=True) if soup.title else ""
+    if raw_title and not _is_just_site_name(raw_title, site_name):
+        return raw_title
     candidates: list[str | None] = [
         _meta_property_content(soup, "og:title"),
         _meta_name_content(soup, "twitter:title"),
-        _first_h1_text(soup),
-        raw_title or None,
+        _first_usable_h1_text(soup),
     ]
     for index, candidate in enumerate(candidates):
         if not candidate:
@@ -436,7 +474,7 @@ def _page_title(soup: BeautifulSoup) -> str:
         ):
             continue
         return candidate
-    return ""
+    return raw_title
 
 
 # --------------------------------------------------------------------------

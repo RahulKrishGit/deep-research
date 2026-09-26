@@ -465,3 +465,141 @@ async def test_reader_uses_the_first_heading_line_when_a_pdf_has_no_metadata_tit
     assert result.success is True
     assert result.data is not None
     assert result.data["title"] == "Findings on Filing Delays"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "content"),
+    [("value.json", '{"z": 1}'), ("table.csv", "name,city\nAda,London\n")],
+)
+async def test_reader_returns_no_title_for_non_pdf_formats(
+    tracker, tmp_path, filename, content
+) -> None:
+    """RevW5Titles P1-b: only a PDF's own metadata or heading stands in for a
+    title; json, csv, text and markdown defer to the URL/search-candidate
+    title path (acquisition.py's ``_resolve_read_title``), exactly as before
+    a document ever carried a title of its own."""
+    source = tmp_path / filename
+    source.write_text(content, encoding="utf-8")
+
+    async with tracker.session_span("session-1", "question"):
+        result = await DocumentReaderTool(tracker).execute(source=str(source))
+
+    assert result.data["title"] == ""
+
+
+@pytest.mark.asyncio
+async def test_reader_uses_heading_when_pdf_metadata_title_is_just_the_file_stem(
+    monkeypatch, tracker
+) -> None:
+    """RevW5Titles P2: a metadata title that only echoes the file name (its
+    stem, without the extension) carries no information the reader does not
+    already have, so the heading line stands in for it."""
+
+    class Page:
+        def extract_text(self):
+            return "Findings on Filing Delays\nA longer body paragraph follows here."
+
+    class Pdf:
+        pages = [Page()]
+        metadata = {"Title": "report"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "report.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.data["title"] == "Findings on Filing Delays"
+
+
+@pytest.mark.asyncio
+async def test_reader_skips_a_page_number_and_copyright_line_for_the_heading(
+    monkeypatch, tracker
+) -> None:
+    """RevW5Titles P2: a running page number and a copyright line are never
+    a document's title, however early they sit in the extracted text."""
+
+    class Page:
+        def extract_text(self):
+            return (
+                "12\n"
+                "© 2019 Example Institute\n"
+                "Findings on Filing Delays\n"
+                "Body text follows."
+            )
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "report.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.data["title"] == "Findings on Filing Delays"
+
+
+@pytest.mark.asyncio
+async def test_reader_returns_no_title_when_the_only_line_is_several_sentences(
+    monkeypatch, tracker
+) -> None:
+    """A PDF with no real heading line -- its whole body is one paragraph of
+    several sentences with no line break -- must not adopt its first
+    sentence as a title; the URL/search-candidate title path applies
+    (regression: e2e case blocked-html-pdf-fallback)."""
+
+    class Page:
+        def extract_text(self):
+            return (
+                "Adoption report. Published by Example Institute. The report "
+                "states the widget adoption rate was 40 percent in 2024."
+            )
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "report.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.data["title"] == ""
