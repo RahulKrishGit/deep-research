@@ -293,9 +293,10 @@ async def test_a_weak_sources_distinct_fact_stays_citable_beside_a_strong_answer
     rather than being hidden as context-only."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
                          unit_dimension=None)
-    weak = _statement_finding("https://weak.test/1", "A weak source's own distinct detail about the topic.",
+    weak = _statement_finding("https://weak.test/1",
+                              "According to the source, a weak source's own distinct detail about the topic.",
                               target_ids=["topic-01-target-01"])
-    strong = _statement_finding("https://strong.test/1", "A strong claim about the topic.",
+    strong = _statement_finding("https://strong.test/1", "According to the source, a strong claim about the topic.",
                                 target_ids=["topic-01-target-01"])
     weak_source = _authority_source("https://weak.test/1", authority=0.2)
     strong_source = _authority_source("https://strong.test/1", authority=0.9)
@@ -307,21 +308,22 @@ async def test_a_weak_sources_distinct_fact_stays_citable_beside_a_strong_answer
     label_by_url = {f.source_url: label for label, f in task.registry}
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added", points=[
-            WriterPointDraft(text="A weak source's own distinct detail about the topic.",
+            WriterPointDraft(text="According to the source, a weak source's own distinct detail about the topic.",
                              finding_labels=[label_by_url[weak.source_url]]),
-            WriterPointDraft(text="A strong claim about the topic.",
+            WriterPointDraft(text="According to the source, a strong claim about the topic.",
                              finding_labels=[label_by_url[strong.source_url]]),
         ]),
         BottomLineDraft(sentences=[WriterPointDraft(
-            text="A strong claim about the topic.", finding_labels=[label_by_url[strong.source_url]])]),
+            text="According to the source, a strong claim about the topic.",
+            finding_labels=[label_by_url[strong.source_url]])]),
     ])
 
     composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
 
     section_texts = [point.text for section in composition.sections for point in section.points]
     bottom_line_texts = [point.text for point in composition.summary]
-    assert "A weak source's own distinct detail about the topic." in section_texts
-    assert "A strong claim about the topic." in section_texts + bottom_line_texts
+    assert "According to the source, a weak source's own distinct detail about the topic." in section_texts
+    assert "According to the source, a strong claim about the topic." in section_texts + bottom_line_texts
     assert composition.rejected_points == []
 
 
@@ -333,6 +335,21 @@ def test_registry_lines_carry_the_findings_content_line():
                        content="The EIA's own page states 10.4 GW in 2024.")
     text = "\n".join(registry_lines("F01", finding))
     assert "content: The EIA's own page states 10.4 GW in 2024." in text
+
+
+def test_registry_lines_print_disputes_yes_for_a_disputing_finding():
+    """Z1/Z2 shared contract (audit D2, CODE 1): the registry line prints
+    ``disputes: yes`` for a finding the dissent re-ask returned."""
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA)
+    finding = finding.model_copy(update={"disputes": True})
+    text = "\n".join(registry_lines("F01", finding))
+    assert "disputes: yes" in text
+
+
+def test_registry_lines_omit_disputes_for_a_finding_that_does_not_dispute():
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA)
+    text = "\n".join(registry_lines("F01", finding))
+    assert "disputes:" not in text
 
 
 def test_registry_lines_carry_the_no_figure_findings_passage():
@@ -939,8 +956,8 @@ async def test_one_non_empty_part_makes_one_section_call_and_one_bottom_line_cal
     task = writer.build_task(state)
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
-        BottomLineDraft(sentences=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="According to the source, The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
     ])
 
     composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
@@ -973,8 +990,10 @@ async def test_a_findings_source_line_reaches_the_statement_check(writer, checke
     task = writer.build_task(state)
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
-        BottomLineDraft(sentences=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.",
+                                             finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.",
+                                                    finding_labels=["F01"])]),
     ])
 
     await compose_written_report(task, provider=writer.provider, section_concurrency=7)
@@ -1019,9 +1038,9 @@ async def test_the_bottom_line_only_sees_above_floor_statements_when_one_exists(
     pool -- it stays printed in its own section."""
     t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
     t2 = make_target("topic-01-target-02", coverage_id="topic-01", required=True, unit_dimension=None)
-    weak = _statement_finding("https://weak.test/1", "A weak claim about part one.",
+    weak = _statement_finding("https://weak.test/1", "According to the source, a weak claim about part one.",
                               target_ids=["topic-01-target-01"])
-    strong = _statement_finding("https://strong.test/1", "A strong claim about part two.",
+    strong = _statement_finding("https://strong.test/1", "According to the source, a strong claim about part two.",
                                 target_ids=["topic-01-target-02"])
     weak_source = _authority_source("https://weak.test/1", authority=0.2)
     strong_source = _authority_source("https://strong.test/1", authority=0.9)
@@ -1038,11 +1057,12 @@ async def test_the_bottom_line_only_sees_above_floor_statements_when_one_exists(
         if schema is BottomLineDraft:
             captured["text"] = messages[-1].content
             return BottomLineDraft(sentences=[WriterPointDraft(
-                text="A strong claim about part two.", finding_labels=[label_by_url[strong.source_url]])])
+                text="According to the source, a strong claim about part two.",
+                finding_labels=[label_by_url[strong.source_url]])])
         return SectionDraft(title="Capacity added", points=[
-            WriterPointDraft(text="A weak claim about part one.",
+            WriterPointDraft(text="According to the source, a weak claim about part one.",
                              finding_labels=[label_by_url[weak.source_url]]),
-            WriterPointDraft(text="A strong claim about part two.",
+            WriterPointDraft(text="According to the source, a strong claim about part two.",
                              finding_labels=[label_by_url[strong.source_url]]),
         ])
 
@@ -1050,10 +1070,10 @@ async def test_the_bottom_line_only_sees_above_floor_statements_when_one_exists(
 
     composition = await compose_written_report(task, provider=completer, section_concurrency=7)
 
-    assert "A strong claim about part two." in captured["text"]
-    assert "A weak claim about part one." not in captured["text"]
+    assert "According to the source, a strong claim about part two." in captured["text"]
+    assert "According to the source, a weak claim about part one." not in captured["text"]
     section_texts = [point.text for section in composition.sections for point in section.points]
-    assert "A weak claim about part one." in section_texts
+    assert "According to the source, a weak claim about part one." in section_texts
 
 
 @pytest.mark.asyncio
@@ -1064,9 +1084,9 @@ async def test_the_bottom_line_sees_every_checked_statement_when_none_reaches_th
     above the floor, every one reaches the bottom line unchanged."""
     t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
     t2 = make_target("topic-01-target-02", coverage_id="topic-01", required=True, unit_dimension=None)
-    weak1 = _statement_finding("https://weak1.test/1", "A weak claim about part one.",
+    weak1 = _statement_finding("https://weak1.test/1", "According to the source, a weak claim about part one.",
                                target_ids=["topic-01-target-01"])
-    weak2 = _statement_finding("https://weak2.test/1", "A weak claim about part two.",
+    weak2 = _statement_finding("https://weak2.test/1", "According to the source, a weak claim about part two.",
                                target_ids=["topic-01-target-02"])
     weak1_source = _authority_source("https://weak1.test/1", authority=0.2)
     weak2_source = _authority_source("https://weak2.test/1", authority=0.1)
@@ -1084,9 +1104,9 @@ async def test_the_bottom_line_sees_every_checked_statement_when_none_reaches_th
             captured["text"] = messages[-1].content
             return BottomLineDraft(sentences=[])
         return SectionDraft(title="Capacity added", points=[
-            WriterPointDraft(text="A weak claim about part one.",
+            WriterPointDraft(text="According to the source, a weak claim about part one.",
                              finding_labels=[label_by_url[weak1.source_url]]),
-            WriterPointDraft(text="A weak claim about part two.",
+            WriterPointDraft(text="According to the source, a weak claim about part two.",
                              finding_labels=[label_by_url[weak2.source_url]]),
         ])
 
@@ -1094,8 +1114,8 @@ async def test_the_bottom_line_sees_every_checked_statement_when_none_reaches_th
 
     await compose_written_report(task, provider=completer, section_concurrency=7)
 
-    assert "A weak claim about part one." in captured["text"]
-    assert "A weak claim about part two." in captured["text"]
+    assert "According to the source, a weak claim about part one." in captured["text"]
+    assert "According to the source, a weak claim about part two." in captured["text"]
 
 
 @pytest.mark.asyncio
@@ -1113,12 +1133,12 @@ async def test_one_failing_part_does_not_lose_the_rest(checker, tracker: Tracker
     def route(messages, schema):
         body = messages[-1].content
         if schema.__name__ == "BottomLineDraft":
-            return BottomLineDraft(sentences=[WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"])])
+            return BottomLineDraft(sentences=[WriterPointDraft(text="According to the source, 5 GW in 2025.", finding_labels=["F02"])])
         if "First" in body.split("# This part of the question")[1][:40]:
             raise ProviderResponseError("provider returned an HTTP error", retryable=True,
                                         failure_category="http", http_status_code=503, failure_origin="sdk")
         return SectionDraft(title="Second",
-                            points=[WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"])])
+                            points=[WriterPointDraft(text="According to the source, 5 GW in 2025.", finding_labels=["F02"])])
 
     completer = ScriptedCompleter(outputs=[route, route, route])
     agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
@@ -1169,7 +1189,7 @@ async def test_a_redraft_re_asks_only_the_parts_a_defect_names(checker, tracker:
         if "topic-01-target-01" in body or "10.4 GW" in body:
             calls.append("topic-01")
             return SectionDraft(title="First",
-                                points=[WriterPointDraft(text="10.4 GW in 2024, corrected.", finding_labels=["F01"])])
+                                points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024, corrected.", finding_labels=["F01"])])
         calls.append("unexpected")
         return SectionDraft(title="Second", points=[])
 
@@ -1245,12 +1265,12 @@ async def test_a_new_iteration_drafts_every_part_fresh_not_as_a_redraft(
             calls.append("topic-01")
             label = _label_for(body, "12.1 GW in 2024, revised.")
             return SectionDraft(title="First",
-                                points=[WriterPointDraft(text="12.1 GW in 2024, revised.",
+                                points=[WriterPointDraft(text="According to the source, 12.1 GW in 2024, revised.",
                                                         finding_labels=[label])])
         calls.append("topic-02")
         label = _label_for(body, "5 GW in 2025.")
         return SectionDraft(title="Second",
-                            points=[WriterPointDraft(text="5 GW in 2025.", finding_labels=[label])])
+                            points=[WriterPointDraft(text="According to the source, 5 GW in 2025.", finding_labels=[label])])
 
     completer = ScriptedCompleter(outputs=[route, route, route])
     agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
@@ -1363,8 +1383,8 @@ async def test_the_statement_check_gate_is_shared_across_every_part_and_the_bott
     task = writer.build_task(state)
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
-        BottomLineDraft(sentences=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="According to the source, The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
     ])
 
     await compose_written_report(task, provider=writer.provider, concurrency=3, section_concurrency=7)
@@ -1372,6 +1392,49 @@ async def test_the_statement_check_gate_is_shared_across_every_part_and_the_bott
     assert len(checker.gates) == 2
     assert checker.gates[0] is checker.gates[1]
     assert isinstance(checker.gates[0], asyncio.Semaphore)
+
+
+# --- D1 fix (a): a point must credit the source it rests on ----------------
+
+
+def test_consider_section_point_refuses_a_point_that_credits_no_source():
+    """Audit D1 fix (a): a bare fact naming neither a credit verb nor a
+    name from its cited finding is refused -- run 7's S043, stated as
+    settled fact one line after its own refutation, credited to nobody."""
+    from deep_research.agents.report_writer import _consider_section_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    part_labels = {"F01": finding}
+    point = WriterPointDraft(text="A bare fact with nobody behind it.", finding_labels=["F01"])
+    rejected: list = []
+
+    candidates = _consider_section_point(
+        point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
+        context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
+        key_prefix="P01.",
+    )
+
+    assert candidates == []
+    assert rejected[0].reason == "states a fact without crediting the source that states it"
+
+
+def test_consider_section_point_keeps_a_credited_point_with_the_same_facts():
+    """The other branch: the same fact, credited, is kept."""
+    from deep_research.agents.report_writer import _consider_section_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    part_labels = {"F01": finding}
+    point = WriterPointDraft(text="According to the source, a bare fact with nobody behind it.",
+                             finding_labels=["F01"])
+    rejected: list = []
+
+    candidates = _consider_section_point(
+        point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
+        context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
+        key_prefix="P01.",
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "According to the source, a bare fact with nobody behind it."
+    assert rejected == []
 
 
 # --- D12: no finding labels leak into point text ----------------------------
@@ -1385,7 +1448,8 @@ def test_consider_section_point_strips_a_parenthesised_label_group_without_refus
     finding_28 = _statement_finding("https://a.test/28", "Pressure two.", target_ids=[])
     part_labels = {"F18": finding_18, "F28": finding_28}
     point = WriterPointDraft(
-        text="Structural pressures built over decades (F18, F28). Next sentence continues.",
+        text="According to the source, structural pressures built over decades (F18, F28). "
+             "Next sentence continues.",
         finding_labels=["F18", "F28"],
     )
     rejected: list = []
@@ -1397,7 +1461,8 @@ def test_consider_section_point_strips_a_parenthesised_label_group_without_refus
     )
 
     assert len(candidates) == 1
-    assert candidates[0].text == "Structural pressures built over decades. Next sentence continues."
+    assert candidates[0].text == ("According to the source, structural pressures built over decades. "
+                                  "Next sentence continues.")
     assert candidates[0].had_label_group is True
     assert rejected == []
 
@@ -1406,7 +1471,8 @@ def test_consider_section_point_strips_a_three_digit_label_group():
     from deep_research.agents.report_writer import _consider_section_point
     finding = _statement_finding("https://a.test/161", "A claim.", target_ids=[])
     part_labels = {"F161": finding}
-    point = WriterPointDraft(text="A claim about the topic (F161).", finding_labels=["F161"])
+    point = WriterPointDraft(text="According to the source, a claim about the topic (F161).",
+                             finding_labels=["F161"])
     rejected: list = []
 
     candidates = _consider_section_point(
@@ -1415,7 +1481,7 @@ def test_consider_section_point_strips_a_three_digit_label_group():
         key_prefix="P01.",
     )
 
-    assert candidates[0].text == "A claim about the topic."
+    assert candidates[0].text == "According to the source, a claim about the topic."
     assert candidates[0].had_label_group is True
 
 
@@ -1430,7 +1496,7 @@ def test_consider_bottom_line_point_strips_a_parenthesised_label_group_without_r
     rejected: list = []
 
     candidates = _consider_bottom_line_point(
-        point, "bottom_line[0]", cited_by_sections=cited_by_sections,
+        point, "bottom_line[0]", cited_by_sections=cited_by_sections, disputed_target_ids=set(),
         numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
     )
 
@@ -1438,6 +1504,115 @@ def test_consider_bottom_line_point_strips_a_parenthesised_label_group_without_r
     assert candidates[0].text == "Structural pressures built over decades. Next clause continues."
     assert candidates[0].had_label_group is True
     assert rejected == []
+
+
+# --- Z1/Z2 item 4: the disputed-target guard --------------------------------
+
+
+def test_consider_bottom_line_point_refuses_a_disputed_target_with_no_difference_marker():
+    """Audit D1 fix (b): a sentence that cites a statement bound to a
+    disputed target, with no marker of difference, is refused -- run 7's
+    D1 (the disputed step carried into the bottom line as settled fact)."""
+    from deep_research.agents.report_writer import _consider_bottom_line_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
+    cited_by_sections = {"F01": finding}
+    point = WriterPointDraft(text="According to the source, the step happened.",
+                             finding_labels=["F01"])
+    rejected: list = []
+
+    candidates = _consider_bottom_line_point(
+        point, "bottom_line[0]", cited_by_sections=cited_by_sections,
+        disputed_target_ids={"topic-01-target-01"},
+        numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
+    )
+
+    assert candidates == []
+    assert rejected[0].reason == "states a disputed step without its dispute"
+
+
+def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_with_a_difference_marker():
+    """The other branch: the same disputed target, with a difference
+    marker, is kept."""
+    from deep_research.agents.report_writer import _consider_bottom_line_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
+    cited_by_sections = {"F01": finding}
+    point = WriterPointDraft(
+        text="According to the source, the step happened, though others dispute it.",
+        finding_labels=["F01"],
+    )
+    rejected: list = []
+
+    candidates = _consider_bottom_line_point(
+        point, "bottom_line[0]", cited_by_sections=cited_by_sections,
+        disputed_target_ids={"topic-01-target-01"},
+        numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
+    )
+
+    assert len(candidates) == 1
+    assert rejected == []
+
+
+def test_bottom_line_messages_lists_a_statement_under_disputed_steps_when_its_target_disputes():
+    """Audit D1 fix (b): a checked statement bound to a disputed target is
+    listed again under its own heading, so the bottom line can state both
+    sides or drop the step."""
+    task = _one_target_task()
+    statement = ReportStatement(statement_id="S001", text="According to the source, 10.4 GW in 2024.",
+                                finding_ids=[finding_fingerprint(task.findings[0])],
+                                target_ids=["topic-01-target-01"])
+    section = ReportSection(title="Capacity added", coverage_id="topic-01",
+                            points=[ReportPointFor("According to the source, 10.4 GW in 2024.", statement)])
+
+    body = bottom_line_messages(task, [section], disputed_target_ids=frozenset({"topic-01-target-01"}))[-1].content
+
+    assert "# Disputed steps: state both sides or leave the step out" in body
+    assert "According to the source, 10.4 GW in 2024." in body.split("# Disputed steps")[1]
+
+
+def test_bottom_line_messages_omit_the_disputed_steps_heading_when_nothing_disputes():
+    task = _one_target_task()
+    statement = ReportStatement(statement_id="S001", text="According to the source, 10.4 GW in 2024.",
+                                finding_ids=[finding_fingerprint(task.findings[0])],
+                                target_ids=["topic-01-target-01"])
+    section = ReportSection(title="Capacity added", coverage_id="topic-01",
+                            points=[ReportPointFor("According to the source, 10.4 GW in 2024.", statement)])
+
+    body = bottom_line_messages(task, [section])[-1].content
+
+    assert "# Disputed steps" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_writer_marked_disputing_point_guards_the_bottom_line(writer, checker) -> None:
+    """Z1/Z2 items 3-4 end to end: a section point the writer marks
+    ``disputes: true`` makes its own target's bottom-line sentence need a
+    difference marker, even though the underlying finding carries no
+    ``Finding.disputes`` of its own -- the writer's own marking (item 3)
+    is read by the bottom line (item 4), not only the dissent re-ask's."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                       target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[finding])
+    task = writer.build_task(state)
+    assert finding.disputes is False
+    writer.provider._outputs.extend([
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="According to the source, sources disagree about the figure.",
+                             finding_labels=["F01"], disputes=True),
+        ]),
+        BottomLineDraft(sentences=[WriterPointDraft(
+            text="According to the source, the figure was 10.4 GW in 2024.", finding_labels=["F01"])]),
+    ])
+
+    composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
+
+    bottom_line_texts = [point.text for point in composition.summary]
+    assert "According to the source, the figure was 10.4 GW in 2024." not in bottom_line_texts
+    assert any(
+        r.reason == "states a disputed step without its dispute" for r in composition.rejected_points
+    )
 
 
 def test_finalize_candidate_never_records_a_strip_note_for_a_refused_point():
@@ -1487,7 +1662,7 @@ async def test_a_leaked_label_group_is_stripped_from_the_printed_point(writer, c
     task = writer.build_task(state)
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added", points=[
-            WriterPointDraft(text="Capacity grew steadily across the period (F01).",
+            WriterPointDraft(text="According to the source, capacity grew steadily across the period (F01).",
                              finding_labels=["F01"]),
         ]),
         BottomLineDraft(sentences=[]),
@@ -1498,7 +1673,7 @@ async def test_a_leaked_label_group_is_stripped_from_the_printed_point(writer, c
     section_texts = [point.text for section in composition.sections for point in section.points]
     bottom_line_texts = [point.text for point in composition.summary]
     printed = (section_texts + bottom_line_texts)[0]
-    assert printed == "Capacity grew steadily across the period."
+    assert printed == "According to the source, capacity grew steadily across the period."
     assert composition.dropped_marks != []
 
 
@@ -1512,7 +1687,7 @@ async def test_a_corrected_verdict_replaces_the_sentence(writer, checker) -> Non
     checker.verdicts["P01.01"] = _verdict("corrected", corrected_text="10.4 GW, corrected.")
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW, corrected.", finding_labels=["F01"])]),
     ])
 
@@ -1530,8 +1705,8 @@ async def test_a_title_with_a_digit_falls_back_to_the_sub_topic_title(writer, ch
     task = writer.build_task(state)
     writer.provider._outputs.extend([
         SectionDraft(title="65 GW by 2027",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
-        BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
     ])
 
     composition = await compose_written_report(task, provider=writer.provider)
@@ -1547,8 +1722,8 @@ async def test_a_title_with_a_verdict_word_falls_back_to_the_sub_topic_title(wri
     task = writer.build_task(state)
     writer.provider._outputs.extend([
         SectionDraft(title="The Best Option",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
-        BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
     ])
 
     composition = await compose_written_report(task, provider=writer.provider)
@@ -1575,7 +1750,7 @@ async def test_an_inconsistent_verdict_refuses_the_point(writer, checker) -> Non
     checker.verdicts["P01.01"] = _verdict("inconsistent", reason="not in the findings")
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[]),
     ])
 
@@ -1602,7 +1777,7 @@ async def test_a_report_with_only_refused_points_discloses_it_not_the_no_source_
     checker.verdicts["P01.01"] = _verdict("inconsistent", reason="not in the findings")
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[]),
     ])
 
@@ -1626,7 +1801,7 @@ async def test_all_parts_refused_is_recoverable_and_the_run_still_finishes(
     checker.verdicts["P01.01"] = _verdict("inconsistent", reason="not in the findings")
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[]),
     ])
 
@@ -1680,7 +1855,7 @@ async def test_a_point_citing_no_known_label_is_refused_without_calling_the_chec
     task = writer.build_task(state)
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=[])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=[])]),
         BottomLineDraft(sentences=[]),
     ])
 
@@ -1874,8 +2049,8 @@ async def test_a_composed_report_carries_its_table_page_credits_and_unreachable_
     )
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added", points=[
-            WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"]),
-            WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"]),
+            WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"]),
+            WriterPointDraft(text="According to the source, 5 GW in 2025.", finding_labels=["F02"]),
         ]),
         BottomLineDraft(sentences=[]),
     ])
@@ -1934,8 +2109,8 @@ async def test_the_pages_own_metadata_date_outranks_the_evaluators_admitted_date
     )
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added", points=[
-            WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"]),
-            WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"]),
+            WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"]),
+            WriterPointDraft(text="According to the source, 5 GW in 2025.", finding_labels=["F02"]),
         ]),
         BottomLineDraft(sentences=[]),
     ])
@@ -1976,7 +2151,7 @@ async def test_the_table_is_built_after_page_credits_exist_not_before(
         SectionDraft(title="Capacity added", points=[
             WriterPointDraft(text="Wood Mackenzie reports 16 GW of storage in 2025.",
                              finding_labels=["F01"]),
-            WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"]),
+            WriterPointDraft(text="According to the source, 5 GW in 2025.", finding_labels=["F02"]),
         ]),
         BottomLineDraft(sentences=[WriterPointDraft(
             text="Wood Mackenzie reports 16 GW of storage in 2025.", finding_labels=["F01"])]),
@@ -2053,7 +2228,7 @@ async def test_a_figures_statement_date_never_becomes_a_page_credits_date(
                           verified_findings=[finding])
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[]),
     ])
     agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
@@ -2154,7 +2329,7 @@ async def test_a_bottom_line_fallback_gives_each_point_its_own_id_and_real_verdi
     checker.verdicts["P01.01"] = _verdict("corrected", corrected_text="10.4 GW, corrected.")
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         _output_limit_error(), _output_limit_error(),
     ])
     agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
@@ -2189,7 +2364,7 @@ async def test_a_statement_check_outage_leaves_a_recoverable_error_not_a_false_e
     checker.fail_all = True
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[]),
     ])
     agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
@@ -2225,7 +2400,7 @@ async def test_a_bottom_line_re_ask_adopts_a_fully_passing_retry(
     checker.verdicts["R01"] = _verdict("consistent")
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[WriterPointDraft(text="A wrong claim.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024, restated.",
                                                     finding_labels=["F01"])]),
@@ -2255,7 +2430,7 @@ async def test_a_re_ask_whose_check_fails_does_not_replace_a_checked_bottom_line
                           verified_findings=[finding])
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[WriterPointDraft(text="A wrong claim.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[WriterPointDraft(text="Unchecked claim.", finding_labels=["F01"])]),
     ])
@@ -2284,7 +2459,7 @@ async def test_a_re_ask_whose_check_fails_does_not_replace_a_checked_bottom_line
     finally:
         ev.check_statements = original
 
-    assert [p.text for p in composition.summary] == ["10.4 GW in 2024."]
+    assert [p.text for p in composition.summary] == ["According to the source, 10.4 GW in 2024."]
 
 
 @pytest.mark.asyncio
@@ -2304,7 +2479,7 @@ async def test_a_bottom_line_with_every_sentence_refused_falls_back_to_checked_s
     checker.verdicts["R01"] = _verdict("inconsistent", reason="still not supported")
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024, allegedly.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024, still allegedly.",
                                                     finding_labels=["F01"])]),
@@ -2315,7 +2490,7 @@ async def test_a_bottom_line_with_every_sentence_refused_falls_back_to_checked_s
     composition = await compose_written_report(task, provider=completer, section_concurrency=7)
 
     assert len(composition.summary) == 1
-    assert composition.summary[0].text == "10.4 GW in 2024."
+    assert composition.summary[0].text == "According to the source, 10.4 GW in 2024."
     assert composition.sections == []
 
 
@@ -2355,13 +2530,13 @@ async def test_a_redraft_still_drafts_a_part_that_has_findings_but_no_previous_s
     def route(messages, schema):
         body = messages[-1].content
         if schema is BottomLineDraft:
-            return BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024, corrected.",
+            return BottomLineDraft(sentences=[WriterPointDraft(text="According to the source, 10.4 GW in 2024, corrected.",
                                                                 finding_labels=["F01"])])
         if "topic-02" in body.split("# This part of the question")[1][:20]:
             return SectionDraft(title="Second",
-                                points=[WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"])])
+                                points=[WriterPointDraft(text="According to the source, 5 GW in 2025.", finding_labels=["F02"])])
         return SectionDraft(title="First",
-                            points=[WriterPointDraft(text="10.4 GW in 2024, corrected.", finding_labels=["F01"])])
+                            points=[WriterPointDraft(text="According to the source, 10.4 GW in 2024, corrected.", finding_labels=["F01"])])
 
     completer = ScriptedCompleter(outputs=[route, route, route])
     agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -227,7 +227,7 @@ SECTION_INSTRUCTION = (
     "state that disagreement in the first points for the target it concerns, before "
     "that target's other facts (required targets still come first, in the listed "
     "order): who holds which view, and where they agree. A point that states it "
-    "cites the findings on each side.\n"
+    "cites the findings on each side, and mark such a point disputes: true.\n"
     "- When two findings give different values or dates for the same thing, state both "
     "in one point, say that they differ, and, where a cited finding shows it, name "
     "which source dates its value or names the document it rests on. Only values or "
@@ -244,7 +244,9 @@ SECTION_INSTRUCTION = (
     "the form its evidence takes: a figure with its period and its organisation; a "
     "forecast with its issuer and release; items with their attributes, grouped or "
     "ordered on a basis the question or the findings give, and stated as the findings "
-    "state them; reasons, mechanisms or provisions as the cited findings state them. "
+    "state them; reasons, mechanisms or provisions as the cited findings state them; "
+    "the last step states the outcome the question's subject reached, with its date "
+    "where a statement gives it. "
     "State an optional target's answer only where it adds a fact the required targets' "
     "points do not carry. Every required target a listed finding answers is still "
     "stated by at least one point citing a finding that answers it; a point never "
@@ -348,15 +350,18 @@ BOTTOM_LINE_INSTRUCTION = (
     "- For a question whose answer form is a causal mechanism (one asking why or how "
     "something happened or works), give the mechanism as ordered steps within the two "
     "to four sentences: each step states a cause, its effect and the sources that "
-    "state it, in order, and a sentence carries one step or consecutive steps. Where "
-    "several listed statements state the same step, say so by naming them and cite "
-    "them all -- write \"X, Y and Z all state that …\", never \"X states …, while Y "
-    "states …\"; agreement among the findings is a fact of the findings, not a "
-    "verdict of your own.\n"
+    "state it, in order, and a sentence carries one step or consecutive steps; the "
+    "last step states the outcome the question's subject reached, with its date "
+    "where a statement gives it. Where several listed statements state the same "
+    "step, say so by naming them and cite them all -- write \"X, Y and Z all state "
+    "that …\", never \"X states …, while Y states …\"; agreement among the findings "
+    "is a fact of the findings, not a verdict of your own.\n"
     "- When the checked statements dispute a step, a figure or a provision (one "
     "states it, another disputes or qualifies it, or gives a different value or "
     "date for the same measured thing), state both and say they differ; never "
-    "state a disputed one as settled.\n"
+    "state a disputed one as settled. State a dispute in the bottom line only "
+    "when it concerns a step of the mechanism or the answer's own value; a "
+    "variance in an incidental date belongs in its section.\n"
     "- Cite by label only: every sentence lists in finding_labels the labels it "
     "rests on, and every label must be one the listed statements cite -- never a "
     "label a listed statement does not carry.\n"
@@ -601,6 +606,12 @@ def registry_lines(label: str, finding: Finding,
     lines = [
         f"## {label}: {finding.source_title} ({publisher_identity(finding.source_url)})",
     ]
+    if finding.disputes:
+        # Z1/Z2 shared contract (audit D2, CODE 1): a finding the dissent
+        # re-ask returned disputes, qualifies or dates a step another
+        # retained finding states -- the writer's own disagreement-first
+        # rule and the bottom line's dispute guard both need to see it.
+        lines.append("disputes: yes")
     rationale_line = _source_rationale_line(
         (sources or {}).get(normalize_source_url(finding.source_url))
     )
@@ -1027,13 +1038,22 @@ def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
 def bottom_line_messages(
     task: ReportWriterTask, sections: Sequence[ReportSection], *,
     previous: Sequence[ReportPoint] = (), defects: Sequence[ReviewDefect] = (),
+    disputed_target_ids: frozenset[str] = frozenset(),
 ) -> list[ChatMessage]:
     """The bottom-line request (spec §6.6): fed only the checked, kept section
     statements a caller passes in ``sections`` -- filtering to consistent or
     corrected verdicts is the caller's job (§6.7 assembly needs the verdicts
-    this function has no access to)."""
+    this function has no access to).
+
+    ``disputed_target_ids`` (audit D1 fix (b)) is the caller's own union of
+    every target a disputing finding binds and every target a kept,
+    writer-marked ``disputes: true`` point cites (``_run_bottom_line``): a
+    statement bound to one of these targets is listed again under "Disputed
+    steps", so the bottom line can state both sides or drop the step.
+    """
     label_by_id = {finding_fingerprint(f): label for label, f in task.registry}
     blocks: list[str] = []
+    disputed_lines: list[str] = []
     for section in sections:
         lines: list[str] = []
         for point in section.points:
@@ -1046,6 +1066,8 @@ def bottom_line_messages(
             cites = f"cites {', '.join(labels)}" if labels else "cites nothing"
             suffix = f" ({cites}; options: {options})" if options else f" ({cites})"
             lines.append(f"- {point.text}{suffix}")
+            if set(point.statement.target_ids) & disputed_target_ids:
+                disputed_lines.append(f"- {point.text}{suffix}")
         if lines:
             blocks.append(f"## {section.title}\n" + "\n".join(lines))
     statements_block = "\n\n".join(blocks) if blocks else "(none)"
@@ -1058,6 +1080,11 @@ def bottom_line_messages(
         f"# Answer form\n{_answer_form_line(task)}",
         f"# Checked statements\n{statements_block}",
     ]
+    if disputed_lines:
+        material.append(
+            "# Disputed steps: state both sides or leave the step out\n"
+            + "\n".join(disputed_lines)
+        )
     if previous:
         material.append(f"# Your previous bottom line\n{_rendered_previous_bottom_line(previous)}")
     if defects:
@@ -1155,6 +1182,60 @@ def _has_unnamed_subject(text: str) -> bool:
     if _UNNAMED_SUBJECT.match(text.strip()):
         return True
     return any(_UNNAMED_SUBJECT.match(match.group(1).strip()) for match in _QUOTED_SPAN.finditer(text))
+
+
+#: Audit D1 fix (a): a point that states a fact but names no one behind it
+#: (run 7's S043, credited to nobody one line after its own refutation).
+#: These are given literally, not stemmed: the writer's own citation
+#: convention is present tense ("X states that ..."). Includes the
+#: forecast verbs the section rule already asks for ("projects",
+#: "expects", "forecasts") -- a forecast sentence credits its issuer
+#: through that verb, not a separate one.
+_CREDIT_VERBS = (
+    "states", "reports", "says", "writes", "argues", "notes", "records",
+    "finds", "dates", "gives", "according to", "as quoted by", "carries",
+    "relates", "describes", "projects", "expects", "forecasts",
+)
+_CREDIT_VERB = re.compile(
+    r"\b(?:" + "|".join(re.escape(verb) for verb in _CREDIT_VERBS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _significant_tokens(text: str) -> set[str]:
+    """Words of at least four letters, or an all-capitals acronym of two
+    or more ("EIA", "IMF") -- coarse enough to catch a name a point's own
+    text repeats from a finding's title or publisher, including the short
+    initialisms most organisation names actually go by; a stray common
+    word matching by accident is harmless here, since it only ever adds a
+    name a credit verb could also have supplied."""
+    return {
+        word.lower() for word in re.findall(r"[A-Za-z]+", text)
+        if len(word) >= 4 or (len(word) >= 2 and word.isupper())
+    }
+
+
+def _names_a_source(text: str, findings: Sequence[Finding]) -> bool:
+    """Audit D1 fix (a): does this point name the source it rests on --
+    by a credit verb, or by a name its cited findings' own registry lines
+    would print (publisher identity, page-title tokens, the attributed
+    issuer, or a quoted author -- the same field carries both)? A point
+    that states a fact naming neither is refused: a fact with no one
+    behind it is not what any finding actually verified.
+    """
+    if _CREDIT_VERB.search(text):
+        return True
+    lowered = text.lower()
+    tokens = _significant_tokens(text)
+    for finding in findings:
+        publisher = publisher_identity(finding.source_url)
+        if publisher and publisher.lower() in lowered:
+            return True
+        if finding.attributed_issuer and finding.attributed_issuer.lower() in lowered:
+            return True
+        if _significant_tokens(finding.source_title) & tokens:
+            return True
+    return False
 
 
 #: Whole-branch review P2-1: a small, general verdict lexicon -- a drafted
@@ -1274,6 +1355,12 @@ class _Candidate:
     recorded by ``_finalize_candidate`` only once the candidate is kept, so
     a refused candidate (whose key never reaches a printed S-id) never
     leaves an orphaned note in the log."""
+    disputes: bool = False
+    """Z1/Z2 item 3: the writer's own ``point.disputes`` -- a point marked
+    ``disputes: true`` states a disagreement or dispute among the sources.
+    Read by ``_run_part`` for a *kept* candidate to compute the part's
+    disputed target ids, which the bottom line reads to list disputed
+    steps and to guard a sentence that states one as settled (audit D1)."""
 
 
 def _finding_label(finding: Finding) -> str:
@@ -1320,6 +1407,10 @@ def _consider_section_point(
     if all(label in context_only_labels for label in wanted):
         refuse("rests only on context-only findings")
         return []
+    cited_findings = [part_labels[label] for label in wanted]
+    if not _names_a_source(drafted, cited_findings):
+        refuse("states a fact without crediting the source that states it")
+        return []
     if _has_unnamed_subject(drafted) and not point.items:
         refuse("a judgement with no named subject")
         return []
@@ -1331,14 +1422,41 @@ def _consider_section_point(
         _Candidate(key=f"{key_prefix}{next(numbers):02d}",
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
-                  findings=[part_labels[label] for label in wanted], items=list(point.items),
-                  had_label_group=had_label_group)
+                  findings=cited_findings, items=list(point.items),
+                  had_label_group=had_label_group, disputes=point.disputes)
         for n, piece in enumerate(pieces, start=1)
     ]
 
 
+#: Audit D1 fix (b): a bottom-line sentence that touches a disputed target
+#: must say so -- run 7's D1 (the disputed step carried into the bottom
+#: line with no dispute) and D7 (the dispute rule with no materiality
+#: test). Given literally, not stemmed, matching the brief.
+_DIFFERENCE_MARKERS = (
+    "differ", "disagree", "dispute", "contested", "challenged", "question",
+    "reject", "while others", "but", "however", "though", "although",
+    "others argue",
+)
+_DIFFERENCE_MARKER = re.compile(
+    r"\b(?:" + "|".join(re.escape(marker) for marker in _DIFFERENCE_MARKERS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _disputed_target_ids(findings: Iterable[Finding]) -> set[str]:
+    """Audit D1 fix (b): every target id at least one disputing finding
+    binds -- the bottom line's own "a disputes statement exists for that
+    target" test."""
+    ids: set[str] = set()
+    for finding in findings:
+        if finding.disputes:
+            ids.update(finding.target_ids)
+    return ids
+
+
 def _consider_bottom_line_point(
     point: WriterPointDraft, where: str, *, cited_by_sections: Mapping[str, Finding],
+    disputed_target_ids: set[str],
     numbers: Iterator[int], rejected: list[RejectedDraftPoint], key_prefix: str,
 ) -> list[_Candidate]:
     drafted = " ".join(point.text.split())
@@ -1360,6 +1478,11 @@ def _consider_bottom_line_point(
     if unknown:
         refuse("cites a finding no checked section statement cites")
         return []
+    cited_findings = [cited_by_sections[label] for label in wanted]
+    own_target_ids = {target_id for finding in cited_findings for target_id in finding.target_ids}
+    if own_target_ids & disputed_target_ids and not _DIFFERENCE_MARKER.search(drafted):
+        refuse("states a disputed step without its dispute")
+        return []
     if _has_unnamed_subject(drafted) and not point.items:
         refuse("a judgement with no named subject")
         return []
@@ -1371,8 +1494,8 @@ def _consider_bottom_line_point(
         _Candidate(key=f"{key_prefix}{next(numbers):02d}",
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
-                  findings=[cited_by_sections[label] for label in wanted], items=list(point.items),
-                  had_label_group=had_label_group)
+                  findings=cited_findings, items=list(point.items),
+                  had_label_group=had_label_group, disputes=point.disputes)
         for n, piece in enumerate(pieces, start=1)
     ]
 
@@ -1620,6 +1743,11 @@ class _PartOutcome:
     verdicts: dict[str, str]                      # temp statement id -> verdict string
     rejected: list[RejectedDraftPoint] = field(default_factory=list)
     dropped_marks: list[tuple[str, str]] = field(default_factory=list)
+    disputed_target_ids: frozenset[str] = frozenset()
+    """Z1/Z2 item 4: the target ids of every *kept* point this part wrote
+    with ``disputes: true`` -- ``_run_bottom_line`` unions this across every
+    part (with the finding-level signal, ``_disputed_target_ids``) before
+    the bottom line ever runs."""
 
 
 async def _run_part(
@@ -1681,6 +1809,7 @@ async def _run_part(
     stated_rows: set[str] = set()
     verdict_map: dict[str, str] = {}
     points: list[ReportPoint] = []
+    disputed_target_ids: set[str] = set()
     for candidate in candidates:
         point, verdict_string = _finalize_candidate(
             candidate, verdicts, stated_rows=stated_rows, task_facts=task.facts,
@@ -1690,6 +1819,10 @@ async def _run_part(
         if point is not None:
             points.append(point)
             verdict_map[point.statement_id] = verdict_string
+            if candidate.disputes:
+                disputed_target_ids.update(
+                    target_id for finding in candidate.findings for target_id in finding.target_ids
+                )
 
     title = _section_title(draft.title, job.sub_topic_title)
     section = ReportSection(title=title, points=points, coverage_id=job.coverage_id) if points else None
@@ -1700,7 +1833,8 @@ async def _run_part(
     status = "written" if points else "failed"
     return _PartOutcome(job=job, section=section, status=status,
                         errors=[*draft_errors, *check_errors], verdicts=verdict_map,
-                        rejected=rejected, dropped_marks=dropped_marks)
+                        rejected=rejected, dropped_marks=dropped_marks,
+                        disputed_target_ids=frozenset(disputed_target_ids))
 
 
 def _bottom_line_fallback(
@@ -1771,7 +1905,7 @@ async def _check_and_finalize_bottom_line(
     task: ReportWriterTask, draft: BottomLineDraft, *, provider: AgentCompleter,
     fingerprint: Callable[[str], object] | None, check_gate: asyncio.Semaphore,
     batch_size: int, cited_by_sections: Mapping[str, Finding], label_urls: Mapping[str, str],
-    label_finding_ids: Mapping[str, str], key_prefix: str,
+    label_finding_ids: Mapping[str, str], key_prefix: str, disputed_target_ids: frozenset[str] = frozenset(),
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
           list[tuple[str, str]], list[tuple[str, str]], bool]:
     """One bottom-line draft's candidates, checked and finalized (spec §6.6).
@@ -1785,6 +1919,10 @@ async def _check_and_finalize_bottom_line(
     and a "consistent" or "corrected" verdict for every one of them (P1-2):
     the re-ask adopts its own result only then, so a check outage or a
     partial refusal never swaps a checked bottom line for unchecked text.
+    ``disputed_target_ids`` (audit D1 fix (b)) is the caller's own combined
+    finding-level and writer-marked set (``_run_bottom_line``); a caller
+    with none in hand (the re-ask, which reuses the first attempt's own
+    checked candidates) leaves it empty and no sentence is guarded twice.
     """
     numbers = iter(range(1, 100))
     rejected: list[RejectedDraftPoint] = []
@@ -1793,6 +1931,7 @@ async def _check_and_finalize_bottom_line(
     for n, point in enumerate(draft.sentences):
         candidates.extend(_consider_bottom_line_point(
             point, f"bottom_line[{n}]", cited_by_sections=cited_by_sections,
+            disputed_target_ids=disputed_target_ids,
             numbers=numbers, rejected=rejected, key_prefix=key_prefix,
         ))
 
@@ -1901,6 +2040,9 @@ async def _run_bottom_line(
                     cited_by_sections[label] = dict(task.registry)[label]
 
     required_coverage = {t.coverage_id for t in task.targets if t.required}
+    disputed_target_ids = frozenset(_disputed_target_ids(cited_by_sections.values())).union(
+        *(outcome.disputed_target_ids for outcome in outcomes)
+    )
 
     if not checked_sections:
         # P1-b(i): a part whose draft succeeded but whose Statement Check
@@ -1948,7 +2090,7 @@ async def _run_bottom_line(
     if is_redraft:
         _, _, bottom_line_defects = _route_defects(task.defects, task.previous, task.targets)
     messages = bottom_line_messages(task, checked_sections, previous=previous_points,
-                                    defects=bottom_line_defects)
+                                    defects=bottom_line_defects, disputed_target_ids=disputed_target_ids)
     draft, draft_errors = await _attempt_bottom_line_draft(
         provider, messages, agent_name=REPORT_WRITER_NAME, fingerprint=fingerprint,
     )
@@ -1965,7 +2107,7 @@ async def _run_bottom_line(
         await _check_and_finalize_bottom_line(
             task, draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
             batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
-            label_finding_ids=label_finding_ids, key_prefix="B",
+            label_finding_ids=label_finding_ids, key_prefix="B", disputed_target_ids=disputed_target_ids,
         )
     )
 
@@ -1990,7 +2132,7 @@ async def _run_bottom_line(
             for n, (text, reason) in enumerate(refusals, start=1)
         ]
         reask_messages = bottom_line_messages(task, checked_sections, previous=points,
-                                              defects=reask_defects)
+                                              defects=reask_defects, disputed_target_ids=disputed_target_ids)
         reask_draft, reask_draft_errors = await _attempt_bottom_line_draft(
             provider, reask_messages, agent_name=REPORT_WRITER_NAME, fingerprint=fingerprint,
         )
@@ -2000,7 +2142,7 @@ async def _run_bottom_line(
              reask_dropped_marks, _, reask_fully_checked) = await _check_and_finalize_bottom_line(
                 task, reask_draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
                 batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
-                label_finding_ids=label_finding_ids, key_prefix="R",
+                label_finding_ids=label_finding_ids, key_prefix="R", disputed_target_ids=disputed_target_ids,
             )
             if reask_fully_checked:
                 points, verdict_map, dropped_marks = (

@@ -2817,16 +2817,18 @@ async def test_remap_drops_a_defect_whose_old_id_now_names_a_different_carried_s
             SectionDraft(
                 title="Part A",
                 points=[
-                    _WriterPointDraft(text="Part A's first point.", finding_labels=["F01"]),
-                    _WriterPointDraft(text="Part A's second point, which is wrong.", finding_labels=["F01"]),
+                    _WriterPointDraft(text="According to the source, Part A's first point.", finding_labels=["F01"]),
+                    _WriterPointDraft(text="According to the source, Part A's second point, which is wrong.",
+                                      finding_labels=["F01"]),
                 ],
             ),
             SectionDraft(
                 title="Part B",
-                points=[_WriterPointDraft(text="Part B's point.", finding_labels=["F02"])],
+                points=[_WriterPointDraft(text="According to the source, Part B's point.", finding_labels=["F02"])],
             ),
             BottomLineDraft(
-                sentences=[_WriterPointDraft(text="Bottom line before the redraft.", finding_labels=["F01"])]
+                sentences=[_WriterPointDraft(text="According to the source, bottom line before the redraft.",
+                                             finding_labels=["F01"])]
             ),
         ]
     )
@@ -2847,10 +2849,12 @@ async def test_remap_drops_a_defect_whose_old_id_now_names_a_different_carried_s
         outputs=[
             SectionDraft(
                 title="Part A",
-                points=[_WriterPointDraft(text="Part A's corrected point.", finding_labels=["F01"])],
+                points=[_WriterPointDraft(text="According to the source, Part A's corrected point.",
+                                          finding_labels=["F01"])],
             ),
             BottomLineDraft(
-                sentences=[_WriterPointDraft(text="Bottom line after the redraft.", finding_labels=["F01"])]
+                sentences=[_WriterPointDraft(text="According to the source, bottom line after the redraft.",
+                                             finding_labels=["F01"])]
             ),
         ]
     )
