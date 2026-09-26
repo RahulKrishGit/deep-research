@@ -133,6 +133,52 @@ def _item(read, finding) -> ContextItem:
     )
 
 
+def test_context_passage_contains_a_snippet_spanning_three_passages() -> None:
+    """The Context Check must see the whole of a kept snippet's own words.
+
+    ``neighbouring_passage_text`` stops at one neighbour either side and
+    would cut this snippet's own third passage away from what the model is
+    shown to judge a kept figure's context; ``context_passage`` now grows
+    with the snippet's actual span instead.
+    """
+    lead_filler = (
+        "Filler introduction text that never appears in any quoted rule at "
+        "all today. "
+    )
+    tail_a = "The operator shall file the annual return with the county office."
+    mid_b = (
+        "The filing states the total acreage under cultivation for the "
+        "season, the count of registered cultivators within the county "
+        "boundary, the volume of produce declared for the district "
+        "warehouse during the reporting period, the names of every tenant "
+        "holding a lease longer than one growing season, the aggregate "
+        "irrigation drawn from the shared district canal since the last "
+        "filing, and the total weight of grain moved through the county "
+        "depot during the same reporting window."
+    )
+    head_c = (
+        "A copy of the filing shall remain in the register for three "
+        "years afterward."
+    )
+    filler_c = (
+        " Additional filler conclusion text that the quoted rule never "
+        "reaches at all."
+    )
+    passage_a = (lead_filler * 6) + tail_a
+    passage_b = mid_b
+    passage_c = head_c + filler_c
+    snippet = f"{tail_a} {mid_b} {head_c}"
+    read = make_read(
+        f"{passage_a} {passage_b} {passage_c}",
+        url="https://example.test/three-passage-context",
+        passages={"chunk-a": passage_a, "chunk-b": passage_b, "chunk-c": passage_c},
+    )
+
+    window = context_passage(read, "chunk-a", snippet)
+
+    assert head_c in window
+
+
 def _reply(**overrides: object) -> FigureCheckDraft:
     fields = dict(finding="F01", figure=1, period="2025", scope=None, attribution="own",
                   organisation="Wood Mackenzie", kind="actual",

@@ -1136,7 +1136,16 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # the module source itself; ``agents.prompts`` was untouched, so the
     # other four target pins and the Judge pin are unchanged. Moved
     # `8b1ad6b04834` -> `725d8e9ef930`.
-    "evidence_verifier": "725d8e9ef930",
+    # Close the Context Check gap (controller decision, same P1 round):
+    # ``context_passage`` (and, through it, the report registry's
+    # ``statement_passages`` line) and ``relay_attribution_on_page``'s
+    # primary path now read ``evidence.snippet_span_text`` instead of the
+    # fixed one-neighbour-either-side ``neighbouring_passage_text``, so a
+    # kept snippet spanning three or more passages is windowed by where it
+    # actually ends. No prompt sentence named a passage count, so no
+    # model-read text moved; only the module's own source did. Moved
+    # `725d8e9ef930` -> `c272fd184706`.
+    "evidence_verifier": "c272fd184706",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;

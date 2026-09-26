@@ -1139,30 +1139,33 @@ def _grown_snippet_window(
 
 
 def snippet_span_text(read: ReadRecord, locator: str, snippet: str) -> str:
-    """Every passage ``snippet`` actually runs through, starting at ``locator``.
+    """Every passage ``snippet`` actually runs through, anchored at ``locator``.
 
     A read passage is capped well below a kept snippet's own length limit, so
     a snippet several passages long has to be windowed by where it actually
     ends, never by a fixed number of neighbours: this is what a consumer that
     must see a whole kept snippet's context -- the Context Check, the report
-    registry's passage line -- needs in place of
-    :func:`neighbouring_passage_text`'s fixed one-neighbour-either-side
-    window. When ``snippet`` is not the read's own words at ``locator`` at
-    all, the single passage at ``locator`` is returned -- the same degraded
-    case :func:`neighbouring_passage_text` already leaves an unmatched
-    locator in.
+    registry's passage line, the relay attribution search -- needs in place
+    of :func:`neighbouring_passage_text`'s fixed one-neighbour-either-side
+    window. The search still starts one passage before ``locator``, exactly
+    as :func:`neighbouring_passage_text` does, because an attribution
+    sentence or a rule's own opening clause can sit in the passage just
+    before the one an excerpt was drawn from; from there it grows forward,
+    in document order, until the whole of ``snippet`` is inside it. When
+    ``snippet`` is not the read's own words anywhere in that reach,
+    :func:`neighbouring_passage_text`'s own fixed window is returned instead
+    -- the same degraded case it already leaves an unmatched locator in.
     """
     keys = list(read.passages.keys())
     if locator not in keys:
         return ""
     normalized_snippet = cosmetic_text(snippet)
     if normalized_snippet:
-        matched = _grown_snippet_window(
-            read, keys, keys.index(locator), normalized_snippet
-        )
+        start_index = max(0, keys.index(locator) - 1)
+        matched = _grown_snippet_window(read, keys, start_index, normalized_snippet)
         if matched is not None:
             return matched
-    return read.passages[locator]
+    return neighbouring_passage_text(read, locator)
 
 
 def locate_snippet(
@@ -1437,7 +1440,7 @@ def relay_attribution_on_page(read: ReadRecord, locator: str, snippet: str, orga
     # itself, never the whole page: an unbounded page-wide search let a distant,
     # unrelated "According to BNEF" credit that body for a figure it never
     # actually attributed.
-    passage = neighbouring_passage_text(read, locator) or _windowed_passage(
+    passage = snippet_span_text(read, locator, snippet) or _windowed_passage(
         _document_text(read), snippet, chars=_RELAY_PASSAGE_CHARS
     )
     name = organisation.strip()
