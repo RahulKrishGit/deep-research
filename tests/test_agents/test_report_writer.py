@@ -1697,6 +1697,29 @@ def test_names_a_source_matches_a_hyphenated_host_with_its_spaces_restored():
     assert _names_a_source("Example Institute's own figure was 10.4 GW.", [finding])
 
 
+def test_names_a_source_refuses_an_action_verb_with_an_ordinary_subject():
+    """ReRevZ2b P1 on R1: the R1 action verbs (rates, names, measured,
+    ...) are ordinary action verbs any subject can take -- unlike the
+    established reporting verbs, "isn't a bare determiner" let ordinary
+    prose through uncredited. None of these names anyone."""
+    from deep_research.agents.report_writer import _names_a_source
+    assert not _names_a_source("The data shows a steady increase.", [])
+    assert not _names_a_source("Rome holds the record for the longest aqueduct.", [])
+    assert not _names_a_source("Output measures rose sharply after the reform.", [])
+    assert not _names_a_source("Marius claims land for his veterans.", [])
+    assert not _names_a_source("The report lists three main causes.", [])
+
+
+def test_names_a_source_accepts_an_action_verb_with_a_name_shaped_subject():
+    """The other branch: a name-shaped subject before an action verb
+    credits -- an all-caps acronym ("EIA"), or two or more consecutive
+    capitalised words even when not the sentence's own first word
+    ("In 2024, Example Institute measured ...")."""
+    from deep_research.agents.report_writer import _names_a_source
+    assert _names_a_source("The EIA measured a rise in storage capacity.", [])
+    assert _names_a_source("In 2024, Example Institute measured a rise in storage capacity.", [])
+
+
 # --- D12: no finding labels leak into point text ----------------------------
 
 
@@ -1963,6 +1986,127 @@ def test_bottom_line_dispute_scope_is_the_labels_the_marked_point_cites_not_its_
     dispute_group = dispute_block.split("The dispute, as a section point states it:")[1]
     assert marked_text in dispute_group.split("Statements that cite")[0]
     assert dating_text not in dispute_block
+
+
+def test_bottom_line_disputed_labels_is_the_exclusive_hop_not_the_plain_one():
+    """ReRevZ2 C11 (Fable's second pass): the one-hop expansion must be
+    exclusive -- a sharing statement's own label joins ``disputed_labels``
+    only when no *other* checked statement (neither a marked point nor
+    itself a sharing statement) also cites it, or the guard reaches one
+    hop further than the "Disputed" block itself lists. Statements:
+    marked S001 (F01+F02); sharing S004 (F01+F03), where F03 is also
+    cited by the non-sharing S002 alone; sharing S006 (F01+F06), which
+    nothing else cites. A bottom-line sentence citing F03 alone is kept
+    (F03 sits outside the dispute); one citing F06 alone is refused;
+    one citing F01 is refused; one citing F05 (cited nowhere) is kept.
+    The block lists S001, S004 and S006, never S002."""
+    from deep_research.agents.report_writer import _bottom_line_disputed_labels, _consider_bottom_line_point
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding_1 = _statement_finding("https://a.test/1", "The annual assessment states enrollment fell steeply.",
+                                   target_ids=["topic-01-target-01"])
+    finding_2 = _statement_finding(
+        "https://b.test/1",
+        "Field Review states later field surveys found little evidence for that decline.",
+        target_ids=["topic-01-target-01"],
+    )
+    finding_3 = _statement_finding("https://c.test/1", "Example Register records that the transport subsidy ended in March 2016.",
+                                   target_ids=["topic-01-target-01"])
+    finding_4 = _statement_finding("https://d.test/1", "A newsletter dates the programme's launch to 2015.",
+                                   target_ids=["topic-01-target-01"])
+    finding_5 = _statement_finding("https://e.test/1", "A separate report notes staffing levels rose in 2018.",
+                                   target_ids=["topic-01-target-01"])
+    task = ReportWriterTask(
+        instruction="Q?", session_id="s1", question="Q?", as_of="2026-08-01",
+        sub_topics=[_topic("topic-01", "Outreach", [target])],
+        targets=[target], findings=[finding_1, finding_2, finding_3, finding_4, finding_5], sources=[],
+        registry=finding_registry([finding_1, finding_2, finding_3, finding_4, finding_5], [target]),
+        answered={target.target_id: [finding_fingerprint(finding_1)]},
+        not_found=[], defects=[], previous=None,
+    )
+    label_by_finding_id = {
+        finding_fingerprint(f): label for label, f in task.registry
+    }
+    cited_by_sections = dict(task.registry)
+
+    marked_text = (
+        "The annual assessment states enrollment fell steeply, while Field Review "
+        "states later field surveys found little evidence for that decline."
+    )
+    non_sharing_text = "Example Register records that the transport subsidy ended in March 2016."
+    sharing_one_text = (
+        "Example Register also records that the transport subsidy overlapped with "
+        "when enrollment fell steeply, according to the annual assessment."
+    )
+    sharing_two_text = (
+        "A newsletter dates the programme's launch to 2015, according to the "
+        "annual assessment."
+    )
+    marked_statement = ReportStatement(
+        statement_id="S001", text=marked_text,
+        finding_ids=[finding_fingerprint(finding_1), finding_fingerprint(finding_2)],
+        target_ids=["topic-01-target-01"],
+    )
+    non_sharing_statement = ReportStatement(
+        statement_id="S002", text=non_sharing_text, finding_ids=[finding_fingerprint(finding_3)],
+        target_ids=["topic-01-target-01"],
+    )
+    sharing_one_statement = ReportStatement(
+        statement_id="S004", text=sharing_one_text,
+        finding_ids=[finding_fingerprint(finding_1), finding_fingerprint(finding_3)],
+        target_ids=["topic-01-target-01"],
+    )
+    sharing_two_statement = ReportStatement(
+        statement_id="S006", text=sharing_two_text,
+        finding_ids=[finding_fingerprint(finding_1), finding_fingerprint(finding_4)],
+        target_ids=["topic-01-target-01"],
+    )
+    section = ReportSection(title="Outreach", coverage_id="topic-01", points=[
+        ReportPointFor(marked_text, marked_statement),
+        ReportPointFor(non_sharing_text, non_sharing_statement),
+        ReportPointFor(sharing_one_text, sharing_one_statement),
+        ReportPointFor(sharing_two_text, sharing_two_statement),
+    ])
+
+    disputed_labels = _bottom_line_disputed_labels(
+        [section], label_by_finding_id, marked_labels=frozenset({"F01", "F02"}),
+        marked_statement_ids=frozenset({"S001"}),
+    )
+    assert disputed_labels == frozenset({"F01", "F02", "F04"})
+
+    def _try(text: str, labels: list[str]) -> tuple[list, list]:
+        rejected: list = []
+        candidates = _consider_bottom_line_point(
+            WriterPointDraft(text=text, finding_labels=labels),
+            "bottom_line[0]", cited_by_sections=cited_by_sections, disputed_labels=disputed_labels,
+            numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
+        )
+        return candidates, rejected
+
+    kept_f03, rejected_f03 = _try(non_sharing_text, ["F03"])
+    assert len(kept_f03) == 1 and rejected_f03 == []
+
+    kept_f06, rejected_f06 = _try("A newsletter dates the programme's launch to 2015.", ["F04"])
+    assert kept_f06 == []
+    assert rejected_f06[0].reason == "states a disputed step without its dispute"
+
+    kept_f01, rejected_f01 = _try("According to the source, enrollment fell steeply.", ["F01"])
+    assert kept_f01 == []
+    assert rejected_f01[0].reason == "states a disputed step without its dispute"
+
+    kept_f05, rejected_f05 = _try(
+        "A separate report notes staffing levels rose in 2018.", ["F05"],
+    )
+    assert len(kept_f05) == 1 and rejected_f05 == []
+
+    marked_statement_ids = frozenset({"S001"})
+    body = bottom_line_messages(task, [section], disputed_statement_ids=marked_statement_ids)[-1].content
+    dispute_block = body.split("# Disputed:")[1]
+    dispute_group = dispute_block.split("The dispute, as a section point states it:")[1]
+    lead = dispute_group.split("Statements that cite")[0]
+    assert marked_text in lead
+    rest = dispute_block.split("Statements that cite")[1]
+    assert sharing_one_text in rest and sharing_two_text in rest
+    assert non_sharing_text not in dispute_block
 
 
 @pytest.mark.asyncio

@@ -1235,23 +1235,40 @@ def _has_unnamed_subject(text: str) -> bool:
 #: RevZ2 P2-a: past-tense and plural forms added, plus the forecast
 #: verbs the section rule already asks for ("projects", "expects",
 #: "forecasts") -- a forecast sentence credits its issuer through that
-#: verb, not a separate one.
-_CREDIT_VERB_WORDS = (
+#: verb, not a separate one. These are the writer's own established
+#: reporting verbs: any subject but a bare determiner credits (the
+#: determiner rule below), the same rule ReRevZ2 P2 added.
+_REPORTING_VERB_WORDS = (
     "states", "state", "reports", "report", "says", "said", "writes", "wrote",
     "argues", "argued", "notes", "noted", "records", "record", "finds", "found",
     "dates", "dated", "gives", "gave", "carries", "relates", "describes",
     "projects", "expects", "forecasts", "stated", "reported", "counted",
     "estimated", "per",
-    # ReRevZ2 R1: the writer's own reply-example verbs the guard did not yet
-    # accept ("Example Tester rates ...", "... names Model B ..."), plus the
-    # bottom-line vocabulary the section guard shares no verb with.
+)
+_REPORTING_VERB_WORD = re.compile(
+    r"\b(?:" + "|".join(re.escape(word) for word in _REPORTING_VERB_WORDS) + r")\b"
+)
+
+#: ReRevZ2 R1: the writer's own reply-example verbs the guard did not yet
+#: accept ("Example Tester rates ...", "... names Model B ..."), plus the
+#: bottom-line vocabulary the section guard shares no verb with. ReRevZ2b
+#: P1 on R1: unlike the reporting verbs above, these are ordinary action
+#: verbs any subject can take ("The data shows a steady increase.", "Rome
+#: holds the record ...") -- "isn't a bare determiner" is not enough, so
+#: ``_action_verb_credits`` requires the words directly before the verb
+#: to actually look like a name.
+_ACTION_VERB_WORDS = (
     "rates", "names", "measured", "measures", "shows", "traces", "attributes",
     "holds", "calls", "lists", "puts", "concludes", "cites", "quotes", "claims",
     "suggests", "warns",
 )
-_CREDIT_VERB_WORD = re.compile(
-    r"\b(?:" + "|".join(re.escape(word) for word in _CREDIT_VERB_WORDS) + r")\b"
+_ACTION_VERB_WORD = re.compile(
+    r"\b(?:" + "|".join(re.escape(word) for word in _ACTION_VERB_WORDS) + r")\b"
 )
+#: Both tiers combined, for ``_AUTHOR_VERB_WORDS`` below: the title-author
+#: construction (ReRevZ2 P1) is already gated on the exact segment name
+#: sitting directly beside the verb, so it needs no separate subject rule.
+_CREDIT_VERB_WORDS = _REPORTING_VERB_WORDS + _ACTION_VERB_WORDS
 
 #: ReRevZ2 P2: a determiner or possessive immediately before the
 #: matched word makes it the noun ("The dates of the change are
@@ -1266,15 +1283,50 @@ _DETERMINERS = frozenset({
 })
 
 
-def _credit_verb_match(text: str) -> re.Match[str] | None:
-    """The first ``_CREDIT_VERB_WORD`` match not immediately preceded by
-    a bare determiner or possessive -- that word is always the noun,
-    never the verb the match assumes."""
-    for match in _CREDIT_VERB_WORD.finditer(text):
-        preceding = re.search(r"(\w+)\s*$", text[:match.start()])
+def _word_before(text: str, position: int) -> re.Match[str] | None:
+    """The last word (and its span) ending at ``position``, if any."""
+    return re.search(r"(\w+)\s*$", text[:position])
+
+
+def _credit_verb_match(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
+    """The first ``pattern`` match not immediately preceded by a bare
+    determiner or possessive -- that word is always the noun, never the
+    verb the match assumes."""
+    for match in pattern.finditer(text):
+        preceding = _word_before(text, match.start())
         if preceding is None or preceding.group(1).lower() not in _DETERMINERS:
             return match
     return None
+
+
+#: ReRevZ2b P1 on R1: the run of consecutive capitalised words ending
+#: right before an action verb -- "Example Institute" out of "... In
+#: 2024, Example Institute measured ...", stopping at the comma before
+#: "2024" since a digit is never `[A-Z]`.
+_ACTION_VERB_SUBJECT = re.compile(r"([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*)*)\s*$")
+
+
+def _action_verb_credits(text: str, match: re.Match[str], findings: Sequence[Finding]) -> bool:
+    """Does the subject directly before this action-verb match look like
+    a name? One of: a source-name phrase from ``findings``; two or more
+    consecutive capitalised words ("Example Tester"); an all-caps
+    acronym of two or more letters ("EIA"); or a single capitalised
+    word that is not the sentence's first word (sentence-initial is as
+    likely an ordinary subject, "Output measures ...", "Rome holds
+    ...", as a name)."""
+    subject_match = _ACTION_VERB_SUBJECT.search(text[:match.start()])
+    if subject_match is None:
+        return False
+    subject = subject_match.group(1)
+    for finding in findings:
+        for phrase in _source_name_phrases(finding):
+            if len(phrase) >= 3 and subject.lower() == phrase.lower():
+                return True
+    if len(subject.split()) >= 2:
+        return True
+    if re.fullmatch(r"[A-Z]{2,}", subject):
+        return True
+    return subject_match.start() != 0
 
 
 #: Multi-word attribution openers -- used sentence-initially and
@@ -1455,8 +1507,16 @@ def _names_a_source(text: str, findings: Sequence[Finding]) -> bool:
     substring of almost any sentence.
     """
     verb_search_text = _MULTIWORD_NAME_EXCLUSION.sub("", text)
-    if _CREDIT_PHRASE.search(text) or _credit_verb_match(verb_search_text) is not None:
+    if _CREDIT_PHRASE.search(text):
         return True
+    if _credit_verb_match(_REPORTING_VERB_WORD, verb_search_text) is not None:
+        return True
+    for match in _ACTION_VERB_WORD.finditer(verb_search_text):
+        preceding = _word_before(verb_search_text, match.start())
+        if preceding is not None and preceding.group(1).lower() in _DETERMINERS:
+            continue
+        if _action_verb_credits(verb_search_text, match, findings):
+            return True
     lowered = text.lower()
     for finding in findings:
         for phrase in _source_name_phrases(finding):
@@ -1966,9 +2026,11 @@ class _PartOutcome:
     """ReRevZ2 C7 (was Z1/Z2 item 4's target-scoped set): the finding
     labels of every *kept* point this part wrote with ``disputes: true``
     -- ``_run_bottom_line`` unions this across every part, then expands
-    it one hop to every other checked statement sharing one of those
-    labels, before the bottom line ever runs (RevZ2 P2-c: the writer's
-    own kept marks are the whole signal now, not a finding-level one).
+    it (ReRevZ2 C11's exclusive hop) to every other checked statement
+    sharing one of those labels, for each label no statement outside
+    the dispute also cites, before the bottom line ever runs (RevZ2
+    P2-c: the writer's own kept marks are the whole signal now, not a
+    finding-level one).
     Label-scoped, not target-scoped: a required target can carry a
     dozen statements, and target scoping told the guard every one of
     them was disputed the moment any one was marked."""
@@ -2178,9 +2240,9 @@ async def _check_and_finalize_bottom_line(
     partial refusal never swaps a checked bottom line for unchecked text.
     ``disputed_labels`` (audit D1 fix (b), ReRevZ2 C7) is the caller's own
     set, scoped to the writer's own kept ``disputes: true`` points' finding
-    labels plus one hop (RevZ2 P2-c); ``_run_bottom_line`` passes the same
-    set to the D1/D2 re-ask too, so a re-asked sentence is guarded exactly
-    as the first attempt's was.
+    labels plus the exclusive hop ReRevZ2 C11 adds (RevZ2 P2-c);
+    ``_run_bottom_line`` passes the same set to the D1/D2 re-ask too, so a
+    re-asked sentence is guarded exactly as the first attempt's was.
     """
     numbers = iter(range(1, 100))
     rejected: list[RejectedDraftPoint] = []
@@ -2246,6 +2308,50 @@ async def _check_and_finalize_bottom_line(
         )
     )
     return points, verdict_map, check_errors, rejected, dropped_marks, refusals, fully_checked
+
+
+def _bottom_line_disputed_labels(
+    checked_sections: Sequence[ReportSection], label_by_finding_id: Mapping[str, str],
+    marked_labels: frozenset[str], marked_statement_ids: frozenset[str],
+) -> frozenset[str]:
+    """ReRevZ2 C7/C11: the finding labels a bottom-line sentence must
+    carry a difference marker to cite -- the writer's own kept, marked
+    ``disputes: true`` points' labels (``marked_labels``), plus Fable's
+    exclusive hop: a *sharing* statement's own label (a checked
+    statement, other than a marked point, that cites one of
+    ``marked_labels``) joins only when no *other* checked statement --
+    one that is neither a marked point nor itself a sharing statement
+    -- also cites it. A finding only the disputed step's own statements
+    cite is part of the dispute (the D1 path: a bottom-line sentence
+    citing a pro-side source only that step's statement cites); a
+    widely cited finding never joins, since a sentence citing it alone
+    states an ordinary fact, not the step the "Disputed" block names --
+    the guard must never reach a sentence the block itself never lists
+    as disputed."""
+    statement_labels: list[tuple[str, set[str]]] = []
+    for section in checked_sections:
+        for point in section.points:
+            if point.statement is None:
+                continue
+            labels = {
+                label_by_finding_id[fid] for fid in point.statement.finding_ids
+                if fid in label_by_finding_id
+            }
+            if labels:
+                statement_labels.append((point.statement.statement_id, labels))
+    sharing_label_sets = [
+        labels for statement_id, labels in statement_labels
+        if statement_id not in marked_statement_ids and labels & marked_labels
+    ]
+    other_label_sets = [
+        labels for statement_id, labels in statement_labels
+        if statement_id not in marked_statement_ids and not (labels & marked_labels)
+    ]
+    other_labels: set[str] = set().union(*other_label_sets) if other_label_sets else set()
+    disputed_labels: set[str] = set(marked_labels)
+    for labels in sharing_label_sets:
+        disputed_labels.update(label for label in labels if label not in other_labels)
+    return frozenset(disputed_labels)
 
 
 async def _run_bottom_line(
@@ -2316,26 +2422,9 @@ async def _run_bottom_line(
     # immaterial to the bottom line and so never marked).
     marked_labels = frozenset().union(*(outcome.disputed_labels for outcome in outcomes))
     marked_statement_ids = frozenset().union(*(outcome.disputed_statement_ids for outcome in outcomes))
-    # ReRevZ2 C7: label-scoped, not target-scoped -- a required target can
-    # carry a dozen statements, and target scoping told the guard every one
-    # of them was disputed the moment any one was marked (run 7's topic-01
-    # wrote 13 points on one target). Expanded exactly one hop: every other
-    # checked statement that cites one of the marked labels has its own
-    # labels folded in too, so the guard also protects a sentence that
-    # states the dispute through a finding the marked point cites alongside
-    # its own -- never a second hop through a label that expansion added.
-    disputed_labels: set[str] = set(marked_labels)
-    for section in checked_sections:
-        for point in section.points:
-            if point.statement is None:
-                continue
-            point_labels = {
-                label_by_finding_id[fid] for fid in point.statement.finding_ids
-                if fid in label_by_finding_id
-            }
-            if point_labels & marked_labels:
-                disputed_labels.update(point_labels)
-    disputed_labels = frozenset(disputed_labels)
+    disputed_labels = _bottom_line_disputed_labels(
+        checked_sections, label_by_finding_id, marked_labels, marked_statement_ids,
+    )
 
     if not checked_sections:
         # P1-b(i): a part whose draft succeeded but whose Statement Check
@@ -2421,10 +2510,13 @@ async def _run_bottom_line(
             ReviewDefect(
                 defect_id=f"bottom-line-reask-{n:02d}", kind="missing_support", severity="major",
                 problem=(
-                    f'The sentence "{text}" was dropped before the check: it states a '
-                    'step, figure or provision that the statements under "Disputed" '
-                    'dispute, without the dispute. Restate it with both sides, as '
-                    'those statements state and credit them, or leave that step out.'
+                    f'The sentence "{text}" was dropped before the check: it cites a '
+                    'finding that the statements under "Disputed" cite, and carries '
+                    'no word of that dispute. If it states the disputed step, figure '
+                    'or provision, restate it with both sides, as those statements '
+                    'state and credit them, or leave that step out; if it states '
+                    'something else, restate it citing only findings no statement '
+                    'under "Disputed" cites, or leave it out.'
                 ) if reason == "states a disputed step without its dispute" else (
                     f'The sentence "{text}" was refused by the check and dropped '
                     f'({reason}). Restate what it said from the listed statements '
