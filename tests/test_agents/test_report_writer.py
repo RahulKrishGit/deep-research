@@ -1038,6 +1038,51 @@ async def test_a_composed_report_carries_its_table_page_credits_and_unreachable_
 
 
 @pytest.mark.asyncio
+async def test_the_table_is_built_after_page_credits_exist_not_before(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """Spec §6.7: page credits must exist before the table is built, so a
+    relayed row's Who cell names the page's own credited publisher
+    ("Utility Dive"), never the raw host ("utilitydive.com") that page
+    credits has not been filled in yet would fall back to."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    relay_url = "https://www.utilitydive.com/news/storage-2025"
+    relay_read = make_read("Wood Mackenzie reports 16 GW of storage in 2025.",
+                           url=relay_url, title="Storage in 2025 | Utility Dive")
+    f1 = _checked(relay_url, "Wood Mackenzie reports 16 GW of storage in 2025.", "16", "GW",
+                 organisation="Wood Mackenzie", attribution="relayed",
+                 target_ids=["topic-01-target-01"])
+    f1 = f1.model_copy(update={"read_id": relay_read.read_id})
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation="Org Two",
+                 target_ids=["topic-01-target-01"], kind="forecast", period="2025")
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(
+        session_id="s1", original_question="Q?", sub_topics=[topic],
+        verified_findings=[f1, f2], read_records={relay_read.read_id: relay_read},
+    )
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="Wood Mackenzie reports 16 GW of storage in 2025.",
+                             finding_labels=["F01"]),
+            WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"]),
+        ]),
+        BottomLineDraft(sentences=[WriterPointDraft(
+            text="Wood Mackenzie reports 16 GW of storage in 2025.", finding_labels=["F01"])]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert composition.table is not None
+    who_cell = next(
+        row[2].text for row in composition.table.rows if "Wood Mackenzie" in row[2].text
+    )
+    assert "reported by Utility Dive" in who_cell
+    assert "utilitydive.com" not in who_cell
+
+
+@pytest.mark.asyncio
 async def test_a_figures_statement_date_never_becomes_a_page_credits_date(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:

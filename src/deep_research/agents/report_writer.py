@@ -1603,12 +1603,27 @@ def _assemble_composition(composition: ReportComposition, task: ReportWriterTask
     credits for every URL the table or a kept statement now cites, then the
     unreachable pages. Table builders and citation order are pure functions
     of ``composition`` alone (T2/T3); nothing here re-reads a page.
+
+    The table and the credits are mutually dependent: ``build_table`` reads
+    ``composition.page_credits`` to name a relayed or unattributed row's
+    publisher (``report_table._who_text``/``_recommended_by_cell``), but the
+    final credits are keyed on ``written_citations(composition)``, which
+    itself reads the table (spec §5's citation order: bottom line, table,
+    sections). So a provisional map -- every finding URL's credit, the same
+    ``_page_credit`` call the final map uses -- is set before the table is
+    built; the final map then only re-keys it to the table's own citations,
+    never recomputing a credit.
     """
+    findings_by_url = _findings_by_url(composition.findings)
+    provisional_credits = {
+        url: _page_credit(url, findings_by_url=findings_by_url, reads=task.reads, sources=task.sources)
+        for url in findings_by_url
+    }
+    composition = composition.model_copy(update={"page_credits": provisional_credits})
     table = _build_table(composition)
     composition = composition.model_copy(update={"table": table})
-    findings_by_url = _findings_by_url(composition.findings)
     page_credits = {
-        citation.url: _page_credit(
+        citation.url: provisional_credits.get(citation.url) or _page_credit(
             citation.url, findings_by_url=findings_by_url, reads=task.reads, sources=task.sources,
         )
         for citation in written_citations(composition)

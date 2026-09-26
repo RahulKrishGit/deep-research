@@ -1167,7 +1167,15 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # device" (P2-3, D10), and the bottom-line example combines two
     # statements instead of copying one word for word (P2-4):
     # `0b9c9239f932` -> `20ef7adf493c`.
-    "report_writer": "20ef7adf493c",
+    # RevFormatT1T2 P1 follow-up: build_table ran before page_credits was
+    # set on the composition, so a relayed or unattributed table row's Who
+    # cell fell back to the raw host ("utilitydive.com") instead of the
+    # page's credited publisher ("Utility Dive"). `_assemble_composition`
+    # now sets a provisional page_credits map (keyed the same way the final
+    # one is) before building the table, then re-keys it to the table's own
+    # citations afterward. Module code only, no prompt wording changed:
+    # `20ef7adf493c` -> `78d7a747bc14`.
+    "report_writer": "78d7a747bc14",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
