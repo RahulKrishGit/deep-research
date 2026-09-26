@@ -60,9 +60,10 @@ from deep_research.agents.report_reviewer import (
     review_messages,
 )
 from deep_research.agents.report_writer import (
-    ReportWriterDraft,
+    PartJob,
     ReportWriterTask,
-    writer_messages,
+    bottom_line_messages,
+    section_messages,
 )
 from deep_research.agents.researcher import (
     _FINDING_REPLY_EXAMPLES,
@@ -102,12 +103,17 @@ from deep_research.tools import (
 )
 from deep_research.utils.config import LLMConfig
 from deep_research.utils.types import (
+    BottomLineDraft,
     FigureContext,
     FigureResult,
     Finding,
     FindingFigure,
     FindingVerification,
     ReadRecord,
+    ReportPoint,
+    ReportSection,
+    ReportStatement,
+    SectionDraft,
     SubTopic,
 )
 from tests.evidence_fakes import make_target
@@ -326,29 +332,60 @@ def _statement_check_messages() -> list:
     )
 
 
-def _writer_messages() -> list:
-    """The Report Writer's draft request for one target and one finding."""
+def _section_messages() -> list:
+    """The Report Writer's section request for one target and one finding."""
     _, finding = _verified_pair()
     target = make_target()
-    return writer_messages(
-        ReportWriterTask(
-            session_id="matrix-session",
-            instruction=EVIDENCE_QUESTION,
-            question=EVIDENCE_QUESTION,
-            iteration=0,
-            max_extra_passes=1,
-            as_of="2026-08-01",
-            scope="United States",
-            generated_on="2026-08-01",
-            sub_topics=[_sub_topic()],
-            targets=[target],
-            findings=[finding],
-            sources=[],
-            registry=[("F01", finding)],
-            not_found=[],
-            answered={target.target_id: ["F01"]},
-        )
+    sub_topic = _sub_topic()
+    task = ReportWriterTask(
+        session_id="matrix-session",
+        instruction=EVIDENCE_QUESTION,
+        question=EVIDENCE_QUESTION,
+        iteration=0,
+        max_extra_passes=1,
+        as_of="2026-08-01",
+        scope="United States",
+        generated_on="2026-08-01",
+        sub_topics=[sub_topic],
+        targets=[target],
+        findings=[finding],
+        sources=[],
+        registry=[("F01", finding)],
+        not_found=[],
+        answered={target.target_id: ["F01"]},
     )
+    job = PartJob(coverage_id=sub_topic.coverage_id, sub_topic_title=sub_topic.title, order=0,
+                 targets=[target], findings=[finding], context_findings=[], previous=None,
+                 defects=[], redraft=True)
+    return section_messages(task, job)
+
+
+def _bottom_line_messages() -> list:
+    """The Report Writer's bottom-line request for one checked section statement."""
+    _, finding = _verified_pair()
+    target = make_target()
+    task = ReportWriterTask(
+        session_id="matrix-session",
+        instruction=EVIDENCE_QUESTION,
+        question=EVIDENCE_QUESTION,
+        iteration=0,
+        max_extra_passes=1,
+        as_of="2026-08-01",
+        scope="United States",
+        generated_on="2026-08-01",
+        sub_topics=[_sub_topic()],
+        targets=[target],
+        findings=[finding],
+        sources=[],
+        registry=[("F01", finding)],
+        not_found=[],
+        answered={target.target_id: ["F01"]},
+    )
+    statement = ReportStatement(statement_id="S001", text=FINDING_TEXT,
+                                finding_ids=[finding_fingerprint(finding)], target_ids=[target.target_id])
+    section = ReportSection(title="Angle", coverage_id="topic-01",
+                            points=[ReportPoint(text=FINDING_TEXT, statement=statement)])
+    return bottom_line_messages(task, [section])
 
 
 def _review_packet() -> ReportReviewInput:
@@ -563,13 +600,15 @@ PLANNED_OPERATION_INVENTORY = {
     # rule stated without its condition or exception, judged against the
     # passage beside the snippet. Two failure classes, one example each.
     "statement check": ("evidence_verifier", 2),
-    # The prompt-fix wave (Fable's WRI-3) gave the writer its second example:
-    # the first is a figure line and its snippet, the second a statement-only
-    # finding whose line names only the host it was read on -- the two shapes
-    # whose crediting the audits found wrong (run 2 S005/S009, smoke 1). Two
-    # shapes, one example each, and neither output invents a word its input
-    # does not carry.
-    "report drafting": ("report_writer", 2),
+    # The parallel writer's two calls (spec §6.3, §6.6): the section call
+    # keeps the writer's two-example shapes (a figure line and its snippet,
+    # then a statement-only finding whose line names only the host it was
+    # read on -- the two shapes whose crediting the audits found wrong, run 2
+    # S005/S009, smoke 1), and the bottom-line call gets one neutral example
+    # (WRI-6): a fresh call with its own reply schema, not another shape the
+    # first needs to teach.
+    "report section drafting": ("report_writer", 2),
+    "report bottom line drafting": ("report_writer", 1),
     "report review": ("report_reviewer", 1),
 }
 
@@ -690,10 +729,19 @@ OPERATIONS = (
         heading_levels=(1, 2),
     ),
     StructuredOperation(
-        operation="report drafting",
+        operation="report section drafting",
         agent="report_writer",
-        build_messages=_writer_messages,
-        schema=ReportWriterDraft,
+        build_messages=_section_messages,
+        schema=SectionDraft,
+        examples=_labelled_examples,
+        static_headings=("# Rules",),
+        heading_levels=(1, 2),
+    ),
+    StructuredOperation(
+        operation="report bottom line drafting",
+        agent="report_writer",
+        build_messages=_bottom_line_messages,
+        schema=BottomLineDraft,
         examples=_labelled_examples,
         static_headings=("# Rules",),
         heading_levels=(1, 2),

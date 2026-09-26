@@ -312,14 +312,15 @@ def test_the_cap_advice_names_the_key_of_the_operation_that_is_full() -> None:
         ("evidence_verifier", "agents.verifier_concurrency"),
         ("researcher", "agents.sub_topic_concurrency"),
         ("source_evaluator", "agents.source_scoring_concurrency"),
-        ("report_writer", "agents.sub_topic_concurrency"),
+        ("report_writer", "agents.writer_section_concurrency"),
     ],
 )
 def test_the_advised_knob_belongs_to_the_agent_at_the_peak(
     agent: str, expected: str
 ) -> None:
-    """The three concurrency caps of §7.3; any other agent at the peak falls
-    back to the researcher's, the cap that bounds the widest fan-out."""
+    """The four concurrency caps of spec §7.3 and §6.10; any other agent at
+    the peak falls back to the researcher's, the cap that bounds the widest
+    fan-out."""
     telemetry = RunTelemetry(
         rate_limit_errors=1, peak_calls_in_flight=4, peak_agent=agent
     )

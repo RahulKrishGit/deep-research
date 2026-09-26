@@ -1125,7 +1125,16 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # example drops the energy word ("12 percent more members"), so the writer
     # value moved `80de0d1e2168` -> `08cad3d4d73f`. Code and example text only;
     # the four other target pins and the Judge pin are unchanged.
-    "report_writer": "08cad3d4d73f",
+    # The consumer report format's parallel writer (T4, spec §6): the single
+    # ``ReportWriterDraft``/``writer_messages`` call is replaced by one call
+    # per plan part (``SectionDraft`` via ``section_messages``) pipelined
+    # against its own Statement Check, and a bottom-line call last
+    # (``BottomLineDraft`` via ``bottom_line_messages``); new WRI-1'/WRI-2'/
+    # WRI-3' section prompt and WRI-4/WRI-5/WRI-6 bottom-line prompt. The
+    # whole module changed shape, so the value moved wholesale:
+    # `08cad3d4d73f` -> `1f445621ab34`. The other three target pins and the
+    # Judge pin are unchanged.
+    "report_writer": "1f445621ab34",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

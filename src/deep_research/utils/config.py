@@ -288,6 +288,14 @@ class AgentRuntimeConfig(BaseModel):
     source_scoring_concurrency: int = Field(default=3, ge=1)
     verifier_batch_size: int = Field(default=5, ge=1)
     verifier_concurrency: int = Field(default=8, ge=1)
+    writer_section_concurrency: int = Field(default=10, ge=1)
+    """How many of the parallel writer's section drafts run at once (spec
+    §6.10). Chosen at least the plan's own part count (max_sub_topics, 7) so
+    every part starts at once; a controller ruling for this build raised the
+    default from spec §17 Q6's 7 to 10 -- the target provider allows far
+    higher concurrency, and a run with no strong content limits should not
+    be serialized on writer fan-out either. Lower it if a live run's
+    telemetry reports rate limits (``observability.run_telemetry``)."""
     planner_final_max_tokens: int = Field(default=65536, ge=1)
     report_review_max_tokens: int = Field(default=65536, ge=1)
     """Output headroom for the report reviewer's one request per review.
@@ -544,6 +552,7 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "AGENTS_VERIFIER_BATCH_SIZE": ("agents", "verifier_batch_size"),
     "AGENTS_VERIFIER_CONCURRENCY": ("agents", "verifier_concurrency"),
+    "AGENTS_WRITER_SECTION_CONCURRENCY": ("agents", "writer_section_concurrency"),
     "AGENTS_PLANNER_FINAL_MAX_TOKENS": (
         "agents",
         "planner_final_max_tokens",

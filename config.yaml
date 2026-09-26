@@ -115,6 +115,11 @@ agents:
   source_scoring_concurrency: 3    # source-evaluator scoring batches in flight
   verifier_batch_size: 5           # Context and Statement Check items per call
   verifier_concurrency: 8          # verification calls in flight
+  # The parallel writer's section drafts in flight (spec §6.10). Controller
+  # ruling for this build (2026-09-25, "no strong limits"): raised from spec
+  # §17 Q6's chosen default of 7 (= max_sub_topics, so every part starts at
+  # once) to 10, since the target provider allows far higher concurrency.
+  writer_section_concurrency: 10
   source_evaluator:
     # Score new canonical URLs in bounded provider batches, while retaining a
     # complete explicit record for every source beyond the run cap.

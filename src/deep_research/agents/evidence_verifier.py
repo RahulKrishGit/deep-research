@@ -1364,6 +1364,7 @@ async def check_statements(
     fingerprint: Callable[[str], None] | None = None,
     batch_size: int = CONTEXT_CHECK_BATCH_SIZE,
     concurrency: int = CONTEXT_CHECK_CONCURRENCY,
+    gate: asyncio.Semaphore | None = None,
 ) -> tuple[dict[str, StatementVerdictDraft | None], list[ResearchError]]:
     """Spec §6.2's Statement Check (D8): does a drafted sentence state only
     what the verified findings it cites actually carry?
@@ -1379,17 +1380,25 @@ async def check_statements(
     ``evidence_verifier_statement_check_failed`` error is recorded for the
     batch. A reply's ``corrected`` verdict with a blank ``corrected_text``
     is treated as ``inconsistent``; nothing else is applied to the reply.
+
+    ``gate`` (spec §6.5) lets a caller share one semaphore across several
+    calls to this function -- the parallel Report Writer's parts and its
+    bottom line all pass the same ``asyncio.Semaphore(verifier_concurrency)``,
+    so the whole pass never runs more than ``verifier_concurrency`` checks at
+    once. ``None`` (every other caller) keeps today's behaviour: a private
+    semaphore scoped to this one call, sized from ``concurrency``.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
-    if concurrency < 1:
-        raise ValueError("concurrency must be at least 1")
     errors: list[ResearchError] = []
     batches = [
         items[i : i + batch_size]
         for i in range(0, len(items), batch_size)
     ]
-    gate = asyncio.Semaphore(concurrency)
+    if gate is None:
+        if concurrency < 1:
+            raise ValueError("concurrency must be at least 1")
+        gate = asyncio.Semaphore(concurrency)
 
     async def one(batch: Sequence[StatementCheckItem]) -> dict[str, StatementVerdictDraft | None]:
         async with gate:
