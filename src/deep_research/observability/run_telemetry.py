@@ -366,12 +366,15 @@ def _render_loop_lag(telemetry: RunTelemetry) -> str:
     """Render the event-loop lag monitor's reading (P1-B).
 
     Always present, even at zero: a quiet run's "0 blocks" is itself the
-    fact worth reporting, the same way "0 truncated" is above.
+    fact worth reporting, the same way "0 truncated" is above. ASCII only
+    (RevTelemetry P2): stdout without UTF-8 mode -- the Windows default when
+    piped, exactly how ``scratch/run_live_proof.py`` runs the CLI -- cannot
+    encode U+2265 and would crash the run after this line printed.
     """
     blocks = telemetry.loop_lag_blocks
     line = (
         f"loop lag max {telemetry.loop_lag_max_seconds:,.1f} s; "
-        f"{len(blocks)} blocks \u2265 5 s"
+        f"{len(blocks)} blocks >= 5 s"
     )
     if blocks:
         line += f" (longest {max(blocks):,.1f} s)"

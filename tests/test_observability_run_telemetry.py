@@ -226,7 +226,7 @@ def test_the_line_renders_the_four_parts_of_the_spec() -> None:
         "3 rate limits (2 recovered); "
         "slowest call report_reviewer 223.4 s; "
         "report_writer output 61,200 of 65,536 tokens (93% of its cap); "
-        "0 truncated; loop lag max 0.0 s; 0 blocks \u2265 5 s"
+        "0 truncated; loop lag max 0.0 s; 0 blocks >= 5 s"
     )
 
 
@@ -375,7 +375,7 @@ def test_the_line_reports_cache_hits_when_input_tokens_were_reported() -> None:
     assert (telemetry.input_tokens, telemetry.cached_input_tokens) == (10_000, 3_000)
     assert render_telemetry_line(telemetry).endswith(
         "0 truncated; cache hits 3,000 of 10,000 input tokens (30%); "
-        "loop lag max 0.0 s; 0 blocks \u2265 5 s"
+        "loop lag max 0.0 s; 0 blocks >= 5 s"
     )
 
 
@@ -546,7 +546,7 @@ def test_the_line_renders_loop_lag_max_and_blocks() -> None:
     line = render_telemetry_line(telemetry)
 
     assert line.endswith(
-        "loop lag max 338.8 s; 3 blocks \u2265 5 s (longest 338.8 s)"
+        "loop lag max 338.8 s; 3 blocks >= 5 s (longest 338.8 s)"
     )
 
 
@@ -555,5 +555,5 @@ def test_the_line_renders_loop_lag_with_no_blocks_and_no_longest() -> None:
 
     line = render_telemetry_line(telemetry)
 
-    assert line.endswith("loop lag max 0.0 s; 0 blocks \u2265 5 s")
+    assert line.endswith("loop lag max 0.0 s; 0 blocks >= 5 s")
     assert "longest" not in line

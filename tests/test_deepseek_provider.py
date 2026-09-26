@@ -512,6 +512,25 @@ def test_deepseek_judge_responses_usage_maps_counts_and_total() -> None:
     }
 
 
+def test_deepseek_judge_responses_usage_maps_reasoning_tokens_when_present() -> None:
+    """The Responses path (DeepSeekSchemaChatProvider's live traffic) must
+    also tell reasoning and content tokens apart, not only Chat Completions."""
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            input_tokens=10,
+            output_tokens=100,
+            total_tokens=110,
+            output_tokens_details=SimpleNamespace(reasoning_tokens=64),
+        )
+    )
+
+    usage = deepseek_module._responses_usage_from_response(response)
+
+    assert usage.reasoning_tokens == 64
+    assert usage.output_tokens == 100
+    assert usage.total_tokens == 110
+
+
 @pytest.mark.parametrize(
     "usage",
     [
@@ -4533,4 +4552,65 @@ async def test_deepseek_judge_responses_schema_records_attempts(monkeypatch) -> 
     assert [(record["attempt"], record["outcome"]) for record in attempts] == [
         (1, "timeout"),
         (2, "ok"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_keeps_attempts_on_the_span_when_every_attempt_fails(
+    monkeypatch,
+) -> None:
+    """The call the stall investigation most needs recorded: every attempt
+    timed out, and the span must still carry what happened (RevTelemetry P3).
+    """
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL))
+    completions = RecordingCompletions(sdk_error, sdk_error, sdk_error)
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderTimeoutError):
+            await provider.complete(
+                [ChatMessage(role="user", content="question")]
+            )
+
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "timeout"),
+        (2, "timeout"),
+        (3, "timeout"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_keeps_attempts_on_the_span_when_every_attempt_fails(
+    monkeypatch,
+) -> None:
+    """The same holds for the native ReAct transport, whose exhausted-retry
+    path clears its locals through a different route than ``complete``."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL))
+    completions = RecordingCompletions(sdk_error, sdk_error)
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError):
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "connection error"),
+        (2, "connection error"),
     ]

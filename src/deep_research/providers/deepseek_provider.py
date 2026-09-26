@@ -378,7 +378,14 @@ def _usage_from_response(response: Any) -> TokenUsage:
 
 
 def _responses_usage_from_response(response: Any) -> TokenUsage:
-    """Map a Responses usage object to project-owned token counts."""
+    """Map a Responses usage object to project-owned token counts.
+
+    ``output_tokens_details.reasoning_tokens`` is captured when present,
+    mirroring ``_responses_cached_input_tokens`` (P1-B, RevTelemetry P1): this
+    is the transport ``DeepSeekSchemaChatProvider`` uses for live structured
+    calls -- planner, extraction, writer -- so it is where most reasoning
+    tokens are actually reported.
+    """
     usage = getattr(response, "usage", None)
     if usage is None:
         return TokenUsage()
@@ -415,10 +422,13 @@ def _responses_usage_from_response(response: Any) -> TokenUsage:
      "DeepSeek response contained malformed usage",
      failure_origin="local_response",
  )
+    details = getattr(usage, "output_tokens_details", None)
+    reasoning_tokens = _cached_count(getattr(details, "reasoning_tokens", None))
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -811,6 +821,28 @@ class DeepSeekChatProvider:
 
         return _record
 
+    def _record_attempts_on_failure(
+        self, span: Any, attempts: Sequence[CallAttemptTelemetry]
+    ) -> None:
+        """Set the span's outputs to this call's attempts before it exits.
+
+        Only reached when every transport attempt failed and ``with_retries``
+        re-raised: no response ever arrived, so ``_set_span_result`` never ran
+        and the span would otherwise carry no record of what happened. This
+        is exactly the call the stall investigation most needs recorded --
+        every attempt timing out at the 1,800 s read timeout (RevTelemetry
+        P3). Called from inside the still-open span so the trace fetch sees
+        it; nothing to set when there were no attempts (a budget refusal).
+        """
+        if attempts:
+            span.set_outputs(
+                {
+                    "attempts": [
+                        record.model_dump(mode="json") for record in attempts
+                    ]
+                }
+            )
+
     def _read_telemetry(
         self,
         response: Any,
@@ -984,17 +1016,22 @@ class DeepSeekChatProvider:
                         ) from error
 
                 started_at = perf_counter()
-                response = await with_retries(
-                    _request,
-                    retry_count=(
-                        self._config.retry_count
-                        if effective.retry_count is None else effective.retry_count
-                    ),
-                    initial_delay=self._config.retry_initial_delay,
-                    max_delay=self._config.retry_max_delay,
-                    telemetry=self._telemetry,
-                    on_attempt=self._attempt_recorder(attempts),
-                )
+                try:
+                    response = await with_retries(
+                        _request,
+                        retry_count=(
+                            self._config.retry_count
+                            if effective.retry_count is None
+                            else effective.retry_count
+                        ),
+                        initial_delay=self._config.retry_initial_delay,
+                        max_delay=self._config.retry_max_delay,
+                        telemetry=self._telemetry,
+                        on_attempt=self._attempt_recorder(attempts),
+                    )
+                except ProviderError:
+                    self._record_attempts_on_failure(span, attempts)
+                    raise
                 telemetry = self._read_telemetry(
                     response,
                     configured_max_tokens=self._config.max_tokens,
@@ -1083,16 +1120,21 @@ class DeepSeekChatProvider:
                     ) from error
 
             started_at = perf_counter()
-            response = await with_retries(
-                _request,
-                retry_count=(
-                    self._config.retry_count if retry_count is None else retry_count
-                ),
-                initial_delay=self._config.retry_initial_delay,
-                max_delay=self._config.retry_max_delay,
-                telemetry=self._telemetry,
-                on_attempt=self._attempt_recorder(attempts),
-            )
+            try:
+                response = await with_retries(
+                    _request,
+                    retry_count=(
+                        self._config.retry_count
+                        if retry_count is None else retry_count
+                    ),
+                    initial_delay=self._config.retry_initial_delay,
+                    max_delay=self._config.retry_max_delay,
+                    telemetry=self._telemetry,
+                    on_attempt=self._attempt_recorder(attempts),
+                )
+            except ProviderError:
+                self._record_attempts_on_failure(span, attempts)
+                raise
             telemetry = self._read_telemetry(
                 response,
                 configured_max_tokens=configured_max_tokens,
@@ -1305,17 +1347,22 @@ class DeepSeekChatProvider:
                     ) from error
 
             started_at = perf_counter()
-            response = await with_retries(
-                _request,
-                retry_count=(
-                    self._config.retry_count
-                    if effective.retry_count is None else effective.retry_count
-                ),
-                initial_delay=self._config.retry_initial_delay,
-                max_delay=self._config.retry_max_delay,
-                telemetry=self._telemetry,
-                on_attempt=self._attempt_recorder(attempts),
-            )
+            try:
+                response = await with_retries(
+                    _request,
+                    retry_count=(
+                        self._config.retry_count
+                        if effective.retry_count is None
+                        else effective.retry_count
+                    ),
+                    initial_delay=self._config.retry_initial_delay,
+                    max_delay=self._config.retry_max_delay,
+                    telemetry=self._telemetry,
+                    on_attempt=self._attempt_recorder(attempts),
+                )
+            except ProviderError:
+                self._record_attempts_on_failure(span, attempts)
+                raise
             telemetry: ProviderResponseTelemetry | None = None
             tool_calls: tuple[NativeToolCall, ...] = ()
             final_answer: str | None = None
@@ -1500,16 +1547,21 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                     ) from error
 
             started_at = perf_counter()
-            response = await with_retries(
-                _request,
-                retry_count=(
-                    self._config.retry_count if retry_count is None else retry_count
-                ),
-                initial_delay=self._config.retry_initial_delay,
-                max_delay=self._config.retry_max_delay,
-                telemetry=self._telemetry,
-                on_attempt=self._attempt_recorder(attempts),
-            )
+            try:
+                response = await with_retries(
+                    _request,
+                    retry_count=(
+                        self._config.retry_count
+                        if retry_count is None else retry_count
+                    ),
+                    initial_delay=self._config.retry_initial_delay,
+                    max_delay=self._config.retry_max_delay,
+                    telemetry=self._telemetry,
+                    on_attempt=self._attempt_recorder(attempts),
+                )
+            except ProviderError:
+                self._record_attempts_on_failure(span, attempts)
+                raise
             finish_reason_category = _responses_finish_reason(response)
             try:
                 usage = _responses_usage_from_response(response)
