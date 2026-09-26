@@ -247,8 +247,12 @@ def _sources() -> list[ScoredSource]:
     ]
 
 
-def _statement(statement_id: str, text: str) -> ReportStatement:
-    return ReportStatement(statement_id=statement_id, text=text)
+def _statement(
+    statement_id: str, text: str, *, finding_ids: Sequence[str] = ()
+) -> ReportStatement:
+    return ReportStatement(
+        statement_id=statement_id, text=text, finding_ids=list(finding_ids)
+    )
 
 
 def _composition(state: ResearchState) -> ReportComposition:
@@ -290,7 +294,8 @@ def _composition(state: ResearchState) -> ReportComposition:
                 text="U.S. battery storage capacity grew by 66% in 2024.",
                 source_urls=[EIA_URL],
                 statement=_statement(
-                    "S001", "U.S. battery storage capacity grew by 66% in 2024."
+                    "S001", "U.S. battery storage capacity grew by 66% in 2024.",
+                    finding_ids=[finding_fingerprint(findings[0])],
                 ),
             )
         ],
@@ -308,6 +313,7 @@ def _composition(state: ResearchState) -> ReportComposition:
                             "S002",
                             "Operators report plans to add 19.6 GW of "
                             "utility-scale battery storage in 2025.",
+                            finding_ids=[finding_fingerprint(findings[1])],
                         ),
                     )
                 ],
