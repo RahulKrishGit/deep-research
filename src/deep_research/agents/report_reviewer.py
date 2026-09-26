@@ -77,7 +77,7 @@ from deep_research.agents.report_writer import (
     # The other half of R1: one label string per cited finding.
     _finding_label,
 )
-from deep_research.agents.sources import publisher_identity
+from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.observability import Tracker
 from deep_research.providers import (
     ChatMessage,
@@ -104,6 +104,9 @@ from deep_research.utils.types import (
     GapKind,
     GapSeverity,
     ReportPoint,
+    ReportSection,
+    ReportStatement,
+    TableCell,
     ReportReview,
     ResearchError,
     ResearchState,
@@ -121,7 +124,7 @@ Preflight validates it exactly like an agent, so a misconfigured reviewer
 fails the run before any collaborator exists.
 """
 
-REPORT_REVIEW_PROMPT_VERSION = "report-review-4"
+REPORT_REVIEW_PROMPT_VERSION = "report-review-5"
 """The prompt and reply contract this review's requests are versioned under.
 
 Version 2 was the whole-report Critic-era packet, which carried checked claims,
@@ -130,6 +133,13 @@ step-4 review: the statements with their code-built labels and the findings
 behind them, one request, dispositions in the three-valued step-4 vocabulary.
 Version 4 is D10's: the same packet in the static-first layout, with the shared
 reply format and one example, and the rule for sentences that end with no label.
+Version 5 (spec §11.1) is the consumer report format's: ``# Key facts`` becomes
+``# Verified figures``, ``# Not found`` becomes ``# What the report could not
+confirm``, a new ``# Table`` block carries the question-shaped table's own
+backing statement and fact-row ids, each finding block gains a ``status:``
+line, and the system prompt no longer tells the reviewer a sentence carries a
+label *beside* it in the report -- labels are code-built material this packet
+shows, never printed prose (spec §3.1 rule 8).
 The version is what keeps a stored judgement of the older packet from being
 read as a judgement of this one.
 """
@@ -280,25 +290,29 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
     "not_reviewed and the review is incomplete rather than a result, so leave "
     "no statement id out.\n"
     "\n"
-    "Read each sentence against the code-built label it ends with, and against "
-    "the findings it cites — each statement names them by their registry "
-    "labels, whose snippets and figure labels are below. That label is what "
-    "the reader sees beside the sentence, and it is built by code from the "
-    "verified figure, not by the writer: a relay must read as relayed from the "
-    "organisation named in the label, an actual must read as an actual, a "
-    "forecast must carry its issuer and its release, and no period, scope, "
-    "kind or organisation in the prose may contradict the label. That mismatch "
-    "is a defect you record against that statement's id. A sentence that ends "
-    "with no label carries no figure label: it states no figure, or one in a "
+    "Judge each statement against the findings it cites — each statement "
+    "names them by their registry labels, whose snippets and figure labels "
+    "are below — and against the verified labels of the figures it states. "
+    "Those labels are built by code from the verified figure, not by the "
+    "writer, and are not printed beside the sentence: the reader sees their "
+    "provenance in the table and the sources instead. A relay must read as "
+    "relayed from the organisation its verified figure names, an actual must "
+    "read as an actual, a forecast must carry its issuer and its release, and "
+    "no period, scope, kind or organisation in the prose may contradict a "
+    "figure it states. That mismatch is a defect you record against that "
+    "statement's id. Judge a statement that states no figure, or one in a "
     "unit this report does not label (a price, a count, a rating), or one no "
-    "cited finding carries. Judge it against the snippets of the findings it "
-    "cites and against their figure labels, and record as unsupported one that "
-    "asserts more than those findings state; a pick, ranking or verdict stated "
-    "as fact, rather than as the judgement of the source that made it, asserts "
-    "more. A sentence that credits a body its label does not name — "
-    "\"according to X\" "
-    "beside a label that reads \"source does not attribute it\" or names "
-    "another organisation — is unsupported.\n"
+    "cited finding carries, against the snippets of the findings it cites "
+    "and against their figure labels, and record as unsupported one that "
+    "asserts more than those findings state; a pick, ranking or verdict "
+    "stated as fact, rather than as the judgement of the source that made "
+    "it, asserts more. A sentence that credits a body its cited findings do "
+    "not name — \"according to X\" beside findings that attribute the "
+    "figure to no one or to another organisation — is unsupported. The "
+    "table is assembled by code from the statements' option marks and the "
+    "verified figures: a cell crediting a source with a verdict or pick its "
+    "backing statement does not carry is a defect against that statement's "
+    "id.\n"
     "\n"
     "Report every defect you find as a typed defect against the ids in this "
     "request, and only against ids in this request. When nothing is wrong, "
@@ -465,7 +479,8 @@ class ReviewFindingView(ContractModel):
     (organisation and attribution first, then kind with a forecast's release);
     the snippet is the verbatim passage the Evidence Verifier verified. This is
     the evidence a statement is judged against, so it is shown whole and never
-    re-worded.
+    re-worded. ``status`` is the finding's own verified/corrected/quoted
+    outcome (spec §11.1), rendered in the same words the evidence log uses.
     """
 
     label: str = Field(min_length=1)
@@ -474,6 +489,7 @@ class ReviewFindingView(ContractModel):
     host: str = Field(min_length=1)
     snippet: str = Field(min_length=1)
     figure_labels: list[str] = Field(default_factory=list)
+    status: str = ""
 
 
 class ReviewDeterministic(ContractModel):
@@ -516,6 +532,11 @@ class ReportReviewInput(ContractModel):
     statements: list[ReviewStatementView] = Field(default_factory=list)
     findings: list[ReviewFindingView] = Field(default_factory=list)
     fact_rows: list[str] = Field(default_factory=list)
+    table_lines: list[str] = Field(default_factory=list)
+    """The question-shaped table's own rows (spec §11.1), one line per row,
+    with the cell texts and the backing statement and fact-row ids -- built
+    once by :func:`_table_lines` from ``composition.table`` and never a raw
+    dump of it, so the packet stays the reader-facing wording."""
     not_found: list[str] = Field(default_factory=list)
     deterministic: ReviewDeterministic = Field(default_factory=ReviewDeterministic)
     required_target_ids: list[str] = Field(default_factory=list)
@@ -592,6 +613,7 @@ def build_report_review_input(
         statements=statements,
         findings=_finding_views(composition),
         fact_rows=_fact_row_lines(composition),
+        table_lines=_table_lines(composition),
         not_found=[target.question for target in composition.not_found]
         if composition is not None
         else [],
@@ -717,6 +739,7 @@ def _finding_views(
                     _figure_label_for(finding, result.context)
                     for result in _kept_results(finding)
                 ],
+                status=_finding_status_label(finding),
             )
         )
     return views
@@ -756,6 +779,94 @@ def _fact_row_line(row: FactRow) -> str:
     )
 
 
+_FINDING_STATUS_LABELS: dict[str, str] = {
+    "verified": "verified",
+    "verified_corrected": "verified with corrections",
+    "quoted": "quoted, not checked for context",
+}
+
+
+def _finding_status_label(finding: Finding) -> str:
+    """The finding's own verified/corrected/quoted outcome, in reader words
+    (spec §11.1). ``dropped`` never reaches here: a dropped finding earns no
+    registry label, so ``_finding_registry_pairs`` never cites it."""
+    if finding.verification is None:
+        return ""
+    status = finding.verification.status
+    return _FINDING_STATUS_LABELS.get(status, status)
+
+
+def _table_entry_publisher(url: str, composition: ReportComposition) -> str:
+    credit = composition.page_credits.get(normalize_source_url(url))
+    return credit.publisher if credit is not None else publisher_identity(url)
+
+
+def _table_cell_text(
+    cell: TableCell,
+    composition: ReportComposition,
+    *,
+    shape: str,
+    is_last_column: bool,
+) -> str:
+    """One reviewer-facing cell's own text (spec §11.1; R1's fix round).
+
+    An options-table cell's verbatim span lives in ``cell.text`` (the
+    "Option" column) or in its ``entries`` (a part cell or Recommended by),
+    never in both; a findings-table cell's text is already ``cell.text``
+    except its own Source column, which names its finding ids instead. Only
+    an entryless, textless, finding-less cell -- an option with nothing
+    marked for that part -- ever reads as an em dash.
+    """
+    if cell.text:
+        return cell.text
+    if shape == "findings" and is_last_column:
+        return ", ".join(cell.finding_ids)
+    if not cell.entries:
+        return ""
+    parts: list[str] = []
+    for entry in cell.entries:
+        publisher = _table_entry_publisher(entry.source_url, composition)
+        if entry.text:
+            parts.append(f"{entry.text} — {publisher}")
+        elif is_last_column and entry.date:
+            parts.append(f"{publisher} ({entry.date})")
+        else:
+            parts.append(publisher)
+    return "; ".join(parts)
+
+
+def _table_lines(composition: ReportComposition | None) -> list[str]:
+    """The question-shaped table's own rows, one line per row (spec §11.1).
+
+    Each line carries every cell's own text -- the writer's verbatim span
+    when it marked one, else the page(s) behind it -- headed by its column
+    name, with that cell's own backing statement ids attached to it, so a
+    mis-credited cell can be pinned to the statement that supposedly backs
+    it (R1) rather than only to the row.
+    """
+    if composition is None or composition.table is None:
+        return []
+    table = composition.table
+    last = len(table.columns) - 1
+    lines: list[str] = []
+    for row in table.rows:
+        segments: list[str] = []
+        for position, (column, cell) in enumerate(zip(table.columns, row)):
+            text = _table_cell_text(
+                cell, composition, shape=table.shape, is_last_column=position == last
+            )
+            segment = f"{column}: {text or '—'}"
+            if cell.statement_ids:
+                segment += f" [statements: {', '.join(sorted(cell.statement_ids))}]"
+            segments.append(segment)
+        row_ids = sorted({rid for cell in row for rid in cell.row_ids})
+        parts = ["- " + "; ".join(segments)]
+        if row_ids:
+            parts.append(f"  backing fact rows: {', '.join(row_ids)}")
+        lines.append("\n".join(parts))
+    return lines
+
+
 def composition_semantic_fingerprint(
     composition: ReportComposition | None,
 ) -> str:
@@ -764,7 +875,10 @@ def composition_semantic_fingerprint(
     The rule is "replacing the composition invalidates the stored review unless
     its semantic fingerprint matches", and this is that fingerprint: the reader
     statements (text and record), the finding ids the report cites, the key
-    facts rows, and Not found. Those four are exactly what the review reads.
+    facts rows, Not found, the question-shaped table, the parts (spec §6.1)
+    and the unreachable pages. Option marks already ride on the statements, so
+    the table's own hash catches only what a rebuild from the same marks could
+    still change: its shape and cap. Those are exactly what the review reads.
 
     Deliberately *not* a whole-composition dump, deliberately not
     ``quality_status`` — a generated presentation badge the terminal finalizer
@@ -788,6 +902,17 @@ def composition_semantic_fingerprint(
         ],
         "not_found": [
             target.model_dump(mode="json") for target in composition.not_found
+        ],
+        "table": (
+            composition.table.model_dump(mode="json")
+            if composition.table is not None
+            else None
+        ),
+        "parts": [
+            part.model_dump(mode="json") for part in composition.parts
+        ],
+        "unreachable": [
+            page.model_dump(mode="json") for page in composition.unreachable
         ],
     }
     encoded = json.dumps(
@@ -959,12 +1084,13 @@ def _render_statements(packet: ReportReviewInput) -> str:
 
 
 def _render_findings(packet: ReportReviewInput) -> str:
-    """Every cited finding whole: its labels, its page, and its snippet."""
+    """Every cited finding whole: its labels, its page, its status, and its snippet."""
     blocks: list[str] = []
     for finding in packet.findings:
         blocks.append(
             f"### {finding.label}\n"
             f"source: {finding.source_title} — {finding.host}\n"
+            f"status: {finding.status or 'verified'}\n"
             f"figure labels: "
             f"{' | '.join(finding.figure_labels) or '(no figure was kept)'}\n"
             f"snippet:\n{finding.snippet}"
@@ -980,6 +1106,10 @@ def _render_not_found(packet: ReportReviewInput) -> str:
     return "\n".join(
         f"- {question}" for question in packet.not_found
     ) or "(every planned obligation was answered)"
+
+
+def _render_table(packet: ReportReviewInput) -> str:
+    return "\n".join(packet.table_lines) or "(no table qualified for this report)"
 
 
 def _render_deterministic(packet: ReportReviewInput) -> str:
@@ -1028,6 +1158,69 @@ def _render_manifest(packet: ReportReviewInput) -> str:
     )
 
 
+def _reader_statements_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Reader statements\n"
+        "Every sentence the report prints, with the code-built reader label "
+        "its cited figures would carry -- built by code, never printed "
+        "beside the sentence -- and the finding labels it cites (F01…, "
+        "whose snippets and figure labels follow below). A defect may "
+        "cite a statement id from this list and no other.\n"
+        + _render_statements(packet)
+    )
+
+
+def _cited_findings_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Cited findings\n"
+        "The verified findings the statements rest on, with the reader "
+        "labels built from their verified context, each finding's own "
+        "verified/corrected/quoted status, and the snippet the Evidence "
+        "Verifier checked against the page. This is the evidence a "
+        "sentence is judged against.\n" + _render_findings(packet)
+    )
+
+
+def _verified_figures_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Verified figures\n"
+        "The report's own verified figures, each with the label a "
+        "sentence stating it would carry. A forecast's label carries its "
+        "issuer and its release, or says the page stated no release; an "
+        "actual's label says actual.\n" + _render_fact_rows(packet)
+    )
+
+
+def _table_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Table\n"
+        "The question-shaped table code assembled from the statements' "
+        "option marks and the verified figures, one line per row, with "
+        "the backing statement and fact-row ids. A cell crediting a "
+        "source with a verdict or pick its backing statement does not "
+        "carry is a defect against that statement's id.\n"
+        + _render_table(packet)
+    )
+
+
+def _not_found_block(packet: ReportReviewInput) -> str:
+    return (
+        "# What the report could not confirm\n"
+        "The obligations no verified finding answered. The report must "
+        "list these and must not present them as answered.\n"
+        + _render_not_found(packet)
+    )
+
+
+def _deterministic_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Deterministic checks\n"
+        "Integrity results the run computed for itself. A failed check is a "
+        "fact about the candidate, not a verdict — and none of these "
+        "numbers is a target to reach.\n" + _render_deterministic(packet)
+    )
+
+
 def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
     """The one request a review makes: the report, its statements, its findings.
 
@@ -1067,40 +1260,12 @@ def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
             f"{packet.reader_content.rstrip()}\n"
             f"{_report_fence(packet.reader_content)}"
         ),
-        (
-            "# Reader statements\n"
-            "Every sentence the report prints, with the code-built reader label "
-            "it ends with, and the finding labels it cites (F01…, whose snippets "
-            "and figure labels follow below). A defect may cite a statement id "
-            "from this list and no other.\n"
-            + _render_statements(packet)
-        ),
-        (
-            "# Cited findings\n"
-            "The verified findings the statements rest on, with the reader "
-            "labels built from their verified context and the snippet the "
-            "Evidence Verifier checked against the page. This is the evidence a "
-            "sentence is judged against.\n" + _render_findings(packet)
-        ),
-        (
-            "# Key facts\n"
-            "The report's own key facts lines, each with the label the reader "
-            "sees beside the sentences that state it. A forecast's label carries "
-            "its issuer and its release, or says the page stated no release; an "
-            "actual's label says actual.\n" + _render_fact_rows(packet)
-        ),
-        (
-            "# Not found\n"
-            "The obligations no verified finding answered. The report must say "
-            "so where it lists them, and must not present them as answered.\n"
-            + _render_not_found(packet)
-        ),
-        (
-            "# Deterministic checks\n"
-            "Integrity results the run computed for itself. A failed check is a "
-            "fact about the candidate, not a verdict — and none of these "
-            "numbers is a target to reach.\n" + _render_deterministic(packet)
-        ),
+        _reader_statements_block(packet),
+        _cited_findings_block(packet),
+        _verified_figures_block(packet),
+        _table_block(packet),
+        _not_found_block(packet),
+        _deterministic_block(packet),
         f"# Manifest of what you were shown\n{_render_manifest(packet)}",
     ]
     return [
@@ -1485,6 +1650,27 @@ class ReportReviewer:
             reviewer=self,
         )
 
+    async def review_scoped(
+        self,
+        scoped: "ScopedReportReviewInput",
+    ) -> ReportReview:
+        """Re-judge a redraft's changed parts, carrying the rest forward.
+
+        T5 addendum: the first review of a pass is always full; this is the
+        one after a redraft, asked only when the redraft's carried-over parts
+        verified byte-identical to what the previous review judged (baked
+        into ``scoped`` by :func:`build_scoped_report_review_input`). Its own
+        schema (``ScopedReportReviewDraft``) and prompt version fingerprint
+        the call distinctly from a full review's.
+        """
+        self._review_records = []
+        return await review_scoped_report(
+            self._provider,
+            scoped,
+            tracker=self._tracker,
+            reviewer=self,
+        )
+
     @property
     def review_records(self) -> tuple[ResearchError, ...]:
         """The records the most recent review produced, provider-free.
@@ -1813,9 +1999,736 @@ def review_defects_as_refinement_jobs(
     return iter(review.material_defects)
 
 
+# --- T5 addendum: scoped re-review after a redraft --------------------------
+#
+# The first review of a pass is always full. After a redraft (spec §6.9), a
+# second full review would re-read and re-judge the whole report even though
+# most of it did not change; this section builds a *scoped* re-review instead:
+# the model still sees the whole report for context and coherence, but its
+# disposition-judging and new-defect burden is limited to the parts the
+# redraft actually touched, and the previous review's own defects are carried
+# forward for it to resolve rather than re-discover.
+
+
+class PreviousDefectView(ContractModel):
+    """One defect the previous full review recorded, carried into a scoped
+    re-review. ``coverage_ids`` names the part(s) it was routed to, so the
+    reviewer can weigh a previous defect against the part its own redraft
+    touched (or find it names none, when that part itself changed)."""
+
+    defect_id: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    severity: str = Field(min_length=1)
+    statement_ids: list[str] = Field(default_factory=list)
+    target_ids: list[str] = Field(default_factory=list)
+    coverage_ids: list[str] = Field(default_factory=list)
+    problem: str = Field(min_length=1)
+
+
+class ScopedReportReviewInput(ContractModel):
+    """The packet a scoped re-review reads after a redraft.
+
+    ``base`` is the ordinary full packet -- the same one a full review would
+    read, built by :func:`build_report_review_input` -- so the reader content,
+    the statements, the findings, the table and the deterministic checks are
+    never duplicated in a second shape. This adds only what a *scoped* review
+    needs on top: which statements changed, which carried over, the
+    dispositions the previous review already settled for the carried-over
+    ones, and the previous review's own defects for the model to resolve.
+
+    Built only when every part the redrafted composition marks carried over
+    verifies byte-identical to what the previous review judged
+    (:func:`remap_review_for_redraft`); a caller that cannot build one falls
+    back to a full review.
+    """
+
+    base: ReportReviewInput
+    previous_defects: list[PreviousDefectView] = Field(default_factory=list)
+    changed_statement_ids: list[str] = Field(default_factory=list)
+    unchanged_statement_ids: list[str] = Field(default_factory=list)
+    carried_dispositions: dict[str, StatementReviewDisposition] = Field(
+        default_factory=dict
+    )
+    fingerprint: str = ""
+
+
+def scoped_report_review_input_fingerprint(scoped: ScopedReportReviewInput) -> str:
+    """The scoped packet's own fingerprint: distinct from
+    ``scoped.base.fingerprint`` because the material a scoped re-review reads
+    -- the changed/unchanged split and the carried previous defects -- is not
+    the material a full review reads, even over an identical report."""
+    payload = scoped.model_dump(mode="json", exclude={"fingerprint"})
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:12]
+
+
+def _statement_shape(statement: ReportStatement | None) -> tuple[object, ...]:
+    """A carried-over statement's own content, with its numbering excluded.
+
+    Renumbering (``report_writer._renumber``) reassigns every statement id in
+    render order on *every* pass, so a carried-over part's ids shift whenever
+    an earlier part's point count changes even though its own words never
+    moved. Comparing everything except the id is the honest "byte-identical"
+    check the addendum asks for.
+    """
+    if statement is None:
+        return ()
+    return (
+        statement.text,
+        tuple(statement.finding_ids),
+        tuple(statement.target_ids),
+        tuple(
+            (item.name, item.verdict, item.picked, item.source_url)
+            for item in statement.items
+        ),
+    )
+
+
+def _sections_content_equal(old: ReportSection, new: ReportSection) -> bool:
+    """Whether ``new`` prints exactly what ``old`` printed, ids aside."""
+    if old.title != new.title or len(old.points) != len(new.points):
+        return False
+    for old_point, new_point in zip(old.points, new.points):
+        if old_point.text != new_point.text:
+            return False
+        if list(old_point.source_urls) != list(new_point.source_urls):
+            return False
+        if _statement_shape(old_point.statement) != _statement_shape(
+            new_point.statement
+        ):
+            return False
+    return True
+
+
+def _redraft_diff(
+    previous: ReportComposition, composition: ReportComposition
+) -> tuple[list[str], list[str], dict[str, str]] | None:
+    """Which statements changed, which carried over, and their id map.
+
+    ``None`` when a part the redrafted composition marks ``carried_over`` is
+    not byte-identical to what ``previous`` held for it: the re-review is not
+    scoped, and the caller must fall back to a full review.
+    """
+    old_sections = {
+        section.coverage_id: section
+        for section in previous.sections
+        if section.coverage_id
+    }
+    new_sections = {
+        section.coverage_id: section
+        for section in composition.sections
+        if section.coverage_id
+    }
+    # The bottom line is always re-asked last (spec §6.9): always changed.
+    changed: list[str] = [
+        point.statement.statement_id
+        for point in composition.summary
+        if point.statement is not None
+    ]
+    unchanged: list[str] = []
+    id_map: dict[str, str] = {}
+    for part in composition.parts:
+        new_section = new_sections.get(part.coverage_id)
+        if part.status != "carried_over":
+            if new_section is not None:
+                changed.extend(
+                    point.statement.statement_id
+                    for point in new_section.points
+                    if point.statement is not None
+                )
+            continue
+        old_section = old_sections.get(part.coverage_id)
+        if old_section is None or new_section is None:
+            return None
+        if not _sections_content_equal(old_section, new_section):
+            return None
+        for old_point, new_point in zip(old_section.points, new_section.points):
+            if old_point.statement is not None and new_point.statement is not None:
+                id_map[old_point.statement.statement_id] = (
+                    new_point.statement.statement_id
+                )
+                unchanged.append(new_point.statement.statement_id)
+    return changed, unchanged, id_map
+
+
+def remap_review_for_redraft(
+    previous_review: ReportReview,
+    *,
+    previous_composition: ReportComposition,
+    composition: ReportComposition,
+) -> ReportReview | None:
+    """The prior review, carried onto the redrafted composition's own ids.
+
+    ``None`` when nothing carried over, or a carried-over part is not
+    byte-identical to what ``previous_review`` judged: the caller must ask a
+    full review instead. The graph's writer node calls this right after
+    composing a redraft, while both compositions are still local Python
+    objects, so the reviewer node can later build a scoped packet without
+    ever needing the prior composition itself.
+    """
+    if previous_review.status != "scored":
+        return None
+    diff = _redraft_diff(previous_composition, composition)
+    if diff is None:
+        return None
+    _changed_ids, unchanged_ids, id_map = diff
+    if not unchanged_ids:
+        return None
+    dispositions = {
+        id_map[old_id]: disposition
+        for old_id, disposition in previous_review.per_statement_dispositions.items()
+        if old_id in id_map
+    }
+    if not dispositions:
+        return None
+    defects = [
+        defect.model_copy(
+            update={
+                "statement_ids": [
+                    id_map[statement_id]
+                    for statement_id in defect.statement_ids
+                    if statement_id in id_map
+                ],
+                "coverage_ids": _coverage_ids_for(defect, previous_composition),
+            }
+        )
+        for defect in previous_review.defects
+    ]
+    return previous_review.model_copy(
+        update={
+            "per_statement_dispositions": dispositions,
+            "defects": defects,
+            "reviewed_statement_ids": sorted(dispositions),
+            "unreviewed_statement_ids": [],
+            "composition_fingerprint": composition_semantic_fingerprint(composition),
+        }
+    )
+
+
+def _coverage_ids_for(defect: ReviewDefect, composition: ReportComposition) -> list[str]:
+    """Which part(s) a defect named, from its statement and target ids."""
+    coverage_by_statement = {
+        point.statement.statement_id: section.coverage_id
+        for section in composition.sections
+        for point in section.points
+        if point.statement is not None
+    }
+    coverage_by_target = {
+        target.target_id: topic.coverage_id
+        for topic in composition.sub_topics
+        for target in topic.evidence_targets
+    }
+    ids = {coverage_by_statement.get(sid) for sid in defect.statement_ids}
+    ids |= {coverage_by_target.get(tid) for tid in defect.target_ids}
+    return sorted(coverage_id for coverage_id in ids if coverage_id)
+
+
+def build_scoped_report_review_input(
+    state: ResearchState,
+    *,
+    previous_review: ReportReview,
+) -> ScopedReportReviewInput | None:
+    """The scoped packet for a re-review after a redraft.
+
+    ``previous_review`` must already be a carried-over review whose
+    dispositions and defects were remapped onto the current composition's own
+    statement ids by :func:`remap_review_for_redraft`: this function reads
+    the ids that carried a disposition forward as the "unchanged" set, and
+    every other statement in the packet as "changed". ``None`` when the
+    composition carries no parts at all, or when nothing in fact changed.
+    """
+    composition = state.composition
+    if composition is None or not composition.parts:
+        return None
+    unchanged_ids = set(previous_review.per_statement_dispositions)
+    if not unchanged_ids:
+        return None
+    base = build_report_review_input(state, composition)
+    unchanged_ordered = [
+        statement_id
+        for statement_id in base.expected_statement_ids
+        if statement_id in unchanged_ids
+    ]
+    if not unchanged_ordered:
+        # Every id ``previous_review`` carried a disposition for is foreign to
+        # this packet -- nothing genuinely carried over, so a "scoped" review
+        # would judge every statement anyway. Not scoped: fall back to full.
+        return None
+    changed_ids = [
+        statement_id
+        for statement_id in base.expected_statement_ids
+        if statement_id not in unchanged_ids
+    ]
+    if not changed_ids:
+        return None
+    previous_defects = [
+        PreviousDefectView(
+            defect_id=defect.defect_id,
+            kind=defect.kind,
+            severity=defect.severity,
+            statement_ids=list(defect.statement_ids),
+            target_ids=list(defect.target_ids),
+            coverage_ids=list(defect.coverage_ids),
+            problem=defect.problem,
+        )
+        for defect in previous_review.defects
+    ]
+    scoped = ScopedReportReviewInput(
+        base=base,
+        previous_defects=previous_defects,
+        changed_statement_ids=changed_ids,
+        unchanged_statement_ids=unchanged_ordered,
+        carried_dispositions={
+            statement_id: previous_review.per_statement_dispositions[statement_id]
+            for statement_id in unchanged_ordered
+        },
+    )
+    return scoped.model_copy(
+        update={"fingerprint": scoped_report_review_input_fingerprint(scoped)}
+    )
+
+
+# --- the scoped request ------------------------------------------------------
+
+
+_SCOPED_REVIEW_ADDITION = (
+    "\n"
+    "\n"
+    "This report was redrafted once, after your own previous review of it. "
+    "The whole report is shown below, for context and cross-part coherence. "
+    "Only some of it changed: the changed statement ids are named below, and "
+    "so are the ids that did not change and are not being asked again.\n"
+    "\n"
+    "For each defect your previous review recorded, say whether the redraft "
+    "resolved it or whether it remains. Judge every changed statement by "
+    "exactly the standard above. Look for a new defect naming a statement id "
+    "only among the changed ones, or in a contradiction a changed statement "
+    "now introduces with an unchanged one; a defect that names no statement "
+    "at all -- an unanswered obligation, a table or source problem -- is not "
+    "restricted this way. Re-score the seven report-level dimensions for the "
+    "whole report as it now stands."
+)
+
+SCOPED_REPORT_REVIEW_SYSTEM_PROMPT = REPORT_REVIEW_SYSTEM_PROMPT + _SCOPED_REVIEW_ADDITION
+"""The scoped re-review's own developer message (T5 addendum).
+
+Built as the full review's own system prompt plus a short scoped-rules
+paragraph, rather than restated from scratch, so a changed statement is
+judged by exactly the full review's standard -- what a disposition means,
+the figure-label rules, the table mis-credit rule, "a fact that is not in
+the findings you were shown is not established" -- and the scoped addition
+states only what is different about this call.
+"""
+
+SCOPED_REPORT_REVIEW_INSTRUCTION = (
+    "The reply carries these fields:\n"
+    "- dimensions: seven re-scored scores in [0,1], one per named dimension, "
+    "for the whole report as it now stands.\n"
+    "- statement_dispositions: one entry per changed statement id you were "
+    "shown, each with the statement id and its disposition (supported, "
+    "unsupported, or not_reviewed).\n"
+    "- previous_defect_resolutions: one entry per previous defect id you "
+    "were shown, each with whether the redraft resolved it.\n"
+    "- new_defects: any new typed defects you found, each naming the "
+    "statement ids and target ids it affects; one naming only unchanged "
+    "statement ids is refused, but a defect naming no statement at all -- an "
+    "unanswered obligation, a table or source problem scoped only to a "
+    "target or a fact row -- is never restricted this way.\n"
+    "- rationale: why the report scores as it does now.\n"
+    "Every id you cite must be one this request showed you. A changed "
+    "statement you leave without a disposition is recorded not_reviewed."
+)
+
+
+_SCOPED_REVIEW_REPLY_EXAMPLES = (
+    (
+        "Example input: changed statement S004; unchanged statement S001; "
+        "one previous defect review-01 against S001, since resolved because "
+        "S004 now supplies the qualifier S001 was missing.",
+        '{"dimensions":{"completeness":0.85,"prioritization":0.8,'
+        '"evidence_quality":0.8,"attribution":0.8,"uncertainty":0.8,'
+        '"readability":0.85,"actionability":0.8},'
+        '"statement_dispositions":[{"statement_id":"S004","disposition":"supported",'
+        '"problem":""}],'
+        '"previous_defect_resolutions":[{"defect_id":"review-01","resolved":true,'
+        '"note":"S004 now supplies the missing qualifier."}],'
+        '"new_defects":[],'
+        '"rationale":"The redraft closed review-01; nothing else changed."}',
+    ),
+)
+
+
+def _render_scoped_defect_contract(scoped: ScopedReportReviewInput) -> str:
+    return (
+        f"{REVIEW_DEFECT_RULES}\n"
+        "- A new defect naming only unchanged statement ids is refused; one "
+        "naming no statement at all -- scoped only to a target, a fact row, "
+        "or the report as a whole -- is never refused for that reason, and "
+        "the D11 coverage floor still applies to it.\n"
+        f"- Return at most {review_defect_limit(scoped.base)} new defects in "
+        "total, on top of the previous defects you are resolving."
+    )
+
+
+def _render_previous_defects(scoped: ScopedReportReviewInput) -> str:
+    lines: list[str] = []
+    for defect in scoped.previous_defects:
+        parts = [f"- {defect.defect_id} ({defect.kind}, {defect.severity})"]
+        parts.append(f"  {defect.problem}")
+        if defect.statement_ids:
+            parts.append("  against: " + ", ".join(defect.statement_ids))
+        if defect.coverage_ids:
+            parts.append("  in part(s): " + ", ".join(defect.coverage_ids))
+        lines.append("\n".join(parts))
+    return "\n".join(lines) or "(the previous review recorded no defect)"
+
+
+def scoped_review_messages(scoped: ScopedReportReviewInput) -> list[ChatMessage]:
+    """The one request a scoped re-review makes after a redraft.
+
+    The whole report and every statement are still shown whole, for context
+    and cross-part coherence -- only the disposition-judging and new-defect
+    burden is scoped to the changed statement ids. Every section a full
+    review shows is reused verbatim here (P1: the scoped material must not
+    drop the explanatory lines a full review's judgement rests on).
+    """
+    packet = scoped.base
+    static = [
+        f"# Response contract\n{SCOPED_REPORT_REVIEW_INSTRUCTION}\n\n"
+        f"{_render_scoped_defect_contract(scoped)}",
+        "# What each dimension means\n"
+        "Score each dimension in [0,1] against its own definition:\n"
+        + _render_dimension_guidance(),
+        "# Reply format\n"
+        + render_structured_reply_format(_SCOPED_REVIEW_REPLY_EXAMPLES),
+    ]
+    material = [
+        f"# Research question\n{packet.question}",
+        (
+            "# Packet fingerprint\n"
+            f"Packet fingerprint: {scoped.fingerprint}\n"
+            "This is a scoped re-review of a redraft: the changed and "
+            "unchanged statement ids and the previous defects below are the "
+            "whole of what is scoped for this call; the report, statements "
+            "and findings following them are shown for context."
+        ),
+        f"# Answer contract\n{_render_answer_contract(packet.answer_contract)}",
+        (
+            "# Reader content — the complete candidate\n"
+            "The report is quoted in full below and nothing is removed from "
+            "its end. This is the complete report a reader would receive, "
+            "not a prefix.\n\n"
+            f"{_report_fence(packet.reader_content)}{_REPORT_FENCE_INFO}\n"
+            f"{packet.reader_content.rstrip()}\n"
+            f"{_report_fence(packet.reader_content)}"
+        ),
+        (
+            "# Changed statement ids\n"
+            "Judge these, and look for any new contradiction they introduce "
+            "with the rest of the report.\n"
+            + (", ".join(scoped.changed_statement_ids) or "(none)")
+        ),
+        (
+            "# Unchanged statement ids\n"
+            "These carried over unchanged from the previous review and are "
+            "not being asked again; raise a new defect against one only when "
+            "a changed statement now contradicts it.\n"
+            + (", ".join(scoped.unchanged_statement_ids) or "(none)")
+        ),
+        (
+            "# Previous defects\n"
+            "Say, for each one, whether the redraft resolved it.\n"
+            + _render_previous_defects(scoped)
+        ),
+        _reader_statements_block(packet),
+        _cited_findings_block(packet),
+        _verified_figures_block(packet),
+        _table_block(packet),
+        _not_found_block(packet),
+        _deterministic_block(packet),
+        f"# Manifest of what you were shown\n{_render_manifest(packet)}",
+    ]
+    return [
+        ChatMessage(role="developer", content=SCOPED_REPORT_REVIEW_SYSTEM_PROMPT),
+        ChatMessage(role="user", content=render_structured_request(static, material)),
+    ]
+
+
+# --- the scoped reply's own schema -------------------------------------------
+
+
+class PreviousDefectResolutionDraft(ContractModel):
+    """One provider-reported resolution of a previous defect."""
+
+    defect_id: str = Field(min_length=1)
+    resolved: bool
+    note: str = ""
+
+
+class ScopedReportReviewDraft(ContractModel):
+    """One provider-reported scoped re-review, before local resolution.
+
+    Its own schema name and fingerprint: a scoped re-review's reply shape is
+    not a full review's, so the two can never be confused by a stored call
+    fingerprint (``fingerprint_call`` keys on ``schema.__name__``).
+    """
+
+    dimensions: ReviewDimensionScores
+    statement_dispositions: list[StatementDispositionDraft] = Field(
+        default_factory=list
+    )
+    previous_defect_resolutions: list[PreviousDefectResolutionDraft] = Field(
+        default_factory=list
+    )
+    new_defects: list[ReviewDefectDraft] = Field(default_factory=list)
+    rationale: str = Field(min_length=1)
+
+
+# --- resolving a scoped reply into one review --------------------------------
+
+
+def _merge_previous_defect_resolutions(
+    previous_defects: Sequence[PreviousDefectView],
+    resolutions: Sequence[PreviousDefectResolutionDraft],
+    *,
+    known_statement_ids: set[str],
+) -> tuple[list[ReviewDefect], list[str], list[str]]:
+    """Carry every previous defect forward, resolved or not.
+
+    T5 addendum item 4: a resolved defect is recorded, not silently dropped
+    -- ``ReviewDefect.resolution`` says which, and ``.material`` reads it, so
+    a resolved defect no longer blocks acceptance but still shows in the
+    merged review's own defect history. A previous defect the reply never
+    mentions is kept unresolved: silence about a known problem is not the
+    same as fixing it. A statement id a defect named that no longer exists
+    in this packet (one of the parts the redraft itself rewrote) is dropped
+    from its scope the same way an unknown id is dropped from a fresh
+    defect -- the defect stays, addressed by whatever target and coverage
+    ids it still carries.
+    """
+    resolved_by_id = {
+        resolution.defect_id.strip(): resolution.resolved
+        for resolution in resolutions
+        if resolution.defect_id.strip()
+    }
+    carried: list[ReviewDefect] = []
+    resolved_ids: list[str] = []
+    unresolved_ids: list[str] = []
+    for defect in previous_defects:
+        resolved = bool(resolved_by_id.get(defect.defect_id))
+        if resolved:
+            resolved_ids.append(defect.defect_id)
+        else:
+            unresolved_ids.append(defect.defect_id)
+        carried.append(
+            ReviewDefect(
+                defect_id=defect.defect_id,
+                kind=cast(GapKind, defect.kind),
+                severity=cast(GapSeverity, defect.severity),
+                statement_ids=[
+                    statement_id
+                    for statement_id in defect.statement_ids
+                    if statement_id in known_statement_ids
+                ],
+                target_ids=list(defect.target_ids),
+                coverage_ids=list(defect.coverage_ids),
+                problem=defect.problem,
+                resolution="resolved" if resolved else "unresolved",
+            )
+        )
+    return carried, resolved_ids, unresolved_ids
+
+
+def _scoped_new_defects(
+    drafts: Sequence[ReviewDefectDraft],
+    *,
+    scoped: ScopedReportReviewInput,
+    existing_ids: set[str],
+) -> tuple[list[ReviewDefect], list[str]]:
+    """New defects, refused only when every statement id they name is
+    unchanged.
+
+    T5 addendum: "new defects are accepted only in changed parts, or when
+    they cite a contradiction with a changed part" -- a defect naming a
+    changed id together with the unchanged one it contradicts still names a
+    changed id, so this one rule covers both. A defect that names *no*
+    statement at all -- a required-target coverage gap (D11), a table or
+    source mis-credit scoped only to fact-row ids, a report-level problem --
+    is not restricted by this rule at all: it goes through :func:`_defects`
+    exactly as a full review's would, D11 floor included, because there is
+    no "which statement" for the scoping rule to apply to.
+    """
+    defects, notes = _defects(drafts, packet=scoped.base)
+    changed = set(scoped.changed_statement_ids)
+    kept: list[ReviewDefect] = []
+    next_index = 1
+    for defect in defects:
+        if defect.statement_ids and not (set(defect.statement_ids) & changed):
+            notes.append(
+                f"A new defect ({defect.kind}, naming "
+                f"{', '.join(defect.statement_ids)}) was dropped: a scoped "
+                "re-review may not raise a new defect naming only unchanged "
+                "statements."
+            )
+            continue
+        candidate = f"review-{next_index:02d}"
+        while candidate in existing_ids:
+            next_index += 1
+            candidate = f"review-{next_index:02d}"
+        existing_ids.add(candidate)
+        next_index += 1
+        kept.append(defect.model_copy(update={"defect_id": candidate}))
+    return kept, notes
+
+
+async def review_scoped_report(
+    provider: StructuredCompleter,
+    scoped: ScopedReportReviewInput,
+    *,
+    tracker: Tracker | None = None,
+    config: AgentRuntimeConfig | None = None,
+    model_profile: EffectiveModelConfig | None = None,
+    reviewer: ReportReviewer | None = None,
+) -> ReportReview:
+    """Run one scoped re-review of ``scoped`` and record its outcome."""
+    owner = reviewer or ReportReviewer(
+        provider=provider, tracker=tracker, config=config, model_profile=model_profile
+    )
+
+    async def _run() -> ReportReview:
+        return await _review_scoped_packet(owner, scoped)
+
+    tracker_ = owner._tracker  # noqa: SLF001  (the reviewer's own tracker)
+    if tracker_ is None:
+        return await _run()
+    async with tracker_.agent_span(owner.name):
+        return await _run()
+
+
+async def _review_scoped_packet(
+    reviewer: ReportReviewer,
+    scoped: ScopedReportReviewInput,
+) -> ReportReview:
+    """The scoped review flow, separate so the span wraps all of it."""
+    packet = scoped.base
+    if not packet.reader_content.strip():
+        return _merge_review(
+            packet,
+            dimension_scores=None,
+            dispositions={},
+            defects=[],
+            derived_statements=[],
+            rationale=(
+                "There is no reader content to review, so no judgement of "
+                "the report exists."
+            ),
+            status="incomplete",
+        )
+    try:
+        reply = await reviewer._request(  # noqa: SLF001
+            scoped_review_messages(scoped), ScopedReportReviewDraft
+        )
+    except (StructuredOutputError, ValidationError) as error:
+        return _failed_review(
+            packet, _schema_reason(error, ScopedReportReviewDraft), status="incomplete"
+        )
+    except ProviderError as error:
+        return _failed_review(packet, _provider_reason(error))
+
+    try:
+        limit = review_defect_limit(scoped.base)
+        if len(reply.new_defects) > limit:
+            raise ReportReviewContractViolation(
+                f"the reply returned {len(reply.new_defects)} new defects, "
+                f"more than the {limit} this request states; a reply beyond "
+                "the bound is refused whole, never cut."
+            )
+        changed_dispositions = _dispositions(reply.statement_dispositions, packet=packet)
+    except ReportReviewContractViolation as violation:
+        return _failed_review(packet, str(violation), status="incomplete")
+
+    carried_defects, resolved_ids, unresolved_ids = (
+        _merge_previous_defect_resolutions(
+            scoped.previous_defects,
+            reply.previous_defect_resolutions,
+            known_statement_ids=set(packet.expected_statement_ids),
+        )
+    )
+    existing_ids = {defect.defect_id for defect in carried_defects}
+    new_defects, defect_notes = _scoped_new_defects(
+        reply.new_defects, scoped=scoped, existing_ids=existing_ids
+    )
+
+    dispositions: dict[str, StatementReviewDisposition] = dict(
+        scoped.carried_dispositions
+    )
+    dispositions.update(changed_dispositions)
+    for statement_id in packet.expected_statement_ids:
+        dispositions.setdefault(statement_id, UNREVIEWED_STATEMENT_DISPOSITION)
+
+    all_defects = [*carried_defects, *new_defects]
+    derived, derived_statements = _derived_defects(packet, dispositions, all_defects)
+
+    scores = reply.dimensions.as_dimensions()
+    status = _status_for(packet, dimension_scores=scores, dispositions=dispositions)
+    dimensions: dict[str, float] | None = scores
+    rationale_parts = [
+        reply.rationale.strip() or "The re-review returned no rationale.",
+        *defect_notes,
+    ]
+    if resolved_ids:
+        rationale_parts.append(
+            "Resolved by the redraft: " + ", ".join(sorted(resolved_ids)) + "."
+        )
+    if unresolved_ids:
+        rationale_parts.append(
+            "Still unresolved: " + ", ".join(sorted(unresolved_ids)) + "."
+        )
+    if status != "scored":
+        rationale_parts.append(
+            _incomplete_reason(
+                packet,
+                unreviewed_statement_ids=[
+                    statement_id
+                    for statement_id in packet.expected_statement_ids
+                    if dispositions[statement_id] == UNREVIEWED_STATEMENT_DISPOSITION
+                ],
+            )
+        )
+        dimensions = None
+    rationale = " ".join(part for part in rationale_parts if part).strip()
+    try:
+        return _merge_review(
+            packet,
+            dimension_scores=dimensions,
+            dispositions=dispositions,
+            defects=[*all_defects, *derived],
+            derived_statements=derived_statements,
+            rationale=rationale,
+            status=status,
+        )
+    except ValidationError as error:
+        return _failed_review(
+            packet,
+            (
+                "The review could not be recorded: the record contract "
+                f"refused the assembled review ({type(error).__name__}). No "
+                "judgement of this report is stored."
+            ),
+            status="incomplete",
+        )
+
 __all__ = [
     "DIMENSION_GUIDANCE",
     "MAX_REVIEW_DEFECTS",
+    "PreviousDefectResolutionDraft",
+    "PreviousDefectView",
     "REPORT_REVIEWER_ROLE",
     "REPORT_REVIEW_INSTRUCTION",
     "REPORT_REVIEW_OPERATION",
@@ -1824,6 +2737,8 @@ __all__ = [
     "REVIEW_DIMENSIONS",
     "REVIEW_DEFECT_RULES",
     "REVIEW_RUBRIC_VERSION",
+    "SCOPED_REPORT_REVIEW_INSTRUCTION",
+    "SCOPED_REPORT_REVIEW_SYSTEM_PROMPT",
     "SEMANTIC_REVIEW_MEAN",
     "ReportReviewContractViolation",
     "ReportReviewDraft",
@@ -1834,13 +2749,20 @@ __all__ = [
     "ReviewDimensionScores",
     "ReviewFindingView",
     "ReviewStatementView",
+    "ScopedReportReviewDraft",
+    "ScopedReportReviewInput",
     "StatementDispositionDraft",
     "build_report_review_input",
+    "build_scoped_report_review_input",
     "composition_semantic_fingerprint",
+    "remap_review_for_redraft",
     "report_review_input_fingerprint",
     "review_defect_limit",
     "review_defects_as_refinement_jobs",
     "review_messages",
     "review_report",
+    "review_scoped_report",
+    "scoped_report_review_input_fingerprint",
+    "scoped_review_messages",
     "semantic_review_passes",
 ]

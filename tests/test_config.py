@@ -513,6 +513,12 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             4,
         ),
         (
+            "AGENTS_WRITER_SECTION_CONCURRENCY",
+            ("agents", "writer_section_concurrency"),
+            "3",
+            3,
+        ),
+        (
             "AGENTS_JUDGE_MAX_TOKENS",
             ("agents", "judge_max_tokens"),
             "12288",
@@ -1321,3 +1327,7 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     assert settings.agents.source_scoring_concurrency == 6
     assert settings.agents.verifier_batch_size == 5
     assert settings.agents.verifier_concurrency == 16
+    # Spec §6.10/§17 Q6: the parallel writer's own concurrency bound; a
+    # controller ruling for this build raised the shipped default from 7 to
+    # 10 ("no strong limits").
+    assert settings.agents.writer_section_concurrency == 10

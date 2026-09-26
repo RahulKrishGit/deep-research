@@ -536,8 +536,14 @@ class FakeReviewer:
     over unchanged content costs nothing.
     """
 
-    def __init__(self, reviews: Sequence[ReportReview] = ()) -> None:
+    def __init__(
+        self,
+        reviews: Sequence[ReportReview | BaseException] = (),
+        *,
+        records: Sequence[tuple[ResearchError, ...]] = (),
+    ) -> None:
         self._reviews = list(reviews) or [fake_report_review()]
+        self._records = list(records)
         self.packets: list[object] = []
         self.review_records: tuple[ResearchError, ...] = ()
 
@@ -560,7 +566,12 @@ class FakeReviewer:
             return previous
         self.packets.append(packet)
         position = min(len(self.packets) - 1, len(self._reviews) - 1)
+        self.review_records = (
+            self._records[min(position, len(self._records) - 1)] if self._records else ()
+        )
         review = self._reviews[position]
+        if isinstance(review, BaseException):
+            raise review
         update: dict[str, object] = {"input_fingerprint": fingerprint}
         if review.status == "scored":
             # The composition fingerprint travels with every scored review, or
@@ -582,6 +593,42 @@ class FakeReviewer:
             # carries the disposition the real reviewer records for it, so the
             # review it serves is one the contract would accept rather than one
             # claiming a coverage it never judged.
+            dispositions = dict(review.per_statement_dispositions)
+            for statement_id in reviewed:
+                dispositions.setdefault(statement_id, "supported")
+            update["per_statement_dispositions"] = dispositions
+        return review.model_copy(update=update)
+
+    async def review_scoped(self, scoped: object) -> ReportReview:
+        """Serve the next scripted review for a scoped re-review call.
+
+        Mirrors ``.review()``'s bookkeeping over ``scoped.base`` (the packet a
+        full review of the same content would build), since that is what the
+        merged record is stamped against (T5 addendum). A queued
+        ``BaseException`` is raised instead of returned, the same contract
+        ``.review()`` and ``FakeAgent`` honour, so a graph test can script a
+        scoped call that fails outright (P2: the fallback-to-full-review
+        gate).
+        """
+        base = getattr(scoped, "base", scoped)
+        fingerprint = getattr(base, "fingerprint", "")
+        self.packets.append(scoped)
+        position = min(len(self.packets) - 1, len(self._reviews) - 1)
+        self.review_records = (
+            self._records[min(position, len(self._records) - 1)] if self._records else ()
+        )
+        review = self._reviews[position]
+        if isinstance(review, BaseException):
+            raise review
+        update: dict[str, object] = {"input_fingerprint": fingerprint}
+        if review.status == "scored":
+            update["composition_fingerprint"] = getattr(
+                base, "composition_fingerprint", ""
+            )
+            reviewed = list(review.reviewed_statement_ids) or list(
+                getattr(base, "expected_statement_ids", [])
+            )
+            update["reviewed_statement_ids"] = reviewed
             dispositions = dict(review.per_statement_dispositions)
             for statement_id in reviewed:
                 dispositions.setdefault(statement_id, "supported")

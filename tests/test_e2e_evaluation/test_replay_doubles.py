@@ -1,10 +1,10 @@
 """Task 4.9: every replay double answers the request its real agent builds.
 
 Each test feeds a double the request a *production* builder produced --
-``context_check_messages``, ``statement_check_messages``, ``writer_messages``,
-``review_messages`` -- and asserts the reply. A double that keys its answer to
-a global order, or that answers a packet the agents do not build, fails here
-rather than in the matrix (Task 4.11).
+``context_check_messages``, ``statement_check_messages``, ``section_messages``,
+``bottom_line_messages``, ``review_messages`` -- and asserts the reply. A
+double that keys its answer to a global order, or that answers a packet the
+agents do not build, fails here rather than in the matrix (Task 4.11).
 
 A label is a batch's own: the Evidence Verifier numbers each Context Check
 batch ``F01…`` from one (``agents/evidence_verifier.py``), so two batches both
@@ -32,11 +32,10 @@ from deep_research.agents.report_reviewer import (
     review_messages,
 )
 from deep_research.agents.report_writer import (
-    ReportWriterDraft,
+    PartJob,
     ReportWriterTask,
-    WriterPointDraft,
     compose_written_report,
-    writer_messages,
+    section_messages,
 )
 from deep_research.agents.report import render_written_report
 from deep_research.e2e_evaluation.replay import (
@@ -48,13 +47,17 @@ from deep_research.e2e_evaluation.replay import (
     ReplayTopic,
 )
 from deep_research.utils.types import (
+    BottomLineDraft,
     FigureContext,
     FigureResult,
     Finding,
     FindingVerification,
+    ItemMarkDraft,
     ReadRecord,
     ResearchState,
+    SectionDraft,
     SubTopic,
+    WriterPointDraft,
 )
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
 
@@ -219,8 +222,20 @@ def writer_task(registry: Sequence[tuple[str, Finding]]) -> ReportWriterTask:
     )
 
 
+def _part_job(task: ReportWriterTask) -> PartJob:
+    """The task's single part, matching what ``compose_written_report`` would
+    build for its one sub-topic: every fixture here plans exactly one, so its
+    own findings are the whole registry."""
+    [topic] = task.sub_topics
+    return PartJob(
+        coverage_id=topic.coverage_id, sub_topic_title=topic.title, order=0,
+        targets=task.targets, findings=task.findings, context_findings=[],
+        previous=None, defects=[], redraft=True,
+    )
+
+
 def request_text(task: ReportWriterTask) -> str:
-    return "\n".join(message.content for message in writer_messages(task))
+    return "\n".join(message.content for message in section_messages(task, _part_job(task)))
 
 
 # --- the Context Check double -----------------------------------------------
@@ -390,9 +405,9 @@ def test_the_writer_double_keeps_a_multi_word_unit_whole() -> None:
     completer = ReplayCompleter(scenario(source))
     task = writer_task([("F01", verified(source))])
 
-    draft = completer._reply_ReportWriterDraft(request_text(task))
+    draft = completer._reply_SectionDraft(request_text(task))
 
-    assert draft.executive_summary[0].text.startswith("Acme Institute reports 3.4 million units")
+    assert draft.points[0].text.startswith("Acme Institute reports 3.4 million units")
 
 
 def test_the_writer_double_drafts_a_point_for_a_finding_with_no_figure() -> None:
@@ -408,19 +423,21 @@ def test_the_writer_double_drafts_a_point_for_a_finding_with_no_figure() -> None
     completer = ReplayCompleter(scenario(source))
     task = writer_task([("F01", verified(source))])
 
-    draft = completer._reply_ReportWriterDraft(request_text(task))
+    draft = completer._reply_SectionDraft(request_text(task))
 
-    assert [point.finding_labels for point in draft.executive_summary] == [["F01"]]
-    assert source.excerpt.split()[-3:] == draft.executive_summary[0].text.split()[-3:]
+    assert [point.finding_labels for point in draft.points] == [["F01"]]
+    assert source.excerpt.split()[-3:] == draft.points[0].text.split()[-3:]
 
 
 def test_the_writer_double_names_a_registry_line_subject_first() -> None:
-    """D11: the drafted sentence names its own row's subject.
+    """D11: the drafted sentence names its own row's subject, and marks it.
 
     Two products rated the same value are two rows, and the writer's own
     restatement guard counts a row only for the subject the sentence names
     (``report_writer.py``), so a draft that omitted the subject would be
-    refused as a restatement of the other row.
+    refused as a restatement of the other row. The subject is also marked as
+    an option (spec §11.3), so a question-shaped table has a real cell to
+    build from a replay run.
     """
     source = page("kettle", value="4.5", unit="out of 5", period="2026")
     completer = ReplayCompleter(scenario(source))
@@ -446,10 +463,13 @@ def test_the_writer_double_names_a_registry_line_subject_first() -> None:
     request = request_text(writer_task([("F01", finding)]))
     assert "| subject Kettle K1 |" in request
 
-    draft = completer._reply_ReportWriterDraft(request)
+    draft = completer._reply_SectionDraft(request)
 
-    assert draft.executive_summary[0].text.startswith("Kettle K1")
-    assert "4.5 out of 5" in draft.executive_summary[0].text
+    assert draft.points[0].text.startswith("Kettle K1")
+    assert "4.5 out of 5" in draft.points[0].text
+    [mark] = draft.points[0].items
+    assert mark.name == "Kettle K1"
+    assert mark.verdict == "4.5 out of 5"
 
 
 def test_a_page_refuses_a_subject_list_that_does_not_match_its_figures() -> None:
@@ -556,15 +576,19 @@ async def test_a_statement_override_corrects_or_refuses_through_the_real_writer(
     )
 
     composition = await compose_written_report(
-        task,
-        completer._reply_ReportWriterDraft(request_text(task)),
-        provider=completer,
-        fingerprint=None,
+        task, provider=completer, fingerprint=None,
     )
 
     # The checker really was asked, and with the writer's own labels: a reader
-    # label is not a registry label, which is the distinction this pins.
-    request = completer.packets["evidence_verifier:StatementCheckDraft"]
+    # label is not a registry label, which is the distinction this pins. The
+    # section's own batch is the *first* Statement Check packet recorded: the
+    # bottom line's later batch re-checks the same kept sentences and would
+    # overwrite ``completer.packets`` with an equally-labelled packet, but the
+    # first is what this test means to pin.
+    request = next(
+        text for key, text in completer.packet_sequence
+        if key == "evidence_verifier:StatementCheckDraft"
+    )
     assert "cited findings:" in request
     assert "Acme Institute's own figure" in request
     assert not re.search(r"(?m)^  F\d+: ", request)
@@ -672,19 +696,21 @@ async def test_the_writer_double_drafts_one_kept_point_per_registry_line() -> No
     completer = ReplayCompleter(scenario(actual, forecast))
     task = writer_task([("F01", verified(actual)), ("F02", verified(forecast))])
 
-    draft = completer._reply_ReportWriterDraft(request_text(task))
+    draft = completer._reply_SectionDraft(request_text(task))
 
-    assert [point.finding_labels for point in draft.executive_summary] == [
+    assert [point.finding_labels for point in draft.points] == [
         ["F01"], ["F02"],
     ]
-    assert "reports 10.4 GW for 2024" in draft.executive_summary[0].text
-    assert "projects 14 GW for 2025" in draft.executive_summary[1].text
+    assert "reports 10.4 GW for 2024" in draft.points[0].text
+    assert "projects 14 GW for 2025" in draft.points[1].text
     composition = await compose_written_report(
-        task, draft, provider=completer, fingerprint=None
+        task, provider=completer, fingerprint=None,
     )
     assert composition.rejected_points == []
+    # Both section points are kept and checked, so the bottom line -- drafted
+    # only from checked section statements (spec §6.6) -- restates them both.
     assert [point.text for point in composition.summary] == [
-        point.text for point in draft.executive_summary
+        point.text for point in draft.points
     ]
 
 
@@ -701,18 +727,44 @@ def test_the_writer_double_drafts_prose_no_page_states_and_the_checker_refuses_i
     completer = ReplayCompleter(scenario(source, invented_prose=prose))
     task = writer_task([("F01", verified(source))])
 
-    draft = completer._reply_ReportWriterDraft(request_text(task))
+    draft = completer._reply_SectionDraft(request_text(task))
 
-    assert prose in draft.executive_summary[0].text
+    assert prose in draft.points[0].text
     [item] = [
         StatementCheckItem(
-            label="S001", text=draft.executive_summary[0].text,
+            label="S001", text=draft.points[0].text,
             findings=[verified(source)], labels=["F01"],
         )
     ]
     [verdict] = completer._reply_StatementCheckDraft(statement_request([item])).statements
     assert verdict.verdict == "inconsistent"
     assert verdict.reason
+
+
+@pytest.mark.asyncio
+async def test_the_writer_double_caps_the_bottom_line_at_four_checked_statements() -> None:
+    """Up to 4 of the checked section statements reach the bottom line, with
+    their labels (spec §11.3), however many the section itself kept."""
+    sources = tuple(
+        page(f"finding{n}", value=str(n), unit="GW", period="2024") for n in range(1, 6)
+    )
+    completer = ReplayCompleter(scenario(*sources))
+    task = writer_task(
+        [(f"F{n:02d}", verified(source)) for n, source in enumerate(sources, start=1)]
+    )
+
+    composition = await compose_written_report(
+        task, provider=completer, fingerprint=None,
+    )
+
+    kept_section_texts = [point.text for point in composition.sections[0].points]
+    assert len(kept_section_texts) == 5
+    assert len(composition.summary) == 4
+    assert [point.text for point in composition.summary] == kept_section_texts[:4]
+    assert all(
+        point.statement is not None and len(point.statement.finding_ids) == 1
+        for point in composition.summary
+    )
 
 
 def test_every_manifest_entry_declares_the_result_its_builder_expects() -> None:
@@ -746,10 +798,7 @@ async def test_the_reviewer_double_scores_every_dimension_and_disposes_every_sta
     completer = ReplayCompleter(scenario(source))
     task = writer_task([("F01", verified(source))])
     composition = await compose_written_report(
-        task,
-        completer._reply_ReportWriterDraft(request_text(task)),
-        provider=completer,
-        fingerprint=None,
+        task, provider=completer, fingerprint=None,
     )
     state = ResearchState(
         session_id="replay-doubles",
@@ -764,7 +813,10 @@ async def test_the_reviewer_double_scores_every_dimension_and_disposes_every_sta
 
     reply = completer._reply_ReportReviewDraft(request)
 
-    assert packet.expected_statement_ids == ["S001"]
+    # One finding, checked twice (its own section point, and the bottom line
+    # that restates it): the parallel writer statement-checks both, so the
+    # packet manifests both ids rather than the single-call writer's one.
+    assert len(packet.expected_statement_ids) == 2
     assert set(reply.dimensions.as_dimensions()) == {
         "completeness",
         "prioritization",
@@ -775,10 +827,10 @@ async def test_the_reviewer_double_scores_every_dimension_and_disposes_every_sta
         "actionability",
     }
     assert set(reply.dimensions.as_dimensions().values()) == {0.9}
-    assert [
+    assert {
         (draft.statement_id, draft.disposition)
         for draft in reply.statement_dispositions
-    ] == [("S001", "supported")]
+    } == {(sid, "supported") for sid in packet.expected_statement_ids}
     assert reply.rationale
 
 
@@ -790,10 +842,7 @@ async def test_a_scenario_can_script_a_statement_unsupported_and_a_score() -> No
     )
     task = writer_task([("F01", verified(source))])
     composition = await compose_written_report(
-        task,
-        completer._reply_ReportWriterDraft(request_text(task)),
-        provider=completer,
-        fingerprint=None,
+        task, provider=completer, fingerprint=None,
     )
     state = ResearchState(
         session_id="replay-doubles",
@@ -809,6 +858,8 @@ async def test_a_scenario_can_script_a_statement_unsupported_and_a_score() -> No
     reply = completer._reply_ReportReviewDraft(request)
 
     assert set(reply.dimensions.as_dimensions().values()) == {0.4}
-    assert [
-        draft.disposition for draft in reply.statement_dispositions
-    ] == ["unsupported"]
+    dispositions = {
+        draft.statement_id: draft.disposition for draft in reply.statement_dispositions
+    }
+    assert dispositions["S001"] == "unsupported"
+    assert set(dispositions.values()) == {"unsupported", "supported"}

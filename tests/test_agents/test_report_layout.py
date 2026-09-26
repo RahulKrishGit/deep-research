@@ -1,4 +1,8 @@
-"""Spec §6.1: the report's shape, its reader labels, and the evidence log."""
+"""Spec §3, §8, §9, §10: the answer-first skeleton, the Sources line, the
+evidence log's audit view, and the fallbacks -- plus the label machinery
+(``_point_labels``/``_row_label``) the terminal reviewer still depends on
+(R1), which this format keeps out of the reader-facing report itself.
+"""
 
 from __future__ import annotations
 
@@ -9,25 +13,34 @@ from deep_research.agents.report import (
     _FACTS_HEADER,
     _point_labels,
     _row_label,
+    evidence_report_filename,
     figure_label,
     render_finding_log,
+    render_quality_record,
     render_written_report,
-    report_scope,
     written_citations,
 )
+from deep_research.agents.sources import normalize_source_url
 from deep_research.utils.types import (
     EarlierEdition,
     FactRow,
     FigureContext,
     FigureResult,
+    Finding,
     FindingVerification,
     NotFoundTarget,
+    PageCredit,
     RejectedDraftPoint,
     ReportComposition,
+    ReportPart,
     ReportPoint,
     ReportSection,
     ReportStatement,
+    ReportTable,
+    ResearchState,
     SubTopic,
+    TableCell,
+    UnreachablePage,
 )
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
 
@@ -77,35 +90,13 @@ def _composition():
         findings=[eia, steo],
         summary=[point(1, "Generators added 10.4 GW of battery storage in 2024.", eia),
                  point(2, "EIA expects 14 GW of battery storage to be added in 2025.", steo)],
-        sections=[ReportSection(title="Basis", points=[point(3, "EIA counts 10.4 GW of new capacity.", eia)])],
+        sections=[ReportSection(title="Basis", coverage_id="topic-01",
+                                points=[point(3, "EIA counts 10.4 GW of new capacity.", eia)])],
         fact_rows=rows,
         not_found=[NotFoundTarget(target_id="topic-03-target-01", question="What does BloombergNEF project for 2025?",
                                   queries=["BloombergNEF 2025 US storage forecast"], pages_read=["https://about.bnef.com/x"], searched=True)],
         finding_labels={"F01": eia_id, "F02": steo_id},
-        rejected_points=[RejectedDraftPoint(where="summary[2]", text="Wood Mackenzie reports 18.9 GW of grid-scale storage.",
-                                            finding_labels=["F03"], reason="scope not carried by the cited figures: grid-scale")],
     )
-
-
-def test_figure_label_follows_the_spec_labels() -> None:
-    assert figure_label(organisation="EIA", attribution="own", relay_host=None, kind="actual",
-                        release="released 2025-03-12", unchecked=False) == "EIA's own figure; actual; released 2025-03-12"
-    assert figure_label(organisation="EIA", attribution="relayed", relay_host="ent.news", kind="forecast",
-                        release="January 2025 STEO", unchecked=True) == "relayed by ent.news from EIA; forecast (January 2025 STEO); unchecked context"
-    assert figure_label(organisation="ent.news", attribution="unattributed", relay_host=None, kind="forecast",
-                        release=None, unchecked=False) == "source does not attribute it; forecast (release not stated on the page)"
-
-
-def test_the_report_has_the_spec_shape_in_order() -> None:
-    report = render_written_report(_composition())
-    headings = [line for line in report.splitlines() if line.startswith("#")]
-    assert headings[1:] == ["## Executive summary", "## Key facts", "## Basis", "## Not found", "## Sources"]
-    assert "| Organisation | Measure | Period | Value | Kind | Scope | Release or edition | Source |" in report
-    assert "U.S. Energy Information Administration (relayed by ent.news)" in report
-    assert "U.S. Energy Information Administration's own figure; actual; released 2025-03-12" in report
-    assert "relayed by ent.news from U.S. Energy Information Administration; forecast (January 2025 STEO)" in report
-    assert "No checked finding answers it: 1 search made, 1 page read." in report
-    assert not VERDICT_WORDS.search(report)
 
 
 def _plain_composition(**overrides: object) -> ReportComposition:
@@ -113,315 +104,30 @@ def _plain_composition(**overrides: object) -> ReportComposition:
     return _composition().model_copy(update=overrides)
 
 
-def test_the_header_names_the_plan_without_its_identifiers() -> None:
-    """The scope lists the planned questions' titles, not the plan's own ids (ev-1 audit A6).
-
-    The reader met "3 planned sub-topic(s), in priority order: topic-01 …", which
-    is the plan's bookkeeping rather than the scope the report assumes.
-    """
-    topics = [SubTopic(coverage_id="topic-01", title="Measured sound-quality scores",
-                       rationale="r", search_queries=["q"], success_criteria=["c"],
-                       priority=1, evidence_targets=[make_target()]),
-              SubTopic(coverage_id="topic-02", title="Microphone recording quality",
-                       rationale="r", search_queries=["q"], success_criteria=["c"],
-                       priority=2, evidence_targets=[make_target("topic-02-target-01")])]
-    report = render_written_report(_plain_composition(scope=report_scope(topics)))
-
-    header = report.splitlines()[2]
-    assert "Measured sound-quality scores" in header and "Microphone recording quality" in header
-    assert "topic-01" not in header and "topic-02" not in header
-    assert "planned sub-topic" not in header and "required target" not in header
-
-
-def test_the_header_counts_unanswered_required_questions_and_points_to_not_found() -> None:
-    """A reader is told how many questions are open and where they are listed."""
-    unanswered = _plain_composition(
-        not_found=[NotFoundTarget(target_id="topic-01-target-01", question="Which one ranks first?"),
-                   NotFoundTarget(target_id="topic-02-target-01", question="What does the lab measure?")],
-    )
-    assert ("2 required questions unanswered, listed under Not found."
-            in render_written_report(unanswered).splitlines()[2])
-
-    one = _plain_composition(
-        not_found=[NotFoundTarget(target_id="topic-01-target-01", question="Which one ranks first?")],
-    )
-    assert ("1 required question unanswered, listed under Not found."
-            in render_written_report(one).splitlines()[2])
-
-    answered = _plain_composition(not_found=[])
-    assert "every required question is answered." in render_written_report(answered).splitlines()[2]
-
-
-def test_the_header_never_claims_more_than_the_not_found_list_proves() -> None:
-    """F7: an unanswered *optional* question is not in ``not_found``, so the header may not claim it away.
-
-    ``verified_facts.not_found_targets`` (verified_facts.py:1212) lists a target
-    only when it is ``required`` and unanswered, so an empty ``not_found``
-    proves that every required question was answered and nothing at all about
-    the optional ones. The sentence says exactly that much.
-    """
-    header = render_written_report(_plain_composition(not_found=[])).splitlines()[2]
-
-    assert "every required question is answered." in header
-    assert "every planned question is answered." not in header
-    assert "every question is answered." not in header
-
-
-def test_the_header_counts_quoted_findings_apart_from_checked() -> None:
-    """D21: a quoted finding's context was never checked (it has no figure
-    for the Context Check to judge), so the header must not fold it into
-    "findings checked against their pages"."""
-    quoted = make_finding(
-        make_read(), "Generators added 10.4 gigawatts", target_ids=[]
-    ).model_copy(update={"verification": FindingVerification(status="quoted")})
-    composition = _plain_composition(findings=[*_composition().findings, quoted])
-
-    header = render_written_report(composition).splitlines()[2]
-
-    assert "2 findings checked against their pages" in header
-    assert "1 quoted (snippet found on the page; context not checked)" in header
-
-
-
-def test_a_not_found_entry_states_the_search_without_dumping_it() -> None:
-    """Each entry is the planned question and how the search went, not its log (ev-1 audit A6).
-
-    The ev-1 report's entries were 730-803-character lines inlining every query
-    string and every page URL, off-topic hosts included.
-    """
-    searched = render_written_report(_plain_composition())
-    assert "No checked finding answers it: 1 search made, 1 page read." in searched
-    assert "BloombergNEF 2025 US storage forecast" not in searched
-    assert "about.bnef.com" not in searched
-    assert "recorded in full in the evidence log" in searched
-
-    unsearched = _plain_composition(
-        not_found=[NotFoundTarget(target_id="topic-03-target-01", question="What does the lab project?")],
-    )
-    assert "No checked finding answers it: not searched in this run." in render_written_report(unsearched)
-
-
-def test_the_evidence_log_keeps_the_search_trail_the_reader_no_longer_carries() -> None:
-    """What the reader report drops, the ledger keeps: every query and every page read."""
-    log = render_finding_log(_composition())
-
-    assert "BloombergNEF 2025 US storage forecast" in log
-    assert "https://about.bnef.com/x" in log
-    assert "What does BloombergNEF project for 2025?" in log
-
-
-def test_a_key_facts_row_that_answers_no_planned_target_is_not_printed() -> None:
-    """The table carries the question's facts, not every figure the run verified (ev-1 audit A6).
-
-    The ev-1 table's five rows were four copies of a site-wide page counter that
-    answers no planned question. A figure that answers nothing stays citable in
-    prose and stays in the evidence log.
-    """
-    base = _composition()
-    answering, unplanned = base.fact_rows
-    assert answering.target_ids  # the fixture's rows answer their planned targets
-
-    only_unplanned = _plain_composition(
-        fact_rows=[unplanned.model_copy(update={"target_ids": []})],
-    )
-    report = render_written_report(only_unplanned)
-    assert "## Key facts" not in report
-    assert f"| {unplanned.value} |" not in report  # a cell, so never the summary's prose
-
-    both = render_written_report(base.model_copy(update={
-        "fact_rows": [answering, unplanned.model_copy(update={"target_ids": []})]}))
-    assert f"| {answering.value} |" in both and f"| {unplanned.value} |" not in both
-
-
-def test_a_pass_with_no_verified_figure_still_says_so() -> None:
-    """Nothing verified is a fact about the pass, not a row that answers nothing."""
-    report = render_written_report(_plain_composition(fact_rows=[]))
-
-    assert "## Key facts" in report
-    assert "No figure passed the Evidence Verifier." in report
-
-
-def test_sources_are_only_the_cited_ones_in_first_use_order() -> None:
-    index = written_citations(_composition())
-    assert [c.number for c in index] == [1, 2]
-    assert index[0].url.startswith("https://eia.gov") and index[1].url.startswith("https://ent.news")
-
-
-def test_the_evidence_log_keeps_snippets_drop_reasons_and_refusals() -> None:
-    log = render_finding_log(_composition())
-    assert "### F01" in log and "Generators added 10.4 gigawatts" in log
-    assert "context_rejected" in log and "A growth rate, not a capacity." in log
-    assert "Wood Mackenzie reports 18.9 GW of grid-scale storage." in log
-    assert "F03" in log and "scope not carried" in log
-    # The log's release must agree with the report's: it comes from the same
-    # fact_rows the report renders from, not a hard-coded "not stated".
-    assert "forecast (January 2025 STEO)" in log
-
-
-def test_the_evidence_log_shows_a_dropped_finding_with_its_reason() -> None:
-    read = make_read("BloombergNEF projects 20 GW of storage by 2026.",
-                     url="https://about.bnef.com/x", title="BNEF forecast")
-    dropped = make_finding(read, "BloombergNEF projects 20 GW of storage by 2026.",
-                           target_ids=["topic-03-target-01"])
-    dropped = dropped.model_copy(update={
-        "verification": FindingVerification(status="dropped", dropped_reason="snippet_not_on_page"),
-    })
-    base = _composition()
-    composition = base.model_copy(update={"findings": [*base.findings, dropped]})
-    log = render_finding_log(composition)
-    assert "dropped (snippet_not_on_page)" in log
-
-
-def test_a_kept_forecast_finding_with_no_fact_row_falls_back_to_its_own_release() -> None:
-    """R3: a kept forecast finding no fact row covers must still show the
-    release its own page carries, not "release not stated on the page".
-    """
-    finding = _finding("https://ent.news/2025/1/941.pdf",
-                       "battery storage capacity growing by 40% (13 GW) in 2025",
-                       "13", "GW", organisation="U.S. Energy Information Administration",
-                       attribution="relayed", kind="forecast", period="2025")
-    finding = finding.model_copy(update={"release_date": "2025-01-14"})
-    base = _composition()
-    composition = base.model_copy(update={"findings": [*base.findings, finding]})
-    log = render_finding_log(composition)
-    assert "forecast (released 2025-01-14)" in log
-    assert "release not stated on the page" not in log
-
-
-def test_two_revision_editions_show_their_own_release_and_label() -> None:
-    """Important 1 + the R2 ruling on the evidence log: two editions of one
-    page (same URL, sub-topic and content; a different figure and release)
-    share a ``finding_fingerprint``. Each must print its own release, never
-    the other edition's (Important 1), and each must keep its own label,
-    never collapse onto or drop the other's (R2).
-    """
-    same_text = "battery storage capacity growing by 40% in 2025"
-    edition_a = _finding("https://ent.news/2025/1/942.pdf", same_text, "13", "GW",
-                         organisation="U.S. Energy Information Administration",
-                         attribution="relayed", kind="forecast", period="2025")
-    edition_a = edition_a.model_copy(update={"release_date": "2025-01-10"})
-    edition_b = _finding("https://ent.news/2025/1/942.pdf", same_text, "14", "GW",
-                         organisation="U.S. Energy Information Administration",
-                         attribution="relayed", kind="forecast", period="2025")
-    edition_b = edition_b.model_copy(update={"release_date": "2025-02-14"})
-    fp = finding_fingerprint(edition_a)
-    assert fp == finding_fingerprint(edition_b)
-    # As ``_fold_revisions`` would produce: one row, the later edition
-    # primary, keyed by the fingerprint both editions share.
-    folded_row = FactRow(row_id="K001", organisation="U.S. Energy Information Administration",
-                         attribution="relayed", relay_host="ent.news",
-                         measure="battery storage power capacity added", period="2025",
-                         value="14 GW", kind="forecast", release="released 2025-02-14", finding_id=fp)
-    composition = ReportComposition(
-        question="q", session_id="s", findings=[edition_a, edition_b], fact_rows=[folded_row],
-        finding_labels={"F01": fp, "F02": fp},
-    )
-    log = render_finding_log(composition)
-    assert log.count("### F01") == 1 and log.count("### F02") == 1
-    assert "13 GW: kept" in log and "14 GW: kept" in log
-    assert "forecast (released 2025-01-10)" in log   # edition_a's own release
-    assert "forecast (released 2025-02-14)" in log   # edition_b's own release
-
-
-def test_the_report_shows_unchecked_context_on_a_fact_row() -> None:
-    base = _composition()
-    unchecked_row = base.fact_rows[0].model_copy(update={"context_unchecked": True})
-    composition = base.model_copy(update={"fact_rows": [unchecked_row, base.fact_rows[1]]})
-    report = render_written_report(composition)
-    assert "actual (unchecked context)" in report
-
-
-def test_the_report_shows_an_unattributed_row_reading() -> None:
-    base = _composition()
-    unattributed_row = base.fact_rows[1].model_copy(update={"attribution": "unattributed", "relay_host": None})
-    composition = base.model_copy(update={"fact_rows": [base.fact_rows[0], unattributed_row]})
-    report = render_written_report(composition)
-    assert "U.S. Energy Information Administration (source does not attribute it)" in report
-
-
-def test_an_undated_pass_says_so_instead_of_reading_a_clock() -> None:
-    """No recorded timestamp prints as "not recorded", never as a date.
-
-    ``as_of`` is the newest timestamp the *evidence* carries, and a pass whose
-    evidence carries none has an empty one. The header must say so: a report
-    that printed a date there would be asserting currency the evidence never
-    stated, and the README promises the undated session says so instead.
-    """
-    composition = _composition().model_copy(update={"as_of": ""})
-
-    header = render_written_report(composition).splitlines()[2]
-
-    assert "As of not recorded." in header
-    assert re.search(r"\d{4}-\d{2}-\d{2}", header) is None
-
-
-def test_the_header_never_prints_two_full_stops_in_a_row() -> None:
-    """The scope text ends with its own full stop, so the header adds none of its own.
-
-    The third pre-flight run's report (line 3) read "... state is assumed..
-    5 sources cited; ..." -- the sentence's own stop plus the header's. A scope
-    the plan did not punctuate still gets one.
-    """
-    base = _composition()
-    planned = report_scope([SubTopic(coverage_id="topic-01", title="2024 capacity additions",
-                                     rationale="r", search_queries=["q"],
-                                     success_criteria=["c"], priority=1)])
-    assert planned.endswith(".")  # the plan's own scope text, as the report prints it
-
-    terminated = render_written_report(
-        base.model_copy(update={"scope": planned})
-    ).splitlines()[2]
-    unterminated = render_written_report(
-        base.model_copy(update={"scope": "United States"})
-    ).splitlines()[2]
-
-    assert ".." not in terminated and ".." not in unterminated
-    assert re.search(r"is assumed\. \d+ sources cited", terminated)
-    assert re.search(r"Scope: United States\. \d+ sources cited", unterminated)
-
-
-def test_a_sub_topic_title_ending_in_a_full_stop_keeps_one_stop() -> None:
-    """The scope punctuates the list it names, and a title may end its own sentence.
-
-    ``report_scope`` appends the assumed-scope note after the listed sub-topics,
-    so a plan whose title ends with a full stop ("Capacity in the U.S.") printed
-    "U.S.. No geography, ..." in every header of that session's report. The
-    scope's own sentence ends once, whatever its titles end with.
-    """
-    scope = report_scope([SubTopic(coverage_id="topic-01", title="Capacity in the U.S.",
-                                   rationale="r", search_queries=["q"],
-                                   success_criteria=["c"], priority=1)])
-    assert "U.S.." not in scope
-
-    header = render_written_report(
-        _composition().model_copy(update={"scope": scope})
-    ).splitlines()[2]
-
-    assert ".." not in header
-    assert "Capacity in the U.S. No geography" in header
-
-
-def test_the_header_prints_a_recorded_stamp_as_a_utc_time() -> None:
-    """The reader meets a UTC minute, not the raw ISO stamp of the third pre-flight run.
-
-    The record keeps its own precision -- the quality JSON prints ``as_of``
-    exactly as recorded -- and only the rendering loses it. The minute is
-    truncated, never rounded, so no stamp moves to another day; a value that
-    names no zone, or no instant at all, is printed as it was recorded rather
-    than given a zone the evidence never stated.
-    """
-    base = _composition()
-
-    def header(as_of: str) -> str:
-        return render_written_report(base.model_copy(update={"as_of": as_of})).splitlines()[2]
-
-    assert header("2026-09-25T12:44:37.098843+00:00").startswith("*As of 2026-09-25 12:44 UTC.")
-    assert header("2026-09-25T23:59:59.999999+00:00").startswith("*As of 2026-09-25 23:59 UTC.")
-    assert header("2026-09-25T14:44:37+02:00").startswith("*As of 2026-09-25 12:44 UTC.")
-    assert header("2026-09-25").startswith("*As of 2026-09-25.")
-    assert header("2026-09-25T12:44:37").startswith("*As of 2026-09-25T12:44:37.")
-    assert header("sometime in 2026").startswith("*As of sometime in 2026.")
-    assert header("").startswith("*As of not recorded.")
+def _section_body(markdown: str, heading: str) -> str:
+    """The text between ``heading`` and the next H2 heading (or the end)."""
+    start = markdown.index(heading)
+    tail = markdown[start + len(heading):]
+    match = re.search(r"(?m)^## ", tail)
+    return tail[: match.start()] if match else tail
+
+
+# --- label machinery the terminal reviewer still reads (R1) -------------------
+#
+# ``_point_labels``/``_row_label``/``figure_label`` no longer print beside a
+# reader-facing sentence (spec §3.1 rule 8 cuts that suffix); they stay
+# because ``report_reviewer.py`` imports them to show the reviewer model the
+# same provenance words the reader used to see. Their own behaviour is
+# unchanged, so their tests stay.
+
+
+def test_figure_label_follows_the_spec_labels() -> None:
+    assert figure_label(organisation="EIA", attribution="own", relay_host=None, kind="actual",
+                        release="released 2025-03-12", unchecked=False) == "EIA's own figure; actual; released 2025-03-12"
+    assert figure_label(organisation="EIA", attribution="relayed", relay_host="ent.news", kind="forecast",
+                        release="January 2025 STEO", unchecked=True) == "relayed by ent.news from EIA; forecast (January 2025 STEO); unchecked context"
+    assert figure_label(organisation="", attribution="unattributed", relay_host=None, kind="forecast",
+                        release=None, unchecked=False) == "source does not attribute it; forecast (release not stated on the page)"
 
 
 def test_a_resolved_period_is_named_on_the_label() -> None:
@@ -431,14 +137,6 @@ def test_a_resolved_period_is_named_on_the_label() -> None:
         "Example Statistical Agency's own figure; actual; "
         "period resolved from the page date 2026-02-20"
     )
-
-
-def test_the_subject_column_appears_only_when_a_row_has_a_subject() -> None:
-    base = _composition()
-    assert _FACTS_HEADER in render_written_report(base)
-    named = base.fact_rows[0].model_copy(update={"subject": "Model A"})
-    report = render_written_report(base.model_copy(update={"fact_rows": [named, *base.fact_rows[1:]]}))
-    assert "| Organisation | Subject | Measure |" in report and "| Model A |" in report
 
 
 def test_a_sentence_carries_the_label_of_the_subject_it_names() -> None:
@@ -491,12 +189,7 @@ def test_a_comparison_target_keeps_each_label_with_its_own_product() -> None:
 
 
 def test_an_article_in_the_sentence_never_hands_a_label_to_the_other_subject() -> None:
-    """Fix round 1 (Important 2): the give-away "a" is required as the whole name, not alone.
-
-    "Model A" against "Model B" leaves just the "a", which any sentence may
-    carry ("... scored a 4.5 out of 5"); matched alone it would hand Model B's
-    sentence Model A's label, so the subject's full run ("model a") is required.
-    """
+    """Fix round 1 (Important 2): the give-away "a" is required as the whole name, not alone."""
     base = _composition()
     target = make_target(question=("How do the Model A and the Model B compare on the "
                                    "Example Tester noise rating for 2026?"),
@@ -518,11 +211,7 @@ def test_an_article_in_the_sentence_never_hands_a_label_to_the_other_subject() -
 
 
 def _two_period_composition() -> ReportComposition:
-    """One page stating one value twice: a 2024 actual and a 2025 forecast.
-
-    Two periods of one value are two facts (PD-9), so the page earns two Key
-    facts rows, K001 and K002, and either sentence cites the same finding.
-    """
+    """One page stating one value twice: a 2024 actual and a 2025 forecast."""
     text = "Sales grew 12 percent in 2024, and the agency expects growth of 12 percent in 2025."
     read = make_read(text, url="https://agency.example.test/outlook", title="Outlook")
     figures = [figure("12", "%", "2024", "actual"), figure("12", "%", "2025", "forecast")]
@@ -560,55 +249,14 @@ def _two_period_composition() -> ReportComposition:
 
 
 def test_a_sentence_carries_only_the_row_of_the_period_it_states() -> None:
-    """The period a sentence states picks its row: two rows of one value are not interchangeable.
-
-    With the value alone both rows match every sentence that states it, so the
-    2024 sentence took the 2025 forecast's label too (a kind the sentence never
-    states) and the 2025 sentence was refused as restating both.
-    """
     composition = _two_period_composition()
     current, forecast = composition.summary
     assert _point_labels(current, composition) == [_row_label(composition.fact_rows[0])]
     assert _point_labels(forecast, composition) == [_row_label(composition.fact_rows[1])]
 
 
-def test_an_earlier_editions_value_cites_its_own_page() -> None:
-    """A row printing an earlier edition's value must carry that page's citation (PD-9).
-
-    ``earlier`` names the finding the value came from; the reader cannot trace
-    "18.2 GW" to any page unless the row's source markers and the Sources list
-    carry it beside the row's own.
-    """
-    latest = _finding("https://agency.example.test/outlook", "19.6 GW is expected in 2026.",
-                      "19.6", "GW", organisation="Example Agency", kind="forecast", period="2026")
-    earlier = _finding("https://agency.example.test/outlook-jan", "18.2 GW was expected.",
-                       "18.2", "GW", organisation="Example Agency", kind="forecast", period="2025")
-    composition = ReportComposition(
-        question="What capacity is expected?", session_id="s", as_of="2026-09-24T00:00:00+00:00",
-        scope="Example", findings=[latest, earlier],
-        fact_rows=[FactRow(row_id="K001", organisation="Example Agency", attribution="own",
-                           measure="capacity", period="2026", value="19.6 GW", kind="forecast",
-                           release="released 2025-06-14", finding_id=finding_fingerprint(latest),
-                           target_ids=["topic-01-target-01"],
-                           earlier=[EarlierEdition(value="18.2 GW", release="released 2025-01-14",
-                                                   finding_id=finding_fingerprint(earlier))])],
-    )
-    assert [citation.url for citation in written_citations(composition)] == [
-        latest.source_url, earlier.source_url]
-    report = render_written_report(composition)
-    row = next(line for line in report.splitlines() if line.startswith("| Example Agency"))
-    assert row.rstrip().endswith("| [1][2] |")
-    assert earlier.source_url in report
-
-
 def test_a_sentence_citing_a_relay_copy_carries_the_relays_label() -> None:
-    """D13: the label beside a sentence is its own cited page's, not the row primary's.
-
-    One fact, two pages: the organisation's own page (the row's primary, hence
-    the row's own label) and a relay of it. A sentence that cites the relay
-    must not be labelled "Example Agency's own figure" -- its marker points at
-    the relay, and a relay is never presented as the issuer.
-    """
+    """D13: the label beside a sentence is its own cited page's, not the row primary's."""
     own_page = _finding("https://agency.example.test/own-release",
                         "The agency expects 14 GW of additions in 2025.",
                         "14", "GW", organisation="Example Agency", kind="forecast", period="2025")
@@ -633,3 +281,1159 @@ def test_a_sentence_citing_a_relay_copy_carries_the_relays_label() -> None:
         "relayed by gazette.example.test from Example Agency; "
         "forecast (release not stated on the page)"
     ]
+
+
+# --- §3: the reader skeleton, in order -----------------------------------------
+
+
+def _skeleton_composition() -> ReportComposition:
+    finding = _finding("https://agency.example.test/report",
+                       "Example Agency reports 10 GW added in 2024.",
+                       "10", "GW", organisation="Example Agency")
+    fid = finding_fingerprint(finding)
+    point = ReportPoint(text="Example Agency reports 10 GW added in 2024.",
+                        source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001",
+                                                  text="Example Agency reports 10 GW added in 2024.",
+                                                  finding_ids=[fid]))
+    table = ReportTable(
+        shape="findings",
+        columns=["What was measured", "Result", "Who reported it (and when)", "Source"],
+        rows=[[TableCell(text="Capacity added"), TableCell(text="10 GW, actual"),
+              TableCell(text="Example Agency"), TableCell(finding_ids=[fid])]],
+        caption="No figure in this table is a forecast.",
+    )
+    return ReportComposition(
+        question="How much capacity was added in 2024?", session_id="s1", iteration=0,
+        as_of="2026-09-25T00:00:00+00:00", findings=[finding], summary=[point], table=table,
+        sections=[ReportSection(title="Capacity", coverage_id="topic-01", points=[point])],
+        not_found=[NotFoundTarget(target_id="topic-02-target-01", question="What about 2025?", searched=True)],
+    )
+
+
+def test_the_reader_report_has_the_spec_skeleton_in_order() -> None:
+    report = render_written_report(_skeleton_composition())
+    headings = [line for line in report.splitlines() if line.startswith("#")]
+
+    assert headings == [
+        "# How much capacity was added in 2024?",
+        "## Bottom line",
+        "## Capacity",
+        "## What we couldn't confirm",
+        "## Sources",
+    ]
+    assert "## Executive summary" not in report
+    assert "## Key facts" not in report
+    assert "## Not found" not in report
+    assert "Scope:" not in report
+    assert "sources cited" not in report
+    assert "| What was measured | Result | Who reported it (and when) | Source |" in report
+    assert "*No figure in this table is a forecast.*" in report
+    assert report.rstrip().endswith(
+        "How this was researched: [evidence log]"
+        f"({evidence_report_filename(session_id='s1', iteration=0)})"
+    )
+
+
+def test_no_table_prints_nothing_when_none_qualifies() -> None:
+    report = render_written_report(_plain_composition(fact_rows=[]))
+    assert "|" not in report
+    assert "No figure passed the Evidence Verifier." not in report
+
+
+# --- §3.1.2: the evidence line --------------------------------------------------
+
+
+def test_the_evidence_line_states_the_date_and_source_count() -> None:
+    report = render_written_report(_composition())
+    assert report.splitlines()[2] == "Evidence as of 2026-09-24 · 2 sources"
+
+
+def test_the_evidence_line_says_no_source_could_be_checked_when_as_of_is_empty() -> None:
+    composition = _composition().model_copy(update={"as_of": ""})
+    report = render_written_report(composition)
+    assert report.splitlines()[2] == "No source could be checked."
+
+
+def test_the_evidence_line_uses_the_singular_for_one_source() -> None:
+    finding = _finding("https://agency.example.test/report", "Example Agency reports X.",
+                       "1", "unit", organisation="Example Agency")
+    point = ReportPoint(text="Example Agency reports X.", source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001", text="Example Agency reports X.",
+                                                  finding_ids=[finding_fingerprint(finding)]))
+    composition = ReportComposition(question="q", session_id="s", as_of="2026-09-25T00:00:00+00:00",
+                                    findings=[finding], summary=[point])
+    report = render_written_report(composition)
+    assert report.splitlines()[2] == "Evidence as of 2026-09-25 · 1 source"
+
+
+# --- §3.1.3: bottom-line markers before the stop --------------------------------
+
+
+def test_bottom_line_markers_land_before_each_sentences_final_stop() -> None:
+    report = render_written_report(_composition())
+    body = _section_body(report, "## Bottom line")
+
+    assert "Generators added 10.4 GW of battery storage in 2024 [1]." in body
+    assert "EIA expects 14 GW of battery storage to be added in 2025 [2]." in body
+
+
+def _single_point_composition(text: str) -> ReportComposition:
+    finding = _bare_finding("https://agency.example.test/report", "A report", text)
+    point = ReportPoint(text=text, source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001", text=text,
+                                                  finding_ids=[finding_fingerprint(finding)]))
+    return ReportComposition(question="q", session_id="s", findings=[finding], summary=[point])
+
+
+def test_bottom_line_markers_land_before_a_closing_quote_after_the_stop() -> None:
+    """P3: a closing quote after the sentence's stop keeps the stop where it
+    was, with the markers before it -- never a second stop after the quote."""
+    composition = _single_point_composition('He called it "the best."')
+    body = _section_body(render_written_report(composition), "## Bottom line")
+    assert body.strip() == 'He called it "the best [1]."'
+
+
+def test_bottom_line_markers_treat_an_ellipsis_as_one_unit() -> None:
+    composition = _single_point_composition("It rose to 5 GW...")
+    body = _section_body(render_written_report(composition), "## Bottom line")
+    assert body.strip() == "It rose to 5 GW [1]..."
+
+
+def test_bottom_line_markers_land_before_a_closing_paren_after_the_stop() -> None:
+    composition = _single_point_composition("It rose to 5 GW.)")
+    body = _section_body(render_written_report(composition), "## Bottom line")
+    assert body.strip() == "It rose to 5 GW [1].)"
+
+
+
+def test_the_bottom_line_falls_back_when_nothing_was_answered() -> None:
+    composition = ReportComposition(question="q", session_id="s")
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "No source we could check answers this question." in body
+    assert "## Sources" not in report
+
+
+def test_the_bottom_line_falls_back_when_every_part_failed() -> None:
+    composition = ReportComposition(
+        question="q", session_id="s",
+        parts=[ReportPart(coverage_id="topic-01", sub_topic_title="Audio", status="failed"),
+               ReportPart(coverage_id="topic-02", sub_topic_title="Mic", status="empty")],
+    )
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert ("This report's sections could not be written this time; "
+           "the evidence log shows what was verified.") in body
+
+
+def test_the_bottom_line_does_not_deny_an_answer_the_sections_give() -> None:
+    """P0: an empty bottom line (a D8 outage -- the draft returned no kept
+    sentence) must not claim the report cites nothing when a section below
+    it, or the table, does answer."""
+    finding = _finding("https://agency.example.test/report",
+                       "The agency reports 10 GW added in 2024.",
+                       "10", "GW", organisation="Example Agency")
+    point = ReportPoint(text="The agency reports 10 GW added in 2024.",
+                        source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001",
+                                                  text="The agency reports 10 GW added in 2024.",
+                                                  finding_ids=[finding_fingerprint(finding)]))
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[finding],
+        sections=[ReportSection(title="Capacity", points=[point])],
+    )
+
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "No source we could check answers this question." not in body
+    assert "A summary could not be written this time" in body
+
+
+
+# --- §5, §3.1.7-9: citation order and the Sources line --------------------------
+
+
+def test_citation_order_is_bottom_line_then_table_then_sections() -> None:
+    a = _finding("https://a.example.test/1", "A reports X.", "1", "unit", organisation="A")
+    b = _finding("https://b.example.test/1", "B reports Y.", "2", "unit", organisation="B")
+    c = _finding("https://c.example.test/1", "C reports Z.", "3", "unit", organisation="C")
+    table = ReportTable(
+        shape="findings",
+        columns=["What was measured", "Result", "Who reported it (and when)", "Source"],
+        rows=[[TableCell(text="Y"), TableCell(text="2, actual"), TableCell(text="B"),
+              TableCell(finding_ids=[finding_fingerprint(b)])]],
+    )
+    bottom = ReportPoint(text="A reports X.", source_urls=[a.source_url],
+                         statement=ReportStatement(statement_id="S001", text="A reports X.",
+                                                   finding_ids=[finding_fingerprint(a)]))
+    section_point = ReportPoint(text="C reports Z.", source_urls=[c.source_url],
+                                statement=ReportStatement(statement_id="S002", text="C reports Z.",
+                                                          finding_ids=[finding_fingerprint(c)]))
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[a, b, c], summary=[bottom], table=table,
+        sections=[ReportSection(title="More", points=[section_point])],
+    )
+
+    index = written_citations(composition)
+
+    assert [citation.url for citation in index] == [a.source_url, b.source_url, c.source_url]
+
+
+def _bare_finding(url: str, title: str, content: str) -> Finding:
+    read = make_read(content, url=url, title=title)
+    return make_finding(read, content, target_ids=[])
+
+
+def _cited_composition(finding: Finding, **overrides: object) -> ReportComposition:
+    fid = finding_fingerprint(finding)
+    point = ReportPoint(text=finding.snippet, source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001", text=finding.snippet,
+                                                  finding_ids=[fid]))
+    payload: dict[str, object] = {"question": "q", "session_id": "s", "findings": [finding], "summary": [point]}
+    payload.update(overrides)
+    return ReportComposition(**payload)
+
+
+def test_the_sources_line_strips_the_publisher_named_title_segment() -> None:
+    finding = _bare_finding("https://cnet.com/best-headphones", "Best Headphones to Buy | CNET",
+                            "CNET reports strong sound quality.")
+    credit = PageCredit(publisher="CNET")
+    composition = _cited_composition(finding, page_credits={normalize_source_url(finding.source_url): credit})
+
+    report = render_written_report(composition)
+
+    assert "1. CNET — [Best Headphones to Buy](https://cnet.com/best-headphones)" in report
+
+
+def test_the_sources_line_shows_a_published_date() -> None:
+    finding = _bare_finding("https://cnet.com/best-headphones", "Best Headphones to Buy | CNET",
+                            "CNET reports strong sound quality.")
+    credit = PageCredit(publisher="CNET", date="2026-09-17", date_kind="published")
+    composition = _cited_composition(finding, page_credits={normalize_source_url(finding.source_url): credit})
+
+    report = render_written_report(composition)
+
+    assert "(2026-09-17)" in report
+    assert "(updated 2026-09-17)" not in report
+
+
+def test_the_sources_line_shows_an_updated_only_date() -> None:
+    finding = _bare_finding("https://cnet.com/best-headphones", "Best Headphones to Buy | CNET",
+                            "CNET reports strong sound quality.")
+    credit = PageCredit(publisher="CNET", date="2026-09-17", date_kind="updated")
+    composition = _cited_composition(finding, page_credits={normalize_source_url(finding.source_url): credit})
+
+    report = render_written_report(composition)
+
+    assert "(updated 2026-09-17)" in report
+
+
+def test_the_sources_line_falls_back_to_the_host_publisher_without_a_credit() -> None:
+    finding = _bare_finding("https://example-agency.test/report", "A report on capacity",
+                            "Example Agency reports strong growth.")
+    composition = _cited_composition(finding)
+
+    report = render_written_report(composition)
+
+    assert "1. example-agency.test — [A report on capacity](https://example-agency.test/report)" in report
+
+
+def test_the_sources_line_escapes_a_title_that_could_hijack_the_link() -> None:
+    """P2: an untrusted page title containing ``](url)`` must not let the
+    printed Sources link point somewhere other than the cited page."""
+    finding = _bare_finding("https://cnet.com/real-page",
+                            "Guide](https://evil.example.test) to headphones",
+                            "CNET reports on headphones.")
+    composition = _cited_composition(finding)
+
+    report = render_written_report(composition)
+
+    assert "Guide\\](https://evil.example.test)" in report
+    assert re.search(r"(?<!\\)\]\(https://evil\.example\.test\)", report) is None
+    assert "](https://cnet.com/real-page)" in report
+
+
+def test_the_sources_line_percent_encodes_unsafe_url_characters() -> None:
+    """P2: a link destination with a raw space or an unbalanced paren must
+    still be one non-whitespace Markdown token pointing at the cited page."""
+    finding = _bare_finding("https://x.example.test/a b", "A report",
+                            "X reports on something.")
+    composition = _cited_composition(finding)
+
+    report = render_written_report(composition)
+
+    assert "https://x.example.test/a%20b" in report
+    assert "https://x.example.test/a b" not in report
+
+
+def test_the_quality_records_printed_title_matches_the_sources_line() -> None:
+    finding = _bare_finding("https://cnet.com/real-page",
+                            "Guide](https://evil.example.test) to headphones",
+                            "CNET reports on headphones.")
+    composition = _cited_composition(finding, page_credits={
+        normalize_source_url(finding.source_url): PageCredit(publisher="CNET")
+    })
+    state = ResearchState(session_id=composition.session_id, original_question=composition.question)
+
+    record = render_quality_record(state, composition, None)
+
+    assert record["sources"][0]["title"] == "Guide\\](https://evil.example.test) to headphones"
+
+
+def test_the_table_header_escapes_a_pipe_in_a_column_title() -> None:
+    """P2: an options-table column title is the writer's section title
+    (model text); an embedded pipe must not break the GFM table."""
+    table = ReportTable(shape="options", columns=["Option", "Price | value", "Recommended by"],
+                        rows=[[TableCell(text="A"), TableCell(), TableCell()]])
+    composition = ReportComposition(question="q", session_id="s", table=table)
+
+    report = render_written_report(composition)
+
+    header = next(line for line in report.splitlines() if line.startswith("| Option"))
+    assert header == "| Option | Price \\| value | Recommended by |"
+
+
+
+# --- §10, §3.1.6: what we couldn't confirm --------------------------------------
+
+
+def test_what_we_couldnt_confirm_groups_searched_and_unsearched_targets() -> None:
+    composition = ReportComposition(
+        question="q", session_id="s",
+        not_found=[
+            NotFoundTarget(target_id="t1", question="Searched but unanswered?", searched=True),
+            NotFoundTarget(target_id="t2", question="Never researched?", searched=False),
+        ],
+    )
+    report = render_written_report(composition)
+
+    assert "We found no source we could check that answers:" in report
+    assert "- Searched but unanswered?" in report
+    assert "This run did not research:" in report
+    assert "- Never researched?" in report
+    assert report.index("We found no source") < report.index("This run did not research")
+
+
+def test_what_we_couldnt_confirm_lists_failed_parts() -> None:
+    composition = ReportComposition(
+        question="q", session_id="s",
+        parts=[ReportPart(coverage_id="topic-02", sub_topic_title="Microphone quality",
+                          finding_ids=["F02"], status="failed")],
+    )
+    report = render_written_report(composition)
+
+    assert ("We could not write up Microphone quality; its sources are listed in the "
+           "evidence log.") in report
+
+
+def test_what_we_couldnt_confirm_lists_up_to_five_unreachable_pages_with_plain_reasons() -> None:
+    pages = [
+        UnreachablePage(url=f"https://denied{n}.example.test/page", title=f"Denied {n}", reason="access_denied")
+        for n in range(6)
+    ]
+    composition = ReportComposition(question="q", session_id="s", unreachable=pages)
+
+    report = render_written_report(composition)
+
+    assert "These pages could not be opened, so nothing from them is in this report:" in report
+    assert "- Denied 0 (denied0.example.test) — access was denied" in report
+    assert "- Denied 4 (denied4.example.test) — access was denied" in report
+    assert "Denied 5" not in report
+    assert "- and others, listed in the evidence log" in report
+    assert "- and others, listed in the evidence log." not in report
+
+
+def test_an_unreachable_pages_reason_reads_in_plain_words() -> None:
+    reasons = {
+        "access_denied": "access was denied",
+        "not_found": "the page could not be found",
+        "http_error": "the site returned an error",
+        "transport_failure": "the page could not be reached",
+        "unusable_content_shell": "the page's content could not be used",
+    }
+    for code, plain in reasons.items():
+        page = UnreachablePage(url="https://example.test/page", title="A page", reason=code)
+        report = render_written_report(ReportComposition(question="q", session_id="s", unreachable=[page]))
+        assert plain in report
+
+
+# --- §3.1.8: the unchecked-sentence provenance exception ------------------------
+
+
+def test_an_unchecked_sentence_with_a_fact_row_keeps_a_provenance_line() -> None:
+    finding = _finding("https://agency.example.test/report",
+                       "The agency reports 10 GW added in 2024.",
+                       "10", "GW", organisation="Example Agency")
+    fid = finding_fingerprint(finding)
+    row = FactRow(row_id="K001", organisation="Example Agency", attribution="own",
+                 measure="capacity added", period="2024", value="10 GW", kind="actual",
+                 finding_id=fid, target_ids=["topic-01-target-01"])
+    point = ReportPoint(text="The agency reports 10 GW added in 2024.",
+                        source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001",
+                                                  text="The agency reports 10 GW added in 2024.",
+                                                  finding_ids=[fid]))
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[finding], fact_rows=[row], summary=[point],
+        statement_verdicts={"S001": "unchecked"},
+        page_credits={normalize_source_url(finding.source_url): PageCredit(publisher="Example Agency")},
+    )
+
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "(figure: Example Agency)" in body
+
+
+def test_a_checked_sentence_with_a_fact_row_keeps_no_provenance_line() -> None:
+    """The exception is for ``unchecked`` sentences only (§3.1 rule 8)."""
+    finding = _finding("https://agency.example.test/report",
+                       "The agency reports 10 GW added in 2024.",
+                       "10", "GW", organisation="Example Agency")
+    fid = finding_fingerprint(finding)
+    row = FactRow(row_id="K001", organisation="Example Agency", attribution="own",
+                 measure="capacity added", period="2024", value="10 GW", kind="actual",
+                 finding_id=fid, target_ids=["topic-01-target-01"])
+    point = ReportPoint(text="The agency reports 10 GW added in 2024.",
+                        source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001",
+                                                  text="The agency reports 10 GW added in 2024.",
+                                                  finding_ids=[fid]))
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[finding], fact_rows=[row], summary=[point],
+        statement_verdicts={"S001": "consistent"},
+    )
+
+    report = render_written_report(composition)
+
+    assert "(figure:" not in report
+
+
+
+def test_an_unchecked_sentence_citing_a_relay_copy_gets_the_relays_provenance() -> None:
+    """P1/D13: an unchecked sentence that cites only the relay duplicate of a
+    fact row must not credit the row's primary page's issuer and release --
+    a page the report never even cites."""
+    own_page = _finding("https://agency.example.test/own-release",
+                        "The agency expects 14 GW of additions in 2025.",
+                        "14", "GW", organisation="Example Agency", kind="forecast", period="2025")
+    own_page = own_page.model_copy(update={"release_date": "2025-01-14"})
+    relay_page = _finding("https://gazette.example.test/story",
+                          "According to the Example Agency, as reported by the Example Gazette, "
+                          "14 GW of additions are expected in 2025.",
+                          "14", "GW", organisation="Example Agency", attribution="relayed",
+                          kind="forecast", period="2025")
+    primary = finding_fingerprint(own_page)
+    row = FactRow(row_id="K001", organisation="Example Agency", attribution="own", measure="additions",
+                  period="2025", value="14 GW", kind="forecast", finding_id=primary,
+                  duplicate_finding_ids=[finding_fingerprint(relay_page)],
+                  target_ids=["topic-01-target-01"])
+    text = ("According to the Example Agency, as reported by the Example Gazette, "
+           "14 GW of additions are expected in 2025.")
+    point = ReportPoint(text=text, source_urls=[relay_page.source_url],
+                        statement=ReportStatement(statement_id="S001", text=text,
+                                                  finding_ids=[finding_fingerprint(relay_page)]))
+    composition = ReportComposition(
+        question="What is the outlook for additions?", session_id="s",
+        findings=[own_page, relay_page], fact_rows=[row], summary=[point],
+        statement_verdicts={"S001": "unchecked"},
+    )
+
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "2025-01-14" not in body
+    assert "reported by gazette.example.test" in body
+
+
+
+def test_an_unchecked_sentence_citing_the_own_duplicate_of_a_relay_row_gets_its_own_provenance() -> None:
+    """P1/D13, the reverse direction: when the row's own primary is the relay
+    page but the sentence cites only the original issuer's duplicate page,
+    the suffix must credit that page, never a relay the report never cites."""
+    own_page = _finding("https://agency.example.test/own-release",
+                        "The agency expects 14 GW of additions in 2025.",
+                        "14", "GW", organisation="Example Agency", kind="forecast", period="2025")
+    own_page = own_page.model_copy(update={"release_date": "2025-01-14"})
+    relay_page = _finding("https://gazette.example.test/story",
+                          "According to the Example Agency, as reported by the Example Gazette, "
+                          "14 GW of additions are expected in 2025.",
+                          "14", "GW", organisation="Example Agency", attribution="relayed",
+                          kind="forecast", period="2025")
+    primary = finding_fingerprint(relay_page)
+    row = FactRow(row_id="K001", organisation="Example Agency", attribution="relayed",
+                 relay_host="gazette.example.test", measure="additions",
+                 period="2025", value="14 GW", kind="forecast", finding_id=primary,
+                 duplicate_finding_ids=[finding_fingerprint(own_page)],
+                 target_ids=["topic-01-target-01"])
+    text = "The agency expects 14 GW of additions in 2025."
+    point = ReportPoint(text=text, source_urls=[own_page.source_url],
+                        statement=ReportStatement(statement_id="S001", text=text,
+                                                  finding_ids=[finding_fingerprint(own_page)]))
+    composition = ReportComposition(
+        question="What is the outlook for additions?", session_id="s",
+        findings=[own_page, relay_page], fact_rows=[row], summary=[point],
+        statement_verdicts={"S001": "unchecked"},
+    )
+
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "gazette.example.test" not in body
+    assert "(figure: Example Agency (released 2025-01-14))" in body
+
+
+# --- §9: the evidence log ------------------------------------------------------
+
+
+def test_the_evidence_log_keeps_the_search_trail_the_reader_no_longer_carries() -> None:
+    log = render_finding_log(_composition())
+
+    assert "BloombergNEF 2025 US storage forecast" in log
+    assert "https://about.bnef.com/x" in log
+    assert "What does BloombergNEF project for 2025?" in log
+
+
+def test_the_evidence_log_shows_every_verified_figure_even_one_that_answers_no_target() -> None:
+    """Decision #4: the full fact-row table moves to the evidence log, unfiltered --
+    an auditor sees every verified figure, not only the ones a plan target names."""
+    base = _composition()
+    unplanned = base.fact_rows[1].model_copy(update={"target_ids": []})
+    composition = base.model_copy(update={"fact_rows": [base.fact_rows[0], unplanned]})
+
+    log = render_finding_log(composition)
+
+    assert "## Verified figures" in log
+    assert f"| {unplanned.value} |" in log
+
+
+def test_the_evidence_log_says_so_when_no_figure_passed() -> None:
+    log = render_finding_log(_plain_composition(fact_rows=[]))
+    assert "No figure passed the Evidence Verifier." in log
+
+
+def test_the_evidence_log_shows_the_subject_column_only_when_a_row_has_a_subject() -> None:
+    base = _composition()
+    assert _FACTS_HEADER in render_finding_log(base)
+    named = base.fact_rows[0].model_copy(update={"subject": "Model A"})
+    log = render_finding_log(base.model_copy(update={"fact_rows": [named, *base.fact_rows[1:]]}))
+    assert "| Organisation | Subject | Measure |" in log and "| Model A |" in log
+
+
+def test_the_evidence_log_shows_unchecked_context_on_a_fact_row() -> None:
+    base = _composition()
+    unchecked_row = base.fact_rows[0].model_copy(update={"context_unchecked": True})
+    composition = base.model_copy(update={"fact_rows": [unchecked_row, base.fact_rows[1]]})
+    log = render_finding_log(composition)
+    assert "actual (unchecked context)" in log
+
+
+def test_the_evidence_log_shows_an_unattributed_row_reading() -> None:
+    base = _composition()
+    unattributed_row = base.fact_rows[1].model_copy(update={"attribution": "unattributed", "relay_host": None})
+    composition = base.model_copy(update={"fact_rows": [base.fact_rows[0], unattributed_row]})
+    log = render_finding_log(composition)
+    assert "U.S. Energy Information Administration (source does not attribute it)" in log
+
+
+def test_the_evidence_log_shows_source_labels_not_citation_markers() -> None:
+    log = render_finding_log(_composition())
+    row = next(line for line in log.splitlines() if line.startswith("| U.S. Energy Information Administration | battery storage power capacity added | 2024 |"))
+    assert row.rstrip().endswith("| F01 |")
+
+
+def test_an_earlier_editions_value_traces_to_both_pages_in_the_evidence_log() -> None:
+    latest = _finding("https://agency.example.test/outlook", "19.6 GW is expected in 2026.",
+                      "19.6", "GW", organisation="Example Agency", kind="forecast", period="2026")
+    earlier = _finding("https://agency.example.test/outlook-jan", "18.2 GW was expected.",
+                       "18.2", "GW", organisation="Example Agency", kind="forecast", period="2025")
+    composition = ReportComposition(
+        question="What capacity is expected?", session_id="s", as_of="2026-09-24T00:00:00+00:00",
+        findings=[latest, earlier],
+        fact_rows=[FactRow(row_id="K001", organisation="Example Agency", attribution="own",
+                           measure="capacity", period="2026", value="19.6 GW", kind="forecast",
+                           release="released 2025-06-14", finding_id=finding_fingerprint(latest),
+                           target_ids=["topic-01-target-01"],
+                           earlier=[EarlierEdition(value="18.2 GW", release="released 2025-01-14",
+                                                   finding_id=finding_fingerprint(earlier))])],
+        finding_labels={"F01": finding_fingerprint(latest), "F02": finding_fingerprint(earlier)},
+    )
+
+    log = render_finding_log(composition)
+
+    row = next(line for line in log.splitlines() if line.startswith("| Example Agency"))
+    assert row.rstrip().endswith("| F01, F02 |")
+    assert earlier.source_url in log
+
+
+def test_the_evidence_log_keeps_snippets_drop_reasons_and_refusals() -> None:
+    composition = _composition().model_copy(update={
+        "rejected_points": [RejectedDraftPoint(where="summary[2]",
+                                               text="Wood Mackenzie reports 18.9 GW of grid-scale storage.",
+                                               finding_labels=["F03"],
+                                               reason="scope not carried by the cited figures: grid-scale")],
+    })
+    log = render_finding_log(composition)
+    assert "### F01" in log and "Generators added 10.4 gigawatts" in log
+    assert "context_rejected" in log and "A growth rate, not a capacity." in log
+    assert "Wood Mackenzie reports 18.9 GW of grid-scale storage." in log
+    assert "F03" in log and "scope not carried" in log
+    assert "forecast (January 2025 STEO)" in log
+
+
+def test_the_evidence_log_shows_a_dropped_finding_with_its_reason() -> None:
+    read = make_read("BloombergNEF projects 20 GW of storage by 2026.",
+                     url="https://about.bnef.com/x", title="BNEF forecast")
+    dropped = make_finding(read, "BloombergNEF projects 20 GW of storage by 2026.",
+                           target_ids=["topic-03-target-01"])
+    dropped = dropped.model_copy(update={
+        "verification": FindingVerification(status="dropped", dropped_reason="snippet_not_on_page"),
+    })
+    base = _composition()
+    composition = base.model_copy(update={"findings": [*base.findings, dropped]})
+    log = render_finding_log(composition)
+    assert "dropped (snippet_not_on_page)" in log
+
+
+def test_a_kept_forecast_finding_with_no_fact_row_falls_back_to_its_own_release() -> None:
+    finding = _finding("https://ent.news/2025/1/941.pdf",
+                       "battery storage capacity growing by 40% (13 GW) in 2025",
+                       "13", "GW", organisation="U.S. Energy Information Administration",
+                       attribution="relayed", kind="forecast", period="2025")
+    finding = finding.model_copy(update={"release_date": "2025-01-14"})
+    base = _composition()
+    composition = base.model_copy(update={"findings": [*base.findings, finding]})
+    log = render_finding_log(composition)
+    assert "forecast (released 2025-01-14)" in log
+    assert "release not stated on the page" not in log
+
+
+def test_two_revision_editions_show_their_own_release_and_label() -> None:
+    same_text = "battery storage capacity growing by 40% in 2025"
+    edition_a = _finding("https://ent.news/2025/1/942.pdf", same_text, "13", "GW",
+                         organisation="U.S. Energy Information Administration",
+                         attribution="relayed", kind="forecast", period="2025")
+    edition_a = edition_a.model_copy(update={"release_date": "2025-01-10"})
+    edition_b = _finding("https://ent.news/2025/1/942.pdf", same_text, "14", "GW",
+                         organisation="U.S. Energy Information Administration",
+                         attribution="relayed", kind="forecast", period="2025")
+    edition_b = edition_b.model_copy(update={"release_date": "2025-02-14"})
+    fp = finding_fingerprint(edition_a)
+    assert fp == finding_fingerprint(edition_b)
+    folded_row = FactRow(row_id="K001", organisation="U.S. Energy Information Administration",
+                         attribution="relayed", relay_host="ent.news",
+                         measure="battery storage power capacity added", period="2025",
+                         value="14 GW", kind="forecast", release="released 2025-02-14", finding_id=fp)
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[edition_a, edition_b], fact_rows=[folded_row],
+        finding_labels={"F01": fp, "F02": fp},
+    )
+    log = render_finding_log(composition)
+    assert log.count("### F01") == 1 and log.count("### F02") == 1
+    assert "13 GW: kept" in log and "14 GW: kept" in log
+    assert "forecast (released 2025-01-10)" in log
+    assert "forecast (released 2025-02-14)" in log
+
+
+def test_the_evidence_log_about_block_carries_scope_counts_and_parts() -> None:
+    composition = _composition().model_copy(update={
+        "generated_on": "2026-09-25",
+        "answer_kind": "factual",
+        "parts": [ReportPart(coverage_id="topic-01", sub_topic_title="2024 capacity",
+                             finding_ids=["F01"], status="written")],
+    })
+    log = render_finding_log(composition)
+    section = _section_body(log, "## About this report")
+
+    assert "Scope: United States" in section
+    assert "Printed on: 2026-09-25" in section
+    assert "factual" in section
+    assert "topic-01" in section and "2024 capacity" in section and "written" in section
+
+
+def test_the_evidence_log_findings_counts_match_the_spec_wording() -> None:
+    quoted = make_finding(make_read(), "Something else was found.", target_ids=[]).model_copy(
+        update={"verification": FindingVerification(status="quoted")})
+    composition = _plain_composition(findings=[*_composition().findings, quoted])
+    log = render_finding_log(composition)
+    section = _section_body(log, "## About this report")
+
+    assert ("Findings: 1 verified, 1 verified with corrections, "
+           "1 quoted (snippet found on the page; not checked for context), "
+           "0 dropped; 0 with unchecked context; 1 required questions unanswered") in section
+
+
+def test_the_evidence_log_lists_dropped_marks_and_unplaced_findings() -> None:
+    unplaced = make_finding(make_read(), "An unplaced finding nobody's part claimed.", target_ids=[])
+    composition = _composition().model_copy(update={
+        "findings": [*_composition().findings, unplaced],
+        "dropped_marks": ["S004: 'Model A' is not in the sentence"],
+    })
+    log = render_finding_log(composition)
+
+    assert "## Dropped option marks" in log
+    assert "S004: 'Model A' is not in the sentence" in log
+    assert "## Unplaced findings" in log
+    assert unplaced.source_url in _section_body(log, "## Unplaced findings")
+    assert "spec §6.1" not in log
+
+
+def test_the_evidence_log_lists_every_unreachable_page_uncapped() -> None:
+    pages = [
+        UnreachablePage(url=f"https://denied{n}.example.test/page", title=f"Denied {n}", reason="access_denied")
+        for n in range(6)
+    ]
+    composition = _composition().model_copy(update={"unreachable": pages})
+    log = render_finding_log(composition)
+
+    assert "## Pages that could not be opened" in log
+    assert "Denied 5" in log  # the reader report caps at 5; the ledger does not
+
+
+# --- §13: end-to-end goldens (T3 acceptance) -----------------------------------
+#
+# Each composition is built the way the named run's own quality JSON would
+# carry it -- findings, a hand-set table, page credits, not-found targets --
+# so the assertion exercises the renderer's own assembly, numbering and
+# Sources logic against the spec's literal text, not the writer's sentence
+# generation or the table builder's own algorithm (both covered by their own
+# tests, T4 and T2).
+
+
+def _pre_flight_run_composition() -> ReportComposition:
+    """§13.2 -- pre-flight run 4 (session ``9390e6e1...``, pass 0)."""
+    house = _bare_finding(
+        "https://docs.house.gov/meetings/II/II00/20260513/119199/HHRG-119-II00-20260513-SD003.pdf",
+        "U.S. battery capacity increased 66% in 2024",
+        "Generators added 10.4 GW of new battery storage capacity in 2024.",
+    )
+    utility_dive = _bare_finding(
+        "https://utilitydive.com/news/us-utility-scale-energy-storage-to-double-reach-65-gw-by-2027-eia/750338",
+        "US utility-scale energy storage to double, reach 65 GW by 2027: EIA",
+        "Domestic storage capacity will rise to 64.9 GW.",
+    )
+    eia = _bare_finding(
+        "https://eia.gov/todayinenergy/detail.php?id=67925",
+        "Battery storage capacity averaged 70% growth over the last three years",
+        "By the end of 2025 the U.S. power system had 43.6 GW.",
+    )
+    energi = _bare_finding(
+        "https://energi.media/news/u-s-electricity-generation-set-to-rise-as-solar-and-battery-capacity-expand-eia-forecasts",
+        "U.S. Electricity Generation Set to Rise as Solar and Battery Capacity Expand: EIA Forecasts - Thoughtful Journalism",
+        "ERCOT battery capacity will rise to 37 GW by 2027.",
+    )
+    house_id = finding_fingerprint(house)
+    utility_dive_id = finding_fingerprint(utility_dive)
+    eia_id = finding_fingerprint(eia)
+    energi_id = finding_fingerprint(energi)
+
+    def point(n: int, text: str, url: str) -> ReportPoint:
+        return ReportPoint(text=text, source_urls=[url],
+                           statement=ReportStatement(statement_id=f"S{n:03d}", text=text))
+
+    summary = [
+        point(1, "For 2024, house.gov reports that generators added 10.4 GW of new "
+                "battery storage capacity, the second-largest generating capacity "
+                "addition after solar.", house.source_url),
+        point(2, "The Energy Information Administration's forecast, released "
+                "2025-06-10 and reported by Utility Dive, projects domestic storage "
+                "capacity rising from about 28 GW at the end of Q1 2025 to 64.9 GW "
+                "at the end of 2026.", utility_dive.source_url),
+        point(3, "The U.S. Energy Information Administration reports that by the end "
+                "of 2025 the U.S. power system had operational battery storage "
+                "capacity of 43.6 GW.", eia.source_url),
+    ]
+
+    table_rows = [
+        ('"Generators added 10.4 GW of new battery storage capacity in 2024, the '
+         'second-largest generating capacity addition after solar."',
+         "10.4 GW, actual", "house.gov (stated 2025-03-12)", house_id),
+        ('"cumulative utility-scale battery storage capacity exceeded 26 gigawatts '
+         '(GW) in 2024, according to our January 2025 Preliminary Monthly…"',
+         "26 gigawatts (GW), actual", "house.gov (stated 2025-03-12)", house_id),
+        ("Battery storage capacity, 2025", "43.6 gigawatts (GW), actual",
+         "U.S. Energy Information Administration (stated 2026-08-07)", eia_id),
+        ("Battery storage (first six months of 2026)", "8.3 GW, actual",
+         "U.S. Energy Information Administration (stated 2026-08-07)", eia_id),
+        ('"Utility-scale battery storage in the United States is poised to more '
+         'than double over the next two years and will close out 2026 at nearly '
+         '65 GW…"', "65 GW, forecast",
+         "Energy Information Administration, reported by Utility Dive (released 2025-06-10)",
+         utility_dive_id),
+        ("Battery storage (utility-scale), Q1 2024", "17 GW, actual",
+         "Energy Information Administration, reported by Utility Dive (released 2025-06-10)",
+         utility_dive_id),
+        ('"Counting projects larger than 1 MW in the electric power sector, EIA '
+         "said domestic storage capacity will rise from about 28 GW at the end of "
+         "Q1'25…\"", "28 GW, actual",
+         "Energy Information Administration, reported by Utility Dive (released 2025-06-10)",
+         utility_dive_id),
+        ('"…EIA said domestic storage capacity will rise from about 28 GW at the '
+         "end of Q1'25 to 64.9 GW at the end of 2026.\"", "64.9 GW, forecast",
+         "Energy Information Administration, reported by Utility Dive (released 2025-06-10)",
+         utility_dive_id),
+        ("ERCOT, 2025", "15 GW, actual", "EIA, reported by energi.media (stated 2026-01-21)", energi_id),
+        ("ERCOT, 2027", "37 GW, forecast", "EIA, reported by energi.media (stated 2026-01-21)", energi_id),
+    ]
+    table = ReportTable(
+        shape="findings",
+        columns=["What was measured", "Result", "Who reported it (and when)", "Source"],
+        rows=[[TableCell(text=what), TableCell(text=result), TableCell(text=who),
+              TableCell(finding_ids=[fid])]
+             for what, result, who, fid in table_rows],
+    )
+
+    sections = [
+        ReportSection(title="Capacity added in 2024", points=[
+            point(4, "For 2024, house.gov reports that generators added 10.4 GW of "
+                    "new battery storage capacity, the second-largest generating "
+                    "capacity addition after solar, from the January 2025 "
+                    "Preliminary Monthly Electric Generator Inventory.", house.source_url),
+            point(5, "house.gov also reports that cumulative utility-scale battery "
+                    "storage capacity exceeded 26 GW in 2024, from the same January "
+                    "2025 Preliminary Monthly Electric Generator Inventory.", house.source_url),
+            point(6, "The U.S. Energy Information Administration reports that by "
+                    "the end of 2025 the U.S. power system had operational battery "
+                    "storage capacity of 43.6 GW.", eia.source_url),
+            point(7, "The U.S. Energy Information Administration reports that "
+                    "operators added another 8.3 GW of battery storage during the "
+                    "first six months of 2026.", eia.source_url),
+        ]),
+        ReportSection(title="The EIA's forecasts", points=[
+            point(8, "According to the Energy Information Administration, as "
+                    "reported by Utility Dive and released 2025-06-10, domestic "
+                    "storage capacity will rise from about 28 GW at the end of Q1 "
+                    "2025 to 64.9 GW at the end of 2026, counting projects larger "
+                    "than 1 MW in the electric power sector.", utility_dive.source_url),
+            point(9, "According to the Energy Information Administration, as "
+                    "reported by Utility Dive, utility-scale battery storage in the "
+                    "United States is forecast to more than double over the next "
+                    "two years and to close out 2026 at nearly 65 GW, a rise from "
+                    "17 GW in the first quarter of 2024 (forecast released "
+                    "2025-06-10).", utility_dive.source_url),
+        ]),
+        ReportSection(title="Other forecasts", points=[
+            point(10, "The EIA expects battery capacity in ERCOT to rise from "
+                     "about 15 GW in 2025 to 37 GW by the end of 2027, according "
+                     "to EIA, as reported by energi.media.", energi.source_url),
+        ]),
+    ]
+
+    return ReportComposition(
+        question=("How much grid-scale battery storage capacity was added in the "
+                  "United States in 2024, and what do the latest forecasts project "
+                  "for 2025?"),
+        session_id="9390e6e10b324fb6a6dc17477738a531", iteration=0,
+        as_of="2026-09-25T00:00:00+00:00",
+        findings=[house, utility_dive, eia, energi],
+        summary=summary, sections=sections, table=table,
+        page_credits={
+            normalize_source_url(house.source_url): PageCredit(publisher="house.gov"),
+            normalize_source_url(utility_dive.source_url): PageCredit(publisher="Utility Dive"),
+            normalize_source_url(eia.source_url): PageCredit(publisher="U.S. Energy Information Administration"),
+            normalize_source_url(energi.source_url): PageCredit(publisher="energi.media"),
+        },
+        not_found=[
+            NotFoundTarget(
+                target_id="topic-01-target-01",
+                question=("How much grid-scale battery storage capacity did the "
+                          "United States add in 2024, according to the U.S. Energy "
+                          "Information Administration?"),
+                searched=True,
+            ),
+            NotFoundTarget(
+                target_id="topic-02-target-01",
+                question=("What 2025 grid-scale battery storage capacity additions "
+                          "did the U.S. Energy Information Administration's latest "
+                          "forecast covering 2025 project?"),
+                searched=True,
+            ),
+        ],
+    )
+
+
+_PRE_FLIGHT_RUN_GOLDEN = """\
+# How much grid-scale battery storage capacity was added in the United States in 2024, and what do the latest forecasts project for 2025?
+
+Evidence as of 2026-09-25 · 4 sources
+
+## Bottom line
+
+For 2024, house.gov reports that generators added 10.4 GW of new battery storage capacity, the second-largest generating capacity addition after solar [1]. The Energy Information Administration's forecast, released 2025-06-10 and reported by Utility Dive, projects domestic storage capacity rising from about 28 GW at the end of Q1 2025 to 64.9 GW at the end of 2026 [2]. The U.S. Energy Information Administration reports that by the end of 2025 the U.S. power system had operational battery storage capacity of 43.6 GW [3].
+
+| What was measured | Result | Who reported it (and when) | Source |
+|---|---|---|---|
+| "Generators added 10.4 GW of new battery storage capacity in 2024, the second-largest generating capacity addition after solar." | 10.4 GW, actual | house.gov (stated 2025-03-12) | [1] |
+| "cumulative utility-scale battery storage capacity exceeded 26 gigawatts (GW) in 2024, according to our January 2025 Preliminary Monthly…" | 26 gigawatts (GW), actual | house.gov (stated 2025-03-12) | [1] |
+| Battery storage capacity, 2025 | 43.6 gigawatts (GW), actual | U.S. Energy Information Administration (stated 2026-08-07) | [3] |
+| Battery storage (first six months of 2026) | 8.3 GW, actual | U.S. Energy Information Administration (stated 2026-08-07) | [3] |
+| "Utility-scale battery storage in the United States is poised to more than double over the next two years and will close out 2026 at nearly 65 GW…" | 65 GW, forecast | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| Battery storage (utility-scale), Q1 2024 | 17 GW, actual | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| "Counting projects larger than 1 MW in the electric power sector, EIA said domestic storage capacity will rise from about 28 GW at the end of Q1'25…" | 28 GW, actual | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| "…EIA said domestic storage capacity will rise from about 28 GW at the end of Q1'25 to 64.9 GW at the end of 2026." | 64.9 GW, forecast | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| ERCOT, 2025 | 15 GW, actual | EIA, reported by energi.media (stated 2026-01-21) | [4] |
+| ERCOT, 2027 | 37 GW, forecast | EIA, reported by energi.media (stated 2026-01-21) | [4] |
+
+## Capacity added in 2024
+
+- For 2024, house.gov reports that generators added 10.4 GW of new battery storage capacity, the second-largest generating capacity addition after solar, from the January 2025 Preliminary Monthly Electric Generator Inventory [1].
+- house.gov also reports that cumulative utility-scale battery storage capacity exceeded 26 GW in 2024, from the same January 2025 Preliminary Monthly Electric Generator Inventory [1].
+- The U.S. Energy Information Administration reports that by the end of 2025 the U.S. power system had operational battery storage capacity of 43.6 GW [3].
+- The U.S. Energy Information Administration reports that operators added another 8.3 GW of battery storage during the first six months of 2026 [3].
+
+## The EIA's forecasts
+
+- According to the Energy Information Administration, as reported by Utility Dive and released 2025-06-10, domestic storage capacity will rise from about 28 GW at the end of Q1 2025 to 64.9 GW at the end of 2026, counting projects larger than 1 MW in the electric power sector [2].
+- According to the Energy Information Administration, as reported by Utility Dive, utility-scale battery storage in the United States is forecast to more than double over the next two years and to close out 2026 at nearly 65 GW, a rise from 17 GW in the first quarter of 2024 (forecast released 2025-06-10) [2].
+
+## Other forecasts
+
+- The EIA expects battery capacity in ERCOT to rise from about 15 GW in 2025 to 37 GW by the end of 2027, according to EIA, as reported by energi.media [4].
+
+## What we couldn't confirm
+
+We found no source we could check that answers:
+- How much grid-scale battery storage capacity did the United States add in 2024, according to the U.S. Energy Information Administration?
+- What 2025 grid-scale battery storage capacity additions did the U.S. Energy Information Administration's latest forecast covering 2025 project?
+
+## Sources
+
+1. house.gov — [U.S. battery capacity increased 66% in 2024](https://docs.house.gov/meetings/II/II00/20260513/119199/HHRG-119-II00-20260513-SD003.pdf)
+2. Utility Dive — [US utility-scale energy storage to double, reach 65 GW by 2027: EIA](https://utilitydive.com/news/us-utility-scale-energy-storage-to-double-reach-65-gw-by-2027-eia/750338)
+3. U.S. Energy Information Administration — [Battery storage capacity averaged 70% growth over the last three years](https://eia.gov/todayinenergy/detail.php?id=67925)
+4. energi.media — [U.S. Electricity Generation Set to Rise as Solar and Battery Capacity Expand: EIA Forecasts - Thoughtful Journalism](https://energi.media/news/u-s-electricity-generation-set-to-rise-as-solar-and-battery-capacity-expand-eia-forecasts)
+
+How this was researched: [evidence log](report-9390e6e10b324fb6a6dc17477738a531-0-evidence.md)
+"""
+
+
+def test_the_1322_pre_flight_run_renders_the_spec_golden() -> None:
+    """§14 T3 acceptance: §13.2's exact rendering from a hand-built
+    composition shaped like the run's own quality JSON."""
+    assert render_written_report(_pre_flight_run_composition()) == _PRE_FLIGHT_RUN_GOLDEN
+
+
+def _electoral_college_composition() -> ReportComposition:
+    """§13.3 -- the generality smoke run (session ``e5d6cc40...``, pass 0; a
+    capped run, 12 required targets left unsearched)."""
+    cornell_article_ii = _bare_finding(
+        "https://law.cornell.edu/constitution/articleii",
+        "Article II | U.S. Constitution | US Law | LII / Legal Information Institute",
+        "Each State appoints electors as its Legislature directs.",
+    )
+    justia = _bare_finding(
+        "https://law.justia.com/constitution/us/article-2/03-electoral-college.html",
+        "Electoral College :: Article II. Executive Department :: U.S. Constitution Annotated :: Justia",
+        "No Senator or Representative shall be appointed an elector.",
+    )
+    archives_allocation = _bare_finding(
+        "https://archives.gov/electoral-college/allocation",
+        "Distribution of Electoral Votes",
+        "538 electoral votes in all, 270 needed to elect.",
+    )
+    archives_about = _bare_finding(
+        "https://archives.gov/electoral-college/about",
+        "What is the Electoral College?",
+        "Every State receives a number of votes equal to its delegation.",
+    )
+    cornell_chiafalo = _bare_finding(
+        "https://law.cornell.edu/supremecourt/text/19-465",
+        "CHIAFALO v. WASHINGTON | Supreme Court | US Law | LII / Legal Information Institute",
+        "A State may enforce an elector's pledge.",
+    )
+    archives_allocation_id = finding_fingerprint(archives_allocation)
+
+    def point(n: int, text: str, *urls: str) -> ReportPoint:
+        return ReportPoint(text=text, source_urls=list(urls),
+                           statement=ReportStatement(statement_id=f"S{n:03d}", text=text))
+
+    summary = [
+        point(1, "Under the Constitution, each State appoints, in the manner its "
+                "Legislature directs, a number of electors equal to its Senators "
+                "and Representatives in Congress;",
+             cornell_article_ii.source_url, justia.source_url),
+        point(2, "archives.gov reports 538 electoral votes in all, with 270 needed "
+                "to elect, for the 2024 and 2028 presidential elections.",
+             archives_allocation.source_url),
+        point(3, "The electors meet in their respective states and vote by ballot "
+                "for two persons,", cornell_article_ii.source_url),
+        point(4, "and if two or more candidates remain with equal votes, the "
+                "Senate chooses the Vice President from them by ballot.", justia.source_url),
+    ]
+
+    table_rows = [
+        ("The District of Columbia", "three electors", "National Archives"),
+        ('"…Senators and Representatives in its U.S. Congressional delegation—two '
+         'votes for its Senators in the U.S. Senate…"', "two votes", "National Archives"),
+        ("Total Electoral Votes, 2024 and 2028 presidential elections",
+         "538 electoral votes", "National Archives"),
+        ("Majority Needed to Elect, 2024 and 2028 presidential elections",
+         "270 votes", "National Archives"),
+    ]
+    table = ReportTable(
+        shape="findings",
+        columns=["What was measured", "Result", "Who reported it (and when)", "Source"],
+        rows=[[TableCell(text=what), TableCell(text=result), TableCell(text=who),
+              TableCell(finding_ids=[archives_allocation_id])]
+             for what, result, who in table_rows],
+        caption="No figure in this table is a forecast.",
+    )
+
+    sections = [
+        ReportSection(title="How many electors there are", points=[
+            point(5, "archives.gov reports 538 total electoral votes and 270 votes "
+                    "as the majority needed to elect, for the 2024 and 2028 "
+                    "presidential elections, on allocations based on the 2020 "
+                    "Census.", archives_allocation.source_url),
+            point(6, "archives.gov states that under the 23rd Amendment of the "
+                    "Constitution the District of Columbia is allocated three "
+                    "electors and treated like a State for purposes of the "
+                    "Electoral College.", archives_allocation.source_url),
+            point(7, "archives.gov states that electoral votes are allocated among "
+                    "the States based on the Census, every State receiving a "
+                    "number of votes equal to the number of Senators and "
+                    "Representatives in its U.S. Congressional delegation — two "
+                    "votes for its Senators in the U.S. Senate plus a number of "
+                    "votes equal to the number of its Congressional districts, one "
+                    "for each Member in the House of Representatives.",
+                 archives_allocation.source_url, archives_about.source_url),
+        ]),
+        ReportSection(title="How electors are appointed and who may serve", points=[
+            point(8, "According to cornell.edu and justia.com, the Constitution "
+                    "provides that each State shall appoint, in such manner as the "
+                    "Legislature thereof may direct, a number of electors equal to "
+                    "the whole number of Senators and Representatives to which the "
+                    "State may be entitled in the Congress.",
+                 cornell_article_ii.source_url, justia.source_url),
+            point(9, "According to justia.com and cornell.edu, no Senator or "
+                    "Representative, or person holding an office of trust or "
+                    "profit under the United States, shall be appointed an "
+                    "elector.", cornell_article_ii.source_url, justia.source_url),
+            point(10, "cornell.edu states that the Constitution's text and the "
+                     "Nation's history both support allowing a State to enforce an "
+                     "elector's pledge to support his party's nominee — and the "
+                     "state voters' choice — for President.", cornell_chiafalo.source_url),
+        ]),
+        ReportSection(title="How the electors vote", points=[
+            point(11, "According to cornell.edu, the electors shall meet in their "
+                     "respective states and vote by ballot for two persons, of "
+                     "whom one at least shall not be an inhabitant of the same "
+                     "state with themselves.", cornell_article_ii.source_url),
+        ]),
+        ReportSection(title="When no candidate has a majority", points=[
+            point(12, "According to justia.com, if two or more candidates should "
+                     "remain with equal votes, the Senate shall choose from them "
+                     "by ballot the Vice President.", justia.source_url),
+        ]),
+    ]
+
+    unresearched_questions = [
+        "What date does federal law set for the appointment of presidential electors?",
+        "Which states award their electoral votes by congressional district rather than statewide?",
+        "On what day must the presidential electors meet to cast their votes?",
+        "In what place must the electors meet to cast their votes?",
+        "What instrument must a state's executive issue to certify which electors were appointed?",
+        "To which officials must the certificate identifying a state's appointed electors be transmitted?",
+        "What legal effect does a state's determination of its electors have if it is made under the federal safe-harbor provision?",
+        "On what date must Congress count the electoral votes?",
+        "Who presides over the joint session at which Congress counts the electoral votes?",
+        "Which body elects the President if no candidate receives a majority of the electoral votes?",
+        "What voting arrangement governs the House of Representatives when it elects the President?",
+        "What voting arrangement governs the Senate when it elects the Vice President?",
+    ]
+
+    return ReportComposition(
+        question="How does the U.S. Electoral College work?",
+        session_id="e5d6cc40fa74403ab7af075a9153c305", iteration=0,
+        as_of="2026-09-25T00:00:00+00:00",
+        findings=[cornell_article_ii, justia, archives_allocation, archives_about, cornell_chiafalo],
+        summary=summary, sections=sections, table=table,
+        page_credits={
+            normalize_source_url(cornell_article_ii.source_url): PageCredit(publisher="cornell.edu"),
+            normalize_source_url(justia.source_url): PageCredit(publisher="Justia"),
+            normalize_source_url(archives_allocation.source_url): PageCredit(publisher="National Archives"),
+            normalize_source_url(archives_about.source_url): PageCredit(publisher="National Archives"),
+            normalize_source_url(cornell_chiafalo.source_url): PageCredit(publisher="cornell.edu"),
+        },
+        not_found=[
+            NotFoundTarget(target_id=f"topic-{n:02d}-target-01", question=question, searched=False)
+            for n, question in enumerate(unresearched_questions, start=1)
+        ],
+    )
+
+
+_ELECTORAL_COLLEGE_GOLDEN = """\
+# How does the U.S. Electoral College work?
+
+Evidence as of 2026-09-25 · 5 sources
+
+## Bottom line
+
+Under the Constitution, each State appoints, in the manner its Legislature directs, a number of electors equal to its Senators and Representatives in Congress [1][2]; archives.gov reports 538 electoral votes in all, with 270 needed to elect, for the 2024 and 2028 presidential elections [3]. The electors meet in their respective states and vote by ballot for two persons [1], and if two or more candidates remain with equal votes, the Senate chooses the Vice President from them by ballot [2].
+
+| What was measured | Result | Who reported it (and when) | Source |
+|---|---|---|---|
+| The District of Columbia | three electors | National Archives | [3] |
+| "…Senators and Representatives in its U.S. Congressional delegation—two votes for its Senators in the U.S. Senate…" | two votes | National Archives | [3] |
+| Total Electoral Votes, 2024 and 2028 presidential elections | 538 electoral votes | National Archives | [3] |
+| Majority Needed to Elect, 2024 and 2028 presidential elections | 270 votes | National Archives | [3] |
+
+*No figure in this table is a forecast.*
+
+## How many electors there are
+
+- archives.gov reports 538 total electoral votes and 270 votes as the majority needed to elect, for the 2024 and 2028 presidential elections, on allocations based on the 2020 Census [3].
+- archives.gov states that under the 23rd Amendment of the Constitution the District of Columbia is allocated three electors and treated like a State for purposes of the Electoral College [3].
+- archives.gov states that electoral votes are allocated among the States based on the Census, every State receiving a number of votes equal to the number of Senators and Representatives in its U.S. Congressional delegation — two votes for its Senators in the U.S. Senate plus a number of votes equal to the number of its Congressional districts, one for each Member in the House of Representatives [3][4].
+
+## How electors are appointed and who may serve
+
+- According to cornell.edu and justia.com, the Constitution provides that each State shall appoint, in such manner as the Legislature thereof may direct, a number of electors equal to the whole number of Senators and Representatives to which the State may be entitled in the Congress [1][2].
+- According to justia.com and cornell.edu, no Senator or Representative, or person holding an office of trust or profit under the United States, shall be appointed an elector [1][2].
+- cornell.edu states that the Constitution's text and the Nation's history both support allowing a State to enforce an elector's pledge to support his party's nominee — and the state voters' choice — for President [5].
+
+## How the electors vote
+
+- According to cornell.edu, the electors shall meet in their respective states and vote by ballot for two persons, of whom one at least shall not be an inhabitant of the same state with themselves [1].
+
+## When no candidate has a majority
+
+- According to justia.com, if two or more candidates should remain with equal votes, the Senate shall choose from them by ballot the Vice President [2].
+
+## What we couldn't confirm
+
+This run did not research:
+- What date does federal law set for the appointment of presidential electors?
+- Which states award their electoral votes by congressional district rather than statewide?
+- On what day must the presidential electors meet to cast their votes?
+- In what place must the electors meet to cast their votes?
+- What instrument must a state's executive issue to certify which electors were appointed?
+- To which officials must the certificate identifying a state's appointed electors be transmitted?
+- What legal effect does a state's determination of its electors have if it is made under the federal safe-harbor provision?
+- On what date must Congress count the electoral votes?
+- Who presides over the joint session at which Congress counts the electoral votes?
+- Which body elects the President if no candidate receives a majority of the electoral votes?
+- What voting arrangement governs the House of Representatives when it elects the President?
+- What voting arrangement governs the Senate when it elects the Vice President?
+
+## Sources
+
+1. cornell.edu — [Article II | U.S. Constitution | US Law | LII / Legal Information Institute](https://law.cornell.edu/constitution/articleii)
+2. Justia — [Electoral College :: Article II. Executive Department :: U.S. Constitution Annotated :: Justia](https://law.justia.com/constitution/us/article-2/03-electoral-college.html)
+3. National Archives — [Distribution of Electoral Votes](https://archives.gov/electoral-college/allocation)
+4. National Archives — [What is the Electoral College?](https://archives.gov/electoral-college/about)
+5. cornell.edu — [CHIAFALO v. WASHINGTON | Supreme Court | US Law | LII / Legal Information Institute](https://law.cornell.edu/supremecourt/text/19-465)
+
+How this was researched: [evidence log](report-e5d6cc40fa74403ab7af075a9153c305-0-evidence.md)
+"""
+
+
+def test_the_1333_electoral_college_smoke_renders_the_spec_golden() -> None:
+    """§14 T3 acceptance: §13.3's exact rendering from a hand-built
+    composition shaped like the run's own quality JSON (a capped run, 12
+    required targets never searched)."""
+    assert render_written_report(_electoral_college_composition()) == _ELECTORAL_COLLEGE_GOLDEN

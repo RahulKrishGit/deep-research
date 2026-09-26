@@ -120,6 +120,10 @@ agents:
   # DeepSeek flash allows 2,500 concurrent requests, so this bound is about
   # local resource use, not the provider's own limit.
   extraction_concurrency: 16       # per-page extraction calls in flight
+  # The parallel writer's section drafts in flight (spec §6.10). Controller
+  # ruling for this build (2026-09-25, "no strong limits"): 10, equal to
+  # max_sub_topics, so every part of the plan starts drafting at once.
+  writer_section_concurrency: 10
   source_evaluator:
     # Score new canonical URLs in bounded provider batches, while retaining a
     # complete explicit record for every source beyond the run cap.

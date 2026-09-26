@@ -354,11 +354,13 @@ def _urls(text: str) -> list[str]:
 def test_the_reader_report_prints_one_row_per_record_and_no_duplicate_url() -> None:
     """Pathology 1: 156 duplicate appendix rows for 101 canonical URLs.
 
-    Every assessed source the report cites is printed once, and every printed
-    row traces to a typed record — a fact row to its finding, a source to its
-    assessment. A URL that appeared twice in the appendix is exactly what this
-    guards against, so the test counts occurrences per URL rather than only
-    the total.
+    Every assessed source the report cites is printed once in the reader's
+    references, and every row of the evidence log's Verified figures table --
+    the fact-row table, moved there in full (spec §9) now that the reader no
+    longer prints a Key facts table -- traces to a typed fact row. A
+    duplicate URL in the references, or a duplicate row in that table, is
+    exactly what this guards against, so the test counts occurrences per URL
+    rather than only the total.
     """
     state = judged_state()
     composition = state.composition
@@ -373,7 +375,8 @@ def test_the_reader_report_prints_one_row_per_record_and_no_duplicate_url() -> N
     }
     # One table row per typed fact row: the header and its separator are the
     # only other lines the table has.
-    facts = report.split("## Key facts", 1)[1].split("\n## ", 1)[0]
+    log = render_finding_log(composition)
+    facts = log.split("## Verified figures", 1)[1].split("\n## ", 1)[0]
     rows = [
         line
         for line in facts.splitlines()
@@ -381,7 +384,6 @@ def test_the_reader_report_prints_one_row_per_record_and_no_duplicate_url() -> N
     ]
     assert len(rows) == len(composition.fact_rows)
 
-    log = render_finding_log(composition)
     assert log.count("### F01") == 1
     assert log.count("### F02") == 1
     assert "dropped (snippet_not_on_page)" in log
@@ -408,7 +410,7 @@ def test_the_reader_references_hold_only_sources_a_statement_cites() -> None:
     }
     assert report.count("[1]") >= 1
     assert report.count("[2]") >= 1
-    assert "## Not found" in report
+    assert "## What we couldn't confirm" in report
     assert f"**{MISSING_TARGET_ID}" not in report  # the report names the question
     assert "Which interconnection queues hold storage capacity?" in report
 

@@ -1,45 +1,41 @@
 """Tests for the three published artifacts: the written report, the finding log
 and the quality JSON.
 
-The written report is what a decision-maker reads: one cited summary, the Key
-facts table, the findings sections, and the required targets nothing answered.
-The finding log is the same pass read closely: every finding with its snippet
-and its verification, every dropped figure, and every refused sentence in full.
-The quality record is the replay surface over both: the verified findings, the
-gate snapshot as the type records it, the reviewer's own judgement, and the
-hashes of the two Markdown documents published beside it.
+The written report is what a decision-maker reads: the answer-first skeleton
+of spec §3 -- title, evidence line, bottom line, the question-shaped table,
+part sections, what could not be confirmed, and sources. The finding log is
+the same pass read closely: the About-this-report audit block, every verified
+figure, every finding with its snippet and verification, every dropped figure
+and every refused sentence in full. The quality record is the replay surface
+over both: the verified findings, the gate snapshot as the type records it,
+the reviewer's own judgement, and the hashes of the two Markdown documents
+published beside it.
 
 Nothing here performs I/O -- the two Markdown artifacts and the record are pure
 functions of the composition handed to them (and, for the record, the state and
-the review) -- so all three are asserted directly.
+the review) -- so all three are asserted directly. Fixtures build
+``ReportComposition`` directly rather than through the Report Writer agent:
+these renderers and the quality record are pure functions of the composition,
+and the writer's own behaviour belongs to ``test_report_writer.py``.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import re
-import tempfile
-from pathlib import Path
 
 import pytest
 
-from deep_research.agents.evidence_verifier import (
-    StatementCheckDraft,
-    StatementVerdictDraft,
-)
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import (
-    QUALITY_RECORD_TEXT_CHARS,
     Citation,
     ReportComposition,
     ReportPoint,
     ReportSection,
     canonical_sources,
     citation_markers,
-    render_citations,
     render_finding_log,
     render_quality_json,
     render_quality_record,
@@ -48,23 +44,12 @@ from deep_research.agents.report import (
     report_scope,
     written_citations,
 )
-from deep_research.agents.report_writer import (
-    REPORT_WRITER_NAME,
-    ReportWriterAgent,
-    ReportWriterDraft,
-    WriterPointDraft,
-    WriterSectionDraft,
-    compose_written_report,
-)
 from deep_research.agents.researcher import sub_topic_skipped_error
-from deep_research.memory.scratchpad import ScratchpadMemory
+from deep_research.agents.sources import normalize_source_url
 from deep_research.observability import (
-    LangSmithRuntimeConfig,
     RunTelemetryCollector,
-    Tracker,
 )
 from deep_research.request_budget import RequestBudget
-from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     LEGACY_QUALITY_CONTRACT_VERSION,
     QUALITY_CONTRACT_VERSION,
@@ -74,20 +59,25 @@ from deep_research.utils.types import (
     FigureResult,
     Finding,
     FindingVerification,
+    ItemMark,
     NotFoundTarget,
+    PageCredit,
     RejectedDraftPoint,
+    ReportPart,
     ReportReview,
     ReportStatement,
+    ReportTable,
     ResearchError,
     ResearchState,
     RunTelemetry,
     ReviewDefect,
     ScoredSource,
     SubTopic,
+    TableCell,
+    TableEntry,
+    UnreachablePage,
 )
-from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
-from tests.research_fakes import report_writer_tools
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 SOURCE_URL = "https://example.org/a"
@@ -415,11 +405,9 @@ def test_scope_is_stated_from_the_plan_alone() -> None:
     assert report_scope([]) != ""
 
 
-def test_citation_numbers_follow_first_use_in_the_written_report() -> None:
-    """The summary is met first, so its page takes reference 1.
-
-    The reader meets the summary, then the Key facts table, then the findings
-    sections; one reference per page, numbered in that order.
+def test_citation_numbers_follow_bottom_line_then_sections() -> None:
+    """§5: ``written_citations`` order is bottom line, then the table, then
+    sections; with no table here, the bottom line's page takes reference 1.
     """
     composition = _written_composition(
         summary=[
@@ -445,11 +433,9 @@ def test_citation_numbers_follow_first_use_in_the_written_report() -> None:
 
     index = written_citations(composition)
 
-    assert [citation.number for citation in index] == [1, 2, 3, 4]
+    assert [citation.number for citation in index] == [1, 2]
     assert [citation.url.split("/")[2] for citation in index] == [
         "other.test",
-        "eia.gov",
-        "ent.news",
         "example.org",
     ]
     sources = _section_body(render_written_report(composition), "## Sources")
@@ -468,12 +454,6 @@ def test_markers_render_sorted_and_deduplicated() -> None:
     assert citation_markers(["https://invented.test/x"], index) == ""
 
 
-def test_citations_render_one_numbered_line_each() -> None:
-    index = [Citation(number=1, url=SOURCE_URL, title="QEC 2025")]
-
-    assert render_citations(index) == f"1. QEC 2025 — {SOURCE_URL}"
-    assert render_citations([]) == "(no sources were cited)"
-
 
 def test_a_citation_object_rejects_a_zero_number() -> None:
     with pytest.raises(ValueError):
@@ -490,7 +470,7 @@ def test_the_finding_log_shows_the_full_drafted_text_of_a_refused_sentence() -> 
     the reason, never truncated to the terse reason alone.
     """
     long_text = " ".join(["A refused figure that was drafted."] * 10)
-    assert len(long_text) > QUALITY_RECORD_TEXT_CHARS
+    assert len(long_text) > 240
     log = render_finding_log(
         _written_composition(
             rejected_points=[
@@ -567,10 +547,9 @@ def test_the_quality_record_publishes_refused_sentences_in_full() -> None:
 def test_the_quality_record_publishes_statement_text_uncut() -> None:
     """Nothing in the record is clipped a second time.
 
-    A 289-character sentence was published cut mid-sentence at
-    ``QUALITY_RECORD_TEXT_CHARS``, and the cut travelled: it reached the
-    writer's packet and the reader's report. A recorded sentence is published
-    as the pass recorded it.
+    A long sentence was published cut mid-sentence at an internal display
+    bound, and the cut travelled: it reached the writer's packet and the
+    reader's report. A recorded sentence is published as the pass recorded it.
     """
     text = (
         "PUDL covers electric power plants with 1 megawatt or greater "
@@ -579,7 +558,7 @@ def test_the_quality_record_publishes_statement_text_uncut() -> None:
         "pass recorded in full and which answers the question's third "
         "obligation about the grid-connection rule in the same sentence."
     )
-    assert len(text) > QUALITY_RECORD_TEXT_CHARS
+    assert len(text) > 240
     composition = _written_composition(
         summary=[_point(text, statement_id="S001")]
     )
@@ -989,149 +968,32 @@ def test_the_quality_record_reads_each_skip_reason_distinctly() -> None:
 
 # --- the quality record a written pass publishes (§6.2; Task 4.5) -------------
 #
-# The record is read from the composition the Report Writer produces -- built
-# here the way the writer's own tests build it -- never from a stand-in, so
-# these tests see what the terminal publication writes.
-
-
-def _record_tracker() -> Tracker:
-    """The no-op tracker the writer needs to build a task and fingerprint calls."""
-    return Tracker(
-        LangSmithRuntimeConfig(
-            tracing_enabled=False, project="agent-tests", api_key=None
-        )
-    )
-
-
-_WRITTEN_DRAFT = ReportWriterDraft(
-    executive_summary=[
-        WriterPointDraft(
-            text=(
-                "Generators added 10.4 GW of battery storage capacity in the "
-                "United States in 2024."
-            ),
-            finding_labels=["F01"],
-        )
-    ],
-    sections=[
-        WriterSectionDraft(
-            title="2025 outlook",
-            points=[
-                WriterPointDraft(
-                    text="Battery storage capacity grows by 14 GW in 2025.",
-                    finding_labels=["F02"],
-                )
-            ],
-        )
-    ],
-)
-
-
-def _statement_check_reply(messages: list, schema: type) -> StatementCheckDraft:
-    """Answer the Statement Check's batch, refusing the last sentence.
-
-    The labels are read out of the request the checker itself built, so the
-    kept sentence and the refused one are both exercised whichever batch the
-    real ``check_statements`` hands the provider; the refused sentence is a
-    section point, so its section has nothing left to publish.
-    """
-    del schema
-    labels = re.findall(r"## (S\d+)", messages[1].content)
-    refused = labels[-1]
-    return StatementCheckDraft(
-        statements=[
-            StatementVerdictDraft(
-                label=label,
-                verdict="inconsistent" if label == refused else "consistent",
-                reason=(
-                    "The sentence states a figure the cited finding does not state."
-                    if label == refused
-                    else "The sentence states only what its cited finding states."
-                ),
-            )
-            for label in labels
-        ]
-    )
+# Built directly as ``ReportComposition``/``ResearchState``: this record is a
+# pure function of the composition and the state, so a hand-built pass with
+# one kept sentence, one refused sentence, the fact rows and one required
+# target no finding answers exercises exactly what the terminal publication
+# writes, without depending on the Report Writer agent's own machinery
+# (``test_report_writer.py``'s concern).
 
 
 def written_state() -> ResearchState:
-    """A state whose composition is the one the Report Writer produces.
-
-    The scripted provider answers the writer's draft request and then the
-    Statement Check's batch, as the writer's own tests drive them, so the
-    composition holds one kept sentence, one refused sentence, the key facts
-    and one required target no finding answers. The state then carries the two
-    published artifacts and the snapshot of the pass that published them.
+    """A hand-built state whose composition matches the shape a written pass
+    produces: one kept sentence, one refused sentence, the fact rows and one
+    required target no finding answers.
     """
-    targets = [
-        make_target(organisation=EIA),
-        make_target(
-            "topic-02-target-01",
-            kind="forecast",
-            period="2025",
-            organisation=EIA,
-        ),
-        make_target(
-            "topic-09-target-01", period="2026", organisation="Wood Mackenzie"
-        ),
-    ]
-    topics = [
-        SubTopic(
-            coverage_id=target.coverage_id,
-            title=target.target_id,
-            rationale="r",
-            search_queries=["q"],
-            success_criteria=["c"],
-            priority=number,
-            evidence_targets=[target],
-        )
-        for number, target in enumerate(targets, start=1)
-    ]
-    state = ResearchState(
-        session_id="session-1",
-        original_question=BATTERY_QUESTION,
-        sub_topics=topics,
-        verified_findings=[EIA_ACTUAL_2024, STEO_FORECAST_2025],
-        # What ``graph.state`` stamps on a new run, so the record publishes the
-        # contract this build writes rather than the legacy default.
-        quality_contract_version=QUALITY_CONTRACT_VERSION,
+    composition = _written_composition(
+        rejected_points=[
+            RejectedDraftPoint(
+                where="section[2025 outlook].points[1]",
+                text="Battery storage capacity grows by 14 GW in 2025, the agency's best case.",
+                finding_labels=["F02"],
+                reason="a judgement with no named subject",
+            )
+        ],
+        rejected=["a judgement with no named subject"],
     )
-    completer = ScriptedCompleter(outputs=[_WRITTEN_DRAFT, _statement_check_reply])
-    tracker = _record_tracker()
-    writer = ReportWriterAgent(
-        provider=completer,
-        tracker=tracker,
-        scratchpad=ScratchpadMemory(
-            session_id=state.session_id,
-            agent_name=REPORT_WRITER_NAME,
-            max_entries=20,
-        ),
-        # The writer declares these two; composing a report never publishes
-        # through them, so the root only has to exist for the tool to be built.
-        tools=report_writer_tools(
-            tracker, output_root=Path(tempfile.mkdtemp(prefix="ev-t4-5-"))
-        ),
-        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
-    )
+    return _record_state(composition)
 
-    async def compose() -> ReportComposition:
-        task = writer.build_task(state)
-        draft, _ = await writer.draft(task)
-        return await compose_written_report(
-            task, draft, provider=completer, fingerprint=writer.fingerprint_call
-        )
-
-    composition = asyncio.run(compose())
-    state = state.model_copy(
-        update={
-            "composition": composition,
-            "report": render_written_report(composition),
-            "report_evidence": render_finding_log(composition),
-        }
-    )
-    return state.model_copy(
-        update={"quality": compute_report_quality(state, composition)}
-    )
 
 
 def test_the_quality_record_carries_the_verified_findings_and_refusals() -> None:
@@ -1231,11 +1093,104 @@ def test_the_quality_record_publishes_the_review_the_reviewer_recorded() -> None
                 "target_ids": [],
                 "statement_ids": ["S001"],
                 "problem": "The summary repeats the table's own release wording.",
+                "resolution": None,
+                "coverage_ids": [],
             }
         ],
         "dispositions": {"S001": "supported"},
         "missing_required_target_ids": ["topic-09-target-01"],
     }
+
+
+def test_the_quality_record_surfaces_each_defects_resolution_and_coverage_ids() -> None:
+    """T5 addendum item 4: a scoped re-review's own resolved/unresolved
+    reading of a previous defect, and its carried ``coverage_ids``, are
+    surfaced in the quality JSON's review record -- not only kept on the
+    in-memory ``ReviewDefect`` for the acceptance gate to read. A fresh
+    defect no scoped review has judged yet dumps ``resolution: null`` and
+    whatever ``coverage_ids`` it carries.
+    """
+    state = written_state()
+    review = ReportReview(
+        status="scored",
+        dimensions=dict.fromkeys(REVIEW_DIMENSIONS, 0.9),
+        defects=[
+            ReviewDefect(
+                defect_id="review-01",
+                kind="coverage",
+                severity="major",
+                target_ids=["topic-09-target-01"],
+                problem="The question's second part names no answer.",
+                coverage_ids=["topic-09"],
+                resolution="resolved",
+            ),
+            ReviewDefect(
+                defect_id="review-02",
+                kind="contradiction",
+                severity="major",
+                statement_ids=["S001"],
+                problem="The report states a rule its own findings qualify.",
+                coverage_ids=["topic-02"],
+                resolution="unresolved",
+            ),
+            ReviewDefect(
+                defect_id="review-03",
+                kind="presentation",
+                severity="minor",
+                statement_ids=["S002"],
+                problem="A heading repeats the bottom line verbatim.",
+            ),
+        ],
+        reviewed_statement_ids=["S001", "S002"],
+        per_statement_dispositions={"S001": "supported", "S002": "supported"},
+        input_fingerprint="packet-1",
+    )
+
+    record = json.loads(render_quality_json(state, state.composition, review))
+
+    defects_by_id = {row["defect_id"]: row for row in record["review"]["defects"]}
+    assert defects_by_id["review-01"]["resolution"] == "resolved"
+    assert defects_by_id["review-01"]["coverage_ids"] == ["topic-09"]
+    assert defects_by_id["review-02"]["resolution"] == "unresolved"
+    assert defects_by_id["review-02"]["coverage_ids"] == ["topic-02"]
+    assert defects_by_id["review-03"]["resolution"] is None
+    assert defects_by_id["review-03"]["coverage_ids"] == []
+
+
+def test_an_older_review_record_with_no_resolution_or_coverage_ids_still_loads() -> None:
+    """A ``ReviewDefect`` built the way an older run's stored state would
+    supply it -- with neither field named -- validates and dumps the same
+    ``None``/``[]`` defaults a fresh defect gets, so a pre-addendum snapshot
+    is read exactly as it was written."""
+    legacy_defect = ReviewDefect.model_validate(
+        {
+            "defect_id": "review-01",
+            "kind": "coverage",
+            "severity": "major",
+            "target_ids": ["topic-09-target-01"],
+            "statement_ids": [],
+            "problem": "The question's second part names no answer.",
+        }
+    )
+
+    assert legacy_defect.resolution is None
+    assert legacy_defect.coverage_ids == []
+
+    state = written_state()
+    review = ReportReview(
+        status="scored",
+        dimensions=dict.fromkeys(REVIEW_DIMENSIONS, 0.9),
+        defects=[legacy_defect],
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        input_fingerprint="packet-1",
+    )
+
+    record = json.loads(render_quality_json(state, state.composition, review))
+
+    (row,) = record["review"]["defects"]
+    assert row["resolution"] is None
+    assert row["coverage_ids"] == []
 
 
 # --- the run's telemetry block (§7.3; Task 4.14b) -----------------------------
@@ -1327,4 +1282,114 @@ def test_a_quoted_findings_evidence_log_entry_says_so() -> None:
 
     assert ("- Verification: quoted (snippet found on the page; not checked "
             "for context)") in log
+
+
+
+# --- §9: the quality JSON's new fields (spec §14 T3) ---------------------------
+
+
+def test_the_quality_record_publishes_answer_kind_table_parts_items_and_marks() -> None:
+    """§9: ``answer_kind``, ``table``, ``sources``, ``parts``, each statement's
+    ``part`` and ``items``, ``unreachable`` and ``dropped_marks``."""
+    eia_id = finding_fingerprint(EIA_ACTUAL_2024)
+    item = ItemMark(name="EIA", verdict="best positioned", picked=True, source_url=EIA_URL)
+    statement = ReportStatement(
+        statement_id="S001", text="EIA is best positioned to report this.",
+        finding_ids=[eia_id], items=[item],
+    )
+    point = ReportPoint(text=statement.text, source_urls=[EIA_URL], statement=statement)
+    table = ReportTable(
+        shape="options", columns=["Option", "Recommended by"],
+        rows=[[
+            TableCell(text="EIA", statement_ids=["S001"], finding_ids=[eia_id]),
+            TableCell(entries=[TableEntry(source_url=EIA_URL, date="2026-09-17")]),
+        ]],
+        caption="c",
+    )
+    composition = _written_composition(
+        summary=[point],
+        sections=[],
+        table=table,
+        answer_kind="comparison",
+        parts=[ReportPart(coverage_id="topic-01", sub_topic_title="Sound", finding_ids=["F01"],
+                          context_finding_ids=[], status="written")],
+        unreachable=[UnreachablePage(url="https://denied.example.test/x", title="Denied", reason="access_denied")],
+        dropped_marks=["S004: 'Model A' is not in the sentence"],
+        page_credits={normalize_source_url(EIA_URL): PageCredit(publisher="QEC", date="2026-09-17", date_kind="published")},
+    )
+
+    record = render_quality_record(_record_state(composition), composition, None)
+
+    assert record["answer_kind"] == "comparison"
+    assert record["table"]["shape"] == "options"
+    assert record["table"]["columns"] == ["Option", "Recommended by"]
+    assert record["table"]["caption"] == "c"
+    assert record["table"]["rows"][0][0]["text"] == "EIA"
+    assert record["table"]["rows"][0][0]["finding_ids"] == [eia_id]
+    assert record["table"]["rows"][0][1]["entries"][0]["source_url"] == EIA_URL
+    assert record["parts"] == [{
+        "coverage_id": "topic-01", "sub_topic_title": "Sound",
+        "finding_ids": ["F01"], "context_finding_ids": [], "status": "written",
+    }]
+    assert record["unreachable"] == [
+        {"url": "https://denied.example.test/x", "title": "Denied", "reason": "access_denied"}
+    ]
+    assert record["dropped_marks"] == ["S004: 'Model A' is not in the sentence"]
+    statement_row = next(row for row in record["statements"] if row["statement_id"] == "S001")
+    assert statement_row["part"] == "bottom_line"
+    assert statement_row["items"] == [
+        {"name": "EIA", "verdict": "best positioned", "picked": True, "source_url": EIA_URL}
+    ]
+    source_row = next(row for row in record["sources"] if row["url"] == normalize_source_url(EIA_URL))
+    assert source_row["publisher"] == "QEC"
+    assert source_row["date"] == "2026-09-17"
+
+
+def test_a_section_statements_part_is_its_own_coverage_id() -> None:
+    section_statement = ReportStatement(statement_id="S002", text="A section point.",
+                                        finding_ids=[finding_fingerprint(STEO_FORECAST_2025)])
+    section_point = ReportPoint(text=section_statement.text, source_urls=[STEO_URL], statement=section_statement)
+    composition = _written_composition(
+        sections=[ReportSection(title="Outlook", coverage_id="topic-02", points=[section_point])],
+    )
+
+    record = render_quality_record(_record_state(composition), composition, None)
+
+    row = next(row for row in record["statements"] if row["statement_id"] == "S002")
+    assert row["part"] == "topic-02"
+
+
+def test_the_quality_record_stores_the_review_problem_whole() -> None:
+    """D19: ``review.defects[*].problem`` is stored whole, never clamped."""
+    long_problem = " ".join(["This report material defect explanation runs on at length."] * 10)
+    assert len(long_problem) > 240
+    composition = _written_composition()
+    review = ReportReview(
+        status="scored", dimensions=dict.fromkeys(REVIEW_DIMENSIONS, 0.9),
+        defects=[ReviewDefect(defect_id="review-01", kind="presentation", severity="minor",
+                              statement_ids=["S001"], problem=long_problem)],
+        reviewed_statement_ids=["S001", "S002"],
+        per_statement_dispositions={"S001": "supported", "S002": "supported"},
+        input_fingerprint="packet-1",
+    )
+
+    record = render_quality_record(_record_state(composition), composition, review)
+
+    assert record["review"]["defects"][0]["problem"] == long_problem
+
+
+def test_the_quality_record_publishes_error_messages_whole() -> None:
+    """Alongside D19: an error's message and source print in full too --
+    ``report.py`` no longer clamps any published text (no strong limits)."""
+    long_message = " ".join(["An unusually long recorded error message."] * 10)
+    assert len(long_message) > 240
+    composition = _written_composition(
+        errors=[ResearchError(error_type="graph_planning_failed", source="graph.planning",
+                              message=long_message, recoverable=False)]
+    )
+    state = _record_state(composition, errors=list(composition.errors))
+
+    record = render_quality_record(state, composition, None)
+
+    assert record["errors"][0]["message"] == long_message
 

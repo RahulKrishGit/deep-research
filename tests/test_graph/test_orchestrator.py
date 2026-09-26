@@ -12,8 +12,6 @@ from deep_research.agents.errors import PlanningError
 from deep_research.agents.report_writer import (
     REPORT_WRITER_NAME,
     ReportWriterAgent,
-    ReportWriterDraft,
-    WriterPointDraft,
 )
 from deep_research.agents.evidence_verifier import (
     EVIDENCE_VERIFIER_NAME,
@@ -53,7 +51,10 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
+    BottomLineDraft,
     ResearchState,
+    SectionDraft,
+    WriterPointDraft,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.graph_fakes import (
@@ -117,7 +118,9 @@ def _statement_check_reply(messages: list, schema: type) -> StatementCheckDraft:
     """Answer every statement in the request with a plain 'consistent' verdict.
 
     Reads the batch's own labels back out of the request body, so it answers
-    correctly whichever batch the real Statement Check hands it.
+    correctly whichever batch the real Statement Check hands it -- a part's
+    ``P{part:02d}.{n}`` flight keys or the bottom line's ``B{n}`` (spec §6.7),
+    before either is renumbered ``S001…``.
     """
     del schema
     return StatementCheckDraft(
@@ -125,47 +128,52 @@ def _statement_check_reply(messages: list, schema: type) -> StatementCheckDraft:
             StatementVerdictDraft(
                 label=label, verdict="consistent", reason="Matches the findings."
             )
-            for label in re.findall(r"## (S\d+)", messages[-1].content)
+            for label in re.findall(r"## (\S+)", messages[-1].content)
         ]
     )
 
 
-def _drafts(count: int = 1) -> list[ReportWriterDraft]:
-    """One scripted draft per pass, each citing the pass's finding by label.
+def _writer_replies(count: int = 1) -> list[object]:
+    """One writing pass's four scripted provider replies, repeated ``count`` times.
 
-    ``F01`` is the label ``finding_registry`` stamps on the one verified
-    finding these fixtures carry, so a draft written here is exactly what the
-    writer's own registry offers the model.
+    Each pass drafts its one part's section, checks it, drafts the bottom
+    line, then checks that -- the sequence ``compose_written_report`` runs
+    for a single-part task (spec §6.5-§6.7). ``F01`` is the label
+    ``finding_registry`` stamps on the one verified finding these fixtures
+    carry, so a draft written here is exactly what the writer's own registry
+    offers the model.
     """
-    return [
-        ReportWriterDraft(
-            executive_summary=[
-                WriterPointDraft(text=SNIPPET, finding_labels=["F01"])
-            ],
-            sections=[],
-        )
-        for _ in range(count)
-    ]
+    replies: list[object] = []
+    for _ in range(count):
+        replies.extend([
+            SectionDraft(
+                title="Findings",
+                points=[WriterPointDraft(text=SNIPPET, finding_labels=["F01"])],
+            ),
+            _statement_check_reply,
+            BottomLineDraft(
+                sentences=[WriterPointDraft(text=SNIPPET, finding_labels=["F01"])]
+            ),
+            _statement_check_reply,
+        ])
+    return replies
 
 
 def _real_writer(
     tracker: Tracker,
     tmp_path: Path,
     *,
-    drafts: Sequence[ReportWriterDraft],
+    replies: Sequence[object],
 ) -> ReportWriterAgent:
-    """The production Report Writer, scripted: one draft and one check reply per pass.
+    """The production Report Writer, scripted with one pass's worth of
+    replies (``_writer_replies``) per writing pass.
 
-    ``ScriptedCompleter`` consumes ``outputs`` in call order, so each pass's
-    draft is followed by the reply its Statement Check asks for — the real
-    writer calls ``check_statements`` after drafting, and a scripted
-    ``consistent`` verdict keeps the sentence as drafted.
+    ``ScriptedCompleter`` consumes ``outputs`` in call order: a part's
+    section draft, its Statement Check reply, the bottom-line draft, then its
+    Statement Check reply -- the real writer's own per-pass call sequence.
     """
-    outputs: list[object] = []
-    for draft in drafts:
-        outputs.extend([draft, _statement_check_reply])
     return ReportWriterAgent(
-        provider=ScriptedCompleter(outputs=outputs),
+        provider=ScriptedCompleter(outputs=list(replies)),
         tracker=tracker,
         scratchpad=ScratchpadMemory(
             session_id="session-1", agent_name=REPORT_WRITER_NAME, max_entries=20
@@ -180,7 +188,7 @@ def _writer_agents(
     tmp_path: Path,
     *,
     publisher: ReportPublisher | None = None,
-    drafts: Sequence[ReportWriterDraft] | None = None,
+    replies: Sequence[object] | None = None,
     pass_: object | None = None,
     **overrides: object,
 ):
@@ -199,12 +207,13 @@ def _writer_agents(
             EVIDENCE_VERIFIER_NAME, [one.verified_update()]  # type: ignore[attr-defined]
         ),
         "report_writer": _real_writer(
-            tracker, tmp_path, drafts=list(drafts or _drafts())
+            tracker, tmp_path, replies=list(replies or _writer_replies())
         ),
         "publisher": publisher,
     }
     defaults.update(overrides)
     return fake_research_agents(**defaults), one
+
 
 
 @pytest.mark.asyncio
@@ -218,10 +227,11 @@ async def test_run_publishes_when_the_context_check_fails(
     ``ReportWriterAgent`` — drafting through a scripted completer and having
     its drafted sentence checked. D8's keep rule then decides each figure on
     the finding's own snippet: a figure its snippet states is kept as
-    *unchecked context* — visible to the reader in the key facts table and to
-    the ledger in the finding's own record — and the run publishes. An outage
-    is never a graph failure, and never an acceptance of anything the check
-    did not judge.
+    *unchecked context* — its fact row carries that flag and the ledger
+    names it in the finding's own record (the reader no longer has a key
+    facts table to flag it in) — and the run publishes. An outage is never a
+    graph failure, and never an acceptance of anything the check did not
+    judge.
     """
     one = verified_pass()
     publisher = FakePublisher()
@@ -275,14 +285,16 @@ async def test_run_publishes_when_the_context_check_fails(
     reader = publisher.document_named("report-session-1-0.md")[1]
     ledger = publisher.document_named("-evidence.md")[1]
     quality = publisher.document_named("-quality.json")[1]
-    assert "unchecked context" in reader
+    assert state.composition is not None
+    assert state.composition.fact_rows[0].context_unchecked is True
     assert "context unchecked" in ledger
     # What these two assertions check: the sentence the drafted point carried
-    # reached the reader unchanged — a sentence the Statement Check refused
-    # would drop SNIPPET from the report — and every sentence the report
-    # prints carries the consistent verdict that check returned.
-    assert SNIPPET in reader
-    assert state.composition is not None
+    # reached the reader unchanged (its citation marker lands before the
+    # final stop, spec §3.1 rule 3, so the check strips it) — a sentence the
+    # Statement Check refused would drop SNIPPET from the report — and every
+    # sentence the report prints carries the consistent verdict that check
+    # returned.
+    assert SNIPPET.rstrip(".") in reader
     assert set(state.composition.statement_verdicts.values()) == {"consistent"}
     assert quality
     assert state.report_path == "report-session-1-0.md"
@@ -294,16 +306,17 @@ async def test_run_publishes_when_the_context_check_fails(
 async def test_extra_pass_that_finds_nothing_publishes_with_not_found(
     tracker: Tracker, tmp_path: Path
 ) -> None:
-    """Review Focus 3: one extra pass, then the target under Not found.
+    """Review Focus 3: one extra pass, then the target under What we couldn't confirm.
 
     A required target no finding answers: the reviewer node stamps it missing,
     the graph buys exactly one extra pass confined to that target, the second
     pass finds nothing, the second review still names it, and no gate fails —
-    the target is listed under Not found. So the run finalizes once, accepted
-    (PD-23), and the researcher was called exactly twice. Both passes' reports
-    are composed by the real ``ReportWriterAgent``, which is what makes the
-    published "## Not found" section a real writer's output rather than a
-    fixture's.
+    the target is listed in the composition's ``not_found`` and printed under
+    the reader report's "What we couldn't confirm" section (spec §3.1, §10).
+    So the run finalizes once, accepted (PD-23), and the researcher was
+    called exactly twice. Both passes' reports are composed by the real
+    ``ReportWriterAgent``, which is what makes that section a real writer's
+    output rather than a fixture's.
     """
     one = verified_pass()
     publisher = FakePublisher()
@@ -314,7 +327,7 @@ async def test_extra_pass_that_finds_nothing_publishes_with_not_found(
         tracker,
         tmp_path,
         pass_=one,
-        drafts=_drafts(2),
+        replies=_writer_replies(2),
         publisher=publisher,
         planner=FakeAgent("planner", [{"sub_topics": [_two_target_topic()]}]),
         researcher=researcher,
@@ -357,9 +370,13 @@ async def test_extra_pass_that_finds_nothing_publishes_with_not_found(
     assert state.report_review is not None
     assert state.report_review.missing_required_target_ids == ["topic-01-target-02"]
     assert state.report is not None
-    assert "## Not found" in state.report
+    assert state.composition is not None
+    assert [target.target_id for target in state.composition.not_found] == [
+        "topic-01-target-02"
+    ]
+    assert "## What we couldn't confirm" in state.report
     assert "What did it cost?" in state.report
-    assert SNIPPET in state.report
+    assert SNIPPET.rstrip(".") in state.report
     # One publication: three documents, whatever the loop did before it.
     assert publisher.report_writes == 3
     assert state.report_path == "report-session-1-1.md"

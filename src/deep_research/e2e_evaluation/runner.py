@@ -94,16 +94,35 @@ def canonical_report_fingerprint(report: str) -> str:
     a source still differs here.
 
     The byline is hashed with the rest of the report, and deliberately so. It
-    is the reader's own line -- the ``As of`` stamp, the scope, and the counts
-    of what was checked, corrected, dropped or left not found -- so dropping it
-    would hide the one line that states how much of the report was verified.
-    Keeping it costs no determinism: a replay row is reproducible because the
-    harness stamps every repetition from one pinned clock
-    (``replay.replay_clock``), not because the stamp is left out of the hash.
+    is the reader's own line -- ``Evidence as of {date} · {n} source(s)``,
+    the evidence date and the count of sources cited -- so dropping it would
+    hide the one line that states how current the evidence is. Keeping it
+    costs no determinism: a replay row is reproducible because the harness
+    stamps every repetition from one pinned clock (``replay.replay_clock``),
+    not because the stamp is left out of the hash.
+
+    The link line is the one exception: ``How this was researched: [evidence
+    log](...)`` (spec §3.1 rule 8) embeds the evidence log's own filename,
+    which carries the *session* id, not anything the reader read -- two
+    repetitions of one fixture run under two different sessions by design
+    (``run_replay_scenario``'s own session isolation), so hashing the link
+    line whole would make every repetition of one scenario its own
+    fingerprint. It is stripped like the reference numbering above it, not
+    because it says nothing, but because what it says (a log exists) is
+    already constant and what varies (its filename) is a session fact.
     """
     body: list[str] = []
     references: list[tuple[str, str]] = []
     for line in report.splitlines():
+        if line.startswith("How this was researched:"):
+            body.append(
+                re.sub(
+                    r"\(report-.*-(\d+)-evidence\.md\)$",
+                    r"(report-<session>-\1-evidence.md)",
+                    line,
+                )
+            )
+            continue
         match = (
             _REFERENCE_LINE.match(line)
             if references or line[:1].isdigit()

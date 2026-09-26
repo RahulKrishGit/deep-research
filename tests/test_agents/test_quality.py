@@ -1,65 +1,43 @@
 """Spec §6.4 and PD-10: the deterministic gates over a written report.
 
-Every fixture here is a report Task 3.4's ``compose_written_report`` actually
-composed over ``tests.evidence_fakes`` findings, so each gate is exercised
-against the shapes the pipeline produces rather than against a hand-built
-composition. ``duplicate_fact_rows`` is the one gate with no fixture: the
+Every fixture here builds a ``ReportComposition`` directly: the gates read
+typed state and the typed composition, never the Report Writer agent's own
+machinery, so a hand-built pass with the same shape exercises them exactly as
+a real one would. ``duplicate_fact_rows`` is the one gate with no fixture: the
 writer's ``fact_rows()`` already merges same-fact rows, so the gate guards
 hand-built compositions and future producers only (PD-10, F11).
 """
 
 from __future__ import annotations
 
-import asyncio
-import re
-import tempfile
 from collections.abc import Sequence
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from deep_research.agents import (
     ReportQualitySnapshot as AgentReportQualitySnapshot,
 )
-from deep_research.agents import evidence_verifier
-from deep_research.agents.evidence_verifier import (
-    StatementCheckDraft,
-    StatementVerdictDraft,
-)
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import ReportComposition
-from deep_research.agents.report_writer import (
-    REPORT_WRITER_NAME,
-    ReportWriterAgent,
-    ReportWriterDraft,
-    WriterPointDraft,
-    compose_written_report,
-)
-from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import LangSmithRuntimeConfig, Tracker
-from deep_research.providers import ProviderResponseError
 from deep_research.utils import (
     ReportQualitySnapshot as UtilsReportQualitySnapshot,
 )
-from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     EvidenceTarget,
+    FactRow,
     FigureContext,
     FigureResult,
     Finding,
     FindingVerification,
     NotFoundTarget,
-    ReportComposition,
     ReportPoint,
     ReportStatement,
+    ResearchError,
     ResearchState,
     SubTopic,
 )
-from deep_research.agents.identity import finding_fingerprint
-from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
-from tests.research_fakes import report_writer_tools
 
 EIA = "U.S. Energy Information Administration"
 ACTUAL_TARGET = "topic-01-target-01"
@@ -130,15 +108,6 @@ FORECAST = _checked(
     target=FORECAST_TARGET,
 )
 
-# One provider failure, shared: a batch the Statement Check could not judge.
-PROVIDER_FAILURE = ProviderResponseError(
-    "provider returned an HTTP error",
-    retryable=True,
-    failure_category="http",
-    http_status_code=503,
-    failure_origin="sdk",
-)
-
 
 def _topic(index: int, target: EvidenceTarget | None = None) -> SubTopic:
     return SubTopic(
@@ -180,75 +149,74 @@ def _state(findings: Sequence[Finding]) -> ResearchState:
     )
 
 
-def _draft() -> ReportWriterDraft:
-    return ReportWriterDraft(
-        executive_summary=[
-            WriterPointDraft(text=ACTUAL_TEXT, finding_labels=["F01"]),
-            WriterPointDraft(text=FORECAST_TEXT, finding_labels=["F02"]),
-        ],
-        sections=[],
+def _fact_row_for(finding: Finding, *, row_id: str, target_id: str) -> FactRow:
+    """One hand-built fact row, mirroring what ``fact_rows()`` would print for
+    ``finding``'s own kept figure and its admitted release."""
+    result = finding.verification.figure_results[0]
+    context = result.context
+    return FactRow(
+        row_id=row_id,
+        organisation=context.organisation,
+        attribution=context.attribution,
+        measure="battery storage power capacity added",
+        period=context.period,
+        value=f"{result.figure.value} {result.figure.unit}",
+        kind=context.kind,
+        release=f"released {finding.release_date}" if finding.release_date else None,
+        finding_id=finding_fingerprint(finding),
+        target_ids=[target_id],
     )
 
 
-def _consistent_reply(messages: list, schema: type) -> StatementCheckDraft:
-    """Answer every sentence of the request's own batch with "consistent"."""
-    del schema
-    return StatementCheckDraft(
-        statements=[
-            StatementVerdictDraft(
-                label=label, verdict="consistent", reason="Matches the cited findings."
-            )
-            for label in re.findall(r"## (S\d+)", messages[1].content)
-        ]
-    )
-
-
-_TOOLS_ROOT = tempfile.TemporaryDirectory(prefix="quality-writer-")
-
-
-def _writer(completer: ScriptedCompleter) -> ReportWriterAgent:
-    """The real writer, wired with the two tools it declares."""
-    tracker = Tracker(
-        LangSmithRuntimeConfig(
-            tracing_enabled=False, project="quality-tests", api_key=None
-        )
-    )
-    return ReportWriterAgent(
-        provider=completer,
-        tracker=tracker,
-        scratchpad=ScratchpadMemory(
-            session_id="session-quality",
-            agent_name=REPORT_WRITER_NAME,
-            max_entries=5,
+def _point_for(finding: Finding, *, statement_id: str, target_id: str) -> ReportPoint:
+    text = finding.snippet or finding.content
+    return ReportPoint(
+        text=text,
+        source_urls=[finding.source_url],
+        statement=ReportStatement(
+            statement_id=statement_id, text=text,
+            finding_ids=[finding_fingerprint(finding)], target_ids=[target_id],
         ),
-        tools=report_writer_tools(tracker, output_root=Path(_TOOLS_ROOT.name)),
-        config=AgentRuntimeConfig(max_iterations=1, tool_budget=0),
     )
-
-
-def _compose(
-    state: ResearchState,
-    draft: ReportWriterDraft,
-    completer: ScriptedCompleter,
-) -> tuple[ResearchState, ReportComposition]:
-    """Compose one pass through the writer, as its graph node does."""
-    agent = _writer(completer)
-    composition = asyncio.run(
-        compose_written_report(
-            agent.build_task(state), draft, provider=completer, fingerprint=None
-        )
-    )
-    return state.model_copy(update={"composition": composition}), composition
 
 
 def _clean_pair(
-    *, findings: Sequence[Finding] | None = None, failed_batch: bool = False
+    *, findings: Sequence[Finding] | None = None, failed_batch: bool = False,
+    error_type: str = "evidence_verifier_statement_check_failed",
 ) -> tuple[ResearchState, ReportComposition]:
-    completer = ScriptedCompleter(
-        outputs=[PROVIDER_FAILURE] if failed_batch else [_consistent_reply]
-    )
+    """A pass with nothing wrong in it.
+
+    Every required target is answered by a verified finding, every kept
+    sentence was judged by the Statement Check, as-of and scope are declared,
+    both artifacts are written, and the Key Facts table carries a forecast row
+    with its release (PD-24). ``findings`` only widens ``state.verified_
+    findings`` (e.g. an extra quoted finding); the two cited, fact-rowed
+    findings are always ACTUAL and FORECAST.
+    """
     state = _state([ACTUAL, FORECAST] if findings is None else findings)
-    return _compose(state, _draft(), completer)
+    if failed_batch:
+        verdicts = {"S001": "unchecked", "S002": "unchecked"}
+        errors = [ResearchError(error_type=error_type, source="report_writer",
+                                message="The Statement Check batch failed.", recoverable=True)]
+    else:
+        verdicts = {"S001": "consistent", "S002": "consistent"}
+        errors = []
+    composition = ReportComposition(
+        question=state.original_question, session_id=state.session_id,
+        as_of="2026-09-25", scope="United States", sub_topics=state.sub_topics,
+        findings=[ACTUAL, FORECAST],
+        fact_rows=[
+            _fact_row_for(ACTUAL, row_id="K001", target_id=ACTUAL_TARGET),
+            _fact_row_for(FORECAST, row_id="K002", target_id=FORECAST_TARGET),
+        ],
+        summary=[
+            _point_for(ACTUAL, statement_id="S001", target_id=ACTUAL_TARGET),
+            _point_for(FORECAST, statement_id="S002", target_id=FORECAST_TARGET),
+        ],
+        statement_verdicts=verdicts,
+        errors=errors,
+    )
+    return state.model_copy(update={"composition": composition}), composition
 
 
 def _relinked(
@@ -303,17 +271,7 @@ def with_recorded_writer_failure() -> tuple[ResearchState, ReportComposition]:
     call failed before it could return per-batch accounting, so the writer
     records ``report_writer_statement_check_failed`` and keeps every sentence.
     """
-    async def _raise(
-        provider, items, *, question, fingerprint=None,
-        batch_size=None, concurrency=None,
-    ):
-        # The two bounds are part of the call the real checker accepts
-        # (PD-12); this stand-in fails the call whatever they are.
-        del provider, items, question, fingerprint, batch_size, concurrency
-        raise PROVIDER_FAILURE
-
-    with patch.object(evidence_verifier, "check_statements", _raise):
-        return _clean_pair()
+    return _clean_pair(failed_batch=True, error_type="report_writer_statement_check_failed")
 
 
 def _extra_point(*, finding_ids: list[str]) -> ReportPoint:
@@ -365,17 +323,25 @@ def missing_forecast_state(
     plan's own targets, or clears it: a missing obligation the report lists is
     accounted for, and one it does not list is the gate.
     """
-    state, composition = _compose(
-        _state([ACTUAL]),
-        ReportWriterDraft(
-            executive_summary=[WriterPointDraft(text=ACTUAL_TEXT, finding_labels=["F01"])],
-            sections=[],
+    state = _state([ACTUAL])
+    composition = ReportComposition(
+        question=state.original_question, session_id=state.session_id,
+        as_of="2026-09-25", scope="United States", sub_topics=state.sub_topics,
+        findings=[ACTUAL],
+        fact_rows=[_fact_row_for(ACTUAL, row_id="K001", target_id=ACTUAL_TARGET)],
+        summary=[_point_for(ACTUAL, statement_id="S001", target_id=ACTUAL_TARGET)],
+        statement_verdicts={"S001": "consistent"},
+        not_found=(
+            [NotFoundTarget(
+                target_id=FORECAST_TARGET,
+                question="What does the EIA forecast for 2025?",
+                searched=True,
+            )]
+            if listed_not_found else []
         ),
-        ScriptedCompleter(outputs=[_consistent_reply]),
     )
-    if listed_not_found:
-        return state, composition
-    return _relinked(state, composition, not_found=[])
+    return state.model_copy(update={"composition": composition}), composition
+
 
 
 def without_reader_report() -> tuple[ResearchState, ReportComposition]:
@@ -491,13 +457,33 @@ def test_a_missing_required_target_is_missing_but_accounted_when_listed_not_foun
     assert "unaccounted_required_targets" in unlisted.hard_failures
 
 
-def test_a_forecast_row_without_a_release_is_counted_not_failed() -> None:
-    state, composition = with_composition()
-    rows = list(composition.fact_rows)
-    first = next(n for n, row in enumerate(rows) if row.kind == "forecast")
-    rows[first] = rows[first].model_copy(update={"release": None})
-    snapshot = compute_report_quality(*with_composition(fact_rows=rows))
-    assert snapshot.forecasts_without_release == 1 and snapshot.hard_failures == []
+def test_a_forecast_finding_with_no_admitted_date_counts_without_a_release() -> None:
+    """§11.2: the gate reads the forecast's finding for an admitted
+    ``release_date``/``statement_date``, not the row's own ``release`` text --
+    which can hold a vintage alone.
+    """
+    vintage_only = FORECAST.model_copy(update={"release_date": None, "statement_date": None})
+    state, composition = _clean_pair()
+    rows = [
+        row.model_copy(update={"release": "January 2025 STEO"}) if row.kind == "forecast" else row
+        for row in composition.fact_rows
+    ]
+
+    state, composition = _relinked(
+        state, composition, fact_rows=rows, findings=[ACTUAL, vintage_only],
+    )
+    snapshot = compute_report_quality(state, composition)
+
+    assert snapshot.forecasts_without_release == 1
+    assert "forecasts_without_release" not in snapshot.hard_failures
+
+
+def test_a_forecast_finding_with_an_admitted_date_counts_with_a_release() -> None:
+    """The clean pair's forecast finding carries ``release_date``, so it is
+    not counted even though nothing gates on it either way."""
+    snapshot = compute_report_quality(*_clean_pair())
+    assert snapshot.forecasts_without_release == 0
+
 
 
 def test_a_kept_sentence_with_no_verdict_is_reported_by_statement_id() -> None:

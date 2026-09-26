@@ -13,6 +13,7 @@ from deep_research.evaluation.evaluators import (
     GENERAL_GATE_IDS,
     METRIC_FUNCTIONS,
     MissingMetricError,
+    _reader_reference_urls,
     deterministic_metric_scores,
     deterministic_quality,
     evaluate_agent_gates,
@@ -410,6 +411,28 @@ def test_a_url_embedded_in_prose_with_trailing_punctuation_passes(
     results = evaluate_general_gates(output, researcher_case, secrets=())
 
     assert gate(results, "citations_known").passed is True
+
+
+def test_reader_reference_urls_reads_the_publisher_dash_markdown_link_line() -> None:
+    """The reader's Sources line is ``n. Publisher — [Title](url) (date)``
+    (spec §3.1 rule 7, §8), not the old bare-URL-at-end-of-line shape: the
+    URL is the markdown link's own target, and an optional trailing
+    ``(date)``/``(updated date)`` must not be read as part of it.
+    """
+    report = (
+        "1. Utility Dive — [US utility-scale energy storage to double]"
+        "(https://utilitydive.com/news/storage-65-gw)\n"
+        "2. National Archives — [Distribution of Electoral Votes]"
+        "(https://archives.gov/electoral-college/allocation) (2026-01-02)\n"
+        "3. cornell.edu — [Article II | U.S. Constitution]"
+        "(https://law.cornell.edu/constitution/articleii) (updated 2026-02-14)\n"
+    )
+
+    assert _reader_reference_urls(report) == {
+        1: "https://utilitydive.com/news/storage-65-gw",
+        2: "https://archives.gov/electoral-college/allocation",
+        3: "https://law.cornell.edu/constitution/articleii",
+    }
 
 
 def test_a_live_case_without_known_urls_fails_on_unknown_citations(
@@ -929,22 +952,21 @@ def _golden_result(case: EvaluationCase, urls: list[str]) -> dict:
         )
         references = "\n".join(
             f"{position}. {finding.source_title} — "
-            f"{normalize_source_url(finding.source_url)}"
+            f"[{finding.source_title}]({normalize_source_url(finding.source_url)})"
             for position, finding in enumerate(citable, start=1)
         ) or "(no sources were cited)"
         report = (
             f"# {case.state.original_question}\n\n"
-            "*As of not recorded. Scope: not recorded. "
-            f"{len(listed)} sources cited.*\n\n"
-            "## Executive summary\n\n"
-            "No summary statement could be printed from the checked findings; "
-            "the key facts follow.\n\n"
-            "## Key facts\n\nNo figure passed the Evidence Verifier.\n"
+            f"Evidence as of 2026-01-01 · {len(listed)} "
+            f"{'source' if len(listed) == 1 else 'sources'}\n\n"
+            "## Bottom line\n\n"
+            "No statement could be printed from the checked findings.\n"
         )
         if required and set(required) - answered:
-            report += "\n## Not found\n\n"
+            report += "\n## What we couldn't confirm\n\n"
+            report += "We found no source we could check that answers:\n"
             report += "\n".join(
-                f"- **{target_id}** No checked finding answers it."
+                f"- {target_id}"
                 for target_id in sorted(set(required) - answered)
             )
             report += "\n"

@@ -78,6 +78,8 @@ DECLARED_CASE_IDS: tuple[str, ...] = (
     "unattributed-relay-prose",
     "one-part-question",
     "maker-notes-vs-relay",
+    "scoped-redraft-after-a-named-defect",
+    "scoped-review-invalid-reply-falls-back",
 )
 
 REPETITIONS = 3
@@ -96,22 +98,37 @@ _CITATION_RUN = re.compile(r"(?:\[\d+\]){2,}")
 
 
 def _stable_report(report: str) -> str:
-    """The published report without the two facts about the session that made it.
+    """The published report without the facts about the session that made it.
 
-    ``As of`` is the moment the pass ran, and the numbering of the reference
-    list is the order this session's reads were recorded in: read identity is
-    scoped to a session by the product's own contract (``build_read_id``), so
-    two runs of one fixture cite the same sources numbered in whichever order
-    their own reads landed. So the report is canonicalized by what a reader
-    would take from it: references renumbered by URL, every citation rewritten
-    to the canonical number. What is compared is which sources the reader was
-    shown against which sentences - not the numbering a session assigned. A
-    citation set that gained, lost or moved a source still differs here.
+    The numbering of the reference list is the order this session's reads
+    were recorded in: read identity is scoped to a session by the product's
+    own contract (``build_read_id``), so two runs of one fixture cite the
+    same sources numbered in whichever order their own reads landed. So the
+    report is canonicalized by what a reader would take from it: references
+    renumbered by URL, every citation rewritten to the canonical number. What
+    is compared is which sources the reader was shown against which
+    sentences - not the numbering a session assigned. A citation set that
+    gained, lost or moved a source still differs here.
+
+    The link line -- ``How this was researched: [evidence log](...)`` (spec
+    §3.1 rule 8) -- embeds the evidence log's own filename, which carries the
+    *session* id, not anything the reader read: two repetitions of one
+    fixture run under two different sessions by design, so keeping the link
+    line whole would make every repetition of one scenario its own
+    "outcome". It is stripped for the same reason the reference numbering is
+    renumbered rather than compared raw.
     """
     body: list[str] = []
     references: list[tuple[str, str]] = []
     for line in report.splitlines():
-        if line.startswith("**As of:**"):
+        if line.startswith("How this was researched:"):
+            body.append(
+                re.sub(
+                    r"\(report-.*-(\d+)-evidence\.md\)$",
+                    r"(report-<session>-\1-evidence.md)",
+                    line,
+                )
+            )
             continue
         match = _REFERENCE.match(line) if references or line[:1].isdigit() else None
         if match is not None:

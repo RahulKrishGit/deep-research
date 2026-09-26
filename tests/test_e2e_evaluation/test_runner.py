@@ -346,7 +346,7 @@ def test_a_replay_report_is_dated_by_the_harness_clock(
 ) -> None:
     """A replay report states the harness's pinned clock, not the machine's.
 
-    The byline's ``As of`` date is the newest evidence timestamp, which the
+    The evidence line's date is the newest evidence timestamp, which the
     frozen clock stamped when the run recorded its reads and findings. So the
     whole report -- not merely the part the fingerprint is taken over -- is a
     function of the fixture and the harness's declared instant, which is what
@@ -363,7 +363,7 @@ def test_a_replay_report_is_dated_by_the_harness_clock(
     lines = run.report.splitlines()
     assert attempts == []
     assert any(
-        line.startswith(f"*As of {REPLAY_CLOCK_INSTANT:%Y-%m-%d %H:%M} UTC. ")
+        line.startswith(f"Evidence as of {REPLAY_CLOCK_INSTANT:%Y-%m-%d} ")
         for line in lines
     )
 
@@ -371,55 +371,53 @@ def test_a_replay_report_is_dated_by_the_harness_clock(
 # --- what the report fingerprint is taken over --------------------------------
 
 
-def _published_report(*, findings_checked: int, dropped: int) -> str:
-    """A report whose byline counts are the only thing that moves.
+def _published_report(*, as_of: str, sources: int) -> str:
+    """A report whose evidence line is the only thing that moves.
 
-    The byline is the reader's own line (``agents.report.render_written_report``):
-    the ``As of`` stamp, the scope, and the counts. Everything below it is
-    fixed, so two of these differ only in what the reader was told.
+    The evidence line is the reader's own line (``agents.report.render_written_report``,
+    spec §3.1 rule 2): the evidence date and the source count. Everything
+    below it is fixed, so two of these differ only in what the reader was
+    told.
     """
     return (
         "# Was the grid modernised in 2024?\n"
         "\n"
-        "*As of 2026-01-02T00:00:00+00:00. Scope: All segments. "
-        "3 sources cited; "
-        f"{findings_checked} findings checked against their pages "
-        "(0 with corrected context, 0 with unchecked context), "
-        f"{dropped} dropped; 0 required targets not found.*\n"
+        f"Evidence as of {as_of} · {sources} source(s)\n"
         "\n"
-        "## Executive summary\n"
+        "## Bottom line\n"
         "\n"
-        "- The grid was modernised [1].\n"
+        "The grid was modernised [1].\n"
         "\n"
         "## Sources\n"
         "\n"
-        "1. Example Agency, *Grid report*, https://example.test/grid\n"
+        "1. Example Agency — [Grid report](https://example.test/grid)\n"
     )
 
 
-def test_the_byline_counts_the_reader_was_shown_are_hashed() -> None:
-    """The counts in the byline are part of a repetition's own outcome.
+def test_the_byline_the_reader_was_shown_is_hashed() -> None:
+    """The evidence line's date and source count are part of a repetition's
+    own outcome.
 
-    The byline is one line: the pinned ``As of`` stamp, the scope, and what the
-    reader was told was checked, corrected, dropped or left not found. The
-    harness clock is pinned, so the stamp is a constant of the row and needs no
-    stripping; a fingerprint that skipped the whole line could not tell two
-    repetitions apart when the only thing that moved was those totals.
+    The evidence line is one line: the evidence date and how many sources the
+    reader was told were cited. The harness clock is pinned, so the date is a
+    constant of the row and needs no stripping; a fingerprint that skipped
+    the whole line could not tell two repetitions apart when only the date or
+    the count moved.
     """
     baseline = canonical_report_fingerprint(
-        _published_report(findings_checked=2, dropped=0)
+        _published_report(as_of="2026-01-02", sources=3)
     )
 
     assert canonical_report_fingerprint(
-        _published_report(findings_checked=3, dropped=0)
+        _published_report(as_of="2026-01-03", sources=3)
     ) != baseline
     assert canonical_report_fingerprint(
-        _published_report(findings_checked=2, dropped=1)
+        _published_report(as_of="2026-01-02", sources=4)
     ) != baseline
     # The same report is one fingerprint, so the two differences above are the
-    # counts rather than the fixture.
+    # evidence line rather than the fixture.
     assert canonical_report_fingerprint(
-        _published_report(findings_checked=2, dropped=0)
+        _published_report(as_of="2026-01-02", sources=3)
     ) == baseline
 
 

@@ -58,6 +58,7 @@ _CONCURRENCY_KNOBS = {
     "evidence_verifier": "agents.verifier_concurrency",
     "researcher": "agents.sub_topic_concurrency",
     "source_evaluator": "agents.source_scoring_concurrency",
+    "report_writer": "agents.writer_section_concurrency",
 }
 _FALLBACK_CONCURRENCY_KNOB = "agents.sub_topic_concurrency"
 

@@ -55,14 +55,14 @@ from deep_research.agents.planner import (
     SubTopicDraft,
 )
 from deep_research.agents.report_reviewer import (
+    PreviousDefectResolutionDraft,
     ReportReviewDraft,
+    ReviewDefectDraft,
     ReviewDimensionScores,
+    ScopedReportReviewDraft,
     StatementDispositionDraft,
 )
-from deep_research.agents.report_writer import (
-    ReportWriterDraft,
-    WriterPointDraft,
-)
+from deep_research.agents.report_writer import WriterPointDraft
 from deep_research.agents.researcher import (
     FindingDraft,
     FindingFigureDraft,
@@ -88,7 +88,14 @@ from deep_research.providers.contracts import ProviderError
 from deep_research.runtime.assembly import build_runtime
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import ConfigSettings
-from deep_research.utils.types import REVIEW_DIMENSIONS, ReadRecord, ResearchState
+from deep_research.utils.types import (
+    REVIEW_DIMENSIONS,
+    BottomLineDraft,
+    ItemMarkDraft,
+    ReadRecord,
+    ResearchState,
+    SectionDraft,
+)
 
 # The public progress summary stays at its shipped length. A scenario may ask
 # for a different one to prove a case cannot pass by enlarging logs, but the
@@ -381,6 +388,27 @@ class CaseExpectation:
 
 
 @dataclass(frozen=True)
+class ReplayReviewDefect:
+    """One material defect the scripted *first* full review names (T5 addendum).
+
+    Its ``target_ids`` are what routes the redraft it buys to exactly the
+    part(s) that own them (spec §6.9's ``_route_defects``); a scenario with
+    two or more parts and one such defect is what leaves the other part(s)
+    carried over byte-identical, which is what lets the second review be
+    scoped rather than a second full one. ``ReplayCompleter`` returns this
+    defect on the first ``ReportReviewDraft`` reply only, and marks it
+    resolved on every scoped re-review after -- a controlled case scripts one
+    redraft, never a loop.
+    """
+
+    target_ids: tuple[str, ...]
+    kind: str = "presentation"
+    severity: str = "major"
+    problem: str = "This part's section should restate its own figure more plainly."
+
+
+
+@dataclass(frozen=True)
 class ReplayScenario:
     """One fully scripted offline replay of the real stack."""
 
@@ -405,6 +433,16 @@ class ReplayScenario:
     # sentences the evidence does not carry.
     review_score: float = 0.9
     rejected_statement_ids: tuple[str, ...] = ()
+    # The one material defect the scripted first full review names, naming
+    # the part(s) its ``target_ids`` route to (T5 addendum, spec §6.9). Left
+    # unset, the review never returns a defect and no redraft is bought.
+    review_defect: ReplayReviewDefect | None = None
+    # The scoped re-review that could not be used: the provider raises,
+    # exactly as an outage would, so the run has to fall back to one fresh
+    # full review rather than accept a scoped-derived judgement (T5
+    # addendum). Meaningless without ``review_defect``, since nothing buys a
+    # redraft (and so a scoped attempt) without one.
+    scoped_review_failure: bool = False
     # The Statement Check that could not be made: every batch's provider call
     # raises, exactly as an outage would, and every drafted sentence has to be
     # kept exactly as drafted with the failure recorded (§5.4). The case exists
@@ -716,6 +754,12 @@ class ReplayCompleter(AgentCompleter):
             scenario.rejected_statement_ids
         )
         self.review_score: float = scenario.review_score
+        self.review_defect: ReplayReviewDefect | None = scenario.review_defect
+        self.scoped_review_failure: bool = scenario.scoped_review_failure
+        # Returned on the first ``ReportReviewDraft`` reply only: a redraft
+        # buys one re-run (spec §6.9), and a controlled case scripts one,
+        # never a defect that keeps reappearing after it is resolved.
+        self._review_defect_returned = False
         self.invented_prose: str = scenario.invented_prose
         # Every sentence the writer double drafted, mapped to the page it was
         # drafted from. This is how a scenario's per-page wording override
@@ -1163,7 +1207,13 @@ class ReplayCompleter(AgentCompleter):
             # anything else would test the harness rather than the product.
             raise ProviderError("the statement check was not made")
         drafts: list[StatementVerdictDraft] = []
-        for label, body in _packet_blocks(text, "S"):
+        # The production writer's own flight keys (spec §6.7): ``P{part:02d}.``
+        # for a section's own batch, ``B`` for the bottom line's, both
+        # renumbered to the reader's ``S001…`` only after every check
+        # finishes, so the check itself never sees an ``S`` label from that
+        # path -- but a test that calls this double directly still builds its
+        # own items with plain ``S00n`` labels, which stay accepted too.
+        for label, body in _packet_blocks(text, r"(?:S|P\d+\.|B)"):
             sentence = _printed_line(body, "sentence")
             self._require_cited_findings(body, label)
             override = self._statement_override(sentence)
@@ -1265,38 +1315,68 @@ class ReplayCompleter(AgentCompleter):
                 return source.statement
         return {}
 
-    def _reply_ReportWriterDraft(self, text: str) -> ReportWriterDraft:
-        """One summary point per figure line the writer's own request lists.
+    def _material_block(self, text: str, header: str) -> str:
+        """The material section's own text, up to the next top-level ``# ``
+        header (or the end of the request).
 
-        The line is the registry's own format (``F01 | figure 1: 10.4 GW |
-        period 2024 | kind actual | organisation Wood Mackenzie | label: ...``),
-        so the draft states the figure its verified finding carries, and the
-        code-built reader label carries what the sentence does not say (who the
-        figure is credited to, and whether it is a forecast). Nothing here
-        invents a sentence about a page the registry does not list, and a
-        packet that lists no figure is a contract violation rather than an
-        empty draft, because the writer is only ever called with a registry.
+        A sub-header (``## F01: ...``) never matches ``^# ``, which is what
+        lets this stay a simple line scan instead of a nested parser: every
+        request this harness builds nests its detail under ``## ``/``### ``,
+        never a second top-level ``# ``.
         """
+        headers = list(re.finditer(r"(?m)^# .*$", text))
+        for index, match in enumerate(headers):
+            if match.group().strip() == f"# {header}":
+                end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+                return text[match.end():end]
+        return ""
+
+    def _reply_SectionDraft(self, text: str) -> SectionDraft:
+        """One point per figure line of this part's own registry block.
+
+        Scoped to ``# Verified findings for this part`` alone, never
+        ``# Context only``: a context-only finding is listed for the writer to
+        read, not to cite (spec §6.4 rule 3), and a double that drafted from it
+        would cite a label the real writer is refused for citing. The line is
+        the registry's own format (``F01 | figure 1: 10.4 GW | period 2024 |
+        kind actual | organisation Wood Mackenzie | label: ...``), so the
+        draft states the figure its verified finding carries, and the
+        code-built reader label carries what the sentence does not say (who
+        the figure is credited to, and whether it is a forecast). A figure
+        line that names a subject (D11) is also marked as an option: the
+        subject is the mark's name and the value-and-unit span is its verdict,
+        both verbatim spans of the drafted sentence (spec §6.4 rule 8), so the
+        options table (§4.2) has real cells to build from a replay run.
+        """
+        title_block = self._material_block(text, "This part of the question")
+        title = title_block.strip().splitlines()[0].strip() if title_block.strip() else "Findings"
+        block = self._material_block(text, "Verified findings for this part")
         index = self._registry_index(text)
         points: list[WriterPointDraft] = []
-        for label, _title, _host, snippet, figures in _registry_entries(text):
+        for label, _title, _host, snippet, figures in _registry_entries(block):
             source = index.get(label)
             if figures:
-                drafted = [
-                    _written_sentence(*figure) for figure in figures
+                drafted: list[tuple[str, list[ItemMarkDraft]]] = [
+                    (
+                        _written_sentence(*figure),
+                        [ItemMarkDraft(name=figure[-1], verdict=f"{figure[0]} {figure[1]}", by=label)]
+                        if figure[-1] else [],
+                    )
+                    for figure in figures
                 ]
             else:
                 # A finding whose page stated no figure. It is a registry row
                 # production prints, so the draft restates the finding itself
                 # rather than refusing the pass.
-                drafted = [_snippet_sentence(snippet)]
+                drafted = [(_snippet_sentence(snippet), [])]
             if self.invented_prose and not points and drafted:
                 # The case's own fault: a writer dressing a verified figure in
                 # prose no page states. The Statement Check is what refuses it
                 # now, so the draft carries the words and the checker's script
                 # reads them.
-                drafted[0] = f"{drafted[0]} This is because {self.invented_prose}."
-            for sentence in drafted:
+                sentence, items = drafted[0]
+                drafted[0] = (f"{sentence} This is because {self.invented_prose}.", items)
+            for sentence, items in drafted:
                 if not sentence:
                     continue
                 if source is not None:
@@ -1304,13 +1384,42 @@ class ReplayCompleter(AgentCompleter):
                         " ".join(sentence.split()), []
                     ).append(source)
                 points.append(
-                    WriterPointDraft(text=sentence, finding_labels=[label])
+                    WriterPointDraft(text=sentence, finding_labels=[label], items=items)
                 )
         if not points:
             raise ReplayContractError(
-                "the writer packet listed no finding to draft from"
+                "the section packet listed no finding to draft from"
             )
-        return ReportWriterDraft(executive_summary=points)
+        return SectionDraft(title=title, points=points)
+
+    _BOTTOM_LINE_STATEMENT = re.compile(r"^(.*) \(cites ([^;()]*)(?:; options: .*)?\)$")
+
+    def _reply_BottomLineDraft(self, text: str) -> BottomLineDraft:
+        """Up to 4 of the checked section statements' own texts, with their
+        labels (spec §11.3): a bottom line built only from what a part's own
+        draft already had verified, never inventing new prose. ``cites
+        nothing`` (a statement with no finding label) carries no label."""
+        block = self._material_block(text, "Checked statements")
+        sentences: list[WriterPointDraft] = []
+        for line in block.splitlines():
+            if not line.startswith("- "):
+                continue
+            match = self._BOTTOM_LINE_STATEMENT.match(line[2:])
+            if match is None:
+                continue
+            point_text, cites = match.group(1), match.group(2)
+            labels = (
+                [] if cites.strip() == "nothing"
+                else [label.strip() for label in cites.split(",")]
+            )
+            sentences.append(WriterPointDraft(text=point_text, finding_labels=labels))
+            if len(sentences) == 4:
+                break
+        if not sentences:
+            raise ReplayContractError(
+                "the bottom-line packet listed no checked statement"
+            )
+        return BottomLineDraft(sentences=sentences)
 
     def _registry_index(self, text: str) -> dict[str, ReplaySource]:
         """The page each registry label cites, from the request's own headings."""
@@ -1353,6 +1462,17 @@ class ReplayCompleter(AgentCompleter):
             for item in manifest.group(1).split(",")
             if item.strip() and item.strip() != "(none)"
         ]
+        defects: list[ReviewDefectDraft] = []
+        if self.review_defect is not None and not self._review_defect_returned:
+            self._review_defect_returned = True
+            defects.append(
+                ReviewDefectDraft(
+                    kind=self.review_defect.kind,
+                    severity=self.review_defect.severity,
+                    target_ids=list(self.review_defect.target_ids),
+                    problem=self.review_defect.problem,
+                )
+            )
         return ReportReviewDraft(
             dimensions=ReviewDimensionScores(
                 **{name: self.review_score for name in REVIEW_DIMENSIONS}
@@ -1364,6 +1484,7 @@ class ReplayCompleter(AgentCompleter):
                 )
                 for statement_id in statement_ids
             ],
+            defects=defects,
             rationale="Every statement is carried by the evidence shown.",
         )
 
@@ -1379,6 +1500,58 @@ class ReplayCompleter(AgentCompleter):
         if statement_id in self.rejected_statement_ids:
             return "unsupported"
         return "supported"
+
+    def _reply_ScopedReportReviewDraft(self, text: str) -> ScopedReportReviewDraft:
+        """Accept a redraft: every changed statement supported, every
+        previous defect resolved, no new defect (T5 addendum).
+
+        Generic over the packet's own content, exactly as
+        ``_reply_ReportReviewDraft`` is keyed on the full packet's own
+        manifest rather than on one case's specifics: the changed statement
+        ids and the previous defect ids are both read back out of the
+        request's own sections, so any scenario whose redraft buys a scoped
+        re-review is answered the same way -- the one redraft closed
+        whatever the first review named, and judgement of the untouched
+        statements is exactly what the packet's own carried dispositions
+        already supply.
+        """
+        if self.scoped_review_failure:
+            # The provider boundary's own failure type: the T5 addendum's
+            # fallback exists precisely for a scoped call that could not be
+            # made, and raising anything else would test the harness's
+            # imagination instead of the product's own fallback.
+            raise ProviderError("the scoped re-review was not made")
+        changed_block = self._material_block(text, "Changed statement ids").strip()
+        changed_line = changed_block.splitlines()[-1] if changed_block else ""
+        changed_ids = [
+            item.strip()
+            for item in changed_line.split(",")
+            if item.strip() and item.strip() != "(none)"
+        ]
+        previous_defects = self._material_block(text, "Previous defects")
+        defect_ids = re.findall(r"(?m)^- (\S+) \(", previous_defects)
+        return ScopedReportReviewDraft(
+            dimensions=ReviewDimensionScores(
+                **{name: self.review_score for name in REVIEW_DIMENSIONS}
+            ),
+            statement_dispositions=[
+                StatementDispositionDraft(
+                    statement_id=statement_id,
+                    disposition=self.disposition_for(statement_id),
+                )
+                for statement_id in changed_ids
+            ],
+            previous_defect_resolutions=[
+                PreviousDefectResolutionDraft(
+                    defect_id=defect_id,
+                    resolved=True,
+                    note="The redraft resolved it.",
+                )
+                for defect_id in defect_ids
+            ],
+            new_defects=[],
+            rationale="The redraft closed every previous defect; nothing else changed.",
+        )
 
 
 class ReplaySearch:
@@ -1929,7 +2102,10 @@ def _invariant_relay_labelled_as_relay(run: ReplayRun) -> str | None:
     The honesty rule is one sentence: a relay is never presented as the
     organisation it relays. So the row names the site that relays the figure as
     the host, credits the figure to the organisation the page credits, and the
-    two are never the same name.
+    two are never the same name. Spec §11.3: the rule is per *page*, not per
+    row -- a wire service relaying four separate obligations is one relaying
+    site four times over, so any other fact row read from that same host must
+    carry the same ``relayed`` attribution, never a stray ``own``.
     """
     rows = [row for row in _fact_rows(run) if row.attribution == "relayed"]
     if not rows:
@@ -1942,10 +2118,57 @@ def _invariant_relay_labelled_as_relay(run: ReplayRun) -> str | None:
                 f"the relayed row {row.row_id} credits {row.organisation!r}, "
                 "which is the site that relays it"
             )
+    relayed_hosts = {row.relay_host for row in rows if row.relay_host}
+    composition = run.state.composition
+    if composition is not None:
+        host_by_finding_id = {
+            finding_fingerprint(finding): publisher_identity(finding.source_url)
+            for finding in composition.findings
+        }
+        for row in _fact_rows(run):
+            host = host_by_finding_id.get(row.finding_id)
+            if host in relayed_hosts and row.attribution != "relayed":
+                return (
+                    f"row {row.row_id} reads from {host!r}, a site this run "
+                    "relays elsewhere, but is attributed "
+                    f"{row.attribution!r}, not 'relayed'"
+                )
     host = rows[0].relay_host or ""
     if host.casefold() not in run.report.casefold():
         return f"the report never names the relaying site {host!r}"
     return None
+
+
+def _invariant_maker_row_is_own(run: ReplayRun) -> str | None:
+    """The maker's own page credits its own figure, never as a relay.
+
+    ``maker-notes-vs-relay``'s premise: "Example Games" is also the report's
+    own title text, so a phrase match on the name cannot tell the maker's own
+    row from the relay's mention of it. This reads the typed fact row for the
+    maker's own page (``games.example.test``) instead.
+    """
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    by_id = {
+        finding_fingerprint(finding): finding for finding in composition.findings
+    }
+    maker_rows = [
+        row
+        for row in composition.fact_rows
+        if row.finding_id in by_id
+        and publisher_identity(by_id[row.finding_id].source_url) == "games.example.test"
+    ]
+    if not maker_rows:
+        return "no fact row is bound to the maker's own page"
+    for row in maker_rows:
+        if row.attribution != "own":
+            return (
+                f"the maker's own row {row.row_id} is attributed "
+                f"{row.attribution!r}, not 'own'"
+            )
+    return None
+
 
 
 # --- what the invariants read -----------------------------------------------
@@ -2816,6 +3039,14 @@ def _invariant_statement_failure_keeps_sentences(run: ReplayRun) -> str | None:
     """
     if "evidence_verifier_statement_check_failed" not in run.error_types():
         return "the run recorded no Statement Check failure"
+    for error in run.state.errors:
+        if error.error_type == "report_writer_provider_error":
+            return (
+                "a false 'every part failed' error was recorded, though "
+                "every part drafted and printed its sentences fine"
+            )
+        if not error.recoverable:
+            return f"a non-recoverable error was recorded: {error.error_type}"
     composition = run.state.composition
     if composition is None:
         return "the run composed no report"
@@ -2944,8 +3175,147 @@ def _invariant_mechanism_obligation_stays_unanswered(
     return None
 
 
+def _invariant_no_table_printed(run: ReplayRun) -> str | None:
+    """No question-shaped table when nothing qualifies (spec §4.1 rule 3).
+
+    A run whose findings state no figure and mark no option builds neither an
+    options table nor a findings table; the choice rule is structural (§4.1),
+    so this reads the composition's own ``table`` field rather than pattern
+    matching the report for the old placeholder sentence the table used to
+    print in its place ("No figure passed the Evidence Verifier.", cut by
+    spec §3.1 rule 4).
+    """
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    if composition.table is not None:
+        return f"a {composition.table.shape} table printed when none should qualify"
+    return None
+
+
+def _owning_coverage_ids(run: ReplayRun) -> set[str]:
+    """The plan part(s) a scenario's review defect names, by coverage id."""
+    defect = run.scenario.review_defect
+    if defect is None:
+        return set()
+    target_ids = set(defect.target_ids)
+    return {
+        topic.coverage_id
+        for topic in run.state.sub_topics
+        for target in topic.evidence_targets
+        if target.target_id in target_ids
+    }
+
+
+def _invariant_scoped_review_used(run: ReplayRun) -> str | None:
+    """The redraft's second review is scoped, never a second full review.
+
+    T5 addendum: once a redrafted composition carries a part byte-identical
+    to what the first review judged, the graph must ask a *scoped* re-review
+    (``ScopedReportReviewDraft``) rather than falling back to a second full
+    one. This checks the whole chain of facts that makes that true, not just
+    the schema name: exactly the defect's own part(s) were redrafted
+    (``status == "written"``), every other part carried over unchanged, the
+    section-draft call count matches (one per part, plus one per redrafted
+    part), and the final review still carries the first review's defect,
+    marked resolved.
+    """
+    calls = run.replay.completer.calls
+    full_reviews = calls.count("report_reviewer:ReportReviewDraft")
+    scoped_reviews = calls.count("report_reviewer:ScopedReportReviewDraft")
+    if full_reviews != 1:
+        return f"expected exactly one full review, saw {full_reviews}"
+    if scoped_reviews != 1:
+        return f"expected exactly one scoped re-review, saw {scoped_reviews}"
+    if run.state.writer_redrafts != 1:
+        return f"expected exactly one writer redraft, saw {run.state.writer_redrafts}"
+    owning = _owning_coverage_ids(run)
+    if not owning:
+        return "the scenario names no review defect to redraft"
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    parts_by_id = {part.coverage_id: part for part in composition.parts}
+    for coverage_id, part in parts_by_id.items():
+        expected_status = "written" if coverage_id in owning else "carried_over"
+        if part.status != expected_status:
+            return (
+                f"part {coverage_id!r} has status {part.status!r}, expected "
+                f"{expected_status!r}"
+            )
+    section_draft_calls = calls.count("report_writer:SectionDraft")
+    expected_calls = len(parts_by_id) + len(owning)
+    if section_draft_calls != expected_calls:
+        return (
+            f"expected {expected_calls} SectionDraft calls (one per part, "
+            f"plus one per redrafted part), saw {section_draft_calls}"
+        )
+    review = run.state.report_review
+    if review is None:
+        return "the run recorded no final review"
+    if not any(defect.resolution == "resolved" for defect in review.defects):
+        return "the final review carries no defect marked resolved"
+    return None
+
+
+def _invariant_count_period_binds_obligation(run: ReplayRun) -> str | None:
+    """A count row binds an obligation only by the period it actually states.
+
+    ``count-unit-period``'s premise: the page states counts for two different
+    years, and only the row stating 2025 may bind the 2025 obligation
+    (``topic-01-target-01``) -- a row for any other period naming that target
+    id is exactly the merged-obligation defect this case rejects.
+    """
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    bound = [
+        row for row in composition.fact_rows if "topic-01-target-01" in row.target_ids
+    ]
+    if not bound:
+        return "no fact row binds topic-01-target-01 at all"
+    wrong_period = [row for row in bound if row.period != "2025"]
+    if wrong_period:
+        return (
+            f"row(s) {[row.row_id for row in wrong_period]} bind "
+            "topic-01-target-01 with a period other than 2025: "
+            f"{[row.period for row in wrong_period]}"
+        )
+    return None
+
+
+
+def _invariant_scoped_review_fallback_used(run: ReplayRun) -> str | None:
+    """An invalid scoped reply falls back to exactly one full review (T5 addendum).
+
+    The scoped attempt is made -- that is what makes the fallback observable
+    -- but its reply could not be used, so the run's *final* judgement is a
+    fresh full review, never a scoped-derived one: the redraft's carried
+    dispositions and previous-defect resolutions play no part in the record
+    the run actually publishes.
+    """
+    calls = run.replay.completer.calls
+    full_reviews = calls.count("report_reviewer:ReportReviewDraft")
+    scoped_reviews = calls.count("report_reviewer:ScopedReportReviewDraft")
+    if scoped_reviews != 1:
+        return f"expected exactly one scoped attempt, saw {scoped_reviews}"
+    if full_reviews != 2:
+        return (
+            f"expected exactly two full reviews (first, then the fallback), "
+            f"saw {full_reviews}"
+        )
+    review = run.state.report_review
+    if review is None:
+        return "the run recorded no final review"
+    if "scoped" not in review.rationale.casefold():
+        return "the final review's rationale does not record the scoped fallback"
+    return None
+
+
+
 _REPLAY_INVARIANTS: dict[str, Any] = {
     "relay_labelled_as_relay": _invariant_relay_labelled_as_relay,
+    "maker_row_is_own": _invariant_maker_row_is_own,
     "no_false_verification": _invariant_no_false_verification,
     "mirror_not_double_counted": _invariant_mirror_not_double_counted,
     "denied_url_not_retried": _invariant_denied_url_not_retried,
@@ -2986,6 +3356,10 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
     "mechanism_obligation_stays_unanswered": (
         _invariant_mechanism_obligation_stays_unanswered
     ),
+    "no_table_printed": _invariant_no_table_printed,
+    "scoped_review_used": _invariant_scoped_review_used,
+    "count_period_binds_obligation": _invariant_count_period_binds_obligation,
+    "scoped_review_fallback_used": _invariant_scoped_review_fallback_used,
 }
 
 

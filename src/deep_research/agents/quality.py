@@ -136,6 +136,7 @@ def compute_report_quality(
         and not (verdict == "unchecked" and failure_recorded)
     ]
     rows = composition.fact_rows
+    finding_by_id = {finding_fingerprint(f): f for f in composition.findings}
     duplicates = sum(1 for n, a in enumerate(rows) for b in rows[n + 1:]
                      if _one_fact(a, b, targets))
     statuses = [f.verification for f in state.verified_findings if f.verification is not None]
@@ -160,7 +161,14 @@ def compute_report_quality(
         duplicate_fact_rows=duplicates, uncited_settled_points=uncited,
         unresolved_citations=unresolved, unjudged_sentences=unjudged,
         refused_sentences=len(composition.rejected_points), hard_failures=failures,
-        forecasts_without_release=sum(1 for row in rows if row.kind == "forecast" and not row.release),
+        forecasts_without_release=sum(
+            1 for row in rows
+            if row.kind == "forecast"
+            and not (
+                (finding := finding_by_id.get(row.finding_id)) is not None
+                and (finding.release_date or finding.statement_date)
+            )
+        ),
     )
 
 

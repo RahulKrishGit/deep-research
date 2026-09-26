@@ -684,7 +684,7 @@ def _normalized_text(value: object) -> str:
 
 
 _READER_REFERENCE_PATTERN = re.compile(
-    r"(?m)^(\d+)\.\s+.*?\s+—\s+(\S+)\s*$"
+    r"(?m)^(\d+)\.\s+.*?\s+—\s+\[.*?\]\((\S+?)\)(?:\s+\([^()]*\))?\s*$"
 )
 
 
@@ -693,10 +693,13 @@ def _reader_reference_urls(report: str) -> dict[int, str]:
 
     The reader report numbers only the sources its own points cite, in
     first-use order, so its markers are resolved through the list it printed
-    rather than through a second, wider index computed from state. A marker
-    with no matching reference line therefore resolves to nothing and the
-    citation gate fails closed, which is the direction an integrity gate must
-    fail in.
+    rather than through a second, wider index computed from state. Each line
+    reads ``n. Publisher — [Title](url)``, with an optional trailing
+    ``(date)``/``(updated date)`` (spec §3.1 rule 7, §8); the URL is the
+    markdown link's own target, never the date parenthetical after it. A
+    marker with no matching reference line therefore resolves to nothing and
+    the citation gate fails closed, which is the direction an integrity gate
+    must fail in.
     """
     references: dict[int, str] = {}
     for match in _READER_REFERENCE_PATTERN.finditer(report):

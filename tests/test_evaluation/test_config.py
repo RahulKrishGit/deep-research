@@ -30,11 +30,13 @@ from deep_research.evaluation.config import (
 from deep_research.evaluation.judging import judge_prompt_fingerprint
 from deep_research.evaluation.models import AGENT_NAMES
 from deep_research.providers import validate_agent_model_configs
+from deep_research.agents.report_reviewer import REPORT_REVIEW_PROMPT_VERSION
 from deep_research.utils.config import (
     AgentRuntimeConfig,
     ConfigSettings,
     EvaluationConfig,
     LLMConfig,
+    SERVICE_ROLE_NAMES,
     load_config,
 )
 
@@ -1162,7 +1164,16 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # actually ends. No prompt sentence named a passage count, so no
     # model-read text moved; only the module's own source did. Moved
     # `725d8e9ef930` -> `c272fd184706`.
-    "evidence_verifier": "c272fd184706",
+    # T4 compose (spec §6.5, §6.10): check_statements gained an optional
+    # shared ``gate``, and the corrected_text cap now interpolates
+    # ``report_writer.MAX_POINT_CHARS`` (1200) instead of a separate literal
+    # 600, so the two limits cannot drift apart. Module code only, no prompt
+    # wording changed beyond the number itself: `8b1ad6b04834` ->
+    # `d3ceb843c8ec`.
+    # Merge of the plan branch (S6 + LimitsLift) with the consumer report
+    # format: both module-source changes above now coexist; re-pinned on the
+    # merged source.
+    "evidence_verifier": "aa2d17feb972",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1189,8 +1200,61 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # example drops the energy word ("12 percent more members"), so the writer
     # value moved `80de0d1e2168` -> `08cad3d4d73f`. Code and example text only;
     # the four other target pins and the Judge pin are unchanged.
-    "report_writer": "08cad3d4d73f",
+    # The consumer report format's parallel writer (T4, spec §6): the single
+    # ``ReportWriterDraft``/``writer_messages`` call is replaced by one call
+    # per plan part (``SectionDraft`` via ``section_messages``) pipelined
+    # against its own Statement Check, and a bottom-line call last
+    # (``BottomLineDraft`` via ``bottom_line_messages``); new WRI-1'/WRI-2'/
+    # WRI-3' section prompt and WRI-4/WRI-5/WRI-6 bottom-line prompt. The
+    # whole module changed shape, so the value moved wholesale:
+    # `08cad3d4d73f` -> `1f445621ab34`. The other three target pins and the
+    # Judge pin are unchanged.
+    # T3 (spec §3.1 rule 8) moved report_filename/evidence_report_filename/
+    # quality_report_filename out of report_writer.py into report.py, so the
+    # writer no longer duplicates them; module code only, no prompt text
+    # changed: `1f445621ab34` -> `65bfda8f7618`.
+    # T4 compose (spec §6.7): composition.table/page_credits/unreachable are
+    # now filled -- report_table.build_table, page_owner/evaluated_page_date
+    # for the Sources dates (never a figure's statement_date or vintage),
+    # and acquisition_state_by_target's denied_urls for unreachable pages.
+    # Module code only, no prompt wording changed: `65bfda8f7618` ->
+    # `0b9c9239f932`.
+    # RevFormatT1T2/RevFormatT4 review round (P0/P1/P2/P3 fixes): a mark's
+    # `by` resolves only among the point's own cited labels (P0); the §6.8
+    # bottom-line fallback builds new B-flight statements with the source's
+    # real verdict instead of reusing a section's own point (P1-a); the
+    # "every part failed" error, the unchecked-but-sections-exist case, and
+    # a drafted-but-empty bottom line now route correctly through the §6.8
+    # fallback (P1-b); a redraft with no previous section still drafts the
+    # part (P2-1); `_target_line` is scoped to the part's own findings
+    # (P2-2); flight keys are `P{part:02d}.{n:02d}`/`B{n:02d}` (P3-1); the
+    # bottom-line candidate cap now runs before the Statement Check (P3-2).
+    # Model-read text changed too: the section example credits the page
+    # instead of an uncredited pick (P1-c), "the buds" is replaced with "the
+    # device" (P2-3, D10), and the bottom-line example combines two
+    # statements instead of copying one word for word (P2-4):
+    # `0b9c9239f932` -> `20ef7adf493c`.
+    # RevFormatT1T2 P1 follow-up: build_table ran before page_credits was
+    # set on the composition, so a relayed or unattributed table row's Who
+    # cell fell back to the raw host ("utilitydive.com") instead of the
+    # page's credited publisher ("Utility Dive"). `_assemble_composition`
+    # now sets a provisional page_credits map (keyed the same way the final
+    # one is) before building the table, then re-keys it to the table's own
+    # citations afterward. Module code only, no prompt wording changed:
+    # `20ef7adf493c` -> `78d7a747bc14`.
+    "report_writer": "78d7a747bc14",
 }
+
+# The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
+# target: it carries no slot in ``AGENT_NAMES`` and so no place in the matrix
+# above or in the judge's own module-source hash below. Its own versioned
+# contract -- ``REPORT_REVIEW_PROMPT_VERSION`` -- is pinned here instead,
+# beside the other two, so a change to its packet or prompt (spec §11.1; the
+# T5 scoped-re-review addendum) is visible the same way a target or judge
+# prompt change is. T5: "report-review-4" -> "report-review-5" (the packet's
+# renamed sections, the new Table block, per-finding status lines, and the
+# scoped re-review after a redraft all landed under this version).
+PINNED_REPORT_REVIEWER_PROMPT_VERSION = "report-review-5"
 
 # The judge half of the same contract. A Judge prompt change moves this value and
 # invalidates Judge evidence for every agent, so it is pinned next to the targets
@@ -1576,6 +1640,17 @@ def test_the_judge_fingerprint_is_pinned_beside_the_target_pins() -> None:
 
     assert judge == PINNED_JUDGE_PROMPT_FINGERPRINT
     assert judge not in set(PINNED_TARGET_PROMPT_FINGERPRINTS.values())
+
+
+def test_the_reviewer_prompt_version_is_pinned_beside_the_target_and_judge_pins() -> None:
+    """The reviewer is a service role, not an agent target or the judge: its
+    own versioned contract is pinned on its own (T5 addendum: "the pin
+    moves" -- this is the value that moved, from "report-review-4" to
+    "report-review-5").
+    """
+    assert SERVICE_ROLE_NAMES == ("report_reviewer",)
+    assert "report_reviewer" not in PINNED_TARGET_PROMPT_FINGERPRINTS
+    assert REPORT_REVIEW_PROMPT_VERSION == PINNED_REPORT_REVIEWER_PROMPT_VERSION
 
 
 def test_the_target_fingerprint_covers_the_shared_prompt_module() -> None:
