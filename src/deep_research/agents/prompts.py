@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
+from deep_research.agents.document_kind import derivative_self_description
 from deep_research.agents.evidence import ReadDossier
 from deep_research.agents.sources import SourceGroup
 from deep_research.agents.steps import summarize_text
@@ -128,6 +129,12 @@ SOURCE_SCORING_INSTRUCTION = (
     "information is a relay and scores as one; a body rating its own product is "
     "self-interested for that rating, not for its own prices or notes. "
     "Anonymous posts and content farms score low.\n"
+    "A document that declares itself teaching material, a simulation or "
+    "exercise, an example, simplified or adapted content, or content based on "
+    "an encyclopedia's or a chatbot's entries (its Self-description line, or "
+    "its own words) is a relay for that content: source_role derivative, and "
+    "its authority is that of a relay of unnamed material, however its host "
+    "reads.\n"
     "recency: how current the source's own content is for this question, "
     "judged from the dates, versions, and events its excerpts mention — "
     "not from when this system retrieved it. Use 0.5 when the excerpts "
@@ -137,6 +144,10 @@ SOURCE_SCORING_INSTRUCTION = (
     "older rule that still governs is not stale.\n"
     "relevance: how directly the excerpts answer the sub-topics the source "
     "was cited for, rather than merely mentioning them.\n"
+    "Relevance is judged on the document's own subject, not its title: a "
+    "document about a different event, period, body or product than the "
+    "sub-topics it was cited for has low relevance, whatever its title "
+    "says.\n"
     "Then describe the source itself, from the dossier alone:\n"
     "source_role: original_report, independent_research, derivative, "
     "company_statement, mixed, or unknown — what the document is. Use "
@@ -332,10 +343,18 @@ def render_read_dossier(
     fields it is asked to report: a judgement about the document has to be
     about the document, and an assertion the dossier does not carry stays
     empty rather than becoming a recorded fact.
+
+    When the read declares its own derivative or teaching kind (D1), that
+    declaration is the dossier's second line -- ahead of everything else the
+    model is shown about the document -- so the evaluator sees it before it
+    forms any other judgement.
     """
     read = dossier.read
-    lines = [
-        f"Source {index}: {dossier.url}",
+    lines = [f"Source {index}: {dossier.url}"]
+    self_description = derivative_self_description(read)
+    if self_description is not None:
+        lines.append(f"Self-description: {self_description}")
+    lines += [
         f"Title: {read.title}",
         f"Serving host: {dossier.serving_host}",
         f"Cited for: {', '.join(dossier.cited_sub_topics) or 'no sub-topic'}",

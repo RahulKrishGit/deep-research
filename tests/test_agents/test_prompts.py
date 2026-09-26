@@ -13,14 +13,17 @@ from deep_research.agents.prompts import (
     STRUCTURED_REQUEST_END,
     AgentTask,
     render_react_messages,
+    render_read_dossier,
     render_scratchpad,
     render_source_dossier,
     render_structured_reply_format,
     render_structured_request,
 )
+from deep_research.agents.evidence import build_read_dossiers
 from deep_research.agents.sources import SourceGroup
 from deep_research.memory.entries import ScratchpadEntry
 from deep_research.utils.types import Finding
+from tests.evidence_fakes import make_read
 
 
 def _entry(content: str, kind: str = "thought") -> ScratchpadEntry:
@@ -350,6 +353,32 @@ def test_source_dossier_clamps_long_finding_text() -> None:
 
     assert "x" * 500 not in rendered
     assert "..." in rendered
+
+
+def test_read_dossier_prints_the_self_description_as_its_second_line() -> None:
+    read = make_read(
+        "This role-play was written by the outreach program for a "
+        "negotiation course."
+    )
+    [dossier] = build_read_dossiers([read])
+
+    rendered = render_read_dossier(dossier, index=1, reputation=None)
+    lines = rendered.splitlines()
+
+    assert lines[0] == f"Source 1: {dossier.url}"
+    assert lines[1] == (
+        "Self-description: This role-play was written by the outreach "
+        "program for a negotiation course."
+    )
+
+
+def test_read_dossier_omits_the_self_description_line_when_absent() -> None:
+    read = make_read("An ordinary page states nothing about its own origin.")
+    [dossier] = build_read_dossiers([read])
+
+    rendered = render_read_dossier(dossier, index=1, reputation=None)
+
+    assert "Self-description:" not in rendered
 
 
 def test_new_prompt_constants_state_their_contracts() -> None:
