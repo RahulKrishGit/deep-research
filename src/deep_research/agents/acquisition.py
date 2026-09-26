@@ -1140,6 +1140,13 @@ class AcquisitionPolicy:
     configuration_fingerprint: str = "acquisition-v1"
     cache: MutableMapping[str, ReadRecord] | None = None
     network_read_ids: set[str] | None = None
+    on_read_admitted: Callable[[str], None] | None = None
+    """S6: called with a read's id the moment it is admitted (cache or
+    network, but only once per read), so a caller can start that page's own
+    extraction call in the background while the ReAct loop keeps running.
+    Never called for a failed/refused read attempt, and never twice for one
+    read id -- a read the run already held (a cache reuse, or a body two
+    candidate URLs both resolve to) is not admitted a second time."""
 
     audit_sequence: ManifestSequence | None = None
     """The manifest counter of the mapping this policy writes into.
@@ -1161,6 +1168,7 @@ class AcquisitionPolicy:
     _packet_overflow_evidence_ids: set[str] = field(
         default_factory=set, init=False
     )
+    _read_admitted_notified: set[str] = field(default_factory=set, init=False)
     _passage_batches: dict[str, int] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
@@ -1836,6 +1844,20 @@ class AcquisitionPolicy:
         )
         return f"{base}#{earlier + 1}"
 
+    def _notify_read_admitted(self, read_id: str) -> None:
+        """S6: tell ``on_read_admitted`` about ``read_id``, once only.
+
+        A read the run already held under this policy -- a cache reuse of a
+        body an earlier admission already notified about, or two candidate
+        URLs resolving to the same body -- must not start a second
+        background extraction call for the page it already scheduled one
+        for.
+        """
+        if self.on_read_admitted is None or read_id in self._read_admitted_notified:
+            return
+        self._read_admitted_notified.add(read_id)
+        self.on_read_admitted(read_id)
+
     def _read_observed(
         self,
         result: ToolResult,
@@ -1937,6 +1959,7 @@ class AcquisitionPolicy:
                     self._mark_candidate(
                         requested, status="read", read_id=validated.read_id
                     )
+                    self._notify_read_admitted(validated.read_id)
                     return
         admission = admit_read_result(
             result,
@@ -2021,6 +2044,7 @@ class AcquisitionPolicy:
                 read_urls.append(read.resolved_url)
             self.state = self.state.model_copy(update={"read_urls": read_urls})
             self._mark_candidate(requested, status="read", read_id=read.read_id)
+            self._notify_read_admitted(read.read_id)
             return
         error = result.error
         if (
@@ -2204,7 +2228,13 @@ class AcquisitionPolicy:
         elif step.tool_name in {"web_scraper", "document_reader"}:
             self._read_observed(result, parsed)
 
-    def context(self, *, limit: int, for_decision: bool = False) -> str:
+    def context(
+        self,
+        *,
+        limit: int,
+        for_decision: bool = False,
+        read_ids: Sequence[str] | None = None,
+    ) -> str:
         omitted: list[str] = []
         text = build_acquisition_context(
             self.state,
@@ -2217,8 +2247,20 @@ class AcquisitionPolicy:
             query=self.query,
             for_decision=for_decision,
             omitted_evidence_ids=omitted,
+            read_ids=read_ids,
         )
-        self._packet_overflow_evidence_ids = set(omitted)
+        if read_ids is None:
+            # The single whole-sub-topic packet (a decision turn, or the
+            # pre-S6 one-call extraction path): this call's own overflow is
+            # the whole story, so it replaces whatever an earlier call in
+            # this same policy's lifetime recorded.
+            self._packet_overflow_evidence_ids = set(omitted)
+        else:
+            # S6: one page's own extraction packet. Several pages of one
+            # sub-topic build their own packet independently, so each call's
+            # overflow is folded in rather than erasing an earlier page's --
+            # a single slot here would report only the last page extracted.
+            self._packet_overflow_evidence_ids |= set(omitted)
         return text
 
 
@@ -2282,6 +2324,7 @@ def build_acquisition_context(
     query: str | None = None,
     for_decision: bool = False,
     omitted_evidence_ids: list[str] | None = None,
+    read_ids: Sequence[str] | None = None,
 ) -> str:
     """Render complete acquisition records, with explicit continuation IDs.
 
@@ -2328,6 +2371,15 @@ def build_acquisition_context(
     the extraction call never saw is a capacity fact, not a relevance one --
     a caller that records a disposition for it must not call it
     ``irrelevant`` when the model was never shown it to judge at all.
+
+    ``read_ids`` scopes the whole packet to those reads alone (S6): a
+    per-page extraction call's own packet, in the normal row plan (reads,
+    then evidence with full excerpts, then recorded findings, candidates,
+    and the deduplicated passage dump) rather than the ``focus_ids`` shape,
+    which doubles a unit's text as both an evidence row and a passage row --
+    affordable for owed re-extraction's handful of passages, not for a whole
+    page's worth of units. ``None`` renders every read the other filters
+    admit, exactly as before.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -2346,6 +2398,18 @@ def build_acquisition_context(
         or target_id in read.target_ids
         or read_id in selected_read_ids
     }
+    if read_ids is not None:
+        allowed_read_ids = set(read_ids)
+        selected_evidence = {
+            evidence_id: unit
+            for evidence_id, unit in selected_evidence.items()
+            if unit.read_id in allowed_read_ids
+        }
+        selected_reads = {
+            read_id: read
+            for read_id, read in selected_reads.items()
+            if read_id in allowed_read_ids
+        }
     focused = [
         evidence_id
         for evidence_id in dict.fromkeys(focus_ids)

@@ -1084,8 +1084,16 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # parent's own value. RevSelectionR3's S1 review fixes (P1 decision-turn
     # row plan; the decision-context call site now passes
     # ``for_decision=True``) moved it a third time: `5472a4abdedf` ->
-    # `b1416cf42008`.
-    "researcher": "b1416cf42008",
+    # `b1416cf42008`. S6's per-page parallel extraction (scheduling each
+    # read's own extraction call as soon as it is admitted, merging by read
+    # order, and the owed re-ask now grouped per page) moved this module's
+    # own source a fourth time, no prompt sentence changing: `b1416cf42008`
+    # -> `8279c0b4d587`. A repeat pass that admits no new read (a page
+    # already read by an earlier pass) now falls back to one legacy-shaped
+    # extraction call over the topic's accumulated evidence instead of
+    # making none at all, moving the source a fifth time: `8279c0b4d587` ->
+    # `3af571b120bc`.
+    "researcher": "3af571b120bc",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

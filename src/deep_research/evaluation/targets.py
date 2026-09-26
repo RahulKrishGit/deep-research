@@ -294,7 +294,9 @@ def _minimal_output(
     )
 
 
-_SOURCE_URL_PATTERN = re.compile(r"(?:https?://|www\.|//)[^\s\"'<>]+")
+_SOURCE_URL_PATTERN = re.compile(
+    r"(?:https?://|(?<![\w:/])(?://|www\.))[^\s\"'<>]+"
+)
 
 
 def _redact_source_urls(text: str) -> str:
@@ -311,7 +313,11 @@ def _redact_source_urls(text: str) -> str:
     marker instead of leaking the raw text unredacted. The pattern also
     catches a scheme-free source (``www.host/path``, ``//host/path``): a
     model names a source exactly as plainly without spelling out ``https://``,
-    and the boundary must not depend on it having done so.
+    and the boundary must not depend on it having done so. The scheme-free
+    alternatives are anchored so they never fire mid-token: a bare ``//`` or
+    ``www.`` is a URL only when nothing word-like, ``:`` or ``/`` sits
+    immediately before it -- otherwise ``a//b``, ``ratio 1//2`` and
+    ``C://temp`` would be redacted too.
     """
 
     def _replace(match: re.Match[str]) -> str:

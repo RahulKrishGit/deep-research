@@ -971,6 +971,70 @@ def test_the_packet_orders_a_reads_passage_dump_by_rank_when_a_query_is_given() 
     assert unranked.index("locator=chunk-0") < unranked.index("locator=chunk-1")
 
 
+def test_read_ids_scopes_the_packet_to_one_page() -> None:
+    """S6: a per-page extraction packet renders only that page's own read,
+    evidence and passage dump -- not doubled as both an evidence row and a
+    passage row (that duplication is affordable only for owed
+    re-extraction's handful of focused passages, never a whole page).
+    """
+    first = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url="https://example.test/first",
+        resolved_url="https://example.test/first",
+        title="First",
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text="First page content.",
+        passages={"chunk-0": "First page content."},
+        extraction_complete=True,
+    )
+    second = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url="https://example.test/second",
+        resolved_url="https://example.test/second",
+        title="Second",
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text="Second page content.",
+        passages={"chunk-0": "Second page content."},
+        extraction_complete=True,
+    )
+    first_unit = EvidenceUnit(
+        evidence_id="ev-first",
+        read_id=first.read_id,
+        source_url=first.resolved_url,
+        source_title=first.title,
+        locator="chunk-0",
+        excerpt="First page content.",
+        origin="researcher",
+    )
+    second_unit = EvidenceUnit(
+        evidence_id="ev-second",
+        read_id=second.read_id,
+        source_url=second.resolved_url,
+        source_title=second.title,
+        locator="chunk-0",
+        excerpt="Second page content.",
+        origin="researcher",
+    )
+    state = AcquisitionState()
+
+    packet = build_acquisition_context(
+        state,
+        {first.read_id: first, second.read_id: second},
+        {first_unit.evidence_id: first_unit, second_unit.evidence_id: second_unit},
+        limit=24000,
+        read_ids=[first.read_id],
+    )
+
+    assert "First page content." in packet
+    assert "Second page content." not in packet
+    assert f"read_id={first.read_id}" in packet
+    assert f"read_id={second.read_id}" not in packet
+    # A rendered excerpt, never doubled as a separate passage row too.
+    assert packet.count("First page content.") == 1
+
+
 def test_a_decision_packet_keeps_every_candidate_row_when_units_overflow_it() -> None:
     """RevSelectionR3 P1: whole-page units must never crowd every candidate
     row out of the decision packet.

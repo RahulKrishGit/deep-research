@@ -372,6 +372,29 @@ def test_a_scheme_free_url_is_also_redacted() -> None:
     assert "//example.com/sodium-ion-energy-density" not in redacted
 
 
+def test_a_bare_slash_or_www_mid_token_is_not_a_url() -> None:
+    """The scheme-free alternatives never fire mid-token.
+
+    A bare ``//`` or ``www.`` is a URL only at a genuine boundary -- nothing
+    word-like, ``:`` or ``/`` immediately before it. Without that anchor a
+    path separator, an integer ratio, or a Windows drive path would be
+    redacted as if it named a source, while a real scheme-free URL right
+    beside them still must be.
+    """
+    text = (
+        "a//b and ratio 1//2 and C://temp, but see www.example.com/report "
+        "and //example.com/report for the real sources."
+    )
+
+    redacted = _redact_source_urls(text)
+
+    assert "a//b" in redacted
+    assert "ratio 1//2" in redacted
+    assert "C://temp" in redacted
+    assert "www.example.com/report" not in redacted
+    assert "//example.com/report" not in redacted
+
+
 def test_a_researchers_thought_is_also_redacted() -> None:
     """RevSelectionR3 P2: the clamp covers observations and thoughts alike.
 

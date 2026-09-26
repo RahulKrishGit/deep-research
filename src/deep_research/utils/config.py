@@ -252,13 +252,17 @@ class AgentRuntimeConfig(BaseModel):
     unknown key is rejected rather than ignored.
 
     ``sub_topic_concurrency``, ``source_scoring_concurrency``,
-    ``verifier_batch_size`` and ``verifier_concurrency`` are spec §7.3's four
-    concurrency bounds (D9/PD-27) and the *only* ones: the researcher's
-    sub-topics and the source evaluator's scoring batches run under the first
-    two, and the Evidence Verifier's Context Check and Statement Check run
-    ``verifier_batch_size`` items per call with ``verifier_concurrency`` calls
-    in flight. Each has an ``AGENTS_*`` environment override, so a live result
-    can lower one without a code change.
+    ``verifier_batch_size``, ``verifier_concurrency`` and
+    ``extraction_concurrency`` are spec §7.3's concurrency bounds (D9/PD-27,
+    S6): the researcher's sub-topics and the source evaluator's scoring
+    batches run under the first two, the Evidence Verifier's Context Check
+    and Statement Check run ``verifier_batch_size`` items per call with
+    ``verifier_concurrency`` calls in flight, and ``extraction_concurrency``
+    bounds how many of one sub-topic's per-page extraction calls run at
+    once (S6: each admitted read's own extraction starts in the background
+    as soon as it is admitted, rather than one call after every page of a
+    sub-topic is read). Each has an ``AGENTS_*`` environment override, so a
+    live result can lower one without a code change.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -296,13 +300,23 @@ class AgentRuntimeConfig(BaseModel):
     the place a whole page belongs."""
     prompt_context_entries: int = Field(default=20, ge=0)
     observation_summary_chars: int = Field(default=2000, ge=1)
-    # Spec §7.3's four concurrency bounds (D9/PD-27). The mission defaults the
+    # Spec §7.3's concurrency bounds (D9/PD-27, S6). The mission defaults the
     # module constants carry stay as the code-level defaults; these are what a
     # production run reads.
     sub_topic_concurrency: int = Field(default=5, ge=1)
     source_scoring_concurrency: int = Field(default=6, ge=1)
     verifier_batch_size: int = Field(default=5, ge=1)
     verifier_concurrency: int = Field(default=16, ge=1)
+    extraction_concurrency: int = Field(default=16, ge=1)
+    """S6: how many of one sub-topic's per-page extraction calls run at once.
+
+    Each admitted read starts its own extraction call in the background as
+    soon as it is admitted, rather than the whole sub-topic waiting for one
+    call after every page is read; this is the semaphore that bounds how
+    many of those per-page calls are in flight together. DeepSeek's own
+    documented ceiling is 2,500 concurrent requests, so 16 is a product
+    choice about latency and provider load, not a provider limit.
+    """
     planner_final_max_tokens: int = Field(default=65536, ge=1)
     report_review_max_tokens: int = Field(default=65536, ge=1)
     """Output headroom for the report reviewer's one request per review.
@@ -549,7 +563,7 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
-    # Spec §7.3's four concurrency bounds (D9/PD-27).
+    # Spec §7.3's concurrency bounds (D9/PD-27, S6).
     "AGENTS_SUB_TOPIC_CONCURRENCY": ("agents", "sub_topic_concurrency"),
     "AGENTS_SOURCE_SCORING_CONCURRENCY": (
         "agents",
@@ -557,6 +571,7 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "AGENTS_VERIFIER_BATCH_SIZE": ("agents", "verifier_batch_size"),
     "AGENTS_VERIFIER_CONCURRENCY": ("agents", "verifier_concurrency"),
+    "AGENTS_EXTRACTION_CONCURRENCY": ("agents", "extraction_concurrency"),
     "AGENTS_PLANNER_FINAL_MAX_TOKENS": (
         "agents",
         "planner_final_max_tokens",

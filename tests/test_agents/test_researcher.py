@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import perf_counter
+from typing import Any
 
 import httpx
 import pytest
@@ -88,6 +90,7 @@ from tests.agent_fakes import (
     ScriptedCompleter,
     TargetKeyedCompleter,
     finish,
+    native_turn_from_decision,
     use_tool,
 )
 from tests.evidence_fakes import make_read, make_target
@@ -6330,3 +6333,469 @@ def test_a_figure_draft_keeps_its_subject() -> None:
     )
     assert dropped == []
     assert [figure.subject for figure in figures] == ["Model B", None]
+
+
+# --- S6: per-page parallel extraction ----------------------------------------
+
+
+_PACKET_READ_ID = re.compile(r"read_id=(\S+) requested_url=\S+ resolved_url=(\S+) title=(.+?) reader=")
+_PACKET_PASSAGE = re.compile(r"evidence_id=\S+ read_id=(\S+) locator=(\S+) targets=\S+ excerpt=(.+)")
+
+
+class _PerPageCompleter:
+    """A fake keyed by the one read a per-page extraction packet names.
+
+    ``complete_react`` serves ``decisions`` in order, exactly like
+    ``ScriptedCompleter``. ``complete_structured`` reads the packet's own
+    ``read_id=`` line to find which page the call is about, sleeps
+    ``delay`` seconds -- a real overlap needs a genuine await point a
+    scripted double never yields on otherwise -- then raises
+    ``error_for[read_id]`` once if set, or returns
+    ``output_factory(read_id, resolved_url, title, verbatim_snippet)``, where
+    ``verbatim_snippet`` is copied straight out of the packet's own "passage"
+    row, since ``build_findings`` rejects any snippet that is not the read's
+    own words, found verbatim in its text. Tracks concurrency
+    (``max_in_flight``) and both the call and completion order of every
+    read, which is the only way to prove two pages actually overlapped
+    rather than merely being scheduled to.
+    """
+
+    def __init__(
+        self,
+        *,
+        decisions: Sequence[object] = (),
+        delay: float = 0.0,
+        output_factory: Callable[[str, str, str, str, str], SubTopicFindingsDraft] | None = None,
+        error_for: Mapping[str, BaseException] | None = None,
+        fail_at_call: int | None = None,
+        fail_with: BaseException | None = None,
+        delays_by_call: Mapping[int, float] | None = None,
+        sync_after_react_call: int | None = None,
+    ) -> None:
+        self._decisions: list[Any] = list(decisions)
+        self._delay = delay
+        self._output_factory = output_factory or (
+            lambda read_id, url, title, locator, snippet: _finding_draft(
+                read_id, url, title, locator, snippet
+            )
+        )
+        self._error_for = dict(error_for or {})
+        self._fail_at_call = fail_at_call
+        self._fail_with = fail_with
+        self._delays_by_call = dict(delays_by_call or {})
+        # The react turn (1-indexed) that must not return its decision until
+        # at least one page extraction has completed: acceptance 4 needs a
+        # LATER decision turn's own packet built only after an earlier page's
+        # background extraction lands, and a fixed sleep would be a guess at
+        # how many event-loop ticks that takes -- busy-yielding until the
+        # extraction is actually observed done is exact instead.
+        self._sync_after_react_call = sync_after_react_call
+        self._react_call_count = 0
+        self.calls: list[str | None] = []
+        self.completions: list[str | None] = []
+        self.structured_packets: list[str] = []
+        self.react_packets: list[str] = []
+        self._in_flight = 0
+        self.max_in_flight = 0
+
+    async def complete_react(
+        self, messages, tools, *, agent_name=None, max_tokens=None
+    ):
+        self.react_packets.append("\n".join(message.content for message in messages))
+        if not self._decisions:
+            raise AssertionError("no scripted decision left for a native ReAct turn")
+        decision = self._decisions.pop(0)
+        if isinstance(decision, BaseException):
+            raise decision
+        self._react_call_count += 1
+        if self._react_call_count == self._sync_after_react_call:
+            while not self.completions:
+                await asyncio.sleep(0)
+        return native_turn_from_decision(decision)
+
+    async def complete_structured(
+        self, messages, schema, *, agent_name=None, max_tokens=None, reasoning_effort=None
+    ):
+        if schema is ReActDecision:
+            raise AssertionError(
+                "ReAct decisions must be requested through complete_react"
+            )
+        text = "\n".join(message.content for message in messages)
+        self.structured_packets.append(text)
+        match = _PACKET_READ_ID.search(text)
+        read_id = match.group(1) if match else None
+        resolved_url = match.group(2) if match else None
+        title = match.group(3) if match else None
+        passage_match = _PACKET_PASSAGE.search(text)
+        locator = passage_match.group(2) if passage_match else "chunk-0"
+        snippet = passage_match.group(3) if passage_match else ""
+        self.calls.append(read_id)
+        call_index = len(self.calls)
+        self._in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        try:
+            delay = self._delays_by_call.get(call_index, self._delay)
+            if delay:
+                await asyncio.sleep(delay)
+            if call_index == self._fail_at_call:
+                raise self._fail_with or AssertionError(
+                    "fail_at_call fired with no fail_with exception"
+                )
+            if read_id in self._error_for:
+                raise self._error_for.pop(read_id)
+            return self._output_factory(
+                read_id or "", resolved_url or "", title or "", locator, snippet
+            )
+        finally:
+            self._in_flight -= 1
+            self.completions.append(read_id)
+
+
+_PAGE_A_URL = "https://a.example.test/page"
+_PAGE_B_URL = "https://b.example.test/page"
+
+
+def _two_page_client(*, body_a: str, body_b: str) -> httpx.AsyncClient:
+    """A client serving two distinct pages at two distinct URLs."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200, text="User-agent: *\nAllow: /", request=request
+            )
+        is_a = "a.example.test" in str(request.url)
+        body = body_a if is_a else body_b
+        title = "Page A" if is_a else "Page B"
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            text=f"<html><head><title>{title}</title></head><body><p>{body}</p></body></html>",
+            request=request,
+        )
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _two_page_search_response() -> dict[str, object]:
+    return {
+        "results": [
+            {"title": "Page A", "url": _PAGE_A_URL, "content": "About page A.", "score": 0.9},
+            {"title": "Page B", "url": _PAGE_B_URL, "content": "About page B.", "score": 0.85},
+        ]
+    }
+
+
+def _two_scrape_decisions() -> list[object]:
+    return [
+        use_tool("Find sources.", "web_search", '{"query": "alpha 2026"}'),
+        use_tool("Read page A.", "web_scraper", f'{{"url": "{_PAGE_A_URL}"}}'),
+        use_tool("Read page B.", "web_scraper", f'{{"url": "{_PAGE_B_URL}"}}'),
+        finish("Both sources read.", "Findings gathered."),
+    ]
+
+
+def _finding_draft(
+    read_id: str, url: str, title: str, locator: str, snippet: str
+) -> SubTopicFindingsDraft:
+    """One finding for whichever read ``read_id`` names.
+
+    ``url``/``title``/``locator``/``snippet`` all come straight off the
+    packet's own "read" and "passage" rows for that read --
+    ``build_findings`` rejects a draft whose source url does not match the
+    read it claims, or whose snippet is not the read's own words found
+    verbatim in its text, so a fake that made any of these up would have
+    every finding rejected instead of admitted.
+    """
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=f"Finding for {read_id}.",
+                source_url=url,
+                source_title=title,
+                confidence=0.8,
+                read_id=read_id,
+                locator=locator,
+                snippet=snippet,
+                target_ids=["topic-01"],
+            )
+        ]
+    )
+
+
+async def _run_two_page_sub_topic(
+    tracker: Tracker,
+    completer: _PerPageCompleter,
+    *,
+    extraction_concurrency: int = 16,
+    sub_topic: SubTopic | None = None,
+    body_a: str = "Alpha content one.",
+    body_b: str = "Alpha content two.",
+):
+    agent = ResearcherAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="researcher", max_entries=20
+        ),
+        tools=research_tools(
+            tracker,
+            search=FakeSearchClient([_two_page_search_response()]),
+            http=_two_page_client(body_a=body_a, body_b=body_b),
+        ),
+        config=AgentRuntimeConfig(
+            max_iterations=6, tool_budget=6, extraction_concurrency=extraction_concurrency
+        ),
+        clock=_clock,
+    )
+    state = _state(sub_topics=[sub_topic or _sub_topic("Alpha", 1)])
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+    return outcome
+
+
+def _read_ids_from_calls(calls: Sequence[str | None]) -> list[str]:
+    return [read_id for read_id in calls if read_id is not None]
+
+
+@pytest.mark.asyncio
+async def test_two_reads_extractions_overlap_in_time(tracker: Tracker) -> None:
+    """Acceptance 1: two reads' extractions overlap; wall time is under the sum.
+
+    Each page's own call is scripted to take 0.1s. Run sequentially that is
+    at least 0.2s; started in the background as each page is admitted, while
+    the loop keeps going, the two calls overlap and the whole pass finishes
+    in well under 0.2s.
+    """
+    completer = _PerPageCompleter(decisions=_two_scrape_decisions(), delay=0.1)
+
+    started = perf_counter()
+    outcome = await _run_two_page_sub_topic(tracker, completer)
+    elapsed = perf_counter() - started
+
+    assert outcome.result is not None
+    assert len(outcome.result.findings) == 2
+    assert elapsed < 0.2
+    assert completer.max_in_flight == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_page_keeps_the_other_pages_findings(tracker: Tracker) -> None:
+    """Acceptance 2: one page's provider failure never costs the other page.
+
+    Page A's own call (the first admitted, the first structured call) hits
+    the output limit; page B's call succeeds. The sub-topic still reports
+    page B's finding, and page A's failure is recorded as its own error --
+    recoverable, not a reason to drop the whole sub-topic.
+    """
+    completer = _PerPageCompleter(
+        decisions=_two_scrape_decisions(),
+        fail_at_call=1,
+        fail_with=_output_limit_error(),
+    )
+
+    outcome = await _run_two_page_sub_topic(tracker, completer)
+
+    assert outcome.result is not None
+    assert [finding.source_url for finding in outcome.result.findings] == [_PAGE_B_URL]
+    assert any(
+        error.error_type == "researcher_extraction_output_limit"
+        for error in outcome.errors
+    )
+
+
+@pytest.mark.asyncio
+async def test_merged_findings_are_identical_whichever_page_completes_first(
+    tracker: Tracker,
+) -> None:
+    """Acceptance 3: the merge is by read order, not completion order.
+
+    Run once with page A slower than page B, once with the delays swapped so
+    page B finishes last instead -- the merged findings come back in the same
+    (read-admission) order either way.
+    """
+    completer_a_last = _PerPageCompleter(
+        decisions=_two_scrape_decisions(), delays_by_call={1: 0.05, 2: 0.0}
+    )
+    completer_b_last = _PerPageCompleter(
+        decisions=_two_scrape_decisions(), delays_by_call={1: 0.0, 2: 0.05}
+    )
+
+    outcome_a_last = await _run_two_page_sub_topic(tracker, completer_a_last)
+    outcome_b_last = await _run_two_page_sub_topic(tracker, completer_b_last)
+
+    assert outcome_a_last.result is not None
+    assert outcome_b_last.result is not None
+    urls_a_last = [finding.source_url for finding in outcome_a_last.result.findings]
+    urls_b_last = [finding.source_url for finding in outcome_b_last.result.findings]
+    assert urls_a_last == [_PAGE_A_URL, _PAGE_B_URL]
+    assert urls_b_last == [_PAGE_A_URL, _PAGE_B_URL]
+
+
+@pytest.mark.asyncio
+async def test_a_later_decision_turn_sees_an_earlier_pages_finding(
+    tracker: Tracker,
+) -> None:
+    """Acceptance 4: findings arrive as calls complete, mid-loop.
+
+    Page A is read at turn 2; turn 3 (which reads page B) does not return
+    its own decision until page A's background extraction has completed, so
+    turn 4's packet -- built only once turn 3's tool has run -- is provably
+    later than page A's finding landing. It must already show that finding
+    as a recorded one, not merely the read as admitted.
+    """
+    completer = _PerPageCompleter(
+        decisions=_two_scrape_decisions(), sync_after_react_call=3
+    )
+
+    outcome = await _run_two_page_sub_topic(tracker, completer)
+
+    assert outcome.result is not None
+    assert len(completer.react_packets) == 4
+    page_a_read_id = completer.calls[0]
+    assert page_a_read_id is not None
+    assert f"recorded finding read_id={page_a_read_id}" in completer.react_packets[3]
+
+
+def _three_page_client(*, bodies: Mapping[str, str]) -> httpx.AsyncClient:
+    """A client serving three distinct pages, one per host in ``bodies``."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200, text="User-agent: *\nAllow: /", request=request
+            )
+        host = request.url.host
+        body = bodies[host]
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            text=f"<html><head><title>{host}</title></head><body><p>{body}</p></body></html>",
+            request=request,
+        )
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+_PAGE_C_URL = "https://c.example.test/page"
+
+
+async def _run_three_page_sub_topic(
+    tracker: Tracker, completer: _PerPageCompleter, *, extraction_concurrency: int
+):
+    agent = ResearcherAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=ScratchpadMemory(
+            session_id="session-1", agent_name="researcher", max_entries=20
+        ),
+        tools=research_tools(
+            tracker,
+            search=FakeSearchClient(
+                [
+                    {
+                        "results": [
+                            {"title": "Page A", "url": _PAGE_A_URL, "content": "A.", "score": 0.9},
+                            {"title": "Page B", "url": _PAGE_B_URL, "content": "B.", "score": 0.85},
+                            {"title": "Page C", "url": _PAGE_C_URL, "content": "C.", "score": 0.8},
+                        ]
+                    }
+                ]
+            ),
+            http=_three_page_client(
+                bodies={
+                    "a.example.test": "Alpha content one.",
+                    "b.example.test": "Alpha content two.",
+                    "c.example.test": "Alpha content three.",
+                }
+            ),
+        ),
+        config=AgentRuntimeConfig(
+            max_iterations=8, tool_budget=8, extraction_concurrency=extraction_concurrency
+        ),
+        clock=_clock,
+    )
+    state = _state(sub_topics=[_sub_topic("Alpha", 1)])
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(state)
+    return outcome
+
+
+@pytest.mark.asyncio
+async def test_extraction_concurrency_bounds_the_semaphore(tracker: Tracker) -> None:
+    """Acceptance 6: ``extraction_concurrency`` reaches the semaphore.
+
+    Three pages, each extraction call delayed enough to overlap the others,
+    but a concurrency cap of 2: no more than two calls are ever in flight at
+    once even though all three pages are read well within that window.
+    """
+    completer = _PerPageCompleter(
+        decisions=[
+            use_tool("Find sources.", "web_search", '{"query": "alpha 2026"}'),
+            use_tool("Read page A.", "web_scraper", f'{{"url": "{_PAGE_A_URL}"}}'),
+            use_tool("Read page B.", "web_scraper", f'{{"url": "{_PAGE_B_URL}"}}'),
+            use_tool("Read page C.", "web_scraper", f'{{"url": "{_PAGE_C_URL}"}}'),
+            finish("All sources read.", "Findings gathered."),
+        ],
+        delay=0.05,
+    )
+
+    outcome = await _run_three_page_sub_topic(tracker, completer, extraction_concurrency=2)
+
+    assert outcome.result is not None
+    assert len(outcome.result.findings) == 3
+    assert completer.max_in_flight == 2
+
+
+def _owed_page_target() -> EvidenceTarget:
+    return EvidenceTarget(
+        target_id=PLANNED_TARGET_ID,
+        coverage_id="topic-01",
+        question=_OWED_TARGET_QUESTION,
+        measure="the date a registrant's first renewal return is due",
+        required=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_owed_re_extraction_targets_only_the_page_that_owed_passages(
+    tracker: Tracker,
+) -> None:
+    """Acceptance 5: a bounded re-ask retries the one page that owed it.
+
+    Page A's own text states the required target's own words; page B's does
+    not share one. Neither page's main extraction binds the target -- both
+    reply with no findings -- so the target stays unanswered and the owed
+    re-ask fires once, over the evidence that owes it. That packet must
+    name page A's read and never page B's: ``build_acquisition_context``'s
+    ``focus_ids`` path renders only the reads the focused evidence belongs
+    to, and only page A's evidence was ever selected into the batch.
+    """
+    sub_topic = _sub_topic("Alpha", 1).model_copy(
+        update={"evidence_targets": [_owed_page_target()]}
+    )
+    completer = _PerPageCompleter(
+        decisions=_two_scrape_decisions(),
+        output_factory=lambda *args: SubTopicFindingsDraft(findings=[]),
+    )
+
+    outcome = await _run_two_page_sub_topic(
+        tracker,
+        completer,
+        sub_topic=sub_topic,
+        body_a=_OWED_BODY,
+        body_b="The weather in spring is generally mild across the region.",
+    )
+
+    assert outcome.result is not None
+    assert len(completer.structured_packets) == 3
+    page_a_read_id = completer.calls[0]
+    page_b_read_id = completer.calls[1]
+    retry_packet = completer.structured_packets[2]
+    assert "Passages owed a finding" in retry_packet
+    assert f"read_id={page_a_read_id}" in retry_packet
+    # Page B's own read/evidence/passage rows are absent -- the state
+    # section's own ``read_urls=`` line still names every URL the run has
+    # read, which is state bookkeeping, not the evidence a page's own
+    # re-extraction packet shows the model.
+    assert f"read_id={page_b_read_id}" not in retry_packet
+    assert f"passage read_id={page_b_read_id}" not in retry_packet
