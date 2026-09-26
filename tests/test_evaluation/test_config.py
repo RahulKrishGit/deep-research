@@ -977,7 +977,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # `7b9532f4fd85` -> `4d3acb4ce085`.
     # Run-4 fix wave (Fable audit 65/100; reviews and Fable prompt review GREEN
     # at 409fc35). Moved `4d3acb4ce085` -> `a61d2797efd7`.
-    "planner": "a61d2797efd7",
+    # Run-8 fix wave (Fable audit 69/100; the why/how optional-target rule and
+    # the shared prompts module's evaluator rules; reviews, Fable prompt review
+    # GREEN at 6424075). Moved `a61d2797efd7` -> `9c5745683d9b`.
+    "planner": "9c5745683d9b",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1119,7 +1122,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-7 fix wave (Fable audit 58.5/100; the dissent re-ask and its packet,
     # reviews, Fable prompt review GREEN at c0ba781). Moved `8d202482e743` ->
     # `580bec83c9a1`.
-    "researcher": "580bec83c9a1",
+    # Run-8 fix wave (Fable audit 69/100; the extraction subject rule and the
+    # shared prompts module; reviews, Fable prompt review GREEN at 6424075).
+    # Moved `580bec83c9a1` -> `a0691eedc3b2`.
+    "researcher": "a0691eedc3b2",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1127,7 +1133,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # literally, so no model-read text moved beyond the module source itself;
     # ``agents.prompts`` was untouched, so the other four target pins and the
     # Judge pin are unchanged. Moved `58c4e7d909ef` -> `72339771d728`.
-    "source_evaluator": "72339771d728",
+    # Run-8 fix wave (Fable audit 69/100; the dossier Self-description line,
+    # the self-declared relay and subject-relevance rules; reviews, Fable
+    # prompt review GREEN at 6424075). Moved `72339771d728` -> `0d96c48eae29`.
+    "source_evaluator": "0d96c48eae29",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
@@ -1199,7 +1208,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # at 409fc35). Moved `aee44f66d137` -> `b96cadd4419a`.
     # Run-5 fix wave (Fable audit 56.5/100; reviews and Fable prompt review).
     # Moved `b96cadd4419a` -> `624687fd7ae1`.
-    "evidence_verifier": "624687fd7ae1",
+    # Run-8 fix wave (Fable audit 69/100; a pronoun is never an organisation,
+    # and the shared prompts module; reviews, Fable prompt review GREEN at
+    # 6424075). Moved `624687fd7ae1` -> `0dc169302934`.
+    "evidence_verifier": "0dc169302934",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1290,7 +1302,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-7 fix wave (Fable audit 58.5/100; the credit and dispute guards,
     # disputes marks, the Disputed block, terminal step; reviews, Fable prompt
     # review GREEN at c0ba781). Moved `bc3c09d23a7e` -> `f1a5d8f8efc3`.
-    "report_writer": "f1a5d8f8efc3",
+    # Run-8 fix wave (Fable audit 69/100; self-description registry line and
+    # floor, authority-ordered registry, the outcome mark, Outcome block and
+    # re-ask, why-part points; reviews, Fable prompt review GREEN at 6424075).
+    # Moved `f1a5d8f8efc3` -> `ee5199095402`.
+    "report_writer": "ee5199095402",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
