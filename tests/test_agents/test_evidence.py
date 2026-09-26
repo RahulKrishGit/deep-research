@@ -123,8 +123,8 @@ def _identity_metadata(record: ReadRecord, **extra: object) -> dict[str, object]
     }
 
 
-def test_build_read_record_carries_the_page_date_captured_at_scrape_time() -> None:
-    """D14: the scraper's own page date, once verified, rides on the record."""
+def test_build_read_record_carries_the_page_dates_captured_at_scrape_time() -> None:
+    """D14: the scraper's own dates, once verified, ride on the record."""
     record = build_read_record(
         session_id=SESSION_ID,
         reader="web_scraper",
@@ -135,10 +135,12 @@ def test_build_read_record_carries_the_page_date_captured_at_scrape_time() -> No
         text=TEXT,
         passages={"p-1": PASSAGE},
         target_ids=("target-1",),
-        page_date="2026-09-17",
+        page_published="2026-09-17",
+        page_updated="2026-09-20",
     )
 
-    assert record.page_date == "2026-09-17"
+    assert record.page_published == "2026-09-17"
+    assert record.page_updated == "2026-09-20"
 
 
 def test_build_read_record_refuses_a_malformed_page_date() -> None:
@@ -154,10 +156,12 @@ def test_build_read_record_refuses_a_malformed_page_date() -> None:
         text=TEXT,
         passages={"p-1": PASSAGE},
         target_ids=("target-1",),
-        page_date="not-a-date",
+        page_published="not-a-date",
+        page_updated="also-not-a-date",
     )
 
-    assert record.page_date is None
+    assert record.page_published is None
+    assert record.page_updated is None
 
 
 # --------------------------------------------------------------------------
@@ -1608,7 +1612,8 @@ def test_the_read_registry_keeps_ids_independent_of_assessments() -> None:
         "requested_url",
         "resolved_url",
         "title",
-        "page_date",
+        "page_published",
+        "page_updated",
         "reader",
         "retrieved_at",
         "content_sha256",
@@ -3333,17 +3338,17 @@ def test_a_date_counts_as_the_publication_date_only_when_the_page_says_so() -> N
     ).data_period == "2025"
 
 
-def test_a_day_precision_date_in_the_opening_credits_needs_no_cue() -> None:
-    """Fable's run-3 case: a model quoted "The page is dated Sep 17, 2026"
-    from the page's own opening and the claim was refused because neither
-    "published" nor "updated" sat beside it. A day-precision date the page's
-    own opening states is its date even with no such word, the same way the
-    opening credits an author with no "published by" cue
-    (``_opening_credits_organisation``)."""
+def test_a_cue_less_quote_is_admitted_only_when_it_matches_the_pages_own_metadata_date() -> None:
+    """Fable's run-3 case, fixed correctly (RevDatesR3 P0): a cue-less quote
+    is the page's date only when it equals the date the page's own metadata
+    already captured (D14, ``ReadRecord.page_published``) -- never merely
+    because it sits early in the page's text, which is what let event dates,
+    data-period dates, effective dates and a related article's own date all
+    through in a first cut of this rule."""
     read = _dated(
         "Grid Storage Outlook. The page is dated Sep 17, 2026. Battery "
         "storage capacity grew across every region this year."
-    )
+    ).model_copy(update={"page_published": "2026-09-17"})
 
     dated = validated_temporal(
         read,
@@ -3355,31 +3360,69 @@ def test_a_day_precision_date_in_the_opening_credits_needs_no_cue() -> None:
     assert dated.status == "current"
 
 
-def test_a_day_precision_date_outside_the_opening_credits_still_needs_a_cue() -> None:
-    """The rule is a window, not a blanket exemption: a day-precision date
-    the page states well past its own opening still needs a
-    Published/Updated cue, the same way ``_opening_credits_organisation``
-    never credits a name the document mentions only deep in its body."""
-    passages = {
-        "p-1": "Grid Storage Outlook. An unrelated opening paragraph about "
-        "capacity trends nationwide.",
-        "p-2": "A second paragraph about interconnection queues and "
-        "permitting delays across every region.",
-        "p-3": "A third paragraph about transmission upgrades planned "
-        "across several regions this decade.",
-        "p-4": "The page is dated Sep 17, 2026, deep in an appendix "
-        "nobody reads first.",
-    }
-    read = _web_read(
-        "https://lab.example/late-date",
-        text=" ".join(passages.values()),
-        passages=passages,
-    )
+def test_a_cue_less_year_is_admitted_against_a_finer_captured_date() -> None:
+    """A cue-less claim coarser than the page's own captured date is still
+    that page's year -- ``2026`` beside a captured ``2026-09-17`` is not a
+    different date, just a coarser reading of the same one."""
+    read = _dated(
+        "Grid Storage Outlook. The page is dated 2026. Battery storage "
+        "capacity grew across every region this year."
+    ).model_copy(update={"page_published": "2026-09-17"})
 
     dated = validated_temporal(
-        read,
-        publication_date=_claim("2026-09-17", "The page is dated Sep 17, 2026"),
-        status="current",
+        read, publication_date=_claim("2026", "The page is dated 2026"), status="current"
+    )
+
+    assert dated.publication_date == "2026"
+    assert dated.status == "current"
+
+
+@pytest.mark.parametrize(
+    ("text", "quote", "value"),
+    [
+        (
+            "On March 3, 2026, the agency reported that battery storage "
+            "capacity grew across every region this year.",
+            "On March 3, 2026, the agency reported",
+            "2026-03-03",
+        ),
+        (
+            "Data as of 2025-12-31. Battery storage capacity grew across "
+            "every region this year.",
+            "Data as of 2025-12-31",
+            "2025-12-31",
+        ),
+        (
+            "The hearing is scheduled for October 14, 2026. Battery "
+            "storage capacity grew across every region this year.",
+            "The hearing is scheduled for October 14, 2026",
+            "2026-10-14",
+        ),
+        (
+            "The rule takes effect January 1, 2027. Battery storage "
+            "capacity grew across every region this year.",
+            "The rule takes effect January 1, 2027",
+            "2027-01-01",
+        ),
+        (
+            "Related: Battery prices fall (March 3, 2025). Battery storage "
+            "capacity grew across every region this year.",
+            "Related: Battery prices fall (March 3, 2025)",
+            "2025-03-03",
+        ),
+    ],
+)
+def test_a_cue_less_date_with_no_matching_page_date_is_refused(
+    text: str, quote: str, value: str
+) -> None:
+    """RevDatesR3 P0: a day-precision date early in the page's text is not by
+    itself the page's publication date. An event date, a data-period date, an
+    effective date and a related article's own date must all still be
+    refused with no cue and no page metadata that names the same date."""
+    read = _dated(text)
+
+    dated = validated_temporal(
+        read, publication_date=_claim(value, quote), status="current"
     )
 
     assert dated.publication_date is None

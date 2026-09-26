@@ -415,8 +415,9 @@ def test_short_access_shell_is_not_admitted_as_usable_evidence() -> None:
     )
 
 
-def test_a_scraped_page_date_is_threaded_onto_the_read_record() -> None:
-    """D14: the scraper's own ``page_date`` reaches the read record it builds."""
+def test_scraped_page_dates_are_threaded_onto_the_read_record() -> None:
+    """D14: the scraper's own ``page_published``/``page_updated`` reach the
+    read record it builds."""
     result = ToolResult(
         tool_name="web_scraper",
         success=True,
@@ -427,7 +428,8 @@ def test_a_scraped_page_date_is_threaded_onto_the_read_record() -> None:
             "title": _EIA_PAGE_TITLE,
             "text": _eia_page_body(),
             "extraction_complete": True,
-            "page_date": "2026-09-17",
+            "page_published": "2026-09-17",
+            "page_updated": "2026-09-20",
         },
         latency_ms=0,
     )
@@ -435,17 +437,19 @@ def test_a_scraped_page_date_is_threaded_onto_the_read_record() -> None:
     read = build_read_record_from_tool_result(result, session_id="session-1")
 
     assert read is not None
-    assert read.page_date == "2026-09-17"
+    assert read.page_published == "2026-09-17"
+    assert read.page_updated == "2026-09-20"
 
 
-def test_a_read_with_no_page_date_leaves_the_field_unset() -> None:
-    """Never invent a date: a payload that names none stores none."""
+def test_a_read_with_no_page_dates_leaves_both_fields_unset() -> None:
+    """Never invent a date: a payload that names neither stores neither."""
     read = build_read_record_from_tool_result(
         _eia_web_result(), session_id="session-1"
     )
 
     assert read is not None
-    assert read.page_date is None
+    assert read.page_published is None
+    assert read.page_updated is None
 
 
 # The navigation block, the solar paragraph, and the battery-storage paragraph
@@ -1339,6 +1343,72 @@ def test_a_denied_candidate_records_its_denial_reason() -> None:
 
     assert policy.state.candidate_records[url].status == "denied"
     assert policy.state.candidate_records[url].denial_reason == "access_denied"
+
+
+def _not_found_step(url: str) -> ReActStep:
+    return ReActStep(
+        iteration=2,
+        thought="Read the landing page.",
+        action="use_tool",
+        tool_name="web_scraper",
+        tool_input={"url": url},
+        observation=ReActObservation(
+            tool_name="web_scraper",
+            success=False,
+            summary="not found",
+            error_type="HTTPStatusError",
+        ),
+        tool_result=ToolResult(
+            tool_name="web_scraper",
+            success=False,
+            data=None,
+            error=ToolError(
+                type="HTTPStatusError",
+                message="the page request failed with an HTTP error status",
+                details={"status_code": 404, "attempts": 1, "retries": 0},
+            ),
+            latency_ms=0,
+        ),
+    )
+
+
+def test_a_404_records_not_found_not_access_denied() -> None:
+    """RevDatesR3 P2: every HTTP status failure used to say ``access_denied``,
+    which would describe a missing page as a refusal in 'what we couldn't
+    confirm'. A 404/410-shaped status names the actual failure instead."""
+    url = "https://agency.example/missing-report"
+    policy = _gateway_policy(candidate_urls=[url], remaining_calls=2)
+
+    policy.after_action(_not_found_step(url))
+
+    assert policy.state.candidate_records[url].denial_reason == "not_found"
+
+
+def test_a_500_records_http_error_not_access_denied() -> None:
+    """RevDatesR3 P2: an HTTP failure that is neither an access refusal nor a
+    not-found gets its own honest label."""
+    url = "https://agency.example/broken-report"
+    policy = _gateway_policy(candidate_urls=[url], remaining_calls=2)
+
+    policy.after_action(
+        _not_found_step(url).model_copy(
+            update={
+                "tool_result": ToolResult(
+                    tool_name="web_scraper",
+                    success=False,
+                    data=None,
+                    error=ToolError(
+                        type="HTTPStatusError",
+                        message="the page request failed with an HTTP error status",
+                        details={"status_code": 500, "attempts": 1, "retries": 0},
+                    ),
+                    latency_ms=0,
+                )
+            }
+        )
+    )
+
+    assert policy.state.candidate_records[url].denial_reason == "http_error"
 
 
 def test_a_handler_that_pads_its_body_is_still_refused_its_read() -> None:

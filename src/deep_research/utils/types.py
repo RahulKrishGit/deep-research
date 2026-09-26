@@ -250,10 +250,12 @@ class CandidateRecord(ContractModel):
     status: AcquisitionStatus = "queued"
     read_id: str | None = None
     denial_reason: str | None = None
-    """Why this candidate could not be opened (I2): an access refusal
-    (401/403/451-shaped), a not-found (404/410-shaped), ``blocked`` or a
-    paywall/shell classification, in the same vocabulary the acquisition
-    disposition already records it in. ``None`` while the candidate is
+    """Why this candidate could not be opened (I2), in the acquisition
+    disposition's own vocabulary: ``access_denied`` (401, 402, 403, 451, or a
+    robots refusal), ``not_found`` (404, 410), ``http_error`` (another HTTP
+    status), or an extraction/shell classification such as
+    ``unusable_content_shell``, ``unusable_error_page``,
+    ``transport_failure`` or ``malformed``. ``None`` while the candidate is
     queued or read, and cleared back to ``None`` if a later attempt reads it.
     """
 
@@ -782,15 +784,23 @@ class ReadRecord(_VerbatimContractModel):
     resolved_url: str = Field(min_length=1)
     """The URL the content was served from, after any redirect."""
     title: str = Field(min_length=1)
-    page_date: str | None = None
-    """The page's own date, as it writes it (D14): ``article:published_time``
-    or ``article:modified_time`` metadata, a JSON-LD ``datePublished`` /
-    ``dateModified`` (including inside an ``@graph``), or a byline-shaped
-    date in the page's opening text — captured once at scrape time and
-    normalised to ``YYYY-MM-DD``, or coarser when that is all the page
-    gives. ``None`` when the page states no date of its own. Never a clock
-    read: this is the page's date, not when this run read it
-    (``retrieved_at``)."""
+    page_published: str | None = None
+    """The page's own publication date, from its own metadata only (D14):
+    ``article:published_time``, a microdata ``itemprop="datePublished"``, a
+    citation/Dublin Core meta name (``citation_publication_date``,
+    ``dc.date.issued``, ...), or a JSON-LD ``datePublished`` (including
+    inside an ``@graph``, restricted to an article-shaped node) — captured
+    once at scrape time and normalised to ``YYYY-MM-DD``, or coarser when
+    that is all the page gives. ``None`` when the page's metadata states no
+    publication date. Never read from prose: a byline mentions a date, it
+    does not carry the page's metadata, and never a clock read — this is
+    the page's date, not when this run read it (``retrieved_at``)."""
+    page_updated: str | None = None
+    """The page's own last-modified date, at the same precision and from
+    the same metadata-only sources as ``page_published`` (``article:
+    modified_time``, ``og:updated_time``, ``itemprop="dateModified"``,
+    ``dcterms.modified``, JSON-LD ``dateModified``). ``None`` when the
+    page's metadata states no modification date."""
     reader: Literal["web_scraper", "document_reader"]
     retrieved_at: AwareISOString
     """When this body was observed — preserved across cache admission."""
