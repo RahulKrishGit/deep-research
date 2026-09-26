@@ -2,10 +2,10 @@
 
 Decision 1's structural choice rule (§4.1), picked *after* the writer's
 statements are checked: an **options table** assembled from option marks on
-kept (``consistent``/``corrected``) statements, when the question's own parts
-name >= 2 options; else a **findings table** of verified figures, when >= 2
-qualify; else no table. No model call ever writes table text — every word in
-a cell is either a verbatim span of a checked sentence (options) or a
+kept (``consistent``/``corrected``) statements, when a required part on its
+own names >= 2 options; else a **findings table** of verified figures, when
+>= 2 qualify; else no table. No model call ever writes table text — every
+word in a cell is either a verbatim span of a checked sentence (options) or a
 page-verified field (findings).
 
 :func:`build_table` is the one entry point the Report Writer calls
@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
+from typing import NamedTuple
 
 from deep_research.agents.evidence import cosmetic_text, excerpt_matches
 from deep_research.agents.figures import parse_figure, quantities_in, same_quantity
@@ -31,6 +32,7 @@ from deep_research.agents.verified_facts import (
     same_subject,
 )
 from deep_research.utils.types import (
+    EarlierEdition,
     FactRow,
     FigureResult,
     Finding,
@@ -87,9 +89,10 @@ def _placed_statements(
 ) -> list[tuple[ReportStatement, str | None]]:
     """Every statement with its own section's coverage id, in report order.
 
-    ``None`` for a bottom-line statement: its parts are the parts of the
-    findings it cites (§4.2's "a statement's parts"), not a section of its
-    own.
+    ``None`` for a bottom-line statement: a bottom-line mark's parts are
+    resolved per mark in :func:`_resolve_marks`, from the cited finding whose
+    own page is the mark's source, never from the whole statement's finding
+    set.
     """
     placed: list[tuple[ReportStatement, str | None]] = []
     for point in composition.summary:
@@ -110,15 +113,10 @@ def _part_by_finding(composition: ReportComposition) -> dict[str, str]:
     return mapping
 
 
-def _statement_parts(
-    statement: ReportStatement,
-    own_section: str | None,
-    part_by_finding: Mapping[str, str],
-) -> set[str]:
-    if own_section is not None:
-        return {own_section}
+def _finding_source_urls(composition: ReportComposition) -> dict[str, str]:
     return {
-        part_by_finding[fid] for fid in statement.finding_ids if fid in part_by_finding
+        finding_fingerprint(finding): _norm(finding.source_url)
+        for finding in composition.findings
     }
 
 
@@ -130,50 +128,85 @@ def _required_coverage_ids(composition: ReportComposition) -> set[str]:
     }
 
 
-def _valid_marks(statement: ReportStatement) -> list[ItemMark]:
-    """A statement's marks whose name/verdict are verbatim spans of its final text (§4.2 last bullet)."""
-    valid: list[ItemMark] = []
-    for mark in statement.items:
-        if not excerpt_matches(statement.text, mark.name):
-            continue
-        if mark.verdict and not excerpt_matches(statement.text, mark.verdict):
-            continue
-        valid.append(mark)
-    return valid
-
-
 def _option_key(name: str) -> str:
-    """§4.2: the row key — whitespace and dash variants folded, case-insensitive."""
+    """§4.2: the row key — case, whitespace and dash variants folded (cosmetic_text plus dash-class collapse)."""
     return _DASH_CLASS.sub("-", cosmetic_text(name))
 
 
-def _kept_marked_statements(
-    composition: ReportComposition,
-) -> list[tuple[ReportStatement, set[str], list[ItemMark]]]:
-    """Kept (consistent/corrected) statements that carry >= 1 valid mark, in report order."""
+class _ResolvedMark(NamedTuple):
+    """One valid mark, tied to the parts it counts toward (§4.2's "a statement's parts")."""
+
+    statement_id: str
+    mark: ItemMark
+    parts: frozenset[str]
+    order: int
+
+
+def _resolve_marks(composition: ReportComposition) -> list[_ResolvedMark]:
+    """Kept statements' valid marks, in report order, each tied to its own part(s).
+
+    Three checks before a mark counts (§4.2 last bullet): the statement is
+    kept (``consistent``/``corrected``, never ``unchecked``); ``name`` and
+    ``verdict`` are verbatim spans of the statement's final text; and the
+    mark's own ``source_url`` is the page of one of the findings the
+    statement cites — a mark cannot credit a page the sentence never rested
+    on. A mark failing that last check is dropped and recorded in
+    ``composition.dropped_marks`` (a statement citing no known finding skips
+    this check rather than dropping every mark it carries, since there is
+    nothing to validate the source against).
+
+    A section statement's marks count toward its own section's part. A
+    bottom-line statement can cite findings from more than one part; a mark
+    there counts only toward the parts of the findings whose own page is the
+    mark's ``source_url`` — never every part the statement happens to cite —
+    so a source's verdict never shows under a criterion it did not judge.
+    """
     part_by_finding = _part_by_finding(composition)
-    out: list[tuple[ReportStatement, set[str], list[ItemMark]]] = []
+    finding_url = _finding_source_urls(composition)
+    resolved: list[_ResolvedMark] = []
+    order = 0
     for statement, own_section in _placed_statements(composition):
         verdict = composition.statement_verdicts.get(statement.statement_id, "")
         if verdict not in _KEPT_VERDICTS:
             continue
-        marks = _valid_marks(statement)
-        if not marks:
-            continue
-        parts = _statement_parts(statement, own_section, part_by_finding)
-        out.append((statement, parts, marks))
-    return out
+        cited_urls = {
+            finding_url[fid] for fid in statement.finding_ids if fid in finding_url
+        }
+        for mark in statement.items:
+            if not excerpt_matches(statement.text, mark.name):
+                continue
+            if mark.verdict and not excerpt_matches(statement.text, mark.verdict):
+                continue
+            mark_url = _norm(mark.source_url)
+            if cited_urls and mark_url not in cited_urls:
+                composition.dropped_marks.append(
+                    f"{statement.statement_id}: '{mark.name}' credits a page "
+                    "the statement does not cite"
+                )
+                continue
+            if own_section is not None:
+                parts = frozenset({own_section})
+            else:
+                parts = frozenset(
+                    part_by_finding[fid]
+                    for fid in statement.finding_ids
+                    if fid in part_by_finding and finding_url.get(fid) == mark_url
+                )
+            resolved.append(_ResolvedMark(statement.statement_id, mark, parts, order))
+            order += 1
+    return resolved
 
 
-def _marked_option_keys_in_required_parts(composition: ReportComposition) -> set[str]:
-    required = _required_coverage_ids(composition)
-    keys: set[str] = set()
-    for _statement, parts, marks in _kept_marked_statements(composition):
-        if not parts & required:
-            continue
-        for mark in marks:
-            keys.add(_option_key(mark.name))
-    return keys
+def _required_part_option_counts(
+    resolved_marks: Sequence[_ResolvedMark], required: set[str]
+) -> dict[str, set[str]]:
+    counts: dict[str, set[str]] = {}
+    for resolved in resolved_marks:
+        for part in resolved.parts:
+            if part not in required:
+                continue
+            counts.setdefault(part, set()).add(_option_key(resolved.mark.name))
+    return counts
 
 
 # =============================================================================
@@ -182,9 +215,23 @@ def _marked_option_keys_in_required_parts(composition: ReportComposition) -> set
 
 
 def build_table(composition: ReportComposition) -> ReportTable | None:
-    """§4.1: options when >= 2 options are marked in a required part; else findings when >= 2 qualify; else none."""
-    if len(_marked_option_keys_in_required_parts(composition)) >= 2:
-        return options_table(composition)
+    """§4.1: options when one required part alone marks >= 2 options; else findings when >= 2 qualify; else none.
+
+    The >= 2 test applies per required part (consistent with the column
+    rule, §4.2): two different required parts each marking one distinct
+    option do not qualify, since neither part alone names a comparison. If
+    the gate passes but the resulting options table still has fewer than 2
+    rows (every marked option's only cell lay outside the parts that
+    ultimately qualified as columns), this falls through to the findings
+    table instead of publishing a near-empty options table.
+    """
+    resolved_marks = _resolve_marks(composition)
+    required = _required_coverage_ids(composition)
+    per_part = _required_part_option_counts(resolved_marks, required)
+    if any(len(keys) >= 2 for keys in per_part.values()):
+        table = _build_options_table(resolved_marks, composition)
+        if table is not None and len(table.rows) >= 2:
+            return table
     table = findings_table(composition)
     if table is not None and len(table.rows) >= 2:
         return table
@@ -230,32 +277,31 @@ def _dedup_join(verdicts: Sequence[str]) -> str:
 
 
 def _cell_pages(
-    kept: Sequence[tuple[ReportStatement, set[str], list[ItemMark]]],
+    resolved_marks: Sequence[_ResolvedMark],
     part_cid: str,
     option_key: str,
 ) -> tuple["OrderedDict[str, list[str]]", list[str]]:
     pages: OrderedDict[str, list[str]] = OrderedDict()
     statement_ids: list[str] = []
-    for statement, parts, marks in kept:
-        if part_cid not in parts:
+    for resolved in resolved_marks:
+        if part_cid not in resolved.parts:
             continue
-        matched = False
-        for mark in marks:
-            if _option_key(mark.name) != option_key:
-                continue
-            pages.setdefault(_norm(mark.source_url), []).append(mark.verdict)
-            matched = True
-        if matched and statement.statement_id not in statement_ids:
-            statement_ids.append(statement.statement_id)
+        if _option_key(resolved.mark.name) != option_key:
+            continue
+        pages.setdefault(_norm(resolved.mark.source_url), []).append(
+            resolved.mark.verdict
+        )
+        if resolved.statement_id not in statement_ids:
+            statement_ids.append(resolved.statement_id)
     return pages, statement_ids
 
 
 def _part_cell(
-    kept: Sequence[tuple[ReportStatement, set[str], list[ItemMark]]],
+    resolved_marks: Sequence[_ResolvedMark],
     part_cid: str,
     option_key: str,
 ) -> TableCell:
-    pages, statement_ids = _cell_pages(kept, part_cid, option_key)
+    pages, statement_ids = _cell_pages(resolved_marks, part_cid, option_key)
     entries = [
         TableEntry(
             text=_dedup_join(verdicts) if index < MAX_FULL_PAGES_PER_CELL else "",
@@ -267,21 +313,18 @@ def _part_cell(
 
 
 def _recommended_by_cell(
-    kept: Sequence[tuple[ReportStatement, set[str], list[ItemMark]]],
+    resolved_marks: Sequence[_ResolvedMark],
     option_key: str,
     page_credits: Mapping[str, PageCredit],
 ) -> TableCell:
     pages: OrderedDict[str, None] = OrderedDict()
     statement_ids: list[str] = []
-    for statement, _parts, marks in kept:
-        matched = False
-        for mark in marks:
-            if _option_key(mark.name) != option_key or not mark.picked:
-                continue
-            pages.setdefault(_norm(mark.source_url), None)
-            matched = True
-        if matched and statement.statement_id not in statement_ids:
-            statement_ids.append(statement.statement_id)
+    for resolved in resolved_marks:
+        if _option_key(resolved.mark.name) != option_key or not resolved.mark.picked:
+            continue
+        pages.setdefault(_norm(resolved.mark.source_url), None)
+        if resolved.statement_id not in statement_ids:
+            statement_ids.append(resolved.statement_id)
     entries = [
         TableEntry(
             text="",
@@ -294,40 +337,31 @@ def _recommended_by_cell(
 
 
 def _distinct_pick_pages(
-    kept: Sequence[tuple[ReportStatement, set[str], list[ItemMark]]],
-    option_key: str,
+    resolved_marks: Sequence[_ResolvedMark], option_key: str
 ) -> int:
     pages: set[str] = set()
-    for _statement, _parts, marks in kept:
-        for mark in marks:
-            if _option_key(mark.name) == option_key and mark.picked:
-                pages.add(_norm(mark.source_url))
+    for resolved in resolved_marks:
+        if _option_key(resolved.mark.name) == option_key and resolved.mark.picked:
+            pages.add(_norm(resolved.mark.source_url))
     return len(pages)
 
 
-def options_table(composition: ReportComposition) -> ReportTable:
-    """§4.2: the table code assembles from option marks, the parts and the page credits.
-
-    Builds from *every* kept, valid mark regardless of its part's required
-    flag — the structural gate that decides whether an options table is used
-    at all lives in :func:`build_table` (§4.1); this function only shapes
-    whatever marks exist.
-    """
-    kept = _kept_marked_statements(composition)
+def _build_options_table(
+    resolved_marks: Sequence[_ResolvedMark], composition: ReportComposition
+) -> ReportTable:
     required = _required_coverage_ids(composition)
     plan_order = [topic.coverage_id for topic in composition.sub_topics]
 
     option_labels: dict[str, str] = {}
-    option_first_index: dict[str, int] = {}
+    option_first_order: dict[str, int] = {}
     part_option_keys: dict[str, set[str]] = {}
-    for index, (_statement, parts, marks) in enumerate(kept):
-        for mark in marks:
-            key = _option_key(mark.name)
-            if key not in option_labels:
-                option_labels[key] = mark.name
-                option_first_index[key] = index
-            for part in parts:
-                part_option_keys.setdefault(part, set()).add(key)
+    for resolved in resolved_marks:
+        key = _option_key(resolved.mark.name)
+        if key not in option_labels:
+            option_labels[key] = resolved.mark.name
+            option_first_order[key] = resolved.order
+        for part in resolved.parts:
+            part_option_keys.setdefault(part, set()).add(key)
 
     included_parts = [cid for cid, keys in part_option_keys.items() if len(keys) >= 2]
 
@@ -349,17 +383,19 @@ def options_table(composition: ReportComposition) -> ReportTable:
         row_cells = [TableCell(text=label)]
         non_empty = 0
         for cid in included_parts:
-            cell = _part_cell(kept, cid, key)
+            cell = _part_cell(resolved_marks, cid, key)
             if cell.entries:
                 non_empty += 1
             row_cells.append(cell)
-        recommended_cell = _recommended_by_cell(kept, key, composition.page_credits)
+        recommended_cell = _recommended_by_cell(
+            resolved_marks, key, composition.page_credits
+        )
         if non_empty == 0 and not recommended_cell.entries:
             continue  # §4.2: a row needs >= 1 non-empty cell
         row_cells.append(recommended_cell)
-        pick_pages = _distinct_pick_pages(kept, key)
+        pick_pages = _distinct_pick_pages(resolved_marks, key)
         rows_data.append(
-            (label, row_cells, pick_pages, non_empty, option_first_index[key])
+            (label, row_cells, pick_pages, non_empty, option_first_order[key])
         )
 
     rows_data.sort(key=lambda row: (-row[2], -row[3], row[4]))
@@ -379,6 +415,17 @@ def options_table(composition: ReportComposition) -> ReportTable:
         rows=[row[1] for row in capped],
         caption=caption,
     )
+
+
+def options_table(composition: ReportComposition) -> ReportTable:
+    """§4.2: the table code assembles from option marks, the parts and the page credits.
+
+    Builds from *every* kept, valid mark regardless of its part's required
+    flag — the structural gate that decides whether an options table is used
+    at all lives in :func:`build_table` (§4.1); this function only shapes
+    whatever marks exist.
+    """
+    return _build_options_table(_resolve_marks(composition), composition)
 
 
 # =============================================================================
@@ -589,14 +636,27 @@ def _what_was_measured(row: FactRow, finding: Finding | None, rival: bool) -> st
     return text
 
 
-def _result_text(row: FactRow, mixed_kinds: bool) -> str:
+def _earlier_edition_date(
+    edition: EarlierEdition, finding_by_id: Mapping[str, Finding]
+) -> str | None:
+    """§4.3: the earlier edition's own release date, else its statement date — never the unverified vintage."""
+    earlier_finding = finding_by_id.get(edition.finding_id)
+    if earlier_finding is None:
+        return None
+    return earlier_finding.release_date or earlier_finding.statement_date
+
+
+def _result_text(
+    row: FactRow, mixed_kinds: bool, finding_by_id: Mapping[str, Finding]
+) -> str:
     text = row.value
     if mixed_kinds:
         text = f"{text}, {'actual' if row.kind == 'actual' else 'forecast'}"
     for edition in row.earlier:
+        date = _earlier_edition_date(edition, finding_by_id)
         text = (
-            f"{text}; earlier: {edition.value} ({edition.release})"
-            if edition.release
+            f"{text}; earlier: {edition.value} ({date})"
+            if date
             else f"{text}; earlier: {edition.value}"
         )
     return text
@@ -685,7 +745,7 @@ def findings_table(composition: ReportComposition) -> ReportTable | None:
                     finding_ids=finding_ids,
                 ),
                 TableCell(
-                    text=_result_text(row, mixed),
+                    text=_result_text(row, mixed, finding_by_id),
                     row_ids=row_ids,
                     finding_ids=finding_ids,
                 ),
@@ -700,6 +760,8 @@ def findings_table(composition: ReportComposition) -> ReportTable | None:
 
     if total > MAX_FINDING_ROWS:
         caption = f"Showing {MAX_FINDING_ROWS} of {total} verified figures; all are in the evidence log."
+        if kind_caption:
+            caption = f"{caption} {kind_caption}"
     else:
         caption = kind_caption
 

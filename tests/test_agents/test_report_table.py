@@ -23,6 +23,7 @@ from deep_research.utils.types import (
     ItemMark,
     PageCredit,
     ReportComposition,
+    ReportPart,
     ReportPoint,
     ReportSection,
     ReportStatement,
@@ -1363,7 +1364,635 @@ def test_cap_12_selection_priority() -> None:
     row_ids = {r[0].row_ids[0] for r in table.rows}
     assert "K001" in row_ids  # answers a required target: always kept
     assert "K002" in row_ids  # cited by the bottom line: kept ahead of "the rest"
-    assert (
-        table.caption
-        == "Showing 12 of 13 verified figures; all are in the evidence log."
+    assert table.caption == (
+        "Showing 12 of 13 verified figures; all are in the evidence log. "
+        "No figure in this table is a forecast."
     )
+
+
+# =============================================================================
+# Review round 1 fixes.
+# =============================================================================
+
+
+def test_capped_findings_table_keeps_the_forecast_caption() -> None:
+    required_row, required_finding = _row(
+        "K000",
+        url="https://req.test/x",
+        value="1",
+        unit="GW",
+        kind="forecast",
+        target_ids=["req-a"],
+        finding_target_ids=["req-a"],
+    )
+    other_rows: list[FactRow] = []
+    other_findings: list[Finding] = []
+    section_points: list[ReportPoint] = []
+    for n in range(12):
+        row, finding = _row(
+            f"K{n + 1:03d}",
+            url=f"https://f{n}.test/x",
+            value=str(n),
+            unit="GW",
+            kind="forecast",
+        )
+        other_rows.append(row)
+        other_findings.append(finding)
+        section_points.append(_cite(finding_fingerprint(finding), statement_id=f"S{n}"))
+    composition = _composition(
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="req-a",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    )
+                ],
+            )
+        ],
+        findings=[required_finding, *other_findings],
+        fact_rows=[required_row, *other_rows],
+        sections=[_section("topic-x", "Section", section_points)],
+        statement_verdicts=_verdicts(*[p.statement_id for p in section_points]),
+    )
+    table = findings_table(composition)
+    assert table is not None
+    assert table.caption == (
+        "Showing 12 of 13 verified figures; all are in the evidence log. "
+        "Every figure in this table is a forecast."
+    )
+
+
+def test_capped_findings_table_keeps_the_actual_caption() -> None:
+    required_row, required_finding = _row(
+        "K000",
+        url="https://req.test/x",
+        value="1",
+        unit="GW",
+        kind="actual",
+        target_ids=["req-a"],
+        finding_target_ids=["req-a"],
+    )
+    other_rows: list[FactRow] = []
+    other_findings: list[Finding] = []
+    section_points: list[ReportPoint] = []
+    for n in range(12):
+        row, finding = _row(
+            f"K{n + 1:03d}",
+            url=f"https://f{n}.test/x",
+            value=str(n),
+            unit="GW",
+            kind="actual",
+        )
+        other_rows.append(row)
+        other_findings.append(finding)
+        section_points.append(_cite(finding_fingerprint(finding), statement_id=f"S{n}"))
+    composition = _composition(
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="req-a",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    )
+                ],
+            )
+        ],
+        findings=[required_finding, *other_findings],
+        fact_rows=[required_row, *other_rows],
+        sections=[_section("topic-x", "Section", section_points)],
+        statement_verdicts=_verdicts(*[p.statement_id for p in section_points]),
+    )
+    table = findings_table(composition)
+    assert table is not None
+    assert table.caption == (
+        "Showing 12 of 13 verified figures; all are in the evidence log. "
+        "No figure in this table is a forecast."
+    )
+
+
+def test_earlier_edition_date_comes_from_the_earlier_findings_own_dates() -> None:
+    earlier_row, earlier_finding = _row(
+        "K000",
+        url="https://earlier.test/x",
+        value="9",
+        unit="GW",
+        target_ids=["req-earlier"],
+        finding_target_ids=["req-earlier"],
+        release_date="2024-01-01",
+        vintage="January 2024 Preliminary Inventory",
+    )
+    row, finding = _row(
+        "K001",
+        url="https://a.test/x",
+        value="10",
+        unit="GW",
+        target_ids=["req-a"],
+        finding_target_ids=["req-a"],
+        earlier=[
+            EarlierEdition(
+                value="9 GW",
+                release="January 2024 Preliminary Inventory",
+                finding_id=finding_fingerprint(earlier_finding),
+            )
+        ],
+    )
+    other_row, other_finding = _row(
+        "K002",
+        url="https://b.test/y",
+        value="20",
+        unit="GW",
+        target_ids=["req-b"],
+        finding_target_ids=["req-b"],
+    )
+    composition = _composition(
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="req-a",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                    EvidenceTarget(
+                        target_id="req-b",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                ],
+            )
+        ],
+        findings=[earlier_finding, finding, other_finding],
+        fact_rows=[row, other_row],
+    )
+    table = findings_table(composition)
+    assert table is not None
+    result = {r[0].row_ids[0]: r[1].text for r in table.rows}["K001"]
+    assert result == "10 GW; earlier: 9 GW (2024-01-01)"
+    assert "January 2024 Preliminary Inventory" not in result
+
+
+def test_earlier_edition_falls_back_to_the_earlier_findings_statement_date() -> None:
+    earlier_row, earlier_finding = _row(
+        "K000",
+        url="https://earlier.test/x",
+        value="9",
+        unit="GW",
+        target_ids=["req-earlier"],
+        finding_target_ids=["req-earlier"],
+        statement_date="2024-02-02",
+    )
+    row, finding = _row(
+        "K001",
+        url="https://a.test/x",
+        value="10",
+        unit="GW",
+        target_ids=["req-a"],
+        finding_target_ids=["req-a"],
+        earlier=[
+            EarlierEdition(
+                value="9 GW",
+                release=None,
+                finding_id=finding_fingerprint(earlier_finding),
+            )
+        ],
+    )
+    other_row, other_finding = _row(
+        "K002",
+        url="https://b.test/y",
+        value="20",
+        unit="GW",
+        target_ids=["req-b"],
+        finding_target_ids=["req-b"],
+    )
+    composition = _composition(
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="req-a",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                    EvidenceTarget(
+                        target_id="req-b",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                ],
+            )
+        ],
+        findings=[earlier_finding, finding, other_finding],
+        fact_rows=[row, other_row],
+    )
+    table = findings_table(composition)
+    assert table is not None
+    result = {r[0].row_ids[0]: r[1].text for r in table.rows}["K001"]
+    assert result == "10 GW; earlier: 9 GW (2024-02-02)"
+
+
+def test_mark_credited_to_an_uncited_page_is_dropped() -> None:
+    read = make_read("Model A is great.", url="https://correct.test/page", title="Page")
+    finding = make_finding(read, "Model A is great.")
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=[finding],
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "Site A says Model A is great.",
+                        items=[
+                            ItemMark(
+                                name="Model A",
+                                verdict="great",
+                                source_url="https://correct.test/page",
+                            )
+                        ],
+                        finding_ids=[finding_fingerprint(finding)],
+                    ),
+                    _stmt(
+                        "S2",
+                        "Site A says Model B is great.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="great",
+                                source_url="https://wrong.test/other",
+                            )
+                        ],
+                        finding_ids=[finding_fingerprint(finding)],
+                    ),
+                    _stmt(
+                        "S3",
+                        "Site A says Model C is great.",
+                        items=[
+                            ItemMark(
+                                name="Model C",
+                                verdict="great",
+                                source_url="https://correct.test/page",
+                            )
+                        ],
+                        finding_ids=[finding_fingerprint(finding)],
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2", "S3"),
+    )
+    table = options_table(composition)
+    assert "Model B" not in labels_of(table)
+    assert "Model A" in labels_of(table)
+    assert "Model C" in labels_of(table)
+    assert any("Model B" in msg and "S2" in msg for msg in composition.dropped_marks)
+
+
+def test_choice_rule_two_required_parts_with_one_option_each_give_no_options_table() -> (
+    None
+):
+    composition = _composition(
+        sub_topics=[
+            _topic("topic-01", required=True, priority=1),
+            _topic("topic-02", required=True, priority=2),
+        ],
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "Site A says Model A is great.",
+                        items=[
+                            ItemMark(
+                                name="Model A",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                    )
+                ],
+            ),
+            _section(
+                "topic-02",
+                "Mic",
+                [
+                    _stmt(
+                        "S2",
+                        "Site A says Model B is great.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                    )
+                ],
+            ),
+        ],
+        statement_verdicts=_verdicts("S1", "S2"),
+    )
+    assert build_table(composition) is None
+
+
+def test_choice_rule_one_required_part_with_two_options_gives_options_table() -> None:
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "Site A says Model A is great.",
+                        items=[
+                            ItemMark(
+                                name="Model A",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                    ),
+                    _stmt(
+                        "S2",
+                        "Site A says Model B is great.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                    ),
+                ],
+            ),
+        ],
+        statement_verdicts=_verdicts("S1", "S2"),
+    )
+    table = build_table(composition)
+    assert table is not None
+    assert table.shape == "options"
+    assert len(table.rows) == 2
+
+
+def test_bottom_line_mark_lands_only_in_the_part_of_its_own_cited_page() -> None:
+    sound_url = "https://sound.test/page"
+    price_url = "https://price.test/page"
+    price_url2 = "https://price2.test/page"
+    sound_read = make_read("Model A scores high.", url=sound_url, title="Sound page")
+    price_read = make_read("Model A costs $10.", url=price_url, title="Price page")
+    price_read2 = make_read("Model C costs $30.", url=price_url2, title="Price page 2")
+    sound_finding = make_finding(sound_read, "Model A scores high.")
+    price_finding = make_finding(price_read, "Model A costs $10.")
+    price_finding2 = make_finding(price_read2, "Model C costs $30.")
+    composition = _composition(
+        sub_topics=[
+            _topic("topic-01", required=True, priority=1),
+            _topic("topic-02", required=False, priority=2),
+        ],
+        findings=[sound_finding, price_finding, price_finding2],
+        parts=[
+            ReportPart(
+                coverage_id="topic-01",
+                sub_topic_title="Sound",
+                finding_ids=[finding_fingerprint(sound_finding)],
+                status="written",
+            ),
+            ReportPart(
+                coverage_id="topic-02",
+                sub_topic_title="Prices",
+                finding_ids=[
+                    finding_fingerprint(price_finding),
+                    finding_fingerprint(price_finding2),
+                ],
+                status="written",
+            ),
+        ],
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "Site A says Model B scores high too.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="scores high too",
+                                source_url=sound_url,
+                            )
+                        ],
+                        finding_ids=[finding_fingerprint(sound_finding)],
+                    )
+                ],
+            ),
+            _section(
+                "topic-02",
+                "Prices",
+                [
+                    _stmt(
+                        "S2",
+                        "Site A lists Model B at $20.",
+                        items=[
+                            ItemMark(
+                                name="Model B", verdict="$20", source_url=price_url
+                            )
+                        ],
+                        finding_ids=[finding_fingerprint(price_finding)],
+                    ),
+                    _stmt(
+                        "S3",
+                        "Site A lists Model C at $30.",
+                        items=[
+                            ItemMark(
+                                name="Model C", verdict="$30", source_url=price_url2
+                            )
+                        ],
+                        finding_ids=[finding_fingerprint(price_finding2)],
+                    ),
+                ],
+            ),
+        ],
+        summary=[
+            _stmt(
+                "B1",
+                "Site A says Model A scores high and costs $10.",
+                items=[
+                    ItemMark(
+                        name="Model A", verdict="scores high", source_url=sound_url
+                    )
+                ],
+                finding_ids=[
+                    finding_fingerprint(sound_finding),
+                    finding_fingerprint(price_finding),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2", "S3", "B1"),
+    )
+    table = options_table(composition)
+    assert table.columns == ["Option", "Sound", "Prices", "Recommended by"]
+    labels = labels_of(table)
+    a_row = table.rows[labels.index("Model A")]
+    sound_cell, price_cell = a_row[1], a_row[2]
+    assert (
+        sound_cell.entries
+    )  # the bottom-line mark counted for Sound, its own page's part
+    assert (
+        price_cell.entries == []
+    )  # never spread to Prices, though B1 also cites price_finding
+
+
+def test_verbatim_span_guard_drops_a_mark_whose_verdict_is_not_in_the_sentence() -> (
+    None
+):
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "Site A says Model A is great.",
+                        items=[
+                            ItemMark(
+                                name="Model A",
+                                verdict="a verdict never written in the sentence",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                    ),
+                    _stmt(
+                        "S2",
+                        "Site A says Model B is great.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                    ),
+                    _stmt(
+                        "S3",
+                        "Site A says Model C is great.",
+                        items=[
+                            ItemMark(
+                                name="Model C",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2", "S3"),
+    )
+    table = options_table(composition)
+    assert "Model A" not in labels_of(table)
+    assert "Model B" in labels_of(table)
+    assert "Model C" in labels_of(table)
+
+
+def test_option_keys_fold_case_whitespace_and_dash_variants() -> None:
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "Site A says Sony WH-1000XM6 is great.",
+                        items=[
+                            ItemMark(
+                                name="Sony WH-1000XM6",
+                                verdict="great",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                    ),
+                    _stmt(
+                        "S2",
+                        "Site B says sony  wh \u2013 1000xm6 is excellent.",
+                        items=[
+                            ItemMark(
+                                name="sony  wh \u2013 1000xm6",
+                                verdict="excellent",
+                                source_url="https://b.test/y",
+                            )
+                        ],
+                    ),
+                    _stmt(
+                        "S3",
+                        "Site A says Model B is fine.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="fine",
+                                source_url="https://a.test/x",
+                            )
+                        ],
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2", "S3"),
+    )
+    table = options_table(composition)
+    labels = labels_of(table)
+    assert labels.count("Sony WH-1000XM6") == 1  # the two spellings folded to one row
+    assert "Sony WH-1000XM6" in labels
+    merged_row = table.rows[labels.index("Sony WH-1000XM6")]
+    assert {e.source_url for e in merged_row[1].entries} == {
+        "https://a.test/x",
+        "https://b.test/y",
+    }
