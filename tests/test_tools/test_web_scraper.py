@@ -1612,3 +1612,57 @@ async def test_two_disagreeing_article_json_ld_nodes_give_no_date_at_all(
     result = await _read_served_page(tracker, page)
 
     assert "page_published" not in result.data
+
+
+# ---------------------------------------------------------------------------
+# D3: title precedence -- og:title, then twitter:title, then the first h1,
+# then the raw <title> tag, and never a title equal to og:site_name while a
+# later, differing candidate exists.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scraper_prefers_og_title_over_a_bare_site_name_title(tracker) -> None:
+    """A platform's bare site name in ``<title>`` never outranks ``og:title``."""
+    page = (
+        "<html><head><title>Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        '<meta property="og:title" content="New filing rule takes effect in 2026">'
+        "</head><body><p>The filing rule changes take effect next year.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "New filing rule takes effect in 2026"
+
+
+@pytest.mark.asyncio
+async def test_scraper_uses_the_title_tag_when_no_other_candidate_exists(
+    tracker,
+) -> None:
+    """With no og:title, twitter:title or h1, the raw ``<title>`` still wins."""
+    page = (
+        "<html><head><title>Example Institute Briefing</title>"
+        "</head><body><p>A short briefing on the survey results.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Example Institute Briefing"
+
+
+@pytest.mark.asyncio
+async def test_scraper_prefers_the_first_h1_over_a_site_name_title(tracker) -> None:
+    """An ``h1`` outranks a ``<title>`` that only names the site itself."""
+    page = (
+        "<html><head><title>Example Register</title>"
+        "</head><body><h1>Model A outperforms Model B in the trial</h1>"
+        "<p>Further detail about the trial follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Model A outperforms Model B in the trial"

@@ -357,7 +357,7 @@ def _extract_html(html: str) -> tuple[str, str, str | None, str | None]:
     is prose a reader wrote for a person, not a machine-readable claim.
     """
     soup = BeautifulSoup(html, "html.parser")
-    title = soup.title.get_text(strip=True) if soup.title else ""
+    title = _page_title(soup)
     # Detached rather than decomposed: a shell's JSON payloads live in them.
     scripts = [element.extract() for element in soup("script")]
     for element in soup(["style", "noscript"]):
@@ -374,6 +374,69 @@ def _extract_html(html: str) -> tuple[str, str, str | None, str | None]:
         )
     page_published, page_updated = _extract_page_date(soup, scripts)
     return title, text, page_published, page_updated
+
+
+# --------------------------------------------------------------------------
+# D3: title precedence. A page's own structured claim about itself
+# (``og:title``, then ``twitter:title``) outranks markup shaped like a
+# heading (the first ``h1``), which outranks the raw ``<title>`` tag -- a
+# browser-tab label a template can fill with nothing but the site's own
+# name. A candidate equal to ``og:site_name`` (the site's name for itself,
+# e.g. a platform's bare name) is skipped whenever a later, differing
+# candidate exists: a probe of a live page found ``<title>`` holding only
+# the site's own name while ``og:title`` held the page's real headline.
+# --------------------------------------------------------------------------
+
+
+def _meta_property_content(soup: BeautifulSoup, prop: str) -> str | None:
+    meta = soup.find("meta", attrs={"property": prop})
+    if meta is None:
+        return None
+    content = meta.get("content")
+    return content.strip() if isinstance(content, str) and content.strip() else None
+
+
+def _meta_name_content(soup: BeautifulSoup, name: str) -> str | None:
+    meta = soup.find(
+        "meta", attrs={"name": re.compile(rf"^{re.escape(name)}$", re.IGNORECASE)}
+    )
+    if meta is None:
+        return None
+    content = meta.get("content")
+    return content.strip() if isinstance(content, str) and content.strip() else None
+
+
+def _first_h1_text(soup: BeautifulSoup) -> str | None:
+    heading = soup.find("h1")
+    if heading is None:
+        return None
+    text = heading.get_text(strip=True)
+    return text or None
+
+
+def _page_title(soup: BeautifulSoup) -> str:
+    """The page's title, by D3's precedence: ``og:title``, ``twitter:title``,
+    the first ``h1``, then the raw ``<title>`` tag -- skipping any candidate
+    equal to ``og:site_name`` while a later, differing candidate remains, so
+    the site's own name for itself never stands in for one of its pages.
+    """
+    site_name = _meta_property_content(soup, "og:site_name")
+    raw_title = soup.title.get_text(strip=True) if soup.title else ""
+    candidates: list[str | None] = [
+        _meta_property_content(soup, "og:title"),
+        _meta_name_content(soup, "twitter:title"),
+        _first_h1_text(soup),
+        raw_title or None,
+    ]
+    for index, candidate in enumerate(candidates):
+        if not candidate:
+            continue
+        if candidate == site_name and any(
+            later and later != site_name for later in candidates[index + 1 :]
+        ):
+            continue
+        return candidate
+    return ""
 
 
 # --------------------------------------------------------------------------

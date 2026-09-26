@@ -6,7 +6,7 @@ import asyncio
 import csv
 import io
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -65,6 +65,7 @@ class DocumentReaderTool(BaseTool):
         "source": "string",
         "requested_source": "string",
         "resolved_source": "string",
+        "title": "string",
         "format": "string",
         "chunks": "array",
         "failures": "array",
@@ -157,7 +158,7 @@ class DocumentReaderTool(BaseTool):
             )
 
         try:
-            chunks, failures, extraction_complete = _extract(
+            chunks, failures, extraction_complete, metadata_title = _extract(
                 document_format, payload, self._chunk_chars, self._csv_rows_per_chunk
             )
         except Exception as error:
@@ -174,10 +175,12 @@ class DocumentReaderTool(BaseTool):
                 details={"format": document_format, "error_type": type(error).__name__},
             ) from error
         document_text = _document_text(chunks)
+        title = _document_title(metadata_title, document_text, source, resolved_source)
         data = {
             "source": source,
             "requested_source": source,
             "resolved_source": resolved_source,
+            "title": title,
             "format": document_format,
             "chunks": chunks,
             "failures": failures,
@@ -337,15 +340,17 @@ def _extract(
     payload: bytes,
     chunk_chars: int,
     csv_rows_per_chunk: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
-    """Return ``chunks``, ``failures``, and whether the extraction is complete.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, str | None]:
+    """Return ``chunks``, ``failures``, whether the extraction is complete,
+    and the document's own metadata title (D3), or ``None`` when its format
+    carries no such metadata.
 
     Completeness is a property of the *document*, not of the transport: text,
     JSON, and CSV payloads are extracted whole, while a PDF that lost a page —
     to a parse failure or to having no extractable text at all — is not.
     """
     if document_format in {"text", "markdown"}:
-        return _text_chunks(payload.decode("utf-8"), chunk_chars), [], True
+        return _text_chunks(payload.decode("utf-8"), chunk_chars), [], True, None
     if document_format == "json":
         value = json.loads(payload.decode("utf-8"))
         return (
@@ -355,9 +360,10 @@ def _extract(
             ),
             [],
             True,
+            None,
         )
     if document_format == "csv":
-        return _csv_chunks(payload, csv_rows_per_chunk), [], True
+        return _csv_chunks(payload, csv_rows_per_chunk), [], True, None
     return _pdf_chunks(payload, chunk_chars)
 
 
@@ -394,8 +400,9 @@ def _csv_chunks(payload: bytes, rows_per_chunk: int) -> list[dict[str, Any]]:
 
 def _pdf_chunks(
     payload: bytes, chunk_chars: int
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
-    """Return ``chunks``, per-page ``failures``, and completeness.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, str | None]:
+    """Return ``chunks``, per-page ``failures``, completeness, and the PDF's
+    own ``Title`` metadata field (D3), or ``None`` when it has none.
 
     A page whose text could not be extracted is skipped rather than reported
     as an empty page, and its loss makes the extraction incomplete: a scanned
@@ -406,6 +413,7 @@ def _pdf_chunks(
     failures: list[dict[str, Any]] = []
     skipped_pages = 0
     with pdfplumber.open(io.BytesIO(payload)) as document:
+        metadata_title = _pdf_metadata_title(document)
         for page_number, page in enumerate(document.pages, start=1):
             try:
                 text = page.extract_text()
@@ -425,4 +433,61 @@ def _pdf_chunks(
                         "message": str(error),
                     }
                 )
-    return chunks, failures, not failures and skipped_pages == 0
+    return chunks, failures, not failures and skipped_pages == 0, metadata_title
+
+
+def _pdf_metadata_title(document: object) -> str | None:
+    """A PDF's own ``Title`` metadata field, stripped, or ``None``.
+
+    Read defensively: ``pdfplumber``'s ``metadata`` is a plain dict when
+    present, but a malformed or absent document info dictionary must never
+    raise here -- a missing title is the honest default, not a failed read.
+    """
+    metadata = getattr(document, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    title = metadata.get("Title")
+    return title.strip() if isinstance(title, str) and title.strip() else None
+
+
+# A heading is short: this is the same length the media-type guard elsewhere
+# in this project uses to distinguish a label from a body (D3).
+_HEADING_MAX_CHARS = 200
+
+
+def _heading_line(text: str) -> str | None:
+    """The document's first heading-shaped line, or ``None`` when it has
+    none: a title is short, so a line longer than ``_HEADING_MAX_CHARS`` is
+    prose, not a heading, however early it sits in the extracted text.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped and len(stripped) <= _HEADING_MAX_CHARS:
+            return stripped
+    return None
+
+
+def _source_names(requested: str, resolved: str) -> set[str]:
+    """Every string that names the source itself -- never its content: the
+    requested and resolved locations, and each one's bare file name.
+    """
+    names = {requested, resolved}
+    for source in (requested, resolved):
+        name = Path(urlsplit(source).path if _is_remote(source) else source).name
+        if name:
+            names.add(name)
+    return names
+
+
+def _document_title(
+    metadata_title: str | None, document_text: str, requested: str, resolved: str
+) -> str:
+    """The document's title (D3): its metadata title, unless the metadata
+    carries none or names only the source itself (the URL or file name a
+    reader already sees), in which case its first heading-shaped line
+    stands in for it. An empty result lets the read registry's own default
+    (the resolved source) apply, exactly as a missing title always has.
+    """
+    if metadata_title and metadata_title not in _source_names(requested, resolved):
+        return metadata_title
+    return _heading_line(document_text) or ""

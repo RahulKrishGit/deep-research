@@ -424,3 +424,44 @@ async def test_reader_retries_rate_limit_using_numeric_retry_after(tracker) -> N
     assert calls == 2
     assert delays == [1.25]
     assert result.metadata["retry_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# D3: a document's title, when its metadata carries none.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reader_uses_the_first_heading_line_when_a_pdf_has_no_metadata_title(
+    monkeypatch, tracker
+) -> None:
+    """No metadata title: the document's own first heading line stands in."""
+
+    class Page:
+        def extract_text(self):
+            return "Findings on Filing Delays\nA longer body paragraph follows here."
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "report.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.success is True
+    assert result.data is not None
+    assert result.data["title"] == "Findings on Filing Delays"
