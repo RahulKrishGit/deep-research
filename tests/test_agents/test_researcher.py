@@ -7179,3 +7179,317 @@ async def test_a_failed_pages_units_are_not_labelled_irrelevant(
     ]
     for evidence_id in page_b_units:
         assert reasons.get(("extraction", evidence_id)) != "extraction_failed"
+
+
+# ---------------------------------------------------------------------------
+# D7/D10: the required-target sweep reaches across sub-topics
+# ---------------------------------------------------------------------------
+#
+# Fable's audit of run 5 found the same class of miss twice: a scholar's own
+# causal account and a modern historians' disagreement paragraph both sat in
+# admitted text on a page the run read, and neither was ever asked about
+# because the existing owed re-ask only asks a page about the *reading*
+# sub-topic's own required targets. The fixtures below give the required
+# target to a sub-topic that never runs this pass (``max_sub_topics=1``
+# truncates the plan to the page-reading sub-topic alone, which is simpler
+# than scripting two concurrent loops and proves the same thing: the sweep
+# reads the plan's whole inventory, not the active loop's own share of it).
+
+_CROSS_TOPIC_TARGET_ID = "topic-01-target-01"
+_CROSS_TOPIC_TARGET_QUESTION = (
+    "What explanation do published assessments give for the outage's "
+    "underlying cause?"
+)
+_CROSS_TOPIC_TARGET_ID_2 = "topic-03-target-01"
+_CROSS_TOPIC_TARGET_QUESTION_2 = (
+    "What corrective measures do published assessments recommend for the "
+    "outage?"
+)
+_CROSS_TOPIC_URL = "https://grid-notices.test/reports/substation-cycle"
+_CROSS_TOPIC_TITLE = "Substation inspection cycle report"
+_CROSS_TOPIC_OWN_PREAMBLE = (
+    "Grid engineers publish a quarterly summary of substation maintenance "
+    "activity, and this report covers every site inspected in the current "
+    "cycle across the region. "
+) * 3
+_CROSS_TOPIC_OVERLAP_SENTENCE = (
+    "Published assessments trace the outage's underlying cause to a "
+    "corroded busbar in the substation, a separate review states."
+)
+_CROSS_TOPIC_BODY = (
+    f"{_CROSS_TOPIC_OWN_PREAMBLE}\n\n{_CROSS_TOPIC_OVERLAP_SENTENCE}"
+)
+
+
+def _cross_topic_reading_sub_topic(priority: int = 1) -> SubTopic:
+    """The sub-topic that runs this pass and reads the shared page."""
+    return _sub_topic("Substation maintenance", priority, coverage_id="topic-02")
+
+
+def _cross_topic_required_sub_topic(priority: int = 2) -> SubTopic:
+    """Owns the required target; ``max_sub_topics=1`` keeps it from running."""
+    return _sub_topic(
+        "Outage cause explanations", priority, coverage_id="topic-01"
+    ).model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id=_CROSS_TOPIC_TARGET_ID,
+                    coverage_id="topic-01",
+                    question=_CROSS_TOPIC_TARGET_QUESTION,
+                    measure=(
+                        "the explanation published assessments give for the "
+                        "outage's cause"
+                    ),
+                    required=True,
+                )
+            ]
+        }
+    )
+
+
+def _cross_topic_required_sub_topic_2(priority: int = 3) -> SubTopic:
+    """A second, differently-owned required target, also never run."""
+    return _sub_topic(
+        "Outage corrective measures", priority, coverage_id="topic-03"
+    ).model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id=_CROSS_TOPIC_TARGET_ID_2,
+                    coverage_id="topic-03",
+                    question=_CROSS_TOPIC_TARGET_QUESTION_2,
+                    measure=(
+                        "the corrective measures published assessments "
+                        "recommend for the outage"
+                    ),
+                    required=True,
+                )
+            ]
+        }
+    )
+
+
+def _cross_topic_decisions() -> list[object]:
+    return [
+        use_tool(
+            "Find the report.",
+            "web_search",
+            '{"query": "substation maintenance cycle"}',
+        ),
+        use_tool(
+            "Read the report.", "web_scraper", f'{{"url": "{_CROSS_TOPIC_URL}"}}'
+        ),
+        finish("The report covers the cycle.", "Substation cycle reported."),
+    ]
+
+
+def _cross_topic_main_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The reading sub-topic's own finding, bound to no required target."""
+    del schema
+    read_id, locator, excerpt = _packet_passage_for(
+        "inspected in the current cycle", messages[1].content
+    )
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content="The substation's inspection cycle covered every site.",
+                source_url=_CROSS_TOPIC_URL,
+                source_title=_CROSS_TOPIC_TITLE,
+                confidence=0.8,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+            )
+        ]
+    )
+
+
+def _cross_topic_main_reply_already_bound(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The reading sub-topic's own finding, already bound to the target."""
+    del schema
+    read_id, locator, excerpt = _packet_passage_for(
+        "corroded busbar", messages[1].content
+    )
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "Published assessments trace the outage's cause to a "
+                    "corroded busbar in the substation."
+                ),
+                source_url=_CROSS_TOPIC_URL,
+                source_title=_CROSS_TOPIC_TITLE,
+                confidence=0.8,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+                target_ids=[_CROSS_TOPIC_TARGET_ID],
+            )
+        ]
+    )
+
+
+def _cross_topic_sweep_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The bound finding the cross-topic sweep is asked to return."""
+    del schema
+    packet = messages[1].content
+    assert "Passages owed a finding" in packet
+    assert _CROSS_TOPIC_TARGET_QUESTION in packet
+    read_id, locator, excerpt = _packet_passage_for("corroded busbar", packet)
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "Published assessments trace the outage's cause to a "
+                    "corroded busbar in the substation."
+                ),
+                source_url=_CROSS_TOPIC_URL,
+                source_title=_CROSS_TOPIC_TITLE,
+                confidence=0.8,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+                target_ids=[_CROSS_TOPIC_TARGET_ID],
+            )
+        ]
+    )
+
+
+def _cross_topic_agent(
+    tracker: Tracker, completer: ScriptedCompleter
+) -> ResearcherAgent:
+    return _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=_CROSS_TOPIC_TITLE, url=_CROSS_TOPIC_URL)]
+        ),
+        http=page_client(title=_CROSS_TOPIC_TITLE, body=_CROSS_TOPIC_BODY),
+        max_sub_topics=1,
+    )
+
+
+async def _run_cross_topic_state(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    sub_topics: list[SubTopic],
+) -> AgentRun[ResearchFindings]:
+    agent = _cross_topic_agent(tracker, completer)
+    async with tracker.session_span("session-1", "q"):
+        return await agent.run(_state(sub_topics=sub_topics))
+
+
+@pytest.mark.asyncio
+async def test_a_page_read_for_one_topic_is_swept_for_anothers_required_target(
+    tracker: Tracker,
+) -> None:
+    """A page read by sub-topic B, whose admitted text answers sub-topic A's
+    required target, yields an owed packet for that target and a finding
+    bound to it.
+    """
+    completer = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply, _cross_topic_sweep_reply],
+    )
+
+    outcome = await _run_cross_topic_state(
+        tracker,
+        completer,
+        sub_topics=[
+            _cross_topic_reading_sub_topic(),
+            _cross_topic_required_sub_topic(),
+        ],
+    )
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 2
+    assert "Passages owed a finding" not in requests[0]
+    assert "Passages owed a finding" in requests[1]
+    assert _CROSS_TOPIC_TARGET_QUESTION in requests[1]
+
+    bound = [
+        finding
+        for finding in outcome.result.findings
+        if _CROSS_TOPIC_TARGET_ID in finding.target_ids
+    ]
+    assert len(bound) == 1
+    assert bound[0].source_url == _CROSS_TOPIC_URL
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_already_answers_the_target_is_not_re_asked(
+    tracker: Tracker,
+) -> None:
+    """A page that already answers the target is not re-asked."""
+    completer = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply_already_bound],
+    )
+
+    outcome = await _run_cross_topic_state(
+        tracker,
+        completer,
+        sub_topics=[
+            _cross_topic_reading_sub_topic(),
+            _cross_topic_required_sub_topic(),
+        ],
+    )
+
+    requests = _extraction_requests(completer)
+    # One request: the page's own main extraction, already bound. No second,
+    # cross-topic-sweep request is made for a target the read already answers.
+    assert len(requests) == 1
+    assert "Passages owed a finding" not in requests[0]
+
+    bound = [
+        finding
+        for finding in outcome.result.findings
+        if _CROSS_TOPIC_TARGET_ID in finding.target_ids
+    ]
+    assert len(bound) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_cross_topic_sweep_sends_at_most_one_packet_per_read(
+    tracker: Tracker,
+) -> None:
+    """The bound holds: at most one sweep packet per read, even when the read
+    leaves more than one required target unbound.
+    """
+    completer = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply, _cross_topic_sweep_reply],
+    )
+
+    outcome = await _run_cross_topic_state(
+        tracker,
+        completer,
+        sub_topics=[
+            _cross_topic_reading_sub_topic(),
+            _cross_topic_required_sub_topic(),
+            _cross_topic_required_sub_topic_2(),
+        ],
+    )
+
+    requests = _extraction_requests(completer)
+    # Two requests, never three: one main call and exactly one sweep packet
+    # for the read, though two required targets are unbound by it.
+    assert len(requests) == 2
+    sweep_request = requests[1]
+    assert _CROSS_TOPIC_TARGET_QUESTION in sweep_request
+    assert _CROSS_TOPIC_TARGET_QUESTION_2 in sweep_request
+
+    bound = [
+        finding
+        for finding in outcome.result.findings
+        if _CROSS_TOPIC_TARGET_ID in finding.target_ids
+    ]
+    assert len(bound) == 1

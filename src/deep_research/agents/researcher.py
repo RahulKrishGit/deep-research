@@ -856,6 +856,39 @@ def _unbound_required_targets(
     ]
 
 
+def _required_targets_unbound_by_read(
+    targets: Sequence[EvidenceTarget],
+    findings: Sequence[Finding],
+    read_id: str,
+) -> list[EvidenceTarget]:
+    """Required, qualitative targets no finding from ``read_id`` alone binds.
+
+    D7/D10: the per-topic sweep above asks a page about only the reading
+    sub-topic's own required targets, answered nowhere in the pass -- so a
+    page read for one sub-topic's own targets that also holds a *different*
+    sub-topic's required answer is never asked about it. The unit here is
+    the one read, not the pass and not the topic: a target another read
+    already bound stays out, and a target this exact read has not bound
+    yet, whoever planned it, stays in. ``targets`` is meant to be the plan's
+    inventory with the reading topic's own already excluded -- those are
+    this function's sibling's job -- so the two sweeps never both pay for
+    the same target on the same read.
+    """
+    bound = {
+        target_id
+        for finding in findings
+        if finding.read_id == read_id
+        for target_id in finding.target_ids
+    }
+    return [
+        target
+        for target in targets
+        if target.required
+        and target.unit_dimension is None
+        and target.target_id not in bound
+    ]
+
+
 def _own_words(target: EvidenceTarget) -> frozenset[str]:
     """The words one target asks in its own voice: the question it states."""
     return frozenset(_tokens(target.question))
@@ -1052,7 +1085,13 @@ def extraction_messages(
         "condition label a page prints beside a name: "
         "a label reading \"(test conditions)\" states how or where something "
         "was measured, not a judgement of it, and reporting that label as a "
-        "verdict is the same error as reporting page furniture.\n"
+        "verdict is the same error as reporting page furniture. Nor is a "
+        "page's own account of what it covers -- an episode or course "
+        "description, an \"in this episode\" blurb, a table of contents, or "
+        "a summary or \"key takeaways\" box -- or a reader comment posted "
+        "below the content: a summary box that restates the page's own "
+        "findings in the page's voice may still be used, but only where the "
+        "page's body states the same thing too.\n"
         "- Every finding MUST copy read_id and locator exactly as the "
         "# Retrieved evidence section below prints them, and MUST carry a "
         "snippet: one or two sentences copied character for character from "
@@ -1154,9 +1193,9 @@ def extraction_messages(
             "# Passages owed a finding",
             "The passages below are selected evidence a previous extraction "
             "returned no finding for. They are candidates, not answers: each "
-            "shares a word with an obligation this pass has not answered, or "
-            "states a number in a power or energy unit a planned target asks "
-            "for.",
+            "shares a word with a required question this page has not "
+            "answered, or states a number in a power or energy unit a "
+            "planned target asks for.",
         ]
         if owed_targets:
             owed_lines.append("The unanswered obligations are:")
@@ -3318,6 +3357,117 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     asked.update(owed.asked_evidence_ids)
             else:
                 asked = set()
+            # The obligation this pass completed is the ACTIVE topic's, and a
+            # finding bound to another topic's target does not complete it.
+            # Mining a read for every planned target would otherwise let one
+            # topic's binding stand in for another's. Only findings that
+            # carry a binding are asked: an unbound finding (a legacy one, or
+            # an extraction that named an id outside the plan) is attributed
+            # through this very topic later, which is what the old reading —
+            # "some passage of this topic was used" — already said. Hoisted
+            # above the cross-topic sweep below, which needs this topic's own
+            # target ids to leave them to the sweep above instead of asking
+            # about them twice.
+            own_target_ids = {
+                target.target_id
+                for target in counted_evidence_targets(
+                    task.sub_topic.evidence_targets
+                )
+            }
+            # D7/D10: every admitted read is also asked about the plan's
+            # required, qualitative targets no finding from THAT read binds,
+            # whichever sub-topic owns them -- the sweep above only ever asks
+            # a page about the reading sub-topic's own required targets, so a
+            # page read for one topic that holds another topic's required
+            # answer is never asked about it (this topic's own targets are
+            # excluded here: the sweep above already covers them). Candidates
+            # come from the read's own admitted units, not only the ones the
+            # active target's own query selected, and at most one bounded
+            # packet is sent per read -- a runaway guard, not a content cap --
+            # so a read left with several targets still unbound still costs
+            # one call, never one per target.
+            cross_topic_required_targets = [
+                target
+                for target in planned_targets
+                if target.required
+                and target.unit_dimension is None
+                and target.target_id not in own_target_ids
+            ]
+            cross_topic_batches: dict[str, list[EvidenceUnit]] = {}
+            cross_topic_unanswered: dict[str, list[EvidenceTarget]] = {}
+            if cross_topic_required_targets:
+                own_read_ids = dict.fromkeys(
+                    unit.read_id
+                    for unit in owed_eligible_evidence.values()
+                    if policy.target_id is None
+                    or policy.target_id in unit.target_ids
+                )
+                for read_id in own_read_ids:
+                    owed_here = _required_targets_unbound_by_read(
+                        cross_topic_required_targets, findings, read_id
+                    )
+                    if not owed_here:
+                        continue
+                    candidates = [
+                        unit
+                        for unit in _units_owing_own_words(
+                            owed_eligible_evidence,
+                            target_ids=(
+                                ()
+                                if policy.target_id is None
+                                else (policy.target_id,)
+                            ),
+                            targets=owed_here,
+                            used=admitted_keys,
+                        )
+                        if unit.read_id == read_id
+                    ]
+                    if not candidates:
+                        continue
+                    cross_topic_batches[read_id] = _ordered_owed_units(
+                        candidates,
+                        bases=frozenset(),
+                        own_words={
+                            target.target_id: _own_words(target)
+                            for target in owed_here
+                        },
+                    )[:MAX_OWED_PASSAGES_PER_BATCH]
+                    cross_topic_unanswered[read_id] = owed_here
+            owed_cross_topic_units = [
+                unit for batch in cross_topic_batches.values() for unit in batch
+            ]
+            if cross_topic_batches:
+                # One packet per owing read, every read's own packet
+                # concurrent with every other's, under the same per-page gate
+                # the sweep above and each page's own main call ran under.
+                cross_topic_results = await asyncio.gather(
+                    *(
+                        self._retry_owed_batches_for_page(
+                            task,
+                            run,
+                            policy,
+                            read_id,
+                            [batch],
+                            gate=gate,
+                            retrieved=retrieved,
+                            known_reads=known_reads,
+                            valid_target_ids=valid_target_ids,
+                            planned_targets=planned_targets,
+                            unanswered=cross_topic_unanswered[read_id],
+                            question=question,
+                            coverage_titles=coverage_titles,
+                        )
+                        for read_id, batch in cross_topic_batches.items()
+                    )
+                )
+                for owed in cross_topic_results:
+                    findings = [*findings, *owed.findings]
+                    rejected = [*rejected, *owed.rejected]
+                    errors.extend(owed.errors)
+                    admitted_keys.extend(owed.admitted_keys)
+                    unplanned_target_ids.extend(owed.unplanned_target_ids)
+                    dropped_figures.extend(owed.dropped_figures)
+                    asked.update(owed.asked_evidence_ids)
             # Unit-level, so a passage is "used" only when that exact passage
             # produced an admitted finding. What the pass asked about and left
             # unmined says so in its own reason rather than "irrelevant";
@@ -3332,26 +3482,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 unmined_quantity_ids=owed_figure_ids,
                 unmined_target_ids=[
                     unit.evidence_id
-                    for unit in owed_own_words
+                    for unit in [*owed_own_words, *owed_cross_topic_units]
                     if unit.evidence_id in asked
                     and unit.evidence_id not in set(owed_figure_ids)
                 ],
                 failed_read_ids=failed_read_ids,
             )
-            # The obligation this pass completed is the ACTIVE topic's, and a
-            # finding bound to another topic's target does not complete it.
-            # Mining a read for every planned target would otherwise let one
-            # topic's binding stand in for another's. Only findings that
-            # carry a binding are asked: an unbound finding (a legacy one, or
-            # an extraction that named an id outside the plan) is attributed
-            # through this very topic later, which is what the old reading —
-            # "some passage of this topic was used" — already said.
-            own_target_ids = {
-                target.target_id
-                for target in counted_evidence_targets(
-                    task.sub_topic.evidence_targets
-                )
-            }
             bound = [finding for finding in findings if finding.target_ids]
             completed = policy.target_id is not None and bool(admitted_keys)
             if completed and own_target_ids and bound:
