@@ -975,7 +975,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # substance, only the numbers it states; ``agents.prompts`` was untouched,
     # so the other four target pins and the Judge pin are unchanged. Moved
     # `7b9532f4fd85` -> `4d3acb4ce085`.
-    "planner": "4d3acb4ce085",
+    # Run-4 fix wave (Fable audit 65/100; reviews and Fable prompt review GREEN
+    # at 409fc35). Moved `4d3acb4ce085` -> `a61d2797efd7`.
+    "planner": "a61d2797efd7",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1108,7 +1110,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # ('an embedded video's or audio player's title'). Moved `8f97523e05d5` -> `639232e40a48`.
     # Whole-branch review round: S6 docstrings describe failed-page handling
     # exactly (no behaviour change). Moved `639232e40a48` -> `a967b15b311d`.
-    "researcher": "a967b15b311d",
+    # Run-4 fix wave (Fable audit 65/100; reviews and Fable prompt review GREEN
+    # at 409fc35). Moved `a967b15b311d` -> `71849bdb488d`.
+    "researcher": "71849bdb488d",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1184,7 +1188,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # now carries its release; a stated release is consistent and a dropped one
     # correctable; corrected text may use the named organisation and site;
     # media-title wording. Moved `aa2d17feb972` -> `aee44f66d137`.
-    "evidence_verifier": "aee44f66d137",
+    # Run-4 fix wave (Fable audit 65/100; reviews and Fable prompt review GREEN
+    # at 409fc35). Moved `aee44f66d137` -> `b96cadd4419a`.
+    "evidence_verifier": "b96cadd4419a",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1266,7 +1272,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Whole-branch re-review: each mark records the finding it rests on
     # (ItemMark.finding_id); an all-refused run is a recoverable
     # report_writer_all_parts_refused. Moved `a4eafe23b35a` -> `c7fb91fd9f90`.
-    "report_writer": "c7fb91fd9f90",
+    # Run-4 fix wave (Fable audit 65/100; reviews and Fable prompt review GREEN
+    # at 409fc35). Moved `c7fb91fd9f90` -> `dccfc1149817`.
+    "report_writer": "dccfc1149817",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
@@ -1278,7 +1286,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
 # prompt change is. T5: "report-review-4" -> "report-review-5" (the packet's
 # renamed sections, the new Table block, per-finding status lines, and the
 # scoped re-review after a redraft all landed under this version).
-PINNED_REPORT_REVIEWER_PROMPT_VERSION = "report-review-5"
+PINNED_REPORT_REVIEWER_PROMPT_VERSION = "report-review-6"
 
 # The judge half of the same contract. A Judge prompt change moves this value and
 # invalidates Judge evidence for every agent, so it is pinned next to the targets
