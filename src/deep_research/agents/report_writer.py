@@ -12,16 +12,9 @@ cites at least one known label belonging to its part, is not built only from
 context-only findings, names its subject, and fits the length and count
 shape. Every other question about a sentence's wording -- its numbers,
 dates, scope, organisation, forecast or actual -- is judged once for every
-drafted sentence by the Statement Check (spec §5.4, decision D8).
-
-Left for "T4 compose" (after T2's ``report_table.build_table`` and T3's
-renderer land): filling ``composition.table``, ``page_credits`` and
-``unreachable``, and wiring ``ReportWriterAgent`` to T3's rewritten
-``render_written_report``/``render_finding_log``. Every seam that step needs
-is already in place: ``ReportComposition.parts``/``summary``/``sections`` are
-built here in their final, renumbered form, ``answer_kind`` is wired from the
-frozen contract, and ``ReportWriterTask.previous`` carries the prior
-composition a redraft needs.
+drafted sentence by the Statement Check (spec §5.4, decision D8). §6.7's
+assembly (the table, page credits and unreachable pages) runs after every
+part and the bottom line finish, driven by the frozen ``answer_kind``.
 """
 
 from __future__ import annotations
@@ -225,7 +218,7 @@ SECTION_INSTRUCTION = (
     "leave the judgement out.\n"
     "- Every judgement, pick or verdict names the item it is about, exactly as the "
     "finding's content or passage names it: never a bare pronoun (\"it\", \"this\", "
-    "\"these\") or an unnamed reference (\"the model\", \"the buds\"). Such a point is "
+    "\"these\") or an unnamed reference (\"the model\", \"the device\"). Such a point is "
     "refused.\n"
     "- A point never rests only on findings listed under \"# Context only\": they are "
     "background, not citable evidence.\n"
@@ -263,9 +256,9 @@ _SECTION_REPLY_EXAMPLES = (
         "snippet: it is the one to beat for the price. | passage: Model B, a compact "
         "model, is the one to beat for the price. | F02 | statement | read at "
         "example-register.test | actual",
-        '{"title":"Value for money","points":[{"text":"Model B is the one to beat for '
-        'the price.","finding_labels":["F02"],"items":[{"name":"Model B","verdict":'
-        '"the one to beat for the price","picked":true,"by":"F02"}]}]}',
+        '{"title":"Value for money","points":[{"text":"example-register.test says Model '
+        'B is the one to beat for the price.","finding_labels":["F02"],"items":[{"name":'
+        '"Model B","verdict":"the one to beat for the price","picked":true,"by":"F02"}]}]}',
     ),
 )
 
@@ -308,10 +301,14 @@ BOTTOM_LINE_INSTRUCTION = (
 _BOTTOM_LINE_REPLY_EXAMPLES = (
     (
         "Example input: # Checked statements ## Noise ratings - Example Tester gives "
-        "Model A a noise rating of 4.5 out of 5. (cites F01)",
-        '{"sentences":[{"text":"Example Tester gives Model A a noise rating of 4.5 '
-        'out of 5.","finding_labels":["F01"],"items":[{"name":"Model A","verdict":'
-        '"a noise rating of 4.5 out of 5","picked":false,"by":"F01"}]}]}',
+        "Model A a noise rating of 4.5 out of 5. (cites F01; options: Model A) - "
+        "Example Register says Model B is the one to beat for the price. (cites F02; "
+        "options: Model B [picked])",
+        '{"sentences":[{"text":"Example Tester rates Model A 4.5 out of 5 for noise, '
+        'while Example Register names Model B the one to beat for the price.",'
+        '"finding_labels":["F01","F02"],"items":[{"name":"Model A","verdict":"4.5 out '
+        'of 5 for noise","picked":false,"by":"F01"},{"name":"Model B","verdict":"the '
+        'one to beat for the price","picked":true,"by":"F02"}]}]}',
     ),
 )
 
@@ -611,10 +608,15 @@ def _answer_form_line(task: ReportWriterTask) -> str:
 def _target_line(
     target: EvidenceTarget, *, answered: Mapping[str, list[str]],
     label_by_id: Mapping[str, str], findings_by_id: Mapping[str, Finding],
-    sub_topics: Sequence[SubTopic],
+    sub_topics: Sequence[SubTopic], own_finding_ids: set[str],
 ) -> str:
+    """§6.3's target line, using only the finding ids ``# Verified findings
+    for this part`` will actually list: a label placed in another part, or a
+    context-only finding, must never be named as answering the target here --
+    the writer would be told to cite a label the mechanical rules then refuse
+    (P2-2)."""
     kind = "required" if target.required else "optional"
-    finding_ids = answered.get(target.target_id, [])
+    finding_ids = [fid for fid in answered.get(target.target_id, []) if fid in own_finding_ids]
     labels = [label_by_id[fid] for fid in finding_ids if fid in label_by_id]
     if not labels:
         return f"- {target.target_id}: {target.question} ({kind}; no listed finding answers it)"
@@ -688,9 +690,11 @@ def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
     shares a cacheable prefix."""
     label_by_id = {finding_fingerprint(f): label for label, f in task.registry}
     findings_by_id = {finding_fingerprint(f): f for f in task.findings}
+    own_finding_ids = {finding_fingerprint(f) for f in job.findings}
     targets_block = "\n".join(
         _target_line(t, answered=task.answered, label_by_id=label_by_id,
-                     findings_by_id=findings_by_id, sub_topics=task.sub_topics)
+                     findings_by_id=findings_by_id, sub_topics=task.sub_topics,
+                     own_finding_ids=own_finding_ids)
         for t in job.targets
     ) or "(none)"
     static = [
@@ -917,7 +921,7 @@ class _Candidate:
     """One drafted point that cleared the mechanical rules and is waiting on
     the Statement Check's verdict."""
 
-    key: str                     # "P01.0001", "B0001"; also the temp ReportStatement.statement_id
+    key: str                     # "P01.01", "B01"; also the temp ReportStatement.statement_id
     where: str                   # "section[topic-01].points[1]" or "bottom_line[0]"
     text: str                    # drafted, whitespace-collapsed
     finding_labels: list[str]
@@ -976,7 +980,7 @@ def _consider_section_point(
         refuse(f"longer than {MAX_POINT_CHARS} characters")
         return []
     return [
-        _Candidate(key=f"{key_prefix}{next(numbers):04d}",
+        _Candidate(key=f"{key_prefix}{next(numbers):02d}",
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
                   findings=[part_labels[label] for label in wanted], items=list(point.items))
@@ -1014,7 +1018,7 @@ def _consider_bottom_line_point(
         refuse(f"longer than {MAX_POINT_CHARS} characters")
         return []
     return [
-        _Candidate(key=f"{key_prefix}{next(numbers):04d}",
+        _Candidate(key=f"{key_prefix}{next(numbers):02d}",
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
                   findings=[cited_by_sections[label] for label in wanted], items=list(point.items))
@@ -1027,8 +1031,10 @@ def _apply_marks(
     label_urls: Mapping[str, str], dropped: list[tuple[str, str]], statement_key: str,
 ) -> list[ItemMark]:
     """Rule 8: each name/verdict a verbatim span of the final text, at most
-    ``_MARK_SPAN_CHARS``; ``by`` resolved to its finding's page. A failing
-    mark is dropped -- the point stays -- and recorded (spec §5)."""
+    ``_MARK_SPAN_CHARS``; ``by`` resolved only among the point's own cited
+    ``labels`` -- never the whole registry, or a mark could credit a page the
+    sentence and its Statement Check never rested on. A failing mark is
+    dropped -- the point stays -- and recorded (spec §5)."""
     kept: list[ItemMark] = []
     sites = {label_urls[label] for label in labels if label in label_urls}
     for mark in marks:
@@ -1042,10 +1048,10 @@ def _apply_marks(
             continue
         by = mark.by.strip()
         if len(sites) > 1:
-            source_url = label_urls.get(by)
-            if source_url is None:
-                dropped.append((statement_key, f"'{mark.name}' names no known finding"))
+            if by not in labels or by not in label_urls:
+                dropped.append((statement_key, "names no finding this sentence cites"))
                 continue
+            source_url = label_urls[by]
         else:
             source_url = next(iter(sites), "")
         kept.append(ItemMark(name=name, verdict=verdict, picked=mark.picked, source_url=source_url))
@@ -1255,17 +1261,20 @@ async def _run_part(
     if not job.findings and not job.context_findings:
         return _PartOutcome(job=job, section=None, status="empty", errors=[], verdicts={})
 
-    if not job.redraft:
+    if not job.redraft and job.previous is not None:
         # §6.9: carried over unchanged -- same points, verdicts and marks, no call.
-        section = job.previous
         verdicts = {}
-        if section is not None and task.previous is not None:
-            for point in section.points:
+        if task.previous is not None:
+            for point in job.previous.points:
                 if point.statement is not None:
                     verdicts[point.statement.statement_id] = task.previous.statement_verdicts.get(
                         point.statement.statement_id, "unchecked")
-        status = "carried_over" if section is not None else "empty"
-        return _PartOutcome(job=job, section=section, status=status, errors=[], verdicts=verdicts)
+        return _PartOutcome(job=job, section=job.previous, status="carried_over", errors=[], verdicts=verdicts)
+
+    # A redraft with no defect routed here still drafts the part when it has
+    # no previous section to carry over -- it failed, or every one of its
+    # points was refused, last pass. Silently relabelling it "empty" would
+    # drop a required target's only answer without disclosing it (P2-1).
 
     messages = section_messages(task, job)
     async with section_gate:
@@ -1289,7 +1298,7 @@ async def _run_part(
         candidates.extend(_consider_section_point(
             point, f"section[{job.coverage_id}].points[{n}]", part_labels=part_labels,
             all_labels=all_labels, context_only_labels=context_only_labels,
-            numbers=numbers, rejected=rejected, key_prefix=f"P{job.order:02d}.",
+            numbers=numbers, rejected=rejected, key_prefix=f"P{job.order + 1:02d}.",
         ))
 
     verdicts, check_errors = await _check(
@@ -1319,15 +1328,46 @@ async def _run_part(
 
 
 def _bottom_line_fallback(
-    required_sections: Sequence[ReportSection], other_sections: Sequence[ReportSection],
-) -> list[ReportPoint]:
-    """§6.8: up to ``MAX_BOTTOM_LINE_SENTENCES`` kept checked points, the first
-    of each part with a required target, then the first of the other parts."""
+    outcomes: Sequence[_PartOutcome], required_coverage_ids: set[str],
+) -> tuple[list[ReportPoint], dict[str, str], set[str]]:
+    """§6.8: up to ``MAX_BOTTOM_LINE_SENTENCES`` kept checked points, the
+    first of each part with a required target then the first of the other
+    parts -- moved into the bottom line as new statements with their own
+    flight keys and the source statement's real verdict, never a section's
+    own id and never a hard-coded "consistent" (P1-a). Returns the fallback
+    points, their verdicts, and the source statement ids to remove from
+    their sections (spec's "move": a sentence is printed once)."""
+    with_required: list[_PartOutcome] = []
+    others: list[_PartOutcome] = []
+    for outcome in outcomes:
+        if outcome.section is None:
+            continue
+        (with_required if outcome.job.coverage_id in required_coverage_ids else others).append(outcome)
+
     points: list[ReportPoint] = []
-    for section in [*required_sections, *other_sections]:
-        if section.points:
-            points.append(section.points[0])
-    return points[:MAX_BOTTOM_LINE_SENTENCES]
+    verdicts: dict[str, str] = {}
+    moved: set[str] = set()
+    numbers = iter(range(1, 100))
+    for outcome in [*with_required, *others]:
+        if len(points) >= MAX_BOTTOM_LINE_SENTENCES:
+            break
+        section = outcome.section
+        if section is None:
+            continue
+        for source_point in section.points:
+            if source_point.statement is None:
+                continue
+            source_id = source_point.statement.statement_id
+            verdict = outcome.verdicts.get(source_id, "unchecked")
+            if verdict not in ("consistent", "corrected"):
+                continue
+            new_id = f"B{next(numbers):02d}"
+            new_statement = source_point.statement.model_copy(update={"statement_id": new_id})
+            points.append(source_point.model_copy(update={"statement": new_statement}))
+            verdicts[new_id] = verdict
+            moved.add(source_id)
+            break
+    return points, verdicts, moved
 
 
 async def _run_bottom_line(
@@ -1335,9 +1375,12 @@ async def _run_bottom_line(
     fingerprint: Callable[[str], object] | None, check_gate: asyncio.Semaphore,
     batch_size: int, label_urls: Mapping[str, str],
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
-          list[tuple[str, str]]]:
+          list[tuple[str, str]], set[str]]:
     """The bottom-line call (spec §6.6), started once every part task has
-    finished. Returns (points, temp verdicts, errors, rejected, dropped_marks)."""
+    finished. Returns (points, temp verdicts, errors, rejected, dropped_marks,
+    moved_statement_ids -- source section statement ids a §6.8 fallback moved
+    into the bottom line, so the caller removes them from their sections and
+    a sentence is never printed twice, P1-a)."""
     checked_sections: list[ReportSection] = []
     cited_by_sections: dict[str, Finding] = {}
     label_by_finding_id = {finding_fingerprint(f): label for label, f in task.registry}
@@ -1358,14 +1401,30 @@ async def _run_bottom_line(
                 if label:
                     cited_by_sections[label] = dict(task.registry)[label]
 
+    required_coverage = {t.coverage_id for t in task.targets if t.required}
+
     if not checked_sections:
-        if any(outcome.status != "empty" for outcome in outcomes):
+        # P1-b(i): a part whose draft succeeded but whose Statement Check
+        # never came back (D8) or judged everything inconsistent is
+        # "written", not "failed" -- only every non-empty part actually
+        # failing earns the non-recoverable "no bottom line" error.
+        non_empty = [outcome for outcome in outcomes if outcome.status != "empty"]
+        if non_empty and all(outcome.status == "failed" for outcome in non_empty):
             error = agent_error(
                 agent_name=REPORT_WRITER_NAME, error_type="report_writer_provider_error",
                 message="Every part failed; the report has no bottom line.", recoverable=False,
             )
-            return [], {}, [error], [], []
-        return [], {}, [], [], []
+            return [], {}, [error], [], [], set()
+        if non_empty:
+            # P1-b(iii): sections are printed, so the bottom line is left
+            # honestly empty rather than claiming "no source could be
+            # checked" (§10 is for no citable finding at all, not this).
+            error = agent_error(
+                agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_unchecked",
+                message="No section statement was checked and kept; the bottom line is left empty.",
+            )
+            return [], {}, [error], [], [], set()
+        return [], {}, [], [], [], set()
 
     is_redraft = bool(task.defects)
     previous_points = task.previous.summary if (is_redraft and task.previous) else []
@@ -1379,24 +1438,31 @@ async def _run_bottom_line(
     )
 
     if draft is None:
-        required_coverage = {t.coverage_id for t in task.targets if t.required}
-        with_required = [s for s in checked_sections if s.coverage_id in required_coverage]
-        others = [s for s in checked_sections if s.coverage_id not in required_coverage]
-        fallback_points = _bottom_line_fallback(with_required, others)
+        fallback_points, fallback_verdicts, moved = _bottom_line_fallback(outcomes, required_coverage)
         error = agent_error(
             agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_failed",
             message="The bottom-line draft failed twice; kept section points stand in for it.",
         )
-        verdicts = {p.statement_id: "consistent" for p in fallback_points if p.statement is not None}
-        return fallback_points, verdicts, [*draft_errors, error], [], []
+        return fallback_points, fallback_verdicts, [*draft_errors, error], [], [], moved
 
-    numbers = iter(range(1, 10_000))
+    numbers = iter(range(1, 100))
     rejected: list[RejectedDraftPoint] = []
     candidates: list[_Candidate] = []
     for n, point in enumerate(draft.sentences):
         candidates.extend(_consider_bottom_line_point(
             point, f"bottom_line[{n}]", cited_by_sections=cited_by_sections,
             numbers=numbers, rejected=rejected, key_prefix="B",
+        ))
+
+    # P3-2: cap before the check, so an overflow sentence never spends one,
+    # and record its refusal with the real F-labels, not finding fingerprints.
+    candidates, overflow_candidates = (
+        candidates[:MAX_BOTTOM_LINE_SENTENCES], candidates[MAX_BOTTOM_LINE_SENTENCES:],
+    )
+    for extra in overflow_candidates:
+        rejected.append(RejectedDraftPoint(
+            where=extra.where, text=extra.text, finding_labels=list(extra.finding_labels),
+            reason="over the bottom line's four sentences",
         ))
 
     verdicts, check_errors = await _check(
@@ -1418,16 +1484,21 @@ async def _run_bottom_line(
             points.append(point)
             verdict_map[point.statement_id] = verdict_string
 
-    kept, overflow = points[:MAX_BOTTOM_LINE_SENTENCES], points[MAX_BOTTOM_LINE_SENTENCES:]
-    for extra in overflow:
-        rejected.append(RejectedDraftPoint(
-            where="bottom_line", text=extra.text,
-            finding_labels=list(extra.statement.finding_ids) if extra.statement else [],
-            reason="over the bottom line's four sentences",
-        ))
-        verdict_map.pop(extra.statement_id, None)
+    if not points:
+        # P1-b(ii): a drafted bottom line that ends up with nothing kept
+        # (every sentence refused by the label-subset rule, the Statement
+        # Check, or rule 5) still gets the §6.8 fallback, not a silent
+        # empty summary.
+        fallback_points, fallback_verdicts, moved = _bottom_line_fallback(outcomes, required_coverage)
+        if fallback_points:
+            error = agent_error(
+                agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_failed",
+                message="Every drafted bottom-line sentence was refused; kept section points stand in for it.",
+            )
+            return (fallback_points, fallback_verdicts,
+                    [*draft_errors, *check_errors, error], rejected, dropped_marks, moved)
 
-    return kept, verdict_map, [*draft_errors, *check_errors], rejected, dropped_marks
+    return points, verdict_map, [*draft_errors, *check_errors], rejected, dropped_marks, set()
 
 
 def _renumber(
@@ -1633,13 +1704,26 @@ async def compose_written_report(
 
     resolved_outcomes: list[_PartOutcome] = [outcome for outcome in outcomes if outcome is not None]
 
-    (bottom_line_points, bottom_line_verdicts, bottom_line_errors,
-     bottom_line_rejected, bottom_line_dropped_marks) = await _run_bottom_line(
+    (bottom_line_points, bottom_line_verdicts, bottom_line_errors, bottom_line_rejected,
+     bottom_line_dropped_marks, bottom_line_moved_ids) = await _run_bottom_line(
         task, resolved_outcomes, provider=provider, fingerprint=fingerprint,
         check_gate=check_gate, batch_size=resolved_batch_size, label_urls=label_urls,
     )
 
-    sections = [outcome.section for outcome in resolved_outcomes if outcome.section is not None]
+    # P1-a's "move": a point the §6.8 fallback promoted into the bottom line
+    # is removed from its section, so it is never printed twice; a section
+    # left with no points is dropped, matching how a fully-refused section
+    # is already dropped elsewhere.
+    sections: list[ReportSection] = []
+    for outcome in resolved_outcomes:
+        if outcome.section is None:
+            continue
+        remaining = [
+            point for point in outcome.section.points
+            if point.statement is None or point.statement.statement_id not in bottom_line_moved_ids
+        ]
+        if remaining:
+            sections.append(outcome.section.model_copy(update={"points": remaining}))
     new_summary, new_sections, remap = _renumber(bottom_line_points, sections)
 
     temp_verdicts: dict[str, str] = dict(bottom_line_verdicts)

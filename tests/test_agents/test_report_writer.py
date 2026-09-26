@@ -40,8 +40,8 @@ from deep_research.agents.report_writer import (
 )
 from deep_research.agents.sources import normalize_source_url
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
-from deep_research.providers import ProviderResponseError
+from deep_research.observability import TokenUsage, Tracker
+from deep_research.providers import ProviderOutputLimitError, ProviderResponseError, ProviderResponseTelemetry
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -49,6 +49,7 @@ from deep_research.utils.types import (
     BottomLineDraft,
     CandidateRecord,
     FindingVerification,
+    ItemMark,
     ItemMarkDraft,
     ReportSection,
     ReportStatement,
@@ -502,6 +503,17 @@ def _verdict(verdict: str, *, corrected_text: str = "", reason: str | None = Non
                         reason=reason or "consistent with its findings")
 
 
+def _output_limit_error() -> ProviderOutputLimitError:
+    return ProviderOutputLimitError(
+        ProviderResponseTelemetry(
+            finish_reason_category="length",
+            configured_max_tokens=4096,
+            usage=TokenUsage(input_tokens=5, output_tokens=4096),
+            request_attempt=1,
+        )
+    )
+
+
 class _FakeChecker:
     """Monkeypatched over ``evidence_verifier.check_statements``. Records the
     ``gate`` every call receives, so the pipelined-sharing acceptance test can
@@ -512,6 +524,11 @@ class _FakeChecker:
         self.errors: list = []
         self.calls: list[list[_FakeStatementCheckItem]] = []
         self.gates: list[object] = []
+        self.fail_all: bool = False
+        """When set, every batch returns no verdicts at all (a Statement Check
+        outage, D8): every item is left ``None`` -- "unchecked" -- exactly as
+        a real batch failure leaves it, rather than this fake's own default
+        of ``consistent``."""
 
     async def __call__(self, provider, items, *, question, fingerprint=None,
                        batch_size=None, concurrency=None, gate=None):
@@ -519,6 +536,8 @@ class _FakeChecker:
         self.gates.append(gate)
         batch = list(items)
         self.calls.append(batch)
+        if self.fail_all:
+            return {}, list(self.errors)
         result = {}
         for item in batch:
             verdict = self.verdicts.get(item.label)
@@ -630,7 +649,7 @@ async def test_one_failing_part_does_not_lose_the_rest(checker, tracker: Tracker
     def route(messages, schema):
         body = messages[-1].content
         if schema.__name__ == "BottomLineDraft":
-            return BottomLineDraft(sentences=[])
+            return BottomLineDraft(sentences=[WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"])])
         if "First" in body.split("# This part of the question")[1][:40]:
             raise ProviderResponseError("provider returned an HTTP error", retryable=True,
                                         failure_category="http", http_status_code=503, failure_origin="sdk")
@@ -825,11 +844,11 @@ async def test_the_statement_check_gate_is_shared_across_every_part_and_the_bott
 async def test_a_corrected_verdict_replaces_the_sentence(writer, checker) -> None:
     state = _one_part_state()
     task = writer.build_task(state)
-    checker.verdicts["P00.0001"] = _verdict("corrected", corrected_text="10.4 GW, corrected.")
+    checker.verdicts["P01.01"] = _verdict("corrected", corrected_text="10.4 GW, corrected.")
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
                     points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
-        BottomLineDraft(sentences=[]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW, corrected.", finding_labels=["F01"])]),
     ])
 
     composition = await compose_written_report(task, provider=writer.provider)
@@ -841,7 +860,7 @@ async def test_a_corrected_verdict_replaces_the_sentence(writer, checker) -> Non
 async def test_an_inconsistent_verdict_refuses_the_point(writer, checker) -> None:
     state = _one_part_state()
     task = writer.build_task(state)
-    checker.verdicts["P00.0001"] = _verdict("inconsistent", reason="not in the findings")
+    checker.verdicts["P01.01"] = _verdict("inconsistent", reason="not in the findings")
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
                     points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
@@ -887,7 +906,8 @@ async def test_statement_target_ids_exclude_a_fallback_only_answer(tmp_path: Pat
         SectionDraft(title="Capacity added",
                     points=[WriterPointDraft(text="Storage capacity grew by 10.4 GW in the United States in 2024.",
                                              finding_labels=["F01"])]),
-        BottomLineDraft(sentences=[]),
+        BottomLineDraft(sentences=[WriterPointDraft(
+            text="Storage capacity grew by 10.4 GW in the United States in 2024.", finding_labels=["F01"])]),
     ])
     from deep_research.agents.evidence_verifier import StatementCheckItem
     import deep_research.agents.evidence_verifier as ev
@@ -1052,3 +1072,228 @@ def test_the_statement_check_correction_cap_follows_max_point_chars() -> None:
 
     assert f"more than {MAX_POINT_CHARS} characters" in STATEMENT_CHECK_INSTRUCTION
     assert "600 characters" not in STATEMENT_CHECK_INSTRUCTION
+
+
+# --- review round (RevFormatT1T2/RevFormatT4) -------------------------------
+
+
+def test_apply_marks_drops_a_mark_whose_by_the_point_does_not_cite() -> None:
+    """P0: ``by`` must resolve only among the point's own cited labels, never
+    the whole registry -- otherwise a mark can credit a page the sentence and
+    its Statement Check never rested on."""
+    from deep_research.agents.report_writer import _apply_marks
+
+    dropped: list[tuple[str, str]] = []
+    kept = _apply_marks(
+        [ItemMarkDraft(name="Model A", verdict="a score of 9", picked=True, by="F03")],
+        final_text="One gives Model A a score of 9 and Two gives Model B a score of 8.",
+        labels=["F01", "F02"],
+        label_urls={"F01": "https://one.test/1", "F02": "https://two.test/1", "F03": "https://three.test/1"},
+        dropped=dropped, statement_key="S001",
+    )
+
+    assert kept == []
+    assert dropped == [("S001", "names no finding this sentence cites")]
+
+
+def test_apply_marks_still_resolves_by_when_it_is_one_of_the_points_own_labels() -> None:
+    from deep_research.agents.report_writer import _apply_marks
+
+    dropped: list[tuple[str, str]] = []
+    kept = _apply_marks(
+        [ItemMarkDraft(name="Model A", verdict="a score of 9", picked=True, by="F01")],
+        final_text="One gives Model A a score of 9 and Two gives Model B a score of 8.",
+        labels=["F01", "F02"],
+        label_urls={"F01": "https://one.test/1", "F02": "https://two.test/1"},
+        dropped=dropped, statement_key="S001",
+    )
+
+    assert dropped == []
+    assert kept == [ItemMark(name="Model A", verdict="a score of 9", picked=True, source_url="https://one.test/1")]
+
+
+@pytest.mark.asyncio
+async def test_a_bottom_line_fallback_gives_each_point_its_own_id_and_real_verdict(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """P1-a: the fallback must not reuse a section's own flight key or
+    hard-code 'consistent'; the source section must not print it again."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                       target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[finding])
+    checker.verdicts["P01.01"] = _verdict("corrected", corrected_text="10.4 GW, corrected.")
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        _output_limit_error(), _output_limit_error(),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert len(composition.summary) == 1
+    assert composition.summary[0].text == "10.4 GW, corrected."
+    assert composition.sections == []
+    printed_ids = {p.statement_id for p in composition.summary} | {
+        p.statement_id for section in composition.sections for p in section.points
+    }
+    assert printed_ids <= set(composition.statement_verdicts)
+    assert composition.statement_verdicts[composition.summary[0].statement_id] == "corrected"
+
+
+@pytest.mark.asyncio
+async def test_a_statement_check_outage_leaves_a_recoverable_error_not_a_false_every_part_failed(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """P1-b(i): a Statement Check outage marks the part 'written' (its draft
+    succeeded), so the composition must not report a non-recoverable 'every
+    part failed' error, and the bottom line must not print the §10 fallback
+    sentence while the (unchecked) section still stands."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                       target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[finding])
+    checker.fail_all = True
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert [p.status for p in composition.parts] == ["written"]
+    assert len(composition.sections) == 1
+    assert composition.summary == []
+    error_types = [e.error_type for e in composition.errors]
+    assert "report_writer_provider_error" not in error_types
+    assert error_types and all(
+        e.recoverable for e in composition.errors if e.error_type != "evidence_verifier_statement_check_failed"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_bottom_line_with_every_sentence_refused_falls_back_to_checked_section_points(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """P1-b(ii): a drafted-but-empty-after-refusal bottom line still gets the
+    §6.8 fallback, not a silent empty summary."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                       target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[finding])
+    checker.verdicts["B01"] = _verdict("inconsistent", reason="not supported")
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024, allegedly.", finding_labels=["F01"])]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert len(composition.summary) == 1
+    assert composition.summary[0].text == "10.4 GW in 2024."
+    assert composition.sections == []
+
+
+@pytest.mark.asyncio
+async def test_a_redraft_still_drafts_a_part_that_has_findings_but_no_previous_section(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """P2-1: a part that failed (or was fully refused) last pass, and that no
+    defect routes to on this redraft, must still be drafted -- not silently
+    relabelled 'empty', losing its required-target answer."""
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
+    f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                 target_ids=["topic-01-target-01"])
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation=EIA,
+                 target_ids=["topic-02-target-01"], kind="forecast", period="2025")
+    topics = [_topic("topic-01", "First", [t1]), _topic("topic-02", "Second", [t2])]
+    previous_statement_1 = ReportStatement(statement_id="S001", text="10.4 GW in 2024.",
+                                           finding_ids=[finding_fingerprint(f1)], target_ids=["topic-01-target-01"])
+    previous_section_1 = ReportSection(title="First", coverage_id="topic-01",
+                                       points=[ReportPointFor("10.4 GW in 2024.", previous_statement_1)])
+    from deep_research.utils.types import ReportComposition, ReportPart
+    previous = ReportComposition(
+        question="Q?", session_id="s1", sections=[previous_section_1], summary=[], sub_topics=topics,
+        parts=[
+            ReportPart(coverage_id="topic-01", sub_topic_title="First",
+                      finding_ids=[finding_fingerprint(f1)], status="written"),
+            ReportPart(coverage_id="topic-02", sub_topic_title="Second",
+                      finding_ids=[finding_fingerprint(f2)], status="failed"),
+        ],
+    )
+    defect = ReviewDefect(defect_id="review-01", kind="missing_support", severity="major",
+                          target_ids=["topic-01-target-01"], problem="Needs the release date.")
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=topics,
+                          verified_findings=[f1, f2], composition=previous, report_review=_scored_review([defect]))
+
+    def route(messages, schema):
+        body = messages[-1].content
+        if schema is BottomLineDraft:
+            return BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024, corrected.",
+                                                                finding_labels=["F01"])])
+        if "topic-02" in body.split("# This part of the question")[1][:20]:
+            return SectionDraft(title="Second",
+                                points=[WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"])])
+        return SectionDraft(title="First",
+                            points=[WriterPointDraft(text="10.4 GW in 2024, corrected.", finding_labels=["F01"])])
+
+    completer = ScriptedCompleter(outputs=[route, route, route])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    statuses = {p.coverage_id: p.status for p in composition.parts}
+    assert statuses["topic-02"] != "empty"
+    assert any(s.coverage_id == "topic-02" for s in composition.sections)
+
+
+def test_target_line_does_not_credit_a_label_placed_in_another_part() -> None:
+    """P2-2: a target's answering labels must be filtered to the part's own
+    (non-context) findings, never the whole registry."""
+    from deep_research.agents.report_writer import _target_line
+
+    target = make_target("topic-02-target-01", coverage_id="topic-02", required=True,
+                         question="How much capacity was added?")
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                       target_ids=["topic-02-target-01"])
+    finding_id = finding_fingerprint(finding)
+
+    line = _target_line(
+        target, answered={target.target_id: [finding_id]}, label_by_id={finding_id: "F01"},
+        findings_by_id={finding_id: finding}, sub_topics=[], own_finding_ids=set(),
+    )
+
+    assert "no listed finding answers it" in line
+    assert "F01" not in line
+
+
+def test_target_line_credits_a_label_that_is_one_of_the_parts_own_findings() -> None:
+    from deep_research.agents.report_writer import _target_line
+
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                       target_ids=["topic-01-target-01"])
+    finding_id = finding_fingerprint(finding)
+
+    line = _target_line(
+        target, answered={target.target_id: [finding_id]}, label_by_id={finding_id: "F01"},
+        findings_by_id={finding_id: finding}, sub_topics=[], own_finding_ids={finding_id},
+    )
+
+    assert "answered by F01" in line

@@ -1152,7 +1152,22 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # and acquisition_state_by_target's denied_urls for unreachable pages.
     # Module code only, no prompt wording changed: `65bfda8f7618` ->
     # `0b9c9239f932`.
-    "report_writer": "0b9c9239f932",
+    # RevFormatT1T2/RevFormatT4 review round (P0/P1/P2/P3 fixes): a mark's
+    # `by` resolves only among the point's own cited labels (P0); the §6.8
+    # bottom-line fallback builds new B-flight statements with the source's
+    # real verdict instead of reusing a section's own point (P1-a); the
+    # "every part failed" error, the unchecked-but-sections-exist case, and
+    # a drafted-but-empty bottom line now route correctly through the §6.8
+    # fallback (P1-b); a redraft with no previous section still drafts the
+    # part (P2-1); `_target_line` is scoped to the part's own findings
+    # (P2-2); flight keys are `P{part:02d}.{n:02d}`/`B{n:02d}` (P3-1); the
+    # bottom-line candidate cap now runs before the Statement Check (P3-2).
+    # Model-read text changed too: the section example credits the page
+    # instead of an uncredited pick (P1-c), "the buds" is replaced with "the
+    # device" (P2-3, D10), and the bottom-line example combines two
+    # statements instead of copying one word for word (P2-4):
+    # `0b9c9239f932` -> `20ef7adf493c`.
+    "report_writer": "20ef7adf493c",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
