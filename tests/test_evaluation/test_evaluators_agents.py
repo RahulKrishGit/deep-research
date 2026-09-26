@@ -5,7 +5,7 @@ from __future__ import annotations
 from deep_research.agents.report import collapse_mirror_urls
 from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActObservation, ReActStep
-from deep_research.evaluation.cases import all_cases
+from deep_research.evaluation.cases import all_cases, case_by_id
 from deep_research.evaluation.dependencies import (
     bounded_url_fingerprints,
     read_url_fingerprints,
@@ -82,6 +82,24 @@ def test_the_planner_gate_rejects_more_than_ten_subtopics(
     assert gate(
         evaluate_agent_gates(output, planner_case), "subtopic_count"
     ).passed is False
+
+
+def test_the_planning_tool_failure_case_uses_the_real_subtopic_ceiling(
+    planner_output,
+) -> None:
+    """A case with no declared ceiling still polices the planner's own bound.
+
+    ``planning-tool-failure`` (cases/planner.py) declares no
+    ``maximum_sub_topics``, so the gate's own default decides it; that
+    default must be ``MAX_SUB_TOPICS``, not a stale literal, or a plan this
+    wide passes every other check and still fails here for no stated reason.
+    """
+    case = case_by_id("planner", "controlled", "planning-tool-failure")
+    output = planner_output.with_sub_topics(9)
+
+    assert gate(
+        evaluate_agent_gates(output, case), "subtopic_count"
+    ).passed is True
 
 
 def test_the_planner_gate_rejects_duplicate_titles(

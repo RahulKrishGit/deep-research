@@ -13,6 +13,8 @@ Four jobs, one module:
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from pydantic import ValidationError
 
@@ -25,6 +27,8 @@ from deep_research.agents.evidence import (
     EvidenceIdentityConflict,
     MissingBoundaryManifest,
     TemporalClaim,
+    _exact_normalised_boundaries,
+    _incremental_normalised_boundaries,
     boundary_audit_id,
     build_boundary_audit,
     build_evidence_unit,
@@ -3507,8 +3511,8 @@ _SPAN3_FILLER_C = (
     " Additional filler conclusion text that the quoted rule never reaches "
     "at all."
 )
-_SPAN3_PASSAGE_A = (_SPAN3_LEAD_FILLER * 6) + _SPAN3_TAIL_A
-_SPAN3_PASSAGE_B = _SPAN3_MID_B
+_SPAN3_PASSAGE_A = (_SPAN3_LEAD_FILLER * 6) + _SPAN3_TAIL_A + " "
+_SPAN3_PASSAGE_B = _SPAN3_MID_B + " "
 _SPAN3_PASSAGE_C = _SPAN3_HEAD_C + _SPAN3_FILLER_C
 _SPAN3_SNIPPET = f"{_SPAN3_TAIL_A} {_SPAN3_MID_B} {_SPAN3_HEAD_C}"
 _SPAN3_STITCHED_SNIPPET = f"{_SPAN3_TAIL_A} {_SPAN3_HEAD_C}"
@@ -3516,7 +3520,7 @@ _SPAN3_STITCHED_SNIPPET = f"{_SPAN3_TAIL_A} {_SPAN3_HEAD_C}"
 
 def _span3_read() -> ReadRecord:
     return make_read(
-        f"{_SPAN3_PASSAGE_A} {_SPAN3_PASSAGE_B} {_SPAN3_PASSAGE_C}",
+        f"{_SPAN3_PASSAGE_A}{_SPAN3_PASSAGE_B}{_SPAN3_PASSAGE_C}",
         url="https://example.test/three-passage-span",
         passages={
             "chunk-a": _SPAN3_PASSAGE_A,
@@ -3629,4 +3633,185 @@ def test_snippet_span_text_contains_the_whole_three_passage_snippet() -> None:
     assert excerpt_matches(window, _SPAN3_HEAD_C)
     assert not excerpt_matches(
         neighbouring_passage_text(read, "chunk-a"), _SPAN3_SNIPPET
+    )
+
+
+def test_snippet_span_text_does_not_stop_at_a_repeat_in_the_preceding_passage() -> None:
+    """A repeat of the snippet's own words one passage early must not win.
+
+    RevLimitsLift's repro: the same sentence sits in both the passage before
+    the relocated locator and the locator's own passage. The window must
+    still hold the locator's own passage -- here, the one that turns the
+    figure into a 2030 forecast -- not stop at the repeat one passage early.
+    """
+    read = make_read(
+        "Section A intro. Capacity reached 10.4 GW. Section B on forecasts. "
+        "Capacity reached 10.4 GW. by 2030 under the plan.",
+        url="https://example.test/repeat-before",
+        passages={
+            "c0": "Section A intro. Capacity reached 10.4 GW. ",
+            "c1": (
+                "Section B on forecasts. Capacity reached 10.4 GW. by 2030 "
+                "under the plan."
+            ),
+        },
+    )
+
+    window = snippet_span_text(read, "c1", "Capacity reached 10.4 GW.")
+
+    assert "by 2030 under the plan" in window
+
+
+def test_locate_snippet_admits_a_quote_crossing_a_line_break_hyphen() -> None:
+    """A PDF-style mid-word passage cut must not defeat admission.
+
+    RevLimitsLift's repro: ``split_read_body`` can cut a passage inside a
+    line-break hyphen when the second half opens with no sentence or clause
+    boundary of its own ("...stor-\\n" / "age..."), and the quote spans the
+    join. Normalising each passage on its own -- before either side has ever
+    seen the other -- drops the join the page's own words state; the whole
+    body has to be joined first.
+    """
+    read = make_read(
+        "Operators must file a plan for every battery stor-\n"
+        "age system above ten megawatts.",
+        url="https://example.test/hyphen-cross",
+        passages={
+            "c0": "Operators must file a plan for every battery stor-\n",
+            "c1": "age system above ten megawatts.",
+        },
+    )
+
+    assert (
+        locate_snippet(
+            read,
+            "every battery storage system above ten megawatts",
+            claimed_locator="c0",
+        )
+        == "c0"
+    )
+
+
+# ---------------------------------------------------------------------------
+# locate_snippet performance: cached, incrementally computed boundaries
+# ---------------------------------------------------------------------------
+
+
+def _large_read(*, passage_count: int, passage_chars: int) -> ReadRecord:
+    """A page of ``passage_count`` distinct passages, each ``passage_chars`` long.
+
+    Padded with a repeated sentence, never raw whitespace: a web-scraped
+    page never carries hundreds of literal trailing spaces per passage
+    (``web_scraper`` collapses whitespace on extraction), so padding with
+    space runs this long would only measure the rare, safety-net fallback
+    path this fix also has, not the incremental fast path a real page takes.
+    """
+    filler = "Additional context precedes the reading. "
+    passages = {
+        f"chunk-{index:04d}": (
+            f"Passage number {index:04d} states its own reading here. "
+            + (filler * ((passage_chars // len(filler)) + 1))
+        )[:passage_chars]
+        for index in range(passage_count)
+    }
+    return make_read(
+        "".join(passages.values()),
+        url="https://example.test/large-page",
+        passages=passages,
+    )
+
+
+def test_locate_snippet_stays_fast_on_a_large_page() -> None:
+    """Admission must not cost quadratic time on a large page.
+
+    RevLimitsLift measured 1.5 s per finding (hit) and 3 s (miss) on a
+    196k-char, 355-passage page before this fix -- ``build_findings`` runs
+    synchronously, so every finding from a large page stalled every
+    sub-topic running at the same time. A miss tries both hyphenation
+    modes, so it alone warms both of the read's cache entries; twenty more
+    calls, mixing a hit and a miss, must together stay well under a second.
+    """
+    read = _large_read(passage_count=350, passage_chars=570)
+    keys = list(read.passages.keys())
+    hit_locator = keys[200]
+    hit_snippet = read.passages[hit_locator].strip()
+    miss_snippet = "this exact sentence is guaranteed not to be on the page"
+
+    locate_snippet(read, miss_snippet, claimed_locator=hit_locator)
+
+    started = time.perf_counter()
+    for _ in range(20):
+        assert locate_snippet(read, hit_snippet, claimed_locator=hit_locator) == hit_locator
+        assert locate_snippet(read, miss_snippet, claimed_locator=hit_locator) is None
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0
+
+
+_HYPHEN_SEAM = (
+    "Operators must file a plan for every battery stor-\n",
+    "age system above ten megawatts.",
+)
+_NUMERIC_SEAM = (
+    "The measured range was 10-\n",
+    "12 GW under standard conditions.",
+)
+# "e" + a combining acute accent (U+0301), split across the seam, composes
+# under NFC only when both halves are normalised together.
+_NFC_SEAM = (
+    "The measured rate was recorded twice in the same degre",
+    "\u0301e for this trial.",
+)
+_WHITESPACE_SEAM = (
+    "The first section ends here.".ljust(60),
+    "The second section begins here.",
+)
+
+
+@pytest.mark.parametrize(
+    "raw_passages",
+    [_HYPHEN_SEAM, _NUMERIC_SEAM, _NFC_SEAM, _WHITESPACE_SEAM],
+    ids=["hyphen", "numeric", "nfc-composition", "whitespace-run"],
+)
+def test_incremental_boundaries_match_the_exact_computation_at_every_seam(
+    raw_passages: tuple[str, str],
+) -> None:
+    """The fast, incremental boundaries must agree with the O(n^2) fallback.
+
+    Each fixture puts a seam ``cosmetic_text`` only resolves when both
+    passages either side of the cut are read together -- a line-break
+    hyphen, a numeric range, an NFC composition, and a whitespace run -- at
+    exactly the passage boundary the incremental computation's bounded
+    look-back has to cross correctly.
+    """
+    for join_hyphenation in (True, False):
+        incremental, _ = _incremental_normalised_boundaries(
+            raw_passages, join_hyphenation=join_hyphenation
+        )
+        exact = _exact_normalised_boundaries(
+            raw_passages, join_hyphenation=join_hyphenation
+        )
+        assert incremental == exact
+
+
+def test_locate_snippet_admits_a_quote_crossing_a_long_whitespace_run() -> None:
+    """A whitespace run longer than the look-back tail must still resolve correctly.
+
+    The incremental computation's own verification step falls back to the
+    exact computation when a seam runs past its bounded look-back, so a
+    quote spanning a run of raw whitespace much longer than the tail is
+    still found, not merely fast in the common case.
+    """
+    read = make_read(
+        "The first section ends here." + (" " * 40) + "The second section begins here.",
+        url="https://example.test/long-whitespace-seam",
+        passages={
+            "c0": "The first section ends here." + (" " * 40),
+            "c1": "The second section begins here.",
+        },
+    )
+
+    assert (
+        locate_snippet(read, "ends here. The second section begins", claimed_locator="c0")
+        == "c0"
     )
