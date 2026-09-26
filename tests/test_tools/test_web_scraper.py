@@ -1784,6 +1784,52 @@ async def test_scraper_falls_back_when_the_titles_own_segment_is_generic(
 
 
 @pytest.mark.asyncio
+async def test_scraper_keeps_a_raw_title_when_no_segment_matches_the_site(
+    tracker,
+) -> None:
+    """D3 (run 5 follow-up P1): with no og:site_name and no title segment
+    matching the page's own host, the site's own segment is never
+    identified, so the generic-apart-from-site rule must not apply -- the
+    raw title is kept even though one of its segments is a generic word."""
+    page = (
+        "<html><head>"
+        "<title>Home - Really Important Headline About Regional Housing "
+        "Filings</title>"
+        "</head><body><h1>Site Banner</h1>"
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(
+        tracker, page, url="https://example.test/article"
+    )
+
+    assert result.data["title"] == (
+        "Home - Really Important Headline About Regional Housing Filings"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scraper_falls_back_when_the_site_segment_matches_the_host(
+    tracker,
+) -> None:
+    """D3 (run 5 follow-up): with no og:site_name, a title segment whose
+    text, normalised, matches the page's own host label -- 'ToposText' for
+    ``topostext.org`` -- is identified as the site's own segment; 'Work -
+    ToposText' then names nothing once it is set aside."""
+    page = (
+        "<html><head><title>Work - ToposText</title>"
+        "</head><body><h1>A summary of recent filings and their outcomes</h1>"
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page, url="https://topostext.org/work")
+
+    assert result.data["title"] == "A summary of recent filings and their outcomes"
+
+
+@pytest.mark.asyncio
 async def test_scraper_skips_a_generic_one_word_og_title(tracker) -> None:
     """D3 (run 5): a generic single-word ``og:title`` is skipped the same
     way a title equal to the site's own name is, while a later, differing

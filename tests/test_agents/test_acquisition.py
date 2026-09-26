@@ -1675,7 +1675,7 @@ def test_a_served_error_page_with_a_banner_h1_is_still_refused_its_read() -> Non
         "<p>Sorry! An error was encountered. Please try again later.</p>"
         "</body></html>"
     )
-    title, text, _published, _updated = _extract_html(html)
+    title, text, _published, _updated = _extract_html(html, _ERROR_PAGE_URL)
 
     assert title == "EIA - Sorry! Unexpected Error"
     assert (

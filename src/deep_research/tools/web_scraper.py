@@ -193,7 +193,8 @@ class WebScraperTool(BaseTool):
                 recoverable=False,
                 details={"content_type": _bounded_content_type(content_type)},
             )
-        title, text, page_published, page_updated = _extract_html(response.text)
+        resolved_url = _resolved_url(response, url)
+        title, text, page_published, page_updated = _extract_html(response.text, resolved_url)
         if not text.strip():
             if _is_large_markup(response.text):
                 # A chrome-shaped shell whose data held no prose: everything
@@ -215,7 +216,6 @@ class WebScraperTool(BaseTool):
                 error_type="empty_page_content",
                 recoverable=True,
             )
-        resolved_url = _resolved_url(response, url)
         data = {
             "url": url,
             "requested_url": url,
@@ -340,7 +340,7 @@ def _bounded_content_type(content_type: str) -> str:
     return media_type
 
 
-def _extract_html(html: str) -> tuple[str, str, str | None, str | None]:
+def _extract_html(html: str, url: str) -> tuple[str, str, str | None, str | None]:
     """The page's title, its readable text, and its own (published, updated)
     dates (D14).
 
@@ -358,7 +358,7 @@ def _extract_html(html: str) -> tuple[str, str, str | None, str | None]:
     is prose a reader wrote for a person, not a machine-readable claim.
     """
     soup = BeautifulSoup(html, "html.parser")
-    title = _page_title(soup)
+    title = _page_title(soup, url)
     # Detached rather than decomposed: a shell's JSON payloads live in them.
     scripts = [element.extract() for element in soup("script")]
     for element in soup(["style", "noscript"]):
@@ -459,39 +459,88 @@ def _is_just_site_name(raw_title: str, site_name: str | None) -> bool:
     return len(segments) == 1 and segments[0] == site_name
 
 
-def _is_generic_apart_from_site(value: str, site_name: str | None) -> bool:
-    """Whether every segment of ``value`` other than the site's own is a
-    generic placeholder word (D3, run 5 follow-up): 'Work - Example
-    Register' names nothing once the site segment is set aside, even
-    though neither the whole title nor any one segment alone is the bare
-    site name.
+_LABEL_CHAR_PATTERN = re.compile(r"[a-z0-9]+")
 
-    When the site's name is not known, the site's own segment is
-    conventionally the first or the last one, so either removal is tried.
+
+def _normalized_label(text: str) -> str:
+    """``text``, casefolded with spaces and punctuation removed, so a title
+    segment can be compared against a host's own label regardless of
+    spacing or hyphenation (D3, run 5 follow-up): 'Example Register' and
+    'example-register' both normalise to 'exampleregister'.
+    """
+    return "".join(_LABEL_CHAR_PATTERN.findall(text.casefold()))
+
+
+def _host_label(url: str) -> str:
+    """The page's own host's main label: its first DNS label, with a
+    leading ``www`` dropped -- ``topostext`` for ``topostext.org``,
+    ``example-register`` for ``www.example-register.test``.
+    """
+    try:
+        host = urlsplit(url).netloc.split(":", 1)[0].casefold()
+    except ValueError:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host.split(".", 1)[0]
+
+
+def _site_segment(segments: list[str], site_name: str | None, host_label: str) -> str | None:
+    """Whichever of ``segments`` is the site's own, or ``None`` when none
+    is actually identified (D3, run 5 follow-up).
+
+    A segment equal to ``og:site_name`` is the site's own. Absent that, a
+    segment whose normalised text matches the page's own host label is --
+    the position is never guessed: a title's other segment might just as
+    well come first ('Home - Really Important Headline') as last, and
+    trying both ends blindly misclassified a perfectly good headline as
+    unhelpful.
+    """
+    if site_name is not None:
+        return site_name if site_name in segments else None
+    normalized_host = _normalized_label(host_label)
+    if not normalized_host:
+        return None
+    return next(
+        (segment for segment in segments if _normalized_label(segment) == normalized_host),
+        None,
+    )
+
+
+def _is_generic_apart_from_site(value: str, site_name: str | None, host_label: str) -> bool:
+    """Whether every segment of ``value`` other than the site's own is a
+    generic placeholder word (D3, run 5 follow-up): 'Work - ToposText'
+    names nothing once the site segment is set aside, even though neither
+    the whole title nor any one segment alone is the bare site name.
+
+    Never applied unless the site's own segment is actually identified
+    (by ``og:site_name`` or by the host label): guessing which end of an
+    unrelated two-segment title is the site's own discarded real headlines
+    such as 'Home - Really Important Headline About Regional Housing
+    Filings'.
     """
     segments = title_segments(value)
     if len(segments) < 2:
         return False
-    if site_name is not None and site_name in segments:
-        remaining = [segment for segment in segments if segment != site_name]
-        return all(_is_generic_placeholder(segment) for segment in remaining)
-    return all(_is_generic_placeholder(segment) for segment in segments[:-1]) or all(
-        _is_generic_placeholder(segment) for segment in segments[1:]
-    )
+    site_segment = _site_segment(segments, site_name, host_label)
+    if site_segment is None:
+        return False
+    remaining = [segment for segment in segments if segment != site_segment]
+    return bool(remaining) and all(_is_generic_placeholder(segment) for segment in remaining)
 
 
-def _is_unhelpful_title(value: str, site_name: str | None) -> bool:
+def _is_unhelpful_title(value: str, site_name: str | None, host_label: str) -> bool:
     """Whether ``value`` names nothing useful: the site's own bare name, a
     generic single-word placeholder, or a title that is generic apart from
     its own site segment (D3, run 5)."""
     return (
         value == site_name
         or _is_generic_placeholder(value)
-        or _is_generic_apart_from_site(value, site_name)
+        or _is_generic_apart_from_site(value, site_name, host_label)
     )
 
 
-def _page_title(soup: BeautifulSoup) -> str:
+def _page_title(soup: BeautifulSoup, url: str) -> str:
     """The page's title (D3, RevW5Titles P1-a/P2; run 5 D3).
 
     The raw ``<title>`` tag is kept whenever it is not empty and does not
@@ -502,11 +551,12 @@ def _page_title(soup: BeautifulSoup) -> str:
     later, differing one remains.
     """
     site_name = _meta_property_content(soup, "og:site_name")
+    host_label = _host_label(url)
     raw_title = soup.title.get_text(strip=True) if soup.title else ""
     if (
         raw_title
         and not _is_just_site_name(raw_title, site_name)
-        and not _is_unhelpful_title(raw_title, site_name)
+        and not _is_unhelpful_title(raw_title, site_name, host_label)
     ):
         return raw_title
     candidates: list[str | None] = [
@@ -517,8 +567,8 @@ def _page_title(soup: BeautifulSoup) -> str:
     for index, candidate in enumerate(candidates):
         if not candidate:
             continue
-        if _is_unhelpful_title(candidate, site_name) and any(
-            later and not _is_unhelpful_title(later, site_name)
+        if _is_unhelpful_title(candidate, site_name, host_label) and any(
+            later and not _is_unhelpful_title(later, site_name, host_label)
             for later in candidates[index + 1 :]
         ):
             continue

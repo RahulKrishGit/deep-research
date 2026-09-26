@@ -960,7 +960,9 @@ def test_page_owner_reads_the_publisher_from_a_kept_headline_publisher_title() -
         "</head><body><p>Battery storage capacity grew across every region.</p>"
         "</body></html>"
     )
-    title, _text, _published, _updated = _extract_html(html)
+    title, _text, _published, _updated = _extract_html(
+        html, "https://www.eia.gov/todayinenergy/detail.php?id=64705"
+    )
     assert title == (
         "Battery storage capacity grew in 2024 - "
         "U.S. Energy Information Administration (EIA)"
